@@ -6019,7 +6019,6 @@ class PreparedIndexMutation:
             value_shape = rows.fetchone()
         if value_shape is None or tuple(value_shape) != (len(value_keys),) * 3:
             raise ReferenceSealError("User completion differs from its canonical original receipt shape")
-        expected["index_marker_witnesses"] = len(target.index_marker_witnesses)
         names = (*expected, "user_assertions_removed", "user_assertions_tombstoned")
         with self._owned_cursor(
             observer,

@@ -69,10 +69,10 @@ from tests.infra.excision_execution import execute_excision, recover_excision
 from tests.infra.sync_as_async import AsyncConnectionView
 
 
-def _seed_marker_carriers(
+def _seed_marker_inputs(
     archive_root: Path, session_id: str
 ) -> tuple[PreparedAcceptedMarkerInput, PreparedAcceptedMarkerInput]:
-    """Seed real pending/accepted carrier bytes plus their rebuildable witnesses."""
+    """Seed real pending and accepted Source marker carriers."""
     raw_id = resolve_session_excision_target_from_root(archive_root, session_id).raw_targets[0].raw_id
     pending = prepare_accepted_marker_input(
         raw_id, [{"session_id": session_id, "candidates": [{"body": "pending secret"}]}]
@@ -86,9 +86,6 @@ def _seed_marker_carriers(
         conn.execute("BEGIN IMMEDIATE")
         persist_pending_marker_input_sync(conn, pending, expected_incarnation_id=str(uuid.uuid4()))
         asyncio.run(append_accepted_marker_input(AsyncConnectionView(conn), accepted))
-    from tests.infra.excision_embeddings import seed_excision_marker_witnesses
-
-    seed_excision_marker_witnesses(archive_root, (pending, accepted))
     return pending, accepted
 
 
@@ -578,16 +575,12 @@ class TestApplySessionExcision:
             assert conn.execute("SELECT count(*) FROM excision_embedding_completions").fetchone() == (1,)
         assert resolve_session_excision_target_from_root(tmp_path, session_id).found is False
 
-    def test_source_first_retry_cleans_marker_witnesses_from_terminal_evidence(
+    def test_source_first_retry_preserves_terminal_marker_evidence(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A retry uses content-free marker tombstones after source erasure.
-
-        Anti-vacuity: resolve marker witnesses only through still-live carrier
-        bytes and the retry leaves both rebuildable witnesses behind.
-        """
-        session_id = _seed_session(tmp_path, native_id="crash-marker-source-index")
-        pending, accepted = _seed_marker_carriers(tmp_path, session_id)
+        """A retry uses content-free Source tombstones after carrier erasure."""
+        session_id = _seed_session(tmp_path, native_id="crash-marker-source-paid")
+        pending, accepted = _seed_marker_inputs(tmp_path, session_id)
         from polylogue.storage.sqlite.reference_seal import _PreparedExcisionEmbeddingsChild
 
         class MarkerSourceInterruptionError(Exception):
@@ -616,12 +609,6 @@ class TestApplySessionExcision:
             assert conn.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
             assert conn.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
             assert conn.execute("SELECT COUNT(*) FROM excised_marker_inputs").fetchone() == (2,)
-        with sqlite3.connect(tmp_path / "index.db") as conn:
-            assert conn.execute(
-                "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
-                (pending.identity, accepted.identity),
-            ).fetchone() == (2,)
-
         recovery_plan = plan_session_excision_from_root(tmp_path, session_id)
         assert recovery_plan.source_marker_inputs_pending == 1
         assert recovery_plan.source_marker_inputs_accepted == 1
@@ -657,19 +644,13 @@ class TestApplySessionExcision:
             receipt = json.loads(row[0])
         assert receipt["counts"]["source_marker_inputs_pending"] == 1
         assert receipt["counts"]["source_marker_inputs_accepted"] == 1
-        assert receipt["counts"]["index_marker_witnesses"] == 2
         assert receipt["marker_input_digests"] == [pending.payload_sha256, accepted.payload_sha256]
-        with sqlite3.connect(tmp_path / "index.db") as conn:
-            assert conn.execute(
-                "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
-                (pending.identity, accepted.identity),
-            ).fetchone() == (0,)
 
     def test_retry_after_receipt_commit_before_index_commit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         session_id = _seed_session(tmp_path, native_id="crash-receipt-index")
-        pending, accepted = _seed_marker_carriers(tmp_path, session_id)
+        _seed_marker_inputs(tmp_path, session_id)
         from polylogue.storage.sqlite.reference_seal import IndexMutationScope
 
         class UserCommitInterruptionError(Exception):
@@ -703,7 +684,6 @@ class TestApplySessionExcision:
             ).fetchone()
             assert stored is not None
             stored_value = json.loads(stored[0])
-            assert stored_value["counts"]["index_marker_witnesses"] == 2
 
         with sqlite3.connect(tmp_path / "audit.db") as conn:
             original_attempts = conn.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall()
@@ -722,11 +702,6 @@ class TestApplySessionExcision:
             )
         assert stored_value["reason"] == "crash"
         assert stored_value["actor"] == "user:test"
-        with sqlite3.connect(tmp_path / "index.db") as conn:
-            assert conn.execute(
-                "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
-                (pending.identity, accepted.identity),
-            ).fetchone() == (0,)
         assert resolve_session_excision_target_from_root(tmp_path, session_id).found is False
 
     def test_reingest_does_not_resurrect_excised_content(self, tmp_path: Path) -> None:
@@ -1526,63 +1501,3 @@ def test_started_source_compiled_dependency_does_not_authorize_outside_rows(
             ).fetchone()[0]
             == 0
         )
-
-
-@pytest.mark.parametrize("changed_column", ["carrier_digest", "incarnation_id", "dispositions_json"])
-def test_frozen_index_marker_cells_refuse_changed_native_witness_before_effects(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_column: str
-) -> None:
-    from polylogue.core.stage_admission import admit_stage_write
-    from polylogue.storage.sqlite.connection_profile import (
-        NativeSQLCustodyOwner,
-        native_sql_owner_for_connection,
-        open_isolated_write_connection,
-    )
-    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError
-
-    session_id = _seed_session(tmp_path, native_id="frozen-marker-native-cells", with_embedding=True)
-    pending, _accepted = _seed_marker_carriers(tmp_path, session_id)
-    original_for_excision = PreparedIndexMutation.for_excision
-    changed = False
-
-    def for_excision(*args: Any, **kwargs: Any) -> Any:
-        nonlocal changed
-        if not changed:
-
-            def change_native() -> None:
-                conn = open_isolated_write_connection(
-                    tmp_path / "index.db", purpose="fixture foreign marker change", archive_root=tmp_path
-                )
-                owner = native_sql_owner_for_connection(conn) or NativeSQLCustodyOwner(conn)
-                try:
-                    value = {
-                        "carrier_digest": "c" * 64,
-                        "incarnation_id": str(uuid.uuid4()),
-                        "dispositions_json": '[{"decision":"changed"}]',
-                    }[changed_column]
-                    conn.execute(
-                        f"UPDATE ingest_marker_witnesses SET {changed_column}=? WHERE request_key=?",
-                        (value, pending.identity),
-                    )
-                    conn.commit()
-                finally:
-                    owner.close()
-
-            admit_stage_write("test.foreign-marker-change", change_native)
-            changed = True
-        return original_for_excision(*args, **kwargs)
-
-    monkeypatch.setattr(PreparedIndexMutation, "for_excision", for_excision)
-    with pytest.raises(ReferenceSealError):
-        execute_excision(tmp_path, session_id, reason="exact marker refusal", actor="user:test")
-    assert changed
-    with sqlite3.connect(tmp_path / "source.db") as source:
-        assert source.execute("SELECT count(*) FROM raw_sessions").fetchone() == (1,)
-        assert source.execute("SELECT count(*) FROM excised_marker_inputs").fetchone() == (0,)
-    with sqlite3.connect(tmp_path / "embeddings.db") as paid:
-        assert paid.execute("SELECT count(*) FROM message_embeddings_meta").fetchone() == (1,)
-        assert paid.execute("SELECT count(*) FROM excision_embedding_completions").fetchone() == (0,)
-    with sqlite3.connect(tmp_path / "user.db") as user:
-        assert user.execute("SELECT count(*) FROM assertions WHERE kind='excision_record'").fetchone() == (0,)
-    with sqlite3.connect(tmp_path / "index.db") as index:
-        assert index.execute("SELECT count(*) FROM sessions WHERE session_id=?", (session_id,)).fetchone() == (1,)

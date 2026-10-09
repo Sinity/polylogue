@@ -1,4 +1,4 @@
-"""Frozen excision coordinates survive removal of their derived witnesses."""
+"""Frozen excision coordinates retain the inputs needed for exact replay."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from polylogue.security.excision import (
     ContainerMember,
     ExcisionRawTarget,
     ExcisionTarget,
-    IndexMarkerExcisionTarget,
     excision_target_from_replay,
     excision_target_replay,
 )
@@ -25,7 +24,6 @@ from polylogue.storage.accepted_marker_inputs import MarkerInputExcisionTarget
 def _target() -> ExcisionTarget:
     return ExcisionTarget(
         session_id="codex:neutral",
-        index_marker_witnesses=(),
         session_exists=True,
         session_content_hash=bytes(range(32)),
         raw_targets=(ExcisionRawTarget("raw-neutral", bytes(reversed(range(32))), "neutral.json"),),
@@ -146,41 +144,3 @@ def test_user_population_precondition_participates_in_frozen_plan_identity() -> 
         replay_context(
             "mutate-session-excision", {key: value for key, value in original.items() if key != "user_frame_epoch"}
         )
-
-
-def test_index_marker_proved_empty_is_explicit_and_missing_operand_refuses() -> None:
-    encoded = excision_target_replay(_target())
-    assert encoded["index_marker_witnesses"] == []
-    assert excision_target_from_replay(encoded).index_marker_witnesses == ()
-    del encoded["index_marker_witnesses"]
-    with pytest.raises(ValueError):
-        excision_target_from_replay(encoded)
-
-
-@pytest.mark.parametrize("corruption", [None, "duplicate", "foreign", "digest", "key"])
-def test_index_marker_operand_serialization_binds_exact_content_free_coordinates(corruption: str | None) -> None:
-    key = "b" * 64
-    target = replace(
-        _target(),
-        marker_input_targets=(MarkerInputExcisionTarget(key, "raw-neutral", "a" * 64, "accepted", "stream", 1),),
-        index_marker_witnesses=(
-            IndexMarkerExcisionTarget(key, "a" * 64, "11111111-1111-4111-8111-111111111111", bytes(range(32))),
-        ),
-    )
-    encoded = excision_target_replay(target)
-    witnesses = encoded["index_marker_witnesses"]
-    assert isinstance(witnesses, list) and isinstance(witnesses[0], dict)
-    if corruption == "duplicate":
-        witnesses.append(dict(witnesses[0]))
-    elif corruption == "foreign":
-        witnesses[0]["carrier_digest"] = "c" * 64
-    elif corruption == "digest":
-        witnesses[0]["dispositions_sha256"] = "00"
-    elif corruption == "key":
-        witnesses[0]["request_key"] = "c" * 64
-    if corruption is not None:
-        with pytest.raises(ValueError):
-            excision_target_from_replay(encoded)
-    else:
-        assert excision_target_from_replay(encoded) == target
-        assert witnesses[0]["dispositions_sha256"] == bytes(range(32)).hex()

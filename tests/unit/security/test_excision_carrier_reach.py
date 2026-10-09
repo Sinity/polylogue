@@ -199,22 +199,12 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
         persist_pending_marker_input_sync(source, target, expected_incarnation_id=str(uuid.uuid4()))
         asyncio.run(append_accepted_marker_input(AsyncConnectionView(source), accepted_target))
         asyncio.run(append_accepted_marker_input(AsyncConnectionView(source), other))
-    from tests.infra.excision_embeddings import seed_excision_marker_witnesses
-
-    seed_excision_marker_witnesses(tmp_path, (target, accepted_target, other))
-
-    with sqlite3.connect(tmp_path / "index.db") as index:
-        outside_marker = index.execute(
-            "SELECT * FROM ingest_marker_witnesses WHERE request_key=?", (other.identity,)
-        ).fetchone()
-        assert outside_marker is not None
     plan = plan_session_excision_from_root(tmp_path, session_id)
     assert plan.source_marker_inputs_pending == 1
     assert plan.source_marker_inputs_accepted == 1
     receipt = execute_excision(tmp_path, session_id, reason="marker secret", actor="user:local")
     assert receipt["counts"]["source_marker_inputs_pending"] == 1
     assert receipt["counts"]["source_marker_inputs_accepted"] == 1
-    assert receipt["counts"]["index_marker_witnesses"] == 2
 
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
@@ -250,15 +240,6 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
         replacement_sequence = asyncio.run(append_accepted_marker_input(AsyncConnectionView(source), replacement))
         source.commit()
         assert replacement_sequence > int(accepted_tombstone[4])
-    with sqlite3.connect(tmp_path / "index.db") as index:
-        assert index.execute(
-            "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
-            (target.identity, accepted_target.identity),
-        ).fetchone() == (0,)
-        assert (
-            index.execute("SELECT * FROM ingest_marker_witnesses WHERE request_key=?", (other.identity,)).fetchone()
-            == outside_marker
-        )
 
 
 def test_mixed_marker_carrier_refuses_before_any_session_tier_mutates(tmp_path: Path) -> None:

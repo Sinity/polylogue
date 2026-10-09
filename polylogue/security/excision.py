@@ -271,20 +271,6 @@ class ContainerDisposition:
 
 
 @dataclass(frozen=True, slots=True)
-class IndexMarkerExcisionTarget:
-    """Original derived witness coordinates and an exact dispositions digest."""
-
-    __pydantic_config__: ClassVar[ConfigDict] = ConfigDict(
-        strict=True, extra="forbid", ser_json_bytes="hex", val_json_bytes="hex"
-    )
-
-    request_key: str
-    carrier_digest: str
-    incarnation_id: str
-    dispositions_sha256: bytes
-
-
-@dataclass(frozen=True, slots=True)
 class ExcisionTarget:
     """Rows resolved as in-scope for excising one session.
 
@@ -297,7 +283,6 @@ class ExcisionTarget:
     )
 
     session_id: str
-    index_marker_witnesses: tuple[IndexMarkerExcisionTarget, ...] = field(kw_only=True)
     session_exists: bool = False
     session_content_hash: bytes | None = None
     raw_targets: tuple[ExcisionRawTarget, ...] = ()
@@ -377,20 +362,6 @@ def excision_target_from_replay(value: object) -> ExcisionTarget:
         len(value) != 32 for value in target.material_blob_hashes
     ):
         raise ValueError("excision replay requires complete original blob identities")
-    witness_keys: set[str] = set()
-    markers = {marker.identity: marker.carrier_digest for marker in target.marker_input_targets}
-    for witness in target.index_marker_witnesses:
-        if (
-            witness.request_key in witness_keys
-            or markers.get(witness.request_key) != witness.carrier_digest
-            or len(witness.dispositions_sha256) != 32
-            or len(witness.request_key) != 64
-            or len(witness.carrier_digest) != 64
-            or any(char not in "0123456789abcdef" for char in witness.request_key + witness.carrier_digest)
-            or len(witness.incarnation_id) != 36
-        ):
-            raise ValueError("excision replay requires exact unique original Index marker coordinates")
-        witness_keys.add(witness.request_key)
     return target
 
 
@@ -513,35 +484,8 @@ def _resolve_session_excision_target(
         hook_event_ids = _session_hook_event_ids(source, session_id)
         material_ids, material_blob_hashes = _session_material_targets(source, session_id)
 
-    index_marker_witnesses: list[IndexMarkerExcisionTarget] = []
-    if index_db.exists() and marker_input_targets:
-        incarnation = index.execute(
-            "SELECT incarnation_id,device,inode FROM ingest_index_incarnation WHERE singleton=1"
-        ).fetchone()
-        physical = index_db.stat()
-        for marker in sorted(marker_input_targets, key=lambda marker: marker.identity):
-            row = index.execute(
-                "SELECT carrier_digest,incarnation_id,dispositions_json FROM ingest_marker_witnesses WHERE request_key=?",
-                (marker.identity,),
-            ).fetchone()
-            if row is None:
-                continue
-            if (
-                incarnation is None
-                or tuple(incarnation[1:]) != (physical.st_dev, physical.st_ino)
-                or row[:2] != (marker.carrier_digest, incarnation[0])
-                or not isinstance(row[2], str)
-            ):
-                raise ValueError("Excision marker witness differs from its Source carrier or Index incarnation")
-            index_marker_witnesses.append(
-                IndexMarkerExcisionTarget(
-                    marker.identity, row[0], row[1], hashlib.sha256(row[2].encode("utf-8")).digest()
-                )
-            )
-
     return ExcisionTarget(
         session_id=session_id,
-        index_marker_witnesses=tuple(index_marker_witnesses),
         session_exists=session_exists,
         session_content_hash=session_content_hash,
         raw_targets=raw_targets,
@@ -1204,15 +1148,6 @@ def plan_session_excision(archive: ArchiveStore, session_id: str, *, cascade_lin
     )
     if cascade_lineage:
         targets = _bind_cascade_container_disposition(archive, targets)
-    owned_marker_keys: set[str] = set()
-    owned_targets: list[ExcisionTarget] = []
-    for current in targets:
-        owned = tuple(
-            witness for witness in current.index_marker_witnesses if witness.request_key not in owned_marker_keys
-        )
-        owned_marker_keys.update(witness.request_key for witness in owned)
-        owned_targets.append(replace(current, index_marker_witnesses=owned))
-    targets = tuple(owned_targets)
     target = targets[-1]
     user_frame_epoch = _excision_user_frame_epoch(archive)
     if not target.found:
@@ -2180,78 +2115,6 @@ def _stage_excision_source_blob_dispositions(
     return reservations_removed
 
 
-def _verify_original_excision_index_markers(seal: PreparedIndexMutation) -> None:
-    """Bind every selected request key to its original native row before effects."""
-    from polylogue.storage.sqlite.reference_seal import ReferenceSealError
-
-    witnesses: dict[str, IndexMarkerExcisionTarget] = {}
-    markers: dict[str, str] = {}
-    for session_id in _PreparedExcisionSessionClosure(seal):
-        target = seal.original_excision_target(session_id)
-        for marker in target.marker_input_targets:
-            prior = markers.setdefault(marker.identity, marker.carrier_digest)
-            if prior != marker.carrier_digest:
-                raise ReferenceSealError("frozen Source markers disagree on their exact carrier")
-        for witness in target.index_marker_witnesses:
-            if witness.request_key in witnesses or markers.get(witness.request_key) != witness.carrier_digest:
-                raise ReferenceSealError("frozen Index marker witness has duplicate or foreign ownership")
-            witnesses[witness.request_key] = witness
-    with seal._owned_cursor(
-        seal._scratch,
-        "CREATE TEMP TABLE excision_index_marker_current(request_key TEXT PRIMARY KEY,present INTEGER NOT NULL) STRICT",
-    ):
-        pass
-    for key in markers:
-        with seal.original_rows(
-            "index", "SELECT rowid FROM ingest_marker_witnesses WHERE request_key=?", (key,)
-        ) as rows:
-            row = rows.fetchone()
-        selected_witness = witnesses.get(key)
-        with seal._owned_cursor(
-            seal._scratch, "INSERT INTO temp.excision_index_marker_current VALUES (?,?)", (key, int(row is not None))
-        ):
-            pass
-        if row is None:
-            if selected_witness is not None and not seal._excision_recovery_user_committed:
-                raise ReferenceSealError("original Index marker witness disappeared before its deletion")
-            continue
-        if selected_witness is None:
-            raise ReferenceSealError("Index marker witness appeared outside its frozen completion")
-        image = seal.retain_tier_row("index", "ingest_marker_witnesses", row[0])
-        if image is None:
-            raise ReferenceSealError("original Index marker disappeared inside its pinned snapshot")
-        cells = dict(zip(image.columns, image.cells, strict=True))
-        expected = {
-            "request_key": selected_witness.request_key,
-            "carrier_digest": selected_witness.carrier_digest,
-            "incarnation_id": selected_witness.incarnation_id,
-        }
-        for name, value in expected.items():
-            kind, length, _fixed = seal._literal_cell_metadata(cells[name])
-            if kind != "text" or length != len(value.encode("utf-8")):
-                raise ReferenceSealError("original Index marker changed its retained scalar")
-            if b"".join(seal._literal_cell_chunks(cells[name])) != value.encode("utf-8"):
-                raise ReferenceSealError("original Index marker changed its retained scalar")
-        with seal.original_rows(
-            "index", "SELECT incarnation_id,device,inode FROM ingest_index_incarnation WHERE singleton=1"
-        ) as rows:
-            incarnation = rows.fetchone()
-        if (
-            incarnation is None
-            or incarnation[0] != selected_witness.incarnation_id
-            or tuple(incarnation[1:]) != seal.index_identity[:2]
-        ):
-            raise ReferenceSealError("Index marker belongs to a stale physical incarnation")
-        kind, _length, _fixed = seal._literal_cell_metadata(cells["dispositions_json"])
-        if kind != "text":
-            raise ReferenceSealError("original Index marker dispositions are not native text")
-        digest = hashlib.sha256()
-        for chunk in seal._literal_cell_chunks(cells["dispositions_json"]):
-            digest.update(chunk)
-        if digest.digest() != selected_witness.dispositions_sha256:
-            raise ReferenceSealError("original Index marker changed its exact dispositions bytes")
-
-
 def _verify_excision_source_target_terminal(
     seal: PreparedIndexMutation, target: ExcisionTarget, *, recovered: bool = False
 ) -> None:
@@ -2727,7 +2590,6 @@ def _apply_original_session_excision(
             )
             source_completed = False
             with seal.original_read_snapshot():
-                _verify_original_excision_index_markers(seal)
                 event = seal.original_excision_source_completion() if recovery is not None else None
                 if event is None:
                     if seal._excision_recovery_user_committed:
@@ -2777,7 +2639,6 @@ def _apply_original_session_excision(
                             "index_sessions": int(target.session_exists),
                             "index_messages": len(target.message_ids),
                             "index_blocks": len(target.block_ids),
-                            "index_marker_witnesses": len(target.index_marker_witnesses),
                         },
                         marker_input_digests=tuple(
                             dict.fromkeys(marker.carrier_digest for marker in target.marker_input_targets)
@@ -2944,26 +2805,6 @@ def _apply_original_session_excision(
                                             expected = rows.fetchone() is not None
                                     else:
                                         expected = target.session_exists
-                                for witness in target.index_marker_witnesses:
-                                    with seal._owned_cursor(
-                                        seal._scratch,
-                                        "SELECT present FROM temp.excision_index_marker_current WHERE request_key=?",
-                                        (witness.request_key,),
-                                    ) as rows:
-                                        marker_present = rows.fetchone()
-                                    if marker_present is None:
-                                        raise ReferenceSealError(
-                                            "Index marker deletion lacks its exact original postimage input"
-                                        )
-                                    with seal._owned_cursor(
-                                        index,
-                                        "DELETE FROM ingest_marker_witnesses WHERE request_key=?",
-                                        (witness.request_key,),
-                                    ) as cursor:
-                                        if cursor.rowcount != marker_present[0]:
-                                            raise ReferenceSealError(
-                                                "Index marker deletion differs from its original witness"
-                                            )
                                 deleted = stage_index_session_deletions(index, scope, (session_id,))
                                 if len(deleted) != int(expected):
                                     raise ReferenceSealError("Index deletion differs from original frozen membership")
