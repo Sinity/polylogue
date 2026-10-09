@@ -96,6 +96,15 @@ promotion. Recreating a link to the same leaf invalidates the old proof.
 Generation linking and Source snapshots preserve those same configured names
 and selected directory incarnations through their operation.
 
+Physical SHA-256 of a live tier file runs in a child process. The parent binds
+an anchored directory and selected device/inode, then the child opens the
+regular leaf without following links, streams its digest, and checks the
+identity and file metadata before and after reading. The parent rechecks the
+directory entry and kills and reaps that child on cancellation. This avoids
+closing an ordinary descriptor for the database in the process that holds
+SQLite's POSIX locks. Schema census and live migration fingerprint checks use
+this owner; ordinary hashing of closed backup artifacts remains local.
+
 Each outer write lease names its archive root and holds an owned, descriptor-anchored
 `.archive-write-custody.lock` before writable archive SQL begins. Nested owners
 borrow that custody; a thread receives authority through a single-use grant,

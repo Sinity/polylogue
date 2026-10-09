@@ -23,6 +23,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
+from polylogue.storage.sqlite.physical_file import physical_file_sha256
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 SchemaObjectType = Literal["table", "index", "trigger", "view", "column"]
@@ -131,14 +132,6 @@ def _canonical_json(value: object) -> bytes:
 
 def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_json(value)).hexdigest()
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _quote(identifier: str) -> str:
@@ -352,9 +345,18 @@ def capture_schema_census(
             errors.append(f"{tier.value}: tier file is missing")
         else:
             try:
-                file_size = identity.resolved_path.stat().st_size
                 if hash_files:
-                    file_sha256 = _file_sha256(identity.resolved_path)
+                    if identity.device is None or identity.inode is None:
+                        raise OSError("tier file identity is unavailable for physical hashing")
+                    digest = physical_file_sha256(
+                        identity.resolved_path,
+                        expected_device=identity.device,
+                        expected_inode=identity.inode,
+                    )
+                    file_sha256 = digest.sha256
+                    file_size = digest.size_bytes
+                else:
+                    file_size = identity.resolved_path.stat().st_size
                 connection = _open_read_only(identity.resolved_path, tier=tier)
                 actual_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
                 physical = _objects_from_connection(connection, tier)
