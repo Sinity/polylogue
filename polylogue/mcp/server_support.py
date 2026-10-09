@@ -311,6 +311,11 @@ def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseM
             # trim. The budget envelope supplies an offset continuation for
             # the retained prefix instead, so never expose a stale cursor.
             updates["next_cursor"] = None
+        coverage = getattr(payload, "coverage", None)
+        if count < len(items) and isinstance(coverage, BaseModel) and hasattr(coverage, "complete"):
+            # Coverage also describes whether this selected page is exhausted;
+            # transport paging adds no storage gap or degraded outcome.
+            updates["coverage"] = coverage.model_copy(update={"complete": False})
         candidate = payload.model_copy(update=updates)
         size = len(_serialize_payload(candidate, exclude_none=exclude_none).encode("utf-8"))
         if size <= MCP_RESPONSE_BUDGET_BYTES - MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES:
@@ -360,6 +365,9 @@ def _bounded_root_dict_page(
                 candidate_root["next_offset"] = offset + count
             if "continuation" in root:
                 candidate_root["continuation"] = None
+            coverage = root.get("coverage")
+            if isinstance(coverage, dict) and "complete" in coverage:
+                candidate_root["coverage"] = {**coverage, "complete": False}
             if "complete" in root:
                 candidate_root["complete"] = False
             if "truncated" in root:

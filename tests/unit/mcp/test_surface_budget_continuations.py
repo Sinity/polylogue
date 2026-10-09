@@ -64,6 +64,8 @@ async def test_registered_typed_pages_keep_budget_continuation(
                 ids.extend(item.get("reference", item.get("id")) for item in page["items"])
                 descriptor = body.get("continuation")
                 if isinstance(descriptor, dict):
+                    assert page["coverage"]["complete"] is False
+                    assert page["coverage"]["gaps"] == []
                     args = descriptor["arguments"]
                     token = args.get("continuation") or args["session_operation"]["continuation"]
                     assert QueryContinuation.decode(token).request.offset == len(ids)

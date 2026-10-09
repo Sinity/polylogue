@@ -507,6 +507,11 @@ def _query_payload(
     # CLI root payloads retain presentation-only keys.  The existing query
     # contract intentionally ignores those while compiling selection intent.
     spec = cli_read_request({**params, "limit": limit, "offset": offset}).selection
+    # Execute the compiler's window, including expression overrides and the
+    # declared nonzero outer-offset precedence. Transport defaults are only
+    # inputs to compilation, never a second execution override.
+    limit = clamp_query_limit(spec.limit, default=DEFAULT_SESSION_LIST_LIMIT)
+    offset = spec.offset
     # A proved missing explicit scope still runs the canonical query. Its
     # exact-ID predicate yields no rows on this pinned snapshot, while normal
     # validation and ranked-lane failures remain visible.

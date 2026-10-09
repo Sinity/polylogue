@@ -379,6 +379,7 @@ async def _query_sessions(
     over ``archive_search_payload`` / ``archive_session_list_payload``.
     """
     from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
+    from polylogue.mcp.query_contracts import build_session_query_request
     from polylogue.operations.session_contracts import SessionList, SessionSearch
     from polylogue.operations.session_reads import execute_session_operation
 
@@ -393,8 +394,6 @@ async def _query_sessions(
     bounded_limit = hooks.clamp_limit(limit if limit is not None else DEFAULT_SESSION_LIST_LIMIT)
 
     if continuation is None:
-        from polylogue.mcp.query_contracts import build_session_query_request
-
         probe = (
             build_session_query_request(
                 query=expression,
@@ -436,7 +435,7 @@ async def _query_sessions(
                 min_words=min_words,
             )
 
-    cls = SessionSearch if expression else SessionList
+    cls = SessionSearch if continuation is None and probe.fts_terms else SessionList
     continuation_request = None
     if continuation:
         from polylogue.archive.query.transaction import QueryContinuation
@@ -470,14 +469,19 @@ async def _query_sessions(
             if continuation_request is not None
             else request
         )
+        envelope_plan = (
+            build_session_query_request(query=envelope_request.expression, sort=envelope_request.sort)
+            .build_spec(hooks.clamp_limit)
+            .to_plan()
+        )
         envelope = build_search_envelope(
             tuple(payload.items),
             total=payload.total,
             limit=payload.limit,
             offset=payload.offset,
             query=envelope_request.expression or "",
-            retrieval_lane="dialogue",
-            sort=envelope_request.sort,
+            retrieval_lane="actions" if envelope_plan.retrieval_lane == "actions" else "dialogue",
+            sort=envelope_plan.sort,
         )
         # This typed owner carries a framed continuation rather than a search cursor.
         envelope = envelope.model_copy(update={"next_offset": payload.next_offset})

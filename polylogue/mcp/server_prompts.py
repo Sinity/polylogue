@@ -13,9 +13,10 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 from typing_extensions import TypedDict
 
 from polylogue.archive.query.discovery import render_query_discovery_example
+from polylogue.archive.query.filter_kwargs import plan_filter_kwargs
 from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
 from polylogue.archive.query.transaction import run_archive_read
-from polylogue.mcp.archive_support import archive_query_filters, clip_with_marker, mcp_archive_root
+from polylogue.mcp.archive_support import clip_with_marker, mcp_archive_root
 from polylogue.mcp.payloads import MCPFencedCodeBlock
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
@@ -202,7 +203,7 @@ def _archive_prompt_session_page(
 
 
 def _archive_prompt_sessions(archive: ArchiveStore, spec: SessionQuerySpec) -> list[PromptSession]:
-    filters = archive_query_filters(spec)
+    filters = plan_filter_kwargs(spec.to_plan())
     limit = spec.limit or 10
     query = " ".join(spec.query_terms).strip()
     if query:

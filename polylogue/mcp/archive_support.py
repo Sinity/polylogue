@@ -6,12 +6,11 @@ from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from time import monotonic
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, cast
 
+from polylogue.archive.query.filter_kwargs import ArchiveFilterKwargs, plan_filter_kwargs
 from polylogue.archive.query.spec import (
     DEFAULT_SESSION_LIST_LIMIT,
-    parse_query_date,
-    resolve_default_root_filter,
 )
 from polylogue.logging import get_logger
 from polylogue.operations.authority import authority_for_reader
@@ -63,38 +62,6 @@ def _filter_value(value: object) -> str:
     return str(raw)
 
 
-class ArchiveQueryFilters(TypedDict):
-    origin: str | None
-    origins: tuple[str, ...]
-    excluded_origins: tuple[str, ...]
-    tags: tuple[str, ...]
-    excluded_tags: tuple[str, ...]
-    repo_names: tuple[str, ...]
-    has_types: tuple[str, ...]
-    has_tool_use: bool
-    has_thinking: bool
-    has_paste: bool
-    tool_terms: tuple[str, ...]
-    excluded_tool_terms: tuple[str, ...]
-    action_terms: tuple[str, ...]
-    excluded_action_terms: tuple[str, ...]
-    action_sequence: tuple[str, ...]
-    action_text_terms: tuple[str, ...]
-    referenced_paths: tuple[str, ...]
-    cwd_prefix: str | None
-    typed_only: bool
-    message_type: str | None
-    title: str | None
-    min_messages: int | None
-    max_messages: int | None
-    min_words: int | None
-    max_words: int | None
-    since_ms: int | None
-    until_ms: int | None
-    since_session_id: str | None
-    root: bool | None
-
-
 def active_archive_root(config: Config) -> Path | None:
     """Return the archive file-set root housing the currently active database.
 
@@ -114,41 +81,6 @@ def mcp_archive_root(config: Config) -> Path:
     if active_root is not None and config.db_path.exists():
         return active_root
     return config.archive_root
-
-
-def archive_query_filters(spec: SessionQuerySpec) -> ArchiveQueryFilters:
-    """Translate the shared query spec into archive index filter kwargs."""
-    return {
-        "origin": None,
-        "origins": spec.origins,
-        "excluded_origins": spec.excluded_origins,
-        "tags": spec.tags,
-        "excluded_tags": spec.excluded_tags,
-        "repo_names": spec.repo_names,
-        "has_types": spec.has_types,
-        "has_tool_use": spec.filter_has_tool_use,
-        "has_thinking": spec.filter_has_thinking,
-        "has_paste": spec.filter_has_paste,
-        "tool_terms": spec.tool_terms,
-        "excluded_tool_terms": spec.excluded_tool_terms,
-        "action_terms": spec.action_terms,
-        "excluded_action_terms": spec.excluded_action_terms,
-        "action_sequence": spec.action_sequence,
-        "action_text_terms": spec.action_text_terms,
-        "referenced_paths": spec.referenced_path,
-        "cwd_prefix": spec.cwd_prefix,
-        "typed_only": spec.typed_only,
-        "message_type": spec.message_type,
-        "title": spec.title,
-        "min_messages": spec.min_messages,
-        "max_messages": spec.max_messages,
-        "min_words": spec.min_words,
-        "max_words": spec.max_words,
-        "since_ms": _date_ms(spec.since),
-        "until_ms": _date_ms(spec.until),
-        "since_session_id": spec.since_session_id,
-        "root": resolve_default_root_filter(spec.root, boolean_predicate=spec.boolean_predicate),
-    }
 
 
 def _archive_text_query(spec: SessionQuerySpec) -> str | None:
@@ -338,7 +270,7 @@ def archive_session_list_payload(
                 ),
             ),
         )
-    filters = archive_query_filters(spec)
+    filters = plan_filter_kwargs(spec.to_plan())
     text_query = _archive_text_query(spec)
     match_counts_are_exact = True
     if spec.exclude_text_terms:
@@ -400,7 +332,7 @@ def _coalesced_search_summaries(
     archive: ArchiveStore,
     *,
     query: str,
-    filters: ArchiveQueryFilters,
+    filters: ArchiveFilterKwargs,
     sort: str | None,
     reverse: bool,
     unique_limit: int,
@@ -460,7 +392,7 @@ def archive_search_payload(
         archive=archive,
     )
     hits = project_search_hits(plan, result)
-    filters = archive_query_filters(spec)
+    filters = plan_filter_kwargs(spec.to_plan())
     ranked_only = bool(spec.similar_text or spec.similar_session_id or spec.retrieval_lane in {"hybrid", "actions"})
     text_query = _archive_text_query(spec) or query
     total = None if ranked_only else archive.count_search_sessions(text_query, **filters)
@@ -489,7 +421,7 @@ def _search_term_diagnostics(
     archive: ArchiveStore,
     *,
     query: str,
-    filters: ArchiveQueryFilters,
+    filters: ArchiveFilterKwargs,
     spec: SessionQuerySpec,
     config: Config | None = None,
 ) -> QueryMissDiagnosticsPayload | None:
@@ -540,7 +472,7 @@ def _predicate_probe_reason_payloads(
     ``ArchiveStore`` calls); this is the one place it steps outside that to
     reuse the async :mod:`~polylogue.archive.query.miss_predicates` substrate
     shared with the CLI ``--why`` path, rather than re-implementing
-    clause-drop probing a third time over ``ArchiveQueryFilters``.
+    clause-drop probing a third time over ``ArchiveFilterKwargs``.
     """
     if config is None:
         return ()
@@ -838,11 +770,6 @@ def _excerpt_text(text: str, max_chars: int, *, match_query: str | None = None) 
     return text[:head] + marker + text[-(retained - head) :]
 
 
-def _date_ms(value: str | None) -> int | None:
-    parsed = parse_query_date("date", value)
-    return int(parsed.timestamp() * 1000) if parsed is not None else None
-
-
 def _sort_value(sort: object) -> str | None:
     if sort is None:
         return None
@@ -852,13 +779,11 @@ def _sort_value(sort: object) -> str | None:
 
 __all__ = [
     "TRUNCATION_MARKER",
-    "ArchiveQueryFilters",
     "active_archive_root",
     "archive_session_list_payload",
     "archive_message_payload",
     "archive_message_page_payload",
     "archive_messages_payload",
-    "archive_query_filters",
     "archive_query_unit_payload",
     "archive_search_payload",
     "archive_summary_payload",

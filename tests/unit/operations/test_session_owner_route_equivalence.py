@@ -235,7 +235,9 @@ def _seed_exclusion(root: Path, texts: dict[str, str] | None = None) -> dict[str
     return ids
 
 
-async def _mcp_sessions(root: Path, expression: str, *, limit: int = 50, offset: int = 0) -> dict[str, object]:
+async def _mcp_sessions(
+    root: Path, expression: str, *, limit: int = 50, offset: int = 0, sort: str | None = None
+) -> dict[str, object]:
     import json
     from typing import cast
 
@@ -247,7 +249,7 @@ async def _mcp_sessions(root: Path, expression: str, *, limit: int = 50, offset:
     with installed_runtime_services(root):
         result = json.loads(
             await invoke_surface_async(
-                query_fn, expression=expression, projection="sessions", limit=limit, offset=offset
+                query_fn, expression=expression, projection="sessions", limit=limit, offset=offset, sort=sort
             )
         )
     assert isinstance(result, dict)
@@ -483,6 +485,11 @@ async def test_action_lane_excludes_dialogue_and_reports_its_lane(tmp_path: Path
     assert [item.id for item in listed.items] == [action]
     assert page.total == listed.total == 1
     assert generic["total"] is None  # Ranked action envelopes do not declare an exact total.
+    mcp = await _mcp_sessions(root, "needle lane:actions")
+    assert mcp["retrieval_lane"] == "actions"
+    assert [hit["session"]["id"] for hit in mcp["hits"]] == [action]
+    assert mcp["hits"][0]["match"]["retrieval_lane"] == "actions"
+
     assert page.items[0].match.retrieval_lane == "actions"
 
 
@@ -697,3 +704,29 @@ async def test_root_only_facade_follows_active_index_and_explicit_shadow_stays_s
     assert explicit.total == 1
     assert explicit.items[0].id == seeded[0]
     assert transcript.items
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outer_offset", [0, 2])
+async def test_generic_read_executes_compiled_expression_window(tmp_path: Path, outer_offset: int) -> None:
+    root = tmp_path / "archive"
+    run_off_event_loop(lambda: _seed(root))
+    expression = '{"limit":2,"offset":1}'
+    owner = await _owner_list(root, expression=expression, limit=20, offset=outer_offset)
+    generic = _generic_list(root, query=expression, limit=20, offset=outer_offset)
+    assert generic == owner
+    assert generic[2:4] == (2, outer_offset or 1)
+    mcp = await _mcp_sessions(root, expression, limit=20, offset=outer_offset)
+    assert [item["id"] for item in mcp["items"]] == generic[0]
+    assert (mcp["limit"], mcp["offset"]) == generic[2:4]
+
+
+@pytest.mark.asyncio
+async def test_mcp_advanced_random_listing_retains_boolean_selection(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    run_off_event_loop(lambda: _seed(root))
+    expression = 'title:"Session 0" OR title:"Session 1"'
+    owner = await _owner_list(root, expression=expression)
+    mcp = await _mcp_sessions(root, expression, limit=20, sort="random")
+    assert mcp["total"] == owner[1] == 2
+    assert {item["id"] for item in mcp["items"]} == set(owner[0])
