@@ -33,6 +33,7 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.derived.session.repo_observations import RepoObservation, refresh_session_repos_sync
 from polylogue.storage.sqlite.action_relation import action_relation_select_sql
 from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveQueryUnitAggregateRow,
@@ -2156,9 +2157,21 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
         second_id = write_index_session(facade, second)
         conn = facade._conn
         facade.add_user_tags((first_id,), ("archive",))
+        # Index-only seeding leaves both profile and repository projections to the fixture.
+        refresh_session_repos_sync(
+            conn,
+            first_id,
+            (
+                RepoObservation(
+                    origin_url="", root_path="/realm/project/polylogue", repo_name="polylogue", branch_name=""
+                ),
+            ),
+        )
         write_session_profile(
             conn,
             first_id,
+            repo_names=("polylogue",),
+            repo_paths=("/realm/project/polylogue",),
             workflow_shape="implementation",
             workflow_shape_confidence=1.0,
             terminal_state="complete",
