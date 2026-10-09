@@ -1099,7 +1099,7 @@ def test_initialize_cursor_state_tracks_latest_path_and_mtime(tmp_path: Path) ->
     assert cursor_state["latest_mtime"] == newer.stat().st_mtime
 
 
-def test_select_paths_for_processing_skips_known_mtimes_only_when_mtime_enabled(tmp_path: Path) -> None:
+def test_select_paths_for_processing_does_not_use_mtime_as_local_currency(tmp_path: Path) -> None:
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
     first.write_text("{}", encoding="utf-8")
@@ -1115,8 +1115,8 @@ def test_select_paths_for_processing_skips_known_mtimes_only_when_mtime_enabled(
         include_file_mtime=True,
         known_mtimes={str(first): first_mtime},
     )
-    assert skipped == 1
-    assert selected == [(second, second_mtime)]
+    assert skipped == 0
+    assert selected == [(first, first_mtime), (second, second_mtime)]
 
     selected_without_mtime, skipped_without_mtime = _select_paths_for_processing(
         [first, second],
@@ -2899,7 +2899,7 @@ def test_iter_source_acquisition_records_refuses_foreign_members_at_a_bound_loca
     assert "foreign_origin_content" in str(cursor_state["failed_files"])
 
 
-def test_iter_source_acquisition_records_skips_known_mtimes_without_reading_file(tmp_path: Path) -> None:
+def test_iter_source_acquisition_records_skips_matching_stat_cursor(tmp_path: Path) -> None:
     skipped = tmp_path / "cached.json"
     fresh = tmp_path / "fresh.json"
     skipped.write_text('{"id":"cached"}', encoding="utf-8")
@@ -2909,7 +2909,14 @@ def test_iter_source_acquisition_records_skips_known_mtimes_without_reading_file
         acquired_payloads(
             iter_source_acquisition_records(
                 Source(name="chatgpt", path=tmp_path),
-                known_mtimes={str(skipped): str(_get_file_mtime(skipped))},
+                known_cursors={
+                    str(skipped): {
+                        "st_dev": skipped.stat().st_dev,
+                        "st_ino": skipped.stat().st_ino,
+                        "st_size": skipped.stat().st_size,
+                        "mtime_ns": skipped.stat().st_mtime_ns,
+                    }
+                },
             )
         )
     )

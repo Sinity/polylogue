@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +10,8 @@ from pathlib import Path
 from polylogue.core.enums import Origin, Provider
 from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
+from polylogue.sources.origin_specs import database_member_for_filename
+from polylogue.sources.sqlite_snapshot import is_sqlite_path
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 
 logger = get_logger(__name__)
@@ -95,9 +96,10 @@ def _select_paths_for_processing(
 ) -> tuple[list[tuple[Path, str | None]], int]:
     """Filter unchanged files and return `(path, file_mtime)` tuples.
 
-    Slice B: When ``known_cursors`` is provided and all stat fields (dev,
-    ino, size, mtime_ns) match the live file, the file is skipped without
-    falling through to the mtime comparison or any full-file I/O.
+    Byte files may skip only when their complete captured stat tuple matches.
+    ZIP containers and mutable SQLite inputs require acquisition: timestamps
+    cannot certify ZIP membership or a database's committed WAL revision.
+    ``known_mtimes`` remains a caller input but never proves local byte currency.
     """
     selected: list[tuple[Path, str | None]] = []
     skipped_mtime = 0
@@ -120,8 +122,11 @@ def _select_paths_for_processing(
             if not profile_matches:
                 selected.append((path, _get_file_mtime(path) if include_file_mtime else None))
                 continue
-        # Slice B: fast-path against known cursor stat fields.
-        if known_cursors is not None and not path.name.lower().endswith(".zip"):
+        # Declared database members carry a logical revision, not the main
+        # file's physical stat identity. Other SQLite-shaped names also stay
+        # on acquisition's existing bound shape/admission route.
+        logical_input = database_member_for_filename(path.name) is not None or is_sqlite_path(path)
+        if known_cursors is not None and path.suffix.lower() != ".zip" and not logical_input:
             try:
                 st = path.stat()
                 cursor_fields = known_cursors.get(str(path))
@@ -138,28 +143,7 @@ def _select_paths_for_processing(
                     continue
             except OSError:
                 pass
-            # Fall through to mtime-based comparison if cursor check is
-            # inconclusive (no cursor data or stat mismatch).
-
         file_mtime = _get_file_mtime(path) if include_file_mtime else None
-        if known_mtimes and file_mtime and not is_hermes:
-            path_str = str(path)
-            # Direct match (non-ZIP files stored by exact path)
-            if known_mtimes.get(path_str) == file_mtime:
-                skipped_mtime += 1
-                continue
-            # ZIP members share the archive mtime, so one known member is not
-            # evidence that the whole archive was acquired.  Only skip when
-            # every current member has its own matching acquisition record.
-            if path_str.endswith(".zip"):
-                try:
-                    with zipfile.ZipFile(path) as archive:
-                        members = [info.filename for info in archive.infolist() if not info.is_dir()]
-                except (OSError, zipfile.BadZipFile):
-                    members = []
-                if members and all(known_mtimes.get(f"{path_str}:{member}") == file_mtime for member in members):
-                    skipped_mtime += 1
-                    continue
         selected.append((path, file_mtime))
 
     return selected, skipped_mtime
