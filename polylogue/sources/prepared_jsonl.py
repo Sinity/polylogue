@@ -3722,6 +3722,7 @@ def prepare_jsonl_blob(
                         profile_identity=profile_identity,
                         message_sink_factory=store.new_sink,
                         event_sink_factory=store.new_event_sink,
+                        attachment_sink_factory=store.new_attachment_sink,
                         sidecar_resolver=sidecar_resolver,
                     )
                 else:
@@ -3735,6 +3736,7 @@ def prepare_jsonl_blob(
                         sidecar_resolver=sidecar_resolver,
                         message_sink_factory=store.new_sink,
                         event_sink_factory=store.new_event_sink,
+                        attachment_sink_factory=store.new_attachment_sink,
                     )
                 with closing(sessions) as selected_sessions:
                     for session in selected_sessions:

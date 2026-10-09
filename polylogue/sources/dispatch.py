@@ -49,6 +49,7 @@ from .parsers import (
     otel_genai,
 )
 from .parsers.base import (
+    ParsedAttachment,
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
@@ -1135,6 +1136,7 @@ def _claude_code_multiway_parse(
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    attachment_sink_factory: Callable[[], MutableSequence[ParsedAttachment]] | None = None,
 ) -> Iterator[ParsedSession]:
     if message_sink_factory is None:
         yield from _claude_code_multiway_parse_inner(
@@ -1142,6 +1144,7 @@ def _claude_code_multiway_parse(
             fallback_id,
             source_path=source_path,
             sidecar_resolver=sidecar_resolver,
+            attachment_sink_factory=attachment_sink_factory,
         )
     else:
         with ClaudeStreamScratch() as scratch, ExitStack() as sidecar_stack:
@@ -1152,6 +1155,7 @@ def _claude_code_multiway_parse(
                 sidecar_resolver=sidecar_resolver,
                 message_sink_factory=message_sink_factory,
                 event_sink_factory=event_sink_factory,
+                attachment_sink_factory=attachment_sink_factory,
                 scratch=scratch,
                 sidecar_stack=sidecar_stack,
             )
@@ -1165,6 +1169,7 @@ def _claude_code_multiway_parse_inner(
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    attachment_sink_factory: Callable[[], MutableSequence[ParsedAttachment]] | None = None,
     scratch: ClaudeStreamScratch | None = None,
     sidecar_stack: ExitStack | None = None,
 ) -> Iterator[ParsedSession]:
@@ -1256,6 +1261,8 @@ def _claude_code_multiway_parse_inner(
             acc.messages = message_sink_factory()
         if event_sink_factory is not None:
             acc.session_events = event_sink_factory()
+        if attachment_sink_factory is not None:
+            acc.attachments = attachment_sink_factory()
         if scratch is not None:
             acc.scratch = scratch
             acc.scratch_scope = group_fallback_id
@@ -2310,6 +2317,7 @@ def iter_parsed_payload(
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    attachment_sink_factory: Callable[[], MutableSequence[ParsedAttachment]] | None = None,
 ) -> Generator[ParsedSession, None, None]:
     """Drain the canonical lowering without retaining its complete output cohort."""
     resolver = sidecar_resolver if sidecar_resolver is not None else _default_sidecar_resolver()
@@ -2338,6 +2346,7 @@ def iter_parsed_payload(
                         sidecar_resolver=resolver,
                         message_sink_factory=message_sink_factory,
                         event_sink_factory=event_sink_factory,
+                        attachment_sink_factory=attachment_sink_factory,
                     )
             else:
                 yield from _parse_lowered_spec(spec, resolver, profile_identity=profile_identity)
@@ -2623,6 +2632,7 @@ def parse_stream_payload(
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    attachment_sink_factory: Callable[[], MutableSequence[ParsedAttachment]] | None = None,
 ) -> list[ParsedSession]:
     """Parse a grouped record stream.
 
@@ -2639,6 +2649,7 @@ def parse_stream_payload(
             sidecar_resolver=sidecar_resolver,
             message_sink_factory=message_sink_factory,
             event_sink_factory=event_sink_factory,
+            attachment_sink_factory=attachment_sink_factory,
         )
     )
 
@@ -2653,6 +2664,7 @@ def iter_parsed_stream(
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    attachment_sink_factory: Callable[[], MutableSequence[ParsedAttachment]] | None = None,
 ) -> Generator[ParsedSession, None, None]:
     """Parse a grouped record stream.
 
@@ -2668,6 +2680,7 @@ def iter_parsed_stream(
             sidecar_resolver=sidecar_resolver,
             message_sink_factory=message_sink_factory,
             event_sink_factory=event_sink_factory,
+            attachment_sink_factory=attachment_sink_factory,
         )
         return
     if runtime_provider is Provider.CODEX:

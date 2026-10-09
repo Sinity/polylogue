@@ -431,6 +431,16 @@ provider (`docs/provider-origin-identity.md:15-30`;
 
 ## Invariants
 
+ChatGPT's declared `author.metadata.real_author=tool:*` lowers a reply to a
+TOOL_RESULT and resolves its invocation across prior replies, while retaining
+its original envelope role and authorship event. Action association crosses
+structural reply messages as well as tool-role envelopes.
+
+Claude tool-result arrays retain nested image/document blocks and attachment
+witnesses, including inline content, URL and file references. Unsupported
+nested parts receive typed unknown accounting. Media blocks keep source
+identity digests and references; inline bytes remain in attachments.
+
 ChatGPT retains every supported nonnull native mapping message, including empty
 text with zero blocks, with its native identity, parent, role, nullable time and
 active-branch coordinates. Null structural nodes remain topology only.

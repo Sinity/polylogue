@@ -40,6 +40,8 @@ if TYPE_CHECKING:
     from polylogue.sources.live.tool_result_sidecars import SidecarDebt, SidecarJoinResult
 
 from ..base import (
+    AdmissionLedger,
+    ParsedAttachment,
     ParsedContentBlock,
     ParsedDispatchObservation,
     ParsedFileEdit,
@@ -51,7 +53,7 @@ from ..base import (
     content_blocks_from_segments,
     text_blocks_prose,
 )
-from ..base_support import AdmissionObserver, claude_code_unknown_wire_type
+from ..base_support import AdmissionObserver, claude_code_unknown_wire_type, tool_result_media_attachments
 from .common import (
     _message_duration_ms,
     _message_model_effort,
@@ -1284,9 +1286,11 @@ def _hook_outcome_payload(item: Mapping[str, object]) -> dict[str, object] | Non
     return payload
 
 
-def _content_blocks_from_record(message: object, text: str | None) -> list[ParsedContentBlock]:
+def _content_blocks_from_record(
+    message: object, text: str | None, *, admission: AdmissionLedger | None = None
+) -> list[ParsedContentBlock]:
     raw_msg_content = message.get("content") if isinstance(message, dict) else None
-    content_blocks = content_blocks_from_segments(raw_msg_content) if raw_msg_content else []
+    content_blocks = content_blocks_from_segments(raw_msg_content, admission=admission) if raw_msg_content else []
     if not content_blocks and text:
         return [ParsedContentBlock(type=BlockType.TEXT, text=text)]
     return content_blocks
@@ -2039,6 +2043,8 @@ class _SessionAccumulator:
     is_acompact: bool = False
 
     messages: MutableSequence[ParsedMessage] = field(default_factory=list)
+    attachments: MutableSequence[ParsedAttachment] = field(default_factory=list)
+    content_admission: AdmissionLedger = field(default_factory=AdmissionLedger)
     created_at: str | None = None
     updated_at: str | None = None
     created_at_instant: datetime | None = None
@@ -2483,7 +2489,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         and text.lstrip().startswith(_PROMPT_SUGGESTION_PREFIX)
     ):
         acc.session_kind_value = SessionKind.PROMPT_SUGGESTION.value
-    content_blocks = _content_blocks_from_record(message, text)
+    content_blocks = _content_blocks_from_record(message, text, admission=acc.content_admission)
     content_blocks = _mark_background_task_start(content_blocks, _background_task_id(item))
     content_blocks = _mark_task_output_outcome(content_blocks, _task_output_outcome(item))
     content_blocks = _attach_file_edit(content_blocks, _file_edit_from_tool_result(item))
@@ -2583,6 +2589,10 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     # position-derived string that would change identity when array
     # order shifts across re-acquisitions.
     provider_message_id = str(record_uuid or "")
+    for attachment in tool_result_media_attachments(raw_content, provider_message_id, role=resolved_role):
+        attachment.message_position = acc.message_position
+        attachment.message_variant_index = 0
+        acc.attachments.append(attachment)
     acc.messages.append(
         ParsedMessage(
             provider_message_id=provider_message_id,
@@ -3053,6 +3063,8 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         created_at=acc.created_at,
         updated_at=acc.updated_at,
         messages=[] if not isinstance(messages, list) else messages,
+        attachments=acc.attachments if isinstance(acc.attachments, list) else [],
+        unit_accounting=acc.content_admission.close(),
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         session_events=(
             cast(list[ParsedSessionEvent], order_session_events(acc.session_events))
@@ -3073,6 +3085,8 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         provider_session_aliases=([str(acc.fallback_id)] if str(acc.fallback_id) != str(composed_session_id) else []),
     )
     updates: dict[str, object] = {}
+    if not isinstance(acc.attachments, list):
+        updates["attachments"] = acc.attachments
     if not isinstance(messages, list):
         updates["messages"] = messages
     if not isinstance(acc.session_events, list):
@@ -3087,6 +3101,7 @@ def _parse_code_records(
     trust_fallback_id: bool = False,
     message_sink: MutableSequence[ParsedMessage] | None = None,
     event_sink: MutableSequence[ParsedSessionEvent] | None = None,
+    attachment_sink: MutableSequence[ParsedAttachment] | None = None,
     scratch: ClaudeStreamScratch | None = None,
 ) -> ParsedSession:
     """Parse Claude Code JSONL payloads into a canonical session model.
@@ -3123,6 +3138,8 @@ def _parse_code_records(
         acc.messages = message_sink
     if event_sink is not None:
         acc.session_events = event_sink
+    if attachment_sink is not None:
+        acc.attachments = attachment_sink
     if scratch is not None:
         acc.scratch = scratch
         acc.scratch_scope = fallback_id
@@ -3304,6 +3321,7 @@ def parse_code(
     trust_fallback_id: bool = False,
     message_sink: MutableSequence[ParsedMessage] | None = None,
     event_sink: MutableSequence[ParsedSessionEvent] | None = None,
+    attachment_sink: MutableSequence[ParsedAttachment] | None = None,
 ) -> ParsedSession:
     """Parse one Claude Code session's whole record set in a single pass.
 
@@ -3322,6 +3340,7 @@ def parse_code(
             trust_fallback_id=trust_fallback_id,
             message_sink=message_sink,
             event_sink=event_sink,
+            attachment_sink=attachment_sink,
             scratch=scratch,
         )
     if tool_result_sidecars is not None:

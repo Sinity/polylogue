@@ -599,6 +599,16 @@ def _real_author(author: object) -> str | None:
     return _string_value(metadata, "real_author")
 
 
+def _is_tool_author(author: object) -> bool:
+    """Use the provider's explicit tool authorship independently of its role."""
+    if not isinstance(author, Mapping):
+        return False
+    real_author = _real_author(author)
+    return author.get("role") == "tool" or (
+        real_author is not None and real_author.startswith(_CHATGPT_TOOL_AUTHOR_PREFIX)
+    )
+
+
 #: A ChatGPT conversation permalink. The captured id is the cited
 #: conversation's own native id -- the join key a cross-session edge needs,
 #: kept resolvable on the construct so the edge can be built later without
@@ -1206,7 +1216,7 @@ def _owning_tool_call_id(
             break
         message = node.get("message")
         author = message.get("author") if isinstance(message, Mapping) else None
-        if not (isinstance(author, Mapping) and author.get("role") == "tool"):
+        if not _is_tool_author(author):
             result, cycle = current, False
             break
         path.append(current)
@@ -1631,7 +1641,7 @@ def _collect_message_entries(
         parent_message_provider_id = str(parent_id) if parent_id else None
         tool_result_owner_id = (
             _owning_tool_call_id(mapping, parent_message_provider_id, tool_owners)
-            if role is Role.TOOL
+            if _is_tool_author(author)
             else parent_message_provider_id
         )
         branch_index = 0
@@ -2193,7 +2203,7 @@ def _collect_message_entries(
         }:
             content_blocks.append(typed_unknown_block(content, wire_type=str(content_type)))
 
-        if role is Role.TOOL and content_blocks:
+        if _is_tool_author(author) and content_blocks:
             content_blocks = _tool_role_result_blocks(
                 content_blocks,
                 tool_id=tool_result_owner_id,

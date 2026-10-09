@@ -961,7 +961,18 @@ def parse_ai_stream(
         admission_stub["type"] = future_type
     admitted = parse_ai(admission_stub, fallback_id)
     session_events.extend(admitted.session_events)
-    return session.model_copy(update={"attachments": attachments, "unit_accounting": admitted.unit_accounting})
+    from ..base_models import ParseAccounting
+
+    assert admitted.unit_accounting is not None and session.unit_accounting is not None
+    accounting = ParseAccounting(
+        expected={**admitted.unit_accounting.expected, **session.unit_accounting.expected},
+        outcomes=[*admitted.unit_accounting.outcomes, *session.unit_accounting.outcomes],
+        materialized_ordinals={
+            **admitted.unit_accounting.materialized_ordinals,
+            **session.unit_accounting.materialized_ordinals,
+        },
+    )
+    return session.model_copy(update={"attachments": attachments, "unit_accounting": accounting})
 
 
 def _parse_ai_records(
@@ -1063,6 +1074,7 @@ def _parse_ai_records(
         attachments=[],
         session_events=session_events if isinstance(session_events, list) else [],
         reported_duration_ms=normalized.reported_duration_ms,
+        unit_accounting=normalized.unit_accounting,
         models_used=normalized.models_used,
         ingest_flags=list(
             dict.fromkeys(
