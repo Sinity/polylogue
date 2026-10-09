@@ -926,10 +926,9 @@ def _exact_session_ids_from_predicate(predicate: QueryPredicate) -> tuple[str, .
         session_field = _predicate_session_field(predicate)
         if session_field not in {"id", "session"} or not predicate.values:
             return None
-        # Session identity equality follows ordinary predicate lowering and uses
-        # the final parsed value.  Do not broaden the physical relation beyond
-        # the predicate's actual semantics.
-        return tuple(value for value in predicate.values[-1:] if value)
+        # Every compact equality value is an alternative, just as in the
+        # session predicate lowerer. The physical bound must retain them all.
+        return tuple(dict.fromkeys(predicate.values))
     if isinstance(predicate, QueryBoolPredicate):
         child_bounds = [
             bound for child in predicate.children if (bound := _exact_session_ids_from_predicate(child)) is not None
@@ -1611,7 +1610,11 @@ def _unit_owned_session_identity_clause(
     expression_template = _UNIT_SESSION_ID_EXPRESSION.get(unit)
     if expression_template is None:
         return None
-    return f"{expression_template.format(alias=row_alias)} = ?", [predicate.values[-1]]
+    expression = expression_template.format(alias=row_alias)
+    if len(predicate.values) == 1:
+        return f"{expression} = ?", [predicate.values[0]]
+    placeholders = ", ".join("?" for _ in predicate.values)
+    return f"{expression} IN ({placeholders})", list(predicate.values)
 
 
 def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = False) -> tuple[str, list[object]]:
@@ -1922,8 +1925,10 @@ def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFiel
     if field in {"scope", "scope_ref"}:
         return _like_clause(f"{assertion_alias}.scope_ref", predicate.values)
     if field in {"author", "author_ref"}:
-        clause, params = _like_clause(f"COALESCE({assertion_alias}.author_ref, ?)", predicate.values)
-        return clause, [ASSERTION_DEFAULT_AUTHOR_REF, *params]
+        return _like_clause(
+            f"COALESCE({assertion_alias}.author_ref, {_sql_string_literal(ASSERTION_DEFAULT_AUTHOR_REF)})",
+            predicate.values,
+        )
     if field in {"text", "body"}:
         return _like_clause(f"{assertion_alias}.body_text", predicate.values)
     if field == "value":
@@ -1934,8 +1939,10 @@ def _assertion_field_predicate_clause(assertion_alias: str, predicate: QueryFiel
         return _like_clause(f"{assertion_alias}.evidence_refs_json", predicate.values)
     if field == "context":
         default_context_json = json.dumps(ASSERTION_DEFAULT_CONTEXT_POLICY, sort_keys=True, separators=(",", ":"))
-        clause, params = _like_clause(f"COALESCE({assertion_alias}.context_policy_json, ?)", predicate.values)
-        return clause, [default_context_json, *params]
+        return _like_clause(
+            f"COALESCE({assertion_alias}.context_policy_json, {_sql_string_literal(default_context_json)})",
+            predicate.values,
+        )
     raise ValueError(f"unsupported assertion predicate field: {field}")
 
 
