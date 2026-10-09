@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import sqlite3
 from builtins import BaseExceptionGroup
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TypedDict, TypeVar
+from typing import TYPE_CHECKING, TypedDict, TypeVar
 
 from polylogue.api.archive import open_readonly_connection
 from polylogue.core.compute import compute_adapter, current_cancellation
@@ -35,6 +35,9 @@ from polylogue.core.user_state_targets import (
     identity_key,
     validate_target_kind,
 )
+
+if TYPE_CHECKING:
+    from polylogue.operations.operation_context import PinnedOperationRead
 
 
 class ResolvedTarget(TypedDict, total=False):
@@ -249,6 +252,253 @@ def _resolve_attachment_in_connections(
     return str(row[0]), str(row[1])
 
 
+def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: str, ref_id: str, raw_id: str) -> bool:
+    """Parse the retained supplier and prove the exact metadata-only ref."""
+    from contextlib import closing
+    from tempfile import TemporaryDirectory
+
+    from polylogue.core.identity_law import session_id as archive_session_id
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.operations.source_target_read import _PinnedRetainedRead
+    from polylogue.pipeline.ids import attachment_message_owner_key
+    from polylogue.sources.dispatch import is_jsonl_source_path
+    from polylogue.sources.prepared_message_sink import SqliteMessageSink, normalize_active_branch
+    from polylogue.sources.revision_backfill import (
+        prepare_retained_jsonl_artifact,
+        prepare_retained_non_json_artifact,
+    )
+    from polylogue.sources.tool_outcomes import derive_tool_outcomes
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.write import (
+        _attachment_id,
+        _attachment_message_id_maps,
+        _attachment_reference_positions,
+        prepared_session_rows_from_shard,
+    )
+
+    archive = snapshot.archive
+    provider, blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+    if not BlobStore(archive.archive_root / "blob").verify(blob_hash):
+        return False
+    retained = _PinnedRetainedRead(archive)
+    with TemporaryDirectory(prefix="polylogue-attachment-target-") as directory:
+        prepare = (
+            prepare_retained_jsonl_artifact
+            if is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"
+            else prepare_retained_non_json_artifact
+        )
+        artifact = prepare(
+            retained,
+            raw_id,
+            directory=Path(directory),
+            prepare_blob_publications=False,
+        )
+        try:
+            if artifact.error is not None or artifact.shard_path is None:
+                return False
+            artifact.verify_files(full=True)
+            rows = prepared_session_rows_from_shard(artifact.shard_path, session_id)
+            with closing(artifact.iter_sessions()) as parsed:
+                session = next(
+                    (
+                        value
+                        for value in parsed
+                        if archive_session_id(origin_from_provider(value.source_name).value, value.provider_session_id)
+                        == session_id
+                    ),
+                    None,
+                )
+            if session is None:
+                return False
+            messages = session.messages
+            origin = origin_from_provider(session.source_name)
+            if isinstance(messages, SqliteMessageSink):
+                messages = messages.normalized_messages(session.session_events, origin=origin)
+            else:
+                messages = derive_tool_outcomes(
+                    normalize_active_branch(messages), session.session_events, origin=origin
+                )
+            attachments = tuple(session.attachments)
+            wanted_owner_keys = {
+                key
+                for attachment in attachments
+                if (key := attachment_message_owner_key(attachment, rows.owner_resolution))
+            }
+            _resolution, by_owner_key, _owning_messages = _attachment_message_id_maps(
+                session_id,
+                messages,
+                content_identities=rows.content_identities,
+                owner_resolution=rows.owner_resolution,
+                wanted_owner_keys=wanted_owner_keys,
+            )
+            attachments_by_message: dict[str, list[object]] = {}
+            for attachment in attachments:
+                owner_key = attachment_message_owner_key(attachment, rows.owner_resolution)
+                message_id = by_owner_key.get(owner_key) if owner_key is not None else None
+                if message_id is not None:
+                    attachments_by_message.setdefault(message_id, []).append(attachment)
+            positions = {
+                key: position
+                for message_attachments in attachments_by_message.values()
+                for key, position in _attachment_reference_positions(message_attachments).items()
+            }
+            return any(
+                (owner_key := attachment_message_owner_key(attachment, rows.owner_resolution)) is not None
+                and by_owner_key.get(owner_key) is not None
+                and f"{by_owner_key[owner_key]}:attachment:{positions.get(attachment.acquisition_key)}" == ref_id
+                and _attachment_id("", attachment)
+                == str(
+                    archive._conn.execute(
+                        "SELECT a.attachment_id FROM attachment_refs r JOIN attachments a "
+                        "ON a.attachment_id=r.attachment_id WHERE r.session_id=? AND r.ref_id=?",
+                        (session_id, ref_id),
+                    ).fetchone()[0]
+                )
+                for attachment in attachments
+            )
+        except (KeyError, ValueError, sqlite3.Error):
+            return False
+        finally:
+            artifact.discard()
+
+
+def bind_attachment_source_guard(
+    snapshot: PinnedOperationRead,
+    *,
+    session_id: str,
+    ref_id: str,
+    current_index_connection: sqlite3.Connection,
+    current_source_connection: sqlite3.Connection,
+) -> Callable[[], None]:
+    """Capture attachment Source currency and recheck it at durable apply.
+
+    The stable Index reference is admitted only while it resolves to its exact
+    Source supplier. The closure retains the supplier row and all attachment
+    blob coordinates for that Raw, so a later call detects supplier removal,
+    replacement, or payload relinking.
+    """
+    archive = snapshot.archive
+    index_connection = archive._conn
+    source_connection = archive.source_connection
+    resolved = _resolve_attachment_in_connections(
+        index_connection, source_connection, session_id=session_id, reference_id=ref_id
+    )
+    if resolved is None:
+        raise ValueError(f"attachment reference {ref_id!r} is not Source-bound in session {session_id!r}")
+    supplier_row = index_connection.execute(
+        "SELECT supplying_raw_id FROM attachment_refs WHERE session_id=? AND ref_id=?",
+        (session_id, ref_id),
+    ).fetchone()
+    if supplier_row is None or supplier_row[0] is None:
+        raise ValueError(f"attachment reference {ref_id!r} has no Source supplier")
+    raw_id = str(supplier_row[0])
+    raw = source_connection.execute("SELECT * FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone()
+    if raw is None:
+        raise ValueError(f"attachment Source supplier {raw_id!r} is unavailable")
+    payload_row = index_connection.execute(
+        "SELECT a.blob_hash FROM attachment_refs r JOIN attachments a ON a.attachment_id=r.attachment_id "
+        "WHERE r.session_id=? AND r.ref_id=?",
+        (session_id, ref_id),
+    ).fetchone()
+    if payload_row is None or (
+        payload_row[0] is None
+        and not _source_declares_attachment(snapshot, session_id=session_id, ref_id=ref_id, raw_id=raw_id)
+    ):
+        raise ValueError(f"attachment reference {ref_id!r} has no matching retained Source descriptor")
+    raw_columns = tuple(str(row[1]) for row in source_connection.execute("PRAGMA table_info(raw_sessions)"))
+    index_ref_columns = tuple(str(row[1]) for row in index_connection.execute("PRAGMA table_info(attachment_refs)"))
+    index_attachment_columns = tuple(str(row[1]) for row in index_connection.execute("PRAGMA table_info(attachments)"))
+    captured_ref = tuple(
+        index_connection.execute(
+            "SELECT * FROM attachment_refs WHERE session_id=? AND ref_id=?", (session_id, ref_id)
+        ).fetchone()
+    )
+    attachment_id = str(captured_ref[index_ref_columns.index("attachment_id")])
+    captured_attachment = tuple(
+        index_connection.execute("SELECT * FROM attachments WHERE attachment_id=?", (attachment_id,)).fetchone()
+    )
+    captured_native_ids = tuple(
+        tuple(row)
+        for row in index_connection.execute(
+            "SELECT * FROM attachment_native_ids WHERE ref_id=? ORDER BY id_kind,native_id", (ref_id,)
+        ).fetchall()
+    )
+    blobs = tuple(
+        tuple(row)
+        for row in source_connection.execute(
+            "SELECT * FROM blob_refs WHERE ref_id=? AND ref_type='attachment' ORDER BY source_path,blob_hash,size_bytes",
+            (raw_id,),
+        ).fetchall()
+    )
+    blob_columns = tuple(str(row[1]) for row in source_connection.execute("PRAGMA table_info(blob_refs)"))
+    captured_raw = tuple(raw)
+
+    def revalidate() -> None:
+        current = _resolve_attachment_in_connections(
+            current_index_connection,
+            current_source_connection,
+            session_id=session_id,
+            reference_id=ref_id,
+        )
+        now_supplier = current_index_connection.execute(
+            "SELECT supplying_raw_id FROM attachment_refs WHERE session_id=? AND ref_id=?",
+            (session_id, ref_id),
+        ).fetchone()
+        now_raw = current_source_connection.execute("SELECT * FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone()
+        now_blobs = tuple(
+            tuple(row)
+            for row in current_source_connection.execute(
+                "SELECT * FROM blob_refs WHERE ref_id=? AND ref_type='attachment' ORDER BY source_path,blob_hash,size_bytes",
+                (raw_id,),
+            ).fetchall()
+        )
+        now_ref_row = current_index_connection.execute(
+            "SELECT * FROM attachment_refs WHERE session_id=? AND ref_id=?", (session_id, ref_id)
+        ).fetchone()
+        now_ref = tuple(now_ref_row) if now_ref_row is not None else None
+        now_attachment_id = (
+            str(now_ref[index_ref_columns.index("attachment_id")])
+            if now_ref is not None and "attachment_id" in index_ref_columns
+            else None
+        )
+        now_attachment_row = (
+            current_index_connection.execute(
+                "SELECT * FROM attachments WHERE attachment_id=?", (now_attachment_id,)
+            ).fetchone()
+            if now_attachment_id is not None
+            else None
+        )
+        now_attachment = tuple(now_attachment_row) if now_attachment_row is not None else None
+        now_native_ids = tuple(
+            tuple(row)
+            for row in current_index_connection.execute(
+                "SELECT * FROM attachment_native_ids WHERE ref_id=? ORDER BY id_kind,native_id", (ref_id,)
+            ).fetchall()
+        )
+        if (
+            current != resolved
+            or now_supplier is None
+            or now_supplier[0] != raw_id
+            or now_raw is None
+            or tuple(now_raw) != captured_raw
+            or tuple(str(row[1]) for row in current_source_connection.execute("PRAGMA table_info(raw_sessions)"))
+            != raw_columns
+            or now_blobs != blobs
+            or tuple(str(row[1]) for row in current_source_connection.execute("PRAGMA table_info(blob_refs)"))
+            != blob_columns
+            or tuple(str(row[1]) for row in current_index_connection.execute("PRAGMA table_info(attachment_refs)"))
+            != index_ref_columns
+            or tuple(str(row[1]) for row in current_index_connection.execute("PRAGMA table_info(attachments)"))
+            != index_attachment_columns
+            or now_ref != captured_ref
+            or now_attachment != captured_attachment
+            or now_native_ids != captured_native_ids
+        ):
+            raise ValueError(f"attachment Source reference {ref_id!r} changed before durable apply")
+
+    return revalidate
+
+
 async def _resolve_block(
     archive_root: Path,
     *,
@@ -309,6 +559,7 @@ async def resolve_insight_target(
     message_id: str | None = None,
     index_connection: sqlite3.Connection | None = None,
     source_connection: sqlite3.Connection | None = None,
+    snapshot: PinnedOperationRead | None = None,
 ) -> ResolvedTarget:
     """Validate a non-session/non-message target and return its row payload.
 
@@ -409,6 +660,24 @@ async def resolve_insight_target(
         )
         if resolved_attachment is None:
             raise ValueError(f"attachment reference {target_id!r} is not Source-bound in session {session_id!r}")
+        payload = index_connection.execute(
+            "SELECT a.blob_hash, r.supplying_raw_id FROM attachment_refs r JOIN attachments a "
+            "ON a.attachment_id=r.attachment_id WHERE r.session_id=? AND r.ref_id=?",
+            (session_id, target_id),
+        ).fetchone()
+        if payload is None or (
+            payload[0] is None
+            and (
+                snapshot is None
+                or not _source_declares_attachment(
+                    snapshot,
+                    session_id=session_id,
+                    ref_id=target_id,
+                    raw_id=str(payload[1]),
+                )
+            )
+        ):
+            raise ValueError(f"attachment reference {target_id!r} has no matching retained Source descriptor")
         canonical_target_id, effective_message_id = resolved_attachment
         return {
             "target_type": TARGET_ATTACHMENT,
