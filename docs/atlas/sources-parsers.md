@@ -20,8 +20,13 @@ its configured archive root. The factory enforces that root’s writer lease
 without relying on the global SQLite opener interceptor.
 
 Decoded detector projections visit only declared fields when no metadata or
-whole-mapping predicate needs the other values. Event projections still consume
-and validate the complete input; acquisition retains every origin check.
+whole-mapping predicate needs the other values. Acquisition classifies each
+decoded record and its singleton sequence in their independent detector order,
+sharing identical declared projections only for that record. Projected mapping
+read views validate their JSON conversion once for their read-only predicates
+and resolvers. Actual root arrays keep each binding's own complete fold. Event
+projections still consume and validate the complete input; acquisition retains
+every origin check.
 
 The artifact classifier proves a complete first physical JSONL value has a
 later nonblank line before trying the existing record fold first. The syntax
@@ -35,6 +40,14 @@ inputs use `prepare_retained_jsonl_artifact` and
 `prepare_retained_non_json_artifact` in `sources/revision_backfill.py`.
 The storage writer lowers their prepared sessions through
 `write_parsed_session_to_archive`.
+
+Retained schema validation owns reducer tables once per spill connection and
+reuses each selected-schema validator across its complete record scan. Lazy
+normalized objects and arrays consume the original ordered cursors, checking
+cancellation before loading each value and closing those cursors on early exit.
+Session revision projections reuse an ordinary event's full inner payload
+digest for its comparison projection; provider-measured generation payloads
+still compute their declared reduced digest separately.
 
 Document arrays use the same tightness-ordered document predicates for every
 member, including streamed detection. An unrelated fragment cannot claim a
@@ -118,7 +131,15 @@ into scan and acquire error counts. Failed paths withhold their stat cursors;
 successfully committed files retain their cursors. Persistence failures are
 counted by the writer once, before source completion withholds their cursors.
 Local byte inputs skip only on a matching complete captured stat tuple; a
-matching timestamp cannot override changed identity or size. ZIP containers
+matching timestamp cannot override changed identity or size. Unbound ZIP
+admission records each complete syntax/provider and CRC inspection once in an
+acquisition-scoped indexed scratch spool. Its identity binds the captured
+container SHA, declared source coordinate, enumeration closure and central
+ordinal; member hints reuse that result, including negative detections.
+Duplicate names remain distinct, and admission scope exit closes the spool.
+Lexical source ownership avoids physical root resolution when no explicit-file
+claim can override it. Physical fallback and explicit claims resolve fresh
+aliases on each selection. ZIP containers
 and mutable SQLite inputs always reach acquisition. ZIP membership comes
 from the captured container, and committed WAL content participates in the
 SQLite logical revision even when the main file's stat tuple is unchanged.
@@ -534,6 +555,9 @@ Drive raw acquisition downloads through `download_into` into its caller-owned
 prepared CAS file. Metadata before and after the transfer must match the
 listing before cache replacement or CAS publication. Cache validation reads
 every JSON event; admitted cache files are stream-hashed into prepared CAS
-files. Cache copies use bounded reads of those exact staged bytes, and every
+files. Both download and cache stages are completely read through the
+acquisition boundary at their native JSON coordinate before cache or CAS
+publication, refusing foreign records even after an own-provider prefix.
+Cache copies use bounded reads of those exact staged bytes, and every
 cancelled or refused transfer discards its private stage. Raw identity and
 publication receipts describe the unmodified provider bytes.

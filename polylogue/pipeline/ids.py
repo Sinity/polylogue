@@ -2169,6 +2169,7 @@ def _event_content_payload(
     event: ParsedSessionEvent,
     *,
     source_owner_key: JSONValue = None,
+    full_payload_hash: str,
 ) -> dict[str, JSONValue]:
     """Build the position- and measurement-independent CONTENT payload for one event.
 
@@ -2199,8 +2200,10 @@ def _event_content_payload(
         and event.payload.get(_PROVIDER_REPORTED_ELAPSED_MARKER_KEY) == _PROVIDER_REPORTED_ELAPSED_MARKER_VALUE
     )
     if allowlist is None or not provider_reported_elapsed:
-        payload = event.payload
         timestamp = event.timestamp
+        # The full-event projection already hashed this exact inner payload.
+        # Measurement stripping below requires its own narrower digest.
+        payload_hash = full_payload_hash
     else:
         payload = {key: value for key, value in event.payload.items() if key in allowlist}
         # An event type with a registered allowlist also has its own
@@ -2209,11 +2212,12 @@ def _event_content_payload(
         # duration is derived from, so it varies in tandem and is
         # measurement too, not content.
         timestamp = None
+        payload_hash = _event_payload_hash(event.event_type, payload)
     content: dict[str, JSONValue] = {
         "event_type": event.event_type,
         "timestamp": timestamp,
         "source_message_provider_id": event.source_message_provider_id,
-        "payload": _event_payload_hash(event.event_type, payload),
+        "payload": payload_hash,
     }
 
     if source_owner_key is not None:
@@ -2571,7 +2575,9 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
                     "INSERT INTO event_hash VALUES (?, ?)", (event_count - 1, bytes.fromhex(hash_item_payload(payload)))
                 )
                 content_payload = _event_content_payload(
-                    event, source_owner_key=payload.get("source_message_owner_key")
+                    event,
+                    source_owner_key=payload.get("source_message_owner_key"),
+                    full_payload_hash=cast(str, payload["payload"]),
                 )
                 base_identity = event_base_identity_hash(
                     event_type=content_payload["event_type"],
@@ -2673,7 +2679,11 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     event_anchor_free_identities: list[bytes | None] = []
     for payload, event in zip(session_events_payload, convo.session_events, strict=True):
         event_hashes.append(bytes.fromhex(hash_item_payload(payload)))
-        content_payload = _event_content_payload(event, source_owner_key=payload.get("source_message_owner_key"))
+        content_payload = _event_content_payload(
+            event,
+            source_owner_key=payload.get("source_message_owner_key"),
+            full_payload_hash=cast(str, payload["payload"]),
+        )
         event_base_identities.append(
             event_base_identity_hash(
                 event_type=content_payload["event_type"],

@@ -281,7 +281,9 @@ def process_zip(
         physical = custody.enter_context(open_bound_container(store, binding))
         zf = custody.enter_context(zipfile.ZipFile(physical.stream))
         entries = zf.infolist()
-        admission = zip_member_admission(zf, zip_path, entries, provider_hint)
+        admission = custody.enter_context(
+            zip_member_admission(zf, zip_path, entries, provider_hint, container_blob_hash=physical.blob_hash)
+        )
 
         def member_skipped(entry: zipfile.ZipInfo, reason: str) -> None:
             # Every member the parse route does not turn into sessions gets
@@ -307,7 +309,7 @@ def process_zip(
             ):
                 continue
             name = info.filename
-            entry_provider_hint = admission.entry_provider_hint(zf, info)
+            entry_provider_hint = admission.entry_provider_hint(info, entry_ordinal=entry_ordinal)
             member_context = ZipEntryReadContext(
                 source=Source(name=provider_hint.value, path=zip_path),
                 zip_path=zip_path,

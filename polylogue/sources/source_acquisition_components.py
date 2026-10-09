@@ -60,6 +60,7 @@ from .dispatch import (
 )
 from .parsers.base import RawSessionData
 from .parsers.hermes_identity import declares_profile_identity
+from .pickle_spool import PickleSpool
 from .source_staging import SourceInputBinding, bind_source_input
 from .sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
 
@@ -886,9 +887,12 @@ def _zip_entry_detected_provider(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> 
         return None
     try:
         with _decoders.open_zip_entry(zf, info) as handle:
-            provider, _evidence = detect_provider_from_stream_evidence(handle)
-            # Projection retries seek backwards. Read to EOF once more so the
-            # accepted shape and this exact entry's CRC both settle.
+            try:
+                provider, _evidence = detect_provider_from_stream_evidence(handle)
+            except (ijson.JSONError, UnicodeError, ValueError):
+                provider = None
+            # Negative syntax outcomes also need a complete CRC read before
+            # the acquisition owner can reuse their inspected member result.
             while handle.read(_REVISION_CHUNK_BYTES):
                 pass
             return provider
@@ -906,6 +910,10 @@ def sniff_zip_provider(zf: zipfile.ZipFile, entries: Iterable[zipfile.ZipInfo]) 
         detected = _zip_entry_detected_provider(zf, info)
         if detected is not None and detected is not Provider.UNKNOWN:
             weights[detected] = weights.get(detected, 0) + max(1, int(info.file_size))
+    return _dominant_zip_provider(weights)
+
+
+def _dominant_zip_provider(weights: dict[Provider, int]) -> Provider | None:
     if not weights:
         return None
     ranked = sorted(weights.items(), key=lambda item: (-item[1], item[0].value))
@@ -916,13 +924,23 @@ def sniff_zip_provider(zf: zipfile.ZipFile, entries: Iterable[zipfile.ZipInfo]) 
 
 @dataclass(frozen=True, slots=True)
 class ZipMemberAdmission:
-    """Container hint and independent member admission under its declared location."""
+    """Admission and complete detector outcomes for one captured container.
+
+    The private indexed spool belongs to this acquisition context. Its key is
+    the exact container SHA, declared source coordinate, enumeration closure
+    and central-directory ordinal. It never certifies a mutable source path.
+    """
 
     provider_hint: Provider
     allowed_path: Callable[[str], bool] | None
     bound_provider: Provider | None
+    capture_key: tuple[str, str, str]
+    entries: list[zipfile.ZipInfo]
+    detected_members: PickleSpool[Provider | None] | None
 
-    def entry_provider_hint(self, zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> Provider:
+    def entry_provider_hint(self, info: zipfile.ZipInfo, *, entry_ordinal: int) -> Provider:
+        if entry_ordinal < 0 or entry_ordinal >= len(self.entries) or self.entries[entry_ordinal] is not info:
+            raise ValueError("ZIP member differs from its captured central-directory ordinal")
         if self.bound_provider is not None:
             return self.bound_provider
         # A container winner never erases a known minority provider. Declared
@@ -931,33 +949,52 @@ class ZipMemberAdmission:
         if not provider_detection_path(info.filename):
             return declared or self.provider_hint
         if info.filename.lower().endswith(ZIP_JSON_SUFFIXES):
-            # A JSON member's provider is its decoded shape. A session path
-            # rule is only a location claim (OpenTelemetry's covers every
-            # ``*.json``), so it never names the provider of a member whose
-            # records no detector claims; the member keeps the container's
-            # hint, exactly as the same file outside a ZIP would.
-            return _zip_entry_detected_provider(zf, info) or self.provider_hint
+            if self.detected_members is None:
+                raise ValueError("unbound ZIP admission lacks its completed member inspection")
+            detected = next(self.detected_members.iter_from(entry_ordinal))
+            return detected or self.provider_hint
         return declared or self.provider_hint
 
 
+@contextlib.contextmanager
 def zip_member_admission(
     zf: zipfile.ZipFile,
     zip_path: Path,
     central_directory: list[zipfile.ZipInfo],
     fallback_provider: Provider,
-) -> ZipMemberAdmission:
-    """A weighted winner hints metadata; each unbound member keeps its own provider."""
+    *,
+    container_blob_hash: str,
+) -> Iterator[ZipMemberAdmission]:
+    """Inspect once, then reuse exact member outcomes until acquisition exits."""
     from polylogue.sources.dispatch import bound_location_provider
 
     bound = bound_location_provider(fallback_provider)
+    capture_key = (container_blob_hash, str(zip_path), zip_acquisition_fingerprint(fallback_provider))
     if bound is not None:
-        return ZipMemberAdmission(fallback_provider, None, bound)
-    safe_json_entries = ZipAdmission(zip_path=zip_path).filter_entries(
-        central_directory,
-        allowed_suffixes=ZIP_JSON_SUFFIXES,
-    )
-    provider = sniff_zip_provider(zf, (info for info in safe_json_entries if provider_detection_path(info.filename)))
-    return ZipMemberAdmission(provider or Provider.UNKNOWN, is_declared_artifact_path, None)
+        yield ZipMemberAdmission(fallback_provider, None, bound, capture_key, central_directory, None)
+        return
+    detected_members: PickleSpool[Provider | None] = PickleSpool(indexed=True)
+    try:
+        weights: dict[Provider, int] = {}
+        validator = ZipAdmission(zip_path=zip_path)
+        for info in central_directory:
+            safe = next(iter(validator.filter_entries((info,), allowed_suffixes=ZIP_JSON_SUFFIXES)), None) is not None
+            detected = (
+                _zip_entry_detected_provider(zf, info) if safe and provider_detection_path(info.filename) else None
+            )
+            detected_members.append(detected)
+            if detected is not None and detected is not Provider.UNKNOWN:
+                weights[detected] = weights.get(detected, 0) + max(1, int(info.file_size))
+        yield ZipMemberAdmission(
+            _dominant_zip_provider(weights) or Provider.UNKNOWN,
+            is_declared_artifact_path,
+            None,
+            capture_key,
+            central_directory,
+            detected_members,
+        )
+    finally:
+        detected_members.close()
 
 
 def zip_acquisition_fingerprint(provider: Provider, *, preserved_only: bool = False) -> str:

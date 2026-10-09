@@ -12,6 +12,7 @@ import hashlib
 import re
 import sqlite3
 from collections.abc import Iterator, KeysView, Mapping, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -24,6 +25,7 @@ from jsonschema import Draft202012Validator, ValidationError, validators
 from polylogue.archive.raw_payload.sampling_buckets import is_record_candidate, take_bucketed_samples
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.core.iterator_lifetime import settled_iterator
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
@@ -63,6 +65,32 @@ _ACTIVE_VALIDATION_CONNECTION: ContextVar[sqlite3.Connection | None] = ContextVa
     "retained_validation_connection", default=None
 )
 _BOUNDED_VALIDATOR_CLASS: Any = None
+_ACTIVE_VALIDATION_SCRATCH: ContextVar[_ValidationScratch | None] = ContextVar(
+    "retained_validation_scratch", default=None
+)
+
+
+class _ValidationScratch:
+    """Reducer tables owned by one live scratch connection and validation scope."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        _ensure_reducer_tables(connection)
+
+    @contextmanager
+    def activate(self) -> Iterator[None]:
+        token = _ACTIVE_VALIDATION_SCRATCH.set(self)
+        try:
+            yield
+        finally:
+            _ACTIVE_VALIDATION_SCRATCH.reset(token)
+
+
+def _validation_scratch(connection: sqlite3.Connection) -> _ValidationScratch:
+    active = _ACTIVE_VALIDATION_SCRATCH.get()
+    if active is not None and active.connection is connection:
+        return active
+    return _ValidationScratch(connection)
 
 
 def _retained_validation_productive_identity(
@@ -125,26 +153,29 @@ def _retained_validation_productive_identity(
 class _ConnectionBoundValidator:
     """Run one shared validator class with its caller-owned spill connection."""
 
-    def __init__(self, validator: Any, connection: sqlite3.Connection) -> None:
+    def __init__(self, validator: Any, connection: sqlite3.Connection, scratch: _ValidationScratch) -> None:
         self._validator = validator
         self._connection = connection
+        self._scratch = scratch
 
     def iter_errors(self, instance: object) -> Iterator[ValidationError]:
         token = _ACTIVE_VALIDATION_CONNECTION.set(self._connection)
         try:
-            yield from self._validator.iter_errors(instance)
+            with self._scratch.activate():
+                yield from self._validator.iter_errors(instance)
         finally:
             _ACTIVE_VALIDATION_CONNECTION.reset(token)
 
     def is_valid(self, instance: object) -> bool:
         token = _ACTIVE_VALIDATION_CONNECTION.set(self._connection)
         try:
-            return bool(self._validator.is_valid(instance))
+            with self._scratch.activate():
+                return bool(self._validator.is_valid(instance))
         finally:
             _ACTIVE_VALIDATION_CONNECTION.reset(token)
 
     def evolve(self, **kwargs: object) -> _ConnectionBoundValidator:
-        return _ConnectionBoundValidator(self._validator.evolve(**kwargs), self._connection)
+        return _ConnectionBoundValidator(self._validator.evolve(**kwargs), self._connection, self._scratch)
 
 
 def _active_validation_connection() -> sqlite3.Connection:
@@ -190,6 +221,7 @@ class _SampleValidationReducer:
         self.resolution = resolution
         self.connection = connection
         self.source_path = source_path
+        self.validator = _bounded_validator(schema, connection)
         self.sample_count = 0
         self.invalid_count = 0
         self.error_count = 0
@@ -202,12 +234,15 @@ class _SampleValidationReducer:
         return self.invalid_count == 0
 
     def observe(self, sample: Mapping[str, object]) -> None:
+        with self.validator._scratch.activate():
+            self._observe(sample)
+
+    def _observe(self, sample: Mapping[str, object]) -> None:
         check_compute_cancelled()
         self.sample_count += 1
-        validator = _bounded_validator(self.schema, self.connection)
         normalized = _normalized(sample, self.schema, self.schema, self.connection)
         sample_errors = 0
-        for error in validator.iter_errors(normalized):
+        for error in self.validator.iter_errors(normalized):
             check_compute_cancelled()
             sample_errors += 1
             self.error_count += 1
@@ -312,6 +347,7 @@ class PrefixValidationState:
             directory=scratch_directory,
         )
         self.connection = self._scratch_context.__enter__()
+        self._validation_scratch: _ValidationScratch | None = None
         self._header: JSONDocument | None = None
         self._base_observation: SchemaObservation | None = None
         self._base_resolution: SchemaResolution | None = None
@@ -432,13 +468,16 @@ class PrefixValidationState:
         self._observe_validators(first_message)
 
     def _new_reducer(self, version: str, schema: Mapping[str, object]) -> _PrefixSchemaReducer:
-        reducer = _SampleValidationReducer(
-            schema,
-            self.provider,
-            self._base_resolution,
-            self.connection,
-            source_path=self.source_path,
-        )
+        if self._validation_scratch is None:
+            self._validation_scratch = _ValidationScratch(self.connection)
+        with self._validation_scratch.activate():
+            reducer = _SampleValidationReducer(
+                schema,
+                self.provider,
+                self._base_resolution,
+                self.connection,
+                source_path=self.source_path,
+            )
         return _PrefixSchemaReducer(version, schema, reducer)
 
     def _observe_validators(self, record: JSONDocument) -> None:
@@ -610,7 +649,7 @@ def validate_retained_document(
     from polylogue.schemas.observation_spill import StreamedJSONDocument
 
     document = StreamedJSONDocument(path, jsonl=jsonl)
-    with document as payload:
+    with document as payload, _ValidationScratch(document.connection).activate():
         spill = _active_spill(document)
         active_registry = registry or SchemaRegistry()
         resolved: SchemaResolution | None = schema_resolution
@@ -764,11 +803,12 @@ def _schema_accepts_document(
     provider: Provider,
     connection: sqlite3.Connection,
 ) -> bool:
-    for sample in _validation_samples(payload, schema, provider):
-        check_compute_cancelled()
-        validator = _bounded_validator(schema, connection)
-        if not validator.is_valid(_normalized(sample, schema, schema, connection)):
-            return False
+    validator = _bounded_validator(schema, connection)
+    with validator._scratch.activate():
+        for sample in _validation_samples(payload, schema, provider):
+            check_compute_cancelled()
+            if not validator.is_valid(_normalized(sample, schema, schema, connection)):
+                return False
     return True
 
 
@@ -828,6 +868,9 @@ class _NormalizedObject(dict[str, object]):
     def __getitem__(self, key: str) -> object:
         check_compute_cancelled()
         value = self._value[key]
+        return self._normalize_member(key, value)
+
+    def _normalize_member(self, key: str, value: object) -> object:
         advance_work_progress(bytes=utf8_byte_length(key) + _validation_value_size(value))
         from polylogue.schemas.validator import _schema_for_property
 
@@ -841,16 +884,26 @@ class _NormalizedObject(dict[str, object]):
             return default
 
     def items(self) -> Iterator[tuple[str, object]]:  # type: ignore[override]
-        for key in self._value:
-            check_compute_cancelled()
-            advance_work_progress(bytes=utf8_byte_length(key))
-            yield key, self[key]
+        with settled_iterator(self._value.items()) as items:
+            while True:
+                check_compute_cancelled()
+                try:
+                    key, value = next(items)
+                except StopIteration:
+                    return
+                advance_work_progress(bytes=utf8_byte_length(key))
+                yield key, self._normalize_member(key, value)
 
     def values(self) -> Iterator[object]:  # type: ignore[override]
-        for key in self._value:
-            check_compute_cancelled()
-            advance_work_progress(bytes=utf8_byte_length(key))
-            yield self[key]
+        with settled_iterator(self._value.items()) as items:
+            while True:
+                check_compute_cancelled()
+                try:
+                    key, value = next(items)
+                except StopIteration:
+                    return
+                advance_work_progress(bytes=utf8_byte_length(key))
+                yield self._normalize_member(key, value)
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -877,9 +930,14 @@ class _NormalizedArray(list[object]):
         return len(self._value)
 
     def __iter__(self) -> Iterator[object]:
-        for index in range(len(self)):
-            check_compute_cancelled()
-            yield self[index]
+        with settled_iterator(self._value) as items:
+            while True:
+                check_compute_cancelled()
+                try:
+                    value = next(items)
+                except StopIteration:
+                    return
+                yield self._normalize_item(value)
 
     @overload
     def __getitem__(self, index: SupportsIndex) -> object: ...
@@ -889,11 +947,14 @@ class _NormalizedArray(list[object]):
 
     def __getitem__(self, index: SupportsIndex | slice) -> object:
         check_compute_cancelled()
-        from polylogue.schemas.validator import _schema_for_items
-
         if isinstance(index, slice):
             return [self[position] for position in range(*index.indices(len(self)))]
         value = self._value[int(index)]
+        return self._normalize_item(value)
+
+    def _normalize_item(self, value: object) -> object:
+        from polylogue.schemas.validator import _schema_for_items
+
         advance_work_progress(bytes=_validation_value_size(value))
         return _normalized(value, _schema_for_items(self._schema, value, self._root), self._root, self._connection)
 
@@ -912,9 +973,9 @@ class _NormalizedArray(list[object]):
 def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connection) -> Any:
     global _BOUNDED_VALIDATOR_CLASS
 
-    _ensure_reducer_tables(connection)
+    scratch = _validation_scratch(connection)
     if _BOUNDED_VALIDATOR_CLASS is not None:
-        return _ConnectionBoundValidator(_BOUNDED_VALIDATOR_CLASS(schema), connection)
+        return _ConnectionBoundValidator(_BOUNDED_VALIDATOR_CLASS(schema), connection, scratch)
 
     def any_of(
         validator: Any, schemas: Sequence[object], instance: object, schema_node: object
@@ -1039,7 +1100,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
             "unevaluatedItems": unevaluated_items,
         },
     )
-    return _ConnectionBoundValidator(_BOUNDED_VALIDATOR_CLASS(schema), connection)
+    return _ConnectionBoundValidator(_BOUNDED_VALIDATOR_CLASS(schema), connection, scratch)
 
 
 def _ensure_reducer_tables(connection: sqlite3.Connection) -> None:
@@ -1209,7 +1270,8 @@ def _collect_drift_paths(
 ) -> int:
     from polylogue.schemas.validator import _iter_drift_paths
 
-    _ensure_reducer_tables(connection)
+    if (active := _ACTIVE_VALIDATION_SCRATCH.get()) is None or active.connection is not connection:
+        _ensure_reducer_tables(connection)
     count = 0
     connection.execute("DELETE FROM retained_drift WHERE sample=?", (sample_index,))
     for path in _iter_drift_paths(sample, schema, "", schema, connection):

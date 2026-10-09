@@ -233,8 +233,7 @@ def _refuse_constant(_constant: str) -> object:
 def _validate_record_value(value: object, bound: Provider | None) -> None:
     from .origin_specs import detector_registry
 
-    for sequence in (False, True):
-        provider, evidence = detector_registry().detect_record_value(value, sequence=sequence)
+    for provider, evidence in detector_registry().iter_record_detections(value):
         if bound is not None and provider is not None and not same_origin(provider, bound):
             raise ForeignOriginContentError(expected=bound, found=provider, evidence=evidence or "record shape")
 

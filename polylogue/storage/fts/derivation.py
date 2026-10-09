@@ -655,13 +655,14 @@ class FtsDerivationAdapter:
             return page, (page[-1] if start + len(page) < len(keys) and page else None)
         conn = read_connection()
         try:
+            # Ordered compound UNION merges the indexed arms lazily. Wrapping
+            # it in a subquery gathers every remaining block membership before
+            # the outer page LIMIT, repeating that suffix on each page.
             rows = conn.execute(
                 """
-                SELECT session_id FROM (
-                    SELECT session_id FROM sessions WHERE session_id > ?
-                    UNION
-                    SELECT session_id FROM blocks WHERE session_id IS NOT NULL AND session_id > ?
-                )
+                SELECT session_id FROM sessions WHERE session_id > ?
+                UNION
+                SELECT session_id FROM blocks WHERE session_id IS NOT NULL AND session_id > ?
                 ORDER BY session_id
                 LIMIT ?
                 """,

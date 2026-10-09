@@ -2806,7 +2806,6 @@ class ReadFrame:
     def _initialize_opened_connection(self) -> None:
         try:
             self._opened_at = time.monotonic()
-            self._generation = _generation_token(self._path)
             self._data_version = _data_version(self._conn)
             self._install_progress_handler()
         except BaseException as primary:
@@ -2816,9 +2815,17 @@ class ReadFrame:
             _LIVE_READ_FRAMES.add(self)
 
     def _open(self) -> sqlite3.Connection:
+        # Generation promotion swaps the configured pointer. Open its selected
+        # physical leaf and capture that leaf's identity, so a later pointer
+        # observation cannot label a predecessor handle with the successor inode.
+        try:
+            selected_path = self._path.resolve(strict=True)
+            generation = _generation_token(selected_path)
+        except FileNotFoundError as exc:
+            raise sqlite3.OperationalError(f"unable to open database file: {self._path}") from exc
         try:
             conn = open_readonly_connection(
-                self._path,
+                selected_path,
                 profile=self._profile,
                 immutable=self._profile.immutable,
                 tier=self._tier,
@@ -2831,6 +2838,9 @@ class ReadFrame:
             raise
         self._sql_owner = NativeSQLCustodyOwner(conn, frame=self)
         try:
+            if _generation_token(selected_path) != generation:
+                raise StaleContinuationError(f"selected read generation changed while opening {self._path}")
+            self._generation = generation
             conn.row_factory = sqlite3.Row
         except BaseException as primary:
             _close_failed_native_construction(self._sql_owner, primary)
@@ -3036,7 +3046,8 @@ class ReadFrame:
         """
         self._require_read_owner()
         if self.expired or (
-            self._profile.generation_identity == "live" and (self._conn.in_transaction or self.streaming)
+            self._profile.generation_identity == "live"
+            and (self._conn.in_transaction or self.streaming or not self.revalidate())
         ):
             # A held read transaction (or an in-flight stream) pins the old
             # snapshot, and data_version inside it reports that snapshot, so

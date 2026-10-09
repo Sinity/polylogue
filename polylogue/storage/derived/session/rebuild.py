@@ -380,15 +380,6 @@ class SessionInsightArchiveBatch:
 class SessionInsightRecordBundle:
     profile_record: SessionProfileRecord
     latency_profile_record: SessionLatencyProfileRecord
-    # polylogue-dab/itvd: run/observed-event/context-snapshot rows are no
-    # longer materialized into tables (they are computed on read by
-    # run_projection_relations.py's CTEs), so the bundle only needs counts
-    # for diagnostics -- building full projection objects here would be
-    # pure waste (a full RunProjection compile + search_text join per session)
-    # for values nothing ever reads back.
-    run_count: int
-    observed_event_count: int
-    context_snapshot_count: int
     repo_observations: tuple[object, ...] = ()
     """Repo observations for ``session_repos`` (#1253).
 
@@ -822,28 +813,9 @@ def build_session_insight_records(
         input_high_water_mark_source=profile_record.input_high_water_mark_source,
     )
     add_timing("build_records.latency_profile_record", t0)
-    t0 = time.perf_counter()
-    # The run projection is computed from the same hydrated Session, with no
-    # cross-session links (session_links=()), so its counts match what the
-    # runtime CTE query path (run_projection_relations.py) would return. The
-    # projection helper always yields a main run, so RunProjection's ">=1 run"
-    # invariant holds for every session, including empty ones. A projection
-    # failure must surface, not be swallowed, so the rebuild fails loudly on
-    # malformed evidence. polylogue-dab/itvd: only the counts are needed here
-    # (for diagnostics) -- run/observed-event/
-    # context-snapshot rows are no longer materialized into tables, so
-    # building full projection objects (a search_text join per
-    # row) would be wasted work.
-    from polylogue.analysis.transforms import compile_session_run_projection
-
-    run_projection = compile_session_run_projection(session, session_links=())
-    add_timing("build_records.run_projection_records", t0)
     return SessionInsightRecordBundle(
         profile_record=profile_record,
         latency_profile_record=latency_profile_record,
-        run_count=len(run_projection.runs),
-        observed_event_count=len(run_projection.events),
-        context_snapshot_count=len(run_projection.context_snapshots),
         repo_observations=repo_observations,
     )
 
@@ -1425,9 +1397,6 @@ def build_large_session_insight_record_bundle_sync(
     return SessionInsightRecordBundle(
         profile_record=profile,
         latency_profile_record=_large_session_latency_profile_record(profile, materialized_at=built_at),
-        run_count=0,
-        observed_event_count=0,
-        context_snapshot_count=0,
     )
 
 
@@ -1455,9 +1424,6 @@ async def build_large_session_insight_record_bundle_async(
     return SessionInsightRecordBundle(
         profile_record=profile,
         latency_profile_record=_large_session_latency_profile_record(profile, materialized_at=built_at),
-        run_count=0,
-        observed_event_count=0,
-        context_snapshot_count=0,
     )
 
 

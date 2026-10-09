@@ -323,8 +323,8 @@ def test_multi_field_group_distinguishes_missing_empty_and_explicit_unknown(
 
     assert isinstance(envelope, QueryUnitAggregateEnvelope)
     assert [(json.loads(row.group_key or "{}"), row.count) for row in envelope.items] == [
+        ({"role": "assistant", "session.repo": None}, 1),
         ({"role": "assistant", "session.repo": ""}, 1),
-        ({"role": "assistant", "session.repo": "[missing]"}, 1),
         ({"role": "assistant", "session.repo": "unknown"}, 1),
     ]
     assert envelope.pipeline is not None

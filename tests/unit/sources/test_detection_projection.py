@@ -2,12 +2,15 @@
 
 import io
 import json
+from decimal import Decimal
 
 import pytest
 
+from polylogue.core.json import JSONDocument, json_document_or_none
 from polylogue.sources import detection_projection
 from polylogue.sources.detection_projection import (
     DetectorProjection,
+    detection_read_view,
     iter_projected_document_records,
     project_detection_root,
 )
@@ -49,3 +52,33 @@ def test_decoded_projection_matches_event_route_in_each_mapping_branch(rule: Det
     assert getattr(decoded, "metadata_values_scalarish", None) == getattr(
         streamed[0], "metadata_values_scalarish", None
     )
+
+
+@pytest.mark.parametrize("scalar", ["synthetic", Decimal("2.5"), object()])
+@pytest.mark.parametrize("preserve_size", [False, True])
+def test_projection_read_view_validates_json_once(
+    scalar: object, preserve_size: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dispatch predicates and dynamic resolution share conversion, including refusal."""
+    from polylogue.sources.dispatch import _payload_record
+
+    original = json_document_or_none
+    calls: list[object] = []
+
+    def observe(value: object) -> JSONDocument | None:
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(detection_projection, "json_document_or_none", observe)
+    rule = DetectorProjection(fields={"selected": DetectorProjection()}, preserve_mapping_size=preserve_size)
+    projected = detection_read_view(project_detection_root({"selected": scalar, "unselected": None}, rule))
+    first = _payload_record(projected)
+    assert _payload_record(projected) is first
+    assert len(calls) == 1
+    if type(scalar) is object:
+        assert first is None
+    else:
+        assert first is projected
+        assert first is not None
+        assert len(first) == (2 if preserve_size else 1)
+        assert first["selected"] == (2.5 if isinstance(scalar, Decimal) else scalar)

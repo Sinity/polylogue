@@ -280,3 +280,31 @@ def test_rebuild_session_insights_writes_only_happen_on_calling_thread(
     assert all(thread_id == calling_thread for thread_id in write_threads), (
         "a bulk SQLite writer ran off the calling thread -- single-writer invariant violated"
     )
+
+
+def test_profile_rebuild_leaves_run_products_to_the_read_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    insight_adapter: Callable[[int], BoundedComputeAdapter],
+) -> None:
+    """A discarded read-product compilation must not gate profile publication."""
+    import polylogue.analysis.transforms as transforms
+    from polylogue.storage.derived.session.status import session_insight_status_sync
+
+    archive_root = tmp_path / "profile-products"
+    _seed_corpus(archive_root, session_count=3)
+    insight_adapter(1)
+
+    def refuse_unowned_projection(*args: object, **kwargs: object) -> object:
+        raise AssertionError("profile publication requested a read-side run projection")
+
+    monkeypatch.setattr(transforms, "compile_session_run_projection", refuse_unowned_projection)
+    with closing(open_connection(archive_root / "index.db")) as conn:
+        conn.row_factory = sqlite3.Row
+        counts = rebuild_session_insights_sync(conn, session_ids=None)
+        status = session_insight_status_sync(conn)
+        assert counts.profiles == 3
+        assert conn.execute("SELECT COUNT(*) FROM session_latency_profiles").fetchone()[0] == 3
+        assert status.run_count == 3
+        assert status.observed_event_count > 0
+        assert status.context_snapshot_count >= 3

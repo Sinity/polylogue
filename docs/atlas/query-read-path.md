@@ -66,6 +66,11 @@ Hydrated message classification reads textual markers only from declared `TEXT` 
 
 Ordinary block reads preserve the stored language and media type through typed records and domain hydration. Message streams plan inherited prefixes as bounded lineage segments and hydrate blocks and message-owned attachment references in batches on one read snapshot; closing a public stream closes its nested reader before releasing that connection.
 
+Read frames retain the identity of the selected physical leaf through native
+open, independently of subsequent active-pointer promotion. Resuming an idle
+continuation rebinds a stale live frame before proving the anchor against current
+rows; a predecessor's surviving anchor cannot authorize a successor page.
+
 ## Scoped ranked reads
 
 Semantic and hybrid session requests qualify the canonical SQL and residual scope before ranking. The held ArchiveStore connection supplies current prose and occurrence identity to the retained-vector TEMP projection. Exact L2 scoring covers every eligible stored output; near takes the minimum over all stored seed outputs. Session witness selection, complete hybrid lane ranks and n-ary RRF precede the final session window (`polylogue/archive/query/archive_execution.py`, `polylogue/storage/search_providers/sqlite_vec_queries.py`, `polylogue/storage/sqlite/archive_tiers/archive.py`). TEMP relations use FILE storage selected at connection acquisition. Successful full lane settlement is explicit in `completed_lanes`; unavailable or failed lanes remain named gaps.
@@ -159,7 +164,7 @@ memory. Vector publication and daemon transport waits retain their own owners.
 The public thread insight route searches session identity, title, repository URL, branch, support level, and the payload's thread/member support signals before the requested result window. API, MCP registry projection, and insight exports share `ArchiveStore.iter_thread_insights`. Strong and moderate threads remain distinct; a root without a materialized profile remains readable from the same session evidence as an exact public thread read. Profile absence does not silently consume a page slot. Search does not hydrate all threads before selecting a page. The former async thread-list adapter and its row-only mapper are retired with their unused query DTO; exact retained thread-record reads still use their existing profile owner.
 ## Aggregate selection
 
-`query.aggregate` reduces the same canonical distinct session relation used by scalar scope reads. Explicit IDs, lexical/action matching and structural predicates intersect before order, limit, sample and offset; count, statistics and grouping reduce that selected window. Content-excluded counts use the shared survivor walk and apply the requested window after exclusion. Ordinary list totals continue to count every survivor independently of their presentation page. Statistics with content exclusion remain a typed refusal.
+`query.aggregate` reduces the same canonical distinct session relation used by scalar scope reads. Explicit IDs, lexical/action matching and structural predicates intersect before order, limit, sample and offset; count, statistics and grouping reduce that selected window, including `latest`. Named aggregates honor group-key sort direction before the result window. Multi-field group identities retain JSON null for missing values so a literal string such as `[missing]` remains a separate group. Content-excluded counts use the shared survivor walk and apply the requested window after exclusion. Ordinary list totals continue to count every survivor independently of their presentation page. Statistics with content exclusion remain a typed refusal.
 
 Message-branch predicates retain the default top-level session scope; only explicit session lineage selectors or root choices change that scope. Row `fields`/`select` projections cannot be combined with `count` or `agg` terminals in either order. Boundary errors offer equivalent names accepted at the requested boundary, and DSL discovery uses the actual grammar metadata rather than internal plan attributes.
 

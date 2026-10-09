@@ -24,6 +24,12 @@ arrays. Ingest, hashing, prepared serialization and index writes replay the
 ordered item rows without collecting them. The table is part of the rebuildable
 index schema and cascades with its event.
 
+Provider-asserted branch points resolve against the parent's composed transcript,
+including prefix rows physically owned by ancestors. Resolution keeps the
+canonical owning message ID and respects the composed branch cut. Several rows
+with the asserted native name cause `AssertedBranchPointAmbiguousError`; the
+writer never selects one by session or ancestor precedence.
+
 Live page admission first proves that every active index raw reference exists
 in source. A process-local healthy certificate starts with a complete check,
 then consumes source/index transactional changed-key journals on each page;
@@ -572,3 +578,13 @@ window and references added after acquisition bind verified retained bytes
 without another provider request. Attachment readiness includes these pending
 attributions in its `allowed_unfetched` count; global acquired status alone
 does not discharge them (`operations/attachment_convergence.py`).
+
+## Derived session records and FTS discovery
+
+Session profile materialization publishes profile, latency and repository
+observations. Run, observed-event and context-snapshot products are derived on
+read through `run_projection_relations.py`; profile preparation does not compile
+a second run projection to obtain unused counters. Unscoped FTS discovery merges
+the ordered session and block-membership indexes with one distinct session-key
+page, retaining empty sessions and blocks-only keys without collecting the
+remaining archive for every page (`storage/fts/derivation.py`, `required_page`).

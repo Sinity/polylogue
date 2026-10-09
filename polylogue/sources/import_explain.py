@@ -588,14 +588,12 @@ def _explain_zip(
             ) as physical,
             zipfile.ZipFile(physical.stream) as archive,
         ):
+            central_directory = archive.infolist()
+            entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
             if container_provider is Provider.UNKNOWN:
-                # The container carried no origin identity while its contents
-                # did: a claude.ai GDPR export ZIP reported
-                # detected_origin=unknown-export even though every inner entry
-                # lowered to a claude-ai session. Establish it from the members
-                # through the same dominance rule acquisition uses, so the
-                # container and its entries cannot disagree.
-                sniffed = sniff_zip_provider(archive, archive.infolist())
+                # Diagnostic container identity inspects all JSON members;
+                # admission's material hint excludes declared raw-only paths.
+                sniffed = sniff_zip_provider(archive, central_directory)
                 if sniffed is not None and sniffed is not Provider.UNKNOWN:
                     container_provider = sniffed
                     detector_evidence.append(
@@ -605,33 +603,62 @@ def _explain_zip(
                             reason=f"dominant member provider: {sniffed.value}",
                         )
                     )
-            central_directory = archive.infolist()
-            entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
-            admission = zip_member_admission(archive, path, central_directory, provider_hint)
-            validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path)
+            with zip_member_admission(
+                archive, path, central_directory, provider_hint, container_blob_hash=physical.blob_hash
+            ) as admission:
+                validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path)
 
-            for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path):
-                entry_ordinal = entry_ordinals[id(info)]
-                entry_provider = admission.entry_provider_hint(archive, info)
-                profile = captured.captured_identity.member_profile_identity(info.filename)
-                profile_identity = None if profile is None else captured_hermes_profile_key(profile[0])
-                zip_coordinate = captured_zip_member_coordinate(
-                    captured.captured_identity,
-                    entry_name=info.filename,
-                    entry_ordinal=entry_ordinal,
-                    split_index=0,
-                    addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
-                    container_blob_hash=physical.blob_hash,
-                    decoder_fingerprint=zip_acquisition_fingerprint(container_provider),
-                )
-                path_classification = classify_artifact_path(info.filename, provider=entry_provider)
-                decoded_session_artifact: ArtifactClassification | None = None
-                if path_classification is not None and not path_classification.parse_as_session:
+                for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path):
+                    entry_ordinal = entry_ordinals[id(info)]
+                    entry_provider = admission.entry_provider_hint(info, entry_ordinal=entry_ordinal)
+                    profile = captured.captured_identity.member_profile_identity(info.filename)
+                    profile_identity = None if profile is None else captured_hermes_profile_key(profile[0])
+                    zip_coordinate = captured_zip_member_coordinate(
+                        captured.captured_identity,
+                        entry_name=info.filename,
+                        entry_ordinal=entry_ordinal,
+                        split_index=0,
+                        addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+                        container_blob_hash=physical.blob_hash,
+                        decoder_fingerprint=zip_acquisition_fingerprint(container_provider),
+                    )
+                    path_classification = classify_artifact_path(info.filename, provider=entry_provider)
+                    decoded_session_artifact: ArtifactClassification | None = None
+                    if path_classification is not None and not path_classification.parse_as_session:
+                        try:
+                            decoded_session_artifact = zip_entry_session_artifact(
+                                archive,
+                                info,
+                                provider=entry_provider,
+                                profile_identity=profile_identity,
+                                captured_zip_coordinate=zip_coordinate,
+                            )
+                        except zipfile.BadZipFile as exc:
+                            skipped.append(
+                                ImportSkippedRowPayload(
+                                    reason=f"zip entry rejected: {exc}",
+                                    source_path=f"{path}:{info.filename}",
+                                )
+                            )
+                            continue
+                    if (
+                        path_classification is not None
+                        and not path_classification.parse_as_session
+                        and decoded_session_artifact is None
+                    ):
+                        skipped.append(
+                            ImportSkippedRowPayload(
+                                reason=path_classification.reason or "not a session artifact",
+                                source_path=f"{path}:{info.filename}",
+                            )
+                        )
+                        continue
                     try:
-                        decoded_session_artifact = zip_entry_session_artifact(
+                        entry = _explain_zip_entry(
                             archive,
                             info,
-                            provider=entry_provider,
+                            source_path=f"{path}:{info.filename}",
+                            provider_hint=entry_provider,
                             profile_identity=profile_identity,
                             captured_zip_coordinate=zip_coordinate,
                         )
@@ -643,37 +670,8 @@ def _explain_zip(
                             )
                         )
                         continue
-                if (
-                    path_classification is not None
-                    and not path_classification.parse_as_session
-                    and decoded_session_artifact is None
-                ):
-                    skipped.append(
-                        ImportSkippedRowPayload(
-                            reason=path_classification.reason or "not a session artifact",
-                            source_path=f"{path}:{info.filename}",
-                        )
-                    )
-                    continue
-                try:
-                    entry = _explain_zip_entry(
-                        archive,
-                        info,
-                        source_path=f"{path}:{info.filename}",
-                        provider_hint=entry_provider,
-                        profile_identity=profile_identity,
-                        captured_zip_coordinate=zip_coordinate,
-                    )
-                except zipfile.BadZipFile as exc:
-                    skipped.append(
-                        ImportSkippedRowPayload(
-                            reason=f"zip entry rejected: {exc}",
-                            source_path=f"{path}:{info.filename}",
-                        )
-                    )
-                    continue
-                entries.append(entry)
-                skipped.extend(entry.skipped)
+                    entries.append(entry)
+                    skipped.extend(entry.skipped)
     except (OSError, zipfile.BadZipFile) as exc:
         return _skipped_entry(
             path,

@@ -1747,7 +1747,9 @@ def _assertion_query_line(item: dict[str, object]) -> str:
 
 def _aggregate_query_line(item: dict[str, object]) -> str:
     group_by = item.get("group_by") or "all"
-    group_key = item.get("group_key") or "all"
+    group_key = item.get("group_key")
+    if group_key is None:
+        group_key = "[missing]" if item.get("group_by") else "all"
     return f"{group_by}={group_key} count={item['count']}"
 
 

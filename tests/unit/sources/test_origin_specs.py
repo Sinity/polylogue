@@ -813,10 +813,59 @@ def test_singleton_sequence_detection_projects_and_tests_once() -> None:
         },
     )
 
-    result = one_binding_registry.detect_record_value({"messages": []}, sequence=True)
+    result = list(one_binding_registry.iter_record_detections({"messages": []}))[1]
 
     assert result == (Provider.CHATGPT, compiled.binding.evidence_label)
     assert calls == [[{"messages": []}]]
+
+
+def test_record_detection_views_share_only_identical_declared_projections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two independent classification orders reuse each declaration once per record."""
+    from polylogue.sources import detection_projection
+
+    registry = detector_registry()
+    original = detection_projection.project_detection_root
+    calls: list[object] = []
+
+    def observe(value: object, rule: detection_projection.DetectorProjection) -> object:
+        calls.append(rule)
+        return original(value, rule)
+
+    monkeypatch.setattr(detection_projection, "project_detection_root", observe)
+    value = {"unrelated": {"nested": [[{"opaque": "synthetic"}]]}}
+    paths = {
+        compiled.binding.stream_projection_path for candidates in registry.by_mode.values() for compiled in candidates
+    }
+
+    assert list(registry.iter_record_detections(value)) == [(None, None), (None, None)]
+    assert len(calls) == len(paths)
+    # A different record must produce new views even when it has the same shape.
+    assert list(registry.iter_record_detections(dict(value))) == [(None, None), (None, None)]
+    assert len(calls) == 2 * len(paths)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        [],
+        {"type": "user", "sessionId": "synthetic", "message": {"content": ["complete"]}},
+        {"type": "session_meta", "payload": {"id": "synthetic", "timestamp": "2026-01-01T00:00:00Z"}},
+        [{"type": "summary"}, {"type": "session_meta", "payload": {"id": "synthetic"}}],
+        {"messages": [{"role": "user", "content": "synthetic"}], "metadata": {"deep": [[{}]]}},
+        {"mapping": {"node": {"id": "node", "message": None, "parent": None, "children": []}}},
+        {"schema_version": "ATIF-v1.7", "session_id": "synthetic", "steps": []},
+        {"source": "antigravity_language_server", "cascadeId": "synthetic", "markdown": "# Synthetic"},
+    ],
+)
+def test_record_detection_views_match_complete_event_route(value: object) -> None:
+    registry = detector_registry()
+
+    def events_factory() -> Iterator[tuple[str, object]]:
+        return iter(exact_backend.basic_parse(io.BytesIO(json.dumps(value).encode("utf-8"))))
+
+    expected = [registry.detect_record_events(events_factory, sequence=sequence) for sequence in (False, True)]
+    assert list(registry.iter_record_detections(value)) == expected
 
 
 def test_singleton_sequence_detection_matches_event_route_for_nested_and_dynamic_shapes() -> None:
@@ -837,9 +886,27 @@ def test_singleton_sequence_detection_matches_event_route_for_nested_and_dynamic
             encoded = json.dumps(value, separators=(",", ":")).encode("utf-8")
             return iter(exact_backend.basic_parse(io.BytesIO(encoded)))
 
-        decoded = registry.detect_record_value(value, sequence=True)
-        streamed = registry.detect_record_events(events_factory, sequence=True)
-        assert decoded == streamed == expected
+        decoded = list(registry.iter_record_detections(value))
+        streamed = [registry.detect_record_events(events_factory, sequence=sequence) for sequence in (False, True)]
+        assert decoded == streamed
+        assert decoded[1] == expected
+
+
+def test_record_detection_views_keep_dynamic_provider_allowlist() -> None:
+    registry = detector_registry()
+    compiled = next(
+        item for item in registry.by_mode[DetectionMode.RECORD] if item.binding.binding_id == "browser-capture-record"
+    )
+    invalid = replace(
+        compiled,
+        binding=replace(compiled.binding, dynamic_provider_allowlist=(Provider.CHATGPT,)),
+        predicate=lambda _payload: True,
+        provider_resolver=lambda _payload: Provider.CODEX,
+    )
+    one_binding_registry = replace(registry, by_mode={DetectionMode.RECORD: (invalid,)})
+
+    with pytest.raises(DetectorBindingError, match="invalid projected dynamic provider"):
+        list(one_binding_registry.iter_record_detections({}))
 
 
 def test_detector_registry_rejects_broken_declarations_with_the_binding_id() -> None:

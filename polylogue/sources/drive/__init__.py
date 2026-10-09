@@ -18,6 +18,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from ...config import Source
+from ..acquisition_boundary import bind_stream
 from ..parsers.base import RawSessionData
 from ..source_acquisition_components import (
     ObservationCallback,
@@ -88,6 +89,13 @@ def _resolved_drive_client(
 def drive_cache_file_path(dest_dir: Path, file_id: str) -> Path:
     """Return the canonical local cache path for a Drive JSON payload."""
     return dest_dir / f"{hashlib.sha256(file_id.encode()).hexdigest()}.json"
+
+
+def _validate_drive_stage(path: Path, coordinate: str, provider: Provider, checkpoint: Callable[[], None]) -> None:
+    """Prove the exact private stage before either cache or raw publication."""
+    with path.open("rb") as handle, bind_stream(handle, coordinate, provider) as stream:
+        while stream.read(1024 * 1024):
+            checkpoint()
 
 
 def _cache_revision_path(path: Path) -> Path:
@@ -225,7 +233,7 @@ def iter_drive_raw_data(
     blob_store: BlobStore | None = None,
     witness: DriveListingWitness | None = None,
 ) -> Iterable[RawSessionData]:
-    """Iterate Drive payloads as raw bytes without writing a local cache.
+    """Retain validated Drive payloads through the local cache and CAS.
 
     Note: googleapiclient / httplib2 are not thread-safe — a single service
     object cannot be shared across threads. Downloads therefore remain
@@ -291,6 +299,10 @@ def iter_drive_raw_data(
                         if not _cache_document_is_readable(prepared.temporary_path):
                             blob_store.discard_prepared(prepared)
                             prepared = None
+                        else:
+                            _validate_drive_stage(
+                                prepared.temporary_path, source_path, Provider.from_string(source.name), checkpoint
+                            )
                     except DaemonOperationCancelled:
                         raise
                     except Exception as exc:
@@ -311,6 +323,9 @@ def iter_drive_raw_data(
                         ):
                             witness.changed = True
                             continue
+                        _validate_drive_stage(
+                            prepared.temporary_path, source_path, Provider.from_string(source.name), checkpoint
+                        )
                     except DaemonOperationCancelled:
                         raise
                     except Exception as exc:

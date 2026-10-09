@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -115,6 +115,58 @@ def _session(
         session_events=events,
         attachments=attachments,
     )
+
+
+@pytest.mark.parametrize("on_disk", [False, True])
+def test_revision_projection_reuses_only_unstripped_event_payload_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, on_disk: bool
+) -> None:
+    events = [
+        ParsedSessionEvent(event_type="citation", payload={"nested": {"label": "cafe\u0301", "empty": None}}),
+        ParsedSessionEvent(
+            event_type="claude_tool_result_sidecar", payload={"blob_hash": "publication", "content_replaced": True}
+        ),
+        ParsedSessionEvent(
+            event_type="generation_lifecycle",
+            payload={"state": "done", "duration_semantics": "provider_reported_elapsed", "elapsed_duration_ms": 23},
+        ),
+        ParsedSessionEvent(
+            event_type="generation_lifecycle",
+            payload={"state": "done", "duration_semantics": "dom_observed_wall", "elapsed_duration_ms": 23},
+        ),
+    ]
+    ordinary = _session([], events, [])
+    expected = ids.session_revision_projection(ordinary)
+    store = SqliteMessageStore(tmp_path / "events.db")
+    try:
+        session = ordinary
+        if on_disk:
+            event_sink = store.new_event_sink()
+            event_sink.extend(events)
+            session = ordinary.model_copy(update={"session_events": event_sink})
+        session.content_hash = ids.session_content_hash(session)
+        original_hash = ids._event_payload_hash
+        calls: list[str] = []
+
+        def counted_hash(event_type: str, payload: Mapping[str, object]) -> str:
+            calls.append(event_type)
+            return original_hash(event_type, payload)
+
+        monkeypatch.setattr(ids, "_event_payload_hash", counted_hash)
+        actual = ids.session_revision_projection(session)
+        try:
+            assert actual.session_hash == expected.session_hash
+            assert tuple(actual.event_hashes) == tuple(expected.event_hashes)
+            assert set(actual.event_contents) == set(expected.event_contents)
+            assert set(actual.anchor_free_event_identities) == set(expected.anchor_free_event_identities)
+            assert calls.count("citation") == 1
+            assert calls.count("claude_tool_result_sidecar") == 1
+            assert calls.count("generation_lifecycle") == 3
+        finally:
+            actual.close()
+            expected.close()
+    finally:
+        store.close()
 
 
 def test_disk_hash_matches_canonical_tree_with_owners_events_and_nfc(

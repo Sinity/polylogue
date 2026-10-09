@@ -352,9 +352,9 @@ class RawObservationArchiveWork:
                         # is the original input.
                         captured_inputs.clear()
                         captured_keys.clear()
-                        # Exclude only explicit selections whose actual original
-                        # Source receipt still refuses. Canonical dependencies are
-                        # expanded afterward and retain their refusal obligation.
+                        # Settled independent page offers need no second parse.
+                        # Canonical dependencies expand afterward, so a settled
+                        # member required by this unit retains its obligation.
                         for refused_id in tuple(refused_ids):
                             if reader.raw_terminal_decode_refusal(refused_id) is None:
                                 refused_ids.remove(refused_id)
@@ -372,7 +372,10 @@ class RawObservationArchiveWork:
                                     )
                                 )
                             )
-                            if item not in refused_ids and item not in dependency_blocked_ids and item not in failed_ids
+                            if item not in visited
+                            and item not in refused_ids
+                            and item not in dependency_blocked_ids
+                            and item not in failed_ids
                         )
                         expanded, _member_keys = reader.expand_raw_membership_selection(selected_ids)
                         for dependency_id in expanded:
@@ -403,16 +406,18 @@ class RawObservationArchiveWork:
 
                     # The frame scope is the whole selection, so an opaque
                     # envelope's census can cover its unreplayed siblings --
-                    # except inputs this operation already settled as refused,
-                    # dependency-blocked or failed, which a sibling's census
-                    # must not pull back in.
+                    # except inputs this operation already settled, which an
+                    # independent sibling's census must not offer again.
                     frame_scope = (
                         (raw_id,)
                         if isolated
                         else tuple(
                             item
                             for item in selected
-                            if item not in refused_ids and item not in dependency_blocked_ids and item not in failed_ids
+                            if item not in visited
+                            and item not in refused_ids
+                            and item not in dependency_blocked_ids
+                            and item not in failed_ids
                         )
                     )
                     frame = raw_observation_frame(

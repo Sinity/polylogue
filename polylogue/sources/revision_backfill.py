@@ -214,8 +214,16 @@ def _resolved_retained_member_provider(
                 entries[coordinate.entry_ordinal].filename != coordinate.member_name
             ):
                 raise RetainedZipMembershipUnprovedError("retained ZIP member differs from its container receipt")
-            admission = zip_member_admission(archive, Path(coordinate.declared_container), entries, Provider.UNKNOWN)
-            container_provider = admission.entry_provider_hint(archive, entries[coordinate.entry_ordinal])
+            with zip_member_admission(
+                archive,
+                Path(coordinate.declared_container),
+                entries,
+                Provider.UNKNOWN,
+                container_blob_hash=coordinate.container_blob_hash,
+            ) as admission:
+                container_provider = admission.entry_provider_hint(
+                    entries[coordinate.entry_ordinal], entry_ordinal=coordinate.entry_ordinal
+                )
     if container_provider is Provider.UNKNOWN:
         return provider, evidence
     return container_provider, f"zip container member admission: {container_provider.value}"

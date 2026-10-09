@@ -454,3 +454,47 @@ def test_exact_status_describes_only_the_live_message_surface(test_conn: sqlite3
     assert isinstance(surfaces, dict)
     assert set(surfaces) == {"messages_fts"}
     assert fts_index_status_sync(test_conn) == {"exists": True, "count": 1}
+
+
+def test_required_page_merges_membership_keys_without_gathering_the_suffix(tmp_path: Path) -> None:
+    """The subquery UNION scans the untouched suffix before returning this page."""
+    db_path = tmp_path / "membership.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            "CREATE TABLE sessions(session_id TEXT PRIMARY KEY);"
+            "CREATE TABLE blocks(session_id TEXT, message_id TEXT, position INTEGER);"
+            "CREATE INDEX idx_blocks_session_position ON blocks(session_id, message_id, position);"
+        )
+        conn.executemany("INSERT INTO sessions VALUES (?)", ((f"key:{index:04d}",) for index in range(100)))
+        conn.executemany(
+            "INSERT INTO blocks VALUES (?, ?, ?)",
+            ((f"key:{index:04d}", "message", position) for index in range(1, 101) for position in range(20)),
+        )
+        conn.execute("INSERT INTO blocks VALUES (NULL, 'null', 0)")
+        conn.commit()
+
+    statements: list[str] = []
+
+    def read_connection() -> sqlite3.Connection:
+        conn = sqlite3.connect(db_path)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    adapter = FtsDerivationAdapter(read_connection, lambda: sqlite3.connect(db_path))
+    frame = _frame(db_path)
+    keys: list[str] = []
+    cursor: str | None = None
+    while True:
+        page, cursor = adapter.required_page(frame, cursor=cursor, limit=7)
+        keys.extend(page)
+        if cursor is None:
+            break
+    # key:0000 is a valid-empty session; key:0100 exists only in blocks;
+    # duplicated memberships yield exactly one key and NULL yields none.
+    assert keys == [f"key:{index:04d}" for index in range(101)]
+    assert adapter.required_page(frame, cursor="key:9999", limit=7) == ((), None)
+
+    with sqlite3.connect(db_path) as conn:
+        plan = " ".join(str(row[3]) for row in conn.execute("EXPLAIN QUERY PLAN " + statements[0]))
+    assert "MERGE (UNION)" in plan
+    assert "TEMP B-TREE" not in plan

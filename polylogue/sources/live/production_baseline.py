@@ -662,82 +662,86 @@ def _archive_members(
         # The location binds, not the sniffed dominant provider: an inbox
         # archive stays unbound so each member classifies, as in live intake.
         location_binding = bound_location_provider(provider)
-        admission = zip_member_admission(archive, path, central_directory, provider)
+        with zip_member_admission(
+            archive, path, central_directory, provider, container_blob_hash=physical.blob_hash
+        ) as admission:
 
-        def excluded(info: zipfile.ZipInfo, reason: str) -> None:
-            members.append(SourceDecision(source_name, f"{path}:{info.filename}", "excluded", reason))
+            def excluded(info: zipfile.ZipInfo, reason: str) -> None:
+                members.append(SourceDecision(source_name, f"{path}:{info.filename}", "excluded", reason))
 
-        def fault(info: zipfile.ZipInfo, reason: str) -> None:
-            members.append(SourceDecision(source_name, f"{path}:{info.filename}", "fault", reason))
+            def fault(info: zipfile.ZipInfo, reason: str) -> None:
+                members.append(SourceDecision(source_name, f"{path}:{info.filename}", "fault", reason))
 
-        validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path)
-        for entry_ordinal, info in enumerate(central_directory):
-            if (
-                next(
-                    iter(
-                        validator.filter_entries((info,), allowed_path=admission.allowed_path, on_unselected=excluded)
-                    ),
-                    None,
-                )
-                is None
-            ):
-                continue
-            _check_observation_cancelled(cancelled)
-            if info.file_size == 0:
-                excluded(info, "empty_member")
-                continue
-            # A member is one admission unit: its accepted decisions join the
-            # denominator only once every record validated.
-            member_decisions: list[SourceDecision] = []
-            try:
-                context = ZipEntryReadContext(
-                    Source(name=source_name, path=path.parent),
-                    path,
-                    info,
-                    None,
-                    admission.entry_provider_hint(archive, info),
-                    None,  # type: ignore[arg-type]
-                    bound_provider=location_binding,
-                    captured_input_identity=captured.captured_identity,
-                    container_blob_hash=physical.blob_hash,
-                    decoder_fingerprint=zip_acquisition_fingerprint(provider),
-                    entry_ordinal=entry_ordinal,
-                )
-                for unit in replay_zip_entry_acquisition_revisions(
-                    archive, context, checkpoint=lambda: _check_observation_cancelled(cancelled)
-                ):
-                    _check_observation_cancelled(cancelled)
-                    split = unit.source_index or 0
-                    member_decisions.append(
-                        SourceDecision(
-                            source_name,
-                            f"{path}:{info.filename}",
-                            "accepted",
-                            "archive_member",
-                            unit.revision,
-                            zip_member_source_index(entry_ordinal=entry_ordinal, split_index=split),
-                            unit.size_bytes,
-                        )
+            validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path)
+            for entry_ordinal, info in enumerate(central_directory):
+                if (
+                    next(
+                        iter(
+                            validator.filter_entries(
+                                (info,), allowed_path=admission.allowed_path, on_unselected=excluded
+                            )
+                        ),
+                        None,
                     )
-                    if progress is not None:
-                        progress("baseline_hash", revisions=1, hashed_bytes=unit.size_bytes)
-                members.extend(member_decisions)
-            except ForeignOriginContentError as exc:
-                # The live acquisition refuses this member with this reason;
-                # the baseline must not expect a raw row for it, and a resumed
-                # build retires an earlier acceptance of the same bytes.
-                excluded(info, f"intake_excluded:{foreign_origin_exclusion(exc)}")
-            except ContentIdentityRefusal as exc:
-                # Raised once the member was read whole. The refused element is
-                # a typed member fault; acquisition still retains its validated
-                # sibling splits, so they stay demanded.
-                members.extend(member_decisions)
-                fault(info, f"content_identity_refused:{exc}")
-                continue
-            except (OSError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
-                reason = "revision_io_unavailable" if retryable_read_fault(exc) else "archive_member_unreadable"
-                fault(info, f"{reason}:{exc}")
-                continue
+                    is None
+                ):
+                    continue
+                _check_observation_cancelled(cancelled)
+                if info.file_size == 0:
+                    excluded(info, "empty_member")
+                    continue
+                # A member is one admission unit: its accepted decisions join the
+                # denominator only once every record validated.
+                member_decisions: list[SourceDecision] = []
+                try:
+                    context = ZipEntryReadContext(
+                        Source(name=source_name, path=path.parent),
+                        path,
+                        info,
+                        None,
+                        admission.entry_provider_hint(info, entry_ordinal=entry_ordinal),
+                        None,  # type: ignore[arg-type]
+                        bound_provider=location_binding,
+                        captured_input_identity=captured.captured_identity,
+                        container_blob_hash=physical.blob_hash,
+                        decoder_fingerprint=zip_acquisition_fingerprint(provider),
+                        entry_ordinal=entry_ordinal,
+                    )
+                    for unit in replay_zip_entry_acquisition_revisions(
+                        archive, context, checkpoint=lambda: _check_observation_cancelled(cancelled)
+                    ):
+                        _check_observation_cancelled(cancelled)
+                        split = unit.source_index or 0
+                        member_decisions.append(
+                            SourceDecision(
+                                source_name,
+                                f"{path}:{info.filename}",
+                                "accepted",
+                                "archive_member",
+                                unit.revision,
+                                zip_member_source_index(entry_ordinal=entry_ordinal, split_index=split),
+                                unit.size_bytes,
+                            )
+                        )
+                        if progress is not None:
+                            progress("baseline_hash", revisions=1, hashed_bytes=unit.size_bytes)
+                    members.extend(member_decisions)
+                except ForeignOriginContentError as exc:
+                    # The live acquisition refuses this member with this reason;
+                    # the baseline must not expect a raw row for it, and a resumed
+                    # build retires an earlier acceptance of the same bytes.
+                    excluded(info, f"intake_excluded:{foreign_origin_exclusion(exc)}")
+                except ContentIdentityRefusal as exc:
+                    # Raised once the member was read whole. The refused element is
+                    # a typed member fault; acquisition still retains its validated
+                    # sibling splits, so they stay demanded.
+                    members.extend(member_decisions)
+                    fault(info, f"content_identity_refused:{exc}")
+                    continue
+                except (OSError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
+                    reason = "revision_io_unavailable" if retryable_read_fault(exc) else "archive_member_unreadable"
+                    fault(info, f"{reason}:{exc}")
+                    continue
     return tuple(members)
 
 
