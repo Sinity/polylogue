@@ -7,26 +7,6 @@
 # says why no permitted member fits -- those are findings, not pending work.
 package: polylogue
 runtime_tables:
-  - file: "polylogue/annotations/import_spill.py"
-    function: "AnnotationImportSpill.__init__"
-    table: "annotation_import_refs"
-    disposition: disposable_scratch
-    reason: "Exact ref resolution results are disposable operands for this import's resolver (the daemon supplies its pinned operation reader), on the same request-owned scratch_connection_context native connection. False remains distinct from an unseen ref; no results cross imports or become archive authority."
-  - file: "polylogue/storage/sqlite/archive_tiers/user_annotations.py"
-    function: "persist_spilled_annotation_batch"
-    table: "annotation_import_literals"
-    disposition: disposable_scratch
-    reason: "A TEMP relation on the existing native User writer stages canonical batch TEXT cells without durable JSON CHECK placeholders. The import selects completed cells into the checked immutable User batch row in the same transaction, then drops the temporary relation; temp_store is FILE before BEGIN."
-  - file: "polylogue/annotations/import_spill.py"
-    function: "AnnotationImportSpill.__init__"
-    table: "annotation_import_rows"
-    disposition: disposable_scratch
-    reason: "The importer supplies its request-owned scratch_connection_context native connection; validated rows and unique accepted row keys remain disposable until the one atomic User publication and are removed with the original scratch owner."
-  - file: "polylogue/annotations/import_spill.py"
-    function: "AnnotationImportSpill.__init__"
-    table: "annotation_import_failures"
-    disposition: disposable_scratch
-    reason: "The same request-owned scratch connection retains ordered canonical validation failures only; these are streamed into immutable User provenance before the original scratch owner closes."
   - file: "polylogue/sources/codex_state_projection.py"
     function: "prepare_thread_state_projection"
     table: "codex_projection_produced_edges"
@@ -213,7 +193,7 @@ writes:
     classification: lifecycle_transition
     reason: "The singleton is the durable sink acknowledgement for immutable accepted-marker source history. Its writer first verifies the exact prior stream and sequence, then advances only to the immediate successor inside the caller-owned assertion-lowering transaction; stale or skipped work raises instead of changing the cursor. It stores delivery progress, not a recomputable producer judgement."
   - file: "polylogue/operations/audit.py"
-    function: "AuditRepository._bind_machine_batch"
+    function: "AuditRepository._bind_insight_machine_seal"
     table: "machine_request_parts"
     kind: "update"
     tier: "audit"
@@ -227,12 +207,12 @@ writes:
     classification: lifecycle_transition
     reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
   - file: "polylogue/operations/audit.py"
-    function: "AuditRepository._bind_machine_batch"
+    function: "AuditRepository._bind_insight_machine_seal"
     table: "machine_requests"
     kind: "update"
     tier: "audit"
     classification: lifecycle_transition
-    reason: "Separate statement 2 of this function on machine_requests (UPDATE machine_requests SET artifact_kind = ?, artifact_ref = ?, accepted_at_ms = ?,). audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
+    reason: "The insight seal advances only the staged insight-preview-pages request with its exact immutable part count; every page remains unexecuted and unbound until its active authorization is verified. audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
   - file: "polylogue/operations/audit.py"
     function: "AuditRepository._bind_machine_result"
     table: "machine_request_parts"

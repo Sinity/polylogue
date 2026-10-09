@@ -33,6 +33,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/annotations/import_spill.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/api/archive.py",
     "tiers": [],
     "authority": "scratch"
@@ -141,6 +146,16 @@
   },
   {
     "file": "polylogue/operations/ingest_inputs.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/operations/insight_planning.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/operations/source_composition_read.py",
     "tiers": [],
     "authority": "scratch"
   },
