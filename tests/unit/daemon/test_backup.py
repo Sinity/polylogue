@@ -328,48 +328,6 @@ def test_backup_maps_a_retired_nested_active_index_without_recursive_search(
     assert backup_mod._all_archive_tiers(root)["index"] == generation
 
 
-def test_backup_retries_a_writer_commit_between_checkpoint_and_lock(
-    workspace_env: dict[str, Path],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    archive_root = workspace_env["archive_root"]
-    archive_root.mkdir(parents=True, exist_ok=True)
-    user_db = archive_root / "user.db"
-    with sqlite3.connect(user_db) as conn:
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("CREATE TABLE events (value TEXT NOT NULL)")
-        conn.execute("INSERT INTO events VALUES ('before')")
-
-    original_checkpoint = backup_mod._checkpoint_sqlite_for_snapshot
-    injected = False
-
-    def checkpoint_then_commit(conn: sqlite3.Connection, path: Path) -> None:
-        nonlocal injected
-        original_checkpoint(conn, path)
-        if not injected:
-            injected = True
-            with sqlite3.connect(user_db) as writer:
-                writer.execute("INSERT INTO events VALUES ('during-gap')")
-
-    monkeypatch.setattr(backup_mod, "_checkpoint_sqlite_for_snapshot", checkpoint_then_commit)
-
-    result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays")
-
-    assert result.ok
-    assert injected
-    assert result.output_path is not None
-    backup_root = Path(result.output_path)
-    with sqlite3.connect(backup_root / "user.db") as conn:
-        assert conn.execute("SELECT value FROM events ORDER BY rowid").fetchall() == [
-            ("before",),
-            ("during-gap",),
-        ]
-    manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
-    fingerprint = manifest["tier_source_fingerprints"]["user.db"]
-    assert fingerprint["sha256"] == hashlib.sha256((backup_root / "user.db").read_bytes()).hexdigest()
-
-
 def test_backup_verifier_refuses_artifact_source_fingerprint_mismatch(
     workspace_env: dict[str, Path],
     tmp_path: Path,
@@ -386,7 +344,7 @@ def test_backup_verifier_refuses_artifact_source_fingerprint_mismatch(
     def copy_with_wrong_fingerprint(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[int, dict[str, object]]:
         size, fingerprint = original_backup(src, dst, archive_root_path=archive_root_path)
         if src.name == "user.db":
-            fingerprint = backup_mod._sqlite_source_fingerprint(other_db)
+            fingerprint = backup_mod._sqlite_source_fingerprint(other_db, snapshot_path=other_db, user_version=3)
         return size, fingerprint
 
     monkeypatch.setattr(backup_mod, "_backup_sqlite", copy_with_wrong_fingerprint)
@@ -395,7 +353,7 @@ def test_backup_verifier_refuses_artifact_source_fingerprint_mismatch(
 
     assert result.ok is False
     assert result.verified is False
-    assert "backup artifact does not match its live source fingerprint" in str(result.error)
+    assert "backup artifact does not match its pinned snapshot fingerprint" in str(result.error)
     assert result.output_path is not None
     assert not (Path(result.output_path) / "verification-receipt.json").exists()
 
@@ -455,8 +413,8 @@ def test_full_evidence_backup_verifies_wal_mode_durable_tiers(
 ) -> None:
     """Verification must not manufacture the sidecars it then refuses.
 
-    ``_backup_sqlite`` checkpoints TRUNCATE and copies the main tier file
-    alone, so a copied WAL-mode tier declares WAL journalling with no ``-wal``
+    ``_backup_sqlite`` closes the SQLite backup image before publication,
+    so a copied WAL-mode tier declares WAL journalling with no ``-wal``
     beside it. The archive-format lineage gate reads that copy through a
     ``mode=ro`` connection, which makes SQLite materialize an empty
     ``-shm``/``-wal`` pair inside the scratch restore. Without the cleanup the
@@ -637,7 +595,7 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         "audit.db",
     }
     for artifact in receipt["tier_artifacts"]:
-        fingerprint = artifact["source_fingerprint"]
+        fingerprint = artifact["source_fingerprint"]["snapshot"]
         copied_tier = backup_root / artifact["path"]
         assert fingerprint["sha256"] == hashlib.sha256(copied_tier.read_bytes()).hexdigest()
         assert fingerprint["size_bytes"] == copied_tier.stat().st_size
@@ -1196,7 +1154,7 @@ def test_backup_replays_legacy_append_from_preceding_full_snapshot(
                 "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
                 (blob_hash, raw_id, "raw_payload", str(source_path), size, 1),
             )
-    # Backup reads these proofs from its checkpointed copy of the tier; fold
+    # Backup reads these proofs from its closed snapshot of the tier; fold
     # the seeded WAL into the main file the same way.
     checkpoint_durable_tier(archive_root / "source.db")
 
@@ -2601,26 +2559,11 @@ def test_embedded_backup_refused_beside_resident_daemon(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """An embedded Python caller of ``backup_archive`` is refused too.
+    """An embedded backup must hold the same archive authority as the daemon.
 
-    ``backup_archive`` is public API and mints its own
-    ``write_lease("maintenance.backup")``, so it satisfies every
-    ``require_write_lease`` in its own process and the armed connection guard
-    passes its writes through. The in-process lease proves nothing about a
-    second process, and the snapshot is a writer: ``_backup_sqlite`` opens each
-    live tier writable, TRUNCATE-checkpoints its WAL and holds
-    ``BEGIN IMMEDIATE`` across the copy.
-
-    The refusal used to live in ``polylogue/cli/commands/backup.py``, covering
-    exactly one caller; ``from polylogue.operations.archive_backup import backup_archive``
-    reached the whole truncating snapshot beside a live daemon with no
-    ownership check at all. That is the standalone Python entry point
-    polylogue-8qm4k AC1's coverage receipt names.
-
-    Anti-vacuity: delete the ``_require_exclusive_archive_ownership(root)``
-    call from ``backup_archive`` and this goes red -- the call returns a
-    successful ``BackupResult`` and the tier digest moves, because the
-    TRUNCATE checkpoint rewrites the live tiers' WAL files.
+    The per-tier read snapshots do not independently bind sibling tiers or
+    retain blobs. Removing the public ownership admission permits an embedded
+    backup beside the live owner and violates that cross-tier custody.
     """
     from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
 

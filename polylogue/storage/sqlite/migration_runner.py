@@ -887,10 +887,13 @@ def _validate_tier_artifact(
     if _json_int(artifact.get("user_version")) != _sqlite_user_version(artifact_path):
         raise MigrationError(f"migration backup tier artifact user_version mismatch: {filename}")
     source_fingerprint = artifact.get("source_fingerprint")
-    if not isinstance(source_fingerprint, dict) or any(
-        artifact.get(field) != source_fingerprint.get(field) for field in ("size_bytes", "sha256", "user_version")
+    snapshot = source_fingerprint.get("snapshot") if isinstance(source_fingerprint, dict) else None
+    if not isinstance(snapshot, dict) or any(
+        artifact.get(field) != snapshot.get(field) for field in ("size_bytes", "sha256", "user_version")
     ):
-        raise MigrationError(f"migration backup tier artifact does not match its live source fingerprint: {filename}")
+        raise MigrationError(
+            f"migration backup tier artifact does not match its pinned snapshot fingerprint: {filename}"
+        )
 
 
 def _validated_receipt_artifacts(

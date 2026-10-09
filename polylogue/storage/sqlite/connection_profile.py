@@ -1198,8 +1198,8 @@ WRITE_PROFILES: Mapping[str, SQLiteConnectionProfile] = {
     "active-cold-build": COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE,
 }
 
-# One tier, no sibling attach. An excision apply and a backup snapshot both
-# commit a single tier at a time so a mid-operation failure leaves at most one
+# One tier, no sibling attach. An excision apply and a checkpoint both
+# mutate a single tier at a time so a mid-operation failure leaves at most one
 # tier mutated; attaching siblings would draw them into the same transaction
 # scope, which is the thing those routes exist to avoid. Journal mode and
 # foreign-key enforcement are deliberately left as the file already has them:

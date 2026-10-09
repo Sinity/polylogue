@@ -109,6 +109,17 @@ Source capability crosses the preparation lifetime.
 
 ## Backup readability
 
+The archive writer holds cross-tier custody and excludes Source blob publishers
+through the package's tier and blob copies. Each SQLite tier is copied through
+SQLite's backup API from an explicitly pinned read transaction, including its
+committed WAL frames without draining unrelated readers. Later commits are
+excluded from that tier's cut. Backup page batches provide cancellation points;
+physical connection settlement precedes publication. The recorded source
+fingerprint retains the original physical main-file identity and hash for
+migration admission, separately from its `snapshot` image fingerprint used by
+package verification. A WAL-inclusive backup is valid recovery evidence; it
+does not bypass migration's existing nonempty-WAL or changed-live-file refusal.
+
 The backup manifest retains the original live-store blob debt before acquisition
 recovery. Restore reports unrestored references from the authenticated package's
 own closure and carried bytes, so exact recovery does not remain a destination
