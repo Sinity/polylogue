@@ -134,7 +134,9 @@ def _authenticate_receiver(endpoint: ParseResult, receiver_id: str, secret: str)
     """Challenge the endpoint; ``None`` when it answers with the bearer-keyed proof.
 
     Otherwise return the refusal code: ``receiver_unreachable`` when nothing
-    answered, ``receiver_authentication_failed`` when something else did. Only
+    answered, ``receiver_authentication_failed`` when something else did, and
+    ``receiver_observation_storage_failed`` when local response custody could
+    not create, write, decode or close its spill. Only
     the challenge crosses the socket, so an impostor listening on the receiver
     port learns no bearer from this exchange. This proof alone does not
     establish endpoint ownership against a relay to another genuine receiver.

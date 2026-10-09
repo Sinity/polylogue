@@ -542,7 +542,7 @@ therefore sends a fresh 32-byte challenge to the endpoint's
 HMAC-SHA256, keyed by that bearer, over the receiver identity and the challenge.
 The bearer itself never crosses the socket during this check. This possession proof alone does not establish endpoint ownership against a forwarding relay; native bootstrap transport remains a separate follow-up (`polylogue-xgj34`). An endpoint that
 does not answer yields `receiver_unreachable`; one that answers with anything
-else yields `receiver_authentication_failed`. When a status probe is refused
+else yields `receiver_authentication_failed`. Local response staging or spill failures yield `receiver_observation_storage_failed` in the native-messaging error envelope; they are distinct from peer reachability or authentication. When a status probe is refused
 with `401`, the extension asks the host for the current bearer once per health
 check; a second refusal is reported as `unauthorized` rather than retried.
 

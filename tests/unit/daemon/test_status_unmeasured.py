@@ -696,8 +696,8 @@ def test_plaintext_status_names_an_unmeasured_cursor_ledger() -> None:
     }
     quiet: dict[str, JSONValue] = {"available": True, "stuck_file_count": 0, "degraded_file_count": 0}
 
-    unreadable_lines = status_module.format_daemon_status_lines({"cursor_lag": unreadable})
-    quiet_lines = status_module.format_daemon_status_lines({"cursor_lag": quiet})
+    unreadable_lines = list(status_module.format_daemon_status_lines({"cursor_lag": unreadable}))
+    quiet_lines = list(status_module.format_daemon_status_lines({"cursor_lag": quiet}))
 
     assert any("Cursor lag: UNMEASURED" in line for line in unreadable_lines)
     assert any("cursor ledger unreadable" in line for line in unreadable_lines)
