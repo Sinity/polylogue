@@ -317,6 +317,9 @@ _MACHINE_FORMAT_FLAG: Mapping[str, str | None] = {
 #: Mutating operations the CLI submits whose route cannot reach the daemon
 #: probe from a daemon-down invocation, with the reason.
 _MATRIX_EXEMPT: Mapping[str, str] = {
+    "user.assertions.export.release": (
+        "releases a selection only after the daemon supplied its export; a daemon-down call cannot acquire one"
+    ),
     "maintenance.demo.augment": (
         "submitted only after `import --demo --wait` saw its ingest complete, and that ingest already needs the daemon"
     ),

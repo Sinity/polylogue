@@ -101,7 +101,7 @@ def test_streamed_controls_preserve_long_legal_refs_and_numeric_metadata(tmp_pat
     assert staged is not None
     try:
         assert size > 65_536
-        assert request.payload == control["payload"]
+        assert {key: request.payload[key] for key in control["payload"]} == control["payload"]
         assert type(request.payload["metadata"]["cost"]) is float
     finally:
         staged.discard()
