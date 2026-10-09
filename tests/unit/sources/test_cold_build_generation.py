@@ -17,6 +17,7 @@ import os
 import sqlite3
 import stat
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -847,6 +848,50 @@ def test_the_readiness_pass_restores_the_reader_shape_before_promotion(
     with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
         hits = reader._conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'owned'").fetchone()
         assert hits[0] >= 1
+
+
+def test_canonical_write_after_readiness_requires_another_readiness_pass(
+    tmp_path: Path, cold_build: ColdBuildGeneration
+) -> None:
+    """An operation's current rows cannot borrow an older readiness pass."""
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "first-ready")
+    cold_build.prepare_promotion_candidate()
+    second = root / "two.jsonl"
+    second.write_bytes(
+        _codex_session("second-ready", "latersearchtoken")
+        + b'{"type":"response_item","payload":{"type":"function_call","id":"fc",'
+        b'"call_id":"call","name":"exec_command","arguments":"{}"}}\n'
+        b'{"type":"response_item","payload":{"type":"function_call_output",'
+        b'"call_id":"call","output":"neutral"}}\n'
+    )
+    metrics = asyncio.run(_ingest_paths(tmp_path, root, [second]))
+    assert metrics.succeeded_file_count == 1
+    # The actual canonical inactive replay defers these models, even after
+    # an earlier readiness pass restored the reader indexes.
+    with closing(sqlite3.connect(f"file:{cold_build.generation.index_path}?mode=ro", uri=True)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'latersearchtoken'").fetchone()[0]
+            == 0
+        )
+    with pytest.raises(ReferenceSealStaleError), cold_build.prepare_promotion_proof():
+        pass
+    assert _active_session_count(tmp_path) == 0
+    assert "idx_messages_role" in _candidate_index_names(cold_build)
+    cold_build.promote()
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
+        assert reader._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 1
+        assert (
+            reader._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'latersearchtoken'"
+            ).fetchone()[0]
+            == 1
+        )
 
 
 @pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
