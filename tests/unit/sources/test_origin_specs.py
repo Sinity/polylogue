@@ -4,20 +4,28 @@ from __future__ import annotations
 
 import ast
 import gzip
+import io
 import json
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from ijson.backends import python as exact_backend
 
 from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources.assembly import get_assembly_spec
-from polylogue.sources.detection import DetectorBinding, DetectorBindingError, compile_detector_registry
+from polylogue.sources.detection import (
+    DetectionMode,
+    DetectorBinding,
+    DetectorBindingError,
+    compile_detector_registry,
+)
 from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS
 from polylogue.sources.origin_specs import (
     DROPPED_VALUE_VOCABULARIES,
@@ -780,6 +788,58 @@ def test_origin_specs_compile_the_production_detector_registry() -> None:
 
     assert registry.by_mode
     assert all(spec.detector_bindings for spec in ORIGIN_SPECS if spec.lifecycle == "executable")
+
+
+def test_singleton_sequence_detection_projects_and_tests_once() -> None:
+    registry = detector_registry()
+    compiled = next(
+        item
+        for item in registry.by_mode[DetectionMode.SEQUENCE_DOCUMENT]
+        if item.binding.binding_id == "chatgpt-sequence-document"
+    )
+    calls: list[object] = []
+
+    def predicate(payload: object) -> bool:
+        calls.append(payload)
+        return True
+
+    single_binding = replace(compiled, predicate=predicate)
+    one_binding_registry = replace(
+        registry,
+        by_mode={
+            DetectionMode.SEQUENCE_DOCUMENT: (single_binding,),
+            DetectionMode.SEQUENCE_RECORD_STREAM: (),
+            DetectionMode.RECORD: (),
+        },
+    )
+
+    result = one_binding_registry.detect_record_value({"messages": []}, sequence=True)
+
+    assert result == (Provider.CHATGPT, compiled.binding.evidence_label)
+    assert calls == [[{"messages": []}]]
+
+
+def test_singleton_sequence_detection_matches_event_route_for_nested_and_dynamic_shapes() -> None:
+    registry = detector_registry()
+    capture = json.loads(
+        (Path(__file__).parents[2] / "fixtures/chatgpt/native-browser-capture-v1.json").read_text(encoding="utf-8")
+    )
+    capture["provenance"]["operator_metadata"] = {"nested": [[{"value": "synthetic"}]]}
+    values_and_expected = (
+        (capture, (Provider.CHATGPT, "browser_capture.looks_like (any complete sequence envelope)")),
+        ([capture], (None, None)),
+        ({"unrelated": [[{"opaque": "synthetic"}]]}, (None, None)),
+    )
+
+    for value, expected in values_and_expected:
+
+        def events_factory(value: object = value) -> Iterator[tuple[str, object]]:
+            encoded = json.dumps(value, separators=(",", ":")).encode("utf-8")
+            return iter(exact_backend.basic_parse(io.BytesIO(encoded)))
+
+        decoded = registry.detect_record_value(value, sequence=True)
+        streamed = registry.detect_record_events(events_factory, sequence=True)
+        assert decoded == streamed == expected
 
 
 def test_detector_registry_rejects_broken_declarations_with_the_binding_id() -> None:
