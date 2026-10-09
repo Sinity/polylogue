@@ -306,6 +306,11 @@ Python facade. An explicitly supplied Index version is observed through the supp
 
 ## Resident insight pages
 
+Origin or date bounds on profile readiness inspect only the selected session
+partitions in bounded batches on the original reader. Unselected stale profiles
+cannot withhold a filtered profile export; a stale selected partition still
+withholds its product. Unfiltered archive readiness retains its global verdict.
+
 The eleven registered `analyze insights` list commands call `insights.list`
 through the daemon. Its closed discriminated request and result branches use
 the registry's existing query and item models. The canonical page reader is

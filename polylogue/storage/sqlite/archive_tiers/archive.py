@@ -6838,12 +6838,15 @@ class ArchiveStore:
         # Session-profile inspection recomputes its partition binding from
         # sessions/messages. Retry/debt rows remain operation-health evidence,
         # but a stale historical row cannot replace this authoritative verdict.
-        converged = (
-            status.missing_profile_row_count == 0
-            and status.stale_profile_row_count == 0
-            and status.orphan_profile_row_count == 0
-            and status.profile_row_count == status.total_sessions
-        )
+        if any(value is not None for value in (request.origin, request.since, request.until)):
+            converged = all(not entry.diverged and not entry.incomplete for entry in entries)
+        else:
+            converged = (
+                status.missing_profile_row_count == 0
+                and status.stale_profile_row_count == 0
+                and status.orphan_profile_row_count == 0
+                and status.profile_row_count == status.total_sessions
+            )
         debt_stages = self._derived_operation_debt_stages()
         return InsightReadinessReport(
             checked_at=datetime.now(UTC).isoformat(),
@@ -7100,6 +7103,28 @@ class ArchiveStore:
         # Several insights are backed by query-time views (threads, delegations,
         # actions), which exist and carry rows; presence is relation presence.
         table_present = _relation_exists(self._conn, table_name)
+        if (
+            name == "session_profiles"
+            and table_present
+            and any(value is not None for value in (origin, since_ms, until_ms))
+        ):
+            from polylogue.storage.sqlite.queries.profile_readiness import read_profile_readiness
+
+            where, parameters = _session_filter_clause("s", origin=origin, since_ms=since_ms, until_ms=until_ms)
+            counts = read_profile_readiness(
+                self._conn,
+                f"FROM sessions s LEFT JOIN session_profiles sp ON sp.session_id = s.session_id {where}",
+                parameters,
+                checkpoint=self.check_operation_read,
+            )
+            row_count, expected_row_count, missing_count, stale_count = (
+                counts.rows,
+                counts.expected,
+                counts.missing,
+                counts.stale,
+            )
+            # Orphans have no source session and cannot enter this source-filtered relation.
+            orphan_count = 0
         artifacts = tuple(
             InsightStorageArtifact(
                 name=artifact,

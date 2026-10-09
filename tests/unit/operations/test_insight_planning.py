@@ -80,6 +80,20 @@ def test_full_manifest_is_exactly_paged_and_digest_stable(tmp_path: Path, count:
     ]
 
 
+def test_explicit_request_above_ten_thousand_keeps_complete_paged_selection(tmp_path: Path) -> None:
+    from polylogue.operations.daemon_protocol import InsightRebuildRequest
+
+    ids = [f"codex-session:target-{index:05d}" for index in range(10_001)]
+    request = InsightRebuildRequest(session_ids=ids)
+    with _reader(tmp_path, len(ids)) as archive:
+        manifest = _prepare(archive, request.session_ids)
+        repeated = _prepare(archive, [*ids, ids[0]])
+    assert [target.target_ref for page in manifest.pages for target in page] == [f"session:{sid}" for sid in ids]
+    assert len(manifest.pages) == 40
+    assert manifest.digest == repeated.digest
+    assert manifest.pages == repeated.pages
+
+
 def test_full_manifest_keeps_profile_orphan_as_excess_target(tmp_path: Path) -> None:
     with _reader(tmp_path, 1, profile_orphan=True) as archive:
         manifest = _prepare(archive)

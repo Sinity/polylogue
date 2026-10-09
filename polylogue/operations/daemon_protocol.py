@@ -927,7 +927,7 @@ class IngestRequest(_OperationPayload):
 
 
 class InsightRebuildRequest(_OperationPayload):
-    session_ids: list[str] | None = Field(default=None, max_length=10_000)
+    session_ids: list[str] | None = None
 
     @model_validator(mode="after")
     def nonempty_identifiers(self) -> InsightRebuildRequest:
