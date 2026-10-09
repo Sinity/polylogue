@@ -735,16 +735,30 @@ class RawObservationInspection:
             # exact session reachability are still required below.
             typed_schema_ineligible = (
                 conn.execute(
-                    "SELECT 1 WHERE EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=?) "
-                    "AND NOT EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? "
+                    "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? "
                     "AND schema_eligible IS NOT 0) "
-                    "AND (EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? AND parse_as_session=1) "
+                    "AND ((EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=?) "
+                    "AND EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? AND parse_as_session=1)) "
                     "OR EXISTS (SELECT 1 FROM raw_membership_census WHERE raw_id=? AND status='non_session' "
-                    "AND parser_fingerprint=?))",
+                    "AND member_count=0 AND parser_fingerprint=?))",
                     (key, key, key, key, parser_fingerprint),
                 ).fetchone()
                 is not None
             )
+            if typed_schema_ineligible:
+                artifact_exemption = conn.execute(
+                    "SELECT 1 FROM raw_artifacts WHERE raw_id=? AND schema_eligible=0",
+                    (key,),
+                ).fetchone()
+                if artifact_exemption is None:
+                    from polylogue.sources.dispatch import is_jsonl_source_path
+                    from polylogue.sources.live.batch_support import jsonl_parse_prefix_size_of_handle
+
+                    typed_schema_ineligible = False
+                    if is_jsonl_source_path(raw["source_path"]):
+                        retained_path = BlobStore(self.archive_root / "blob").blob_path(bytes(raw["blob_hash"]).hex())
+                        with retained_path.open("rb") as retained_input:
+                            typed_schema_ineligible = jsonl_parse_prefix_size_of_handle(retained_input) == 0
             if not (
                 raw["validation_mode"] is None
                 and census is not None
@@ -1970,14 +1984,6 @@ class RawObservationDerivation(RawObservationInspection):
             staged_blob = captured.staged_blob
             provider, blob_hash, source_path, kind, _raw_size = descriptor
             neutral_directory = staged_blob.parent
-            from polylogue.sources.revision_backfill import retained_empty_session_stream_refusal
-
-            refusal = retained_empty_session_stream_refusal(
-                provider, source_path=source_path, blob_hash=blob_hash, payload_bytes=_raw_size
-            )
-            if refusal is not None:
-                carry.neutral_artifacts[neutral_keys[raw_id]] = refusal
-                return refusal
             if cached is None:
                 with staged_blob.open("rb") as staged_input:
                     parse_prefix_size = jsonl_parse_prefix_size_of_handle(staged_input)
@@ -2014,7 +2020,7 @@ class RawObservationDerivation(RawObservationInspection):
             else:
                 # Parser bytes survive rebinding; current schema evidence does not.
                 neutral = cached
-            if neutral.error is None and neutral.resolved_provider is not None:
+            if neutral.error is None and neutral.resolved_provider is not None and neutral.parsed_prefix_size != 0:
                 from polylogue.sources.revision_backfill import _retained_validation_input
 
                 prefix = neutral.parsed_prefix_size if self._validation_mode is not ValidationMode.OFF else None
@@ -2406,7 +2412,13 @@ class RawObservationDerivation(RawObservationInspection):
                         if validation_mode is not None:
                             continue
                         schema_eligible = census_read.raw_schema_eligible(raw_id)
-                        if not schema_eligible or declared_non_session:
+                        admitted_no_records = False
+                        if is_jsonl_source_path(source_path) and census_read.raw_parser_confirmed_non_session(raw_id):
+                            from polylogue.sources.live.batch_support import jsonl_parse_prefix_size_of_handle
+
+                            with census_read.open_raw_revision_material(raw_id) as (_, census_material, _, _):
+                                admitted_no_records = jsonl_parse_prefix_size_of_handle(census_material) == 0
+                        if not schema_eligible or declared_non_session or admitted_no_records:
                             complete_census.add(raw_id)
                 # Every retained raw needs its actual parser authority before
                 # replay can select a session. A singleton can still refine an

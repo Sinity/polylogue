@@ -5,10 +5,12 @@ from __future__ import annotations
 import pickle
 import sqlite3
 from collections.abc import Iterator, MutableMapping
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
 
 
@@ -109,6 +111,12 @@ class SqlitePickleMap(MutableMapping[str, Any]):
         return self[key]
 
 
+@dataclass(frozen=True, slots=True)
+class _BorrowedPrefix:
+    connection_identity: int
+    node_id: int
+
+
 class ClaudeStreamScratch:
     def __init__(self) -> None:
         scratch_root = Path("/realm/tmp/work")
@@ -122,7 +130,6 @@ class ClaudeStreamScratch:
         self.db.execute("PRAGMA temp_store=FILE")
         self.db.executescript(
             "CREATE TABLE strings (scope TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (scope, value));"
-            "CREATE TABLE prefix (position INTEGER PRIMARY KEY, payload BLOB NOT NULL);"
             "CREATE TABLE notifications (seq INTEGER PRIMARY KEY, scope TEXT NOT NULL, task TEXT NOT NULL, "
             "tool TEXT NOT NULL, payload TEXT NOT NULL, source_id TEXT, timestamp TEXT);"
             "CREATE INDEX notifications_scope ON notifications (scope, task, tool);"
@@ -133,6 +140,13 @@ class ClaudeStreamScratch:
             "CREATE TABLE mapped (scope TEXT NOT NULL, key TEXT NOT NULL, payload BLOB NOT NULL, "
             "PRIMARY KEY (scope, key)) WITHOUT ROWID;"
         )
+        self._prefix_owners: dict[int, sqlite3.Connection] = {}
+        try:
+            self._prefix: PickleSpool[tuple[int, object]] = PickleSpool()
+        except BaseException:
+            self.db.close()
+            self._directory.cleanup()
+            raise
 
     def string_set(self, scope: str) -> SqliteStringSet:
         return SqliteStringSet(self, scope)
@@ -143,23 +157,33 @@ class ClaudeStreamScratch:
     def mapped(self, scope: str) -> SqlitePickleMap:
         return SqlitePickleMap(self, scope)
 
-    def add_prefix(self, position: int, item: object, record: object) -> None:
-        self.db.execute(
-            "INSERT INTO prefix (position, payload) VALUES (?, ?)",
-            (position, pickle.dumps((item, record), protocol=pickle.HIGHEST_PROTOCOL)),
-        )
+    def add_prefix(self, position: int, item: object) -> None:
+        from polylogue.schemas.observation_spill import SpilledArray, SpilledObject
+
+        if isinstance(item, SpilledObject | SpilledArray):
+            # The parser caller retains its completed tape through replay and
+            # session finalization. Borrow its owner once, never pickle a view
+            # or reconstruct unknown values merely to remember a prefix.
+            identity = id(item._connection)
+            self._prefix_owners[identity] = item._connection
+            item = _BorrowedPrefix(identity, item._node_id)
+        self._prefix.append((position, item))
 
     def prefix_count(self) -> int:
-        row = self.db.execute("SELECT COUNT(*) FROM prefix").fetchone()
-        return int(row[0]) if row else 0
+        return len(self._prefix)
 
-    def iter_prefix(self) -> Iterator[tuple[int, Any, Any]]:
-        for position, payload in self.db.execute("SELECT position, payload FROM prefix ORDER BY position"):
-            item, record = pickle.loads(payload)
-            yield position, item, record
+    def iter_prefix(self) -> Iterator[tuple[int, object]]:
+        from polylogue.schemas.observation_spill import _load_node
+
+        for position, item in self._prefix:
+            if isinstance(item, _BorrowedPrefix):
+                item = _load_node(self._prefix_owners[item.connection_identity], item.node_id)
+            yield position, item
 
     def clear_prefix(self) -> None:
-        self.db.execute("DELETE FROM prefix")
+        self._prefix.close()
+        self._prefix = PickleSpool()
+        self._prefix_owners.clear()
 
     def add_start(self, scope: str, task: str, tool: str, message_index: int, block_index: int) -> None:
         self.db.execute("INSERT INTO starts VALUES (?, ?, ?, ?, ?)", (scope, task, tool, message_index, block_index))
@@ -178,8 +202,14 @@ class ClaudeStreamScratch:
         return (int(rows[0][0]), int(rows[0][1])) if len(rows) == 1 else None
 
     def close(self) -> None:
-        self.db.close()
-        self._directory.cleanup()
+        try:
+            self._prefix.close()
+        finally:
+            self._prefix_owners.clear()
+            try:
+                self.db.close()
+            finally:
+                self._directory.cleanup()
 
     def __enter__(self) -> ClaudeStreamScratch:
         return self

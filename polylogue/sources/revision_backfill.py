@@ -891,11 +891,6 @@ def prepare_retained_jsonl_artifact(
                         f"{type(exc).__name__}: {exc}",
                         decode_failure=decode_failure,
                     )
-            refusal = retained_empty_session_stream_refusal(
-                provider, source_path=source_path, blob_hash=blob_hash, payload_bytes=_size
-            )
-            if refusal is not None:
-                return refusal
         artifact = prepare_jsonl_blob(
             str(blob_path),
             source_path,
@@ -1032,36 +1027,6 @@ def _attach_retained_validation_verdict(
                 ) from None
             raise
     return artifact
-
-
-def _is_declared_provider_session_stream(provider: Provider, source_path: str) -> bool:
-    """Whether an empty provider JSONL path should be decoded as a session stream."""
-    if provider not in {Provider.CODEX, Provider.CLAUDE_CODE}:
-        return False
-    # Claude's configured history file is raw-only intake metadata. Other
-    # provider JSONL paths that are not explicitly excluded by OriginSpec are
-    # session decode inputs, including neutral and exported path spellings.
-    return not (provider is Provider.CLAUDE_CODE and Path(source_path).name.lower() == "history.jsonl")
-
-
-def retained_empty_session_stream_refusal(
-    provider: Provider, *, source_path: str, blob_hash: str, payload_bytes: int
-) -> PreparedJsonl | None:
-    """Keep ordinary and detached retained session-stream admission equal."""
-    if (
-        payload_bytes != 0
-        or not is_jsonl_source_path(source_path)
-        or path_declaration_refuses_session(provider, source_path)
-        or not _is_declared_provider_session_stream(provider, source_path)
-    ):
-        return None
-    return PreparedJsonl(
-        blob_hash,
-        None,
-        None,
-        "zero-byte provider session stream contains no decodable session record",
-        decode_failure=DecodeFailure.JSONL_RECORD,
-    )
 
 
 def prepare_retained_non_json_artifact(
@@ -2916,7 +2881,7 @@ def _retained_enrichment_sidecar_data(
 def parse_retained_raw_sessions(archive: RetainedRawRead, raw_id: str) -> list[ParsedSession]:
     """Parse retained raw evidence without eagerly loading stream records.
 
-    Raw-revision replay is shared by historical repair and the live full and
+    Raw-revision replay is shared by retained rebuilding and the live full and
     append routes.  Keeping the provider-shape decision here prevents a
     seemingly harmless live replay helper from reintroducing ``read_all()``
     for Codex/Claude JSONL evidence.
@@ -3808,7 +3773,17 @@ def prepare_revision_source_census(
             return True
         prepared = prepared_inputs.get(raw_id)
         artifact = prepared.prepared_artifact if prepared is not None else None
+        if prepared is not None and prepared.parser_error is not None:
+            # A failed preparation has no successful validation obligation.
+            # Publish its original refusal through the same Source custody
+            # used for an uncensused input, including byte-governed appends.
+            apply_outcome(raw_id, source_index)
+            return True
         schema_validation_required = evidence_reader.raw_schema_eligible(raw_id)
+        if artifact is not None and artifact.parsed_prefix_size == 0:
+            # The verified retained capture admitted no complete record.
+            # Its excluded tail is not a schema-validation input.
+            schema_validation_required = False
         stream = artifact.stream_classification() if artifact is not None else None
         if (
             source_index >= 0
@@ -3916,7 +3891,8 @@ def prepare_revision_source_census(
         check_compute_cancelled()
         state.scanned += 1
         state.censused.add(raw_id)
-        if source_index < 0:
+        outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
+        if source_index < 0 and not isinstance(outcome, Exception):
             stage_current_parser_followup(raw_id, source_index)
             if evidence_reader.raw_has_membership_authority(raw_id):
                 record_current_parser_source_census(seal, raw_id)
@@ -3932,7 +3908,6 @@ def prepare_revision_source_census(
                 )
             state.quarantined += 1
             return
-        outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
         provider, _hash, source_path, revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
         observed_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
         if isinstance(outcome, Exception):
@@ -4001,16 +3976,24 @@ def prepare_revision_source_census(
                     state=_raw_parse_failure_state(provider, outcome),
                     manage_transaction=False,
                 )
-                replace_raw_membership_census(
-                    seal,
-                    raw_id,
-                    [],
-                    parser_fingerprint=raw_authority_parser_fingerprint(),
-                    censused_at_ms=0,
-                    detail=str(outcome),
-                    retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
-                    revision_authority=None,
-                )
+                if (
+                    source_index < 0
+                    or evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.BYTE_PROVEN.value
+                ):
+                    # A failed parent or append keeps its proven byte chain;
+                    # a parser refusal cannot retire that authority.
+                    record_current_parser_source_census(seal, raw_id)
+                else:
+                    replace_raw_membership_census(
+                        seal,
+                        raw_id,
+                        [],
+                        parser_fingerprint=raw_authority_parser_fingerprint(),
+                        censused_at_ms=0,
+                        detail=str(outcome),
+                        retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                        revision_authority=None,
+                    )
             state.quarantined += 1
             return
         sessions, _payload_bytes, _parsed_kind = outcome

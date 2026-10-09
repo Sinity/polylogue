@@ -255,6 +255,10 @@ def terminal_decode_evidence(error: BaseException, *, provider: Provider) -> Raw
     replay both decide from this one rule, so a rebuild refuses exactly the
     bytes live intake refused, and neither re-selects them.
     """
+    from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
+
+    if isinstance(error, RetainedRawDecodeRefusalError):
+        return error.kind
     if classify_decode_failure(error) is None:
         return None
     if provider is Provider.UNKNOWN:

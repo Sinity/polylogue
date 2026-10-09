@@ -1848,19 +1848,65 @@ def test_neutral_jsonl_restores_exact_source_before_capture(tmp_path: Path, prov
 
 
 @pytest.mark.parametrize("provider", [Provider.CODEX, Provider.CLAUDE_CODE])
-def test_neutral_empty_session_stream_has_terminal_decode_evidence(tmp_path: Path, provider: Provider) -> None:
+def test_neutral_empty_session_stream_has_clean_non_session_census(tmp_path: Path, provider: Provider) -> None:
     bootstrap_archive_root(tmp_path)
     _admit(tmp_path, (), provider=provider, path="session.jsonl", payload=b"")
     _derive(tmp_path, validation_mode=ValidationMode.OFF)
     lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
-    assert lifecycle.terminal == 1
+    assert lifecycle.terminal == 0
     assert lifecycle.unexplained == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT parse_error IS NOT NULL FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions").fetchone() == (1, None)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+        assert conn.execute("SELECT status, member_count FROM raw_membership_census").fetchall() == [("non_session", 0)]
         assert conn.execute("SELECT status, logical_keys_json FROM raw_authority_parser_census").fetchall() == [
             ("complete", "[]")
         ]
         assert conn.execute("SELECT COUNT(*) FROM raw_session_memberships").fetchone() == (0,)
+
+
+def test_empty_census_schema_exemption_requires_retained_jsonl_frontier(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, (), provider=Provider.CODEX, path="session.jsonl", payload=b"")
+    assert _derive(tmp_path, validation_mode=ValidationMode.OFF).failed == 0
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "valid"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path='session.json' WHERE raw_id=?", (raw_id,))
+    # A document must prove its own schema policy; an empty stream's current
+    # zero-member receipt cannot exempt an invalid empty JSON document.
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "stale"
+
+
+def test_sessionless_json_document_still_requires_schema_policy(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, (), provider=Provider.CODEX, path="session.json", payload=b"[]")
+    _derive(tmp_path, validation_mode=ValidationMode.OFF)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT status, member_count FROM raw_membership_census WHERE raw_id=?", (raw_id,)
+        ).fetchone() == ("non_session", 0)
+        # A current census cannot replace this document's missing policy.
+        conn.execute("DELETE FROM raw_artifacts WHERE raw_id=?", (raw_id,))
+        conn.execute("UPDATE raw_sessions SET validation_mode=NULL WHERE raw_id=?", (raw_id,))
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "stale"
+
+
+@pytest.mark.parametrize("payload", [b"", b'{"display":"neutral history","timestamp":1}\n'])
+def test_declared_raw_only_history_keeps_its_schema_exemption(tmp_path: Path, payload: bytes) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, (), provider=Provider.CLAUDE_CODE, path="history.jsonl", payload=payload)
+    assert _derive(tmp_path, validation_mode=ValidationMode.OFF).failed == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT parse_as_session, schema_eligible FROM raw_artifacts WHERE raw_id=?", (raw_id,)
+        ).fetchall() == ([(0, 0)] if payload else [])
+        assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone() == (None,)
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.OFF) == "valid"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        # Exercise the existing typed raw-only exemption when no policy
+        # receipt was captured, rather than overriding a stored OFF verdict.
+        conn.execute("UPDATE raw_sessions SET validation_mode=NULL WHERE raw_id=?", (raw_id,))
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "valid"
 
 
 def test_neutral_retry_refreshes_validation_without_reparsing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

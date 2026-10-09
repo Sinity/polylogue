@@ -33,7 +33,6 @@ from polylogue.sources.live.cold_build import (
 from polylogue.sources.revision_backfill import (
     LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
     _browser_snapshot_fidelity,
-    _is_declared_provider_session_stream,
 )
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_store import BlobStore
@@ -58,19 +57,6 @@ from tests.infra.revision_backfill_benchmark import (
     build_independent_raw_corpus,
     build_revision_chain_corpus,
 )
-
-
-@pytest.mark.parametrize(
-    ("provider", "source_path", "expected"),
-    [
-        (Provider.CODEX, "2026/10/07/rollout-a.jsonl", True),
-        (Provider.CLAUDE_CODE, "-home-user-repo/session.jsonl", True),
-        (Provider.CLAUDE_CODE, "history.jsonl", False),
-        (Provider.CHATGPT, "sessions/abc.jsonl", False),
-    ],
-)
-def test_declared_provider_session_stream_boundary(provider: Provider, source_path: str, expected: bool) -> None:
-    assert _is_declared_provider_session_stream(provider, source_path) is expected
 
 
 def _seed_historical_revision(archive: ArchiveStore, raw_id: str, revision: RawRevisionEnvelope) -> None:

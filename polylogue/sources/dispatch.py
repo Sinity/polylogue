@@ -1301,7 +1301,7 @@ def _claude_code_multiway_parse_inner(
                 if scratch is None:
                     pending_prefix.append((item, record))
                 else:
-                    scratch.add_prefix(record_index, item, record)
+                    scratch.add_prefix(record_index, item)
                 continue
             fold_into(current_group_id, record_index, item, record)
             continue
@@ -1331,9 +1331,9 @@ def _claude_code_multiway_parse_inner(
                     fold_into(session_id, prefix_index, prefix_item, prefix_record)
             else:
                 prefix_index = record_index - scratch.prefix_count()
-                for _, prefix_item, prefix_record in scratch.iter_prefix():
+                for _, prefix_item in scratch.iter_prefix():
                     prefix_index += 1
-                    fold_into(session_id, prefix_index, prefix_item, prefix_record)
+                    fold_into(session_id, prefix_index, prefix_item, _payload_record(prefix_item))
                 scratch.clear_prefix()
             pending_prefix = []
 
@@ -1353,8 +1353,8 @@ def _claude_code_multiway_parse_inner(
             for index, (prefix_item, prefix_record) in enumerate(pending_prefix, start=1):
                 fold_into(fallback_id, index, prefix_item, prefix_record)
         else:
-            for index, prefix_item, prefix_record in scratch.iter_prefix():
-                fold_into(fallback_id, index, prefix_item, prefix_record)
+            for index, prefix_item in scratch.iter_prefix():
+                fold_into(fallback_id, index, prefix_item, _payload_record(prefix_item))
 
     # Provisional groups (non-agent, own sessionId != fallback_id, first
     # encountered before the primary group had started) can only be

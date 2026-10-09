@@ -6217,7 +6217,9 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
     assert first.refused_bytes_by_reason == {"truncated_tail": split_at}
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT parse_error FROM raw_sessions").fetchall() == [(None,)]
-        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+        assert conn.execute(
+            "SELECT artifact_kind, support_status, parse_as_session, schema_eligible FROM raw_artifacts"
+        ).fetchall() == [("session_record_stream", "supported_parseable", 1, 1)]
     assert not processor._cursor_references_raw_failure_requiring_full_replay(path, captured_cursor)
 
     # The writer finishes the split record and its line; a partial capture
@@ -6315,7 +6317,9 @@ def test_deferred_full_jsonl_with_prior_session_replays_completed_snapshot(
     assert deferred.full_file_count == 1
     assert deferred.succeeded_file_count == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+        assert conn.execute(
+            "SELECT artifact_kind, support_status, parse_as_session, schema_eligible FROM raw_artifacts"
+        ).fetchall() == [("session_record_stream", "supported_parseable", 1, 1)]
     replayed = run_ingest_files(processor, [path])
 
     assert replayed.full_file_count == 1
@@ -6745,6 +6749,7 @@ def test_failed_parser_upgrade_preserves_accepted_parser_identity(
 def test_append_parse_failure_retains_typed_raw_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     # An append parses only once it chains off an accepted full; seed one.
     _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="append-bad")
@@ -6762,7 +6767,7 @@ def test_append_parse_failure_retains_typed_raw_failure(
     assert result.failed == [plan]
     parsed_at_ms, parse_error = _append_raw_parse_state(tmp_path)
     assert parsed_at_ms is None
-    assert isinstance(parse_error, str) and "injected append parse failure" in parse_error
+    assert isinstance(parse_error, str) and "injected append parse failure" in parse_error, caplog.text
     assert len(parse_error) <= 2000
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions WHERE source_index = -1").fetchone()[0])
@@ -6867,7 +6872,9 @@ def test_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(
     assert second.failed_file_count == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
-        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+        assert conn.execute(
+            "SELECT artifact_kind, support_status, parse_as_session, schema_eligible FROM raw_artifacts"
+        ).fetchall() == [("session_record_stream", "supported_parseable", 1, 1)]
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
@@ -6907,7 +6914,9 @@ def test_large_full_batch_session_shaped_workflow_journal_reaches_parser_idempot
     assert second.failed_file_count == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
-        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+        assert conn.execute(
+            "SELECT artifact_kind, support_status, parse_as_session, schema_eligible FROM raw_artifacts"
+        ).fetchall() == [("session_record_stream", "supported_parseable", 1, 1)]
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
@@ -9937,7 +9946,7 @@ def test_slow_append_finishes_once_without_poisoning_source(
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (2,)
 
 
-def test_append_refuses_a_malformed_middle_record(tmp_path: Path) -> None:
+def test_append_refuses_a_malformed_middle_record(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     from hashlib import sha256
 
     path, initial, owner, processor = _seed_live_append_plan(tmp_path, native_id="malformed-middle")
@@ -9959,7 +9968,7 @@ def test_append_refuses_a_malformed_middle_record(tmp_path: Path) -> None:
             (str(path),),
         ).fetchall()
     assert retained_hash.lower() == sha256(malformed).hexdigest()
-    assert error
+    assert error, caplog.text
     # The append's own bytes fail to decode: the same terminal evidence the
     # full route's census records for corrupt input.
     with sqlite3.connect(tmp_path / "source.db") as conn:

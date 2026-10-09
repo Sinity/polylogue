@@ -361,3 +361,85 @@ def test_selected_patch_and_draft_outputs_release_borrowed_nested_values() -> No
         )
     assert patch.model_dump(mode="json")["structured_patch"] == [value]
     assert session.pending_drafts == [value]
+
+
+def test_claude_prefix_replay_borrows_ignored_large_scalar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.schemas.observation_spill import _ScalarTokenStore
+    from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+
+    source = tmp_path / "prefix.jsonl"
+    records = [
+        {"contentKey": "ignored-prefix", "agentId": "neutral", "summary": "x" * (128 * 1024)},
+        {"type": "user", "uuid": "before-session", "message": {"role": "user", "content": "prefix selected"}},
+        {
+            "type": "user",
+            "uuid": "after-session",
+            "sessionId": "neutral",
+            "message": {"role": "user", "content": "later selected"},
+        },
+    ]
+    source.write_text("".join(json.dumps(record) + "\n" for record in records))
+    original = _ScalarTokenStore.read
+
+    def selected(store: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
+        (size,) = store.connection.execute(
+            "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
+        ).fetchone()
+        assert size < 128 * 1024, "ignored prefix scalar was reconstructed"
+        return original(store, kind, ordinal)
+
+    monkeypatch.setattr(_ScalarTokenStore, "read", selected)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_CODE.value,
+        "neutral",
+        is_stream=True,
+        strict_jsonl_records=True,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    try:
+        assert artifact.error is None, artifact.error
+        [session] = artifact.iter_sessions()
+        assert [message.text for message in session.messages] == ["prefix selected", "later selected"]
+    finally:
+        artifact.discard()
+
+
+def test_claude_prefix_scratch_borrows_one_tape_and_settles_failed_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import closing
+
+    from polylogue.schemas.observation_spill import SpilledObject
+    from polylogue.sources.decoder_json import DecodedRecordSequence
+    from polylogue.sources.parsers.claude import stream_scratch
+
+    wire = json.dumps({"uuid": "exact", "ignored": "x" * (128 * 1024)}).encode() + b"\n"
+    with closing(DecodedRecordSequence.from_jsonl(io.BytesIO(wire), "prefix.jsonl")) as tape:
+        item = tape[0]
+        assert isinstance(item, SpilledObject)
+        scratch = stream_scratch.ClaudeStreamScratch()
+        try:
+            for position in range(32):
+                scratch.add_prefix(position, item)
+            assert scratch.prefix_count() == 32
+            assert len(scratch._prefix_owners) == 1
+            replayed = 0
+            for _, value in scratch.iter_prefix():
+                assert isinstance(value, dict)
+                assert value["uuid"] == "exact"
+                replayed += 1
+            assert replayed == 32
+
+            def failed_spool() -> None:
+                raise OSError("injected prefix reset failure")
+
+            monkeypatch.setattr(stream_scratch, "PickleSpool", failed_spool)
+            with pytest.raises(OSError, match="prefix reset failure"):
+                scratch.clear_prefix()
+        finally:
+            scratch.close()
+            scratch.close()
+        assert scratch._prefix_owners == {}
+        assert item["uuid"] == "exact"

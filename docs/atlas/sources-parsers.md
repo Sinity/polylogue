@@ -153,9 +153,9 @@ optimization (`storage/derived/raw.py`;
 On its first Source binding, `RawObservationDerivation` keeps the complete
 selected unit and its census/publication boundary, then detaches only the
 eligible Codex and Claude Code JSONL session inputs. Exact-source restoration
-of missing retained bytes runs before that capture. Declared zero-byte session
-streams receive the same typed decode refusal as ordinary retained preparation;
-explicit raw-only histories keep their non-session disposition. It copies those primary
+of missing retained bytes runs before that capture. Zero-record JSONL streams retain a clean current non-session census on both
+ordinary and detached preparation; malformed complete records retain typed
+decode refusal. Explicit raw-only histories keep their non-session disposition. It copies those primary
 CAS bytes while the original Source witness is current, then closes that
 witness before parser work and retained-schema validation. Other selected
 providers remain on the ordinary fresh-bound preparation path. Claude Code
@@ -558,12 +558,14 @@ argument; its default is advisory. Changing an environment variable after
 constructing an owner does not change its policy. The derivation recipe
 includes the selected mode, and retained artifacts carry their own detached
 validation verdict. Declared raw-only artifacts bypass session decoding and
-schema validation; empty session inputs retain terminal decoder evidence. A
-current non-session parser census alone does not waive schema validation for
-an eligible structured document that yields no sessions. A missing artifact
-observation is treated as eligible; only that raw revision's exact provider
-path declaration or a recorded ineligible artifact observation can establish
-that no session validation verdict is required.
+schema validation. A zero-record JSONL prefix retains a clean current
+non-session census; its exact retained frontier proves that no record was
+admitted for schema validation. A current non-session census alone does not
+waive schema validation for an eligible structured document that yields no
+sessions. Other missing artifact observations remain eligible; the exact
+provider path declaration or an ineligible artifact establishes the raw-only
+exemption. Empty JSON documents and malformed complete records retain typed
+decode refusal.
 
 When current parser authority confirms a typed raw-only input, canonical
 Source follow-up refreshes its independently stale non-session membership
