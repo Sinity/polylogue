@@ -78,8 +78,18 @@ class JSONDecodeError(ValueError):
     """
 
 
+class _ValidatedJSONContainer:
+    """Internal container whose owner validated every key and JSON value.
+
+    Lazy decoded trees cannot recheck representation by loading all scalar
+    content. Only a complete validating decoder may attach this proof.
+    """
+
+
 def is_json_value(value: object) -> TypeGuard[JSONValue]:
     """Return whether *value* is representable as JSON."""
+    if isinstance(value, _ValidatedJSONContainer):
+        return True
     if value is None or isinstance(value, (str, int, float, bool)):
         return True
     if isinstance(value, list):
@@ -91,7 +101,10 @@ def is_json_value(value: object) -> TypeGuard[JSONValue]:
 
 def is_json_document(value: object) -> TypeGuard[JSONDocument]:
     """Return whether *value* is a JSON object with string keys."""
-    return isinstance(value, dict) and all(isinstance(key, str) and is_json_value(item) for key, item in value.items())
+    return isinstance(value, dict) and (
+        isinstance(value, _ValidatedJSONContainer)
+        or all(isinstance(key, str) and is_json_value(item) for key, item in value.items())
+    )
 
 
 def json_document(value: object) -> JSONDocument:

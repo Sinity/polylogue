@@ -1010,7 +1010,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
         properties = schema_node.get("properties", {}) if isinstance(schema_node, Mapping) else {}
         patterns = schema_node.get("patternProperties", {}) if isinstance(schema_node, Mapping) else {}
         compiled = [(re.compile(pattern), subschema) for pattern, subschema in patterns.items()]
-        for key, value in instance.items():
+        for key in instance:
             check_compute_cancelled()
             if key in properties:
                 continue
@@ -1021,8 +1021,8 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
                 error = ValidationError("additional property is not allowed", instance=instance, schema=schema_node)
                 error.path.append(key)
                 yield error
-            else:
-                yield from validator.descend(value, additional, path=key)
+            elif additional is not True:
+                yield from validator.descend(instance[key], additional, path=key)
 
     def unique_items(
         validator: Any, enabled: object, instance: object, schema_node: object

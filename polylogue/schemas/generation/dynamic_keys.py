@@ -328,7 +328,11 @@ def observed_structure_schema(
     if isinstance(value, list):
         array_schema: JSONDocument = {"type": "array"}
         items = merge_observed_structure_schemas(
-            (observed_structure_schema(item, store=store) for item in value), store=store
+            (
+                observed_structure_schema(item, store=store)
+                for item in (value.structure_values() if hasattr(value, "structure_values") else value)
+            ),
+            store=store,
         )
         if items:
             array_schema["items"] = items
@@ -341,7 +345,7 @@ def observed_structure_schema(
     properties: JSONDocument = {}
     required: list[JSONValue] = []
     if not collapse_all:
-        for key, child in value.items():
+        for key, child in value.structure_items() if hasattr(value, "structure_items") else value.items():
             key_text = str(key)
             if is_dynamic_key(key_text):
                 continue
@@ -355,7 +359,7 @@ def observed_structure_schema(
     dynamic_values = merge_observed_structure_schemas(
         (
             observed_structure_schema(child, field_name=str(key), store=store)
-            for key, child in value.items()
+            for key, child in (value.structure_items() if hasattr(value, "structure_items") else value.items())
             if collapse_all or is_dynamic_key(str(key))
         ),
         store=store,

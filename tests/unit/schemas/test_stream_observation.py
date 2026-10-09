@@ -230,7 +230,7 @@ def test_abandoned_lazy_view_propagates_its_cursor_close_failure(tmp_path: Path,
             class Connection:
                 def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> Any:
                     cursor = actual.execute(sql, parameters)
-                    if "ORDER BY" in sql:
+                    if "ORDER BY" in sql and "json_scalar_chunks" not in sql:
                         failed_cursors.append(cursor)
                         return FailedCloseCursor(cursor)
                     return cursor

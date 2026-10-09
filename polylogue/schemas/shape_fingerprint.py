@@ -120,7 +120,8 @@ def fingerprint_parts(value: object, *, depth: int = 0) -> Iterator[str]:
             if count:
                 yield ", "
             yield "(" + repr("*" if is_dynamic_key(key) else key) + ", "
-            yield from fingerprint_parts(value[key], depth=depth + 1)
+            child = value.structure_value(key) if isinstance(value, SpilledObject) else value[key]
+            yield from fingerprint_parts(child, depth=depth + 1)
             yield ")"
             count += 1
         if count == 1:
@@ -131,7 +132,8 @@ def fingerprint_parts(value: object, *, depth: int = 0) -> Iterator[str]:
         # complete repr can itself be large, so sort and deduplicate on disk.
         with ExitStack() as owned:
             files: list[BinaryIO] = []
-            for item in islice(value, _FINGERPRINT_ARRAY_SAMPLE):
+            children = value.structure_values() if isinstance(value, SpilledArray) else value
+            for item in islice(children, _FINGERPRINT_ARRAY_SAMPLE):
                 output: BinaryIO = owned.enter_context(TemporaryFile())
                 for part in fingerprint_parts(item, depth=depth + 1):
                     output.write(part.encode("utf-8"))

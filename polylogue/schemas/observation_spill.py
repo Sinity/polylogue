@@ -1,8 +1,9 @@
 """A disk-backed JSON tree for schema inspection of large documents.
 
 The input is decoded once into a private SQLite tree. Mapping and sequence
-views read that tree lazily, so existing schema observation code can traverse
-the complete document without retaining its decoded values in Python memory.
+views read that tree lazily. Exact string and number tokens live in chunks;
+structural consumers read their kinds, and selected scalar reads reconstruct
+complete values without keeping the decoded document in Python memory.
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ from types import TracebackType
 from typing import Any, SupportsIndex, TypeVar, cast, overload
 
 from polylogue.core.compute_cancel import check_compute_cancelled
-from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.core.json import JSONDocument, JSONValue, _ValidatedJSONContainer
+from polylogue.core.work_progress import advance_work_progress
 from polylogue.sources.value_bounds import require_storable_string
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
@@ -61,7 +63,7 @@ def _read_row(connection: sqlite3.Connection, sql: str, parameters: tuple[object
         rows.close()
 
 
-class SpilledObject(dict[str, JSONValue]):
+class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
     def __init__(self, connection: sqlite3.Connection, node_id: int) -> None:
         dict.__init__(self)
         self._connection = connection
@@ -105,6 +107,27 @@ class SpilledObject(dict[str, JSONValue]):
             return self[key]
         except KeyError:
             return default
+
+    def structure_value(self, key: str) -> JSONValue:
+        row = _read_row(
+            self._connection,
+            "SELECT child_id FROM json_object_members WHERE parent_id=? AND key_bytes=?",
+            (self._node_id, key.encode("utf-8", "surrogatepass")),
+        )
+        if row is None:
+            raise KeyError(key)
+        return _load_structure_node(self._connection, int(row[0]))
+
+    def structure_items(self) -> Iterator[tuple[str, JSONValue]]:
+        with closing(
+            _read_rows(
+                self._connection,
+                "SELECT key_bytes,child_id FROM json_object_members WHERE parent_id=? ORDER BY ordinal",
+                (self._node_id,),
+            )
+        ) as rows:
+            for key, child_id in rows:
+                yield bytes(key).decode("utf-8", "surrogatepass"), _load_structure_node(self._connection, int(child_id))
 
     def sorted_keys(self) -> Iterator[str]:
         with closing(
@@ -184,7 +207,8 @@ class SpilledObject(dict[str, JSONValue]):
         connection.execute("DELETE FROM profile_fields")
         for sample in samples:
             bucket = record_bucket_key(sample, record_type_key).encode("utf-8", "surrogatepass")
-            for key, value in sample.items():
+            items = sample.structure_items() if isinstance(sample, SpilledObject) else sample.items()
+            for key, value in items:
                 connection.execute(
                     "INSERT OR IGNORE INTO profile_fields VALUES (?, ?, ?)",
                     (bucket, key.encode("utf-8", "surrogatepass"), coarse_type(value)),
@@ -271,11 +295,22 @@ class _SpilledItemsView(ItemsView[str, JSONValue]):
                 )
 
 
-class SpilledArray(list[JSONValue], Sequence[JSONValue]):
+class SpilledArray(list[JSONValue], Sequence[JSONValue], _ValidatedJSONContainer):
     def __init__(self, connection: sqlite3.Connection, node_id: int) -> None:
         list.__init__(self)
         self._connection = connection
         self._node_id = node_id
+
+    def structure_values(self) -> Iterator[JSONValue]:
+        with closing(
+            _read_rows(
+                self._connection,
+                "SELECT child_id FROM json_array_items WHERE parent_id=? ORDER BY ordinal",
+                (self._node_id,),
+            )
+        ) as rows:
+            for (child_id,) in rows:
+                yield _load_structure_node(self._connection, int(child_id))
 
     def __len__(self) -> int:
         row = _read_row(self._connection, "SELECT COUNT(*) FROM json_array_items WHERE parent_id = ?", (self._node_id,))
@@ -338,15 +373,124 @@ class SpilledArray(list[JSONValue], Sequence[JSONValue]):
         return _load_node(self._connection, int(row[0]))
 
 
-def _load_node(connection: sqlite3.Connection, node_id: int) -> JSONValue:
-    row = _read_row(connection, "SELECT kind, scalar_json FROM json_nodes WHERE id = ?", (node_id,))
+@dataclass(frozen=True, slots=True)
+class _ScalarToken:
+    kind: str
+    ordinal: int
+
+
+class _ScalarTokenStore:
+    """Exact scalar chunks owned by the existing private JSON tree."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        self.pending = bytearray()
+        self.chunk = 0
+        self.decoded_bytes = 0
+        self.number_integer = True
+        self.failure: ValueError | UnicodeError | None = None
+
+    def string(self, ordinal: int, content: bytes, final: bool) -> None:
+        from polylogue.core.json_envelope import _prefix_cut
+
+        # Chunk sizes are a buffering choice, never a support limit. A chunk
+        # boundary cannot split an escape, surrogate pair or UTF-8 character.
+        for start in range(0, len(content), 4096):
+            self.pending.extend(content[start : start + 4096])
+            while len(self.pending) > 4096:
+                cut = _prefix_cut(bytes(self.pending[:4096]))
+                if not cut:
+                    break
+                self._string_chunk(ordinal, bytes(self.pending[:cut]))
+                del self.pending[:cut]
+        if final:
+            self._string_chunk(ordinal, bytes(self.pending))
+            self.pending.clear()
+            self._finish("string", ordinal)
+
+    def _string_chunk(self, ordinal: int, raw: bytes) -> None:
+        try:
+            decoded = json.loads(b'"' + raw + b'"').encode("utf-8", "surrogatepass")
+        except (ValueError, UnicodeError) as error:
+            # The structural reader validates this token's complete syntax.
+            # Let it reject the stream through the tokenizer so its coroutine
+            # chain closes normally; never expose a tree after a sink failure.
+            self.failure = error
+            return
+        self._store("string", ordinal, decoded)
+
+    def number(self, ordinal: int, content: bytes, final: bool) -> None:
+        self.number_integer &= not any(byte in content for byte in (b".", b"e", b"E", b"N", b"I"))
+        for start in range(0, len(content), 4096):
+            self._store("number", ordinal, content[start : start + 4096])
+        if final:
+            self._finish("number", ordinal)
+
+    def _store(self, kind: str, ordinal: int, content: bytes) -> None:
+        check_compute_cancelled()
+        self.connection.execute(
+            "INSERT INTO json_scalar_chunks VALUES (?, ?, ?, ?)", (kind, ordinal, self.chunk, content)
+        )
+        self.chunk += 1
+        self.decoded_bytes += len(content)
+        advance_work_progress(bytes=len(content))
+
+    def _finish(self, kind: str, ordinal: int) -> None:
+        self.connection.execute(
+            "INSERT INTO json_scalar_tokens VALUES (?, ?, ?, ?)",
+            (kind, ordinal, self.decoded_bytes, "integer" if kind == "number" and self.number_integer else kind),
+        )
+        self.chunk = 0
+        self.decoded_bytes = 0
+        self.number_integer = True
+
+    def read(self, kind: str, ordinal: int) -> JSONValue:
+        rows = _read_rows(
+            self.connection,
+            "SELECT data FROM json_scalar_chunks WHERE kind=? AND token=? ORDER BY ordinal",
+            (kind, ordinal),
+        )
+
+        def chunks() -> Iterator[bytes]:
+            for (content,) in rows:
+                check_compute_cancelled()
+                yield bytes(content)
+
+        with closing(rows):
+            if kind == "string":
+                return "".join(chunk.decode("utf-8", "surrogatepass") for chunk in chunks())
+            return cast(JSONValue, json.loads(b"".join(chunks())))
+
+
+def _load_structure_node(connection: sqlite3.Connection, node_id: int) -> JSONValue:
+    """Resolve structure-only scalar evidence without decoding scalar content."""
+    row = _read_row(
+        connection,
+        "SELECT node.kind, tokens.json_kind FROM json_nodes node LEFT JOIN json_scalar_tokens tokens "
+        "ON tokens.kind=node.kind AND tokens.token=node.token WHERE node.id=?",
+        (node_id,),
+    )
     if row is None:
         raise ValueError("streamed JSON tree lost a referenced node")
-    kind, scalar_json = row
+    kind, json_kind = row
+    if kind == "string":
+        return ""
+    if kind == "number":
+        return 0 if json_kind == "integer" else 0.0
+    return _load_node(connection, node_id)
+
+
+def _load_node(connection: sqlite3.Connection, node_id: int) -> JSONValue:
+    row = _read_row(connection, "SELECT kind, scalar_json, token FROM json_nodes WHERE id = ?", (node_id,))
+    if row is None:
+        raise ValueError("streamed JSON tree lost a referenced node")
+    kind, scalar_json, token = row
     if kind == "object":
         return SpilledObject(connection, node_id)
     if kind == "array":
         return SpilledArray(connection, node_id)
+    if token is not None:
+        return _ScalarTokenStore(connection).read(kind, int(token))
     if kind == "string":
         return bytes(scalar_json).decode("utf-8", "surrogatepass")
     return cast(JSONValue, json.loads(str(scalar_json)))
@@ -439,8 +583,17 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
                     id INTEGER PRIMARY KEY,
                     parent_id INTEGER REFERENCES json_nodes(id) ON DELETE CASCADE,
                     kind TEXT NOT NULL,
-                    scalar_json TEXT
+                    scalar_json TEXT,
+                    token INTEGER
                 );
+                CREATE TABLE json_scalar_tokens (
+                    kind TEXT NOT NULL, token INTEGER NOT NULL, decoded_bytes INTEGER NOT NULL, json_kind TEXT NOT NULL,
+                    PRIMARY KEY(kind,token)
+                ) WITHOUT ROWID;
+                CREATE TABLE json_scalar_chunks (
+                    kind TEXT NOT NULL, token INTEGER NOT NULL, ordinal INTEGER NOT NULL, data BLOB NOT NULL,
+                    PRIMARY KEY(kind,token,ordinal)
+                ) WITHOUT ROWID;
                 CREATE TABLE json_object_members (
                     parent_id INTEGER NOT NULL REFERENCES json_nodes(id) ON DELETE CASCADE,
                     key_bytes BLOB NOT NULL,
@@ -478,12 +631,18 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
 
     def _decode(self, connection: sqlite3.Connection) -> int:
         stack: list[_Frame] = []
+        tokens = _ScalarTokenStore(connection)
         root_id: int | None = None
         if self._jsonl:
             root_id = cast(int, connection.execute("INSERT INTO json_nodes(kind) VALUES ('array')").lastrowid)
             stack.append(_Frame(root_id, "array"))
 
         def add_node(kind: str, scalar: object = None) -> int:
+            token_id = None
+            if isinstance(scalar, _ScalarToken):
+                kind = scalar.kind
+                token_id = scalar.ordinal
+                scalar = None
             if isinstance(scalar, str):
                 require_storable_string(scalar)
             if isinstance(scalar, Decimal):
@@ -498,8 +657,8 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
                 scalar_json = json.dumps(scalar, ensure_ascii=True, separators=(",", ":")) if kind == "scalar" else None
             parent_id = stack[-1].node_id if stack else None
             cursor = connection.execute(
-                "INSERT INTO json_nodes(parent_id, kind, scalar_json) VALUES (?, ?, ?)",
-                (parent_id, kind, scalar_json),
+                "INSERT INTO json_nodes(parent_id, kind, scalar_json, token) VALUES (?, ?, ?, ?)",
+                (parent_id, kind, scalar_json, token_id),
             )
             node_id = cast(int, cursor.lastrowid)
             if not stack:
@@ -541,22 +700,70 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
 
         from ijson.backends import python as exact_backend
 
-        from polylogue.core.json_envelope import LexemeAlignedReader
+        from polylogue.core.json_envelope import LexemeAlignedReader, _PrefixStringReader
         from polylogue.sources.detection_projection import _DetectionText
 
         with self._path.open("rb") as stream:
             encoding = json.detect_encoding(stream.read(4))
             stream.seek(0)
             with io.BufferedReader(_DetectionText(stream, encoding)) as reader:
-                events = exact_backend.basic_parse(LexemeAlignedReader(reader), multiple_values=self._jsonl)
+                scalar_reader = _PrefixStringReader(
+                    reader, scalar_values=True, string_sink=tokens.string, number_sink=tokens.number
+                )
+
+                def parsed_events() -> Iterator[tuple[str, object]]:
+                    from ijson import sendable_list
+
+                    pending = sendable_list()
+                    parser = exact_backend.basic_parse_coro(pending, multiple_values=self._jsonl)
+                    aligned = LexemeAlignedReader(scalar_reader)
+                    try:
+                        while True:
+                            chunk = aligned.read(65536)
+                            try:
+                                parser.send(chunk)
+                            except StopIteration:
+                                yield from pending
+                                return
+                            yield from pending
+                            pending.clear()
+                            if not chunk:
+                                return
+                    finally:
+                        # Own the coroutine even when reading or cancellation
+                        # fails upstream, before ijson gets its next chunk.
+                        with suppress(BaseException):
+                            parser.close()
+                        pending.clear()
+
+                events = parsed_events()
+
+                def exact_events() -> Iterator[tuple[str, object]]:
+                    string_ordinal = 0
+                    number_ordinal = 0
+                    for event, value in events:
+                        if event in {"map_key", "string"}:
+                            string_ordinal += 1
+                            value = (
+                                tokens.read("string", string_ordinal)
+                                if event == "map_key"
+                                else _ScalarToken("string", string_ordinal)
+                            )
+                        elif event == "number":
+                            number_ordinal += 1
+                            value = _ScalarToken("number", number_ordinal)
+                        yield event, value
+
                 try:
-                    parsed_root = self._consume_events(events, connection, stack, add_node)
+                    parsed_root = self._consume_events(exact_events(), connection, stack, add_node)
                 except BaseException:
                     close = getattr(events, "close", None)
                     if callable(close):
                         with suppress(BaseException):
                             close()
                     raise
+        if tokens.failure is not None:
+            raise tokens.failure
         if self._jsonl:
             if len(stack) != 1 or stack[0].node_id != root_id:
                 raise ValueError("streamed JSON lines ended inside a container")
@@ -577,18 +784,13 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
         stack: list[_Frame],
         add_node: Callable[[str, object], int],
     ) -> int | None:
-        from polylogue.core.work_progress import advance_work_progress, utf8_byte_length
-
         root_id = None
         for event, value in events:
             check_compute_cancelled()
-            # Count decoded JSON content, not parser tokens as messages.
-            # Whitespace is intentionally excluded from this work counter.
-            if isinstance(value, str):
-                advance_work_progress(bytes=utf8_byte_length(value))
-            elif event == "number":
-                advance_work_progress(bytes=len(str(value).encode("ascii")))
-            elif event == "null":
+            # Scalar chunks report byte progress while they are written, so
+            # a long token remains visible and cancellable before its event.
+            # Boolean and null literals have no chunk transport.
+            if event == "null":
                 advance_work_progress(bytes=4)
             elif event == "boolean":
                 advance_work_progress(bytes=4 if value else 5)

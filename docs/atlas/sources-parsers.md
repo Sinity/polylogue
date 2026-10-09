@@ -34,6 +34,14 @@ publishes Index paste markers through `open_isolated_write_connection` with
 its configured archive root. The factory enforces that root’s writer lease
 without relying on the global SQLite opener interceptor.
 
+Retained schema decoding stores exact string and number tokens as private
+SQLite chunks. Full syntax validation completes before lazy container views
+are exposed. Schema structure, fingerprint and profile consumers use stored
+kinds; boolean additional-property validation and drift checks traverse keys.
+Selected values are reconstructed exactly. Codex recognition does not copy
+unconstrained payload members into its temporary type-validation model; the
+original mapping continues to supply lowering and schema observations.
+
 Decoded detector projections visit only declared fields when no metadata or
 whole-mapping predicate needs the other values. Type-only and first-item decoded
 array folds project only their retained values when no metadata fold or array

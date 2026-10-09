@@ -28,6 +28,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.json import _ValidatedJSONContainer
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import DEBUG, WARNING, emit, get_logger
 from polylogue.sources.detection_projection import DetectorProjection
@@ -733,7 +734,18 @@ def _validate_record(item: object, *, index: int, context: str = "record") -> Co
     if not isinstance(item, dict):
         return None
     try:
-        return CodexRecord.model_validate(item)
+        # This model is a recognition proof. Its callers read only declared
+        # fields; unknown wire fields remain in the original mapping for
+        # lowering and schema drift, without being copied into model extras.
+        validation_input = item
+        if isinstance(item, _ValidatedJSONContainer):
+            validation_input = {name: item[name] for name in CodexRecord.model_fields if name in item}
+            payload = validation_input.get("payload")
+            if isinstance(payload, dict) and isinstance(payload, _ValidatedJSONContainer):
+                # The complete decoder already proves dict[str, object]. No
+                # recognition consumer reads payload members from this model.
+                validation_input["payload"] = {}
+        return CodexRecord.model_validate(validation_input, extra="ignore")
     except ValidationError as exc:
         # Never interpolate the ValidationError itself: Pydantic v2's __str__
         # embeds ``input_value``, i.e. raw captured payload content, into the

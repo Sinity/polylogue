@@ -277,7 +277,12 @@ def looks_metadataish_dict(payload: JSONDocument) -> bool:
     complete_values = getattr(payload, "metadata_values_scalarish", None)
     if isinstance(complete_values, bool):
         return complete_values
-    return all(is_scalarish(value) for value in payload.values())
+    values = (
+        (value for _key, value in payload.structure_items())
+        if hasattr(payload, "structure_items")
+        else payload.values()
+    )
+    return all(is_scalarish(value) for value in values)
 
 
 def looks_metadataish_list(payload: Sequence[JSONValue]) -> bool:
@@ -293,10 +298,12 @@ def is_scalarish(value: object, *, depth: int = 0) -> bool:
     if depth >= 2:
         return False
     if isinstance(value, list):
-        return len(value) <= 32 and all(is_scalarish(item, depth=depth + 1) for item in value)
+        children = value.structure_values() if hasattr(value, "structure_values") else value
+        return len(value) <= 32 and all(is_scalarish(item, depth=depth + 1) for item in children)
     if isinstance(value, dict):
         return len(value) <= 8 and all(
-            isinstance(key, str) and is_scalarish(item, depth=depth + 1) for key, item in value.items()
+            isinstance(key, str) and is_scalarish(item, depth=depth + 1)
+            for key, item in (value.structure_items() if hasattr(value, "structure_items") else value.items())
         )
     return False
 

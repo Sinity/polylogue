@@ -382,7 +382,7 @@ def _document_profile_tokens(sample: SchemaSample) -> tuple[str, ...]:
     from polylogue.schemas.shape_fingerprint import ordered_keys
 
     for key in ordered_keys(sample):
-        value = sample[key]
+        value = sample.structure_value(key) if hasattr(sample, "structure_value") else sample[key]
         value_type = _coarse_type(value)
         _append_tokens(
             tokens,

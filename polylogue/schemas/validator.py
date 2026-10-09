@@ -472,12 +472,13 @@ def _iter_drift_paths(
     properties = properties_value if isinstance(properties_value, Mapping) else {}
     has_additional = selected_schema.get("additionalProperties", True)
     dynamic_container = bool(selected_schema.get("x-polylogue-dynamic-keys"))
-    for key, value in data.items():
+    for key in data:
         check_compute_cancelled()
         current_path = f"{path}.{key}" if path else str(key)
         if key not in properties:
-            property_schema = _schema_for_property(selected_schema, str(key), value, root, connection=connection)
             if _has_matching_pattern_property(selected_schema, str(key)):
+                value = data[key]
+                property_schema = _schema_for_property(selected_schema, str(key), value, root, connection=connection)
                 yield from _iter_nested_drift_paths(value, property_schema, current_path, root, connection)
             elif has_additional is False:
                 yield current_path
@@ -487,9 +488,9 @@ def _iter_drift_paths(
             else:
                 if not dynamic_container and not looks_dynamic_key(str(key)):
                     yield current_path
-                yield from _iter_nested_drift_paths(value, has_additional, current_path, root, connection)
+                yield from _iter_nested_drift_paths(data[key], has_additional, current_path, root, connection)
             continue
-        yield from _iter_nested_drift_paths(value, properties.get(key), current_path, root, connection)
+        yield from _iter_nested_drift_paths(data[key], properties.get(key), current_path, root, connection)
 
 
 def _iter_nested_drift_paths(
