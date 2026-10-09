@@ -118,6 +118,7 @@ from polylogue.sources.prepared_message_sink import (
     read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope, SidecarResolver
+from polylogue.sources.streamed_json_output import write_streamed_json
 from polylogue.sources.value_bounds import ValueBoundRefusedError
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
@@ -3633,8 +3634,7 @@ def prepare_jsonl_blob(
                         if not isinstance(record, dict):
                             yield None
                             continue
-                        with member_path.open("w", encoding="utf-8") as member:
-                            json.dump(record, member, ensure_ascii=True)
+                        write_streamed_json(record, member_path, member_format=True)
                         del record
                         yield index
 
