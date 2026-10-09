@@ -55,17 +55,26 @@ class ModelUsageTotals(BaseModel):
     ``compute_session_cost`` aggregates these rows directly when supplied,
     instead of recomputing an independent (and, for Codex, ~1000x smaller)
     estimate from per-message fields Codex rarely populates (polylogue-r7p6).
-    ``provider_lanes_complete`` is false when unmappable provider counters
-    leave these lanes a subtotal. It is independent of catalog price availability.
+    ``provider_lanes_complete`` is false when missing required provider counters
+    leave these lanes a subtotal. ``provider_usage_observed`` records measurement
+    presence, including explicit zero. Both are independent of catalog pricing.
     """
 
     model_config = ConfigDict(frozen=True, protected_namespaces=())
     provider_lanes_complete: bool
+    provider_usage_observed: bool = False
     model_name: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+
+    @property
+    def has_provider_usage(self) -> bool:
+        """Positive counters or a recorded zero observation prove measurement."""
+        return self.provider_usage_observed or bool(
+            self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
+        )
 
 
 __all__ = [

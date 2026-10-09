@@ -179,6 +179,7 @@ from polylogue.storage.usage import (
     project_provider_usage_events,
     provider_usage_event_identity,
     provider_usage_request_events,
+    provider_usage_required_lane_indices,
 )
 
 
@@ -12463,24 +12464,33 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
     """
     stored_rows = conn.execute(
         """
-        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete, provider_usage_observed
         FROM session_model_usage
         WHERE session_id = ? AND model_name != ?
           AND (input_tokens + output_tokens + cache_read_tokens + cache_write_tokens > 0
-               OR provider_lanes_complete = 0)
+               OR provider_lanes_complete = 0 OR provider_usage_observed)
         """,
         (session_id, keep_model),
     ).fetchall()
     if not stored_rows:
         return
     candidate_models = [str(row[0]) for row in stored_rows]
+    observed_sql, complete_sql = _message_usage_presence_sql(conn, session_id)
     message_totals = {
-        str(row[0]): (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0), int(row[4] or 0))
+        str(row[0]): (
+            int(row[1] or 0),
+            int(row[2] or 0),
+            int(row[3] or 0),
+            int(row[4] or 0),
+            bool(row[5]),
+            bool(row[6]),
+        )
         for row in conn.execute(
             f"""
             SELECT model_name,
                    SUM(input_tokens), SUM(output_tokens),
-                   SUM(cache_read_tokens), SUM(cache_write_tokens)
+                   SUM(cache_read_tokens), SUM(cache_write_tokens),
+                   {observed_sql}, {complete_sql}
             FROM messages
             WHERE session_id = ?
               AND model_name IN ({", ".join("?" for _ in candidate_models)})
@@ -12491,8 +12501,12 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
     }
     for row in stored_rows:
         model_name = str(row[0])
-        totals = message_totals.get(model_name, (0, 0, 0, 0))
-        if (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0), int(row[4] or 0)) == totals and row[5]:
+        totals = message_totals.get(model_name, (0, 0, 0, 0, False, True))
+        if (
+            (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0), int(row[4] or 0)) == totals[:4]
+            and bool(row[5]) == totals[5]
+            and bool(row[6]) == totals[4]
+        ):
             continue
         catalog_cost = _price_provider_usage_tokens(
             conn,
@@ -12502,6 +12516,11 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
             cache_read_tokens=totals[2],
             cache_write_tokens=totals[3],
         )
+        if not totals[5]:
+            catalog_cost = None
+        elif totals[4] and not any(totals[:4]):
+            zero_cost, _ = catalog_cost_for_tokens(model_name, 0, 0, 0, 0)
+            catalog_cost = None if zero_cost is None else CatalogCost(zero_cost)
         conn.execute(
             """
             UPDATE session_model_usage
@@ -12510,10 +12529,18 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
                 cache_read_tokens = ?,
                 cache_write_tokens = ?,
                 catalog_cost_usd = ?,
-                provider_lanes_complete = 1
+                provider_lanes_complete = ?,
+                provider_usage_observed = ?
             WHERE session_id = ? AND model_name = ?
             """,
-            (*totals, None if catalog_cost is None else catalog_cost.value, session_id, model_name),
+            (
+                *totals[:4],
+                None if catalog_cost is None else catalog_cost.value,
+                int(totals[5]),
+                int(totals[4]),
+                session_id,
+                model_name,
+            ),
         )
 
 
@@ -12550,7 +12577,7 @@ def _reprice_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
     """
     rows = conn.execute(
         """
-        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete, provider_usage_observed
         FROM session_model_usage
         WHERE session_id = ?
         """,
@@ -12571,6 +12598,9 @@ def _reprice_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
             cache_read_tokens=int(row[3] or 0),
             cache_write_tokens=int(row[4] or 0),
         )
+        if row[6] and not any(row[index] for index in range(1, 5)):
+            zero_cost, _ = catalog_cost_for_tokens(model_name, 0, 0, 0, 0)
+            catalog_cost = None if zero_cost is None else CatalogCost(zero_cost)
         value = None if catalog_cost is None else catalog_cost.value
         changed += conn.execute(
             """
@@ -12588,15 +12618,16 @@ def _upsert_provider_usage_model_rollup(conn: sqlite3.Connection, projection: Us
         """
         INSERT INTO session_model_usage (
             session_id, model_name, input_tokens, output_tokens, cache_read_tokens,
-            cache_write_tokens, catalog_cost_usd, provider_lanes_complete
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            cache_write_tokens, catalog_cost_usd, provider_lanes_complete, provider_usage_observed
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, model_name) DO UPDATE SET
             input_tokens = excluded.input_tokens,
             output_tokens = excluded.output_tokens,
             cache_read_tokens = excluded.cache_read_tokens,
             cache_write_tokens = excluded.cache_write_tokens,
             catalog_cost_usd = excluded.catalog_cost_usd,
-            provider_lanes_complete = excluded.provider_lanes_complete
+            provider_lanes_complete = excluded.provider_lanes_complete,
+            provider_usage_observed = excluded.provider_usage_observed
         """,
         (
             projection.session_id,
@@ -12607,6 +12638,7 @@ def _upsert_provider_usage_model_rollup(conn: sqlite3.Connection, projection: Us
             projection.cache_write_tokens,
             projection.cost_usd,
             int(projection.provider_lanes_complete),
+            int(projection.provider_usage_observed),
         ),
     )
 
@@ -12616,7 +12648,7 @@ def _increment_provider_usage_model_rollup(
     projection: UsageProjectionModel,
 ) -> None:
     existing = conn.execute(
-        """SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
+        """SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete, provider_usage_observed
            FROM session_model_usage WHERE session_id = ? AND model_name = ?""",
         (projection.session_id, projection.model_name),
     ).fetchone()
@@ -12649,6 +12681,7 @@ def _increment_provider_usage_model_rollup(
             state="incomplete" if cost is None else "complete",
             missing_reasons=reasons,
             provider_lanes_complete=provider_lanes_complete,
+            provider_usage_observed=projection.provider_usage_observed or (existing is not None and bool(existing[5])),
         ),
     )
 
@@ -12763,6 +12796,18 @@ def _seed_session_model_usage_rows(
         )
 
 
+def _message_usage_presence_sql(conn: sqlite3.Connection, session_id: str) -> tuple[str, str]:
+    origin_row = conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    origin = str(origin_row[0]) if origin_row is not None else ""
+    lane_names = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+    present = " OR ".join(f"{name} IS NOT NULL" for name in lane_names)
+    missing = " OR ".join(f"{lane_names[index]} IS NULL" for index in provider_usage_required_lane_indices(origin))
+    # Identity-only messages do not assert usage. A partial measurement does.
+    observed_sql = f"MAX(CASE WHEN {present} THEN 1 ELSE 0 END)"
+    complete_sql = f"MIN(CASE WHEN ({present}) AND ({missing}) THEN 0 ELSE 1 END)"
+    return observed_sql, complete_sql
+
+
 def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
     """Aggregate per-message token counts into session_model_usage and compute cost_usd.
 
@@ -12772,10 +12817,9 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     the full message set regardless of append ordering.
 
     Models with no messages carrying token data keep DEFAULT 0 token counts.
-    Models with no catalog price entry, or zero billable tokens, get
-    cost_provenance = NULL / cost_usd = NULL together -- never 'priced' with
-    a NULL cost (polylogue-shnc: that self-contradiction was live on 5,016
-    rows).
+    Identity-only rows and incomplete measurements have no complete catalog
+    price. A fully measured zero receives a zero catalog price when its model
+    is priceable, while a model without a catalog entry remains unpriced.
 
     Empty or NULL model_name values in the messages table are excluded from
     aggregation (the model is unknown so pricing is impossible).
@@ -12790,15 +12834,18 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     rollups started sharing the 'priced' label with real message-derived
     pricing (see ``_price_provider_usage_tokens``).
     """
+    observed_sql, complete_sql = _message_usage_presence_sql(conn, session_id)
     # Aggregate token counts from the messages table for all known models.
     token_rows = conn.execute(
-        """
+        f"""
         SELECT model_name,
                SUM(input_tokens)        AS sum_input,
                SUM(output_tokens)       AS sum_output,
                SUM(cache_read_tokens)   AS sum_cache_read,
                SUM(cache_write_tokens)  AS sum_cache_write,
-               COUNT(*)                 AS msg_count
+               COUNT(*)                 AS msg_count,
+               {observed_sql} AS provider_usage_observed,
+               {complete_sql} AS provider_lanes_complete
         FROM messages
         WHERE session_id = ?
           AND model_name IS NOT NULL
@@ -12818,6 +12865,8 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
         sum_cache_read: int = int(row[3] or 0)
         sum_cache_write: int = int(row[4] or 0)
         msg_count: int = int(row[5] or 0)
+        observed = bool(row[6])
+        complete = bool(row[7])
 
         catalog_cost = _price_provider_usage_tokens(
             conn,
@@ -12827,6 +12876,12 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
             cache_read_tokens=sum_cache_read,
             cache_write_tokens=sum_cache_write,
         )
+
+        if not complete:
+            catalog_cost = None
+        elif observed and sum_input + sum_output + sum_cache_read + sum_cache_write == 0:
+            zero_cost, _ = catalog_cost_for_tokens(model_name, 0, 0, 0, 0)
+            catalog_cost = None if zero_cost is None else CatalogCost(zero_cost)
 
         # UPSERT: the skeleton row was created by _seed_session_model_usage_rows above.
         # For models that somehow landed in messages but not in models_used/
@@ -12839,15 +12894,17 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 session_id, model_name,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                 message_count,
-                catalog_cost_usd
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                catalog_cost_usd, provider_usage_observed, provider_lanes_complete
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, model_name) DO UPDATE SET
                 input_tokens       = excluded.input_tokens,
                 output_tokens      = excluded.output_tokens,
                 cache_read_tokens  = excluded.cache_read_tokens,
                 cache_write_tokens = excluded.cache_write_tokens,
                 message_count      = excluded.message_count,
-                catalog_cost_usd    = excluded.catalog_cost_usd
+                catalog_cost_usd    = excluded.catalog_cost_usd,
+                provider_usage_observed = excluded.provider_usage_observed,
+                provider_lanes_complete = excluded.provider_lanes_complete
             WHERE (
                 COALESCE(session_model_usage.input_tokens, 0)
                 + COALESCE(session_model_usage.output_tokens, 0)
@@ -12864,6 +12921,8 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 sum_cache_write,
                 msg_count,
                 None if catalog_cost is None else catalog_cost.value,
+                int(observed),
+                int(complete),
             ),
         )
 
@@ -12896,7 +12955,8 @@ def _reconcile_session_model_usage_rows(conn: sqlite3.Connection, session_id: st
             message_count = 0,
             provider_cost_usd = NULL,
             catalog_cost_usd = NULL,
-            provider_lanes_complete = 1
+            provider_lanes_complete = 1,
+            provider_usage_observed = 0
         WHERE session_id = ?
         """,
         (session_id,),
@@ -17566,5 +17626,7 @@ def _provider_usage_projections(
             if values["model_name"] is not None:
                 yield values
 
+    origin_row = conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    origin = str(origin_row[0]) if origin_row is not None else ""
     with closing(provider_usage_request_events(conn, session_id, start_position=start_position)) as selected:
-        return project_provider_usage_events(events(selected), origin="")
+        return project_provider_usage_events(events(selected), origin=origin)

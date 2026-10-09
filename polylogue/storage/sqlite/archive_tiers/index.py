@@ -1867,7 +1867,7 @@ AFTER INSERT ON session_model_usage BEGIN
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_demand_model_usage_au
-AFTER UPDATE OF session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, catalog_cost_usd ON session_model_usage BEGIN
+AFTER UPDATE OF session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, catalog_cost_usd, provider_lanes_complete, provider_usage_observed ON session_model_usage BEGIN
     {_profile_demand_sql("OLD.session_id")}
     {_profile_demand_sql("NEW.session_id")}
 END;

@@ -1616,6 +1616,10 @@ SESSION_MODEL_USAGE_SPEC = _make_table_spec(
             "provider_lanes_complete",
             """provider_lanes_complete INTEGER NOT NULL DEFAULT 1 CHECK(provider_lanes_complete IN (0, 1))""",
         ),
+        _raw_column(
+            "provider_usage_observed",
+            """provider_usage_observed INTEGER NOT NULL DEFAULT 0 CHECK(provider_usage_observed IN (0, 1))""",
+        ),
         _raw_column("cost_credits", """cost_credits            REAL"""),
         _raw_column(
             "declared",

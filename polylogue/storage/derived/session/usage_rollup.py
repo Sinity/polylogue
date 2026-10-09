@@ -80,7 +80,7 @@ _STALE = "stale"
 #: aggregation, reconciliation or provider-cost apportionment. The catalog
 #: half of the recipe is derived below rather than declared, because the
 #: catalog is data.
-_DECLARED_ROLLUP_RECIPE = "2"
+_DECLARED_ROLLUP_RECIPE = "3"
 
 
 @lru_cache(maxsize=1)

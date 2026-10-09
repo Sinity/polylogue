@@ -472,7 +472,7 @@ def test_complete_provider_lanes_accept_a_new_catalog_price(tmp_path: Path, monk
                 event_type="token_count",
                 payload={
                     "model": "new-price-model",
-                    "total_token_usage": {"input_tokens": 20},
+                    "total_token_usage": {"input_tokens": 20, "output_tokens": 0, "cached_input_tokens": 0},
                 },
             )
         ],
