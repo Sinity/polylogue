@@ -85,7 +85,7 @@ import sqlite3
 import time
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -6496,59 +6496,6 @@ def _prepare_raw_parse_failure(
 def prepare_raw_parse_success(seal: PreparedIndexMutation, raw_id: str, *, provider: Provider) -> None:
     """Stage the canonical parse success after its selected Index outcome."""
     _prepare_raw_parse_success(_PreparedSourceProducer(seal), raw_id, provider=provider)
-
-
-#: Byte-replay decisions whose raw the replay acknowledges as parsed; the same
-#: set ``revision_replay_terminal_raw_ids`` stages for the live route.
-_TERMINAL_APPLICATION_DECISIONS = (
-    ApplicationDecision.SELECTED_BASELINE.value,
-    ApplicationDecision.APPLIED_APPEND.value,
-    ApplicationDecision.SUPERSEDED.value,
-)
-
-
-def stamp_promoted_revision_parse_success(source_conn: sqlite3.Connection, index_path: Path) -> int:
-    """Acknowledge, at a cold build's promotion, the parses its replay applied.
-
-    A cold build reconstructs Index from frozen Source and publishes no Source
-    effects, so the parse acknowledgement live replay stages with its Index
-    outcome is still owed when the candidate becomes the active Index. The
-    promoted Index's byte-replay applications name exactly those raws. Only
-    raws not yet acknowledged are stamped, so a retried promotion tail is
-    idempotent.
-    """
-    from polylogue.storage.sqlite.archive_tiers.source_write import _ConnectionSourceProducer
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-    with closing(
-        open_readonly_connection(index_path, tier=ArchiveTier.INDEX, timeout_class="background-read")
-    ) as index:
-        placeholders = ",".join("?" for _ in _TERMINAL_APPLICATION_DECISIONS)
-        applied = sorted(
-            {
-                str(row[0])
-                for row in index.execute(
-                    f"SELECT raw_id FROM raw_revision_applications WHERE decision IN ({placeholders})",
-                    _TERMINAL_APPLICATION_DECISIONS,
-                )
-            }
-        )
-    stamped = 0
-    producer = _ConnectionSourceProducer(source_conn)
-    with source_conn:
-        for raw_id in applied:
-            row = source_conn.execute(
-                "SELECT parsed_at_ms IS NULL FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-            ).fetchone()
-            if row is None or not row[0]:
-                continue
-            provider = _raw_revision_descriptor_from_row(
-                source_conn.execute(_RAW_REVISION_DESCRIPTOR_SQL, (raw_id,)).fetchone(), raw_id
-            )[0]
-            _prepare_raw_parse_success(producer, raw_id, provider=provider)
-            stamped += 1
-    return stamped
 
 
 if TYPE_CHECKING:

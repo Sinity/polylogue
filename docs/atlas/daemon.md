@@ -11,7 +11,9 @@ successor is ready. Cancellation physically settles the original work and leaves
 the predecessor authoritative until promotion; restart discards interrupted
 inactive candidates and replays retained bytes without re-acquiring originals.
 Normal services start only after successful preflight. A current successor is
-not rebuilt again. The verified-empty bootstrap transition remains separate,
+not rebuilt again. Source parse acknowledgements remain with the regular retained
+replay stage; promotion and restart preserve pending states and current failures.
+The verified-empty bootstrap transition remains separate,
 and its successful promotion skips populated reconstruction in that startup.
 
 Python child processes for Source readers, the optional browser host and demo

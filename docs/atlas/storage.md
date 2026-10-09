@@ -454,8 +454,13 @@ Readiness, full replay completion, current Source/User/Audit observers and
 previously resolving purchased message references must all pass before the
 normal reference-checked promotion. No durable or purchased tier is replaced.
 Interrupted MEMORY candidates are discarded through their owner and rebuilt;
-a published successor completes its existing promotion tail and idempotent
-Source acknowledgement on restart. Unsupported physical DDL, durable schemas,
+a published successor completes its existing promotion tail on restart.
+Promotion and restart do not derive durable parse success from Index receipts.
+Unacknowledged successful session components remain eligible for ordinary retained
+replay, which prepares current evidence and publishes its original Source permit
+after the Index outcome. This can require an additional preparation pass after
+a cold build; terminal, deferred and non-session dispositions keep their existing
+inspection behavior. Unsupported physical DDL, durable schemas,
 changed custody or missing reference coverage remain explicit refusals.
 
 ## Tool-result association

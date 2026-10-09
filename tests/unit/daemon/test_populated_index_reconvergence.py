@@ -305,11 +305,9 @@ def test_actual_startup_refuses_ineligible_populated_generation(
     assert tuple((root / ".index-generations").glob("gen-*/generation.json")) == before
 
 
-@pytest.mark.parametrize("phase", ["activation", "acknowledgement"])
 def test_pointer_swapped_recovery_finishes_owned_promotion_tail(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.operations import index_reconvergence_startup as startup
     from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
     from tests.infra.empty_managed_index import mutate_fixture_database
 
@@ -328,14 +326,8 @@ def test_pointer_swapped_recovery_finishes_owned_promotion_tail(
             raise InterruptedPromotionError
         original_write(self, generation)
 
-    def stop_acknowledgement(*_args: object) -> None:
-        raise InterruptedPromotionError
-
     with monkeypatch.context() as control:
-        if phase == "activation":
-            control.setattr(IndexGenerationStore, "_write", stop_activation)
-        else:
-            control.setattr(startup, "_acknowledge_promoted", stop_acknowledgement)
+        control.setattr(IndexGenerationStore, "_write", stop_activation)
         with pytest.raises(InterruptedPromotionError):
             asyncio.run(
                 daemon_cli.run_daemon_services(
@@ -358,10 +350,7 @@ def test_pointer_swapped_recovery_finishes_owned_promotion_tail(
         with closing(open_readonly_connection(active)) as conn:
             assert tuple(row[0] for row in conn.execute("SELECT session_id FROM sessions")) == session_ids
         with closing(open_readonly_connection(root / "source.db")) as conn:
-            assert (
-                conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone()[0]
-                is not None
-            )
+            assert conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone()[0] is None
         raise PreflightReachedError
 
     monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", preflight)
@@ -377,6 +366,70 @@ def test_pointer_swapped_recovery_finishes_owned_promotion_tail(
         )
     assert tuple((root / ".index-generations").glob("gen-*/generation.json")) == metadata
     assert IndexGenerationStore.for_archive_root(root).load(active.parent.name).state == "active"
+
+
+def test_current_startup_preserves_newer_source_retry_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.core.errors import RawCASFrontierError
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.empty_managed_index import mutate_fixture_database
+
+    root = tmp_path / "archive"
+    old, raw_id, _session_ids = make_populated_stale_index(root, tmp_path / "external" / "session.jsonl")
+    mutate_fixture_database(root / "source.db", "UPDATE raw_sessions SET parsed_at_ms=NULL WHERE raw_id=?", (raw_id,))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+
+    class PreflightReachedError(Exception):
+        pass
+
+    def stop_preflight() -> None:
+        raise PreflightReachedError
+
+    monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", stop_preflight)
+
+    def restart() -> None:
+        with pytest.raises(PreflightReachedError):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                )
+            )
+
+    restart()
+    active = ArchiveLocation.resolve(root).active_index_path.resolve()
+    assert active != old
+    with closing(open_readonly_connection(active)) as index:
+        assert index.execute("SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id=?", (raw_id,)).fetchone()[0]
+
+    def refuse_current() -> None:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            archive.mark_raw_parse_failed(
+                raw_id, provider=Provider.CODEX, error=RawCASFrontierError("new unresolved frontier")
+            )
+
+    asyncio.run(run_archive_fixture_write(root, refuse_current))
+    before = logical_rows(root / "source.db")
+    with closing(open_readonly_connection(root / "source.db")) as source:
+        assert source.execute(
+            "SELECT parsed_at_ms,parse_error FROM raw_sessions WHERE raw_id=?", (raw_id,)
+        ).fetchone() == (
+            None,
+            "RawCASFrontierError: new unresolved frontier",
+        )
+        assert source.execute(
+            "SELECT artifact_kind FROM raw_artifacts WHERE raw_id=? AND artifact_kind='deferred_cas_frontier'",
+            (raw_id,),
+        ).fetchall() == [
+            ("deferred_cas_frontier",),
+        ]
+    restart()
+    assert ArchiveLocation.resolve(root).active_index_path.resolve() == active
+    assert logical_rows(root / "source.db") == before
 
 
 @pytest.mark.parametrize("provider", ["codex", "unknown"])
