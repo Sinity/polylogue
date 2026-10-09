@@ -1461,6 +1461,95 @@ def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
     artifact.discard()
 
 
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_prepared_gemini_sidecars_preserve_stderr_and_independent_display(tmp_path: Path, checkpoint: bool) -> None:
+    """Replacing prepared primary carriers with text alone loses stderr/display."""
+    from polylogue.sources.parsers.local_agent import TOOL_RESULT_DISPLAY_MEDIA_TYPE
+
+    messages = [
+        {
+            "id": "answer",
+            "type": "gemini",
+            "toolCalls": [
+                {
+                    "id": "stderr-call",
+                    "name": "terminal",
+                    "result": [
+                        {
+                            "functionResponse": {
+                                "id": "stderr-call",
+                                "response": {
+                                    "output": "<tool_output_masked>For full output see: stderr-call.txt</tool_output_masked>",
+                                    "error": "DISTINCT_STDERR",
+                                },
+                            }
+                        }
+                    ],
+                },
+                {
+                    "id": "display-call",
+                    "name": "terminal",
+                    "resultDisplay": "DISPLAY_OUTPUT",
+                    "result": [{"functionResponse": {"id": "display-call", "response": {"output": "MODEL_OUTPUT"}}}],
+                },
+            ],
+        }
+    ]
+    header = {"sessionId": "sidecar-streams", "kind": "main", "startTime": "2026-01-01T00:00:00Z"}
+    payload = [header, *messages] if checkpoint else {**header, "messages": messages}
+    source = tmp_path / ("checkpoint.jsonl" if checkpoint else "session.json")
+    source.write_text(
+        "".join(json.dumps(record) + "\n" for record in payload) if checkpoint else json.dumps(payload),
+        encoding="utf-8",
+    )
+    full_stderr = "FULL_STDOUT"
+    full_display = "FULL_MODEL_OUTPUT_THAT_IS_LONGER_THAN_INLINE"
+    scope = RetainedSidecarScope(
+        scope_key="neutral-streams",
+        available=True,
+        files=(
+            RetainedSidecarFile("stderr-call.txt", len(full_stderr), None, lambda: full_stderr),
+            RetainedSidecarFile("display-call.txt", len(full_display), None, lambda: full_display),
+        ),
+    )
+
+    class Resolver:
+        def gemini_cli_scope(self, *_args: object) -> RetainedSidecarScope:
+            return scope
+
+    resolver = Resolver()
+    [expected] = parse_payload(
+        Provider.GEMINI_CLI, payload, "fallback", source_path=str(source), sidecar_resolver=resolver
+    )
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.GEMINI_CLI.value,
+        "fallback",
+        is_stream=False,
+        strict_jsonl_records=checkpoint,
+        shard_directory=str(tmp_path / "prepared"),
+        sidecar_resolver=resolver,
+    )
+    try:
+        assert artifact.error is None, artifact.error
+        [actual] = artifact.iter_sessions()
+        for session in (expected, actual):
+            results = [
+                block for message in session.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+            ]
+            assert [block.text for block in results] == [
+                f"{full_stderr}\nDISTINCT_STDERR",
+                full_display,
+                "DISPLAY_OUTPUT",
+            ]
+            assert results[-1].media_type == TOOL_RESULT_DISPLAY_MEDIA_TYPE
+        assert _gemini_message_payloads(actual) == _gemini_message_payloads(expected)
+        assert actual.content_hash == session_content_hash(expected)
+    finally:
+        artifact.discard()
+
+
 def test_retained_gemini_sidecar_replay_uses_sealed_preparation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -361,7 +361,9 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
             for block in message.blocks:
                 match = (
                     replacements.get(block.tool_id)
-                    if block.type is BlockType.TOOL_RESULT and block.tool_id is not None
+                    if block.type is BlockType.TOOL_RESULT
+                    and block.tool_id is not None
+                    and block.media_type != TOOL_RESULT_DISPLAY_MEDIA_TYPE
                     else None
                 )
                 if match is None:
@@ -387,8 +389,7 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
                     blocks.append(block)
                 else:
                     attached_hashes[match] = hash_text(text)
-                    error = _string((block.metadata or {}).get("gemini_response_error"))
-                    blocks.append(block.model_copy(update={"text": _tool_result_stream_text(text, error)}))
+                    blocks.append(replace_gemini_tool_result_output(block, text))
             updated_messages.append(message.model_copy(update={"blocks": blocks}))
         messages = updated_messages
 
@@ -841,8 +842,6 @@ def _token_usage_fields(record: JSONDocument) -> dict[str, int | None]:
         "output_tokens",
         "completion_tokens",
         "generated_tokens",
-        "total_tokens",
-        "total",
     )
     return {
         "input_tokens": input_tokens,
@@ -882,11 +881,6 @@ def _gemini_message_usage_event(item: object, message: ParsedMessage) -> ParsedS
     if not raw_usage:
         return None
     usage = _token_usage_fields(record)
-    # A total-only wire report does not identify its output lane. The message
-    # compatibility projection may use it there, but the usage event retains
-    # the provider's own counter grain.
-    if _first_non_negative_int(raw_usage, "output", "output_tokens", "completion_tokens", "generated_tokens") is None:
-        usage["output_tokens"] = None
     last_usage = {
         event_key: value
         for event_key, value in (
@@ -1241,6 +1235,14 @@ def _fullest_tool_result_text(output: str | None, error: str | None, result_disp
 #: has to land on a real column; ``media_type`` is written verbatim by
 #: ``_write_blocks`` and is unused on tool_result blocks.
 TOOL_RESULT_DISPLAY_MEDIA_TYPE = "text/vnd.polylogue.tool-result-display"
+
+
+def replace_gemini_tool_result_output(block: ParsedContentBlock, output: str) -> ParsedContentBlock:
+    """Replace only the primary output, retaining stderr and display rendering."""
+    if block.type is not BlockType.TOOL_RESULT or block.media_type == TOOL_RESULT_DISPLAY_MEDIA_TYPE:
+        return block
+    error = _string((block.metadata or {}).get("gemini_response_error"))
+    return block.model_copy(update={"text": _tool_result_stream_text(output, error)})
 
 
 def _divergent_display_text(primary: str | None, output: str | None, result_display: object) -> str | None:

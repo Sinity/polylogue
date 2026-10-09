@@ -1304,7 +1304,7 @@ def _usage_and_lifecycle_events(
                     "type": "token_count",
                     "model": _optional_text(_row_value(row, "model")),
                     "total_token_usage": total_usage,
-                    "api_call_count": _non_negative_int(_row_value(row, "api_call_count")) or 0,
+                    "api_call_count": _non_negative_int(_row_value(row, "api_call_count")),
                     **cost_payload,
                 },
             )

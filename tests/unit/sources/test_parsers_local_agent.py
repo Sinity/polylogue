@@ -1989,6 +1989,30 @@ def test_gemini_usage_event_does_not_assign_total_only_count_to_output() -> None
     assert event.payload["last_token_usage"] == {"total_tokens": 0}
 
 
+@pytest.mark.parametrize("provider", ["gemini-cli", "hermes"])
+@pytest.mark.parametrize("total", [0, 15])
+def test_total_only_usage_does_not_fabricate_message_output(provider: str, total: int) -> None:
+    wire = {"id": "answer", "role": "assistant", "type": "gemini", "content": "done", "usage": {"total_tokens": total}}
+    if provider == "gemini-cli":
+        payload = {"sessionId": "neutral-total", "kind": "main", "messages": [wire]}
+    else:
+        payload = {"session_id": "neutral-total", "session_start": "2026-01-01T00:00:00Z", "messages": [wire]}
+    [session] = parse_payload(provider, payload, "fallback")
+    [message] = session.messages
+    assert message.output_tokens is None
+    assert message.input_tokens is None
+
+
+@pytest.mark.parametrize("api_count", [None, 0, 2])
+def test_hermes_usage_event_preserves_nullable_api_call_count(api_count: int | None) -> None:
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT 5 AS input_tokens, ? AS api_call_count", (api_count,)).fetchone()
+        events = hermes_state._usage_and_lifecycle_events(row, [], session_columns=set(row.keys()))
+    [event] = events
+    assert event.payload["api_call_count"] == api_count
+
+
 def test_hermes_usage_event_keeps_null_and_explicit_zero_distinct() -> None:
     with sqlite3.connect(":memory:") as conn:
         conn.row_factory = sqlite3.Row

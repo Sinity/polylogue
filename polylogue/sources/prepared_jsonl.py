@@ -2975,9 +2975,10 @@ def prepare_jsonl_blob(
                     for position in range(len(gemini_session.messages)):
                         message = gemini_session.messages[position]
                         updated_blocks = [
-                            block.model_copy(update={"text": replacement})
+                            local_agent.replace_gemini_tool_result_output(block, replacement)
                             if block.type is BlockType.TOOL_RESULT
                             and block.tool_id is not None
+                            and block.media_type != local_agent.TOOL_RESULT_DISPLAY_MEDIA_TYPE
                             and (replacement := index.replacement_for(block.tool_id)) is not None
                             else block
                             for block in message.blocks

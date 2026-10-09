@@ -99,6 +99,38 @@ def test_mark_active_leaf_flags_exactly_one_message_with_duplicate_ids() -> None
     assert leaves[0].text == "final"
 
 
+def test_markdown_activity_ids_survive_unrelated_insertion_and_keep_identical_occurrences(tmp_path: Path) -> None:
+    """Putting a global activity ordinal in the semantic seed renames both edits."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    body = "A\n\n*Edited relevant file*\n\nB\n\n*Edited relevant file*\n"
+    summary = AntigravitySessionSummary(cascade_id="activity-identity")
+    before = parse_markdown_export("### Planner Response\n\n" + body, summary)
+    after = parse_markdown_export("### Planner Response\n\n*Checked command status*\n\nInserted\n\n" + body, summary)
+    activities = [message for message in before.messages if message.blocks[0].type is BlockType.TOOL_USE]
+    assert len(activities) == 2
+    assert all(message.provider_message_id == "" for message in activities)
+    tool_name = activities[0].blocks[0].tool_name
+    with ArchiveStore(tmp_path / "archive") as archive:
+        session_id = write_index_session(archive, before)
+
+        def edit_ids() -> list[str]:
+            return [
+                row[0]
+                for row in archive.index_connection.execute(
+                    "SELECT m.message_id FROM messages m JOIN blocks b ON b.message_id=m.message_id "
+                    "WHERE m.session_id=? AND b.tool_name=? ORDER BY m.position",
+                    (session_id, tool_name),
+                )
+            ]
+
+        original = edit_ids()
+        write_index_session(archive, after)
+        assert edit_ids() == original
+        assert len(set(original)) == 2
+
+
 def test_parse_markdown_export_falls_back_to_single_export_message() -> None:
     markdown = """# Chat Session
 

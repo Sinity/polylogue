@@ -6,6 +6,14 @@ Gemini CLI result blocks retain both model-facing output and error text when
 the provider reports both streams. Divergent terminal renderings remain
 separately marked. Hermes ATIF tool availability events retain each declared
 tool definition in full, including its type and strictness setting.
+Resident and prepared Gemini sidecar joins replace only the primary output;
+stderr and independent terminal renderings survive the shared transform.
+Reported total tokens do not imply output tokens, and absent Hermes API-call
+counts remain absent. ATIF tool-call steps retain invocation and usage evidence
+once per step, independent of the number of calls. Skipped malformed ATIF parts
+remain counted in an accounting event and a degraded fidelity declaration.
+Antigravity markdown activity has no native message or call IDs; canonical
+semantic identity and identical-content occurrence bind those messages.
 
 Codex event-message mirrors consume one matching response occurrence only
 when exact text and role also carry a shared native identity, timestamp instant,

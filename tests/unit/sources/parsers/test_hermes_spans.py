@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.sources.dispatch import detect_provider, parse_payload, parse_stream_payload
@@ -90,6 +92,54 @@ def test_dispatch_detects_and_parses_atif_trace_through_the_real_pipeline() -> N
     # Never a duplicated transcript: the only "message" is a bounded summary.
     assert len(session.messages) == 1
     assert len(session.messages[0].text or "") < 500
+
+
+@pytest.mark.parametrize("parallel_calls", [1, 3])
+def test_atif_tool_step_keeps_invocation_and_usage_once(parallel_calls: int) -> None:
+    step = {
+        "step_id": "step-1",
+        "source": "agent",
+        "tool_calls": [{"tool_call_id": f"call-{i}", "function_name": "terminal"} for i in range(parallel_calls)],
+        "extra": {
+            "invocation": {"invocation_id": "inv-1", "framework": "neutral", "start_timestamp": 1, "end_timestamp": 2},
+            "llm_response": {"usage": {"prompt_tokens": 3, "completion_tokens": 4}},
+        },
+    }
+    payload = hermes_spans.marker_payload("tool-telemetry", [step])
+    [session] = parse_payload(Provider.HERMES, payload, "fallback")
+    tools = [e for e in session.session_events if e.event_type == "hermes_tool_execution_span"]
+    assert len(tools) == parallel_calls
+    telemetry = [e for e in session.session_events if "llm_response_usage" in e.payload]
+    [event] = telemetry
+    assert event.payload["invocation_invocation_id"] == "inv-1"
+    assert event.payload["invocation_framework"] == "neutral"
+    assert event.payload["invocation_start_timestamp"] == 1
+    assert event.payload["invocation_end_timestamp"] == 2
+    assert event.payload["llm_response_usage"] == {"prompt_tokens": 3, "completion_tokens": 4}
+    assert all("llm_response_usage" not in tool.payload for tool in tools)
+
+
+def test_atif_malformed_parts_keep_explicit_parent_and_child_fidelity(tmp_path: Path) -> None:
+    payload = hermes_spans.marker_payload(
+        "parent-accounting",
+        [None, {"tool_calls": [{"tool_call_id": "valid", "function_name": "terminal"}, {"function_name": "terminal"}]}],
+    )
+    payload["subagent_trajectories"] = [
+        None,
+        {"session_id": "child-accounting", "steps": [None, {"tool_calls": [{"function_name": "terminal"}]}]},
+    ]
+    parent, child = hermes_spans.parse_atif_document(payload, "fallback", profile_root=tmp_path)
+    for session, expected in (
+        (parent, {"malformed_steps": 1, "malformed_tool_calls": 1, "malformed_subagents": 1}),
+        (child, {"malformed_steps": 1, "malformed_tool_calls": 1, "malformed_subagents": 0}),
+    ):
+        [accounting] = [e for e in session.session_events if e.event_type == "hermes_atif_parse_accounting"]
+        assert accounting.payload == expected
+        fidelity = hermes_spans.import_fidelity_declaration(session)
+        capability = fidelity.capabilities["malformed_parts"]
+        assert capability.status == "degraded"
+        assert capability.counts == expected
+        assert any(caveat.startswith("malformed_parts:") for caveat in fidelity.caveats)
 
 
 def test_atif_step_timestamp_reaches_session_events_through_dispatch() -> None:
