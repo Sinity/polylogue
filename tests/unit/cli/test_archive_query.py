@@ -1535,7 +1535,13 @@ class TestSessionSummaryText:
         def dispatch(_config: object, request: object, **_kwargs: object) -> tuple[dict[str, object], None]:
             limit = request.payload.get("limit")  # type: ignore[attr-defined]
             limits.append(limit if isinstance(limit, int) else None)
-            return {"session": {"session_id": "fixture", "messages": []}, "complete": True}, None
+            return {
+                "session": {"session_id": "fixture", "messages": []},
+                "complete": True,
+                "outcome": {"state": "empty", "reason": "no_rows_in_scope", "detail": {}},
+                "lineage_complete": True,
+                "lineage_truncation_reason": None,
+            }, None
 
         monkeypatch.setattr(archive_query, "dispatch_read", dispatch)
         assert (

@@ -753,16 +753,18 @@ def test_async_execute_query_archive_exact_id_clause_reads_session(
 
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
-    asyncio.run(
-        _execute_query_params(
-            env,
-            {
-                "archive": True,
-                "query": ("id:chatgpt-export:72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb",),
-                "output_format": "json",
-            },
+    with pytest.raises(SystemExit) as terminal:
+        asyncio.run(
+            _execute_query_params(
+                env,
+                {
+                    "archive": True,
+                    "query": ("id:chatgpt-export:72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb",),
+                    "output_format": "json",
+                },
+            )
         )
-    )
+    assert terminal.value.code == 2
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "session"
@@ -807,16 +809,18 @@ def test_async_execute_query_archive_bare_native_ref_resolves_before_fts(
 
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
-    asyncio.run(
-        _execute_query_params(
-            env,
-            {
-                "archive": True,
-                "query": (native_id,),
-                "output_format": "json",
-            },
+    with pytest.raises(SystemExit) as terminal:
+        asyncio.run(
+            _execute_query_params(
+                env,
+                {
+                    "archive": True,
+                    "query": (native_id,),
+                    "output_format": "json",
+                },
+            )
         )
-    )
+    assert terminal.value.code == 2
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "session"
