@@ -307,6 +307,23 @@ def test_archive_debt_preserves_unknown_embedding_message_counts(
     assert row.caveats == ("Run `polylogue ops embed status --detail` for bounded exact-count attempts.",)
 
 
+def test_archive_debt_reports_unreadable_embedding_readiness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_current_tier_files(tmp_path)
+    monkeypatch.setattr(
+        module,
+        "embedding_readiness_info",
+        lambda _path, detail=False: {
+            "embedding_status": "unknown",
+            "embedding_unmeasurable_reason": "readiness_unreadable",
+            "embedding_pending_count": None,
+            "embedding_failure_count": None,
+        },
+    )
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("embedding",))
+    assert [row.debt_ref for row in payload.rows] == ["debt:embedding:readiness:unknown"]
+    assert payload.rows[0].details == "readiness_unreadable"
+
+
 def _stamp_tier_version(path: Path, tier: ArchiveTier) -> None:
     """Stamp a hand-built tier fixture with the version its schema emulates."""
     conn = sqlite3.connect(path)

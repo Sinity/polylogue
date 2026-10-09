@@ -559,12 +559,29 @@ being validated and explicitly promoted through
 build or switch generations (`storage/embeddings/generations.py`;
 `storage/embeddings/materialization.py`; `storage/embeddings/derivation.py`).
 
+Embedding lifecycle startup resolves configured tier links through
+`ArchiveLocation`. Generation metadata and retention stay beside the actual
+Embeddings tier, including a separately located tier; writer admission remains
+bound to the configured archive. The configured link and physical directory
+are checked before admission and publication. An exception while staging the
+first adoption discards only that operation's unpublished copy, preserving the
+original database for the next startup attempt. Published promotion intent
+continues through normal lifecycle recovery.
+Copy bytes and metadata are staged outside committed `gen-*` inventory and
+published together by a directory rename. A process killed before publication
+can leave staging evidence, which inventory preserves and ignores rather than
+treating incomplete metadata as a generation or guessing authority to delete
+it. Restart can adopt the untouched original tier normally.
+
 Embedding status measures coverage from Index and the canonical Embeddings tier.
 Its separately guarded Ops history reader returns nullable catchup history when
 the disposable tier is missing or unreadable; that absence does not abort
 otherwise measurable coverage. Supplied pinned connections keep their original
 attached snapshot authority. Owned diagnostic readers close even when an
 Embeddings attachment refuses (`storage/embeddings/status_payload.py`).
+The daemon readiness adapter preserves an unreadable query as `unknown`, with
+nullable counts, coverage and cost. Status components, health, plain rendering
+and archive debt keep that unavailable measurement visible.
 
 Ordinary full FTS rebuilds clear text and identity residue together and stream
 session pages through the existing paired SQL projections. Progress counts

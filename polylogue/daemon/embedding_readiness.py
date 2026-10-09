@@ -12,26 +12,29 @@ from polylogue.logging import WARNING, emit
 from polylogue.storage.embeddings.status_payload import EmbeddingCatchupRunPayload, embedding_status_payload
 
 
-def _defaults(*, enabled: bool, config_enabled: bool, has_key: bool, model: str, dimension: int) -> dict[str, object]:
+def _defaults(
+    *, enabled: bool, config_enabled: bool, has_key: bool, model: str, dimension: int, unreadable: bool = False
+) -> dict[str, object]:
     return {
         "embedding_enabled": enabled,
         "embedding_config_enabled": config_enabled,
         "embedding_has_voyage_key": has_key,
         "embedding_model": model,
         "embedding_dimension": dimension,
-        "embedding_status": "empty",
-        "embedding_freshness_status": "empty",
+        "embedding_status": "unknown" if unreadable else "empty",
+        "embedding_freshness_status": "unknown" if unreadable else "empty",
+        "embedding_unmeasurable_reason": "readiness_unreadable" if unreadable else None,
         "embedding_retrieval_ready": False,
-        "embedding_pending_count": 0,
-        "embedding_pending_message_count": 0,
+        "embedding_pending_count": None if unreadable else 0,
+        "embedding_pending_message_count": None if unreadable else 0,
         "embedding_pending_message_count_exact": False,
-        "embedding_stale_count": 0,
-        "embedding_coverage_percent": 0.0,
-        "embedding_failure_count": 0,
-        "embedding_terminal_failure_count": 0,
-        "embedding_retryable_failure_count": 0,
+        "embedding_stale_count": None if unreadable else 0,
+        "embedding_coverage_percent": None if unreadable else 0.0,
+        "embedding_failure_count": None if unreadable else 0,
+        "embedding_terminal_failure_count": None if unreadable else 0,
+        "embedding_retryable_failure_count": None if unreadable else 0,
         "embedding_failure_details": [],
-        "embedding_estimated_cost_usd": 0.0,
+        "embedding_estimated_cost_usd": None if unreadable else 0.0,
         "embedding_latest_catchup_run": None,
         "embedding_latest_material_catchup_run": None,
     }
@@ -72,10 +75,6 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
             include_detail=detail,
         )
     except (sqlite3.Error, OSError) as exc:
-        # _defaults() reports embedding_status="empty" / retrieval_ready=False
-        # / pending counts of 0 — identical to a genuinely fresh archive with
-        # no embeddings yet. Log loudly so a transient DB error doesn't read
-        # as "nothing to embed" (polylogue-cpf.4).
         emit(
             "daemon.embed.readiness_query_failed",
             level=WARNING,
@@ -91,6 +90,7 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
             has_key=has_key,
             model=model,
             dimension=dimension,
+            unreadable=True,
         )
 
     return {
@@ -101,6 +101,7 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
         "embedding_dimension": dimension,
         "embedding_status": payload["status"],
         "embedding_freshness_status": payload["freshness_status"],
+        "embedding_unmeasurable_reason": payload["coverage_unmeasurable_reason"],
         "embedding_retrieval_ready": payload["retrieval_ready"],
         "embedding_pending_count": payload["pending_sessions"],
         "embedding_pending_message_count": payload["pending_messages"],

@@ -354,6 +354,7 @@ class EmbeddingReadiness(BaseModel):
     embedding_dimension: int | None = None
     embedding_status: str = "unavailable"
     embedding_freshness_status: str = "unavailable"
+    embedding_unmeasurable_reason: str | None = None
     embedding_retrieval_ready: bool = False
     embedding_pending_count: int | None = None
     embedding_pending_message_count: int | None = None
@@ -1955,7 +1956,9 @@ def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentR
 
 
 def _component_from_daemon_embedding_readiness(readiness: EmbeddingReadiness) -> ComponentReadiness:
-    if not readiness.embedding_config_enabled:
+    if readiness.embedding_status == "unknown" or readiness.embedding_unmeasurable_reason:
+        state = CapabilityReadinessState.UNKNOWN
+    elif not readiness.embedding_config_enabled:
         state = CapabilityReadinessState.MISSING
     elif not readiness.embedding_has_voyage_key:
         state = CapabilityReadinessState.BLOCKED
@@ -1975,6 +1978,7 @@ def _component_from_daemon_embedding_readiness(readiness: EmbeddingReadiness) ->
         scope="semantic",
         state=state,
         summary=readiness.embedding_status,
+        caveats=(readiness.embedding_unmeasurable_reason,) if readiness.embedding_unmeasurable_reason else (),
         counts={
             "pending_sessions": readiness.embedding_pending_count,
             "pending_messages": readiness.embedding_pending_message_count,
@@ -2893,6 +2897,7 @@ def build_daemon_status(
         embedding_dimension=_optional_int(embedding_info.get("embedding_dimension")),
         embedding_status=str(embedding_info.get("embedding_status", "unavailable")),
         embedding_freshness_status=str(embedding_info.get("embedding_freshness_status", "unavailable")),
+        embedding_unmeasurable_reason=cast(str | None, embedding_info.get("embedding_unmeasurable_reason")),
         embedding_retrieval_ready=bool(embedding_info.get("embedding_retrieval_ready", False)),
         embedding_pending_count=_optional_int(embedding_info.get("embedding_pending_count")),
         embedding_pending_message_count_exact=bool(embedding_info.get("embedding_pending_message_count_exact", False)),
@@ -3922,7 +3927,10 @@ def format_daemon_status_lines(payload: JSONDocument) -> Iterator[str]:
             if embedding.get("embedding_pending_message_count_exact")
             else "pending msgs not calculated"
         )
-        if embedding.get("embedding_enabled"):
+        if status == "unknown" or embedding.get("embedding_unmeasurable_reason"):
+            reason = str(embedding.get("embedding_unmeasurable_reason") or "readiness_unmeasured")
+            lines.append(f"Embeddings: unknown ({reason}); measurements unavailable")
+        elif embedding.get("embedding_enabled"):
             coverage = _safe_float(embedding.get("embedding_coverage_percent"))
             pending = _safe_int(embedding.get("embedding_pending_count"))
             stale = _safe_int(embedding.get("embedding_stale_count"))

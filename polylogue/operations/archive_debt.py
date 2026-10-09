@@ -999,6 +999,21 @@ def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
 
 def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
     info = embedding_readiness_info(index_db, detail=True)
+    if info.get("embedding_status") == "unknown" or info.get("embedding_unmeasurable_reason"):
+        return [
+            ArchiveDebtRowPayload(
+                debt_ref="debt:embedding:readiness:unknown",
+                kind="embedding",
+                stage="readiness",
+                subject_ref="embedding:readiness",
+                severity="warning",
+                status="blocked",
+                owner="daemon",
+                summary="Embedding readiness is unknown",
+                details=str(info.get("embedding_unmeasurable_reason") or "readiness_unmeasured"),
+                evidence_refs=(f"archive-tier:{index_db.with_name('embeddings.db')}",),
+            )
+        ]
     rows: list[ArchiveDebtRowPayload] = []
     config_enabled = _bool_value(info.get("embedding_config_enabled"))
     has_key = _bool_value(info.get("embedding_has_voyage_key"))

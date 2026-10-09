@@ -1691,6 +1691,15 @@ def _check_embedding_coverage_expensive() -> HealthAlert:
             )
 
         info = embedding_readiness_info(_active_health_db_path())
+        if info.get("embedding_status") == "unknown" or info.get("embedding_unmeasurable_reason"):
+            return HealthAlert(
+                check_name="embedding_coverage",
+                tier=HealthTier.EXPENSIVE,
+                severity=HealthSeverity.ERROR,
+                message=f"embedding coverage unknown: {info.get('embedding_unmeasurable_reason') or 'readiness_unmeasured'}",
+                checked_at=now,
+                consecutive_failures=_record_failure("embedding_coverage", False),
+            )
         coverage = info.get("embedding_coverage_percent", 0.0)
         cov_pct = float(coverage) if isinstance(coverage, (int, float)) and not isinstance(coverage, bool) else 0.0
         failure_count = info.get("embedding_failure_count", 0)

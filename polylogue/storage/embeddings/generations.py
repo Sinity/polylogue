@@ -26,6 +26,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from polylogue.storage.archive_identity import ArchiveLocation, TierFileIdentity
 from polylogue.storage.embeddings.identity import EmbeddingProvenanceError, EmbeddingRecipe
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
@@ -130,6 +131,7 @@ _GENERATIONS = ".embeddings-generations"
 _RECEIPTS = "retention-receipts"
 _MAX_RETAINED = 1
 _ID = re.compile(r"^gen-[0-9]+-[0-9a-f]{10}$")
+_UNPUBLISHED = re.compile(r"^unpublished-gen-[0-9]+-[0-9a-f]{10}-[0-9a-f]{32}$")
 _RETIRED = re.compile(r"^retired-(gen-[0-9]+-[0-9a-f]{10})-[0-9a-f]{32}$")
 _OWNER = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _REQUIRED_TABLES = {
@@ -211,9 +213,29 @@ class EmbeddingGenerationStore:
             raise EmbeddingGenerationError("archive root must be absolute")
         if not root.is_dir():
             raise EmbeddingGenerationError("embedding archive root must be an owned directory")
+        self._write_root = root
+        configured_path = (Path(active_path) if active_path is not None else root / "embeddings.db").absolute()
+        self._configured_alias: tuple[Path, tuple[int, int]] | None = None
+        if not _under(root, configured_path):
+            location = ArchiveLocation.resolve(root)
+            tier = location.configured_tier("embeddings")
+            if configured_path != tier.configured_path or tier.resolved_path.name != "embeddings.db":
+                raise EmbeddingGenerationError("embedding active path must be archive-local embeddings.db")
+            canonical = tier.resolved_path
+            if canonical.parent.parent.name == _GENERATIONS and _ID.fullmatch(canonical.parent.name):
+                canonical = canonical.parent.parent.parent / "embeddings.db"
+            if not tier.same_file(TierFileIdentity.resolve("embeddings", canonical)):
+                raise EmbeddingGenerationError("embedding configured tier is not its canonical active database")
+            self._configured_alias = (
+                configured_path,
+                self._link_identity(configured_path, label="embedding configured alias"),
+            )
+            root = canonical.parent.resolve(strict=True)
+            configured_path = root / "embeddings.db"
         self.archive_root = root
+        self._physical_root_identity = self._identity(root, label="embedding physical archive root")
         self.root = root / _GENERATIONS
-        self.active_path = (Path(active_path) if active_path is not None else root / "embeddings.db").absolute()
+        self.active_path = configured_path
         if not _under(root, self.active_path) or self.active_path.name != "embeddings.db":
             raise EmbeddingGenerationError("embedding active path must be archive-local embeddings.db")
         if self.root.exists() and (self.root.is_symlink() or not self.root.is_dir()):
@@ -231,13 +253,47 @@ class EmbeddingGenerationStore:
 
     @contextmanager
     def _lock(self) -> Iterator[None]:
+        self._assert_configured_alias()
         fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
+            self._assert_configured_alias()
             yield
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
+
+    def _assert_configured_alias(self) -> None:
+        if self._configured_alias is None:
+            return
+        path, identity = self._configured_alias
+        if self._identity(self.archive_root, label="embedding physical archive root") != self._physical_root_identity:
+            raise EmbeddingGenerationError("embedding physical archive root changed during lifecycle admission")
+        if self._link_identity(path, label="embedding configured alias") != identity or not TierFileIdentity.resolve(
+            "embeddings", path
+        ).same_file(TierFileIdentity.resolve("embeddings", self.active_path)):
+            raise EmbeddingGenerationError("embedding configured alias changed during lifecycle admission")
+
+    @contextmanager
+    def _unpublished_directory(self, directory: Path) -> Iterator[tuple[tuple[int, int], tuple[int, int]]]:
+        """Discard only this operation's copy if staging fails before pointer publication."""
+        root_identity = self._link_identity(self.root, label="embedding generation root")
+        directory.mkdir(parents=True, exist_ok=False)
+        identity = self._link_identity(directory, label="unpublished embedding generation")
+        try:
+            yield root_identity, identity
+        except BaseException as staging_error:
+            if (
+                directory.is_symlink()
+                or self._link_identity(self.root, label="embedding generation root") != root_identity
+                or self._link_identity(directory, label="unpublished embedding generation") != identity
+            ):
+                raise EmbeddingGenerationError(
+                    "unpublished embedding generation was replaced during staging"
+                ) from staging_error
+            shutil.rmtree(directory)
+            _fsync_dir(self.root)
+            raise
 
     def _metadata_path(self, generation_id: str) -> Path:
         if not _ID.fullmatch(generation_id):
@@ -392,7 +448,7 @@ class EmbeddingGenerationStore:
     def _checkpoint_database(self, path: Path, *, label: str) -> None:
         from polylogue.storage.sqlite.write_lease import require_write_lease
 
-        require_write_lease(f"EmbeddingGenerationStore checkpoint({label})", archive_root=self.archive_root)
+        require_write_lease(f"EmbeddingGenerationStore checkpoint({label})", archive_root=self._write_root)
         try:
             with sqlite_connection(path, timeout=30.0) as conn:
                 row = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
@@ -462,7 +518,13 @@ class EmbeddingGenerationStore:
     def _generations(self) -> list[EmbeddingGeneration]:
         result: list[EmbeddingGeneration] = []
         for child in self.root.iterdir():
-            if child.name in {_RECEIPTS, ".lifecycle.lock"} or child.name.startswith("retired-"):
+            if (
+                child.name in {_RECEIPTS, ".lifecycle.lock"}
+                or child.name.startswith("retired-")
+                or _UNPUBLISHED.fullmatch(child.name)
+            ):
+                # A killed producer may leave an unpublished copy. It is not
+                # generation evidence and its ownership cannot be guessed.
                 continue
             if child.is_symlink() or not child.is_dir():
                 raise EmbeddingGenerationError(f"unexpected embedding generation child: {child}")
@@ -475,6 +537,27 @@ class EmbeddingGenerationStore:
 
     def _write_generation(self, generation: EmbeddingGeneration) -> None:
         _atomic_json(self._metadata_path(generation.generation_id), asdict(generation))
+
+    def _write_staged_generation(self, generation: EmbeddingGeneration, directory: Path) -> None:
+        _atomic_json(directory / "generation.json", asdict(generation))
+
+    def _publish_staged_generation(
+        self, generation: EmbeddingGeneration, directory: Path, identity: tuple[tuple[int, int], tuple[int, int]]
+    ) -> None:
+        if (
+            directory.parent != self.root
+            or directory.is_symlink()
+            or not _UNPUBLISHED.fullmatch(directory.name)
+            or self._link_identity(self.root, label="embedding generation root") != identity[0]
+            or self._link_identity(directory, label="unpublished embedding generation") != identity[1]
+        ):
+            raise EmbeddingGenerationError("unpublished embedding generation was replaced before publication")
+        destination = self._metadata_path(generation.generation_id).parent
+        if destination.exists() or destination.is_symlink():
+            raise EmbeddingGenerationError("embedding generation publication destination already exists")
+        self._assert_configured_alias()
+        os.replace(directory, destination)
+        _fsync_dir(self.root)
 
     def _active_generation(self, generations: list[EmbeddingGeneration]) -> EmbeddingGeneration | None:
         if self.active_path.is_symlink():
@@ -516,8 +599,8 @@ class EmbeddingGenerationStore:
         if active.state not in {"active", "promoting"}:
             raise EmbeddingGenerationError("embedding active pointer names non-active metadata")
         return EmbeddingGenerationBinding(
-            archive_root=str(self.archive_root),
-            archive_root_identity=self._identity(self.archive_root, label="embedding archive root"),
+            archive_root=str(self._write_root),
+            archive_root_identity=self._identity(self._write_root, label="embedding archive root"),
             generation_id=active.generation_id,
             owner_id=active.owner_id,
             database_path=active.database_path,
@@ -527,9 +610,10 @@ class EmbeddingGenerationStore:
 
     def assert_binding(self, binding: EmbeddingGenerationBinding) -> None:
         """Reject a binding whose root, pointer, or generation changed."""
-        if str(self.archive_root) != binding.archive_root:
+        self._assert_configured_alias()
+        if str(self._write_root) != binding.archive_root:
             raise EmbeddingGenerationError("embedding archive root binding mismatch")
-        if self._identity(self.archive_root, label="embedding archive root") != binding.archive_root_identity:
+        if self._identity(self._write_root, label="embedding archive root") != binding.archive_root_identity:
             raise EmbeddingGenerationError("embedding archive root was replaced during materialization")
         if self._link_identity(self.active_path, label="embedding active pointer") != binding.active_path_identity:
             raise EmbeddingGenerationError("embedding active pointer was replaced during materialization")
@@ -773,23 +857,26 @@ class EmbeddingGenerationStore:
         now = self._next_ns()
         generation_id = f"gen-{now}-{uuid.uuid4().hex[:10]}"
         destination = self.root / generation_id / "embeddings.db"
-        destination.parent.mkdir(parents=True, exist_ok=False)
-        with self.active_path.open("rb") as source, destination.open("wb") as target:
-            shutil.copyfileobj(source, target)
-            target.flush()
-            os.fsync(target.fileno())
-        _fsync_dir(destination.parent)
-        generation = EmbeddingGeneration(
-            generation_id,
-            str(self.archive_root),
-            str(destination),
-            uuid.uuid4().hex,
-            "promoting",
-            now,
-            **self._database_contract(destination, physical_root=destination.parent),
-        )
-        self._write_generation(generation)
-        _fsync_dir(self.root)
+        staging = self.root / f"unpublished-{generation_id}-{uuid.uuid4().hex}"
+        with self._unpublished_directory(staging) as staging_identity:
+            with self.active_path.open("rb") as source, (staging / "embeddings.db").open("wb") as target:
+                shutil.copyfileobj(source, target)
+                target.flush()
+                os.fsync(target.fileno())
+            _fsync_dir(staging)
+            generation = EmbeddingGeneration(
+                generation_id,
+                str(self.archive_root),
+                str(destination),
+                uuid.uuid4().hex,
+                "promoting",
+                now,
+                **self._database_contract(staging / "embeddings.db", physical_root=destination.parent),
+            )
+            self._write_staged_generation(generation, staging)
+            _fsync_dir(self.root)
+            self._assert_configured_alias()
+        self._publish_staged_generation(generation, staging, staging_identity)
         temporary = self.active_path.with_name(f".{self.active_path.name}.{uuid.uuid4().hex}.tmp")
         temporary.symlink_to(destination)
         os.replace(temporary, self.active_path)
@@ -818,15 +905,16 @@ class EmbeddingGenerationStore:
             now = self._next_ns()
             generation_id = f"gen-{now}-{uuid.uuid4().hex[:10]}"
             destination = self.root / generation_id / "embeddings.db"
+            staging = self.root / f"unpublished-{generation_id}-{uuid.uuid4().hex}"
             owner = owner_id or uuid.uuid4().hex
             if not _OWNER.fullmatch(owner):
                 raise EmbeddingGenerationError("embedding owner identity is invalid")
-            destination.parent.mkdir(parents=True, exist_ok=False)
-            shutil.copyfile(candidate, destination)
-            _fsync_file(destination)
-            _fsync_dir(destination.parent)
-            try:
-                destination_contract = self._database_contract(destination, physical_root=destination.parent)
+            with self._unpublished_directory(staging) as staging_identity:
+                staged_database = staging / "embeddings.db"
+                shutil.copyfile(candidate, staged_database)
+                _fsync_file(staged_database)
+                _fsync_dir(staging)
+                destination_contract = self._database_contract(staged_database, physical_root=destination.parent)
                 if any(
                     candidate_contract[field] != destination_contract[field]
                     for field in (
@@ -837,22 +925,20 @@ class EmbeddingGenerationStore:
                     )
                 ):
                     raise EmbeddingGenerationError("embedding replacement candidate changed while staging")
-            except BaseException:
-                shutil.rmtree(destination.parent)
+                generation = EmbeddingGeneration(
+                    generation_id,
+                    str(self.archive_root),
+                    str(destination),
+                    owner,
+                    "promoting",
+                    now,
+                    predecessor_generation_id=current.generation_id if current else None,
+                    **destination_contract,
+                )
+                self._write_staged_generation(generation, staging)
                 _fsync_dir(self.root)
-                raise
-            generation = EmbeddingGeneration(
-                generation_id,
-                str(self.archive_root),
-                str(destination),
-                owner,
-                "promoting",
-                now,
-                predecessor_generation_id=current.generation_id if current else None,
-                **destination_contract,
-            )
-            self._write_generation(generation)
-            _fsync_dir(self.root)
+                self._assert_configured_alias()
+            self._publish_staged_generation(generation, staging, staging_identity)
             temporary = self.active_path.with_name(f".{self.active_path.name}.{uuid.uuid4().hex}.tmp")
             temporary.symlink_to(destination)
             os.replace(temporary, self.active_path)

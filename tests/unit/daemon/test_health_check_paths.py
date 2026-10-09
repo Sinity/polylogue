@@ -27,6 +27,7 @@ import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1234,6 +1235,32 @@ def test_embedding_coverage_error_when_enabled_with_failures(
     assert alert.severity == HealthSeverity.ERROR
     assert alert.consecutive_failures == 1
     assert "failures" in alert.message
+
+
+def test_embedding_coverage_reports_unknown_measurements(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("polylogue.daemon.health._active_health_db_path", lambda: tmp_path / "index.db")
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: SimpleNamespace(
+            embedding_enabled=True,
+            voyage_api_key="vk-test",
+        ),
+    )
+    monkeypatch.setattr(
+        "polylogue.daemon.health.embedding_readiness_info",
+        lambda _path: {
+            "embedding_status": "unknown",
+            "embedding_unmeasurable_reason": "readiness_unreadable",
+            "embedding_coverage_percent": None,
+            "embedding_failure_count": None,
+        },
+    )
+    alert = _check_embedding_coverage_expensive()
+    assert alert.severity == HealthSeverity.ERROR
+    assert alert.message == "embedding coverage unknown: readiness_unreadable"
 
 
 @pytest.mark.parametrize(
