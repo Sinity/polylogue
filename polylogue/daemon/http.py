@@ -5483,6 +5483,7 @@ async def _recover_startup_with_compute(
                 archive_root,
                 resolver_actor_ref=RECOVERY_SERVICE_ACTOR_REF,
                 input_demand=kernel.amend_current_input_demand,
+                startup=True,
             )
 
     await bridge.coordinator.run_prepared_sync(

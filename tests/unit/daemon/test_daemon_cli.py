@@ -2171,7 +2171,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     async def fake_configure_fts_automerge() -> None:
         events.append("automerge")
 
-    def fake_operation_recovery(_archive_root_path: Path, *, resolver_actor_ref: str, input_demand: object) -> None:
+    def fake_operation_recovery(
+        _archive_root_path: Path, *, resolver_actor_ref: str, input_demand: object, startup: bool
+    ) -> None:
+        assert startup
         events.append("operation-recovery")
 
     def recording_converger(
@@ -3844,7 +3847,7 @@ def _daemon_startup_stubs(
     stack.enter_context(
         patch(
             "polylogue.operations.mutation_replay.recover_interrupted_operations",
-            lambda _root, *, resolver_actor_ref, input_demand: None,
+            lambda _root, *, resolver_actor_ref, input_demand, startup: None,
         )
     )
     stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))

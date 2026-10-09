@@ -60,6 +60,11 @@ connection under its same-root writer lease. Both discovery scopes end before
 any recovery actuator runs (`AuditRepository.recovery_discovery_read`;
 `OperationExecutor._resolve_dead_operations`).
 
+Startup recovery explicitly fences abandoned staged machine pages and reclaims
+unaccepted Source preparation before request admission. Live request recovery
+resolves dead attempts without touching those rows: an ingest can own its
+committed preparation header between its compute and writer phases.
+
 Recovery resolution events name the resolver: authenticated request recovery uses
 the request principal, while automated startup uses `daemon:recovery`. The
 continuity command retains this identity for crash replay; the original

@@ -259,6 +259,86 @@ def test_accepted_ingest_waits_out_audit_continuity_contention(tmp_path: Path, m
     assert envelope is not None and envelope["outcome"] == "completed", envelope
 
 
+def test_live_request_recovery_preserves_another_ingests_preaccept_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A work-event request cannot reclaim the live ingest's committed header.
+
+    Pause ingest after its preparation header commits, outside compute and
+    writer admission. A second real staged request then runs recovery before
+    acquiring its work event. Moving the global preparation sweep back into
+    request recovery deletes the header and fails this ingest's next page.
+    """
+    import asyncio
+    import threading
+    from collections.abc import Callable
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import closing
+    from typing import Any
+
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+
+    prepared = threading.Event()
+    release = threading.Event()
+    original_phase = DaemonOperationRuntime.compute_phase
+
+    async def pause_page(self: DaemonOperationRuntime, work: Callable[[], Any]) -> Any:
+        if getattr(work, "__name__", "") == "compute_page" and not prepared.is_set():
+            prepared.set()
+            await asyncio.to_thread(release.wait)
+        return await original_phase(self, work)
+
+    first, second = _two_sessions(tmp_path / "capture-files")
+    with running_daemon_operations(tmp_path / "archive", session_derivation=True) as stack:
+        root = str(stack.archive_root)
+        imported = stack.client.operation_to_completion("ingest", {"path": str(first)}, archive_root=root)
+        assert imported is not None and imported["outcome"] == "completed", imported
+        (session_id,) = _session_ids(stack.archive_root)
+        monkeypatch.setattr(DaemonOperationRuntime, "compute_phase", pause_page)
+        with ThreadPoolExecutor(max_workers=1) as requests:
+            ingest = requests.submit(
+                stack.client.operation_to_completion,
+                "ingest",
+                {"path": str(second)},
+                archive_root=root,
+                request_id="paused-preaccept-ingest",
+            )
+            try:
+                assert prepared.wait(timeout=30), "ingest never committed its preparation header"
+                with closing(sqlite3.connect(f"file:{stack.archive_root / 'source.db'}?mode=ro", uri=True)) as source:
+                    original = source.execute(
+                        "SELECT source_generation_id, publisher_id FROM prepared_source_manifests p "
+                        "WHERE NOT EXISTS (SELECT 1 FROM source_generations g "
+                        "WHERE g.source_generation_id=p.source_generation_id)"
+                    ).fetchall()
+                assert len(original) == 1
+                recorded = stack.client.operation_to_completion(
+                    "mutation.facade.record_work_event",
+                    {
+                        "session_id": session_id,
+                        "event_id": "concurrent-preaccept-event",
+                        "event_type": "decision",
+                        "summary": "retain the active input preparation",
+                        "payload": {},
+                    },
+                    archive_root=root,
+                    request_id="concurrent-preaccept-work-event",
+                )
+                assert recorded is not None and recorded["outcome"] == "completed", recorded
+                with closing(sqlite3.connect(f"file:{stack.archive_root / 'source.db'}?mode=ro", uri=True)) as source:
+                    remaining = source.execute(
+                        "SELECT source_generation_id, publisher_id FROM prepared_source_manifests p "
+                        "WHERE NOT EXISTS (SELECT 1 FROM source_generations g "
+                        "WHERE g.source_generation_id=p.source_generation_id)"
+                    ).fetchall()
+                assert remaining == original
+            finally:
+                release.set()
+            completed = ingest.result(timeout=120)
+            assert completed is not None and completed["outcome"] == "completed", completed
+        assert len(_session_ids(stack.archive_root)) == 2
+
+
 def test_cli_delete_refuses_a_selection_that_drifted_after_authorization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
