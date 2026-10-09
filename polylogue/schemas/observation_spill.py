@@ -1328,7 +1328,7 @@ def owned_scalar_events(handle: _Readable) -> Generator[Iterator[tuple[str, obje
         reader = _PrefixStringReader(handle, scalar_values=True, string_sink=tokens.string, number_sink=tokens.number)
         with closing(iter(exact_backend.basic_parse(LexemeAlignedReader(reader)))) as events:
 
-            def exact_events() -> Iterator[tuple[str, object]]:
+            def exact_events() -> Generator[tuple[str, object], None, None]:
                 strings = numbers = 0
                 for event, value in events:
                     if event in {"map_key", "string"}:

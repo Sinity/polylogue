@@ -7,7 +7,7 @@ import hashlib
 import io
 import json
 import threading
-from collections.abc import Generator, Iterator
+from collections.abc import AsyncGenerator, Generator, Iterator
 from pathlib import Path
 
 import pytest
@@ -158,7 +158,11 @@ async def test_cancelled_source_read_settles_before_discarding_worker_capture(
 
     monkeypatch.setattr(acquisition_module, "iter_source_acquisition_records", records)
     stream = iter_source_raw_stream(Source(name="neutral", path=tmp_path))
-    pending = asyncio.create_task(anext(stream))
+
+    async def next_record() -> SourceInputRecord:
+        return await anext(stream)
+
+    pending = asyncio.create_task(next_record())
     try:
         await started.wait()
         pending.cancel()
@@ -170,6 +174,7 @@ async def test_cancelled_source_read_settles_before_discarding_worker_capture(
         assert settled.is_set() and not stage.path.exists()
     finally:
         released.set()
+        assert isinstance(stream, AsyncGenerator)
         await stream.aclose()
         stage.discard()
 
@@ -327,7 +332,11 @@ def test_emitter_selected_nested_tool_input_outlives_record_tape(tmp_path: Path)
         block = session.messages[0].blocks[0]
         assert block.tool_input == selected
         assert block.model_dump(mode="json")["tool_input"] == selected
-        assert session.messages[0].text == json.dumps(record["message"]["content"][0], sort_keys=True)
+        message = record["message"]
+        assert isinstance(message, dict)
+        content = message["content"]
+        assert isinstance(content, list)
+        assert session.messages[0].text == json.dumps(content[0], sort_keys=True)
     finally:
         raw.staged_payload.discard()
 
@@ -345,9 +354,10 @@ def test_selected_patch_and_draft_outputs_release_borrowed_nested_values() -> No
         assert isinstance(record, dict)
         borrowed = record["selected"]
         assert isinstance(borrowed, dict)
+        draft: dict[str, object] = dict(borrowed)
         patch = ParsedFileEdit(structured_patch=[borrowed])
         session = ParsedSession(
-            source_name=Provider.CLAUDE_CODE, provider_session_id="neutral", messages=[], pending_drafts=[borrowed]
+            source_name=Provider.CLAUDE_CODE, provider_session_id="neutral", messages=[], pending_drafts=[draft]
         )
     assert patch.model_dump(mode="json")["structured_patch"] == [value]
     assert session.pending_drafts == [value]

@@ -98,7 +98,7 @@ async def test_workflow_same_message_calls_and_runless_sidecar_keep_all_evidence
         block = {"type": "tool_use", "name": "Workflow", "input": {"runId": RUN_ID}}
         if native_tool_ids:
             block["id"] = f"workflow-parallel-{ordinal}"
-            block["input"] = {**block["input"], "phases": [f"phase-{ordinal}"]}
+            block["input"] = {"runId": RUN_ID, "phases": [f"phase-{ordinal}"]}
         blocks.append(block)
     _write_jsonl(
         coordinator_path,

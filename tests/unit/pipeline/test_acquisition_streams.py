@@ -268,7 +268,9 @@ async def test_visit_sources_settles_zip_capture_before_returning(
                 json.dumps({"type": "session_meta", "payload": {"id": f"neutral-{ordinal}"}}) + "\n",
             )
     streams: list[IO[bytes]] = []
-    original_open = source_acquisition.open_bound_container
+    from polylogue.sources.acquisition_boundary import open_bound_container
+
+    original_open = open_bound_container
 
     @contextmanager
     def tracked_open(blob_store: BlobStore, source_binding: SourceInputBinding) -> Iterator[BoundContainerCapture]:

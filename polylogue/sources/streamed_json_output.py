@@ -18,16 +18,21 @@ from polylogue.schemas.observation_spill import SpilledArray, SpilledObject, _lo
 
 
 def write_streamed_json(value: object, destination: Path, *, member_format: bool = False) -> None:
-    """Publish complete encoded bytes while borrowing the input owner's lifetime.
+    """Prepare complete scratch bytes while borrowing the input owner's lifetime.
 
     Member format preserves the original stdlib bundle-member serialization;
     compact format preserves the core JSON encoder. Failed output stays private.
+    The destination is preparation scratch, without crash durability. Creator
+    blob pickup copies and fsyncs it before the archive publication barrier.
     """
     stage = destination.with_name(f".{destination.name}-{uuid.uuid4().hex}.partial")
     try:
         with stage.open("xb") as output:
             _write_value(value, output, member_format)
             check_compute_cancelled()
+        # Scratch becomes readable here; durable creator pickup is a separate
+        # fsynced copy plus BlobStore._persist_publication's directory barrier.
+        # ast-grep-ignore: replace-without-parent-fsync
         os.replace(stage, destination)
     finally:
         stage.unlink(missing_ok=True)

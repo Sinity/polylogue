@@ -922,7 +922,9 @@ def test_record_stream_shares_json_read_conversion_within_each_record(monkeypatc
         for item in registry.by_mode[DetectionMode.SEQUENCE_DOCUMENT]
         if item.binding.binding_id == "claude-ai-sequence-chat-messages"
     )
-    original = detection_projection.json_document_or_none
+    from polylogue.core.json import json_document_or_none
+
+    original = json_document_or_none
     calls: list[object] = []
 
     def observe(value: object) -> object:

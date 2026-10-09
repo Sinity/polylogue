@@ -1523,6 +1523,11 @@ def test_prepared_gemini_sidecars_preserve_stderr_and_independent_display(tmp_pa
     )
 
     class Resolver:
+        def claude_code_scope(self, source_path: str | Path | None) -> RetainedSidecarScope:
+            from polylogue.sources.sidecar_evidence import UNRESOLVED_SIDECAR_SCOPE
+
+            return UNRESOLVED_SIDECAR_SCOPE
+
         def gemini_cli_scope(self, *_args: object) -> RetainedSidecarScope:
             return scope
 
@@ -4125,7 +4130,9 @@ def test_gemini_checkpoint_preparation_spools_records_before_eof_without_retaini
     live = 0
     peak = 0
     first_append: int | None = None
-    original_records = prepared.owned_json_records
+    from polylogue.sources.decoders import owned_json_records
+
+    original_records = owned_json_records
     original_append = prepared._append_gemini_raw_message
 
     class TrackedRecord(dict[str, JSONValue]):
@@ -4305,7 +4312,9 @@ def test_bare_drive_jsonl_preparation_reuses_chunk_stream_without_retaining_reco
     live = 0
     peak = 0
     decoded = 0
-    original_records = prepared.owned_json_records
+    from polylogue.sources.decoders import owned_json_records
+
+    original_records = owned_json_records
 
     class TrackedRecord(dict[str, JSONValue]):
         pass
@@ -4955,7 +4964,7 @@ def test_gemini_final_rows_share_one_decode(
             decoded += 1
         return result
 
-    monkeypatch.setattr(prepared_jsonl.json, "loads", tracked_loads)
+    monkeypatch.setattr(json, "loads", tracked_loads)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),

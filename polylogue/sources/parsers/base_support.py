@@ -252,8 +252,8 @@ def _unknown_wire_type(value: object) -> str | None:
             if isinstance(value, SpilledObject)
             else value.items()
         )
-        for key, child in entries:
-            if key in _USER_DATA_KEYS:
+        for child_key, child in entries:
+            if child_key in _USER_DATA_KEYS:
                 continue
             found = _unknown_wire_type(child)
             if found is not None:

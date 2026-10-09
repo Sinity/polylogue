@@ -102,11 +102,23 @@ def test_retained_validation_initializes_reducer_tables_once_per_document(
             schema_resolution=_resolution("v2"),
             schema_resolution_is_explicit=False,
             registry=registry,
+            signature_directory=tmp_path,
         )
         assert verdict.sample_count == count
         assert verdict.status is ValidationStatus.PASSED
         assert verdict.invalid_count == verdict.error_count == verdict.drift_count == 0
-        assert len(declarations) == 6
+        # Exact drift paths now own a separate chunk table. Each table must
+        # still be initialized once for the whole document, never per sample.
+        names = [statement.split()[5].split("(", 1)[0] for statement in declarations]
+        assert sorted(names) == [
+            "retained_drift",
+            "retained_drift_chunks",
+            "retained_eval_items",
+            "retained_eval_props",
+            "retained_scope",
+            "retained_unique",
+            "retained_unread",
+        ]
         assert retained_validation._ACTIVE_VALIDATION_SCRATCH.get() is None
 
 
@@ -1169,6 +1181,7 @@ def test_reused_registry_retained_current_historical_and_reload_match_fresh(tmp_
             schema_resolution=_resolution("v2"),
             schema_resolution_is_explicit=explicit,
             registry=registry,
+            signature_directory=tmp_path,
         )
 
     historical = verdict(reader)

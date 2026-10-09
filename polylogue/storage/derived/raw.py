@@ -2018,21 +2018,32 @@ class RawObservationDerivation(RawObservationInspection):
                 from polylogue.sources.revision_backfill import _retained_validation_input
 
                 prefix = neutral.parsed_prefix_size if self._validation_mode is not ValidationMode.OFF else None
-                with _retained_validation_input(staged_blob, prefix, neutral_directory) as validation_path:
-                    verdict = validate_retained_document(
-                        neutral.resolved_provider,
-                        validation_path,
-                        mode=self._validation_mode,
-                        raw_id=raw_id,
-                        revision_sha256=blob_hash,
-                        evidence_id=raw_id,
-                        source_path=source_path,
-                        jsonl=True,
-                        captured_zip_coordinate=captured.zip_coordinate,
-                        registry=self._schema_registry,
-                        signature_directory=neutral_directory,
+                try:
+                    with _retained_validation_input(staged_blob, prefix, neutral_directory) as validation_path:
+                        verdict = validate_retained_document(
+                            neutral.resolved_provider,
+                            validation_path,
+                            mode=self._validation_mode,
+                            raw_id=raw_id,
+                            revision_sha256=blob_hash,
+                            evidence_id=raw_id,
+                            source_path=source_path,
+                            jsonl=True,
+                            captured_zip_coordinate=captured.zip_coordinate,
+                            registry=self._schema_registry,
+                            signature_directory=neutral_directory,
+                        )
+                except Exception as error:
+                    from polylogue.sources.prepared_jsonl import classify_decode_failure
+
+                    decode_failure = classify_decode_failure(error)
+                    if decode_failure is None:
+                        raise
+                    neutral = dataclasses.replace(
+                        neutral, error=f"{type(error).__name__}: {error}", decode_failure=decode_failure
                     )
-                neutral = dataclasses.replace(neutral, validation_verdict=verdict)
+                else:
+                    neutral = dataclasses.replace(neutral, validation_verdict=verdict)
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
             refreshed_neutral[raw_id] = neutral
             return neutral
