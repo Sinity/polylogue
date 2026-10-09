@@ -419,3 +419,71 @@ def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
             tuple(user.execute("SELECT * FROM assertions WHERE assertion_id=?", (before_user[0],)).fetchone())
             == before_user
         )
+
+
+def test_retained_source_can_replay_into_an_operation_owned_standalone_index(tmp_path: Path) -> None:
+    import json
+
+    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+    from polylogue.core.enums import Provider
+    from polylogue.operations.operation_context import open_operation_read
+    from polylogue.operations.source_target_read import _PinnedRetainedRead, _prepare_source_target_artifact
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write, write_parsed_session_to_archive
+    from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    (tmp_path / "prepared").mkdir()
+    with write_lease("test.source-scratch-replay", archive_root=root):
+        bootstrap_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CLAUDE_AI,
+                payload=json.dumps(_export(["A", "B"])).encode(),
+                source_path="stable-blocks.txt",
+                canonical_source_path="stable-blocks.txt",
+                acquired_at_ms=1,
+                revision=RawRevisionEnvelope(
+                    logical_source_key="claude-ai-export:stable-blocks",
+                    kind=RawRevisionKind.FULL,
+                    source_revision="scratch-source",
+                    acquisition_generation=1,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                ),
+            )
+            archive.commit()
+    with open_operation_read(root) as snapshot:
+        retained = _PinnedRetainedRead(snapshot.archive)
+        artifact = _prepare_source_target_artifact(retained, raw_id, directory=tmp_path / "prepared")
+        try:
+            scratch_path = tmp_path / "composition.sqlite"
+            with closing(connect_measured(str(scratch_path))) as scratch:
+                scratch.row_factory = sqlite3.Row
+                initialize_runtime_tier_probe(scratch, ArchiveTier.INDEX, probe_path=scratch_path)
+                destination = IndexMutationDestination.standalone(scratch_path)
+                with closing(artifact.iter_sessions()) as sessions:
+                    for session in sessions:
+                        prepared = prepare_session_write(
+                            scratch, session, merge_append=False, source_read=retained, raw_id=raw_id
+                        )
+                        try:
+                            with destination.mutation_scope(scratch) as scope:
+                                write_parsed_session_to_archive(
+                                    scratch,
+                                    session,
+                                    raw_id=raw_id,
+                                    prepared_write=prepared,
+                                    source_read=retained,
+                                    mutation_scope=scope,
+                                    manage_transaction=False,
+                                )
+                                scope.commit()
+                        finally:
+                            prepared.close()
+                assert [row[0] for row in scratch.execute("SELECT text FROM blocks ORDER BY position")] == ["A", "B"]
+        finally:
+            artifact.discard()
+        assert snapshot.archive._conn.execute("SELECT count(*) FROM blocks").fetchone()[0] == 0
