@@ -662,3 +662,16 @@ Native message names are opaque: only literal empty is absent. Whitespace
 and Unicode normalization form remain significant in native identity,
 message ownership, and Source revision hashing. Exact repeated names use
 semantic content identity plus occurrence rather than replacing a row.
+
+Across distinct acquisitions, message reconciliation retains prior canonical
+owners. A canonical native match takes precedence; where duplicate-name
+normalization changes native and content identity, exact semantic digest and
+occurrence identify the same message. Incoming block and projection owners
+follow that explicit mapping. Original Source-native occurrence names remain
+separate Index evidence for asserted lineage anchors inside composed cuts.
+Same-acquisition replay and explicit replacement retain their replacement
+semantics.
+
+An asserted native anchor without a stored occurrence keeps lineage incomplete.
+A later parent write binds it only when the exact composed occurrence is unique;
+several admitted occurrences refuse the assertion rather than select a row.

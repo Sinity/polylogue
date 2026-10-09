@@ -37,6 +37,7 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
 from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -345,7 +346,11 @@ def test_prepared_rows_match_identity_golden_fixture() -> None:
 
     assert prepared.session_id == "codex-session:tool-use-and-thinking"
     assert prepared.session_content_hash.hex() == "b388bae80e73def1b0c39c892a27ab887bca6b7b65128e823ae698025e54123f"
-    assert [(row[0], row[1], cast(bytes, row[30]).hex()) for row in prepared.message_rows] == [
+    message_columns = [
+        c.name for c in archive_tiers_specs.MESSAGES_SPEC.writable_columns if c.extract_placeholder == "?"
+    ]
+    hash_index = message_columns.index("content_hash")
+    assert [(row[0], row[1], cast(bytes, row[hash_index]).hex()) for row in prepared.message_rows] == [
         (
             "codex-session:tool-use-and-thinking",
             "t0",

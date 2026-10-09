@@ -119,17 +119,22 @@ runtime_tables:
     reason: "The table is created in refs.db under this object's TemporaryDirectory and holds prefix references for one prepared session; the connection and directory are removed with the object."
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_UnionScratch.__init__"
-    table: "block_remap"
-    disposition: disposable_scratch
-    reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and maps block ids during one cross-acquisition preparation; close() removes the private scratch store."
-  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
-    function: "_UnionScratch.__init__"
     table: "message_remap"
     disposition: disposable_scratch
     reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and maps message ids during one cross-acquisition preparation; close() removes the private scratch store."
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_prepare_cross_acquisition_union"
+    table: "old_semantic"
+    disposition: disposable_scratch
+    reason: "The table belongs to the cross-acquisition union private scratch owner and is removed when preparation closes."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_prepare_cross_acquisition_union"
+    table: "incoming_message_remap"
+    disposition: disposable_scratch
+    reason: "The table belongs to the cross-acquisition union private scratch owner and is removed when preparation closes."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_UnionScratch.__init__"
-    table: "native_message"
+    table: "message_owner_map"
     disposition: disposable_scratch
     reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and indexes merged message ids during one cross-acquisition preparation; close() removes the private scratch store."
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
