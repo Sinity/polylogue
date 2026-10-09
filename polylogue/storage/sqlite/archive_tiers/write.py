@@ -5137,7 +5137,7 @@ def _coalesce_scalar(new: object, old: object) -> object:
 _SPLICE_FRONT: object = object()
 
 
-def _splice_merge_keys(old_keys: list[object], new_keys: list[object]) -> list[tuple[str, object]]:
+def _splice_merge_keys(old_keys: Sequence[object], new_keys: Sequence[object]) -> list[tuple[str, object]]:
     """Merge two ordered key sequences, preserving the relative order of both.
 
     A key present in ``old_keys`` but not ``new_keys`` is spliced back in
@@ -6382,15 +6382,15 @@ def _union_with_existing_rows(
         old_row_by_key = dict(zip(old_keys, old_rows, strict=True))
 
         final_rows: list[tuple[object, ...]] = []
-        for new_block_pos, (source, key) in enumerate(_splice_merge_keys(old_keys, new_keys)):
+        for new_block_pos, (source, block_key) in enumerate(_splice_merge_keys(old_keys, new_keys)):
             if source == "new":
-                row = new_row_by_key[key]
-                if key in old_row_by_key:
+                row = new_row_by_key[block_key]
+                if block_key in old_row_by_key:
                     row = _coalesce_block_row(
-                        row, old_row_by_key[key], b_idx, message_id=message_id, position=new_block_pos
+                        row, old_row_by_key[block_key], b_idx, message_id=message_id, position=new_block_pos
                     )
             else:
-                row = old_row_by_key[key]
+                row = old_row_by_key[block_key]
                 logger.info(
                     "field-path union (polylogue-geop): reinjecting block message_id=%s "
                     "dropped by newer acquisition, restored at relative position %s",
@@ -6763,33 +6763,33 @@ def _prepare_cross_acquisition_union(
                 or not scratch.conn.execute("SELECT 1 FROM new_message WHERE key = ?", (native,)).fetchone()
             ):
                 continue
-            row = list(pickle.loads(blob))
-            row[mi["has_tool_use"]] = int(
+            rehashed_row = list(cast(tuple[object, ...], pickle.loads(blob)))
+            rehashed_row[mi["has_tool_use"]] = int(
                 any(
                     block[bi["block_type"]] == BlockType.TOOL_USE.value
                     for block in owner_rows("merged_block", message_id)
                 )
             )
-            row[mi["has_thinking"]] = int(
+            rehashed_row[mi["has_thinking"]] = int(
                 any(
                     block[bi["block_type"]] == BlockType.THINKING.value
                     for block in owner_rows("merged_block", message_id)
                 )
             )
-            row[mi["content_hash"]] = _message_row_hash(
+            rehashed_row[mi["content_hash"]] = _message_row_hash(
                 session_id,
                 native_id_from_storage(
-                    cast("str | None", row[mi["native_id"]]),
-                    cast("str | None", row[mi["source_native_id_json"]]),
+                    cast("str | None", rehashed_row[mi["native_id"]]),
+                    cast("str | None", rehashed_row[mi["source_native_id_json"]]),
                 ),
-                cast(int, row[mi["position"]]),
-                cast(int, row[mi["variant_index"]] or 0),
-                _row_fields_digest(row, mi),
+                cast(int, rehashed_row[mi["position"]]),
+                cast(int, rehashed_row[mi["variant_index"]] or 0),
+                _row_fields_digest(rehashed_row, mi),
                 _stored_block_hash_parts(owner_rows("merged_block", message_id), bi),
             )
             scratch.conn.execute(
                 "UPDATE merged_message SET row_blob = ? WHERE ordinal = ?",
-                (pickle.dumps(tuple(row), protocol=5), ordinal),
+                (pickle.dumps(tuple(rehashed_row), protocol=5), ordinal),
             )
         for (native,) in scratch.conn.execute("SELECT key FROM old_message WHERE key IS NOT NULL GROUP BY key"):
             old_id = native
