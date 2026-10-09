@@ -329,6 +329,17 @@ and preserves original receipts as detached provenance. Fixture clones use the
 same deep owner. Partial durable cores refuse operational restoration; omitted
 purchased Embeddings remain unrestored and produce degraded admission.
 
+Backup publication streams a filesystem barrier over every copied tier, CAS
+blob, metadata file and directory, then persists ancestor reachability before
+publishing the signed verification receipt. Unverified package success requires
+the same barrier. The first attestation-key directory also persists its parent
+chain. Explicit restore persists the complete destination, including purchased
+Embeddings and detached original receipts, before removing its population fence;
+a failed fence-retirement barrier reinstalls the original pending evidence.
+These barriers establish syscall ordering; neutral tests do not simulate an
+actual power loss (`core/durable_fs.py`, `storage/backup_package.py`,
+`storage/sqlite/population_admission.py`).
+
 Literal row evidence streams current durable ROWID table TEXT and BLOB cells
 through same-connection incremental handles, including primary keys and invalid
 UTF-8. Metadata projections fetch only storage classes and numeric scalars.

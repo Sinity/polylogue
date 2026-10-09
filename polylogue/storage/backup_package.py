@@ -29,7 +29,7 @@ from typing import IO, Literal
 from pydantic import BaseModel
 
 from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
-from polylogue.core.durable_fs import atomic_replace
+from polylogue.core.durable_fs import atomic_replace, sync_directory, sync_tree
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.write_lease import require_write_lease
 from polylogue.paths import archive_root
@@ -1384,7 +1384,10 @@ def _copy_backup_artifact_to_scratch(source: Path, scratch_root: Path) -> Path:
 
 
 def _remove_verification_receipt(backup_root: Path) -> None:
-    (backup_root / _VERIFICATION_RECEIPT_FILE).unlink(missing_ok=True)
+    receipt = backup_root / _VERIFICATION_RECEIPT_FILE
+    if receipt.exists() or receipt.is_symlink():
+        receipt.unlink()
+        sync_directory(backup_root)
 
 
 def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
@@ -1737,6 +1740,9 @@ def _write_successful_verification_receipt(backup_root: Path, verification: dict
         raise RuntimeError(f"backup changed after scratch verification: {exc}") from exc
     if current_evidence != verified_evidence:
         raise RuntimeError("backup changed after scratch verification")
+    # Reading the accepted bytes is not a destination persistence barrier.
+    # Complete their physical closure before the receipt can authorize them.
+    sync_tree(backup_root)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     receipt_body: dict[str, object] = {
         "format": VERIFICATION_RECEIPT_FORMAT,
@@ -1789,6 +1795,8 @@ def create_backup_package(
     )
     if verify and result.ok and result.output_path is not None:
         _verify_backup_result(result)
+    elif result.ok and result.output_path is not None:
+        sync_tree(Path(result.output_path))
     return result
 
 

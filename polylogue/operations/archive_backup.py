@@ -155,7 +155,7 @@ def backup_archive(
                     profile=profile,
                     archive_root_path=root,
                     archive_owner=archive_owner,
-                    verify=False,
+                    verify=verify,
                 )
             else:
                 with OwnedArchiveLocation.acquire(
@@ -167,10 +167,8 @@ def backup_archive(
                         profile=profile,
                         archive_root_path=root,
                         archive_owner=owned,
-                        verify=False,
+                        verify=verify,
                     )
-    if verify and result.ok and result.output_path is not None:
-        package._verify_backup_result(result)
     return result
 
 
@@ -430,6 +428,11 @@ def restore_verified_backup(*, backup_dir: Path, destination: Path) -> dict[str,
                 if path.is_file():
                     path.replace(original_package / name)
             validate()
+            from polylogue.core.durable_fs import sync_tree
+
+            # Keep the population fence until every copied preservation byte
+            # and relocated provenance entry survives destination publication.
+            sync_tree(destination)
             # The deep owner already evaluated the normal final startup
             # predicate after exact row/schema population. This point
             # additionally proves the final file/blob set and source
