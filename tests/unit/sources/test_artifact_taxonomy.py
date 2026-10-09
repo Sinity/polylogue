@@ -120,6 +120,19 @@ def test_jsonl_grammar_probe_restores_borrowed_stream(payload: bytes, expected: 
     assert not stream.closed
 
 
+@pytest.mark.parametrize("number", ["1e400", "-1e400", "1e-400"])
+def test_jsonl_first_grammar_preserves_float_overflow_and_underflow(number: str) -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    payload = ('{"n":' + number + '}\n{"n":0}\n').encode()
+    result = classify_artifact_stream(io.BytesIO(payload), provider=Provider.UNKNOWN, wire_format="jsonl")
+    assert result.record_count == 2
+    assert result.classification.kind is ArtifactKind.METADATA_DOCUMENT
+    assert result.proved_non_session
+
+
 def test_jsonl_grammar_probe_memory_does_not_track_wide_first_value() -> None:
     import io
     import tracemalloc
@@ -143,18 +156,19 @@ def test_jsonl_grammar_probe_memory_does_not_track_wide_first_value() -> None:
     assert large_peak - small_peak < (large_bytes - small_bytes) // 4, measurements
 
 
-def test_jsonl_grammar_probe_preserves_callback_failure_and_stream_position() -> None:
+@pytest.mark.parametrize("failure_type", [ValueError, OverflowError])
+def test_jsonl_grammar_probe_preserves_callback_failure_and_stream_position(failure_type: type[Exception]) -> None:
     import io
 
     from polylogue.core.json_envelope import jsonl_has_record_successor
 
     stream = io.BytesIO(b'{"one":1}\n{"two":2}\n')
-    failure = ValueError("cancelled callback")
+    failure = failure_type("cancelled callback")
 
     def cancelled() -> None:
         raise failure
 
-    with pytest.raises(ValueError) as observed:
+    with pytest.raises(failure_type) as observed:
         jsonl_has_record_successor(stream, check_stop=cancelled)
     assert observed.value is failure
     assert stream.tell() == 0
