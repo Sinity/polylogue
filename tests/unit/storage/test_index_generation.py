@@ -445,6 +445,56 @@ def test_metadata_tmp_symlink_is_not_followed(tmp_path: Path) -> None:
     assert external.read_text(encoding="utf-8") == "untouched"
 
 
+@pytest.mark.parametrize("producer", ["metadata", "rollback", "pointer_proof", "retention_receipt"])
+def test_promotion_preserves_regular_interrupted_temporary(tmp_path: Path, producer: str) -> None:
+    """A prior write's private bytes do not own the next promotion attempt."""
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    target = {
+        "metadata": store._metadata_path(generation.generation_id),
+        "rollback": store._metadata_path(generation.generation_id).with_name("generation.rollback.json"),
+        "pointer_proof": store._rollback_pointer_proof_path(generation.generation_id),
+        "retention_receipt": store._retention_receipt_path(generation.generation_id),
+    }[producer]
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_bytes(b"neutral interrupted lifecycle write")
+    identity = temporary.stat()
+
+    promoted = store.promote(generation)
+
+    assert promoted.state == "active"
+    assert (tmp_path / "index.db").resolve() == Path(generation.index_path).resolve()
+    assert temporary.read_bytes() == b"neutral interrupted lifecycle write"
+    assert (temporary.stat().st_dev, temporary.stat().st_ino) == (identity.st_dev, identity.st_ino)
+
+
+def test_pointer_anchor_preserves_regular_interrupted_temporary(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    temporary = tmp_path / ".index-active-pointer.tmp"
+    temporary.write_bytes(b"neutral interrupted anchor write")
+    identity = temporary.stat()
+
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    assert store.active_pointer == tmp_path / "index.db"
+    assert (tmp_path / ".index-active-pointer").read_text() == str((tmp_path / "index.db").absolute())
+    assert temporary.read_bytes() == b"neutral interrupted anchor write"
+    assert temporary.stat().st_ino == identity.st_ino
+
+
+def test_pointer_anchor_refuses_interrupted_temporary_symlink(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    external = tmp_path / "external-anchor"
+    external.write_text("untouched")
+    (tmp_path / ".index-active-pointer.tmp").symlink_to(external)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        IndexGenerationStore.for_archive_root(tmp_path)
+
+    assert external.read_text() == "untouched"
+
+
 def test_check_to_use_replacement_cannot_redirect_metadata_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

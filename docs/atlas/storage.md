@@ -498,6 +498,11 @@ previously resolving purchased message references must all pass before the
 normal reference-checked promotion. No durable or purchased tier is replaced.
 Interrupted MEMORY candidates are discarded through their owner and rebuilt;
 a published successor completes its existing promotion tail on restart.
+Lifecycle JSON and the first-touch pointer anchor use exclusive no-follow,
+attempt-owned temporary files. A regular temporary left by an interrupted
+write remains untouched and cannot reserve the next attempt's pathname.
+Temporary symlinks still refuse; publication retains file and parent-directory
+fsync and the existing lifecycle lock and pointer identity checks.
 Promotion and restart do not derive durable parse success from Index receipts.
 Unacknowledged successful session components remain eligible for ordinary retained
 replay, which prepares current evidence and publishes its original Source permit

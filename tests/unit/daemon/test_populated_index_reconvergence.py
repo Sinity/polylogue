@@ -439,8 +439,9 @@ def test_actual_startup_refuses_ineligible_populated_generation(
     assert tuple((root / ".index-generations").glob("gen-*/generation.json")) == before
 
 
+@pytest.mark.parametrize("leftover_temporary", [False, True])
 def test_pointer_swapped_recovery_finishes_owned_promotion_tail(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leftover_temporary: bool
 ) -> None:
     from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
     from tests.infra.empty_managed_index import mutate_fixture_database
@@ -475,6 +476,10 @@ def test_pointer_swapped_recovery_finishes_owned_promotion_tail(
     active = ArchiveLocation.resolve(root).active_index_path.resolve()
     assert active != old and old.exists()
     metadata = tuple((root / ".index-generations").glob("gen-*/generation.json"))
+    temporary = active.parent / "generation.json.tmp"
+    if leftover_temporary:
+        temporary.write_bytes(b"neutral interrupted atomic write")
+        temporary_identity = temporary.stat()
 
     class PreflightReachedError(Exception):
         pass
@@ -500,6 +505,10 @@ def test_pointer_swapped_recovery_finishes_owned_promotion_tail(
         )
     assert tuple((root / ".index-generations").glob("gen-*/generation.json")) == metadata
     assert IndexGenerationStore.for_archive_root(root).load(active.parent.name).state == "active"
+
+    if leftover_temporary:
+        assert temporary.read_bytes() == b"neutral interrupted atomic write"
+        assert temporary.stat().st_ino == temporary_identity.st_ino
 
 
 def test_current_startup_preserves_newer_source_retry_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
