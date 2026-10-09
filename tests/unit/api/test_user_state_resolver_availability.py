@@ -18,10 +18,10 @@ from pathlib import Path
 import pytest
 
 from polylogue.api.user_state_resolver import (
-    _resolve_attachment_in_connections,
     resolve_insight_target,
 )
 from polylogue.core.user_state_targets import TARGET_SESSION
+from polylogue.operations.attachment_target_read import _resolve_attachment_in_connections
 
 
 def _materialized_index(root: Path) -> Path:

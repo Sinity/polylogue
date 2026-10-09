@@ -11,8 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.api.user_state_resolver import bind_attachment_source_guard, resolve_insight_target
+from polylogue.api.user_state_resolver import resolve_insight_target
 from polylogue.core.enums import Provider
+from polylogue.operations.attachment_target_read import bind_attachment_source_guard
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
