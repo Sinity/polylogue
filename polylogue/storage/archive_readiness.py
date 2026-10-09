@@ -15,7 +15,9 @@ from typing import Any, Literal, cast
 from polylogue.archive.raw_materialization import source_path_native_id_candidates
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
+    _measure_parser_census_identity,
     parser_census_identity_measurement,
+    parser_census_identity_workspace,
 )
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS
@@ -480,14 +482,15 @@ def _pinned_parser_census_projection(
                         (_raw_id,),
                     )
                 ) as memberships,
-                parser_census_identity_measurement(
+            ):
+                measured = _measure_parser_census_identity(
+                    measurement_owner,
                     raw_logical_key=typed_key,
                     revision_kind=revision_kind,
                     membership_logical_keys=(row[0] for row in memberships),
                     observed_logical_keys=iter_parser_census_logical_keys(logical_keys_json),
                     observed_are_receipt=True,
-                ) as measured,
-            ):
+                )
                 complete = measured.complete(
                     typed_non_session=bool(typed_non_session),
                     parser_confirmed_non_session=bool(parser_confirmed_non_session),
@@ -516,9 +519,13 @@ def _pinned_parser_census_projection(
             non_complete_receipt_count += 1
 
     try:
-        for row in rows:
-            current_row = tuple(row)
-            assess()
+        # Only aggregate results leave this projection. Each Raw replaces the
+        # private census tables after its prior readers have settled, while
+        # the admitted Source snapshot and its matching predicates stay pinned.
+        with parser_census_identity_workspace() as measurement_owner:
+            for row in rows:
+                current_row = tuple(row)
+                assess()
     finally:
         rows.close()
     return {

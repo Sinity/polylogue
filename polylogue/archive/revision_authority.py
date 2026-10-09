@@ -348,28 +348,13 @@ class ParserCensusIdentityMeasurement:
 
 
 @contextmanager
-def parser_census_identity_measurement(
-    *,
-    raw_logical_key: object,
-    revision_kind: object,
-    membership_logical_keys: Iterable[object],
-    observed_logical_keys: Iterable[str] | None,
-    observed_are_receipt: bool = False,
-    inherit_durable_keys: bool = False,
-    check_stop: Callable[[], None] | None = None,
-) -> Iterator[ParserCensusIdentityMeasurement]:
-    """Measure producer or retained receipt keys under the same identity law.
-
-    Inputs come from the caller's admitted Source snapshot. The scratch owner
-    never reopens that snapshot; its regular indexed table lives on disk.
-    """
+def parser_census_identity_workspace() -> Iterator[NativeSQLCustodyOwner]:
+    """Own the canonical disk tables for one finite census projection."""
     from polylogue.storage.sqlite.connection_profile import (
         retained_native_sql_owners_on_current_thread,
         scratch_connection_context,
     )
 
-    if observed_logical_keys is not None and inherit_durable_keys:
-        raise ValueError("parser census cannot combine observed and inherited durable keys")
     with scratch_connection_context(prefix="polylogue-parser-census-", filename="identities.sqlite") as scratch:
         owners = tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner.connection is scratch)
         if len(owners) != 1:
@@ -385,79 +370,134 @@ def parser_census_identity_measurement(
             "PRIMARY KEY(kind, logical_key))"
         ).close()
         scratch.execute("CREATE TABLE census_encoded_keys(id INTEGER PRIMARY KEY, value TEXT NOT NULL)").close()
-        durable_valid = True
-        for value in membership_logical_keys:
-            if check_stop is not None:
-                check_stop()
-            if value is None:
-                continue
+        yield owner
+
+
+def _measure_parser_census_identity(
+    owner: NativeSQLCustodyOwner,
+    *,
+    raw_logical_key: object,
+    revision_kind: object,
+    membership_logical_keys: Iterable[object],
+    observed_logical_keys: Iterable[str] | None,
+    observed_are_receipt: bool = False,
+    inherit_durable_keys: bool = False,
+    check_stop: Callable[[], None] | None = None,
+) -> ParserCensusIdentityMeasurement:
+    """Replace one Raw's measurement on its caller's live census workspace.
+
+    The caller consumes the measurement before measuring another Raw. No
+    identity reader or stream may outlive that row's measurement.
+    """
+    if observed_logical_keys is not None and inherit_durable_keys:
+        raise ValueError("parser census cannot combine observed and inherited durable keys")
+    if check_stop is not None:
+        check_stop()
+    scratch = owner.require_connection()
+    scratch.execute("DELETE FROM census_identity").close()
+    scratch.execute("DELETE FROM census_encoded_keys").close()
+    durable_valid = True
+    for value in membership_logical_keys:
+        if check_stop is not None:
+            check_stop()
+        if value is None:
+            continue
+        try:
+            key = canonical_authority_logical_key(str(value))
+        except ValueError:
+            durable_valid = False
+            continue
+        scratch.execute(
+            "INSERT OR IGNORE INTO census_identity(kind, logical_key, source_key) VALUES (1, ?, ?)",
+            (key, str(value)),
+        ).close()
+    if raw_logical_key is not None and str(revision_kind) != RawRevisionKind.UNKNOWN.value:
+        typed_key = str(raw_logical_key)
+        if not typed_key.startswith("pending-raw:"):
             try:
-                key = canonical_authority_logical_key(str(value))
+                key = canonical_authority_logical_key(typed_key)
             except ValueError:
                 durable_valid = False
-                continue
-            scratch.execute(
-                "INSERT OR IGNORE INTO census_identity(kind, logical_key, source_key) VALUES (1, ?, ?)",
-                (key, str(value)),
-            ).close()
-        if raw_logical_key is not None and str(revision_kind) != RawRevisionKind.UNKNOWN.value:
-            typed_key = str(raw_logical_key)
-            if not typed_key.startswith("pending-raw:"):
+            else:
+                scratch.execute(
+                    "INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (1, ?)", (key,)
+                ).close()
+    observed_valid = observed_logical_keys is not None or inherit_durable_keys
+    if inherit_durable_keys and durable_valid:
+        scratch.execute(
+            "INSERT INTO census_identity(kind, logical_key) SELECT 0, logical_key FROM census_identity WHERE kind=1"
+        ).close()
+    elif observed_logical_keys is not None:
+        observed = iter(observed_logical_keys)
+        try:
+            while True:
+                if check_stop is not None:
+                    check_stop()
                 try:
-                    key = canonical_authority_logical_key(typed_key)
-                except ValueError:
-                    durable_valid = False
-                else:
-                    scratch.execute(
-                        "INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (1, ?)", (key,)
-                    ).close()
-        observed_valid = observed_logical_keys is not None or inherit_durable_keys
-        if inherit_durable_keys and durable_valid:
-            scratch.execute(
-                "INSERT INTO census_identity(kind, logical_key) SELECT 0, logical_key FROM census_identity WHERE kind=1"
-            ).close()
-        elif observed_logical_keys is not None:
-            observed = iter(observed_logical_keys)
-            try:
-                while True:
-                    if check_stop is not None:
-                        check_stop()
-                    try:
-                        value = next(observed)
-                    except StopIteration:
-                        break
-                    except InvalidParserCensusKeysError:
+                    value = next(observed)
+                except StopIteration:
+                    break
+                except InvalidParserCensusKeysError:
+                    observed_valid = False
+                    break
+                key = canonical_authority_logical_key(value)
+                with closing(
+                    scratch.execute("INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (0, ?)", (key,))
+                ) as inserted:
+                    if observed_are_receipt and not inserted.rowcount:
                         observed_valid = False
-                        break
-                    key = canonical_authority_logical_key(value)
-                    with closing(
                         scratch.execute(
-                            "INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (0, ?)", (key,)
-                        )
-                    ) as inserted:
-                        if observed_are_receipt and not inserted.rowcount:
-                            observed_valid = False
-                            scratch.execute(
-                                "UPDATE census_identity SET occurrences=occurrences+1 WHERE kind=0 AND logical_key=?",
-                                (key,),
-                            ).close()
-            finally:
-                close_observed = getattr(observed, "close", None)
-                if callable(close_observed):
-                    close_observed()
-        with closing(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind=0")) as counted:
-            observed_count = int(counted.fetchone()[0])
-        with closing(
-            scratch.execute(
-                "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND NOT EXISTS ("
-                "SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND durable.logical_key=observed.logical_key) "
-                "UNION ALL SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND NOT EXISTS ("
-                "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND observed.logical_key=durable.logical_key) LIMIT 1"
-            )
-        ) as compared:
-            differs = compared.fetchone()
-        yield ParserCensusIdentityMeasurement(
-            scratch, durable_valid, observed_valid, differs is None, observed_count, owner
+                            "UPDATE census_identity SET occurrences=occurrences+1 WHERE kind=0 AND logical_key=?",
+                            (key,),
+                        ).close()
+        finally:
+            close_observed = getattr(observed, "close", None)
+            if callable(close_observed):
+                close_observed()
+    with closing(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind=0")) as counted:
+        observed_count = int(counted.fetchone()[0])
+    with closing(
+        scratch.execute(
+            "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND NOT EXISTS ("
+            "SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND durable.logical_key=observed.logical_key) "
+            "UNION ALL SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND NOT EXISTS ("
+            "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND observed.logical_key=durable.logical_key) LIMIT 1"
+        )
+    ) as compared:
+        differs = compared.fetchone()
+    return ParserCensusIdentityMeasurement(
+        scratch, durable_valid, observed_valid, differs is None, observed_count, owner
+    )
+
+
+@contextmanager
+def parser_census_identity_measurement(
+    *,
+    raw_logical_key: object,
+    revision_kind: object,
+    membership_logical_keys: Iterable[object],
+    observed_logical_keys: Iterable[str] | None,
+    observed_are_receipt: bool = False,
+    inherit_durable_keys: bool = False,
+    check_stop: Callable[[], None] | None = None,
+) -> Iterator[ParserCensusIdentityMeasurement]:
+    """Measure producer or retained receipt keys under the same identity law.
+
+    Inputs come from the caller's admitted Source snapshot. The scratch owner
+    never reopens that snapshot; its regular indexed table lives on disk.
+    """
+    if observed_logical_keys is not None and inherit_durable_keys:
+        raise ValueError("parser census cannot combine observed and inherited durable keys")
+    with parser_census_identity_workspace() as owner:
+        yield _measure_parser_census_identity(
+            owner,
+            raw_logical_key=raw_logical_key,
+            revision_kind=revision_kind,
+            membership_logical_keys=membership_logical_keys,
+            observed_logical_keys=observed_logical_keys,
+            observed_are_receipt=observed_are_receipt,
+            inherit_durable_keys=inherit_durable_keys,
+            check_stop=check_stop,
         )
 
 
