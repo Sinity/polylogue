@@ -100,7 +100,15 @@ def test_output_and_error_streams_both_survive_one_failed_call(display: str) -> 
     """The real census includes two responses carrying both output and error."""
     call = _tool_call("run_shell_command_1_0", output="PARTIAL_STDOUT", result_display=display)
     call["status"] = "error"
-    call["result"][0]["functionResponse"]["response"]["error"] = "DISTINCT_STDERR"
+    result = call["result"]
+    assert isinstance(result, list)
+    result_item = result[0]
+    assert isinstance(result_item, dict)
+    function_response = result_item["functionResponse"]
+    assert isinstance(function_response, dict)
+    response = function_response["response"]
+    assert isinstance(response, dict)
+    response["error"] = "DISTINCT_STDERR"
     payload = _session([{"id": "a1", "type": "gemini", "timestamp": "2026-03-14T21:41:02.000Z", "toolCalls": [call]}])
 
     [session] = parse_payload("gemini-cli", payload, "fallback")
@@ -345,7 +353,15 @@ def test_sidecar_replacement_preserves_the_response_error_stream(tmp_path: Path)
     payload = json.loads(snapshot.read_text(encoding="utf-8"))
     call = payload["messages"][0]["toolCalls"][0]
     call["status"] = "error"
-    call["result"][0]["functionResponse"]["response"]["error"] = "DISTINCT_STDERR"
+    result = call["result"]
+    assert isinstance(result, list)
+    result_item = result[0]
+    assert isinstance(result_item, dict)
+    function_response = result_item["functionResponse"]
+    assert isinstance(function_response, dict)
+    response = function_response["response"]
+    assert isinstance(response, dict)
+    response["error"] = "DISTINCT_STDERR"
     outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
     assert outputs is not None
     full_output = (outputs / "run_shell_command_1773524726450_0.txt").read_text()
