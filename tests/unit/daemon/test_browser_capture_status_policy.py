@@ -54,7 +54,15 @@ def test_summary_matches_bound_receiver_policy_and_auth_gate(tmp_path: Path, all
         direct = json.loads(response.read())
         connection.close()
         summary = browser_capture_status_payload()
-        minimal = refresh_status_snapshot(rich=False).payload["browser_capture"]
+        snapshot = refresh_status_snapshot(rich=False).payload
+        states = snapshot["component_state"]
+        readiness = snapshot["component_readiness"]
+        assert isinstance(states, dict) and isinstance(readiness, dict)
+        assert states["browser_capture"] == "running"
+        capture_readiness = readiness["browser_capture"]
+        assert isinstance(capture_readiness, dict)
+        assert capture_readiness["state"] == "ready"
+        minimal = snapshot["browser_capture"]
         assert isinstance(minimal, dict)
         for key in ("receiver_id", "auth_required", "allow_remote", "allowed_origins", "spool_ready", "active"):
             assert summary[key] == direct[key]
@@ -229,6 +237,15 @@ def test_daemon_does_not_publish_unscheduled_receiver(
 
     def observe(config: BrowserCaptureReceiverConfig | None) -> None:
         configure_browser_capture_status(config)
+        snapshot = refresh_status_snapshot(rich=False).payload
+        states = snapshot["component_state"]
+        readiness = snapshot["component_readiness"]
+        assert isinstance(states, dict) and isinstance(readiness, dict)
+        assert states["browser_capture"] == "stopped"
+        capture_readiness = readiness["browser_capture"]
+        assert isinstance(capture_readiness, dict)
+        assert capture_readiness["state"] == "missing"
+        assert snapshot["browser_capture_active"] is False
         observations.append(dict(browser_capture_status_payload()))
         if len(observations) == 1:
             raise RuntimeError("observation reached")

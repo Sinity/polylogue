@@ -339,7 +339,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "component_state": {
             "watcher": _component_state_from_flag(runtime.watcher_enabled),
             "api": _component_state_from_flag(runtime.api_enabled, default_when_unknown="running"),
-            "browser_capture": _component_state_from_flag(runtime.browser_capture_enabled),
+            "browser_capture": _component_state_from_flag(browser_capture_enabled),
         },
         "live": False,
         "browser_capture": json_document(browser_capture),
