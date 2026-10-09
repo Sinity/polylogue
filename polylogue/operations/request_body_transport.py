@@ -11,7 +11,6 @@ from polylogue.core.staged_body import BodyIncompleteError, StagedBody, stage_bo
 from polylogue.operations.daemon_protocol import (
     MAX_DECLARED_OPERATION_BODY_BYTES,
     DaemonOperationRequest,
-    daemon_operation_spec,
 )
 
 UPLOAD_MEDIA_TYPE = "application/vnd.polylogue.operation-input"
@@ -35,6 +34,50 @@ def _decode_control(raw):
     return DaemonOperationRequest.from_dict(
         json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
     )
+
+
+def _decode_streamed_control(source: BinaryIO, length: int) -> DaemonOperationRequest:
+    from decimal import Decimal
+
+    from ijson.backends.python import parse
+    from ijson.common import JSONError, ObjectBuilder
+
+    class FramedReader:
+        remaining = length
+
+        def read(self, size=-1):
+            if size == 0 or self.remaining == 0:
+                return b""
+            chunk = source.read(min(65536, self.remaining, size if size > 0 else self.remaining))
+            if not chunk:
+                raise BodyIncompleteError("incomplete operation control")
+            self.remaining -= len(chunk)
+            return chunk
+
+    framed = FramedReader()
+    builder = ObjectBuilder()
+    objects = []
+    try:
+        for _prefix, event, value in parse(framed, use_float=False):
+            if event == "start_map":
+                objects.append(set())
+            elif event == "start_array":
+                objects.append(None)
+            elif event in {"end_map", "end_array"}:
+                objects.pop()
+            elif event == "map_key":
+                keys = objects[-1]
+                if value in keys:
+                    raise ValueError("duplicate operation field")
+                keys.add(value)
+            if isinstance(value, Decimal):
+                value = float(value)
+            builder.event(event, value)
+        if framed.remaining:
+            raise BodyIncompleteError("incomplete operation control")
+        return DaemonOperationRequest.from_dict(builder.value)
+    except JSONError as exc:
+        raise ValueError("invalid operation control JSON") from exc
 
 
 def _read_exact(source: BinaryIO, length: int) -> bytes:
@@ -63,18 +106,14 @@ def read_operation_body(
     if media_type != UPLOAD_MEDIA_TYPE or length < 8:
         raise ValueError("unsupported operation input framing")
     control_length = struct.unpack("!Q", _read_exact(source, 8))[0]
-    if control_length <= 0 or control_length > MAX_DECLARED_OPERATION_BODY_BYTES or control_length > length - 8:
+    if control_length <= 0 or control_length > length - 8:
         raise ValueError("invalid operation control length")
-    request = _decode_control(_read_exact(source, control_length))
+    request = _decode_streamed_control(source, control_length)
     if request.operation != ANNOTATION_IMPORT_OPERATION:
         raise ValueError("operation does not declare an input body")
     declared = request.payload["input"]
     if not isinstance(declared, dict) or declared.get("size_bytes") != length - 8 - control_length:
         raise ValueError("input byte length differs from HTTP framing")
-    spec = daemon_operation_spec(request.operation)
-    assert spec is not None
-    if control_length > spec.max_body_bytes:
-        raise ValueError("operation control exceeds declared framing")
     staged = stage_body(source.read, length - 8 - control_length, spool_root=spool_root)
     if staged.sha256 != declared.get("sha256"):
         staged.discard()

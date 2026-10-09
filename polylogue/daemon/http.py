@@ -4890,7 +4890,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
-        if control_bytes > spec.max_body_bytes:
+        if input_body is None and control_bytes > spec.max_body_bytes:
             if input_body is not None:
                 input_body.discard()
             self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")

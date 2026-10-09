@@ -88,3 +88,20 @@ def test_old_whole_scalar_annotation_contract_is_refused(tmp_path: Path) -> None
     with pytest.raises(ValueError):
         read_operation_body(io.BytesIO(raw), len(raw), "application/json", spool_root=tmp_path)
     assert not list(tmp_path.iterdir())
+
+
+def test_streamed_controls_preserve_long_legal_refs_and_numeric_metadata(tmp_path: Path) -> None:
+    raw = b"{}\n"
+    control = _control(raw)
+    control["payload"]["prompt_ref"] = "block:" + "opaque" * 20_000
+    control["payload"]["metadata"] = {"wide_integer": 2**128, "path": "cafe\u0301", "cost": 1.0}
+    encoded = json.dumps(control).encode()
+    body = struct.pack("!Q", len(encoded)) + encoded + raw
+    request, staged, size = read_operation_body(io.BytesIO(body), len(body), UPLOAD_MEDIA_TYPE, spool_root=tmp_path)
+    assert staged is not None
+    try:
+        assert size > 65_536
+        assert request.payload == control["payload"]
+        assert type(request.payload["metadata"]["cost"]) is float
+    finally:
+        staged.discard()

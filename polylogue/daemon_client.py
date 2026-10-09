@@ -154,15 +154,17 @@ class DaemonClient:
         """Return the response status with its decoded JSON object, if any."""
 
         connection = _UnixHTTPConnection(self.socket_path, timeout_s)
-        raw = json.dumps(body, separators=(",", ":")).encode() if body is not None else None
+        raw = json.dumps(body, separators=(",", ":")).encode() if body is not None and input_body is None else None
         started_at = perf_counter()
+        control_custody = None
         try:
             # Connect before resolving credentials: an absent socket must cost
             # nothing, least of all a write into the archive root.
             connection.connect()
             if prepare_body is not None:
                 body = prepare_body()
-                raw = json.dumps(body, separators=(",", ":")).encode()
+                if input_body is None:
+                    raw = json.dumps(body, separators=(",", ":")).encode()
             headers = {"Host": "127.0.0.1", "Content-Type": "application/json"}
             token = self.auth_token
             if token:
@@ -170,18 +172,25 @@ class DaemonClient:
             if input_body is None:
                 connection.request(method, path, body=raw, headers=headers)
             else:
+                from polylogue.operations.read_result_transport import staged_json_response
                 from polylogue.operations.request_body_transport import UPLOAD_MEDIA_TYPE
 
-                assert raw is not None
+                control_custody = staged_json_response(body)
+                control = control_custody.__enter__()
+                control.seek(0, 2)
+                control_size = control.tell()
+                control.seek(0)
                 input_body.seek(0, 2)
                 size = input_body.tell()
                 input_body.seek(0)
-                prefix = struct.pack("!Q", len(raw)) + raw
+                prefix = struct.pack("!Q", control_size)
                 headers["Content-Type"] = UPLOAD_MEDIA_TYPE
-                headers["Content-Length"] = str(len(prefix) + size)
+                headers["Content-Length"] = str(len(prefix) + control_size + size)
 
                 def chunks():
                     yield prefix
+                    while chunk := control.read(65536):
+                        yield chunk
                     while chunk := input_body.read(65536):
                         yield chunk
 
@@ -231,6 +240,8 @@ class DaemonClient:
                 return None
             raise DaemonOperationProtocolError("daemon transport failed; direct fallback is not permitted") from exc
         finally:
+            if control_custody is not None:
+                control_custody.__exit__(None, None, None)
             connection.close()
 
     def _response_timeout_s(self, deadline_ms: int | None) -> float | None:

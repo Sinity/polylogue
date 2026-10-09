@@ -1182,14 +1182,14 @@ class AnnotationBatchImportOperationRequest(_OperationPayload):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, protected_namespaces=())
 
     input: AnnotationInputDescriptor
-    batch_id: str = Field(min_length=1, max_length=256)
-    schema_id: str = Field(min_length=1, max_length=256)
+    batch_id: str = Field(min_length=1)
+    schema_id: str = Field(min_length=1)
     schema_version: int = Field(ge=1)
-    target_ref: str = Field(min_length=1, max_length=4_096)
-    source_result_ref: str = Field(min_length=1, max_length=4_096)
-    actor_ref: str = Field(min_length=1, max_length=4_096)
-    model_ref: str = Field(min_length=1, max_length=4_096)
-    prompt_ref: str = Field(min_length=1, max_length=4_096)
+    target_ref: str = Field(min_length=1)
+    source_result_ref: str = Field(min_length=1)
+    actor_ref: str = Field(min_length=1)
+    model_ref: str = Field(min_length=1)
+    prompt_ref: str = Field(min_length=1)
     metadata: dict[str, object] = Field(default_factory=dict)
     created_at_ms: int | None = Field(default=None, ge=0)
     schema_definition_json: str | None = None

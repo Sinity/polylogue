@@ -197,7 +197,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
         self._request_identity = (request.operation, request.request_id)
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
-        if control_bytes > spec.max_body_bytes:
+        if input_body is None and control_bytes > spec.max_body_bytes:
             if input_body is not None:
                 input_body.discard()
             self._reject(413, "request_too_large", "operation control exceeds its declared bound")
