@@ -43,6 +43,8 @@ _NOT_ADDITIVE = {
     "table_drop": "DROP TABLE raw_sessions;",
     "column_add": "ALTER TABLE raw_sessions ADD COLUMN extra TEXT;",
     "create_as_select": "CREATE TABLE copied AS SELECT * FROM raw_sessions;",
+    "create_as_block_comment_select": "CREATE TABLE copied AS/*gap*/SELECT * FROM raw_sessions;",
+    "create_as_line_comment_select": "CREATE TABLE copied AS\n-- gap\nSELECT * FROM raw_sessions;",
     "trigger": "CREATE TRIGGER trg AFTER INSERT ON t BEGIN DELETE FROM t; END;",
 }
 
@@ -92,3 +94,38 @@ def test_trigger_body_is_one_statement_not_several() -> None:
         trigger,
         "CREATE TABLE harmless (id INTEGER);",
     ]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "CREATE TABLE copied AS/*gap*/SELECT * FROM raw_sessions;",
+        "CREATE TABLE copied AS\n-- gap\nSELECT * FROM raw_sessions;",
+    ],
+)
+def test_commented_ctas_is_row_copying_sqlite_and_not_additive(statement: str) -> None:
+    """Exercise the exact SQLite row effect and the production safety classifier."""
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE raw_sessions (raw_id TEXT)")
+        conn.execute("INSERT INTO raw_sessions VALUES ('source-row')")
+        conn.execute(statement)
+        assert conn.execute("SELECT raw_id FROM copied").fetchall() == [("source-row",)]
+    finally:
+        conn.close()
+
+    with pytest.raises(MigrationError, match="not additive-only"):
+        _requires_migration_backup(Path("099_commented_ctas.sql"), f"{_MARKER}\n{statement}")
+
+
+def test_ctas_words_inside_quoted_names_and_literals_remain_additive() -> None:
+    import sqlite3
+
+    statement = "CREATE TABLE \"name AS SELECT\" (value TEXT DEFAULT 'AS SELECT');"
+    assert _requires_migration_backup(Path("099_quoted.sql"), f"{_MARKER}\n{statement}") is False
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute(statement)
+        conn.execute('INSERT INTO "name AS SELECT" DEFAULT VALUES')
+        assert conn.execute('SELECT value FROM "name AS SELECT"').fetchone() == ("AS SELECT",)

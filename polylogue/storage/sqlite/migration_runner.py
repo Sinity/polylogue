@@ -56,6 +56,8 @@ _SQL_TRANSACTION_CONTROL_RE = re.compile(r"^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOI
 DURABLE_CHANGE_TRAIN_FORMAT: Final = "polylogue.durable-change-train.v2"
 DURABLE_MIGRATION_COLLISION_REPORT_FORMAT: Final = "polylogue.durable-migration-collisions.v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SQL_SCHEMA_IDENTIFIER = r"""(?:[A-Za-z_][A-Za-z_0-9]*|"(?:[^"]|"")*"|'(?:[^']|'')*'|`(?:[^`]|``)*`|\[[^\]]*\])"""
+_SQL_SCHEMA_TRIVIA = r"(?:\s|/\*.*?\*/|--[^\n]*(?:\n|$))*"
 
 
 class MigrationError(RuntimeError):
@@ -202,7 +204,14 @@ _ADDITIVE_STATEMENT_RE = re.compile(
 )
 #: ``CREATE TABLE … AS SELECT`` writes rows at apply time, so it is a create
 #: statement that is not additive-only.
-_CREATE_TABLE_AS_RE = re.compile(r"^CREATE\s+TABLE\b.*\bAS\b\s*(?:WITH|SELECT|VALUES)\b", re.IGNORECASE | re.DOTALL)
+_CREATE_TABLE_AS_RE = re.compile(
+    rf"^CREATE{_SQL_SCHEMA_TRIVIA}TABLE\b{_SQL_SCHEMA_TRIVIA}"
+    rf"(?:IF{_SQL_SCHEMA_TRIVIA}NOT{_SQL_SCHEMA_TRIVIA}EXISTS{_SQL_SCHEMA_TRIVIA})?"
+    rf"{_SQL_SCHEMA_IDENTIFIER}"
+    rf"(?:{_SQL_SCHEMA_TRIVIA}\.{_SQL_SCHEMA_TRIVIA}{_SQL_SCHEMA_IDENTIFIER})?"
+    rf"{_SQL_SCHEMA_TRIVIA}AS\b{_SQL_SCHEMA_TRIVIA}(?:WITH|SELECT|VALUES)\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _iter_migration_statements(sql: str) -> Iterable[str]:
@@ -261,8 +270,6 @@ def _requires_migration_backup(path: Path, sql: str) -> bool:
     return False
 
 
-_SQL_SCHEMA_IDENTIFIER = r"""(?:[A-Za-z_][A-Za-z_0-9]*|"(?:[^"]|"")*"|'(?:[^']|'')*'|`(?:[^`]|``)*`|\[[^\]]*\])"""
-_SQL_SCHEMA_TRIVIA = r"(?:\s|/\*.*?\*/|--[^\n]*(?:\n|$))*"
 _SCHEMA_DROP_STATEMENT_RE = re.compile(
     rf"^(?:DROP\b|ALTER{_SQL_SCHEMA_TRIVIA}TABLE{_SQL_SCHEMA_TRIVIA}"
     rf"{_SQL_SCHEMA_IDENTIFIER}(?:{_SQL_SCHEMA_TRIVIA}\.{_SQL_SCHEMA_TRIVIA}{_SQL_SCHEMA_IDENTIFIER})?"
