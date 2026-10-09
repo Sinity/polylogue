@@ -37,7 +37,7 @@ Drift check: `devtools verify api-parity --check` (also asserted by
 
 ## Classification of the public Python facade
 
-Every public callable on `polylogue.api.Polylogue` (174 at
+Every public callable on `polylogue.api.Polylogue` (175 at
 render time) is either bound by an operation above or listed here as an
 explicit exclusion. An unclassified callable fails the parity gate.
 

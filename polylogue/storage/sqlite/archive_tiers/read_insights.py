@@ -323,6 +323,9 @@ class ArchiveReadInsights:
         if request.action_kind:
             where.append("COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') = ?")
             params.append(request.action_kind)
+        if request.session_id is not None:
+            where.append("s.session_id = ?")
+            params.append(request.session_id)
         if request.since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(request.since_ms)

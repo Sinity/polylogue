@@ -352,6 +352,11 @@ from polylogue.storage.sqlite.connection_profile import (
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.model_usage_sql import MODEL_USAGE_CATALOG_SUM_SQL, model_usage_cost_estimated_sql
+from polylogue.storage.sqlite.queries.profile_analytics import (
+    PROFILE_WALLCLOCK_SQL,
+    ProfileAnalyticsMode,
+    read_profile_analytics,
+)
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
 from polylogue.storage.sqlite.query_watch import (
     clear_query_watch,
@@ -4724,7 +4729,7 @@ class ArchiveStore:
             )
         )
 
-    def iter_session_profile_insights(
+    def _session_profile_selection(
         self,
         *,
         origin: str | None = None,
@@ -4740,23 +4745,10 @@ class ArchiveStore:
         session_date_until: str | None = None,
         tier: str = "merged",
         query: str | None = None,
-        limit: int | None = 50,
-        offset: int = 0,
         min_wallclock_seconds: float | None = None,
         max_wallclock_seconds: float | None = None,
-        sort: str | None = None,
-    ) -> Generator[SessionProfileInsight, None, None]:
-        """List archive session profile insights.
-
-        ``min_wallclock_seconds`` / ``max_wallclock_seconds`` filter on the
-        session's message-timestamp span (last minus first message), and
-        ``sort='wallclock'`` orders by that span descending.
-        """
-        # Wallclock span = newest minus oldest message timestamp for the session.
-        wall_expr = (
-            "(SELECT MAX(m.occurred_at_ms) - MIN(m.occurred_at_ms) "
-            "FROM messages m WHERE m.session_id = s.session_id AND m.occurred_at_ms IS NOT NULL)"
-        )
+    ) -> tuple[str, list[object]]:
+        """Share profile existence and complete scope between rows and analytics."""
         where: list[str] = []
         params: list[object] = []
         origin = _origin_value(origin)
@@ -4803,12 +4795,88 @@ class ArchiveStore:
             where.append("sp.canonical_session_date <= date(?)")
             params.append(session_date_until)
         if min_wallclock_seconds is not None:
-            where.append(f"COALESCE({wall_expr}, 0) >= ?")
+            where.append(f"COALESCE({PROFILE_WALLCLOCK_SQL}, 0) >= ?")
             params.append(int(min_wallclock_seconds * 1000))
         if max_wallclock_seconds is not None:
-            where.append(f"COALESCE({wall_expr}, 0) <= ?")
+            where.append(f"COALESCE({PROFILE_WALLCLOCK_SQL}, 0) <= ?")
             params.append(int(max_wallclock_seconds * 1000))
         clause = "WHERE " + " AND ".join(where) if where else ""
+        return f"FROM session_profiles sp JOIN sessions s ON s.session_id = sp.session_id {clause}", params
+
+    def read_session_profile_analytics(
+        self,
+        *,
+        mode: ProfileAnalyticsMode,
+        group_by: str = "",
+        origin: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        min_severity: str = "question_left",
+        limit: int = 20,
+    ) -> dict[str, object]:
+        relation, params = self._session_profile_selection(
+            origin=origin, tag=tag, repo=repo, since_ms=since_ms, until_ms=until_ms
+        )
+        return read_profile_analytics(
+            self._conn,
+            relation,
+            params,
+            mode=mode,
+            group_by=group_by,
+            min_severity=min_severity,
+            limit=limit,
+            checkpoint=self.check_operation_read,
+        )
+
+    def iter_session_profile_insights(
+        self,
+        *,
+        origin: str | None = None,
+        workflow_shape: str | None = None,
+        terminal_state: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        first_message_since: str | None = None,
+        first_message_until: str | None = None,
+        session_date_since: str | None = None,
+        session_date_until: str | None = None,
+        tier: str = "merged",
+        query: str | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+        min_wallclock_seconds: float | None = None,
+        max_wallclock_seconds: float | None = None,
+        sort: str | None = None,
+    ) -> Generator[SessionProfileInsight, None, None]:
+        """List archive session profile insights.
+
+        ``min_wallclock_seconds`` / ``max_wallclock_seconds`` filter on the
+        session's message-timestamp span (last minus first message), and
+        ``sort='wallclock'`` orders by that span descending.
+        """
+        # Wallclock span = newest minus oldest message timestamp for the session.
+        wall_expr = PROFILE_WALLCLOCK_SQL
+        relation, params = self._session_profile_selection(
+            origin=origin,
+            workflow_shape=workflow_shape,
+            terminal_state=terminal_state,
+            tag=tag,
+            repo=repo,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            first_message_since=first_message_since,
+            first_message_until=first_message_until,
+            session_date_since=session_date_since,
+            session_date_until=session_date_until,
+            tier=tier,
+            query=query,
+            min_wallclock_seconds=min_wallclock_seconds,
+            max_wallclock_seconds=max_wallclock_seconds,
+        )
         order_by = f"{wall_expr} DESC, s.session_id" if sort == "wallclock" else "s.sort_key_ms DESC, s.session_id"
         pagination = "" if limit is None else " LIMIT ? OFFSET ?"
         if limit is not None:
@@ -4823,13 +4891,9 @@ class ArchiveStore:
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count,
                    sp.tool_calls_per_minute,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
+                   sp.total_duration_ms,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
-            FROM session_profiles sp
-            JOIN sessions s ON s.session_id = sp.session_id
-            {clause}
+            {relation}
             ORDER BY {order_by}
             {pagination}
             """,
