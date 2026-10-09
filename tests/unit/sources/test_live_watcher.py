@@ -7,8 +7,10 @@ import asyncio
 import json
 import os
 import sqlite3
+import threading
 import time
 import zipfile
+from builtins import BaseExceptionGroup
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -4968,4 +4970,74 @@ async def test_cursor_reconciliation_hashes_off_the_writer_and_rechecks_under_it
         assert selected == ()
         assert record is not None
         assert record.byte_offset == len(payload)
+    watcher.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("waits for a physical watcher selection thread to settle")
+async def test_repeated_cancel_retains_watcher_selection_until_cleanup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second cancel cannot abandon the physical selection or its failure."""
+    root = tmp_path / "src"
+    root.mkdir()
+    watcher, _ = _make_watcher(tmp_path, root, write_coordinator=cast(Any, object()))
+    entered = threading.Event()
+    release_cleanup = threading.Event()
+    finished = threading.Event()
+
+    def select_then_fail(_paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        entered.set()
+        try:
+            if not release_cleanup.wait(timeout=5):
+                raise AssertionError("test did not release physical selection")
+            raise RuntimeError("synthetic selection cleanup failure")
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(watcher, "classify_ingest_candidates", select_then_fail)
+    caller = asyncio.get_running_loop().create_task(watcher.classify_ingest_candidates_off_writer(()))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2), "physical selection never started"
+        caller.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(caller), timeout=0.05)
+        except TimeoutError:
+            pass
+        except BaseException:
+            pass
+        caller.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(caller), timeout=0.05)
+        except TimeoutError:
+            returned_before_cleanup = False
+        except BaseException:
+            returned_before_cleanup = True
+        else:
+            returned_before_cleanup = True
+    finally:
+        release_cleanup.set()
+        assert await asyncio.to_thread(finished.wait, 2), "physical selection did not settle"
+
+    try:
+        await caller
+    except BaseException as failure:
+        observed = failure
+    else:
+        pytest.fail("cancelled selection unexpectedly returned successfully")
+
+    assert not returned_before_cleanup, "repeated cancellation released selection ownership early"
+    assert isinstance(observed, BaseExceptionGroup)
+    flattened: list[BaseException] = []
+
+    def collect(error: BaseException) -> None:
+        if isinstance(error, BaseExceptionGroup):
+            for nested in error.exceptions:
+                collect(nested)
+        else:
+            flattened.append(error)
+
+    collect(observed)
+    assert any(isinstance(error, asyncio.CancelledError) for error in flattened)
+    assert any(isinstance(error, RuntimeError) and "cleanup failure" in str(error) for error in flattened)
     watcher.stop()
