@@ -420,9 +420,7 @@ class _PrefixStringReader:
             nonfinite = bytes(self._number_view) in {b"NaN", b"Infinity", b"-Infinity"}
             if nonfinite:
                 out += b"0.0" if self._allow_nonfinite else _INVALID_NUMBER_END
-            elif self._number_state not in _NUMBER_ACCEPTING or (
-                self._number_is_integer and limit and self._number_digits > limit
-            ):
+            elif self._number_state not in _NUMBER_ACCEPTING:
                 out += _INVALID_NUMBER_END
             else:
                 out += b"0" if self._number_is_integer else b"0.0"
@@ -969,45 +967,6 @@ def top_level_envelopes(
     yield from envelopes
 
 
-def jsonl_record_envelopes(handle: IO[bytes], *, fields: frozenset[str]) -> Iterator[object]:
-    """Stream the envelope of each physical line that holds exactly one JSON value.
-
-    A blank or malformed line is skipped, as the JSONL decoder skips it --
-    including a line whose integer exceeds Python's conversion limit, which
-    the decoder rejects per line with ``ValueError``. A line holding two
-    values is malformed, not two records.
-    """
-    import ijson
-
-    limit = sqlite_value_limit()
-    lines = _LineSource(handle)
-    # The decoder strips byte-order marks from the start of the first line it
-    # can decode as UTF-8; an undecodable (or over-long) line before it
-    # leaves that line still to come.
-    first_decodable_pending = True
-    while True:
-        if first_decodable_pending:
-            lines.strip_leading_byte_order_marks()
-        if (line := lines.next_line()) is None:
-            return
-        reader = _PrefixStringReader(line)
-        try:
-            values = list(
-                _envelopes(ijson.basic_parse(reader, use_float=False), reader, expand_arrays=False, fields=fields)
-            )
-        except (ijson.JSONError, UnicodeDecodeError, ArithmeticError, ValueError):
-            values = []
-        line.drain()
-        if line.size > limit:
-            # The decoders refuse a record beyond the record bound unread
-            # (``bounded_lines``), so recognition does not admit it either.
-            continue
-        if line.decodable:
-            first_decodable_pending = False
-        if len(values) == 1:
-            yield values[0]
-
-
 class OversizedRecord:
     """A physical line longer than the record bound, skipped without being held."""
 
@@ -1166,7 +1125,6 @@ __all__ = [
     "LexemeAlignedReader",
     "OversizedRecord",
     "bounded_lines",
-    "jsonl_record_envelopes",
     "sqlite_value_limit",
     "top_level_envelopes",
 ]

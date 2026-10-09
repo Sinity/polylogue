@@ -21,7 +21,13 @@ import ijson
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
-from polylogue.core.json import JSONDecodeError, _ValidatedJSONContainer, decode_provider_utf8, normalize_json_decimal
+from polylogue.core.json import (
+    JSONDecodeError,
+    _decode_integer,
+    _ValidatedJSONContainer,
+    decode_provider_utf8,
+    normalize_json_decimal,
+)
 from polylogue.core.json import loads as json_loads
 from polylogue.core.json_envelope import JSONL_MEMORY_BUFFER_BYTES, OversizedRecord, bounded_lines
 from polylogue.logging import get_logger
@@ -124,6 +130,7 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
         fail_on_decode_error: bool = False,
         repair: bool = True,
         on_decode_failure: Callable[[Exception], None] | None = None,
+        sample_records: int | None = None,
     ) -> DecodedRecordSequence:
         """Retain physical records through parser completion and cohort replay.
 
@@ -132,16 +139,21 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
         """
         tape = cls(())
         try:
-            for _record in _retain_jsonl_records(
-                tape,
-                logger_obj or logger,
-                handle,
-                path_name,
-                fail_on_decode_error=fail_on_decode_error,
-                repair=repair,
-                on_decode_failure=on_decode_failure,
-            ):
-                pass
+            with closing(
+                _retain_jsonl_records(
+                    tape,
+                    logger_obj or logger,
+                    handle,
+                    path_name,
+                    fail_on_decode_error=fail_on_decode_error,
+                    repair=repair,
+                    on_decode_failure=on_decode_failure,
+                    expose_records=False,
+                )
+            ) as retained:
+                for _record in retained:
+                    if sample_records is not None and len(tape) >= sample_records:
+                        break
         except BaseException as primary:
             try:
                 tape.close()
@@ -212,7 +224,7 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
                             text = text.strip()
                             if not text:
                                 continue
-                            value = cast(JsonValue, json.loads(text))
+                            value = cast(JsonValue, json.loads(text, parse_int=_decode_integer))
                             if not dict_only or isinstance(value, dict):
                                 tape._spool.append(value)
                         else:
@@ -311,6 +323,20 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
             self._require_open()
             check_compute_cancelled()
             yield self._value(value)
+
+    def structure_values(self) -> Iterator[JsonValue]:
+        """Traverse root kinds while leaving unselected scalar tokens on disk."""
+        from polylogue.schemas.observation_spill import _load_structure_node
+
+        self._require_open()
+        for value in self._spool:
+            self._require_open()
+            check_compute_cancelled()
+            if isinstance(value, _TreeRecordRef):
+                assert self._tree is not None
+                yield _load_structure_node(self._tree.connection, value.node_id)
+            else:
+                yield value
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -463,7 +489,7 @@ def _yield_jsonl_pending(
             provider_text = None
         if provider_text is not None:
             try:
-                return ([cast(JsonValue, json.loads(provider_text))], 0, None)
+                return ([cast(JsonValue, json.loads(provider_text, parse_int=_decode_integer))], 0, None)
             except json.JSONDecodeError:
                 pass
         decoded = decode_json_bytes_with(logger_obj, raw_pending)
@@ -477,7 +503,7 @@ def _yield_jsonl_pending(
         decoded = raw_pending
 
     try:
-        parsed = json.loads(decoded)
+        parsed = json.loads(decoded, parse_int=_decode_integer)
     except json.JSONDecodeError as exc:
         if is_last:
             logger_obj.debug("Skipping truncated trailing line in %s: %s", path_name, exc)
@@ -644,6 +670,7 @@ def _retain_jsonl_records(
     fail_on_decode_error: bool,
     repair: bool,
     on_decode_failure: Callable[[Exception], None] | None,
+    expose_records: bool = True,
 ) -> Generator[JsonValue, None, None]:
     from polylogue.core.json_envelope import _LineSource
 
@@ -698,7 +725,13 @@ def _retain_jsonl_records(
                                 def refuse_constant(_value: str) -> object:
                                     raise ValueError("non-finite JSON constant")
 
-                                records = [json.loads(decode_provider_utf8(raw), parse_constant=refuse_constant)]
+                                records = [
+                                    json.loads(
+                                        decode_provider_utf8(raw),
+                                        parse_constant=refuse_constant,
+                                        parse_int=_decode_integer,
+                                    )
+                                ]
                                 failed = 0
                             except (UnicodeError, ValueError):
                                 records, failed = [], 1
@@ -738,7 +771,9 @@ def _retain_jsonl_records(
                         logger_obj.warning("Skipping invalid JSON line in %s", path_name)
                     elif errors == 4:
                         logger_obj.warning("Skipping further invalid JSON lines in %s...", path_name)
-                if raw is not None:
+                if not expose_records:
+                    yield None
+                elif raw is not None:
                     yield from records
                 else:
                     for record_index in range(previous_records, len(tape)):

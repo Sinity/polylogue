@@ -25,7 +25,7 @@ import re
 import sqlite3
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from functools import cache, lru_cache
 from itertools import islice
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from polylogue.sources.sqlite_inspection import SQLiteClassification
 
 from polylogue.core.enums import Origin, Provider, ToolResultUnknownReason
-from polylogue.core.json_envelope import jsonl_record_envelopes, top_level_envelopes
+from polylogue.core.json_envelope import ENVELOPE_TEXT_PREFIX_CHARS, UNDECLARED_FIELDS, top_level_envelopes
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -830,6 +830,49 @@ def recognize_source_class(
     return recognize_json_source_class(provider, path, payload=payload)
 
 
+def _jsonl_signature_envelopes(
+    handle: IO[bytes], *, fields: frozenset[str], sample_records: int | None = None
+) -> Iterator[object]:
+    """Project completed owned JSONL records for root structural signatures."""
+    from polylogue.schemas.observation_spill import SpilledObject
+    from polylogue.sources.decoder_json import DecodedRecordSequence
+
+    with contextlib.closing(
+        DecodedRecordSequence.from_jsonl(handle, "source-class.jsonl", sample_records=sample_records)
+    ) as records:
+        for record in records.structure_values():
+            if isinstance(record, list):
+                yield []
+                continue
+            if not isinstance(record, dict):
+                yield record
+                continue
+            envelope: dict[object, object] = {}
+            selected = 0
+            for field in fields:
+                if field not in record:
+                    continue
+                selected += 1
+                value = record.structure_value(field) if isinstance(record, SpilledObject) else record[field]
+                if isinstance(value, str):
+                    value = (
+                        record.string_prefix(field, characters=ENVELOPE_TEXT_PREFIX_CHARS)
+                        if isinstance(record, SpilledObject)
+                        else value[:ENVELOPE_TEXT_PREFIX_CHARS]
+                    )
+                elif isinstance(value, list):
+                    value = []
+                elif isinstance(value, dict):
+                    value = {}
+                elif isinstance(record, SpilledObject):
+                    value = record[field]
+                envelope[field] = value
+            # Unknown mapping presence participates in the all-ATOF rule.
+            if len(record) > selected:
+                envelope[UNDECLARED_FIELDS] = True
+            yield envelope
+
+
 def recognize_json_source_class(
     provider: Provider, source_path: str | Path, *, payload: object | None = None
 ) -> SourceClassRecognition | None:
@@ -859,7 +902,9 @@ def recognize_json_source_class(
             with path.open("rb") as handle:
                 if is_jsonl:
                     payload = list(
-                        islice(jsonl_record_envelopes(handle, fields=fields), SOURCE_CLASS_JSONL_LEADING_RECORDS)
+                        _jsonl_signature_envelopes(
+                            handle, fields=fields, sample_records=SOURCE_CLASS_JSONL_LEADING_RECORDS
+                        )
                     )
                 else:
                     first = _first_significant_byte(handle)

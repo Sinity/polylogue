@@ -245,3 +245,59 @@ def test_emitter_streams_unknown_giant_key_and_string_to_canonical_stage(
         assert len(list((tmp_path / "preparation").iterdir())) == 1
     finally:
         raw.staged_payload.discard()
+
+
+@pytest.mark.parametrize("digits", [4301, 65537])
+def test_emitter_canonicalizes_valid_unknown_integer_without_a_digit_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, digits: int
+) -> None:
+    from polylogue.schemas.observation_spill import _ScalarTokenStore
+
+    root = {
+        "id": "neutral-conversation",
+        "mapping": {
+            "node": {
+                "message": {
+                    "id": "neutral-message",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["selected exact text"]},
+                }
+            }
+        },
+    }
+    prefix = json.dumps(root, separators=(",", ":")).encode()[:-1]
+    canonical = prefix + b',"unknown":' + b"9" * digits + b',"zero":0}'
+    wire = prefix + b',"unknown":' + b"9" * digits + b',"zero":-0}\n'
+    original_read = _ScalarTokenStore.read
+
+    def selected(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
+        size = self.connection.execute(
+            "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
+        ).fetchone()[0]
+        assert size < 4301, "unselected integer materialization"
+        return original_read(self, kind, ordinal)
+
+    monkeypatch.setattr(_ScalarTokenStore, "read", selected)
+    context = _ParseContext(Provider.CHATGPT, False, "neutral.jsonl", "neutral", None, True, {})
+    ((raw, session),) = _SessionEmitter(context).emit(io.BytesIO(wire), "neutral.jsonl")
+    assert raw is not None and raw.staged_payload is not None
+    try:
+        assert raw.staged_payload.path.read_bytes() == canonical
+        assert raw.staged_payload.seal.sha256 == hashlib.sha256(canonical).hexdigest()
+        assert session.messages[0].text == "selected exact text"
+    finally:
+        raw.staged_payload.discard()
+
+
+def test_selected_integer_codec_accepts_exact_large_values_without_global_settings() -> None:
+    import sys
+    from decimal import Decimal
+
+    from polylogue.core.json import dumps_bytes, loads
+
+    configured_limit = sys.get_int_max_str_digits()
+    wire = b'{"n":' + b"9" * 5000 + b',"float":1e2}'
+    value = loads(wire)
+    assert isinstance(value, dict) and value["n"] == int(Decimal("9" * 5000))
+    assert dumps_bytes(value) == b'{"n":' + b"9" * 5000 + b',"float":100.0}'
+    assert sys.get_int_max_str_digits() == configured_limit

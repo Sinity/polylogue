@@ -298,6 +298,11 @@ def _prepare_for_msgspec(value: object, encoder: JSONEncoder) -> object:
         return {key: _prepare_for_msgspec(item, encoder) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_prepare_for_msgspec(item, encoder) for item in value]
+    if isinstance(value, int) and not -(1 << 63) <= value < (1 << 64):
+        # Preserve native integer bytes beyond the codec's ordinary range
+        # without Python's capped decimal-string conversion. Raw is created
+        # only from this exact integer conversion, never from supplied text.
+        return msgspec.Raw(format(Decimal(value), "f").encode("ascii"))
     if isinstance(value, _JSON_NATIVE_SCALAR):
         return value
     return encoder(value)
@@ -543,7 +548,9 @@ def loads(obj: str | bytes | bytearray) -> JSONValue:
                 with suppress(UnicodeDecodeError):
                     second = decode_provider_utf8(raw)
         try:
-            return _loaded_json_value(_stdlib_json.loads(second, parse_constant=_reject_non_finite_token))
+            return _loaded_json_value(
+                _stdlib_json.loads(second, parse_constant=_reject_non_finite_token, parse_int=_decode_integer)
+            )
         except (_stdlib_json.JSONDecodeError, ValueError):
             if second is obj:
                 raise exc from None
@@ -551,9 +558,16 @@ def loads(obj: str | bytes | bytearray) -> JSONValue:
         # BOM-less UTF-16 document can hold an ``ED A0 80`` triple): the
         # stdlib's own encoding detection reads the original bytes.
         try:
-            return _loaded_json_value(_stdlib_json.loads(obj, parse_constant=_reject_non_finite_token))
+            return _loaded_json_value(
+                _stdlib_json.loads(obj, parse_constant=_reject_non_finite_token, parse_int=_decode_integer)
+            )
         except (_stdlib_json.JSONDecodeError, ValueError):
             raise exc from None
+
+
+def _decode_integer(text: str) -> int:
+    """Decode a grammar-validated integer without an interpreter digit cap."""
+    return int(Decimal(text))
 
 
 __all__ = [

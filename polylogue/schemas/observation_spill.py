@@ -315,6 +315,35 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
             raise KeyError(key)
         return _load_structure_node(self._connection, child)
 
+    def string_prefix(self, key: str, *, characters: int) -> str:
+        """Read a declared discriminator prefix without reconstructing its value."""
+        child = self._member(key)
+        if child is None:
+            raise KeyError(key)
+        kind, token, scalar = _read_row(
+            self._connection, "SELECT kind, token, scalar_json FROM json_nodes WHERE id=?", (child,)
+        )
+        if kind != "string":
+            raise TypeError("declared JSON discriminator is not a string")
+        if token is None:
+            return bytes(scalar).decode("utf-8", "surrogatepass")[:characters]
+        result: list[str] = []
+        remaining = characters
+        with closing(
+            _read_rows(
+                self._connection,
+                "SELECT data FROM json_scalar_chunks WHERE kind='string' AND token=? ORDER BY ordinal",
+                (token,),
+            )
+        ) as chunks:
+            for (chunk,) in chunks:
+                piece = bytes(chunk).decode("utf-8", "surrogatepass")[:remaining]
+                result.append(piece)
+                remaining -= len(piece)
+                if remaining == 0:
+                    break
+        return "".join(result)
+
     def structure_key_items(self, *, sorted_keys: bool = False) -> Generator[tuple[SpilledKey, JSONValue], None, None]:
         """Keep original key tokens while reading only each child's structural kind."""
         with closing(self.key_entries(sorted_keys=sorted_keys)) as entries:
@@ -767,7 +796,9 @@ class _ScalarTokenStore:
         with closing(rows):
             if kind == "string":
                 return "".join(chunk.decode("utf-8", "surrogatepass") for chunk in chunks())
-            return cast(JSONValue, json.loads(b"".join(chunks())))
+            from polylogue.core.json import _decode_integer
+
+            return cast(JSONValue, json.loads(b"".join(chunks()), parse_int=_decode_integer))
 
 
 def _load_structure_node(connection: sqlite3.Connection, node_id: int) -> JSONValue:

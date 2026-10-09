@@ -8,6 +8,7 @@ import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import closing
+from decimal import Decimal
 from pathlib import Path
 from typing import BinaryIO
 
@@ -33,6 +34,8 @@ def write_streamed_json(value: object, destination: Path, *, member_format: bool
 
 
 def _scalar(value: object, member_format: bool) -> bytes:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return format(Decimal(value), "f").encode("ascii")
     return json.dumps(value, ensure_ascii=True).encode("utf-8") if member_format else dumps_bytes(value)
 
 
@@ -54,6 +57,28 @@ def _write_node(connection: sqlite3.Connection, node: int, output: BinaryIO, mem
     if row is None:
         raise ValueError("streamed JSON tree lost a referenced node")
     kind, token = row
+    if kind == "number" and token is not None:
+        json_kind, decoded_bytes = _read_row(
+            connection,
+            "SELECT json_kind, decoded_bytes FROM json_scalar_tokens WHERE kind='number' AND token=?",
+            (token,),
+        )
+        if json_kind == "integer":
+            with closing(
+                _read_rows(
+                    connection,
+                    "SELECT data FROM json_scalar_chunks WHERE kind='number' AND token=? ORDER BY ordinal",
+                    (token,),
+                )
+            ) as chunks:
+                if decoded_bytes <= 2:
+                    number = b"".join(bytes(data) for (data,) in chunks)
+                    output.write(b"0" if number == b"-0" else number)
+                else:
+                    for (data,) in chunks:
+                        check_compute_cancelled()
+                        output.write(bytes(data))
+            return
     if kind == "string" and token is not None:
         with closing(
             _read_rows(
