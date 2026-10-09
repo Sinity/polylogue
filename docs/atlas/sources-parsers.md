@@ -7,6 +7,10 @@ publishes Index paste markers through `open_isolated_write_connection` with
 its configured archive root. The factory enforces that root’s writer lease
 without relying on the global SQLite opener interceptor.
 
+Decoded detector projections visit only declared fields when no metadata or
+whole-mapping predicate needs the other values. Event projections still consume
+and validate the complete input; acquisition retains every origin check.
+
 Sources acquire bytes and identify their material source. Detection chooses a
 provider parser by input shape. `RawObservationConvergenceOwner` coordinates
 retained preparation through `RawObservationDerivation`; JSONL and non-JSON
