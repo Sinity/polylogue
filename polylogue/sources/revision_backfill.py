@@ -768,6 +768,7 @@ def prepare_retained_jsonl_artifact(
     allow_generic_object_alias: bool = False,
     validation_mode: ValidationMode = ValidationMode.ADVISORY,
     schema_registry: SchemaRegistry | None = None,
+    prepare_blob_publications: bool = True,
 ) -> PreparedJsonl:
     """Seal JSON sessions using this creator's actual selected Source inputs.
 
@@ -899,9 +900,10 @@ def prepare_retained_jsonl_artifact(
             is_stream=is_stream_record_provider(source_path, provider),
             profile_identity=profile_identity,
             shard_directory=str(directory),
-            publication_publisher=ArchiveBlobPublisher(
-                evidence_reader.archive_root / "source.db",
-                evidence_reader.archive_root / "blob",
+            publication_publisher=(
+                ArchiveBlobPublisher(evidence_reader.archive_root / "source.db", evidence_reader.archive_root / "blob")
+                if prepare_blob_publications
+                else None
             ),
             publication_source_read=evidence_reader,
             strict_jsonl_records=True,
@@ -1064,6 +1066,7 @@ def prepare_retained_non_json_artifact(
     directory: Path,
     validation_mode: ValidationMode = ValidationMode.ADVISORY,
     schema_registry: SchemaRegistry | None = None,
+    prepare_blob_publications: bool = True,
 ) -> PreparedJsonl:
     """Seal non-JSON sessions through the same original retained read owner."""
     from polylogue.core.compute import DaemonBackpressureError
@@ -1106,6 +1109,7 @@ def prepare_retained_non_json_artifact(
                     allow_generic_object_alias=True,
                     validation_mode=validation_mode,
                     schema_registry=schema_registry,
+                    prepare_blob_publications=prepare_blob_publications,
                 )
     if path_declaration_refuses_session(provider, source_path):
         # A raw-only member (an export's binary asset) is evidence whatever its
@@ -1117,10 +1121,12 @@ def prepare_retained_non_json_artifact(
             directory=directory,
             validation_mode=validation_mode,
             schema_registry=schema_registry,
+            prepare_blob_publications=prepare_blob_publications,
         )
-    publisher = ArchiveBlobPublisher(
-        evidence_reader.archive_root / "source.db",
-        evidence_reader.archive_root / "blob",
+    publisher = (
+        ArchiveBlobPublisher(evidence_reader.archive_root / "source.db", evidence_reader.archive_root / "blob")
+        if prepare_blob_publications
+        else None
     )
     sessions_path = Path(directory) / f"prepared-{uuid.uuid4().hex}.db"
     shard_path: Path | None = None
@@ -1132,6 +1138,8 @@ def prepare_retained_non_json_artifact(
         if not BlobStore(evidence_reader.archive_root / "blob").verify(blob_hash, stop=compute_cancel_requested):
             raise RetainedPreparationRetryableError(f"retained blob changed for raw {raw_id}")
         if state_descriptor is not None:
+            if not prepare_blob_publications:
+                raise RetainedPreparationRetryableError("retained state material has no session block supplier")
             parsed = True
             artifact = _prepare_codex_state_blob(
                 state_descriptor[0],
@@ -1252,8 +1260,9 @@ def prepare_retained_non_json_artifact(
                     )
                 finally:
                     marker_path.unlink(missing_ok=True)
-            _prepare_attachment_publications(store, publisher, Path(directory))
-            _prepare_sidecar_publications(store, publisher, Path(directory))
+            if publisher is not None:
+                _prepare_attachment_publications(store, publisher, Path(directory))
+                _prepare_sidecar_publications(store, publisher, Path(directory))
             store.close()
             store = None
             artifact = PreparedJsonl.seal(
@@ -1304,8 +1313,9 @@ def prepare_retained_non_json_artifact(
         )
         if declared is not None:
             record_prepared_classification(store.conn, ArtifactStreamClassification(declared, True, 0))
-        _prepare_attachment_publications(store, publisher, Path(directory))
-        _prepare_sidecar_publications(store, publisher, Path(directory))
+        if publisher is not None:
+            _prepare_attachment_publications(store, publisher, Path(directory))
+            _prepare_sidecar_publications(store, publisher, Path(directory))
         store.close()
         store = None
         artifact = PreparedJsonl.seal(
@@ -1374,7 +1384,8 @@ def prepare_retained_non_json_artifact(
                     failures.append(cleanup)
             if not failures:
                 try:
-                    publisher.discard_pending()
+                    if publisher is not None:
+                        publisher.discard_pending()
                 except BaseException as cleanup:
                     failures.append(cleanup)
             if failures:
