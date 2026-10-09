@@ -3243,6 +3243,29 @@ class PreparedIndexMutation:
             raise ReferenceSealError("Source predicate merging cannot borrow a User row")
         return self._selected_row_is_touched(table, rowid)
 
+    @_namespace_verified_per_row
+    def source_row_is_loaded(self, table: str, rowid: int) -> bool:
+        """Reuse an exact selected coordinate before retaining original cells.
+
+        The existing stage ledger includes loaded originals, new producer
+        rows, updates and deletions. None may be overwritten by another
+        original hydration. A queued dependency is not a completed load.
+        """
+        self._require_selected_producer("source")
+        if self._selected_tier(table) != "source":
+            raise ReferenceSealError("Source input reuse cannot borrow a User row")
+        with self._owned_cursor(
+            self._scratch,
+            "SELECT load_state FROM temp.polylogue_source_stage_rows WHERE table_name=? AND physical_rowid=?",
+            (table, rowid),
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            return False
+        if row[0] != 2:
+            raise ReferenceSealError("Source input reuse requires its completed original load")
+        return True
+
     def _selected_row_is_touched(self, table: str, rowid: int) -> bool:
         self._require_new_work()
         if not self._source_producer_active:

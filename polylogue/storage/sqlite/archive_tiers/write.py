@@ -8499,7 +8499,7 @@ class PreparedSessionSourceRead:
             for (rowid,) in rows:
                 check_compute_cancelled()
                 with self._seal.verified_namespace():
-                    if self._seal.source_row_is_touched(table, rowid):
+                    if self._seal.source_row_is_loaded(table, rowid):
                         continue
                     image = self._seal.retain_tier_row("source", table, rowid)
                     if image is not None:
@@ -8947,7 +8947,7 @@ class PreparedSessionSourceRead:
         ) as rows:
             for (rowid,) in rows:
                 check_compute_cancelled()
-                if self._seal.source_row_is_touched("raw_session_memberships", rowid):
+                if self._seal.source_row_is_loaded("raw_session_memberships", rowid):
                     continue
                 image = self._seal.retain_tier_row("source", "raw_session_memberships", rowid)
                 if image is not None:

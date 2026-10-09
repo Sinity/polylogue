@@ -3948,6 +3948,8 @@ def _load_parser_census_source_inputs(seal: PreparedIndexMutation, raw_id: str) 
             for row in original_rows:
                 check_compute_cancelled()
                 with seal.verified_namespace():
+                    if seal.source_row_is_loaded(table, int(row[0])):
+                        continue
                     image = seal.retain_tier_row("source", table, int(row[0]))
                     if image is None:
                         raise RuntimeError("pinned parser census input disappeared")
@@ -4285,7 +4287,7 @@ class _PreparedSourceProducer:
                 check_compute_cancelled()
                 rowid = int(row[0])
                 with self.seal.verified_namespace():
-                    if self.seal.source_row_is_touched(table, rowid):
+                    if self.seal.source_row_is_loaded(table, rowid):
                         continue
                     image = self.seal.retain_tier_row("source", table, rowid)
                     if image is None:
@@ -4542,7 +4544,7 @@ def prepared_convertible_full_revision_raw_ids(
     ) as original:
         for (rowid,) in original:
             check_compute_cancelled()
-            if seal.source_row_is_touched("raw_sessions", rowid):
+            if seal.source_row_is_loaded("raw_sessions", rowid):
                 continue
             image = seal.retain_tier_row("source", "raw_sessions", rowid)
             if image is not None:
@@ -4666,7 +4668,7 @@ def _load_membership_selector_inputs(
     ) as original:
         for (rowid,) in original:
             check_compute_cancelled()
-            if seal.source_row_is_touched("raw_session_memberships", rowid):
+            if seal.source_row_is_loaded("raw_session_memberships", rowid):
                 continue
             image = seal.retain_tier_row("source", "raw_session_memberships", rowid)
             if image is not None:
@@ -4699,7 +4701,7 @@ def _load_membership_selector_inputs(
             for table, sql, parameters in predicates:
                 with seal.original_rows("source", sql, parameters) as original:
                     for (rowid,) in original:
-                        if seal.source_row_is_touched(table, rowid):
+                        if seal.source_row_is_loaded(table, rowid):
                             continue
                         image = seal.retain_tier_row("source", table, rowid)
                         if image is not None:
@@ -4745,7 +4747,7 @@ def _load_raw_session_input(seal: PreparedIndexMutation, raw_id: str) -> None:
     with seal.original_rows("source", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,)) as original:
         for (rowid,) in original:
             check_compute_cancelled()
-            if seal.source_row_is_touched("raw_sessions", rowid):
+            if seal.source_row_is_loaded("raw_sessions", rowid):
                 continue
             image = seal.retain_tier_row("source", "raw_sessions", rowid)
             if image is not None:
@@ -4763,7 +4765,7 @@ def _load_raw_observation_inputs(seal: PreparedIndexMutation, raw_id: str) -> No
     ) as original:
         for (rowid,) in original:
             check_compute_cancelled()
-            if seal.source_row_is_touched("blob_refs", rowid):
+            if seal.source_row_is_loaded("blob_refs", rowid):
                 continue
             image = seal.retain_tier_row("source", "blob_refs", rowid)
             if image is not None:
