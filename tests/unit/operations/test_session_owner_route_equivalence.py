@@ -440,6 +440,7 @@ async def test_action_lane_excludes_dialogue_and_reports_its_lane(tmp_path: Path
     root = tmp_path / "archive"
 
     def seed_actions() -> str:
+        ids: dict[str, str] = {}
         with ArchiveStore(root) as archive:
             for name, block in (
                 ("dialogue", ParsedContentBlock(type=BlockType.TEXT, text="needle")),
@@ -450,7 +451,7 @@ async def test_action_lane_excludes_dialogue_and_reports_its_lane(tmp_path: Path
                     ),
                 ),
             ):
-                selected = write_index_session(
+                ids[name] = write_index_session(
                     archive,
                     ParsedSession(
                         source_name=Provider.CODEX,
@@ -465,7 +466,7 @@ async def test_action_lane_excludes_dialogue_and_reports_its_lane(tmp_path: Path
                         ],
                     ),
                 )
-            return selected
+            return ids["action"]
 
     action = run_off_event_loop(seed_actions)
     async with Polylogue(archive_root=root) as api:
@@ -476,7 +477,9 @@ async def test_action_lane_excludes_dialogue_and_reports_its_lane(tmp_path: Path
             "cli.query", {"params": {"query": "needle lane:actions"}}, archive=pinned.archive, serving_identity="direct"
         )
     assert [hit.session.id for hit in page.items] == [action]
-    assert [hit["session"]["id"] for hit in generic["hits"]] == [action]
+    hits = generic["hits"]
+    assert isinstance(hits, list)
+    assert [hit["session"]["id"] for hit in hits] == [action]
     assert [item.id for item in listed.items] == [action]
     assert page.total == listed.total == 1
     assert generic["total"] is None  # Ranked action envelopes do not declare an exact total.
