@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-import time
-from collections.abc import Callable, Iterator, Mapping
-from dataclasses import replace
+from collections.abc import Iterator, Mapping
 from itertools import chain
 from pathlib import Path
 from typing import Any
@@ -14,7 +12,6 @@ from typing import Any
 import click
 import yaml
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.hydration import archive_summary_to_domain
 from polylogue.archive.query.transaction import run_archive_read_sync
 from polylogue.archive.session.domain_models import Session, SessionSummary
@@ -26,15 +23,8 @@ from polylogue.rendering.formatting import format_session
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.projection_spec import ProjectionSpec, RenderDestination
 from polylogue.surfaces.temporal_evidence import (
-    TemporalEvidenceEvent,
     TemporalEvidenceWindow,
-    action_row_to_temporal_event,
-    build_temporal_evidence_window,
-    message_row_to_temporal_event,
-    summary_to_temporal_event,
 )
-
-TemporalPhaseRecorder = Callable[[str, float, Mapping[str, object]], None]
 
 
 def _warn_on_written_file_secret_candidates(env: AppEnv, out_path: str | None) -> None:
@@ -55,17 +45,6 @@ def _warn_on_written_file_secret_candidates(env: AppEnv, out_path: str | None) -
     if notice is None:
         return
     env.ui.console.print(f"[yellow]{notice}[/yellow]")
-
-
-def _record_temporal_phase(
-    recorder: TemporalPhaseRecorder | None,
-    name: str,
-    started_at: float,
-    details: Mapping[str, object] | None = None,
-) -> None:
-    if recorder is None:
-        return
-    recorder(name, (time.perf_counter() - started_at) * 1000, details or {})
 
 
 def _is_exact_ref_read(request: RootModeRequest, invocation: ReadViewInvocation) -> bool:
@@ -434,71 +413,6 @@ def exact_read_summaries(config: Config, request: RootModeRequest) -> list[Sessi
         return []
 
 
-def _message_temporal_events_for_summaries(
-    config: Config,
-    summaries: list[SessionSummary],
-    *,
-    per_session_limit: int = 8,
-) -> tuple[list[TemporalEvidenceEvent], tuple[str, ...]]:
-    if not summaries:
-        return [], ()
-    # polylogue-yla8.1 split-root contract: config.db_path always names a
-    # concrete index.db (explicit override or resolved active generation).
-    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-    events: list[TemporalEvidenceEvent] = []
-    caveats: list[str] = []
-    total_limit = max(per_session_limit * len(summaries), 0)
-    rows = run_archive_read_sync(
-        archive_root,
-        operation="cli.read.temporal_messages",
-        arguments={"session_ids": [str(summary.id) for summary in summaries], "limit": total_limit},
-        work=lambda archive: archive.query_session_messages(
-            [str(summary.id) for summary in summaries],
-            limit=total_limit,
-            sort_direction="asc",
-        ),
-        page_size=total_limit,
-        projection="temporal-messages",
-        stable_order="time,message_id",
-    )
-    if len(rows) >= total_limit and sum(summary.message_count or 0 for summary in summaries) > total_limit:
-        caveats.append("message_events_capped")
-    events.extend(event for row in rows if (event := message_row_to_temporal_event(row)) is not None)
-    return events, tuple(caveats)
-
-
-def _action_temporal_events_for_summaries(
-    config: Config,
-    summaries: list[SessionSummary],
-    *,
-    per_session_limit: int = 4,
-) -> tuple[list[TemporalEvidenceEvent], tuple[str, ...]]:
-    if not summaries:
-        return [], ()
-    # polylogue-yla8.1 split-root contract: config.db_path always names a
-    # concrete index.db (explicit override or resolved active generation).
-    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-    events: list[TemporalEvidenceEvent] = []
-    caveats: list[str] = []
-    total_limit = max(per_session_limit * len(summaries), 0)
-    session_ids = [str(summary.id) for summary in summaries]
-    rows = run_archive_read_sync(
-        archive_root,
-        operation="cli.read.temporal_actions",
-        arguments={"session_ids": session_ids, "limit": total_limit},
-        work=lambda archive: archive.query_session_action_occurrences(
-            session_ids, limit=total_limit, sort_direction="asc"
-        ),
-        page_size=total_limit,
-        projection="temporal-actions",
-        stable_order="time,action_id",
-    )
-    if len(rows) >= total_limit:
-        caveats.append("action_events_capped")
-    events.extend(event for row in rows if (event := action_row_to_temporal_event(row)) is not None)
-    return events, tuple(caveats)
-
-
 def _render_temporal_window_markdown(window: TemporalEvidenceWindow) -> str:
     lines = [
         "# Temporal Evidence Window",
@@ -530,72 +444,6 @@ def _render_temporal_window_markdown(window: TemporalEvidenceWindow) -> str:
     else:
         lines.append("- none")
     return "\n".join(lines) + "\n"
-
-
-def build_read_temporal_window(
-    config: Config,
-    request: RootModeRequest,
-    *,
-    phase_recorder: TemporalPhaseRecorder | None = None,
-) -> TemporalEvidenceWindow:
-    """Project selected session summaries into a temporal evidence window."""
-
-    from polylogue.cli.query import _create_query_vector_provider
-
-    started = time.perf_counter()
-    spec = request.query_spec()
-    if spec.limit is None:
-        spec = replace(spec, limit=50)
-    # polylogue-yla8.1 split-root contract: config.db_path always names a
-    # concrete index.db (explicit override or resolved active generation).
-    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-    vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
-    _record_temporal_phase(
-        phase_recorder,
-        "prepare",
-        started,
-        {"archive_root": str(archive_root), "limit": spec.limit},
-    )
-
-    started = time.perf_counter()
-    summaries = exact_read_summaries(config, request)
-    if summaries is None:
-        summaries = run_coroutine_sync(spec.list_summaries(config, vector_provider=vector_provider))
-    _record_temporal_phase(phase_recorder, "select_sessions", started, {"session_count": len(summaries)})
-
-    started = time.perf_counter()
-    events = [event for summary in summaries if (event := summary_to_temporal_event(summary)) is not None]
-    _record_temporal_phase(phase_recorder, "project_sessions", started, {"event_count": len(events)})
-
-    started = time.perf_counter()
-    message_events, caveats = _message_temporal_events_for_summaries(config, summaries)
-    _record_temporal_phase(
-        phase_recorder,
-        "project_messages",
-        started,
-        {"event_count": len(message_events), "caveats": list(caveats)},
-    )
-
-    started = time.perf_counter()
-    action_events, action_caveats = _action_temporal_events_for_summaries(config, summaries)
-    _record_temporal_phase(
-        phase_recorder,
-        "project_actions",
-        started,
-        {"event_count": len(action_events), "caveats": list(action_caveats)},
-    )
-
-    started = time.perf_counter()
-    window = build_temporal_evidence_window(
-        [*events, *message_events, *action_events], caveats=(*caveats, *action_caveats)
-    )
-    _record_temporal_phase(
-        phase_recorder,
-        "build_window",
-        started,
-        {"event_count": window.event_count, "family_counts": dict(window.family_counts)},
-    )
-    return window
 
 
 def run_read_temporal(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
@@ -644,11 +492,12 @@ def run_read_temporal(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     else:
         content = _render_temporal_window_markdown(window)
     deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path, output_format=fmt)
+    from polylogue.cli.render.outcome import finish_supplied_outcome
+
+    finish_supplied_outcome(window.outcome)
 
 
 __all__ = [
-    "TemporalPhaseRecorder",
-    "build_read_temporal_window",
     "exact_read_summaries",
     "run_read_dialogue",
     "run_read_summary_or_transcript",

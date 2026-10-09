@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.cli.operation_kernel import OperationKernel, OperationRequest
@@ -186,7 +188,9 @@ def test_temporal_operation_keeps_session_message_action_event_families() -> Non
     archive = MagicMock()
     archive.resolve_session_id.return_value = "codex-session:one"
     archive.read_summary.return_value = object()
-    archive.query_session_messages.return_value = []
+    archive.read_session_page.return_value = SimpleNamespace(
+        messages=(), total_message_count=0, lineage_complete=True, lineage_truncation_reason=None
+    )
     archive.query_session_action_occurrences.return_value = []
     with patch("polylogue.operations.read_view_dialogue_temporal.archive_summary_to_domain", return_value=summary):
         result = execute_temporal_read({"session_id": "one", "params": {}, "projection": {}}, archive=archive)
@@ -196,16 +200,16 @@ def test_temporal_operation_keeps_session_message_action_event_families() -> Non
     assert isinstance(window, dict)
     assert window["event_count"] == 1
     assert window["family_counts"] == {"archive-session": 1}
-    archive.query_session_messages.assert_called_once_with(["codex-session:one"], limit=8, sort_direction="asc")
-    archive.query_session_action_occurrences.assert_called_once_with(
-        ["codex-session:one"], limit=4, sort_direction="asc"
-    )
+    archive.read_session_page.assert_called_once_with("codex-session:one", limit=256, offset=0)
+    archive.query_session_action_occurrences.assert_not_called()
 
 
 def test_temporal_operation_uses_pinned_vector_provider_for_semantic_selection() -> None:
     archive = MagicMock()
     provider = cast(VectorProvider, object())
-    with patch("polylogue.operations.read_view_dialogue_temporal._archive_summaries", return_value=[]) as select:
+    with patch(
+        "polylogue.operations.read_view_dialogue_temporal.select_read_view_summaries", return_value=[]
+    ) as select:
         result = execute_temporal_read(
             {"session_id": None, "params": {"similar_text": "needle"}, "projection": {}},
             archive=archive,
@@ -235,10 +239,152 @@ def test_temporal_cli_dispatches_declared_operation_without_local_builder() -> N
                 SimpleNamespace(line=lambda: "daemon"),
             ),
         ) as dispatch,
-        patch("polylogue.cli.read_views.standard.build_read_temporal_window", side_effect=AssertionError("local read")),
         patch("polylogue.cli.read_views.standard.deliver_content") as deliver,
     ):
-        run_read_temporal(env, RootModeRequest.from_params({"query": ("repo:example",)}), invocation)
+        with pytest.raises(SystemExit) as exc:
+            run_read_temporal(env, RootModeRequest.from_params({"query": ("repo:example",)}), invocation)
+        assert exc.value.code == 2
     assert dispatch.call_args.args[1].operation == "read.temporal"
     assert dispatch.call_args.args[1].payload["params"]["query"] == ["repo:example"]
     assert "temporal_window" in deliver.call_args.args[1]
+
+
+def test_temporal_query_set_filters_content_before_the_window(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.storage_records import SessionBuilder
+
+    selected_ids = []
+    for index, text in enumerate(("keep older", "keep newer", "needle excluded")):
+        builder = (
+            SessionBuilder(tmp_path / "index.db", f"temporal-scope-{index}")
+            .provider("codex")
+            .title("Content scope")
+            .updated_at(f"2026-01-0{index + 1}T12:00:00Z")
+            .add_message(text=text, timestamp=f"2026-01-0{index + 1}T12:00:00Z")
+        )
+        builder.save()
+        selected_ids.append(builder.native_session_id())
+    with ArchiveStore(tmp_path, read_only=True) as archive:
+        result = execute_temporal_read(
+            {
+                "params": {
+                    "title": "Content scope",
+                    "exclude_text": ["needle"],
+                    "reverse": False,
+                    "sort": "date",
+                    "offset": 1,
+                    "limit": 1,
+                }
+            },
+            archive=archive,
+        )
+    window = cast(dict[str, Any], result["payload"])["temporal_window"]
+    sessions = [event["source_ref"] for event in window["events"] if event["family"] == "archive-session"]
+    assert sessions == [f"session:{selected_ids[0]}"]
+    assert not any("needle" in event["label"] for event in window["events"])
+
+
+def test_temporal_pages_past_null_timestamps_and_action_counts(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.storage_records import SessionBuilder
+
+    builder = SessionBuilder(tmp_path / "index.db", "late-evidence").provider("codex")
+    for index in range(260):
+        builder.add_message(message_id=f"null-{index}", text="untimestamped", timestamp=None)
+    builder.add_message(
+        message_id="recorded",
+        text="recorded evidence",
+        timestamp="2026-01-01T12:00:00Z",
+        blocks=[
+            {
+                "block_id": f"action-{index}",
+                "type": "tool_use",
+                "tool_name": "Bash",
+                "tool_id": f"call-{index}",
+                "tool_input": {"command": f"printf synthetic-{index}"},
+            }
+            for index in range(6)
+        ],
+    )
+    builder.save()
+    with ArchiveStore(tmp_path, read_only=True) as archive:
+        result = execute_temporal_read({"session_id": builder.native_session_id()}, archive=archive)
+    window = cast(dict[str, Any], result["payload"])["temporal_window"]
+    assert window["family_counts"]["archive-message"] == 1
+    assert window["family_counts"]["archive-action"] == 6
+    assert not any("capped" in caveat for caveat in window["caveats"])
+    assert window["outcome"]["state"] == "ok"
+
+
+def test_read_projections_preserve_a_physical_lineage_gap(tmp_path: Path) -> None:
+    from polylogue.operations.read_view_chronicle import execute_chronicle_read
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.storage_records import seed_attachment_library_lineage_archive
+
+    ids = seed_attachment_library_lineage_archive(tmp_path)
+    with (
+        write_lease("test.temporal.lineage-gap", archive_root=tmp_path),
+        ArchiveStore.open_existing(tmp_path, read_only=False) as archive,
+    ):
+        archive._conn.execute(
+            "UPDATE session_links SET branch_point_message_id='missing-branch-point', "
+            "branch_point_content_address=NULL WHERE src_session_id=?",
+            (ids["child"],),
+        )
+        archive._conn.commit()
+    with ArchiveStore(tmp_path, read_only=True) as archive:
+        page = archive.read_session_page(ids["child"], limit=100, offset=0)
+        assert page.lineage_complete is False
+        assert page.lineage_truncation_reason == "dangling_branch_point"
+        chronicle = cast(
+            dict[str, Any], execute_chronicle_read({"session_id": ids["child"]}, archive=archive)["payload"]
+        )
+        temporal = cast(
+            dict[str, Any], execute_temporal_read({"session_id": ids["child"]}, archive=archive)["payload"]
+        )["temporal_window"]
+    for payload in (chronicle, temporal):
+        assert payload["outcome"]["state"] == "degraded"
+        assert payload["outcome"]["reason"] == "lineage_truncated:dangling_branch_point"
+    assert "lineage_truncated:dangling_branch_point" in chronicle["sessions"][0]["caveats"]
+    assert "lineage_truncated:dangling_branch_point" in temporal["caveats"]
+
+
+def test_temporal_cli_delivers_the_supplied_degraded_outcome() -> None:
+    from polylogue.surfaces.temporal_evidence import build_temporal_evidence_window
+
+    window = build_temporal_evidence_window([], gaps=("lineage_truncated:dangling_branch_point",))
+    env = cast(AppEnv, SimpleNamespace(config=object()))
+    invocation = ReadViewInvocation(
+        view="temporal", session_id=None, output_format="json", destination=RenderDestination.STDOUT, out_path=None
+    )
+    with (
+        patch(
+            "polylogue.cli.read_dispatch.dispatch_read",
+            return_value=(
+                {"view": "temporal", "payload": {"temporal_window": window.model_dump(mode="json")}},
+                SimpleNamespace(line=lambda: "daemon"),
+            ),
+        ),
+        patch("polylogue.cli.read_views.standard.deliver_content") as deliver,
+    ):
+        with pytest.raises(SystemExit) as exc:
+            run_read_temporal(env, RootModeRequest.from_params({}), invocation)
+    assert exc.value.code == 1
+    assert '"degraded"' in deliver.call_args.args[1]
+
+
+def test_temporal_selected_child_keeps_its_composed_prefix_only(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.storage_records import seed_attachment_library_lineage_archive
+
+    ids = seed_attachment_library_lineage_archive(tmp_path)
+    with ArchiveStore(tmp_path, read_only=True) as archive:
+        page = archive.read_session_page(ids["child"], limit=100, offset=0)
+        expected = {f"message:{message.message_id}" for message in page.messages if message.occurred_at is not None}
+        result = execute_temporal_read({"session_id": ids["child"]}, archive=archive)
+    window = cast(dict[str, Any], result["payload"])["temporal_window"]
+    actual = {event["source_ref"] for event in window["events"] if event["family"] == "archive-message"}
+    assert len(expected) == 2
+    assert actual == expected
+    assert window["outcome"]["state"] == "ok"

@@ -8098,9 +8098,10 @@ class ArchiveStore:
         limit: int = 50,
         offset: int = 0,
         sort_direction: Literal["asc", "desc"] = "asc",
+        message_ids: Sequence[str] | None = None,
     ) -> list[ArchiveActionQueryRow]:
         return _archive_query_reads.query_session_action_occurrences(
-            self, session_ids, limit=limit, offset=offset, sort_direction=sort_direction
+            self, session_ids, limit=limit, offset=offset, sort_direction=sort_direction, message_ids=message_ids
         )
 
     def get_delegation_attempt(

@@ -38,6 +38,14 @@ reference selects a query set; a missing selected reference stays empty.
 Selected temporal reads do not admit a vector snapshot; ranked query-set reads
 retain their ordinary vector admission and named availability gaps.
 
+Temporal and chronicle query sets apply the canonical content predicates before
+sample, offset and limit. Chronicle streams the composed transcript and keeps
+the exact first and last nonempty authored prose rows. Temporal pages every
+composed message and its action occurrences; untimestamped rows do not stop
+later recorded events from appearing. Shared inherited occurrences appear once
+in a selected temporal set. Both projections retain named lineage gaps in their
+caveats and typed terminal outcome; CLI delivery preserves that outcome.
+
 ## Shared read input
 
 `ReadRequest.normalize` and `read_contract_schema` share the flat input

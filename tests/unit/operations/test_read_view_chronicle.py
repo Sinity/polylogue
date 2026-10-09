@@ -9,7 +9,7 @@ import pytest
 
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Origin
-from polylogue.operations.read_view_chronicle import chronicle_edges, execute_chronicle_read
+from polylogue.operations.read_view_chronicle import ChronicleEdges, chronicle_edges, execute_chronicle_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.builders import make_conv, make_msg
 
@@ -17,10 +17,11 @@ from tests.infra.builders import make_conv, make_msg
 def _serving(rows: list[Any]) -> Any:
     """A fake candidate fetch that streams to ``on_batch`` as the real one does."""
 
-    def fetch(*_args: object, on_batch: Any = None, **_kwargs: object) -> list[Any]:
+    def fetch(*_args: object, on_batch: Any = None, keep: Any = None, **_kwargs: object) -> list[Any]:
+        selected = keep(rows) if keep is not None else rows
         if on_batch is None:
-            return rows
-        on_batch(rows)
+            return selected
+        on_batch(selected)
         return []
 
     return fetch
@@ -32,6 +33,7 @@ def test_chronicle_edges_reads_composed_pages_and_counts_only_authored_dialogue(
     messages = [
         SimpleNamespace(
             id=f"message-{index}",
+            text="authored prose",
             role=role,
             message_type=message_type,
             material_origin=material_origin,
@@ -50,13 +52,18 @@ def test_chronicle_edges_reads_composed_pages_and_counts_only_authored_dialogue(
         def __init__(self) -> None:
             self.offsets: list[int] = []
 
-        def has_prefix_lineage(self, session_id: str) -> bool:
-            return True
+        def check_operation_read(self) -> None:
+            pass
 
         def read_session_page(self, session_id: str, *, limit: int, offset: int) -> SimpleNamespace:
             assert session_id == "origin:session"
             self.offsets.append(offset)
-            return SimpleNamespace(messages=messages[offset : offset + 2], total_message_count=len(messages))
+            return SimpleNamespace(
+                messages=messages[offset : offset + 2],
+                total_message_count=len(messages),
+                lineage_complete=True,
+                lineage_truncation_reason=None,
+            )
 
     archive = PinnedArchive()
     monkeypatch.setattr(
@@ -64,13 +71,11 @@ def test_chronicle_edges_reads_composed_pages_and_counts_only_authored_dialogue(
         lambda message, *, origin: message,
     )
 
-    first, last, total = chronicle_edges(
-        cast(ArchiveStore, archive), "origin:session", 1, origin=Origin.from_string("codex")
-    )
+    edges = chronicle_edges(cast(ArchiveStore, archive), "origin:session", 1, origin=Origin.from_string("codex"))
 
-    assert [message.id for message in first] == ["message-0", "message-1", "message-3", "message-5", "message-6"]
-    assert [message.id for message in last] == ["message-9", "message-10", "message-11", "message-12", "message-13"]
-    assert total == 12
+    assert [message.id for message in edges.first] == ["message-0"]
+    assert [message.id for message in edges.last] == ["message-13"]
+    assert edges.total == 12
     assert archive.offsets == [0, 2, 4, 6, 8, 10, 12]
 
 
@@ -113,15 +118,20 @@ def test_chronicle_operation_applies_exclude_text_before_offset_and_limit(monkey
     }
     archive = Mock(archive_root="/tmp/archive")
     monkeypatch.setattr(archive_execution, "_archive_summaries", _serving(rows))
-    monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
+    monkeypatch.setattr(archive_execution, "archive_summary_to_domain", lambda row: summaries[row.session_id])
     monkeypatch.setattr(
-        "polylogue.archive.hydration.archive_envelope_to_session",
+        "polylogue.operations.read_view_selection.archive_summary_to_domain", lambda row: summaries[row.session_id]
+    )
+    monkeypatch.setattr(
+        "polylogue.archive.query.archive_execution.archive_envelope_to_session",
         lambda envelope, **kwargs: SimpleNamespace(
             id=envelope.session_id,
             messages=[SimpleNamespace(text=texts[envelope.session_id])],
         ),
     )
-    monkeypatch.setattr(read_view_chronicle, "chronicle_edges", lambda *args, **kwargs: ([], [], 0))
+    monkeypatch.setattr(
+        read_view_chronicle, "chronicle_edges", lambda *args, **kwargs: ChronicleEdges([], [], 0, True, None)
+    )
     archive.read_session.side_effect = lambda session_id: SimpleNamespace(session_id=session_id)
 
     result = execute_chronicle_read(
@@ -216,7 +226,10 @@ def test_a_chronicle_count_sort_hydrates_each_candidate_once(monkeypatch: pytest
     }
     archive = Mock(archive_root="/tmp/archive")
     monkeypatch.setattr(archive_execution, "_archive_summaries", _serving(rows))
-    monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
+    monkeypatch.setattr(archive_execution, "archive_summary_to_domain", lambda row: summaries[row.session_id])
+    monkeypatch.setattr(
+        "polylogue.operations.read_view_selection.archive_summary_to_domain", lambda row: summaries[row.session_id]
+    )
     monkeypatch.setattr(
         "polylogue.archive.hydration.archive_envelope_to_session",
         lambda envelope, **kwargs: make_conv(
@@ -224,7 +237,9 @@ def test_a_chronicle_count_sort_hydrates_each_candidate_once(monkeypatch: pytest
             messages=[make_msg(id=f"m{i}", text="x") for i in range(int(envelope.session_id.rsplit(":", 1)[1]) + 1)],
         ),
     )
-    monkeypatch.setattr(read_view_chronicle, "chronicle_edges", lambda *args, **kwargs: ([], [], 0))
+    monkeypatch.setattr(
+        read_view_chronicle, "chronicle_edges", lambda *args, **kwargs: ChronicleEdges([], [], 0, True, None)
+    )
     archive.read_session.side_effect = lambda session_id: SimpleNamespace(session_id=session_id)
 
     result = execute_chronicle_read({"params": {"sort": "messages", "limit": 1}}, archive=archive, vector_provider=None)
@@ -261,7 +276,10 @@ def test_a_sampled_chronicle_count_sort_samples_every_candidate(monkeypatch: pyt
     }
     archive = Mock(archive_root="/tmp/archive")
     monkeypatch.setattr(archive_execution, "_archive_summaries", _serving(rows))
-    monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
+    monkeypatch.setattr(archive_execution, "archive_summary_to_domain", lambda row: summaries[row.session_id])
+    monkeypatch.setattr(
+        "polylogue.operations.read_view_selection.archive_summary_to_domain", lambda row: summaries[row.session_id]
+    )
     monkeypatch.setattr(
         "polylogue.archive.hydration.archive_envelope_to_session",
         lambda envelope, **kwargs: make_conv(
@@ -269,7 +287,9 @@ def test_a_sampled_chronicle_count_sort_samples_every_candidate(monkeypatch: pyt
             messages=[make_msg(id=f"m{i}", text="x") for i in range(int(envelope.session_id.rsplit(":", 1)[1]) + 1)],
         ),
     )
-    monkeypatch.setattr(read_view_chronicle, "chronicle_edges", lambda *args, **kwargs: ([], [], 0))
+    monkeypatch.setattr(
+        read_view_chronicle, "chronicle_edges", lambda *args, **kwargs: ChronicleEdges([], [], 0, True, None)
+    )
     archive.read_session.side_effect = lambda session_id: SimpleNamespace(session_id=session_id)
     offered: list[int] = []
     original = SessionQueryPlan._finalize
@@ -310,3 +330,49 @@ def test_chronicle_scan_classification_does_not_impose_an_execution_deadline() -
     assert not read_is_archive_scan("read.chronicle", {"params": {"sort": "date"}})
     spec = daemon_operation_spec("read.chronicle")
     assert spec is not None and spec.deadline_s is None
+
+
+@pytest.mark.parametrize("count", [20, 60, 300])
+def test_physical_chronicle_keeps_the_actual_tail(tmp_path: Any, count: int) -> None:
+    """The tail is the last authored rows, including beyond a storage page."""
+    from datetime import UTC, timedelta
+
+    from tests.infra.storage_records import SessionBuilder
+
+    builder = SessionBuilder(tmp_path / "index.db", "physical-edges").provider("codex")
+    instant = datetime(2026, 1, 1, tzinfo=UTC)
+    for index in range(count):
+        builder.add_message(
+            message_id=f"edge-{index}",
+            text=f"prose-{index}",
+            timestamp=(instant + timedelta(seconds=index)).isoformat(),
+            material_origin="human_authored",
+        )
+    builder.save()
+    with ArchiveStore(tmp_path, read_only=True) as archive:
+        result = execute_chronicle_read(
+            {"session_id": builder.native_session_id(), "projection": {"edge_limit": 8}}, archive=archive
+        )
+    body = cast(dict[str, Any], result["payload"])["sessions"][0]
+    assert [row["text"] for row in body["first_messages"]] == [f"prose-{index}" for index in range(8)]
+    assert [row["text"] for row in body["last_messages"]] == [f"prose-{index}" for index in range(count - 8, count)]
+    assert "empty_text_messages_omitted" not in body["caveats"]
+
+
+def test_chronicle_pages_past_empty_authored_text(tmp_path: Any) -> None:
+    from tests.infra.storage_records import SessionBuilder
+
+    builder = SessionBuilder(tmp_path / "index.db", "empty-edges").provider("codex")
+    for index in range(20):
+        builder.add_message(message_id=f"empty-{index}", text="", material_origin="human_authored")
+    for index in range(4):
+        builder.add_message(message_id=f"prose-{index}", text=f"prose-{index}", material_origin="human_authored")
+    builder.save()
+    with ArchiveStore(tmp_path, read_only=True) as archive:
+        result = execute_chronicle_read(
+            {"session_id": builder.native_session_id(), "projection": {"edge_limit": 2}}, archive=archive
+        )
+    body = cast(dict[str, Any], result["payload"])["sessions"][0]
+    assert [row["text"] for row in body["first_messages"]] == ["prose-0", "prose-1"]
+    assert [row["text"] for row in body["last_messages"]] == ["prose-2", "prose-3"]
+    assert body["total_matching_messages"] == 24

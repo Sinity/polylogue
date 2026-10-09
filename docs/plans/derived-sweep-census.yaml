@@ -65,13 +65,6 @@ sites:
     scope: "read_only_module"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/cli/read_views/standard.py"
-    function: "build_read_temporal_window"
-    subject: "limit"
-    kind: "read_path_substitution"
-    scope: "read_only_module"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
   - file: "polylogue/coordination/envelope.py"
     function: "_compact_coordination_payload"
     subject: "resource_episodes"

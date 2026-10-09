@@ -8,6 +8,7 @@ from typing import Any
 
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import MaterialOrigin
+from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 from polylogue.surfaces.payloads import SurfacePayloadModel
 
 
@@ -31,6 +32,8 @@ class ChronicleSessionPayload(SurfacePayloadModel):
     included_count: int
     omitted_count: int
     edge_limit: int
+    lineage_complete: bool = True
+    lineage_truncation_reason: str | None = None
     first_messages: tuple[ChronicleMessagePayload, ...] = ()
     last_messages: tuple[ChronicleMessagePayload, ...] = ()
     caveats: tuple[str, ...] = ()
@@ -43,6 +46,7 @@ class ChronicleProjectionPayload(SurfacePayloadModel):
     session_count: int
     edge_limit: int
     body_policy: str = "authored-dialogue"
+    outcome: OutcomeEnvelope
     caveats: tuple[str, ...] = ()
 
 
@@ -125,6 +129,8 @@ def build_chronicle_session_payload(
     last_messages: Sequence[object],
     total_matching_messages: int,
     edge_limit: int,
+    lineage_complete: bool = True,
+    lineage_truncation_reason: str | None = None,
 ) -> ChronicleSessionPayload:
     """Build an honest bounded first/last projection for one session."""
 
@@ -135,6 +141,8 @@ def build_chronicle_session_payload(
     included_count = len(first_payloads) + len(last_payloads)
     omitted_count = max(total_matching_messages - included_count, 0)
     caveats: list[str] = []
+    if not lineage_complete:
+        caveats.append(f"lineage_truncated:{lineage_truncation_reason or 'unknown'}")
     if omitted_count:
         caveats.append("middle_messages_omitted")
     if first_skipped or last_skipped:
@@ -146,6 +154,8 @@ def build_chronicle_session_payload(
         title=summary.display_title,
         origin=str(summary.origin),
         total_matching_messages=total_matching_messages,
+        lineage_complete=lineage_complete,
+        lineage_truncation_reason=lineage_truncation_reason,
         included_count=included_count,
         omitted_count=omitted_count,
         edge_limit=edge_limit,
@@ -169,6 +179,17 @@ def build_chronicle_projection_payload(
         caveats.append("empty_result_set")
     return ChronicleProjectionPayload(
         sessions=tuple(sessions),
+        outcome=decide_outcome(
+            matched=len(sessions),
+            degraded=tuple(
+                dict.fromkeys(
+                    caveat
+                    for session in sessions
+                    for caveat in session.caveats
+                    if caveat.startswith("lineage_truncated:")
+                )
+            ),
+        ),
         session_count=len(sessions),
         edge_limit=edge_limit,
         caveats=tuple(caveats),

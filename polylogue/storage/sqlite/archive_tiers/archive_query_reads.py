@@ -4176,6 +4176,7 @@ def query_session_action_occurrences(
     limit: int = 50,
     offset: int = 0,
     sort_direction: Literal["asc", "desc"] = "asc",
+    message_ids: Sequence[str] | None = None,
 ) -> list[ArchiveActionQueryRow]:
     """Return lightweight action occurrence rows for known sessions.
 
@@ -4189,6 +4190,13 @@ def query_session_action_occurrences(
     )
     if not normalized_session_ids:
         return []
+    if message_ids is not None and not message_ids:
+        return []
+    message_clause = ""
+    message_params: list[object] = []
+    if message_ids is not None:
+        message_clause = " AND a.message_id IN (" + ", ".join("?" for _ in message_ids) + ")"
+        message_params.extend(message_ids)
     normalized_limit = max(int(limit), 0)
     normalized_offset = max(int(offset), 0)
     order_direction = _query_unit_order_direction(sort_direction)
@@ -4222,12 +4230,12 @@ def query_session_action_occurrences(
         FROM {action_relation_name} a
         JOIN sessions s ON s.session_id = a.session_id
         JOIN messages m ON m.message_id = a.message_id
-        WHERE a.session_id IN ({placeholders})
+        WHERE a.session_id IN ({placeholders}){message_clause}
         ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction},
                  a.tool_use_block_id {order_direction}
         LIMIT ? OFFSET ?
         """,
-        [*relation_params, *normalized_session_ids, normalized_limit, normalized_offset],
+        [*relation_params, *normalized_session_ids, *message_params, normalized_limit, normalized_offset],
     ).fetchall()
     return [_archive_action_query_row(row) for row in rows]
 

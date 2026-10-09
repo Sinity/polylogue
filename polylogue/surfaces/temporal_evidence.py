@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, Field
 
+from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 from polylogue.surfaces.payloads import SurfacePayloadModel
 
 
@@ -88,6 +89,7 @@ class TemporalEvidenceWindow(SurfacePayloadModel):
     bucket: TemporalBucket = TemporalBucket.HOUR
     events: tuple[TemporalEvidenceEvent, ...] = ()
     event_count: int = Field(ge=0)
+    outcome: OutcomeEnvelope
     family_counts: dict[str, int] = Field(default_factory=dict)
     kind_counts: dict[str, int] = Field(default_factory=dict)
     buckets: tuple[TemporalCountBucket, ...] = ()
@@ -103,6 +105,7 @@ def build_temporal_evidence_window(
     until: datetime | None = None,
     bucket: TemporalBucket = TemporalBucket.HOUR,
     caveats: Iterable[str] = (),
+    gaps: Iterable[str] = (),
 ) -> TemporalEvidenceWindow:
     """Build a deterministic temporal window from already-selected events."""
 
@@ -116,7 +119,8 @@ def build_temporal_evidence_window(
     )
     family_counts = Counter(event.family for event in selected)
     kind_counts = Counter(event.kind for event in selected)
-    caveat_list = list(caveats)
+    gap_names = tuple(dict.fromkeys(gaps))
+    caveat_list = [*caveats, *gap_names]
     if normalized_since is None or normalized_until is None:
         caveat_list.append("window_bound_open")
     return TemporalEvidenceWindow(
@@ -125,6 +129,7 @@ def build_temporal_evidence_window(
         bucket=bucket,
         events=selected,
         event_count=len(selected),
+        outcome=decide_outcome(matched=len(selected), degraded=gap_names),
         family_counts=dict(sorted(family_counts.items())),
         kind_counts=dict(sorted(kind_counts.items())),
         buckets=_count_buckets(selected, bucket=bucket),

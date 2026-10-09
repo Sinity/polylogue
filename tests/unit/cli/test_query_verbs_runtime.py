@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import click
 import pytest
@@ -1670,124 +1669,6 @@ def test_exact_read_summaries_resolves_id_without_query_enumeration(tmp_path: Pa
     archive.read_summary.assert_called_once_with("codex-session:abc")
 
 
-def test_temporal_message_events_use_indexed_session_message_query(tmp_path: Path) -> None:
-    from polylogue.cli.read_views.standard import _message_temporal_events_for_summaries
-
-    archive = MagicMock()
-    archive.query_session_messages.return_value = []
-    archive.__enter__.return_value = archive
-    archive.__exit__.return_value = None
-    config = Config(
-        archive_root=tmp_path,
-        db_path=tmp_path / "index.db",
-        render_root=tmp_path / "render",
-        sources=[],
-    )
-    summaries = [
-        SessionSummary.model_validate({"id": "codex-session:a", "origin": "codex-session", "message_count": 100}),
-        SessionSummary.model_validate(
-            {"id": "claude-code-session:b", "origin": "claude-code-session", "message_count": 100}
-        ),
-    ]
-
-    with patch("polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing", return_value=archive):
-        rows, caveats = _message_temporal_events_for_summaries(config, summaries)
-
-    assert rows == []
-    assert caveats == ()
-    archive.query_session_messages.assert_called_once_with(
-        ["codex-session:a", "claude-code-session:b"],
-        limit=16,
-        sort_direction="asc",
-    )
-
-
-def test_temporal_action_events_use_lightweight_occurrence_query(tmp_path: Path) -> None:
-    from polylogue.cli.read_views.standard import _action_temporal_events_for_summaries
-
-    archive = MagicMock()
-    archive.query_session_action_occurrences.return_value = []
-    archive.__enter__.return_value = archive
-    archive.__exit__.return_value = None
-    config = Config(
-        archive_root=tmp_path,
-        db_path=tmp_path / "index.db",
-        render_root=tmp_path / "render",
-        sources=[],
-    )
-    summaries = [
-        SessionSummary.model_validate({"id": "codex-session:a", "origin": "codex-session"}),
-        SessionSummary.model_validate({"id": "claude-code-session:b", "origin": "claude-code-session"}),
-    ]
-
-    with patch("polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing", return_value=archive):
-        rows, caveats = _action_temporal_events_for_summaries(config, summaries)
-
-    assert rows == []
-    assert caveats == ()
-    archive.query_session_action_occurrences.assert_called_once_with(
-        ["codex-session:a", "claude-code-session:b"],
-        limit=8,
-        sort_direction="asc",
-    )
-
-
-def test_read_view_temporal_builder_records_phase_timings(tmp_path: Path) -> None:
-    from polylogue.cli.read_views.standard import build_read_temporal_window
-
-    config = Config(
-        archive_root=tmp_path,
-        db_path=tmp_path / "index.db",
-        render_root=tmp_path / "render",
-        sources=[],
-    )
-    summaries = [
-        SessionSummary.model_validate(
-            {
-                "id": "codex-session:abc",
-                "origin": "codex-session",
-                "title": "Temporal slice",
-                "created_at": datetime(2026, 6, 30, 8, 0, tzinfo=UTC),
-            }
-        )
-    ]
-    phases: list[tuple[str, float, Mapping[str, object]]] = []
-
-    with (
-        patch("polylogue.cli.query._create_query_vector_provider", return_value=None),
-        patch(
-            "polylogue.archive.query.spec.SessionQuerySpec.list_summaries",
-            new=AsyncMock(return_value=summaries),
-        ),
-        patch(
-            "polylogue.cli.read_views.standard._message_temporal_events_for_summaries",
-            return_value=([], ()),
-        ),
-        patch(
-            "polylogue.cli.read_views.standard._action_temporal_events_for_summaries",
-            return_value=([], ()),
-        ),
-    ):
-        window = build_read_temporal_window(
-            config,
-            RootModeRequest.from_params({"query": ("repo:polylogue",), "limit": 1}),
-            phase_recorder=lambda name, elapsed_ms, details: phases.append((name, elapsed_ms, details)),
-        )
-
-    assert window.event_count == 1
-    assert [name for name, _elapsed_ms, _details in phases] == [
-        "prepare",
-        "select_sessions",
-        "project_sessions",
-        "project_messages",
-        "project_actions",
-        "build_window",
-    ]
-    assert all(elapsed_ms >= 0 for _name, elapsed_ms, _details in phases)
-    assert phases[1][2]["session_count"] == 1
-    assert phases[-1][2]["family_counts"] == {"archive-session": 1}
-
-
 def test_read_view_registry_builds_typed_view_options() -> None:
     options = read_view_handlers.read_view_options_for_view(
         "context-image",
@@ -1816,9 +1697,14 @@ def test_read_view_registry_builds_chronicle_edge_limit() -> None:
 
 
 def test_read_chronicle_uses_projection_spec_edge_limit() -> None:
+    from polylogue.surfaces.chronicle import build_chronicle_projection_payload
+
     projection_spec = projection_from_views(("chronicle",), edge_limit=3)
     operation_result = SimpleNamespace(
-        value={"view": "chronicle", "payload": {"sessions": [], "session_count": 0, "edge_limit": 3}}
+        value={
+            "view": "chronicle",
+            "payload": build_chronicle_projection_payload([], edge_limit=3).model_dump(mode="json"),
+        }
     )
 
     with (
@@ -1827,18 +1713,20 @@ def test_read_chronicle_uses_projection_spec_edge_limit() -> None:
         patch("polylogue.cli.read_views.chronicle.render_chronicle_markdown", return_value="chronicle\n"),
         patch("polylogue.cli.read_views.chronicle.deliver_content") as deliver,
     ):
-        read_view_handlers.run_read_view(
-            cast(AppEnv, SimpleNamespace(config=SimpleNamespace())),
-            RootModeRequest.from_params({}),
-            ReadViewInvocation(
-                view="chronicle",
-                session_id=None,
-                output_format="markdown",
-                destination="terminal",
-                out_path=None,
-                projection_spec=projection_spec,
-            ),
-        )
+        with pytest.raises(SystemExit) as exc:
+            read_view_handlers.run_read_view(
+                cast(AppEnv, SimpleNamespace(config=SimpleNamespace())),
+                RootModeRequest.from_params({}),
+                ReadViewInvocation(
+                    view="chronicle",
+                    session_id=None,
+                    output_format="markdown",
+                    destination="terminal",
+                    out_path=None,
+                    projection_spec=projection_spec,
+                ),
+            )
+        assert exc.value.code == 2
 
     operation = dispatch.call_args.args[1]
     assert operation.operation == "read.chronicle"
