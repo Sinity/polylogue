@@ -253,3 +253,15 @@ def test_grammar_only_jsonl_successor_accepts_large_integer() -> None:
     giant = b"9" * 65537
     assert jsonl_has_record_successor(io.BytesIO(b'{"ignored":' + giant + b"}\n{}"))
     assert not jsonl_has_record_successor(io.BytesIO(b'{"ignored":' + giant + b"x}\n{}"))
+
+
+@pytest.mark.parametrize("token", [b"\xed\xa0\x80" + b"\\udc00", b"\\ud800" + b"\xed\xb0\x80"])
+def test_stream_projection_preserves_mixed_surrogate_spelling(token: bytes) -> None:
+    from polylogue.core.json import decode_provider_utf8
+    from polylogue.sources.detection_projection import project_detection_input
+
+    wire = b'{"selected":"' + token + b'"}'
+    expected = json.loads(decode_provider_utf8(wire))
+    rule = DetectorProjection(fields={"selected": DetectorProjection()})
+    assert list(iter_projected_document_records(io.BytesIO(wire), rule)) == [expected]
+    assert project_detection_input(io.BytesIO(wire), rule) == ("record", expected)

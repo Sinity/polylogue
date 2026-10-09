@@ -8,7 +8,6 @@ are not a prefix sample. Scalar decoding retains one value at a time.
 
 from __future__ import annotations
 
-import codecs
 import io
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack, closing
@@ -130,43 +129,20 @@ class _ObservedLine:
 
 class _DetectionText(io.RawIOBase):
     def __init__(self, handle: _ByteReader, encoding: str, check_stop: Callable[[], None] | None = None) -> None:
-        self.handle = handle
-        self.check_stop = check_stop
-        self.callback_failure: BaseException | None = None
-        self.decoder = codecs.getincrementaldecoder(encoding)(errors="surrogatepass")
-        self.pending = bytearray()
-        self.ended = False
-        self.started = False
+        from polylogue.schemas.observation_spill import _ExactJSONText
+
+        self.observed = _ObservedLine(handle, check_stop)
+        self.exact = _ExactJSONText(self.observed, encoding)
+
+    @property
+    def callback_failure(self) -> BaseException | None:
+        return self.observed.callback_failure
 
     def readable(self) -> bool:
         return True
 
     def readinto(self, buffer: object) -> int:
-        check_compute_cancelled()
-        if self.check_stop is not None:
-            try:
-                self.check_stop()
-            except BaseException as exc:
-                self.callback_failure = exc
-                raise
-        view = memoryview(buffer)  # type: ignore[arg-type]
-        while not self.pending and not self.ended:
-            check_compute_cancelled()
-            chunk = self.handle.read(1024 * 1024)
-            self.ended = not chunk
-            text = self.decoder.decode(chunk, final=self.ended)
-            if not self.started:
-                text = text.lstrip("\ufeff")
-                self.started = bool(text)
-            # JSON accepts escaped lone surrogates, while the event decoder's
-            # UTF-8 reader rejects their directly encoded provider spelling.
-            # Escaping only those code units preserves both lone units and
-            # adjacent CESU-8 pairs without changing ordinary string content.
-            self.pending.extend(text.encode("utf-8", "backslashreplace"))
-        count = min(len(view), len(self.pending))
-        view[:count] = self.pending[:count]
-        del self.pending[:count]
-        return count
+        return self.exact.readinto(buffer)
 
 
 def _skip(events: Iterator[tuple[str, object]], event: str) -> object:

@@ -245,29 +245,18 @@ class ChatGPTAssetIndex:
         """
         import io
 
-        from polylogue.schemas.observation_spill import SpilledKey, owned_scalar_events
+        from polylogue.schemas.observation_spill import SpilledKey, _ExactJSONText, owned_scalar_events
         from polylogue.sources.detection_projection import DetectorProjection, _project
 
         encoding = json.detect_encoding(source.read(4))
         source.seek(0)
-        text = io.TextIOWrapper(source, encoding=encoding, errors="surrogatepass")
-
-        class Utf8Input:
-            def read(self, size: int = -1) -> bytes:
-                check_compute_cancelled()
-                if size == 0:
-                    return b""
-                chunk = text.read(16384)
-                return "".join(
-                    f"\\u{ord(character):04x}" if 0xD800 <= ord(character) <= 0xDFFF else character
-                    for character in chunk
-                ).encode("utf-8")
+        text = io.BufferedReader(_ExactJSONText(source, encoding, strip_bom=False))
 
         conn = self._connection()
         conn.execute("SAVEPOINT sidecar_input")
         try:
             with ExitStack() as stack:
-                events = stack.enter_context(owned_scalar_events(Utf8Input()))
+                events = stack.enter_context(owned_scalar_events(text))
                 first = next(events, None)
                 if first is None:
                     raise ValueError("empty ChatGPT sidecar input")
@@ -334,7 +323,7 @@ class ChatGPTAssetIndex:
         else:
             conn.execute("RELEASE sidecar_input")
         finally:
-            text.detach()
+            text.close()
         return claimed
 
     def begin_asset_group(self) -> int:
