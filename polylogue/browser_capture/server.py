@@ -313,7 +313,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         finally:
             self._finish_observed_request(method, started_at)
 
-    def _send_json(self, status: HTTPStatus, payload: object) -> None:
+    def _send_json(self, status: HTTPStatus, payload: object, *, keep_alive: bool = False) -> None:
         encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
         def encoded_chunks() -> Iterator[bytes]:
@@ -340,6 +340,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self.send_header("X-Request-ID", self._request_id())
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(staged.size_bytes))
+            if keep_alive:
+                self.send_header("Connection", "keep-alive")
+                self.close_connection = False
             if _origin_allowed(origin, self.server.config):
                 self.send_header("Access-Control-Allow-Origin", origin or "null")
                 self.send_header("Vary", "Origin")
@@ -1478,6 +1481,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 receiver_id=receiver_identity(self.server.config),
                 proof=proof,
             ).model_dump(mode="json"),
+            keep_alive=self.headers.get("Connection", "").lower() == "keep-alive",
         )
 
     def _mission_control(self, provider: str, provider_session_id: str) -> None:

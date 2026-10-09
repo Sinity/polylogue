@@ -10,8 +10,12 @@ import secrets
 import struct
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import ParseResult, urlparse
+
+from ijson.common import JSONError
 
 from polylogue.browser_capture.models import BROWSER_CAPTURE_API_SCHEMA
 from polylogue.browser_capture.receiver import (
@@ -19,6 +23,8 @@ from polylogue.browser_capture.receiver import (
     load_or_mint_receiver_token,
     receiver_attestation_proof,
 )
+from polylogue.core.json import JSONValue
+from polylogue.schemas.observation_spill import StreamedJSONDocument
 
 NATIVE_HOST_NAME = "com.polylogue.browser_capture"
 
@@ -129,34 +135,60 @@ def _authenticate_receiver(endpoint: ParseResult, receiver_id: str, secret: str)
     the challenge crosses the socket, so an impostor listening on the receiver
     port learns nothing it can use and cannot answer.
     """
-    challenge = secrets.token_urlsafe(32)
-    path = endpoint.path.rstrip("/") + "/v1/receiver/attest"
     connection = http.client.HTTPConnection(
         endpoint.hostname or "", endpoint.port or 80, timeout=RECEIVER_ATTESTATION_IDLE_TIMEOUT_S
     )
     try:
-        connection.request(
-            "POST",
-            path,
-            body=json.dumps({"challenge": challenge}),
-            headers={"Content-Type": "application/json"},
+        return _authenticate_receiver_connection(
+            connection, receiver_id, secret, path=endpoint.path.rstrip("/") + "/v1/receiver/attest"
         )
-        response = connection.getresponse()
-        raw = response.read()
-    except (OSError, http.client.HTTPException):
-        return "receiver_unreachable"
     finally:
         connection.close()
+
+
+def _authenticate_receiver_connection(
+    connection: http.client.HTTPConnection,
+    receiver_id: str,
+    secret: str,
+    *,
+    path: str = "/v1/receiver/attest",
+    keep_alive: bool = False,
+) -> str | None:
+    """Verify the proof on the caller-owned connection without closing its peer."""
+    challenge = secrets.token_urlsafe(32)
+    headers = {"Content-Type": "application/json"}
+    if keep_alive:
+        headers["Connection"] = "keep-alive"
     try:
-        body = json.loads(raw) if response.status == 200 else None
-    except ValueError:
-        body = None
-    proof = body.get("proof") if isinstance(body, dict) else None
-    if isinstance(proof, str) and hmac.compare_digest(
-        proof, receiver_attestation_proof(secret, receiver_id, challenge)
-    ):
-        return None
+        connection.request("POST", path, body=json.dumps({"challenge": challenge}), headers=headers)
+        response = connection.getresponse()
+        if response.status != 200:
+            return "receiver_authentication_failed"
+        with _receiver_response_document(response) as body:
+            proof = body.get("proof") if isinstance(body, dict) else None
+            if (
+                isinstance(proof, str)
+                and proof.isascii()
+                and hmac.compare_digest(proof, receiver_attestation_proof(secret, receiver_id, challenge))
+            ):
+                return None
+    except (OSError, http.client.HTTPException):
+        return "receiver_unreachable"
+    except (ValueError, JSONError):
+        return "receiver_authentication_failed"
     return "receiver_authentication_failed"
+
+
+@contextmanager
+def _receiver_response_document(response: http.client.HTTPResponse) -> Iterator[JSONValue]:
+    """Own a complete receiver JSON response without retaining its wire collection."""
+    with tempfile.TemporaryDirectory(prefix="polylogue-receiver-response-") as scratch:
+        path = Path(scratch) / "response.json"
+        with path.open("wb") as stream:
+            while chunk := response.read(64 * 1024):
+                stream.write(chunk)
+        with StreamedJSONDocument(path) as document:
+            yield document
 
 
 def main() -> int:

@@ -3435,6 +3435,13 @@ def format_browser_capture_policy_lines(payload: JSONDocument) -> list[str]:
 
 def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     """Render daemon component status as plain text lines."""
+    snapshot = payload.get("status_snapshot")
+    if payload.get("ok") is False and "archive_storage" not in payload and isinstance(snapshot, dict):
+        lines = [f"Polylogue daemon: {snapshot['state']}"]
+        for key, label in (("reason", "Reason"), ("detail", "Detail"), ("request_id", "Request")):
+            if value := snapshot.get(key):
+                lines.append(f"{label}: {value}")
+        return lines
     lines = ["Polylogue daemon"]
     halted = payload.get("halted_units")
     if isinstance(halted, list) and halted:

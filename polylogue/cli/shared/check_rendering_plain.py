@@ -92,7 +92,11 @@ def append_daemon_lines(lines: list[str], result: CheckCommandResult) -> None:
     if result.daemon_report is None:
         return
     lines.extend(["", "Daemon Components:"])
-    lines.extend(f"  {line}" for line in format_daemon_status_lines(result.daemon_report)[1:])
+    rendered = format_daemon_status_lines(result.daemon_report)
+    snapshot = result.daemon_report.get("status_snapshot")
+    if not (result.daemon_report.get("ok") is False and isinstance(snapshot, dict)):
+        rendered = rendered[1:]
+    lines.extend(f"  {line}" for line in rendered)
 
 
 def append_blob_lines(lines: list[str], result: CheckCommandResult) -> None:

@@ -169,7 +169,7 @@ def test_unobserved_receiver_policy_stays_unknown_without_io(monkeypatch: pytest
     assert summary["spool_ready"] is None
 
 
-@pytest.mark.parametrize("spoof", ["unauthenticated_success", "wrong_identity"])
+@pytest.mark.parametrize("spoof", ["unauthenticated_success", "wrong_identity", "closing_peer", "malformed_proof"])
 def test_status_rejects_schema_valid_impostor_before_trusting_policy(tmp_path: Path, spoof: str) -> None:
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -185,10 +185,21 @@ def test_status_rejects_schema_valid_impostor_before_trusting_policy(tmp_path: P
     class Impostor(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             challenge = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["challenge"]
-            proof = receiver_attestation_proof(secret, identity, challenge) if spoof == "wrong_identity" else "invalid"
+            proof = (
+                receiver_attestation_proof(secret, identity, challenge)
+                if spoof != "unauthenticated_success"
+                else "invalid"
+            )
+            if spoof == "malformed_proof":
+                proof = "invalid-unicode-\u00e9"
+            body = json.dumps({"proof": proof}).encode()
             self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            if spoof == "wrong_identity":
+                self.send_header("Connection", "keep-alive")
+                self.close_connection = False
             self.end_headers()
-            self.wfile.write(json.dumps({"proof": proof}).encode())
+            self.wfile.write(body)
 
         def do_GET(self) -> None:
             received_tokens.append(self.headers.get("Authorization"))
@@ -205,9 +216,13 @@ def test_status_rejects_schema_valid_impostor_before_trusting_policy(tmp_path: P
     try:
         result = CliRunner().invoke(status_command, ["--port", str(server.server_port), "--format", "json"])
         assert result.exit_code == 1
-        assert (
-            "receiver_identity_mismatch" if spoof == "wrong_identity" else "receiver_authentication_failed"
-        ) in result.output
+        reason = {
+            "wrong_identity": "receiver_identity_mismatch",
+            "unauthenticated_success": "receiver_authentication_failed",
+            "closing_peer": "receiver_peer_lost",
+            "malformed_proof": "receiver_authentication_failed",
+        }[spoof]
+        assert reason in result.output
         assert received_tokens == (["Bearer " + token] if spoof == "wrong_identity" else [])
     finally:
         server.shutdown()
@@ -265,3 +280,110 @@ def test_daemon_does_not_publish_unscheduled_receiver(
     assert observations
     assert all(observation["active"] is False for observation in observations)
     assert all(observation["auth_required"] is None for observation in observations)
+
+
+@pytest.mark.parametrize("invalid", ["malformed", "schema", "origin"])
+def test_status_invalid_payload_is_a_named_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: str
+) -> None:
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    config = BrowserCaptureReceiverConfig(spool_path=tmp_path)
+    receiver_identity(config)
+    payload = receiver_status_payload(config)
+    if invalid == "schema":
+        payload["schema_version"] = 2
+    elif invalid == "origin":
+        payload["allowed_origins"] = ["https://neutral.example", None]
+    body = b"{invalid" if invalid == "malformed" else json.dumps(payload).encode()
+
+    class InvalidReceiver(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return None
+
+    server = HTTPServer(("127.0.0.1", 0), InvalidReceiver)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = CliRunner().invoke(status_command, ["--port", str(server.server_port), "--allow-no-auth"])
+        assert result.exit_code == 1
+        assert "receiver_status_invalid_payload" in result.output
+        assert "Browser capture receiver" not in result.stdout
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_status_requires_auth_override_and_streams_large_roster(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from http.client import HTTPResponse
+
+    monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH", "1")
+    token = resolve_receiver_auth_token("neutral-explicit-token", allow_no_auth=True)
+    assert token is not None
+    origins = tuple(f"https://neutral-{index:06d}.{'x' * 50}.{'y' * 50}.example" for index in range(35000))
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token, extra_origins=origins)
+    receiver_identity(server.config)
+    original_read = HTTPResponse.read
+    status_reads: list[int] = []
+
+    def bounded_read(self: HTTPResponse, amt: int | None = None) -> bytes:
+        assert amt is not None and 0 < amt <= 65536
+        if self.getheader("Connection") != "keep-alive":
+            status_reads.append(amt)
+        return original_read(self, amt)
+
+    monkeypatch.setattr(HTTPResponse, "read", bounded_read)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = CliRunner().invoke(
+            status_command, ["--port", str(server.server_address[1]), "--require-auth", "--format", "json"]
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert set(origins).issubset(payload["allowed_origins"])
+        assert payload["auth_required"] is True
+        assert len(status_reads) > 64
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.uses_real_clock("the real loopback attestation responds after the former socket timeout")
+def test_status_waits_for_valid_slow_attestation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from polylogue.browser_capture.server import BrowserCaptureHandler
+
+    original = BrowserCaptureHandler._receiver_attest
+
+    def delayed(self: BrowserCaptureHandler) -> None:
+        time.sleep(5.1)
+        original(self)
+
+    monkeypatch.setattr(BrowserCaptureHandler, "_receiver_attest", delayed)
+    token = resolve_receiver_auth_token("neutral-slow-token")
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
+    receiver_identity(server.config)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = CliRunner().invoke(
+            status_command, ["--port", str(server.server_address[1]), "--require-auth", "--format", "json"]
+        )
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["auth_required"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import http.client
+import json
 import mimetypes
 import os
 import shutil
 import sys
 import tempfile
-from contextlib import nullcontext
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import get_args
-from urllib.parse import urlparse
 
 import click
+from ijson.common import JSONError
 from pydantic import ValidationError
 
 from polylogue.browser_capture.actions import (
@@ -52,9 +54,12 @@ def browser_capture_command() -> None:
     """Run and inspect the browser-capture receiver."""
 
 
-def _observed_receiver_status(host: str | None, port: int | None, allow_no_auth: bool | None) -> dict[str, object]:
-    """Read the configured standalone or daemon receiver without minting credentials."""
-    from polylogue.browser_capture.native_host import _authenticate_receiver
+@contextmanager
+def _observed_receiver_status(
+    host: str | None, port: int | None, allow_no_auth: bool | None
+) -> Iterator[dict[str, object]]:
+    """Own the selected peer and disk-backed status until its consumer finishes."""
+    from polylogue.browser_capture.native_host import _authenticate_receiver_connection, _receiver_response_document
     from polylogue.config import resolve_runtime_config
     from polylogue.paths import browser_capture_receiver_identity_path, browser_capture_receiver_token_path
 
@@ -62,44 +67,59 @@ def _observed_receiver_status(host: str | None, port: int | None, allow_no_auth:
     host = config.browser_capture_host if host is None else host
     port = config.browser_capture_port if port is None else port
     allow_no_auth = config.browser_capture_allow_no_auth if allow_no_auth is None else allow_no_auth
-
-    def request(headers: dict[str, str]) -> tuple[int, bytes]:
-        connection = http.client.HTTPConnection(host, port, timeout=None)
-        try:
-            connection.request("GET", "/v1/status", headers=headers)
-            response = connection.getresponse()
-            return response.status, response.read()
-        except (OSError, http.client.HTTPException) as exc:
-            raise click.ClickException("receiver_unreachable") from exc
-        finally:
-            connection.close()
-
     identity_path = browser_capture_receiver_identity_path()
     if not _is_trusted_token_file(identity_path):
         raise click.ClickException("receiver_identity_unavailable")
     expected_identity = identity_path.read_text().strip()
     if not expected_identity:
         raise click.ClickException("receiver_identity_unavailable")
-    headers: dict[str, str] = {}
-    if not allow_no_auth:
-        token_path = browser_capture_receiver_token_path()
-        token = token_path.read_text().strip() or None if _is_trusted_token_file(token_path) else None
-        if token is None:
-            raise click.ClickException("receiver_credential_unavailable")
-        endpoint = urlparse(f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}")
-        refusal = _authenticate_receiver(endpoint, expected_identity, token)
-        if refusal is not None:
-            raise click.ClickException(refusal)
-        headers["Authorization"] = "Bearer " + token
-    status, body = request(headers)
-    if status != 200:
-        raise click.ClickException(f"receiver_status_refused_{status}")
-    payload = BrowserCaptureReceiverStatusPayload.model_validate_json(body)
-    if payload.receiver_id != expected_identity:
-        raise click.ClickException("receiver_identity_mismatch")
-    if payload.auth_required is allow_no_auth:
-        raise click.ClickException("receiver_authentication_policy_mismatch")
-    return payload.model_dump(mode="json")
+    connection = http.client.HTTPConnection(host, port, timeout=None)
+    try:
+        headers: dict[str, str] = {}
+        if not allow_no_auth:
+            token_path = browser_capture_receiver_token_path()
+            token = token_path.read_text().strip() or None if _is_trusted_token_file(token_path) else None
+            if token is None:
+                raise click.ClickException("receiver_credential_unavailable")
+            refusal = _authenticate_receiver_connection(connection, expected_identity, token, keep_alive=True)
+            if refusal is not None:
+                raise click.ClickException(refusal)
+            if connection.sock is None:
+                raise click.ClickException("receiver_peer_lost")
+            # The proved TCP peer must receive the credential. HTTPConnection
+            # otherwise reconnects implicitly after a closing attestation response.
+            connection.auto_open = 0
+            headers["Authorization"] = "Bearer " + token
+        connection.request("GET", "/v1/status", headers=headers)
+        response = connection.getresponse()
+        if response.status != 200:
+            raise click.ClickException(f"receiver_status_refused_{response.status}")
+        try:
+            with _receiver_response_document(response) as document:
+                if not isinstance(document, dict):
+                    raise ValueError("status must be an object")
+                origins = document.get("allowed_origins")
+                if not isinstance(origins, list) or any(not isinstance(origin, str) for origin in origins):
+                    raise ValueError("invalid allowed_origins")
+                fields = {
+                    key: document[key]
+                    for key in BrowserCaptureReceiverStatusPayload.model_fields
+                    if key != "allowed_origins" and key in document
+                }
+                payload = BrowserCaptureReceiverStatusPayload.model_validate({**fields, "allowed_origins": []})
+                if payload.receiver_id != expected_identity:
+                    raise click.ClickException("receiver_identity_mismatch")
+                if payload.auth_required is allow_no_auth:
+                    raise click.ClickException("receiver_authentication_policy_mismatch")
+                observed = payload.model_dump(mode="json")
+                observed["allowed_origins"] = origins
+                yield observed
+        except (ValueError, ValidationError, JSONError) as exc:
+            raise click.ClickException("receiver_status_invalid_payload") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        raise click.ClickException("receiver_unreachable") from exc
+    finally:
+        connection.close()
 
 
 @browser_capture_command.command("status")
@@ -107,28 +127,36 @@ def _observed_receiver_status(host: str | None, port: int | None, allow_no_auth:
 @click.option("--host", default=None, help="Receiver host; defaults to resolved settings.")
 @click.option("--port", default=None, type=int, help="Receiver port; defaults to resolved settings.")
 @click.option(
-    "--allow-no-auth",
+    "--allow-no-auth/--require-auth",
     is_flag=True,
     default=None,
     envvar=BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
-    help="Observe an explicitly unauthenticated receiver without sending credentials.",
+    help="Override resolved authentication mode: no credential or required receiver attestation.",
 )
 def status_command(output_format: str | None, host: str | None, port: int | None, allow_no_auth: bool | None) -> None:
     """Show the bound standalone or daemon receiver's observed policy."""
-    payload = _observed_receiver_status(host, port, allow_no_auth)
-    if output_format == "json":
-        click.echo(dumps(payload))
-        return
-    click.echo("Browser capture receiver")
-    click.echo(f"Spool: {'ready' if payload.get('spool_ready') else 'unavailable'}")
-    origins = payload.get("allowed_origins", [])
-    origin_text = ", ".join(str(item) for item in origins) if isinstance(origins, list) else str(origins)
-    click.echo(f"Allowed origins: {origin_text}")
-    from polylogue.core.json import json_document
-    from polylogue.daemon.status import format_browser_capture_policy_lines
+    with _observed_receiver_status(host, port, allow_no_auth) as payload:
+        if output_format == "json":
+            for piece in json.JSONEncoder(ensure_ascii=True, allow_nan=False).iterencode(payload):
+                click.echo(piece, nl=False)
+            click.echo()
+            return
+        click.echo("Browser capture receiver")
+        click.echo(f"Spool: {'ready' if payload.get('spool_ready') else 'unavailable'}")
+        click.echo("Allowed origins: ", nl=False)
+        origins = payload["allowed_origins"]
+        assert isinstance(origins, list)
+        for position, origin in enumerate(origins):
+            click.echo((", " if position else "") + str(origin), nl=False)
+        click.echo()
+        from polylogue.core.json import json_document
+        from polylogue.daemon.status import format_browser_capture_policy_lines
 
-    for line in format_browser_capture_policy_lines(json_document(payload)):
-        click.echo(line)
+        # Only fixed policy scalars are needed by the shared formatter.
+        for line in format_browser_capture_policy_lines(
+            json_document({"auth_required": payload["auth_required"], "allow_remote": payload["allow_remote"]})
+        ):
+            click.echo(line)
 
 
 @browser_capture_command.command("serve")

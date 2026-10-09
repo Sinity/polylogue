@@ -200,6 +200,19 @@ def test_check_daemon_plain_renders_component_status(cli_runner: CliRunner) -> N
     assert "Browser capture spool: ready" in result.output
 
 
+def test_check_daemon_plain_preserves_absence_reason(cli_runner: CliRunner) -> None:
+    from polylogue.cli.operation_kernel import OperationUnavailableError
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.commands import _live_daemon_status_payload
+
+    with patch("polylogue.cli.operation_kernel.dispatch", side_effect=OperationUnavailableError("no resident daemon")):
+        absent = _live_daemon_status_payload(load_polylogue_config())
+    with patch("polylogue.cli.shared.check_workflow._live_daemon_status_payload", return_value=absent):
+        result = cli_runner.invoke(cli, ["--plain", "ops", "doctor", "--daemon"])
+    assert "daemon_absent" in result.output
+    assert "unavailable" in result.output
+
+
 def test_check_warns_when_message_index_is_incomplete(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
     db_path = cli_workspace["db_path"]
     factory = DbFactory(db_path)

@@ -106,14 +106,6 @@ def status_command(output_format: str | None) -> None:
     payload = _live_daemon_status_payload(load_polylogue_config())
     if output_format == "json":
         click.echo(dumps(payload))
-    elif "status_snapshot" in payload and payload.get("ok") is False and "archive_storage" not in payload:
-        snapshot = payload["status_snapshot"]
-        if not isinstance(snapshot, dict):
-            raise click.ClickException("daemon returned invalid status metadata")
-        click.echo(f"Polylogue daemon: {snapshot['state']}")
-        for key, label in (("reason", "Reason"), ("detail", "Detail"), ("request_id", "Request")):
-            if value := snapshot.get(key):
-                click.echo(f"{label}: {value}")
     else:
         from polylogue.daemon.status import format_daemon_status_lines
 
