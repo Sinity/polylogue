@@ -316,13 +316,11 @@ def _neutral_artifact_key(
     raw_id: str,
     operand: _NeutralParserOperand,
     validation_mode: ValidationMode,
-    cohort_identity: str,
 ) -> tuple[object, ...]:
-    """Identify one parsed artifact by local inputs and one shared cohort digest."""
+    """Identify parser output independently of the freshly bound publication cohort."""
     return (
         _neutral_parser_cache_identity(raw_id, operand),
         ("validation-mode", validation_mode.value),
-        ("eligible-cohort-sha256", cohort_identity),
     )
 
 
@@ -358,15 +356,6 @@ def _neutral_parser_cache_identity(raw_id: str, operand: _NeutralParserOperand) 
         ("append-logical-key", operand.append_logical_key),
         ("sidecar-signature", operand.sidecar_signature),
     )
-
-
-def _neutral_cohort_identity(raw_ids: Sequence[str], operands: Mapping[str, _NeutralParserOperand]) -> str:
-    """Digest the exact ordered eligible cohort once for all of its cache keys."""
-    recipe = (
-        "neutral-parser-cohort-v1",
-        tuple(_neutral_parser_cache_identity(raw_id, operands[raw_id]) for raw_id in raw_ids),
-    )
-    return _neutral_identity_digest(recipe)
 
 
 def _neutral_identity_digest(recipe: tuple[object, ...]) -> str:
@@ -2048,13 +2037,11 @@ class RawObservationDerivation(RawObservationInspection):
             refreshed_neutral[raw_id] = neutral
             return neutral
 
-        cohort_identity = _neutral_cohort_identity(eligible_raw_ids, operands)
         for raw_id in eligible_raw_ids:
             artifact_key = _neutral_artifact_key(
                 raw_id,
                 operands[raw_id],
                 self._validation_mode,
-                cohort_identity,
             )
             neutral_keys[raw_id] = artifact_key
 
@@ -2155,8 +2142,12 @@ class RawObservationDerivation(RawObservationInspection):
             ) as checkpoint:
                 if checkpoint.disposition is CodexCheckpointDisposition.READY:
                     for checkpoint_raw_id, checkpoint_artifact in checkpoint.iter_artifacts():
+                        artifact_key = neutral_keys[checkpoint_raw_id]
+                        previous = carry.neutral_artifacts.get(artifact_key)
                         neutral_by_raw[checkpoint_raw_id] = checkpoint_artifact
-                        carry.neutral_artifacts[neutral_keys[checkpoint_raw_id]] = checkpoint_artifact
+                        carry.neutral_artifacts[artifact_key] = checkpoint_artifact
+                        if previous is not None and previous is not checkpoint_artifact:
+                            _close_prepared_carriers({}, {}, (previous,))
 
         for raw_id in eligible_raw_ids:
             neutral = neutral_by_raw.get(raw_id)
@@ -2340,11 +2331,8 @@ class RawObservationDerivation(RawObservationInspection):
                     neutral_operands = {
                         raw_id: _neutral_parser_operand(selection_read, raw_id) for raw_id in neutral_raw_ids
                     }
-                    neutral_cohort = _neutral_cohort_identity(neutral_raw_ids, neutral_operands)
                     neutral_artifact_keys = {
-                        raw_id: _neutral_artifact_key(
-                            raw_id, neutral_operands[raw_id], self._validation_mode, neutral_cohort
-                        )
+                        raw_id: _neutral_artifact_key(raw_id, neutral_operands[raw_id], self._validation_mode)
                         for raw_id in neutral_raw_ids
                     }
             if (

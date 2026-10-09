@@ -83,6 +83,14 @@ own validation verdict and complete census/publication coordinates; reuse still
 validates that raw against current schema declarations. Codex state and UNKNOWN
 inputs keep per-raw preparation because they can own mutable state projections.
 
+Detached Codex and Claude Code JSONL retries reuse each parser artifact by its
+exact local inputs, including Claude's retained sidecar and sibling witness.
+Changing the selected publication cohort does not invalidate unrelated parses.
+The fresh Source reader still proves the complete ordered selection and parser
+operands before enrichment and publication, and schema evidence is refreshed
+on reuse. Codex prefix checkpoints still prove their complete cohort before
+regenerating its interior artifacts; replaced checkpoint owners are closed.
+
 Retained schema validation owns reducer tables once per spill connection and
 reuses each selected-schema validator across its complete record scan. Lazy
 normalized objects and arrays consume the original ordered cursors, checking

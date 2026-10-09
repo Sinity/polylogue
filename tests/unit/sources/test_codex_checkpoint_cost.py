@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -13,17 +15,17 @@ from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.schemas import retained_validation
 from polylogue.sources import prepared_jsonl
+from polylogue.sources.prepared_codex_checkpoints import CodexPrefixPreparation
 from polylogue.sources.prepared_jsonl import PreparedJsonl
 from polylogue.storage.derived.raw import (
     _neutral_artifact_key,
-    _neutral_cohort_identity,
     _NeutralParserOperand,
 )
 from tests.infra.retained_replay import replay_retained_components
 from tests.infra.revision_backfill_benchmark import build_revision_chain_corpus
 
 
-def test_neutral_cohort_digest_is_stable_typed_and_shared_by_local_keys() -> None:
+def test_neutral_artifact_keys_preserve_exact_local_dependencies() -> None:
     raw_ids = tuple(f"raw-{index:03d}" for index in range(51))
     operands: dict[str, _NeutralParserOperand] = {}
     for index, raw_id in enumerate(raw_ids):
@@ -47,13 +49,20 @@ def test_neutral_cohort_digest_is_stable_typed_and_shared_by_local_keys() -> Non
             append_logical_key=None,
         )
 
-    digest = _neutral_cohort_identity(raw_ids, operands)
-    assert len(digest) == 64
-    assert _neutral_cohort_identity(raw_ids, operands) == digest
-    assert _neutral_cohort_identity(tuple(reversed(raw_ids)), operands) != digest
-    keys = tuple(_neutral_artifact_key(raw_id, operands[raw_id], ValidationMode.ADVISORY, digest) for raw_id in raw_ids)
-    assert all(key[-1] == ("eligible-cohort-sha256", digest) for key in keys)
-    assert all(key[-1] != raw_ids for key in keys)
+    keys = {raw_id: _neutral_artifact_key(raw_id, operands[raw_id], ValidationMode.ADVISORY) for raw_id in raw_ids}
+    assert {
+        raw_id: _neutral_artifact_key(raw_id, operands[raw_id], ValidationMode.ADVISORY) for raw_id in reversed(raw_ids)
+    } == keys
+    changed = dict(operands)
+    provider, _blob_hash, path, kind, size = changed[raw_ids[25]].descriptor
+    changed[raw_ids[25]] = replace(changed[raw_ids[25]], descriptor=(provider, "f" * 64, path, kind, size))
+    changed_keys = {
+        raw_id: _neutral_artifact_key(raw_id, changed[raw_id], ValidationMode.ADVISORY) for raw_id in raw_ids
+    }
+    assert [raw_id for raw_id in raw_ids if changed_keys[raw_id] != keys[raw_id]] == [raw_ids[25]]
+    assert _neutral_artifact_key(raw_ids[0], operands[raw_ids[0]], ValidationMode.STRICT) != keys[raw_ids[0]]
+    sidecar_changed = replace(operands[raw_ids[0]], sidecar_signature=("scope", True, (("retained-blob", "c" * 64),)))
+    assert _neutral_artifact_key(raw_ids[0], sidecar_changed, ValidationMode.ADVISORY) != keys[raw_ids[0]]
 
 
 @pytest.mark.parametrize("capture_count", [5, 51, 804])
@@ -182,3 +191,44 @@ def test_neutral_endpoint_artifacts_are_owned_before_later_parse_failure(
     discarded_sessions = {artifact.sessions_path for artifact in discarded}
     assert None not in created_sessions
     assert created_sessions == discarded_sessions
+
+
+def test_neutral_checkpoint_retry_closes_replaced_interior_owners(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Fresh cohort proof replaces interiors without orphaning their prior owners."""
+    raw_ids = build_revision_chain_corpus(tmp_path, superseded_count=4, final_payload_bytes=5, native_singleton=True)
+    created: list[PreparedJsonl] = []
+    discarded_paths: set[Path | None] = set()
+    original_interiors = CodexPrefixPreparation.iter_artifacts
+    original_discard = PreparedJsonl.discard
+    original_bind = cast(Callable[..., PreparedJsonl], prepared_jsonl._finalize_prepared_cohort)
+    committed = False
+
+    def record_interiors(self: CodexPrefixPreparation) -> Iterator[tuple[str, PreparedJsonl]]:
+        for raw_id, artifact in original_interiors(self):
+            created.append(artifact)
+            yield raw_id, artifact
+
+    def record_discard(self: PreparedJsonl) -> None:
+        discarded_paths.add(self.sessions_path)
+        original_discard(self)
+
+    def stale_first_binding(*args: object, **kwargs: object) -> PreparedJsonl:
+        nonlocal committed
+        artifact = original_bind(*args, **kwargs)
+        if not committed:
+            committed = True
+            with sqlite3.connect(tmp_path / "source.db") as conn:
+                conn.execute("PRAGMA user_version=1")
+        return artifact
+
+    monkeypatch.setattr(CodexPrefixPreparation, "iter_artifacts", record_interiors)
+    monkeypatch.setattr(PreparedJsonl, "discard", record_discard)
+    monkeypatch.setattr(prepared_jsonl, "_finalize_prepared_cohort", stale_first_binding)
+
+    result = replay_retained_components(tmp_path, selected_raw_ids=raw_ids)
+
+    assert result.replayed_logical_sources == 1
+    assert committed and len(created) == 4
+    assert all(artifact.sessions_path is not None and artifact.sessions_path in discarded_paths for artifact in created)

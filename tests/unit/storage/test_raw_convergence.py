@@ -33,6 +33,7 @@ from polylogue.daemon.derivation import (
     converge,
 )
 from polylogue.daemon.status import raw_failure_info_for_root
+from polylogue.logging import capture
 from polylogue.operations.intake_adapters import RawMaterializationDiscovery
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
@@ -739,6 +740,72 @@ def test_codex_neutral_parse_survives_unrelated_source_commit(
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (target,)).fetchone() == (1,)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
+
+
+def test_changed_retained_selection_reuses_99_unchanged_parser_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changed publication cohort retains only dependency-identical parses."""
+    from polylogue.sources import prepared_jsonl as prepared_jsonl_module
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from tests.unit.storage.test_raw_observation_derivation import _publish_to_valid
+
+    bootstrap_archive_root(tmp_path)
+    raw_ids = [
+        _admit(
+            tmp_path,
+            (),
+            provider=Provider.CODEX,
+            path=f"codex/cohort-{index:03d}.jsonl",
+            payload=_codex_conversation_bytes(f"cohort-{index:03d}"),
+        )
+        for index in range(100)
+    ]
+    selected = list(raw_ids)
+    parsed_paths: list[str] = []
+    prepare_original = cast(Callable[..., PreparedJsonl], prepared_jsonl_module.prepare_jsonl_blob)
+
+    def counted_prepare(*args: object, **kwargs: object) -> PreparedJsonl:
+        parsed_paths.append(str(args[1]))
+        artifact = prepare_original(*args, **kwargs)
+        if len(parsed_paths) == 100:
+            selected[50] = _admit(
+                tmp_path,
+                (),
+                provider=Provider.CODEX,
+                path="codex/cohort-replacement.jsonl",
+                payload=_codex_conversation_bytes("cohort-replacement", "changed input"),
+                acquired_at_ms=2,
+            )
+        return artifact
+
+    monkeypatch.setattr(prepared_jsonl_module, "prepare_jsonl_blob", counted_prepare)
+
+    def exercise(compute: BoundedComputeAdapter) -> None:
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+        frame = raw_observation_frame(tmp_path, raw_ids=(raw_ids[0],))
+        with capture() as events:
+            replacement = adapter.compute(
+                frame,
+                raw_ids[0],
+                replay_current=True,
+                select_retained_raw_ids=lambda _read: tuple(selected),
+            )
+            assert set(replacement.raw_ids) == set(selected)
+            assert raw_ids[50] not in replacement.raw_ids
+            assert _publish_to_valid(adapter, frame, replacement)
+        retries = [event for event in events if event.get("event") == "storage.raw_observation.preparation_retry"]
+        assert any(event["reason"] == "selection_changed" for event in retries)
+
+    run_on_convergence_owner(tmp_path, "test.raw.dependency-local-cache", exercise)
+
+    assert len(parsed_paths) == 101, parsed_paths
+    assert parsed_paths.count("codex/cohort-replacement.jsonl") == 1
+    assert all(parsed_paths.count(f"codex/cohort-{index:03d}.jsonl") == 1 for index in range(100))
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (100,)
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id=?", (raw_ids[50],)).fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id=?", (selected[50],)).fetchone() == (1,)
 
 
 def test_mixed_default_retained_selection_neutralizes_only_eligible_codex_raw(
