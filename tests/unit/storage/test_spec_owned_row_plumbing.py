@@ -36,6 +36,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries import message_query_reads, sessions_reads
+from tests.infra.identity import archive_block_id, fixture_block_content_identity
 from tests.infra.live_ingest import ingest_session
 
 
@@ -435,8 +436,11 @@ def test_a_dropped_enum_conversion_leaks_the_enum_into_the_domain_block() -> Non
     Red would mean the hydrator re-derives the wire text itself, which is the
     per-family conversion the declaration replaced.
     """
+    content_identity = fixture_block_content_identity("tool_use", "ran it")
     record = BlockRecord(
-        block_id="s:m:0",
+        block_id=archive_block_id("s:m", content_identity=content_identity),
+        content_identity=content_identity,
+        content_occurrence=0,
         message_id=MessageId("s:m"),
         session_id=SessionId("s"),
         block_index=0,

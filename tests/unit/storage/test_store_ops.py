@@ -24,7 +24,7 @@ from typing_extensions import TypedDict, Unpack
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.session.domain_models import Session
-from polylogue.core.enums import BlockType, Origin, Provider, SemanticBlockType
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
 from polylogue.storage.query_models import SessionRecordQuery
@@ -44,6 +44,7 @@ from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import (
     make_attachment,
+    make_content_block,
     make_message,
     make_session,
     save_session_to_archive,
@@ -117,7 +118,6 @@ def _content_hash(value: str) -> ContentHash:
 
 def _content_block(
     *,
-    block_id: str,
     message_id: str,
     session_id: str,
     block_index: int,
@@ -145,18 +145,17 @@ def _content_block(
                 base.update(parsed)
         base.setdefault("media_type", media_type)
         metadata = _json_dumps(base)
-    return BlockRecord(
-        block_id=block_id,
-        message_id=_message_id(message_id),
-        session_id=_session_id(session_id),
+    return make_content_block(
+        message_id=message_id,
+        session_id=session_id,
         block_index=block_index,
-        type=BlockType.from_string(block_type),
+        block_type=block_type,
         text=text,
         tool_name=tool_name,
         tool_id=tool_id,
         tool_input=tool_input,
         metadata=metadata,
-        semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
+        semantic_type=semantic_type,
     )
 
 
@@ -337,7 +336,6 @@ def _file_read_block(*, message_id: str, session_id: str, path: str, block_index
     the path must be carried in ``tool_input`` rather than block metadata.
     """
     return _content_block(
-        block_id=f"{message_id}-{block_index}",
         message_id=message_id,
         session_id=session_id,
         block_index=block_index,
@@ -595,7 +593,6 @@ def _tool_block(
     *, message_id: str, session_id: str, tool_name: str, semantic_type: str, tool_input: str | None = None
 ) -> BlockRecord:
     return _content_block(
-        block_id=f"{message_id}-0",
         message_id=message_id,
         session_id=session_id,
         block_index=0,
