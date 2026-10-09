@@ -47,7 +47,7 @@ from polylogue.core.errors import (
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
-from polylogue.core.staged_body import BodyStorageExhaustedError
+from polylogue.core.staged_body import BodyStorageExhaustedError, StagedBody
 from polylogue.daemon import workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
@@ -4909,15 +4909,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 input_body.discard()
             self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
             return
+        from polylogue.operations.request_body_transport import OperationBodyKwargs
+
+        body_kwargs: OperationBodyKwargs = (
+            {"input_body": input_body, "request_body_bytes": control_bytes} if input_body is not None else {}
+        )
         self._send_daemon_operation(
             self._execute_daemon_operation(
                 request,
-                **({"input_body": input_body, "request_body_bytes": control_bytes} if input_body is not None else {}),
+                **body_kwargs,
             )
         )
 
     def _execute_daemon_operation(
-        self, request: DaemonOperationRequest, *, input_body=None, request_body_bytes=None
+        self,
+        request: DaemonOperationRequest,
+        *,
+        input_body: StagedBody | None = None,
+        request_body_bytes: int | None = None,
     ) -> dict[str, object]:
         from polylogue.operations.daemon_protocol import DAEMON_PRINCIPAL_CAPABILITIES
         from polylogue.operations.mutation_transaction import MutationPrincipal

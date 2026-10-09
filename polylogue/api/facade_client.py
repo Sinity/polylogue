@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from polylogue.operations.request_body_transport import BinaryReader, OperationInputKwargs
 
 from polylogue.config import Config, active_archive_root
 from polylogue.core.errors import PolylogueError
@@ -124,7 +127,7 @@ async def submit_facade_product(
 
 
 async def submit_facade_operation(
-    config: Config, operation: str, payload: dict[str, object], *, input=None
+    config: Config, operation: str, payload: dict[str, object], *, input: BinaryReader | None = None
 ) -> dict[str, Any]:
     """Submit a declared daemon write and return its validated product result."""
     from polylogue.daemon.api_auth import resolve_api_auth_token
@@ -147,6 +150,7 @@ async def submit_facade_operation(
     from polylogue.operations.daemon_errors import DaemonMutationIndeterminateError
 
     request_id = uuid.uuid4().hex
+    input_kwargs: OperationInputKwargs = {"input": input} if input is not None else {}
     pending = asyncio.create_task(
         asyncio.to_thread(
             client.operation_to_completion,
@@ -154,7 +158,7 @@ async def submit_facade_operation(
             payload,
             archive_root=str(root),
             request_id=request_id,
-            **({"input": input} if input is not None else {}),
+            **input_kwargs,
         )
     )
     try:

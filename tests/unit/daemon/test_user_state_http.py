@@ -12,8 +12,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue.core.staged_body import StagedBody
 from polylogue.daemon.http import DaemonAPIHandler
 from polylogue.daemon.route_families.user_overlay import ROUTES
+from polylogue.operations.daemon_protocol import DaemonOperationRequest
 
 
 def _handler(method: str, path: str, *, body: dict[str, object] | bytes | None = None) -> DaemonAPIHandler:
@@ -54,14 +56,16 @@ def _sample_body(path: str) -> dict[str, object]:
 
 
 @pytest.mark.parametrize("route", ROUTES, ids=lambda route: f"{route.method} {route.path}")
-def test_every_overlay_endpoint_invokes_its_declared_operation(route: Any) -> None:
+def test_every_overlay_endpoint_invokes_its_declared_operation(route: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     path = route.path.replace(":id", "item-1")
     if route.method == "DELETE" and path.endswith("/marks"):
         path += "?session_id=codex:one&mark_type=star"
     handler = _handler(route.method, path, body=_sample_body(route.path) if route.method == "POST" else None)
     calls: list[tuple[str, dict[str, object]]] = []
 
-    def execute(request: Any) -> dict[str, object]:
+    def execute(
+        request: DaemonOperationRequest, *, input_body: StagedBody | None = None, request_body_bytes: int | None = None
+    ) -> dict[str, object]:
         calls.append((request.operation, request.payload))
         if route.method == "POST":
             result: dict[str, object] = {
@@ -94,7 +98,7 @@ def test_every_overlay_endpoint_invokes_its_declared_operation(route: Any) -> No
             }
         return {"outcome": "completed", "result": result}
 
-    handler._execute_daemon_operation = execute  # type: ignore[method-assign]
+    monkeypatch.setattr(handler, "_execute_daemon_operation", execute)
     getattr(handler, f"do_{route.method}")()
     cast(MagicMock, handler._send_error).assert_not_called()
     cast(MagicMock, handler._send_json).assert_called_once()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import struct
 from pathlib import Path
-from typing import BinaryIO
+from typing import NoReturn, Protocol, TypedDict, cast
 
 from polylogue.core.staged_body import BodyIncompleteError, StagedBody, stage_body
 from polylogue.operations.daemon_protocol import (
@@ -17,8 +17,21 @@ UPLOAD_MEDIA_TYPE = "application/vnd.polylogue.operation-input"
 ANNOTATION_IMPORT_OPERATION = "mutation.annotation.import_batch"
 
 
-def _unique_object(pairs):
-    result = {}
+class BinaryReader(Protocol):
+    def read(self, size: int = -1, /) -> bytes: ...
+
+
+class OperationInputKwargs(TypedDict, total=False):
+    input: BinaryReader
+
+
+class OperationBodyKwargs(TypedDict, total=False):
+    input_body: StagedBody
+    request_body_bytes: int
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
             raise ValueError("duplicate operation field")
@@ -26,17 +39,17 @@ def _unique_object(pairs):
     return result
 
 
-def _reject_constant(value):
+def _reject_constant(value: str) -> NoReturn:
     raise ValueError(f"invalid JSON constant: {value}")
 
 
-def _decode_control(raw):
+def _decode_control(raw: bytes) -> DaemonOperationRequest:
     return DaemonOperationRequest.from_dict(
         json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
     )
 
 
-def _decode_streamed_control(source: BinaryIO, length: int) -> DaemonOperationRequest:
+def _decode_streamed_control(source: BinaryReader, length: int) -> DaemonOperationRequest:
     from decimal import Decimal
 
     from ijson.backends.python import parse
@@ -45,7 +58,7 @@ def _decode_streamed_control(source: BinaryIO, length: int) -> DaemonOperationRe
     class FramedReader:
         remaining = length
 
-        def read(self, size=-1):
+        def read(self, size: int = -1) -> bytes:
             if size == 0 or self.remaining == 0:
                 return b""
             chunk = source.read(min(65536, self.remaining, size if size > 0 else self.remaining))
@@ -56,7 +69,7 @@ def _decode_streamed_control(source: BinaryIO, length: int) -> DaemonOperationRe
 
     framed = FramedReader()
     builder = ObjectBuilder()
-    objects = []
+    objects: list[set[str] | None] = []
     try:
         for _prefix, event, value in parse(framed, use_float=False):
             if event == "start_map":
@@ -66,7 +79,8 @@ def _decode_streamed_control(source: BinaryIO, length: int) -> DaemonOperationRe
             elif event in {"end_map", "end_array"}:
                 objects.pop()
             elif event == "map_key":
-                keys = objects[-1]
+                keys = cast(set[str], objects[-1])
+                value = cast(str, value)
                 if value in keys:
                     raise ValueError("duplicate operation field")
                 keys.add(value)
@@ -80,7 +94,7 @@ def _decode_streamed_control(source: BinaryIO, length: int) -> DaemonOperationRe
         raise ValueError("invalid operation control JSON") from exc
 
 
-def _read_exact(source: BinaryIO, length: int) -> bytes:
+def _read_exact(source: BinaryReader, length: int) -> bytes:
     chunks = []
     remaining = length
     while remaining:
@@ -93,7 +107,7 @@ def _read_exact(source: BinaryIO, length: int) -> bytes:
 
 
 def read_operation_body(
-    source: BinaryIO, length: int, media_type: str, *, spool_root: Path
+    source: BinaryReader, length: int, media_type: str, *, spool_root: Path
 ) -> tuple[DaemonOperationRequest, StagedBody | None, int]:
     """Read control then seal the body; callers authenticate before this call."""
     if media_type == "application/json":

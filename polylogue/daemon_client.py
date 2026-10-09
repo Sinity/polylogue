@@ -30,7 +30,10 @@ from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any, BinaryIO
+
+if TYPE_CHECKING:
+    from polylogue.operations.request_body_transport import BinaryReader
 
 from polylogue.operations.daemon_errors import (
     DaemonMutationIndeterminateError,
@@ -149,7 +152,7 @@ class DaemonClient:
         mutation: bool = False,
         timeout_s: float | None = None,
         prepare_body: Callable[[], dict[str, object]] | None = None,
-        input_body=None,
+        input_body: BinaryIO | None = None,
     ) -> tuple[int, dict[str, Any] | None] | None:
         """Return the response status with its decoded JSON object, if any."""
 
@@ -187,7 +190,7 @@ class DaemonClient:
                 headers["Content-Type"] = UPLOAD_MEDIA_TYPE
                 headers["Content-Length"] = str(len(prefix) + control_size + size)
 
-                def chunks():
+                def chunks() -> Iterator[bytes]:
                     yield prefix
                     while chunk := control.read(65536):
                         yield chunk
@@ -268,8 +271,8 @@ class DaemonClient:
         request_id: str | None = None,
         deadline_ms: int | None = None,
         cancellation_token: str | None = None,
-        input=None,
-        _input_body=None,
+        input: BinaryReader | None = None,
+        _input_body: BinaryIO | None = None,
     ) -> dict[str, Any] | None:
         """Issue one archive-scoped operation request; no health probe is needed."""
 
@@ -608,7 +611,7 @@ class DaemonClient:
         *,
         archive_root: str,
         request_id: str | None = None,
-        input=None,
+        input: BinaryReader | None = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> dict[str, Any] | None:
         """Follow accepted work with event-driven waits, never mutation retries.
