@@ -529,6 +529,14 @@ def _project_object(
             return _ProjectedMapping(fields, count, metadata_values), mapping_scalarish
         return fields, mapping_scalarish
     if isinstance(value, list):
+        # Decoded arrays are already structurally validated. These folds
+        # discard their tail values unless metadata or a predicate needs them.
+        if scalarish_depth is None and rule.array_predicate is None:
+            if not value or rule.array_fold == "type":
+                return [], True
+            if rule.array_fold == "first":
+                projected_first, _scalarish = _project_object(value[0], rule.item, scalarish_depth=None)
+                return ([projected_first] if len(value) == 1 else [projected_first, None]), True
         first: object = None
         witness: object = None
         matched = False

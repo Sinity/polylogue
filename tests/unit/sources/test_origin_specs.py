@@ -844,6 +844,112 @@ def test_record_detection_views_share_only_identical_declared_projections(monkey
     assert len(calls) == 2 * len(paths)
 
 
+def test_record_stream_shares_only_identical_projections_within_each_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.sources import detection_projection
+
+    registry = detector_registry()
+    original = detection_projection.project_detection_value
+    calls: list[object] = []
+
+    def observe(value: object, rule: detection_projection.DetectorProjection) -> object:
+        calls.append(rule)
+        return original(value, rule)
+
+    monkeypatch.setattr(detection_projection, "project_detection_value", observe)
+    candidates = (
+        *registry.by_mode[DetectionMode.SEQUENCE_DOCUMENT],
+        *registry.by_mode[DetectionMode.SEQUENCE_RECORD_STREAM],
+    )
+    paths = {compiled.binding.stream_projection_path for compiled in candidates}
+    assert len(paths) < len(candidates)
+    value = {"unrelated": {"nested": [[{"opaque": "synthetic"}]]}}
+    assert registry.detect_record_stream([value, dict(value)]) == (None, None)
+    assert len(calls) == 2 * len(paths)
+
+
+def test_record_stream_shares_json_read_conversion_within_each_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.sources import detection_projection
+    from polylogue.sources.dispatch import _payload_record
+
+    registry = detector_registry()
+    compiled = next(
+        item
+        for item in registry.by_mode[DetectionMode.SEQUENCE_DOCUMENT]
+        if item.binding.binding_id == "claude-ai-sequence-chat-messages"
+    )
+    original = detection_projection.json_document_or_none
+    calls: list[object] = []
+
+    def observe(value: object) -> object:
+        calls.append(value)
+        return original(value)
+
+    def predicate(payload: object) -> bool:
+        assert isinstance(payload, list)
+        assert _payload_record(payload[0]) is not None
+        return False
+
+    monkeypatch.setattr(detection_projection, "json_document_or_none", observe)
+    candidates = (replace(compiled, predicate=predicate), replace(compiled, predicate=predicate))
+    selected = replace(registry, by_mode={DetectionMode.SEQUENCE_DOCUMENT: candidates})
+    assert selected.detect_record_stream([{}, {}]) == (None, None)
+    assert len(calls) == 2
+
+
+def test_record_stream_keeps_order_last_witness_and_complete_consumption() -> None:
+    registry = detector_registry()
+    compiled = next(
+        item
+        for item in registry.by_mode[DetectionMode.SEQUENCE_DOCUMENT]
+        if item.binding.binding_id == "browser-capture-sequence"
+    )
+    observed: list[object] = []
+    resolved: list[object] = []
+
+    def first(payload: object) -> bool:
+        assert isinstance(payload, list)
+        record = payload[0]
+        assert isinstance(record, dict)
+        return record.get("session") == {"provider": "chatgpt"}
+
+    def resolver(payload: object) -> Provider:
+        resolved.append(payload)
+        return Provider.CHATGPT
+
+    tighter = replace(compiled, predicate=first, provider_resolver=resolver)
+    looser = replace(compiled, predicate=lambda _payload: True)
+    selected = replace(registry, by_mode={DetectionMode.SEQUENCE_DOCUMENT: (tighter, looser)})
+    values = [
+        {"session": {"provider": "codex"}},
+        {"session": {"provider": "chatgpt"}},
+        {"session": {"provider": "chatgpt"}, "schema_version": "last"},
+    ]
+
+    def records() -> Iterator[object]:
+        for value in values:
+            observed.append(value)
+            yield value
+
+    assert selected.detect_record_stream(records()) == (Provider.CHATGPT, compiled.binding.evidence_label)
+    assert observed == values
+    assert resolved == [[{"session": {"provider": "chatgpt"}, "schema_version": "last"}]]
+
+    def broken() -> Iterator[object]:
+        yield values[1]
+        raise ValueError("synthetic late syntax refusal")
+
+    with pytest.raises(ValueError, match="synthetic late syntax refusal"):
+        selected.detect_record_stream(broken())
+
+    invalid = replace(
+        tighter,
+        binding=replace(tighter.binding, dynamic_provider_allowlist=(Provider.CHATGPT,)),
+        provider_resolver=lambda _payload: Provider.CODEX,
+    )
+    with pytest.raises(DetectorBindingError, match="invalid projected dynamic provider"):
+        replace(registry, by_mode={DetectionMode.SEQUENCE_DOCUMENT: (invalid,)}).detect_record_stream(values)
+
+
 @pytest.mark.parametrize(
     "value",
     [

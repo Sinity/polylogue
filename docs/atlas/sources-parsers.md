@@ -20,7 +20,11 @@ its configured archive root. The factory enforces that root’s writer lease
 without relying on the global SQLite opener interceptor.
 
 Decoded detector projections visit only declared fields when no metadata or
-whole-mapping predicate needs the other values. Acquisition classifies each
+whole-mapping predicate needs the other values. Type-only and first-item decoded
+array folds project only their retained values when no metadata fold or array
+predicate needs the tail. Physical record-stream detection shares identical
+declared projections and JSON read views within each record while retaining
+its independent binding order and last winning witness. Acquisition classifies each
 decoded record and its singleton sequence in their independent detector order,
 sharing identical declared projections only for that record. Projected mapping
 read views validate their JSON conversion once for their read-only predicates
