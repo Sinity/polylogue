@@ -101,7 +101,7 @@ standalone `browser-capture serve`, using existing credentials without minting o
 For a standalone listener override, pass the matching `status --host HOST --port PORT`; omitted values use resolved settings. Credentialed observations use `POST /v1/receiver/status-attest`. A fresh challenge and request HMAC authenticate the caller before status disclosure; a response HMAC binds the challenge, persisted receiver identity and exact staged JSON bytes. The persisted bearer never crosses this observation socket, including through a relay. The returned identity is checked. For an explicitly unauthenticated listener, use `status --allow-no-auth` (or the matching configured/environment opt-out); this sends no credential and checks identity and disabled authentication. Use `--require-auth` to override a configured no-auth setting for a credentialed listener. Status waits for completion or operator cancellation, stages and validates responses incrementally, and retains the lazy origin roster only through output. Invalid JSON/schema is a named refusal; local response-spill failures report `receiver_observation_storage_failed`. These routes report the bound server's resolved authentication,
 allowed origins and remote policy. Before bind or after shutdown, policy remains
 unknown rather than being inferred from defaults. Status never includes bearer
-token values.
+token values. Its nonsecret identity file may be readable by other users, but must be an owner-controlled regular file without group/other write permission. The token remains owner-only. Descriptor reads refuse symlinks, and local identity/token failures are named before any receiver connection is opened.
 
 ## Control-plane browser boundary
 

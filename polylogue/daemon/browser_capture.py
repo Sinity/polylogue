@@ -8,6 +8,7 @@ import mimetypes
 import os
 import secrets
 import shutil
+import stat
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -41,7 +42,6 @@ from polylogue.browser_capture.pairing import (
 from polylogue.browser_capture.receiver import (
     BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
     BrowserCaptureReceiverConfig,
-    _is_trusted_token_file,
     load_or_mint_receiver_token,
     receiver_identity,
     resolve_receiver_auth_token,
@@ -53,6 +53,29 @@ from polylogue.core.json import dumps
 @click.group("browser-capture")
 def browser_capture_command() -> None:
     """Run and inspect the browser-capture receiver."""
+
+
+def _read_receiver_credential(path: Path, *, secret: bool) -> str:
+    """Read one owner-controlled regular file without following a final symlink."""
+    refusal = "receiver_credential_unavailable" if secret else "receiver_identity_unavailable"
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(descriptor)
+        forbidden_permissions = 0o077 if secret else 0o022
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & forbidden_permissions:
+            raise click.ClickException(refusal)
+        with os.fdopen(descriptor, encoding="utf-8") as stream:
+            descriptor = None
+            value = stream.read().strip()
+        if not value:
+            raise click.ClickException(refusal)
+        return value
+    except (OSError, UnicodeError) as exc:
+        raise click.ClickException(refusal) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 @contextmanager
@@ -73,20 +96,13 @@ def _observed_receiver_status(
     host = config.browser_capture_host if host is None else host
     port = config.browser_capture_port if port is None else port
     allow_no_auth = config.browser_capture_allow_no_auth if allow_no_auth is None else allow_no_auth
-    identity_path = browser_capture_receiver_identity_path()
-    if not _is_trusted_token_file(identity_path):
-        raise click.ClickException("receiver_identity_unavailable")
-    expected_identity = identity_path.read_text().strip()
-    if not expected_identity:
-        raise click.ClickException("receiver_identity_unavailable")
+    expected_identity = _read_receiver_credential(browser_capture_receiver_identity_path(), secret=False)
+    token = None if allow_no_auth else _read_receiver_credential(browser_capture_receiver_token_path(), secret=True)
     connection = http.client.HTTPConnection(host, port, timeout=None)
     try:
         status_auth: tuple[str, str, str] | None = None
         if not allow_no_auth:
-            token_path = browser_capture_receiver_token_path()
-            token = token_path.read_text().strip() or None if _is_trusted_token_file(token_path) else None
-            if token is None:
-                raise click.ClickException("receiver_credential_unavailable")
+            assert token is not None
             challenge = secrets.token_urlsafe(32)
             request = {
                 "receiver_id": expected_identity,

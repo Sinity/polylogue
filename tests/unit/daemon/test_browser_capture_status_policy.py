@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
@@ -30,6 +31,7 @@ from polylogue.daemon.status_snapshot import (
     configure_runtime_components,
     refresh_status_snapshot,
 )
+from polylogue.paths import browser_capture_receiver_identity_path, browser_capture_receiver_token_path
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -498,3 +500,121 @@ def test_origin_formatter_yields_before_consuming_roster() -> None:
     assert next(iterator) == "Browser capture spool: ready"
     assert next(iterator) == "Browser capture origins:"
     assert next(iterator) == "  https://first.example"
+
+
+@pytest.mark.parametrize("permissions", [None, 0o644])
+def test_status_observes_default_or_public_identity_with_large_roster(tmp_path: Path, permissions: int | None) -> None:
+    token = resolve_receiver_auth_token("neutral-default-identity-token")
+    origins = tuple(f"https://origin-{number}.example" for number in range(10000))
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token, extra_origins=origins)
+    expected = receiver_identity(server.config)
+    identity_path = browser_capture_receiver_identity_path()
+    if permissions is not None:
+        identity_path.chmod(permissions)
+    configure_browser_capture_status(server.config)
+    first = browser_capture_status_payload()
+    second = browser_capture_status_payload()
+    assert first["allowed_origins"] is second["allowed_origins"]
+    minimal = refresh_status_snapshot(rich=False).payload["browser_capture"]
+    assert isinstance(minimal, dict)
+    assert minimal["allowed_origins"] is first["allowed_origins"]
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = CliRunner().invoke(status_command, ["--port", str(server.server_port), "--format", "json"])
+        assert result.exit_code == 0, result.output
+        actual = json.loads(result.stdout)
+        assert actual["receiver_id"] == expected
+        assert set(origins).issubset(actual["allowed_origins"])
+        assert actual["auth_required"] is True
+        assert json.loads(json.dumps(first))["allowed_origins"] == actual["allowed_origins"]
+    finally:
+        configure_browser_capture_status(None)
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["setitem", "delitem", "iadd", "imul", "append", "extend", "insert", "remove", "pop", "clear", "reverse", "sort"],
+)
+def test_published_origin_roster_is_immutable(tmp_path: Path, mutation: str) -> None:
+    config = BrowserCaptureReceiverConfig(spool_path=tmp_path, allowed_origins=frozenset({"https://neutral.example"}))
+    configure_browser_capture_status(config)
+    roster = browser_capture_status_payload()["allowed_origins"]
+    assert isinstance(roster, list)
+    with pytest.raises(TypeError, match="immutable"):
+        if mutation == "setitem":
+            roster[0] = "https://wrong.example"
+        elif mutation == "delitem":
+            del roster[0]
+        elif mutation == "iadd":
+            roster += ["https://wrong.example"]
+        elif mutation == "imul":
+            roster *= 2
+        elif mutation == "append":
+            roster.append("https://wrong.example")
+        elif mutation == "extend":
+            roster.extend(["https://wrong.example"])
+        elif mutation == "insert":
+            roster.insert(0, "https://wrong.example")
+        elif mutation == "remove":
+            roster.remove("https://neutral.example")
+        elif mutation == "pop":
+            roster.pop()
+        elif mutation == "clear":
+            roster.clear()
+        elif mutation == "reverse":
+            roster.reverse()
+        else:
+            roster.sort(key=str)
+    assert browser_capture_status_payload()["allowed_origins"] == ["https://neutral.example"]
+    configure_browser_capture_status(None)
+
+
+@pytest.mark.parametrize("credential", ["identity", "token"])
+def test_local_credential_read_failure_precedes_any_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, credential: str
+) -> None:
+    resolve_receiver_auth_token("neutral-local-token")
+    receiver_identity(BrowserCaptureReceiverConfig(spool_path=tmp_path))
+    target = (
+        browser_capture_receiver_identity_path() if credential == "identity" else browser_capture_receiver_token_path()
+    )
+    original_open = os.open
+
+    def unavailable(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == target:
+            raise FileNotFoundError("neutral local read race")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    def no_connection(*args: object, **kwargs: object) -> None:
+        raise AssertionError("local credential refusal must happen before network setup")
+
+    monkeypatch.setattr("polylogue.daemon.browser_capture.os.open", unavailable)
+    monkeypatch.setattr("polylogue.daemon.browser_capture.http.client.HTTPConnection", no_connection)
+    result = CliRunner().invoke(status_command, [])
+    assert result.exit_code == 1
+    reason = "receiver_identity_unavailable" if credential == "identity" else "receiver_credential_unavailable"
+    assert reason in result.stderr
+    assert "receiver_unreachable" not in result.stderr
+
+
+def test_published_origin_roster_cannot_be_reinitialized(tmp_path: Path) -> None:
+    configure_browser_capture_status(BrowserCaptureReceiverConfig(spool_path=tmp_path))
+    snapshot = browser_capture_status_payload()
+    roster = snapshot["allowed_origins"]
+    assert isinstance(roster, list)
+    original = list(roster)
+    with pytest.raises(TypeError, match="immutable"):
+        type(roster).__init__(roster, ["https://wrong.example"])
+    assert list(roster) == original
+    assert browser_capture_status_payload()["allowed_origins"] is roster
+    configure_browser_capture_status(None)

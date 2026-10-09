@@ -717,7 +717,7 @@ def browser_capture_status_payload(*, include_spool_path: bool = False) -> JSOND
     if not include_spool_path:
         payload.pop("spool_path", None)
         payload.pop("artifact_path", None)
-    return json_document(payload)
+    return payload
 
 
 def browser_capture_status_public_payload() -> JSONDocument:

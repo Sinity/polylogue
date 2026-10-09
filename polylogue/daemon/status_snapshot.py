@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections.abc import Mapping
-from copy import deepcopy
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Never, cast
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.core.evidence_families import STATUS_SNAPSHOT_STATE_FAMILY
@@ -20,7 +20,7 @@ from polylogue.core.evidence_value import (
     FreshnessProvenance,
     TemporalProvenance,
 )
-from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.refs import ObjectRef
 from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.daemon.discovery_progress import overlay_active_discovery
@@ -49,7 +49,7 @@ class RuntimeComponentState:
     watcher_enabled: bool | None = None
     watcher_roots: tuple[str, ...] = ()
     browser_capture_enabled: bool | None = None
-    browser_capture_status: JSONDocument | None = None
+    browser_capture_status: Mapping[str, JSONValue] | None = None
 
 
 _RUNTIME_COMPONENT_STATE = RuntimeComponentState()
@@ -247,10 +247,49 @@ def configure_runtime_components(
         )
 
 
+class _ReceiverOriginRoster(list[str]):
+    """One immutable array owned by the published receiver-policy snapshot.
+
+    Public JSON and formatter contracts require a list. Its actual list storage
+    remains available to JSON encoders; ordinary mutation cannot alter later
+    observations that share it.
+    """
+
+    __slots__ = ("_initialized",)
+
+    def __init__(self, origins: Iterable[str]) -> None:
+        if hasattr(self, "_initialized"):
+            raise TypeError("receiver origin snapshot is immutable")
+        super().__init__(origins)
+        self._initialized = True
+
+    def _refuse_mutation(self, *args: object, **kwargs: object) -> Never:
+        raise TypeError("receiver origin snapshot is immutable")
+
+    __setitem__ = _refuse_mutation
+    __delitem__ = _refuse_mutation
+    __iadd__ = _refuse_mutation
+    __imul__ = _refuse_mutation
+    append = _refuse_mutation
+    extend = _refuse_mutation
+    insert = _refuse_mutation
+    remove = _refuse_mutation
+    pop = _refuse_mutation
+    clear = _refuse_mutation
+    reverse = _refuse_mutation
+    sort = _refuse_mutation
+
+
 def configure_browser_capture_status(config: BrowserCaptureReceiverConfig | None) -> None:
     """Publish only the bound receiver's public fields, or clear them at shutdown."""
     global _RUNTIME_COMPONENT_STATE
-    payload = json_document(receiver_status_payload(config)) if config is not None else None
+    payload: Mapping[str, JSONValue] | None = None
+    if config is not None:
+        observed = receiver_status_payload(config)
+        origins = observed["allowed_origins"]
+        assert isinstance(origins, list)
+        observed["allowed_origins"] = _ReceiverOriginRoster(origins)
+        payload = MappingProxyType(cast(JSONDocument, observed))
     with _RUNTIME_COMPONENT_LOCK:
         _RUNTIME_COMPONENT_STATE = replace(_RUNTIME_COMPONENT_STATE, browser_capture_status=payload)
 
@@ -259,10 +298,10 @@ def browser_capture_runtime_status() -> JSONDocument:
     """Read observed receiver policy without guessing it from configuration defaults."""
     with _RUNTIME_COMPONENT_LOCK:
         payload = _RUNTIME_COMPONENT_STATE.browser_capture_status
-        if payload is not None:
-            observed = deepcopy(payload)
-            observed["checked_at"] = datetime.now(UTC).isoformat()
-            return observed
+    if payload is not None:
+        observed = dict(payload)
+        observed["checked_at"] = datetime.now(UTC).isoformat()
+        return observed
     return {
         "active": False,
         "auth_required": None,
