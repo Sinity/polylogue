@@ -12,6 +12,7 @@ from .types import (
     FOLDER_MIME_TYPE,
     GEMINI_PROMPT_MIME_TYPE,
     DriveFile,
+    DriveIncompleteSearchError,
 )
 
 logger = get_logger(__name__)
@@ -34,6 +35,8 @@ def _json_sequence(value: object) -> DriveJSONRecordSequence:
 
 
 def _response_files(response: DriveListFilesResponse) -> DriveJSONRecordSequence:
+    if response.get("incompleteSearch") is True:
+        raise DriveIncompleteSearchError("Drive listing search is incomplete")
     return _json_sequence(response.get("files"))
 
 

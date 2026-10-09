@@ -556,6 +556,16 @@ an alias that now resolves elsewhere leaves the pass pending. Escaped acquisitio
 or cancellation releases the private relation after the existing execution owner
 has physically drained its worker.
 
+Folder references keep their ID-or-exact-name contract. An ID-shaped reference
+permits exact-name lookup only after the provider returns a definitive typed
+404. Transport, authentication, access and cancellation failures propagate;
+successful metadata for a nonfolder is a typed refusal. Both folder-name lookup
+and prompt enumeration request the provider's `incompleteSearch` flag and refuse
+an incomplete search before publishing a complete listing witness. The
+[Drive listing contract](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list)
+defines that flag independently of pagination; the provider may change the
+default search corpus according to the query.
+
 Retained preparation emits `storage.raw_observation.preparation_retry` when
 its existing internal retry catches a changed carry or a stale reference seal.
 The degraded event records the exception class, attempt count, seed Raw work

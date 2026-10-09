@@ -20,8 +20,16 @@ class DriveAuthError(DriveError):
     pass
 
 
+class DriveIncompleteSearchError(DriveError):
+    """The provider did not search the complete requested listing scope."""
+
+
 class DriveNotFoundError(DriveError):
     pass
+
+
+class DriveNotFolderError(DriveError):
+    """The native reference exists but identifies a file rather than a folder."""
 
 
 class DriveAccessDeniedError(DriveError):
@@ -150,6 +158,8 @@ __all__ = [
     "DriveCredentialsFactory",
     "DriveError",
     "DriveFile",
+    "DriveIncompleteSearchError",
+    "DriveNotFolderError",
     "DriveNotFoundError",
     "DriveRetryPolicy",
     "DriveTokenStoreLike",
