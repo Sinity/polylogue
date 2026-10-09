@@ -51,7 +51,7 @@ polylogue --since "last month" find 'since:"last month"' then read --all --forma
 | `ndjson` | One JSON object per line |
 | `yaml` | Query-set envelope as YAML |
 | `plaintext` | Unformatted query-set rows |
-| `csv` | Comma-separated query-set rows |
+| `csv` | Message rows with one header for the complete query set |
 
 These are the formats supported by the standard query-set export path. Default
 output varies by view and cardinality, so specify a format in automation. Other

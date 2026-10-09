@@ -166,7 +166,7 @@ def _conv_to_csv_messages(conv: Session) -> str:
                 _csv_safe(msg.text),
             ]
         )
-    return buf.getvalue().rstrip()
+    return buf.getvalue().rstrip("\r\n")
 
 
 def _conv_to_markdown(conv: Session) -> str:
