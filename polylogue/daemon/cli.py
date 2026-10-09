@@ -2469,7 +2469,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 adopt_write_lease(delegation),
                 write_lease(actor, archive_root=archive_root_path),
             ):
-                yield
+                yield None
 
         with archive_tiers_closed(archive_root_path):
             try:
