@@ -17,7 +17,7 @@ import pytest
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
-from polylogue.schemas import observation_spill
+from polylogue.schemas import observation_spill, retained_validation
 from polylogue.schemas.packages import SchemaResolution, SchemaResolutionReason
 from polylogue.schemas.retained_validation import PrefixValidationState, _bounded_validator, _normalized
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
@@ -61,6 +61,95 @@ def _registry(tmp_path: Path, current: object, historical: object | None = None)
 
 def _write_jsonl(path: Path, rows: Sequence[object]) -> None:
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+@pytest.mark.parametrize("count", [3, 27])
+def test_retained_validation_initializes_reducer_tables_once_per_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    registry = _registry(tmp_path, {"type": "integer"})
+    path = tmp_path / "records.jsonl"
+    _write_jsonl(path, [{"type": "message", "kind": number} for number in range(count)])
+    declarations: list[str] = []
+    original_enter = observation_spill.StreamedJSONDocument.__enter__
+
+    def traced_enter(owner: observation_spill.StreamedJSONDocument) -> JSONValue:
+        result = original_enter(owner)
+        owner.connection.set_trace_callback(
+            lambda statement: (
+                declarations.append(statement) if statement.startswith("CREATE TABLE IF NOT EXISTS retained_") else None
+            )
+        )
+        return result
+
+    monkeypatch.setattr(observation_spill.StreamedJSONDocument, "__enter__", traced_enter)
+    for revision in range(2):
+        declarations.clear()
+        verdict = validate_retained_document(
+            Provider.CLAUDE_CODE,
+            path,
+            mode=ValidationMode.STRICT,
+            raw_id=f"raw-{revision}",
+            revision_sha256="a" * 64,
+            evidence_id=f"raw-{revision}",
+            source_path="records.jsonl",
+            jsonl=True,
+            schema_resolution=_resolution("v2"),
+            schema_resolution_is_explicit=False,
+            registry=registry,
+        )
+        assert verdict.sample_count == count
+        assert verdict.status is ValidationStatus.PASSED
+        assert verdict.invalid_count == verdict.error_count == verdict.drift_count == 0
+        assert len(declarations) == 6
+        assert retained_validation._ACTIVE_VALIDATION_SCRATCH.get() is None
+
+
+def test_normalized_collection_iteration_uses_original_spill_cursors(tmp_path: Path) -> None:
+    path = tmp_path / "document.json"
+    path.write_text(json.dumps({"a": 1, "b": [], "rows": [1, 2, 3]}), encoding="utf-8")
+    schema = {
+        "type": "object",
+        "properties": {"b": {"type": "null"}, "rows": {"type": "array", "items": {"type": "integer"}}},
+    }
+    owner = observation_spill.StreamedJSONDocument(path)
+    with owner as payload:
+        normalized = _normalized(payload, schema, schema, owner.connection)
+        assert isinstance(normalized, dict)
+        statements: list[str] = []
+        owner.connection.set_trace_callback(statements.append)
+        pairs = list(normalized.items())
+        assert [(key, list(value) if key == "rows" else value) for key, value in pairs] == [
+            ("a", 1),
+            ("b", None),
+            ("rows", [1, 2, 3]),
+        ]
+        assert not any("AND key_bytes =" in statement for statement in statements)
+        assert not any("AND ordinal =" in statement for statement in statements)
+        statements.clear()
+        assert list(normalized.values()) == [1, None, [1, 2, 3]]
+        assert not any("AND key_bytes =" in statement for statement in statements)
+
+
+def test_normalized_iteration_checks_cancellation_before_loading_next_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "array.json"
+    path.write_text("[1,2,3]", encoding="utf-8")
+    owner = observation_spill.StreamedJSONDocument(path)
+    with owner as payload:
+        normalized = _normalized(payload, {"type": "array"}, {}, owner.connection)
+        assert isinstance(normalized, list)
+        statements: list[str] = []
+        owner.connection.set_trace_callback(statements.append)
+
+        def cancelled() -> None:
+            raise RuntimeError("cancelled")
+
+        monkeypatch.setattr(retained_validation, "check_compute_cancelled", cancelled)
+        with pytest.raises(RuntimeError, match="cancelled"):
+            next(iter(normalized))
+        assert statements == []
 
 
 def _schema_shaped_witness(schema: object, root: object | None = None, depth: int = 0) -> object:

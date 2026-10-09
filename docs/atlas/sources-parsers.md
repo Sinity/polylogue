@@ -36,6 +36,14 @@ inputs use `prepare_retained_jsonl_artifact` and
 The storage writer lowers their prepared sessions through
 `write_parsed_session_to_archive`.
 
+Retained schema validation owns reducer tables once per spill connection and
+reuses each selected-schema validator across its complete record scan. Lazy
+normalized objects and arrays consume the original ordered cursors, checking
+cancellation before loading each value and closing those cursors on early exit.
+Session revision projections reuse an ordinary event's full inner payload
+digest for its comparison projection; provider-measured generation payloads
+still compute their declared reduced digest separately.
+
 Document arrays use the same tightness-ordered document predicates for every
 member, including streamed detection. An unrelated fragment cannot claim a
 later complete document. Lowering streams all accepted documents and refuses
