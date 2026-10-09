@@ -17,7 +17,7 @@ possibly many times), this module decides:
 
 - which raw bytes are the authoritative full snapshot vs. an appendable tail
   vs. a duplicate vs. a genuine, unresolved conflict
-  (``classify_raw_revision_cohort``, ``raw_revision_replay_plan``,
+  (``prepare_raw_revision_byte_classification``, ``raw_revision_replay_plan``,
   ``_raw_revision_candidates``, ``_authorize_full_snapshot_fold``);
 - whether a parsed session is allowed to overwrite ``sessions`` at all, given
   the raw's recorded membership decision and revision-authority state
@@ -44,7 +44,7 @@ possibly many times), this module decides:
 
 ## The connection interface
 
-Source-only classification and revision binding take ``RawRevisionSourceHost``.
+Revision binding and persisted replay reads take ``RawRevisionSourceHost``.
 Functions that lower Index changes take ``RawRevisionGovernanceHost`` and require
 the Store's exact mutation scope. Both protocols use the caller's actual tier
 connections. ``ArchiveStore`` owns
@@ -56,7 +56,7 @@ internals that live alongside it. ``RawRevisionGovernanceHost`` is a
 ``Protocol`` extending Source authority with the actual Index connection,
 mutation scope and pending publication state. ``ArchiveStore`` satisfies both
 interfaces structurally. The Drive Source adapter implements only Source
-classification and binding; it carries no placeholder Index handle.
+binding and replay reads; it carries no placeholder Index handle.
 
 This was chosen over two alternatives: (a) passing the raw ``sqlite3.Connection``
 alone — insufficient, because several functions need the lazily-opened
@@ -68,14 +68,11 @@ into internals" this module is supposed to make impossible to do by
 accident. The Protocol makes the dependency surface an explicit, readable
 contract instead of "whatever `self` happens to have".
 
-``ArchiveStore`` keeps one-line delegating methods for the named
-classification entry points (``def
-classify_raw_revision_cohort_for_rebuild_repair(self, ...): return
-classify_raw_revision_cohort_for_rebuild_repair(self, ...)``). There is
-exactly one shared implementation (``_classify_raw_revision_cohort``), it
-lives here, and ``ArchiveStore``'s method bodies are the call site. The live
-watcher binds append revisions at acquisition and never classifies a cohort,
-so every entry point applies the source-path identity-split guard.
+Raw convergence prepares byte authority with
+``prepare_raw_revision_byte_classification`` on its original Source seal.
+Publication validates the selected blob identities and applies that seal's
+Source statements. ``ArchiveStore`` exposes the persisted replay plan, not a
+separate direct classifier or frozen-source remediation route.
 """
 
 from __future__ import annotations
@@ -238,22 +235,8 @@ class MembershipReplayConflictError(RawCASFrontierError):
     """
 
 
-class FrozenSourceRemediationRequiredError(RuntimeError):
-    """Candidate replay found source authority that phase 2 must update."""
-
-
 class PreparedRawClassificationStaleError(RuntimeError):
     """Off-writer byte classification no longer describes the durable source."""
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedRawRevisionClassification:
-    """Sealed source-row dependency and byte decisions for one rebuild key."""
-
-    logical_source_key: str
-    source_binding: str
-    full_updates: tuple[tuple[str, str, str | None, str | None, int], ...]
-    blob_stats: tuple[tuple[str, tuple[int, int, int, int, int]], ...]
 
 
 def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
@@ -1384,7 +1367,7 @@ def raw_membership_retired_full_revision_siblings(
     ``replace_raw_membership_census(..., retire_full_revision_governance=True)``
     nulls the retired raw's ``raw_sessions.logical_source_key`` and sets
     ``revision_authority='quarantined'`` -- it becomes invisible both to
-    ``classify_raw_revision_cohort``'s own byte-row query and to
+    ``prepare_raw_revision_byte_classification``'s own byte-row query and to
     ``raw_membership_rebuild_raw_ids``'s deliberately byte-proven-only
     filter (polylogue-lkrc/#2822 guards a different hazard: reopening a
     quarantined member against an already-established head). Its
@@ -1431,395 +1414,6 @@ _RETIRED_MEMBERSHIP_SIBLINGS_SQL = """
 def _retired_membership_siblings_parameters(logical_source_key: str) -> tuple[str, str, str]:
     quarantined = RawRevisionAuthority.QUARANTINED.value
     return (logical_source_key, quarantined, quarantined)
-
-
-def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionSourceHost, logical_source_key: str) -> bool:
-    """Detect a same-``source_path`` sibling under a DIFFERENT byte-revision key.
-
-    Polylogue-eqnv: two raws of the identical physical document can end
-    up with different ``logical_source_key`` values -- most concretely
-    when one was censused by a parser version with an identity bug since
-    fixed (the source_revision the other raw's key was assigned under
-    never gets revisited, see ``uncensused_historical_revision_raw_ids``'s
-    exact-fingerprint quiescence gate). Neither raw's own key surfaces
-    the other in ``raw_membership_retired_full_revision_siblings``, so
-    both would otherwise be accepted as independent one-member byte
-    chains. ``source_path`` is the correct join key here: a real
-    re-acquisition of the same document always keeps the same path.
-    """
-    row = (
-        store._ensure_source_conn()
-        .execute(
-            """
-            SELECT 1
-            FROM raw_sessions AS this
-            WHERE this.logical_source_key = ? AND this.revision_kind = 'full'
-              AND (
-                  EXISTS (
-                      SELECT 1 FROM raw_sessions AS other
-                      WHERE other.source_path = this.source_path
-                        AND other.raw_id != this.raw_id
-                        AND other.revision_kind = 'full'
-                        AND (other.logical_source_key IS NULL OR other.logical_source_key != this.logical_source_key)
-                  )
-                  OR EXISTS (
-                      SELECT 1
-                      FROM raw_sessions AS other
-                      JOIN raw_session_memberships AS m ON m.raw_id = other.raw_id
-                      JOIN raw_membership_census AS c ON c.raw_id = other.raw_id
-                      WHERE other.source_path = this.source_path
-                        AND other.raw_id != this.raw_id
-                        AND c.revision_authority = ?
-                  )
-              )
-            LIMIT 1
-            """,
-            (logical_source_key, RawRevisionAuthority.QUARANTINED.value),
-        )
-        .fetchone()
-    )
-    return row is not None
-
-
-def classify_raw_revision_cohort_for_rebuild_repair(
-    store: RawRevisionGovernanceHost,
-    logical_source_key: str,
-) -> RevisionReplayPlan:
-    """Classify a cohort for the offline rebuild/backfill repair path.
-
-    This is the caller that must catch a stale-parser identity split
-    (polylogue-eqnv): a re-acquisition of the same physical document can end
-    up under two different ``logical_source_key`` values when an older,
-    now-superseded parser assigned identity inconsistently across passes.
-    Always applies the ``source_path`` cross-key divergent-evidence guard
-    (see ``_raw_revision_source_path_has_divergent_evidence``) so such a
-    split is refused a naive singleton byte-chain accept and instead folds
-    into membership governance, where the real content-based classifier
-    weighs every known sibling together.
-
-    This entry point owns the source transaction. Batch rebuilds use the
-    explicitly caller-owned ``*_in_transaction`` variant below.
-    """
-    return _classify_raw_revision_cohort(
-        store,
-        logical_source_key,
-        manage_transaction=True,
-        source_effects=True,
-    )
-
-
-def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
-    store: RawRevisionGovernanceHost,
-    logical_source_key: str,
-) -> RevisionReplayPlan:
-    """Classify one rebuild cohort inside the caller's open source transaction."""
-    return _classify_raw_revision_cohort(
-        store,
-        logical_source_key,
-        manage_transaction=False,
-        source_effects=True,
-    )
-
-
-def classify_raw_revision_cohort_for_frozen_candidate(
-    store: RawRevisionGovernanceHost,
-    logical_source_key: str,
-) -> RevisionReplayPlan:
-    """Re-derive byte authority and require the frozen source to match it."""
-    return _classify_raw_revision_cohort(
-        store,
-        logical_source_key,
-        manage_transaction=False,
-        source_effects=False,
-    )
-
-
-def _raw_classification_source_binding(store: RawRevisionGovernanceHost, logical_source_key: str) -> str:
-    """Bind every source row that can change rebuild byte classification."""
-    source_conn = store._ensure_source_conn()
-    digest = hashlib.sha256()
-    relevant_raws = """
-        SELECT r.raw_id FROM raw_sessions AS r
-        WHERE r.logical_source_key = ?
-           OR r.source_path IN (
-               SELECT source_path FROM raw_sessions
-               WHERE logical_source_key = ? AND revision_kind = 'full'
-           )
-           OR r.raw_id IN (
-               SELECT raw_id FROM raw_session_memberships WHERE logical_source_key = ?
-           )
-    """
-    for query, params in (
-        (
-            f"SELECT r.* FROM raw_sessions AS r WHERE r.raw_id IN ({relevant_raws}) ORDER BY r.raw_id",
-            (logical_source_key,) * 3,
-        ),
-        (
-            "SELECT m.* FROM raw_session_memberships AS m "
-            f"WHERE m.logical_source_key = ? OR m.raw_id IN ({relevant_raws}) "
-            "ORDER BY m.raw_id, m.logical_source_key",
-            (logical_source_key,) * 4,
-        ),
-        (
-            "SELECT c.* FROM raw_membership_census AS c "
-            f"WHERE c.raw_id IN ({relevant_raws}) "
-            "OR c.raw_id IN (SELECT raw_id FROM raw_session_memberships WHERE logical_source_key = ?) "
-            "ORDER BY c.raw_id",
-            (logical_source_key,) * 4,
-        ),
-    ):
-        digest.update(query.encode())
-        for row in source_conn.execute(query, params):
-            encoded = repr(tuple(row)).encode()
-            digest.update(len(encoded).to_bytes(8, "big"))
-            digest.update(encoded)
-    return digest.hexdigest()
-
-
-def _classify_raw_revision_cohort(
-    store: RawRevisionSourceHost,
-    logical_source_key: str,
-    *,
-    manage_transaction: bool = True,
-    source_effects: bool,
-    prepared_updates: list[tuple[str, str, str | None, str | None, int]] | None = None,
-) -> RevisionReplayPlan:
-    """Promote only a unique byte-prefix full chain and contiguous appends.
-
-    Shared implementation behind the named ``classify_raw_revision_cohort_for_*``
-    entry points. Refuses a singleton accept when another 'full' raw shares
-    this raw's ``source_path`` under a DIFFERENT key (see
-    ``_raw_revision_source_path_has_divergent_evidence``).
-    """
-    if source_effects and store._blob_publisher is None:
-        raise RuntimeError("raw revision classification requires a writable blob publisher")
-    if source_effects and prepared_updates is not None:
-        raise ValueError("prepared byte classification cannot mutate source")
-    payload_store = _retained_blob_store(store)
-    source_conn = store._ensure_source_conn()
-    full_rows = source_conn.execute(
-        """
-        SELECT raw_id, lower(hex(blob_hash)) AS blob_hash, blob_size
-        FROM raw_sessions
-        WHERE logical_source_key = ? AND revision_kind = 'full'
-        """,
-        (logical_source_key,),
-    ).fetchall()
-    # polylogue-52l2: a byte chain is classified against whichever full
-    # rows the caller happens to have discovered/censused so far, not
-    # against the complete sibling population for this logical identity
-    # -- an earlier pass can have already retired ambiguous siblings to
-    # membership governance (nulling their logical_source_key, see
-    # raw_membership_retired_full_revision_siblings). If that leaves a
-    # later-discovered raw as the ONLY remaining 'full' row here, it
-    # would be evaluated as a trivial one-member "chain" and
-    # unconditionally accepted as a byte-proven baseline by
-    # classify_historical_full_revision_streams (no sibling to prove a
-    # byte prefix against) -- permanently establishing session content
-    # from whichever raw happened to be discovered last, independent of
-    # which content is actually correct. Refuse the byte-chain path
-    # entirely whenever this identity has retired sibling evidence: the
-    # caller's existing "no accepted chain" fallback
-    # (convertible_full_revision_raw_ids) folds these full rows into
-    # membership governance instead, where the real prefix-based
-    # classifier weighs every known sibling together.
-    if full_rows and raw_membership_retired_full_revision_siblings(store, logical_source_key):
-        full_rows = []
-    # polylogue-eqnv: the guard above only catches a retired SIBLING
-    # discoverable under the SAME logical_source_key. A raw whose
-    # identity was assigned by a now-superseded parser (e.g. the
-    # pre-#3179/z1c6 dispatch bug that appended a spurious "-0" to one
-    # of two otherwise-identical Drive re-acquisitions) can carry a
-    # logical_source_key that DIFFERS from a same-document sibling's --
-    # neither raw's own key ever surfaces the other, so each gets
-    # evaluated as a trivial one-member "chain" and unconditionally
-    # accepted as a byte-proven singleton baseline, independent of
-    # which content is actually correct. Two such raws then silently
-    # materialize as two independent sessions (arbitrary last-write-
-    # wins on the shared (origin, native_id) upsert) instead of ever
-    # being compared. Detect this by ``source_path``: a real re-
-    # acquisition of the same physical document always keeps the same
-    # ``source_path``. Refuse the byte-chain path here too whenever
-    # another raw at the same source_path is still an unretired 'full'
-    # row under a different key, OR has already been retired to
-    # membership governance under any key (a prior pass may have
-    # re-derived a DIFFERENT, corrected key during its own retirement
-    # reparse) -- the caller's existing "no accepted chain" fallback
-    # folds this raw into membership governance too, where the real
-    # content-based classifier weighs every known sibling together.
-    if full_rows and _raw_revision_source_path_has_divergent_evidence(store, logical_source_key):
-        full_rows = []
-    historical: list[HistoricalRawRevisionStream] = []
-    for row in full_rows:
-
-        def open_payload(blob_hash: str = str(row[1])) -> BinaryIO:
-            return payload_store.open(blob_hash)
-
-        historical.append(
-            HistoricalRawRevisionStream(
-                raw_id=str(row[0]),
-                payload_size=int(row[2]),
-                open_payload=open_payload,
-            )
-        )
-    decisions = classify_historical_full_revision_streams(historical)
-    by_raw_id = {decision.raw_id: decision for decision in decisions}
-    baseline_ids = [decision.raw_id for decision in decisions if decision.relation == "baseline"]
-    baseline_raw_id = baseline_ids[0] if len(baseline_ids) == 1 else None
-    generation_by_raw_id: dict[str, int] = {}
-    if baseline_raw_id is not None:
-        current: str | None = baseline_raw_id
-        generation = 0
-        children = {
-            decision.predecessor_raw_id: decision.raw_id
-            for decision in decisions
-            if decision.predecessor_raw_id is not None
-        }
-        while current is not None:
-            generation_by_raw_id[current] = generation
-            current = children.get(current)
-            generation += 1
-    # polylogue-5unky: a "duplicate" decision (byte-identical to its
-    # representative) never carries a predecessor_raw_id and therefore never
-    # appears in the predecessor-keyed ``children`` walk above -- it is not a
-    # chain-continuing child of anything, it's a second copy of its
-    # representative's own bytes. Mirroring the representative's
-    # predecessor_raw_id onto the duplicate instead (the naive fix rejected
-    # in review) would make the duplicate and its representative compete for
-    # the same ``children`` dict key, risking silently dropping the real
-    # chain-continuing representative from the walk. Instead, copy each
-    # duplicate's generation directly from its already-computed
-    # representative in a separate post-pass that never touches ``children``.
-    for dup_decision in decisions:
-        if dup_decision.relation == "duplicate" and dup_decision.duplicate_of_raw_id is not None:
-            generation_by_raw_id[dup_decision.raw_id] = generation_by_raw_id.get(dup_decision.duplicate_of_raw_id, 0)
-    if prepared_updates is not None:
-        for row in full_rows:
-            raw_id = str(row[0])
-            decision = by_raw_id.get(raw_id)
-            authority = decision.authority if decision is not None else RawRevisionAuthority.QUARANTINED
-            prepared_updates.append(
-                (
-                    raw_id,
-                    authority.value,
-                    decision.predecessor_raw_id if decision is not None else None,
-                    baseline_raw_id if authority is RawRevisionAuthority.BYTE_PROVEN else None,
-                    generation_by_raw_id.get(raw_id, 0),
-                )
-            )
-    elif source_effects:
-        with source_conn if manage_transaction else nullcontext():
-            for row in full_rows:
-                raw_id = str(row[0])
-                decision = by_raw_id.get(raw_id)
-                authority = decision.authority if decision is not None else RawRevisionAuthority.QUARANTINED
-                predecessor_raw_id = decision.predecessor_raw_id if decision is not None else None
-                source_conn.execute(
-                    """
-                    UPDATE raw_sessions
-                    SET revision_authority = ?, predecessor_raw_id = ?, baseline_raw_id = ?,
-                        acquisition_generation = ?
-                    WHERE raw_id = ?
-                    """,
-                    (
-                        authority.value,
-                        predecessor_raw_id,
-                        baseline_raw_id if authority is RawRevisionAuthority.BYTE_PROVEN else None,
-                        generation_by_raw_id.get(raw_id, 0),
-                        raw_id,
-                    ),
-                )
-            _promote_contiguous_append_evidence(source_conn, logical_source_key)
-    else:
-        for row in full_rows:
-            raw_id = str(row[0])
-            decision = by_raw_id.get(raw_id)
-            authority = decision.authority if decision is not None else RawRevisionAuthority.QUARANTINED
-            predecessor_raw_id = decision.predecessor_raw_id if decision is not None else None
-            expected = (
-                authority.value,
-                predecessor_raw_id,
-                baseline_raw_id if authority is RawRevisionAuthority.BYTE_PROVEN else None,
-                generation_by_raw_id.get(raw_id, 0),
-            )
-            persisted = source_conn.execute(
-                """
-                SELECT revision_authority, predecessor_raw_id, baseline_raw_id,
-                       acquisition_generation
-                FROM raw_sessions WHERE raw_id = ?
-                """,
-                (raw_id,),
-            ).fetchone()
-            if persisted is None or tuple(persisted) != expected:
-                raise FrozenSourceRemediationRequiredError(
-                    "inactive candidate re-derived different byte authority for frozen raw "
-                    f"{raw_id}; complete source remediation before candidate construction"
-                )
-        if _contiguous_append_authority_drift_exists(source_conn, logical_source_key):
-            raise FrozenSourceRemediationRequiredError(
-                "inactive candidate found promotable append authority in the frozen source; "
-                "complete source remediation before candidate construction"
-            )
-    return raw_revision_replay_plan(store, logical_source_key)
-
-
-def _contiguous_append_authority_candidates(
-    conn: sqlite3.Connection, logical_source_key: str
-) -> tuple[sqlite3.Row | tuple[object, ...], ...]:
-    candidates = conn.execute(
-        """
-            SELECT child.raw_id, parent.raw_id, CASE WHEN parent.revision_kind = 'full' THEN parent.raw_id ELSE parent.baseline_raw_id END,
-                   parent.acquisition_generation + 1
-            FROM raw_sessions AS child
-            JOIN raw_sessions AS parent
-              ON parent.logical_source_key = child.logical_source_key
-             AND parent.source_revision = child.predecessor_source_revision
-             AND parent.revision_authority = 'byte_proven'
-             AND (
-                 (parent.revision_kind = 'full' AND parent.blob_size = child.append_start_offset)
-                 OR
-                 (parent.revision_kind = 'append' AND parent.append_end_offset = child.append_start_offset)
-             )
-            WHERE child.logical_source_key = ?
-              AND child.revision_kind = 'append'
-              AND (
-                  child.revision_authority = 'quarantined'
-                  OR child.predecessor_raw_id != parent.raw_id
-                  OR child.baseline_raw_id != CASE WHEN parent.revision_kind = 'full' THEN parent.raw_id ELSE parent.baseline_raw_id END
-                  OR child.acquisition_generation != parent.acquisition_generation + 1
-              )
-            """,
-        (logical_source_key,),
-    ).fetchall()
-    by_child: dict[str, list[sqlite3.Row | tuple[object, ...]]] = {}
-    for row in candidates:
-        by_child.setdefault(str(row[0]), []).append(row)
-    return tuple(rows[0] for rows in by_child.values() if len(rows) == 1)
-
-
-def _contiguous_append_authority_drift_exists(conn: sqlite3.Connection, logical_source_key: str) -> bool:
-    return bool(_contiguous_append_authority_candidates(conn, logical_source_key))
-
-
-def _promote_contiguous_append_evidence(conn: sqlite3.Connection, logical_source_key: str) -> None:
-    while True:
-        promotable = _contiguous_append_authority_candidates(conn, logical_source_key)
-        if not promotable:
-            return
-        changed = 0
-        for row in promotable:
-            cursor = conn.execute(
-                """
-                UPDATE raw_sessions
-                SET revision_authority = 'byte_proven', predecessor_raw_id = ?,
-                    baseline_raw_id = ?, acquisition_generation = ?
-                WHERE raw_id = ?
-                """,
-                (str(row[1]), str(row[2]), int(cast(Any, row[3])), str(row[0])),
-            )
-            changed += int(cursor.rowcount)
-        if not changed:
-            return
 
 
 def _raw_revision_authority(store: RawRevisionGovernanceHost, raw_id: str) -> str | None:
@@ -2305,7 +1899,7 @@ def replace_raw_membership_census(
             # through its census authority: the retired raw loses its
             # ``logical_source_key`` and goes ``quarantined``, so
             # ``raw_membership_retired_full_revision_siblings`` and
-            # ``_raw_revision_source_path_has_divergent_evidence`` find it by the
+            # the prepared same-path sibling guard find it by the
             # typed quarantined authority alone. An unrecognized marker with no
             # typed authority is not a harmless label -- it makes the retirement
             # invisible, and a later-arriving sibling for the
@@ -2583,21 +2177,9 @@ def record_current_parser_source_census(
     ) as census_rows:
         membership_census = census_rows.fetchone()
     typed_non_session = bool(raw[2])
-    # polylogue-39kcs: an append fragment is never parsed for identity --
-    # ``_persist_revision_census`` routes every ``source_index < 0`` raw
-    # straight to the byte-authority membership receipt because appends are
-    # governed by byte revision authority, not by semantic membership. That
-    # is a COMPLETE observation with an authoritative empty identity set,
-    # exactly like a typed non-session artifact, so it must be receipted as
-    # such. Recording it as ``failed`` instead left the fragment matching
-    # neither branch of ``uncensused_historical_revision_raw_ids``'s gate
-    # (complete + ``parser-observed:%``, or ``failed`` at the current
-    # resource-blocked fingerprint), so every pass re-censused it, rewrote
-    # the same receipt, and left raw-replay planning "paused until the
-    # persisted parser census completes" forever -- taking every ``full``
-    # snapshot in the same authority component down with it (the live
-    # codex 019f49d8 rollout: 767 fragments, 20 parsed fulls, ~20k messages
-    # acquired and censused but never materialized).
+    # An append fragment has byte authority rather than semantic membership.
+    # Its parser receipt therefore proves a complete, empty identity set;
+    # recording failure would keep the component pending on every replay.
     byte_governed_fragment = (
         int(raw[3]) < 0
         and membership_census is not None
@@ -3800,6 +3382,13 @@ _RAW_DIVERGENT_PATH_SQL = """
             """
 
 
+def _has_retained_full_byte_claim(row: sqlite3.Row | tuple[object, ...]) -> bool:
+    """Only byte proof or an asserted root already owns its full authority."""
+    return str(row[3]) == RawRevisionAuthority.BYTE_PROVEN.value or (
+        str(row[3]) == RawRevisionAuthority.ASSERTED.value and row[4] is None
+    )
+
+
 def _classify_full_revision_byte_inputs(
     full_rows: Sequence[sqlite3.Row | tuple[object, ...]],
     open_input: Callable[[str, str], BinaryIO],
@@ -3828,8 +3417,7 @@ def _classify_full_revision_byte_inputs(
             _source_integer(row[6]),
         )
         for row in full_rows
-        if str(row[3]) == RawRevisionAuthority.BYTE_PROVEN.value
-        or (str(row[3]) == RawRevisionAuthority.ASSERTED.value and row[4] is None)
+        if _has_retained_full_byte_claim(row)
     }
     # A Source-admitted asserted baseline is preserved, but does not prove
     # that another payload extends it. Only retained byte proof anchors that law.
@@ -4037,7 +3625,14 @@ def prepare_raw_revision_byte_classification(
         if not verified or before != after:
             raise PreparedRawClassificationStaleError("retained classification bytes changed")
         blob_stats[blob_hash] = after
-    updates = _classify_full_revision_byte_inputs(full_rows, lambda _raw_id, blob_hash: payload_store.open(blob_hash))
+    # Retained authority cannot change without an undecided full observation.
+    # Keep original blob capture and integrity checks above, but do not read
+    # those bytes again for prefix comparison on a metadata-only append pass.
+    updates = (
+        ()
+        if all(_has_retained_full_byte_claim(row) for row in full_rows)
+        else _classify_full_revision_byte_inputs(full_rows, lambda _raw_id, blob_hash: payload_store.open(blob_hash))
+    )
     for blob_hash, identity in blob_stats.items():
         check_compute_cancelled()
         try:

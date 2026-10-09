@@ -14,7 +14,7 @@ this document are the ones the measurement actually used.
 `source.db`'s `raw_sessions` table snapshots every observed file state as a
 full, independent content-addressed blob. This is deliberate: it distinguishes
 append-growth from history rewrite, keeps idempotent re-ingest honest, and
-gives replay authority (`classify_raw_revision_cohort`,
+gives replay authority (`prepare_raw_revision_byte_classification`,
 `plan_revision_replay`) a durable evidential trail. But when a file is
 captured repeatedly while it only grows (a live Codex rollout, a live Claude
 Code project transcript), every capture before the last one is a **strict
@@ -59,7 +59,7 @@ Three buckets, computed against `/realm/db/polylogue/source.db` + blob store
 
 | Bucket | What it is | Rows | Bytes | Method |
 |---|---|---:|---:|---|
-| **A** — already classified | `revision_kind='full'`, `revision_authority='byte_proven'`, not the cohort's terminal (leaf) member | 992 | 10.48 GB | Trust the durable `predecessor_raw_id`/`baseline_raw_id` chain already written by `classify_raw_revision_cohort`. No bytes read. |
+| **A** — already classified | `revision_kind='full'`, `revision_authority='byte_proven'`, not the cohort's terminal (leaf) member | 992 | 10.48 GB | Trust the durable `predecessor_raw_id`/`baseline_raw_id` chain already written by `prepare_raw_revision_byte_classification`. No bytes read. |
 | **B** — typed, needs a fresh proof | `logical_source_key` assigned, `revision_kind='full'`, cohort has ≥2 members but not all already `byte_proven` (default-quarantined, never reclassified) | 318 reclaimable / 3,432 cohorts checked (50 proven, 3,382 quarantined) | 7.17 GB | Ran the real `classify_historical_full_revision_streams` against the live blob store for every such cohort. |
 | **C** — never-typed (`revision_kind='unknown'`) | Legacy/backfill raws, grouped by `source_path`, the same-file equivalence edge | 11 reclaimable / 3,240 cohorts checked (4 proven, 3,236 quarantined) | 0.0006 GB | Same streamed proof, path-grouped candidates. |
 | **Total** | | **1,321** | **17.65 GB** (18.12% of archive) | |
@@ -409,14 +409,14 @@ durability tier.
 fall back to reconstructing an equivalent cursor from **durable** evidence
 already in `source.db` before giving up and falling back to a full capture —
 specifically, the accepted chain's current head (`raw_revision_replay_plan`
-/ `classify_raw_revision_cohort`'s already-durable `predecessor_raw_id` /
+/ `prepare_raw_revision_byte_classification`'s already-durable `predecessor_raw_id` /
 `baseline_raw_id` / `source_revision` / `blob_size` columns) already carries
 everything `_append_plan` needs (`byte_offset`, `content_fingerprint`
 equivalent, `parser_fingerprint` match) to resynthesize a `CursorRecord`
 without touching `ops.db` at all. This is additive to `_append_plan` (a
 secondary lookup path, tried only when the primary disposable-tier cursor is
 absent), not a schema change, and does not weaken the existing
-`RawRevisionAuthority` model — `classify_raw_revision_cohort` remains the
+`RawRevisionAuthority` model — `prepare_raw_revision_byte_classification` remains the
 sole authority for what's accepted; this only changes *how eagerly* the
 append path is attempted before falling back to a full capture.
 

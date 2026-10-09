@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
 from io import BytesIO
-from itertools import chain, groupby
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, Protocol, cast
 
@@ -50,7 +49,6 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
     canonical_authority_logical_key,
     is_work_event_raw_id,
-    parser_census_identity_measurement,
 )
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.session_revision_membership import (
@@ -122,7 +120,6 @@ from polylogue.storage.blob_publication import BlobPublicationSourceRead
 from polylogue.storage.io_phase_metrics import connection_cursor
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import (
-    iter_parser_census_logical_keys,
     raw_authority_parser_fingerprint,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -155,7 +152,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_shard,
 )
 from polylogue.storage.sqlite.connection_profile import (
-    StaleContinuationError,
     read_frame,
 )
 from polylogue.storage.sqlite.reference_seal import ReferenceSealError
@@ -1485,118 +1481,6 @@ class AntigravityTrajectoryDriftError(RuntimeError):
     older revision's ``raw_id``. This refusal counts as a replay degradation
     exactly the way the other replay ``RuntimeError``s do.
     """
-
-
-def uncensused_historical_revision_raw_ids(
-    archive_root: Path,
-    raw_ids: list[str],
-) -> tuple[str, ...]:
-    """Return inputs whose current parser identity has not been persisted.
-
-    The dedicated receipt proves that the parser whose current executable
-    semantics fingerprint is stored actually observed every relevant raw.
-    Any fingerprint change makes a former receipt stale, so no growing list of
-    manually-known revisions can accidentally keep a changed parser authority
-    current.
-
-    Current-fingerprint receipts also have to prove the durable authority
-    shape. Receipts with another fingerprint, or an empty key list when
-    membership rows establish a canonical identity, are selected for
-    recomputation instead of remaining permanently blocked by readiness.
-    """
-    if not raw_ids:
-        return ()
-    current_fingerprint = raw_authority_parser_fingerprint()
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        conn = source_frame.connection
-        uncensused: list[str] = []
-        for offset in range(0, len(raw_ids), 500):
-            raw_id_chunk = raw_ids[offset : offset + 500]
-            placeholders = ",".join("?" for _ in raw_id_chunk)
-            rows = conn.execute(
-                f"""
-                SELECT r.raw_id
-                FROM raw_sessions AS r
-                LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
-                WHERE r.raw_id IN ({placeholders})
-                  AND NOT COALESCE(
-                      c.parser_fingerprint = ?
-                      AND c.status = 'complete'
-                      AND c.detail LIKE 'parser-observed:%',
-                      0
-                  )
-                ORDER BY r.raw_id
-                """,
-                [*raw_id_chunk, current_fingerprint],
-            )
-            uncensused.extend(str(row[0]) for row in rows)
-            with closing(
-                conn.execute(
-                    f"""
-                SELECT r.raw_id, c.logical_keys_json, r.logical_source_key, r.revision_kind,
-                       EXISTS(SELECT 1 FROM raw_artifacts AS a
-                              WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
-                       EXISTS(SELECT 1 FROM raw_membership_census AS mc
-                              WHERE mc.raw_id = r.raw_id
-                                AND mc.parser_fingerprint = ?
-                                AND mc.status = 'non_session'),
-                       EXISTS(SELECT 1 FROM raw_membership_census AS mc
-                              WHERE mc.raw_id = r.raw_id
-                                AND r.source_index < 0
-                                AND mc.parser_fingerprint = ?
-                                AND mc.status = 'failed'
-                                AND mc.revision_authority = ?),
-                       m.logical_source_key
-                FROM raw_sessions AS r
-                JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
-                LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-                WHERE r.raw_id IN ({placeholders})
-                  AND c.parser_fingerprint = ?
-                  AND c.status = 'complete'
-                  AND c.detail LIKE 'parser-observed:%'
-                ORDER BY r.raw_id, m.logical_source_key
-                """,
-                    (
-                        raw_authority_parser_fingerprint(),
-                        raw_authority_parser_fingerprint(),
-                        RawRevisionAuthority.BYTE_PROVEN.value,
-                        *raw_id_chunk,
-                        raw_authority_parser_fingerprint(),
-                    ),
-                )
-            ) as receipt_rows:
-                for raw_id, raw_rows in groupby(receipt_rows, key=lambda row: str(row[0])):
-                    check_compute_cancelled()
-                    first = next(raw_rows)
-                    (
-                        _raw_id,
-                        logical_keys_json,
-                        typed_key,
-                        revision_kind,
-                        typed_non_session,
-                        parser_confirmed_non_session,
-                        byte_governed_fragment,
-                        _membership_key,
-                    ) = first
-                    with parser_census_identity_measurement(
-                        raw_logical_key=typed_key,
-                        revision_kind=revision_kind,
-                        membership_logical_keys=(row[7] for row in chain((first,), raw_rows)),
-                        observed_logical_keys=iter_parser_census_logical_keys(logical_keys_json),
-                        observed_are_receipt=True,
-                        check_stop=check_compute_cancelled,
-                    ) as measured:
-                        if not measured.complete(
-                            typed_non_session=bool(typed_non_session),
-                            parser_confirmed_non_session=bool(parser_confirmed_non_session),
-                            byte_governed_fragment=bool(byte_governed_fragment),
-                        ):
-                            uncensused.append(raw_id)
-        if not source_frame.revalidate():
-            raise StaleContinuationError("source archive changed during parser source census")
-    return tuple(sorted(set(uncensused)))
 
 
 def apply_prepared_revision_census(
@@ -3536,15 +3420,8 @@ def _parse_one_raw(
                     source_path=source_path,
                 )
     if looks_like_sqlite_bytes(payload):
-        # polylogue-qjscw: a retained SQLite PAGE IMAGE reaching this point has
-        # no current parser -- every provider that can replay a database has
-        # already claimed its export above. Feeding these bytes to the JSON
-        # stream parser raises, and on the frozen-candidate route that single
-        # exception is promoted to FrozenSourceRemediationRequiredError, which
-        # ends the WHOLE rebuild rather than failing one raw. The archive
-        # deliberately retained this material, so it becomes terminal
-        # non-session evidence instead: no session, no abort, and a receipt
-        # that still names what the material was.
+        # A retained SQLite page image has no replayable logical export.
+        # Preserve it as terminal non-session evidence with its material receipt.
         return []
     from polylogue.sources.live.batch_support import jsonl_parse_input_of_handle
 
@@ -3756,7 +3633,6 @@ __all__ = [
     "apply_prepared_revision_census",
     "enrich_sessions_from_retained_read",
     "open_retained_session_enricher",
-    "uncensused_historical_revision_raw_ids",
     "parse_retained_raw_sessions",
 ]
 

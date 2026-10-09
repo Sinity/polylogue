@@ -514,6 +514,12 @@ A populated managed Index with canonical physical DDL and a stale fingerprint
 is reconstructed at startup from retained Source, before ordinary preflight.
 The existing Raw owner performs bounded canonical census, classification and
 replay into an owned inactive generation; external originals are unnecessary.
+Canonical parsing supplies membership and parser receipts from its prepared
+artifacts; the same original Source seal stages byte authority before replay.
+There is no separate direct classifier or historical receipt backfill selector.
+A cohort whose full authority is already retained skips prefix reclassification;
+its original blob integrity and currentness checks and append metadata fixed
+point remain active. New undecided full evidence compares the required anchors.
 The acquisition snapshot binds raw identities, captured coordinates, verified
 payload bytes, blob claims and capture observations to the current Index recipe.
 Origin and revision interpretation may refine only through those original

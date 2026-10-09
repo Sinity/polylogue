@@ -20,6 +20,7 @@ from polylogue.daemon.write_coordinator import (
 from polylogue.storage.derived.raw import RawFrame, RawObservationReplacement
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+from tests.infra.prepared_replay import publish_fixture_byte_classification
 
 
 def _admit(root: Path, native_id: str = "owner") -> str:
@@ -290,14 +291,19 @@ async def test_multi_session_claude_code_raw_settles_every_session(
                 acquired_at_ms=1,
                 post_parse=True,
             )
-            if envelope_byte_classified:
-                (pending_key,) = archive.pending_raw_revision_logical_keys()
-                assert archive.classify_raw_revision_cohort_for_rebuild_repair(pending_key).accepted_raw_ids == (
-                    acquired,
-                )
             return acquired
 
     raw_id = await run_archive_fixture_write(tmp_path, acquire)
+    if envelope_byte_classified:
+
+        def classify() -> None:
+            with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+                (pending_key,) = archive.pending_raw_revision_logical_keys()
+                assert publish_fixture_byte_classification(archive, pending_key).accepted_raw_ids == (raw_id,)
+
+        from tests.infra.archive_templates import run_off_event_loop
+
+        run_off_event_loop(classify)
     owner, compute, coordinator = await _owner(tmp_path)
     try:
         # One call publishes the parser census and continues to the replay in

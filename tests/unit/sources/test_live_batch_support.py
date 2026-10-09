@@ -76,6 +76,7 @@ from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
+from tests.infra.prepared_replay import publish_fixture_byte_classification
 from tests.infra.raw_owner_routes import (
     ingest_append_with_owner,
     ingest_files_with_owners,
@@ -5240,7 +5241,7 @@ def test_append_ingest_proves_byte_authority_at_capture_without_reconciler(tmp_p
     ``append_ingest.py``'s ``ingest_append_plans`` already resolves
     the byte-contiguous predecessor via ``raw_append_revision_parent`` and,
     once found, immediately classifies+applies the revision in the SAME
-    ingest call (``archive.classify_raw_revision_cohort`` /
+    ingest call (``prepare_raw_revision_byte_classification`` /
     ``apply_raw_revision_replay``) -- there is no code path where a normal,
     single-predecessor append is left ``quarantined`` for a later async pass
     to pick up. This test locks that invariant in: after one full capture
@@ -7631,7 +7632,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
     """polylogue-hm2f: the live incremental path must reunite retired siblings, not drop new raws forever.
 
     Mirrors the exact live call sequence the polylogue-52l2 guard protects
-    (``bind_raw_revision`` -> ``classify_raw_revision_cohort``), then proves
+    (``bind_raw_revision`` -> ``prepare_raw_revision_byte_classification``), then proves
     the new routing this fix adds: when that cohort comes back empty AND
     ``raw_membership_retired_full_revision_siblings`` shows this identity has
     known siblings already retired to membership governance -- exactly the
@@ -7649,7 +7650,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
     raw_a=["base","left"], raw_b=["base","right"] are byte-divergent (not a
     prefix of one another) -- a genuine, decided ambiguous cohort, retired
     here exactly the way ``backfill_historical_revision_evidence`` retires
-    one once ``classify_raw_revision_cohort`` returns no accepted chain.
+    one once ``prepare_raw_revision_byte_classification`` returns no accepted chain.
     raw_c=["base","left","extra"] then arrives through the live incremental
     path (``LiveBatchProcessor._ingest_full_paths_sync``, the production
     entry point, not a hand-simulated call). Content-wise raw_c does not
@@ -7724,7 +7725,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
 
         # Exactly the polylogue-52l2 guard-tripping sequence: no unique
         # byte-prefix chain across a and b.
-        plan = store.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:shared")
+        plan = publish_fixture_byte_classification(store, "chatgpt-export:shared")
         assert plan.accepted_raw_ids == ()
 
         convertible = list(store.convertible_full_revision_raw_ids("chatgpt-export:shared"))

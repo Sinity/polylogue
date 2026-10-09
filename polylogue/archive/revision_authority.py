@@ -535,7 +535,7 @@ class HistoricalRevisionDecision:
     predecessor_raw_id: str | None = None
     #: For ``relation="duplicate"`` only: the representative raw_id whose
     #: verdict (and, for callers that derive chain position such as
-    #: ``revision_governance.classify_raw_revision_cohort``, generation
+    #: ``revision_governance.prepare_raw_revision_byte_classification``, generation
     #: number) this duplicate mirrors. Deliberately separate from
     #: ``predecessor_raw_id`` -- a duplicate is NOT a chain-continuing child
     #: of anything; it is a second copy of its representative's own bytes.

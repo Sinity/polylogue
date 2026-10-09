@@ -212,21 +212,16 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     PreparedRevisionReplayOutcome,
     _authorize_full_snapshot_fold,
     _flush_pending_raw_parse_states,
-    _promote_contiguous_append_evidence,
     _raw_revision_authority,
     _raw_revision_candidates,
     _raw_revision_matches_segments,
     _raw_revision_payload_digest_and_size,
-    _raw_revision_source_path_has_divergent_evidence,
     admit_raw_artifact_blob_ref,
     admit_raw_artifact_payload,
     admit_work_event_raw,
     apply_raw_revision_replay,
     bind_raw_revision,
     blob_path_for_hash,
-    classify_raw_revision_cohort_for_frozen_candidate,
-    classify_raw_revision_cohort_for_rebuild_repair,
-    classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
     convertible_full_revision_raw_ids,
     defer_raw_revision_adoption,
     expand_raw_membership_selection,
@@ -2946,31 +2941,6 @@ class ArchiveStore:
 
     def raw_membership_retired_full_revision_siblings(self, logical_source_key: str) -> tuple[str, ...]:
         return raw_membership_retired_full_revision_siblings(self, logical_source_key)
-
-    def _raw_revision_source_path_has_divergent_evidence(self, logical_source_key: str) -> bool:
-        return _raw_revision_source_path_has_divergent_evidence(self, logical_source_key)
-
-    @_archive_mutator
-    def classify_raw_revision_cohort_for_rebuild_repair(
-        self,
-        logical_source_key: str,
-    ) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_rebuild_repair(self, logical_source_key)
-
-    @_archive_mutator
-    def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
-        self, logical_source_key: str
-    ) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_rebuild_repair_in_transaction(self, logical_source_key)
-
-    def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
-        return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
-
-    @staticmethod
-    def _promote_contiguous_append_evidence(conn: sqlite3.Connection, logical_source_key: str) -> None:
-        return _promote_contiguous_append_evidence(conn, logical_source_key)
 
     def _raw_revision_authority(self, raw_id: str) -> str | None:
         return _raw_revision_authority(self, raw_id)

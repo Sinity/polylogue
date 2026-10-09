@@ -50,6 +50,7 @@ from tests.infra.prepared_replay import (
     apply_prepared_revision_replay,
     independent_source_connection,
     open_independent_source,
+    publish_fixture_byte_classification,
     publish_membership_census,
     publish_prepared_source,
     run_on_convergence_owner,
@@ -843,7 +844,7 @@ def test_replay_does_not_treat_a_duplicate_of_the_accepted_baseline_as_a_competi
     """polylogue-qhk8z: a byte-identical duplicate of the accepted baseline must
     not create a false "multiple byte-proven full baselines" tie.
 
-    ``revision_governance.classify_raw_revision_cohort`` writes a duplicate
+    ``revision_governance.prepare_raw_revision_byte_classification`` writes a duplicate
     decision's ``baseline_raw_id`` to the SAME chain root as the real
     baseline row (``predecessor_raw_id=None`` on both, per
     ``HistoricalRevisionDecision.duplicate_of_raw_id``'s contract), and
@@ -915,7 +916,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
             ),
         )
 
-        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        plan = publish_fixture_byte_classification(archive, "codex-session:session")
 
     assert {item.raw_id: item.decision for item in plan.applications} == {
         baseline_raw_id: ApplicationDecision.SELECTED_BASELINE,
@@ -928,7 +929,7 @@ def test_public_cohort_classification_commits_source_authority_before_return(tmp
     bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = _write_chain_full(archive, "transaction-owner", 0)
-        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        plan = publish_fixture_byte_classification(archive, "codex-session:session")
         assert plan.accepted_raw_ids == (baseline,)
 
         with sqlite3.connect(tmp_path / "source.db") as source:
@@ -941,6 +942,7 @@ def test_public_cohort_classification_commits_source_authority_before_return(tmp
 
 
 def _write_full_raw(archive: ArchiveStore, *, raw_id: str, payload: bytes, acquired_at_ms: int) -> str:
+    """Acquire an undecided fixture revision for the byte-prefix proof laws."""
     written_id = archive.write_raw_payload(
         provider=Provider.CODEX,
         payload=payload,
@@ -951,7 +953,13 @@ def _write_full_raw(archive: ArchiveStore, *, raw_id: str, payload: bytes, acqui
     )
     archive.bind_raw_revision(
         written_id,
-        RawRevisionEnvelope("codex-session:session", RawRevisionKind.FULL, f"revision-{raw_id}", 0),
+        RawRevisionEnvelope(
+            "codex-session:session",
+            RawRevisionKind.FULL,
+            f"revision-{raw_id}",
+            0,
+            authority=RawRevisionAuthority.QUARANTINED,
+        ),
     )
     return written_id
 
@@ -988,7 +996,7 @@ def test_duplicate_decision_mid_chain_gets_representative_generation_not_zero(tm
             archive, raw_id="raw-011-mid-dup", payload=b"a" * 10 + b"b" * 10, acquired_at_ms=4
         )
 
-        archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        publish_fixture_byte_classification(archive, "codex-session:session")
 
         assert _acquisition_generation(archive, base) == 0
         assert _acquisition_generation(archive, mid) == 1
@@ -1030,7 +1038,7 @@ def test_duplicate_generation_copy_does_not_drop_the_chain_continuing_representa
         )
         assert mid < mid_duplicate  # guards the ordering assumption the collision case depends on
 
-        archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        publish_fixture_byte_classification(archive, "codex-session:session")
 
         assert _acquisition_generation(archive, base) == 0
         assert _acquisition_generation(archive, mid) == 1
@@ -1067,7 +1075,7 @@ def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tm
         baseline = _write_full_raw(archive, raw_id="raw-a-baseline", payload=b"hello world", acquired_at_ms=1)
         duplicate = _write_full_raw(archive, raw_id="raw-b-duplicate", payload=b"hello world", acquired_at_ms=2)
 
-        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        plan = publish_fixture_byte_classification(archive, "codex-session:session")
 
         # The cohort has a unique byte-proven baseline -- the duplicate no
         # longer manufactures a false "multiple newest baselines" ambiguity.
@@ -1173,7 +1181,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        append_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        append_plan = publish_fixture_byte_classification(archive, "codex-session:session")
         apply_prepared_revision_replay(
             archive,
             append_plan,
@@ -1202,7 +1210,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        folded_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        folded_plan = publish_fixture_byte_classification(archive, "codex-session:session")
         folded_session = parsed(("full-0", "zero"), ("full-1", "one"), ("full-2", "two"))
         before_hash = archive._conn.execute(
             "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = ?",
@@ -1317,12 +1325,12 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
 
     This mirrors the LIVE incremental watcher's own call sequence
     (``sources/live/batch.py``): ``bind_raw_revision`` then
-    ``classify_raw_revision_cohort`` directly, with no census-phase
+    ``prepare_raw_revision_byte_classification`` directly, with no census-phase
     re-derivation or connected-component re-expansion in between (those only
     happen in the offline ``backfill_historical_revision_evidence`` path,
     which is why this bug does not reproduce through that entry point).
 
-    ``classify_raw_revision_cohort`` only ever queries
+    ``prepare_raw_revision_byte_classification`` only ever queries
     ``raw_sessions WHERE logical_source_key = ? AND revision_kind = 'full'``.
     Retiring an ambiguous sibling to membership governance
     (``replace_raw_membership_census(..., retire_full_revision_governance=True)``,
@@ -1377,7 +1385,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
             ),
         )
 
-        first_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:s1")
+        first_plan = publish_fixture_byte_classification(archive, "chatgpt-export:s1")
         assert first_plan.accepted_raw_ids == ()
 
         # Both siblings genuinely disagree (no byte-prefix relation) --
@@ -1413,7 +1421,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
                 "chatgpt-export:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        second_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:s1")
+        second_plan = publish_fixture_byte_classification(archive, "chatgpt-export:s1")
 
     # The isolated raw must not be promoted alone: this identity has known,
     # unresolved ambiguous siblings that a real classifier must weigh it
@@ -1690,7 +1698,7 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
             ),
         )
         # With the recognized marker the isolated third raw stays refused.
-        assert archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:s1").accepted_raw_ids == ()
+        assert publish_fixture_byte_classification(archive, "chatgpt-export:s1").accepted_raw_ids == ()
 
         with independent_source_connection(archive) as conn:
             conn.executemany(
@@ -1698,7 +1706,7 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
                 [(unrecognized, raw_id) for raw_id in retired],
             )
         # Changing display wording cannot change the typed governance result.
-        promoted = archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:s1")
+        promoted = publish_fixture_byte_classification(archive, "chatgpt-export:s1")
 
     assert promoted.accepted_raw_ids == ()
 
@@ -1771,7 +1779,7 @@ def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path
                 "chatgpt-export:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:s1")
+        plan = publish_fixture_byte_classification(archive, "chatgpt-export:s1")
 
     assert plan.accepted_raw_ids == ()
 
@@ -1834,7 +1842,7 @@ def test_same_source_path_full_siblings_under_different_keys_are_not_independent
     ``logical_source_key`` that DIFFERS from a same-``source_path``
     sibling's. Neither raw's own key ever surfaces the other in
     ``raw_membership_retired_full_revision_siblings`` (an exact-key-match
-    query), so ``classify_raw_revision_cohort`` evaluates each key as a
+    query), so ``prepare_raw_revision_byte_classification`` evaluates each key as a
     trivial one-member chain and unconditionally accepts BOTH as
     independent byte-proven singleton baselines -- silently splitting one
     physical document into two sessions that then race on the shared
@@ -1881,8 +1889,8 @@ def test_same_source_path_full_siblings_under_different_keys_are_not_independent
             ),
         )
 
-        enriched_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("gemini:doc")
-        bare_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("gemini:doc-0")
+        enriched_plan = publish_fixture_byte_classification(archive, "gemini:doc")
+        bare_plan = publish_fixture_byte_classification(archive, "gemini:doc-0")
 
     # Neither key's lone member may be promoted alone: a same-source_path
     # sibling under a different key means this identity is genuinely
@@ -2910,7 +2918,7 @@ def test_append_replay_reindexes_the_whole_composed_chain(tmp_path: Path, monkey
                 "codex-session:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        plan0 = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        plan0 = publish_fixture_byte_classification(archive, "codex-session:session")
         apply_prepared_revision_replay(archive, plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0)
         indexed_writes.clear()
 
@@ -2937,7 +2945,7 @@ def test_append_replay_reindexes_the_whole_composed_chain(tmp_path: Path, monkey
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan1 = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        plan1 = publish_fixture_byte_classification(archive, "codex-session:session")
         apply_prepared_revision_replay(
             archive,
             plan1,
@@ -3024,7 +3032,7 @@ def test_accepted_chain_indexes_one_composed_session_not_one_per_chunk(tmp_path:
             ),
         )
 
-        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("claude-code-session:chat")
+        plan = publish_fixture_byte_classification(archive, "claude-code-session:chat")
         assert plan.accepted_raw_ids == (baseline, append_one)
         session_id, _ = apply_prepared_revision_replay(
             archive,

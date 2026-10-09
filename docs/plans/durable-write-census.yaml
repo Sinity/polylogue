@@ -794,20 +794,6 @@ writes:
     classification: declared_retention
     reason: "cleanup_superseded_raw_snapshots deletes only raws that superseded_raw_snapshot_candidates ranked outside the declared keep_full_snapshots/keep_append_snapshots window, minus the caller's protected_raw_ids and outside its eligible_raw_ids set; it is dry-run by default and reports skipped_referenced_count rather than deleting a protected row"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "_classify_raw_revision_cohort"
-    table: "raw_sessions"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "_promote_contiguous_append_evidence"
-    table: "raw_sessions"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
     function: "promote_reconstructed_legacy_append_revisions"
     table: "raw_authority_parser_census"
     kind: "delete"

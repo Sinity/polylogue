@@ -221,13 +221,14 @@ async def test_an_undecodable_json_document_is_excluded_as_corrupt_input(
         assert conn.execute("SELECT outcome_code FROM ingest_attempts ORDER BY rowid DESC LIMIT 1").fetchone() == (
             "corrupt_input",
         )
-    from polylogue.sources.revision_backfill import uncensused_historical_revision_raw_ids
+    from tests.infra.archive_templates import run_off_event_loop
+    from tests.infra.prepared_replay import current_fixture_parser_receipts
 
     with sqlite3.connect(archive_root / "source.db") as conn:
         raw_ids = [str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")]
     assert raw_ids, "live refusal did not retain its accepted raw"
     # The live pass settles the refusal through its census phase in one pass.
-    assert uncensused_historical_revision_raw_ids(archive_root, raw_ids) == ()
+    assert run_off_event_loop(lambda: current_fixture_parser_receipts(archive_root, raw_ids)) == (True,)
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT status FROM raw_authority_parser_census").fetchall() == [("complete",)]
 
