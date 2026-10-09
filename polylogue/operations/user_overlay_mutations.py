@@ -58,13 +58,25 @@ def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _target(snapshot: PinnedOperationRead, root: Any, payload: dict[str, object]) -> tuple[str, str, str, str | None]:
+def _target(
+    snapshot: PinnedOperationRead, root: Any, payload: dict[str, object], *, require_present: bool = True
+) -> tuple[str, str, str, str | None]:
     archive = snapshot.archive
     session_id = _resolve_session_target(archive, root, _text(payload, "session_id"))
     target_type = _text(payload, "target_type", TARGET_SESSION)
     target_id = _text(payload, "target_id") or None
     message_id = _text(payload, "message_id") or None
     validate_target_kind(target_type)
+    if not require_present and target_id and target_type == TARGET_BLOCK:
+        from polylogue.core.refs import ObjectRef, normalize_durable_object_ref_text
+
+        stable = ObjectRef.parse(normalize_durable_object_ref_text(f"block:{target_id}"))
+        return target_type, stable.object_id, session_id, message_id
+    if not require_present and target_id and target_type == TARGET_ATTACHMENT:
+        from polylogue.operations.mutation_actuators import _bind_stable_attachment_target
+
+        _bind_stable_attachment_target(archive, target_type, target_id, session_id, require_present=False)
+        return target_type, target_id, session_id, message_id
     if target_type == TARGET_SESSION:
         if target_id and _resolve_session_target(archive, root, target_id) != session_id:
             raise ValueError("session target_id must match session_id")
@@ -231,7 +243,7 @@ def user_mark_remove(
     mark_type = validate_mark_type(_text(payload, "mark_type"))
 
     def build(archive: ArchiveStore) -> tuple[Any, Any, Any]:
-        target = _target(snapshot, context.archive_root, payload)
+        target = _target(snapshot, context.archive_root, payload, require_present=False)
         return MarkRemoveActuator(), MarkArgs(archive, target[0], target[1], mark_type, target[2]), target
 
     public_target = (

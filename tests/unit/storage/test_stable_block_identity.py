@@ -129,6 +129,37 @@ def test_cross_export_union_preserves_identity_without_grafting_new_occupants(tm
         assert dict(after)["B"] == before["B"]
 
 
+def test_stable_mark_can_be_retracted_after_block_disappears(tmp_path: Path) -> None:
+    from polylogue.operations.mutation_actuators import MarkArgs, MarkRemoveActuator
+    from polylogue.operations.operation_context import open_operation_read
+    from polylogue.operations.user_overlay_mutations import _target
+
+    with write_lease("test.stable-block-retraction", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            session_id = write_index_session(archive, _session(["A", "B"]))
+            block_id = str(archive._conn.execute("SELECT block_id FROM blocks WHERE text='B'").fetchone()[0])
+            archive.add_mark("block", block_id, "star", owner_session_id=session_id)
+            archive._conn.execute("DELETE FROM blocks WHERE block_id=?", (block_id,))
+            archive.commit()
+    with open_operation_read(tmp_path) as snapshot:
+        target = _target(
+            snapshot,
+            tmp_path,
+            {"session_id": session_id, "target_type": "block", "target_id": block_id},
+            require_present=False,
+        )
+        with write_lease("test.stable-block-retraction-apply", archive_root=tmp_path):
+            with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+                actuator = MarkRemoveActuator()
+                args = MarkArgs(archive, target[0], target[1], "star", target[2])
+                plan = actuator.prepare(args)
+                assert plan.target_refs == (f"block:{block_id}",)
+                assert actuator.apply(plan, args).affected_count == 1
+                archive.commit()
+                assert not list(archive.list_marks(target_type="block", target_id=block_id))
+
+
 @pytest.mark.parametrize("source_change", [None, "replace", "delete"])
 def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
     tmp_path: Path,
@@ -240,12 +271,19 @@ def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
     from polylogue.operations.operation_context import open_operation_read
     from polylogue.operations.source_target_read import (
         SourceTargetChangedError,
-        bind_source_block,
-        revalidate_source_block,
     )
+    from polylogue.operations.user_overlay_mutations import _source_guard, _target
 
     with open_operation_read(tmp_path) as snapshot:
-        bind_source_block(snapshot, session_id=session_id, block_id=block_id)
+        message_id = str(
+            snapshot.archive._conn.execute("SELECT message_id FROM blocks WHERE block_id=?", (block_id,)).fetchone()[0]
+        )
+        target = _target(
+            snapshot,
+            tmp_path,
+            {"session_id": session_id, "target_type": "block", "target_id": f"{message_id}:2"},
+        )
+        assert target == ("block", block_id, session_id, message_id)
         with write_lease("test.source-target-current", archive_root=tmp_path):
             with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
                 actuator = AnnotationSaveActuator()
@@ -256,12 +294,7 @@ def test_native_message_block_reference_survives_retained_rebuild_and_promotion(
                     block_id,
                     "Still B",
                     session_id,
-                    source_guard=lambda: revalidate_source_block(
-                        snapshot,
-                        archive,
-                        session_id=session_id,
-                        block_id=block_id,
-                    ),
+                    source_guard=_source_guard(snapshot, archive, target),
                 )
                 plan = actuator.prepare(args)
                 if source_change is not None:
