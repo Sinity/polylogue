@@ -418,9 +418,16 @@ admitted INDEX tier installs only canonical runtime performance indexes before
 manifest validation, following its writable sync and async policy; read-only
 opens still refuse a missing manifest index without writing. At daemon
 startup, exclusive archive ownership and a write lease allow replacement of a
-stale disposable ops file before persistent tier handles open. Index
-reconvergence keeps its declared reset/rebuild route; purchased embeddings and
-durable tiers are never replaced by ops startup.
+stale disposable ops file before persistent tier handles open. A stale managed
+Index with canonical physical DDL may instead be replaced at startup only after proving all Source custody and parsed/material Index tables
+empty, physical blob custody empty, and durable User/Audit reference preservation.
+The existing generation owner creates and atomically promotes fresh empty DDL
+before tier handles open; the predecessor remains recoverable under normal
+promotion and retention, including its normal WAL checkpoint. Durable and
+purchased tier schemas and bindings must remain supported and current.
+Ineligible archives retain schema-blocked preflight; populated Index identity
+changes still require their declared rebuild route. Purchased embeddings and
+durable tiers are never replaced by this transition or ops startup.
 
 ## Tool-result association
 
