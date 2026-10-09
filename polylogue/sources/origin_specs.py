@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from polylogue.sources.sqlite_inspection import SQLiteClassification
 
 from polylogue.core.enums import Origin, Provider, ToolResultUnknownReason
-from polylogue.core.json_envelope import ENVELOPE_TEXT_PREFIX_CHARS, UNDECLARED_FIELDS, top_level_envelopes
+from polylogue.core.json_envelope import ENVELOPE_TEXT_PREFIX_CHARS, UNDECLARED_FIELDS
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -830,47 +830,50 @@ def recognize_source_class(
     return recognize_json_source_class(provider, path, payload=payload)
 
 
+def _signature_envelope(record: object, fields: frozenset[str]) -> object:
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    if isinstance(record, list):
+        return []
+    if not isinstance(record, dict):
+        return record
+    envelope: dict[object, object] = {}
+    selected = 0
+    for field in fields:
+        if field not in record:
+            continue
+        selected += 1
+        value = record.structure_value(field) if isinstance(record, SpilledObject) else record[field]
+        if isinstance(value, str):
+            value = (
+                record.string_prefix(field, characters=ENVELOPE_TEXT_PREFIX_CHARS)
+                if isinstance(record, SpilledObject)
+                else value[:ENVELOPE_TEXT_PREFIX_CHARS]
+            )
+        elif isinstance(value, list):
+            value = []
+        elif isinstance(value, dict):
+            value = {}
+        elif isinstance(record, SpilledObject):
+            value = record[field]
+        envelope[field] = value
+    # Unknown mapping presence participates in the all-ATOF rule.
+    if len(record) > selected:
+        envelope[UNDECLARED_FIELDS] = True
+    return envelope
+
+
 def _jsonl_signature_envelopes(
     handle: IO[bytes], *, fields: frozenset[str], sample_records: int | None = None
 ) -> Iterator[object]:
     """Project completed owned JSONL records for root structural signatures."""
-    from polylogue.schemas.observation_spill import SpilledObject
     from polylogue.sources.decoder_json import DecodedRecordSequence
 
     with contextlib.closing(
         DecodedRecordSequence.from_jsonl(handle, "source-class.jsonl", sample_records=sample_records)
     ) as records:
         for record in records.structure_values():
-            if isinstance(record, list):
-                yield []
-                continue
-            if not isinstance(record, dict):
-                yield record
-                continue
-            envelope: dict[object, object] = {}
-            selected = 0
-            for field in fields:
-                if field not in record:
-                    continue
-                selected += 1
-                value = record.structure_value(field) if isinstance(record, SpilledObject) else record[field]
-                if isinstance(value, str):
-                    value = (
-                        record.string_prefix(field, characters=ENVELOPE_TEXT_PREFIX_CHARS)
-                        if isinstance(record, SpilledObject)
-                        else value[:ENVELOPE_TEXT_PREFIX_CHARS]
-                    )
-                elif isinstance(value, list):
-                    value = []
-                elif isinstance(value, dict):
-                    value = {}
-                elif isinstance(record, SpilledObject):
-                    value = record[field]
-                envelope[field] = value
-            # Unknown mapping presence participates in the all-ATOF rule.
-            if len(record) > selected:
-                envelope[UNDECLARED_FIELDS] = True
-            yield envelope
+            yield _signature_envelope(record, fields)
 
 
 def recognize_json_source_class(
@@ -909,30 +912,31 @@ def recognize_json_source_class(
                 else:
                     first = _first_significant_byte(handle)
                     handle.seek(0)
-                    if first == b"[":
-                        # The signature is read from the leading records; the
-                        # rest is streamed, its envelopes dropped as they come,
-                        # because preparation consumes the complete array: a
-                        # malformed tail refuses it, and the Hermes predicate
-                        # applies to every member.
-                        elements = top_level_envelopes(handle, expand_arrays=True, fields=fields)
-                        payload = list(islice(elements, SOURCE_CLASS_JSONL_LEADING_RECORDS))
-                        for element in elements:
-                            if (
-                                provider is Provider.HERMES
-                                and isinstance(element, dict)
-                                and element
-                                and not hermes_spans.looks_like_atof_payload(element)
-                            ):
-                                tail_violates_atof = True
-                    elif first == b"{":
-                        (payload,) = top_level_envelopes(handle, expand_arrays=False, fields=fields)
-                    else:
+                    if first not in {b"[", b"{"}:
                         # A scalar root carries no source signature; its body
                         # is never scanned.
                         return SourceClassRecognition(
                             "unsupported", f"{provider.value} candidate has no JSON object or array root"
                         )
+                    from polylogue.schemas.observation_spill import SpilledArray
+                    from polylogue.sources.decoder_json import DecodedRecordSequence
+
+                    with contextlib.closing(DecodedRecordSequence.from_raw_document(path)) as document:
+                        root = next(document.structure_values())
+                        if isinstance(root, list):
+                            values = root.structure_values() if isinstance(root, SpilledArray) else iter(root)
+                            elements = (_signature_envelope(value, fields) for value in values)
+                            payload = list(islice(elements, SOURCE_CLASS_JSONL_LEADING_RECORDS))
+                            for element in elements:
+                                if (
+                                    provider is Provider.HERMES
+                                    and isinstance(element, dict)
+                                    and element
+                                    and not hermes_spans.looks_like_atof_payload(element)
+                                ):
+                                    tail_violates_atof = True
+                        else:
+                            payload = _signature_envelope(root, fields)
         except (OSError, UnicodeDecodeError, ValueError, ArithmeticError, ijson.JSONError):
             return SourceClassRecognition("unsupported", f"{provider.value} candidate is not readable JSON")
         if tail_violates_atof:

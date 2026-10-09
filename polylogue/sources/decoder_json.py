@@ -197,7 +197,13 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
 
     @classmethod
     def from_archive_jsonl(
-        cls, handle: JsonlReadable, *, textual: bool = False, dict_only: bool = False
+        cls,
+        handle: JsonlReadable,
+        *,
+        textual: bool = False,
+        dict_only: bool = False,
+        sample_records: int | None = None,
+        allow_empty: bool = False,
     ) -> tuple[DecodedRecordSequence, int, str | None]:
         """Own retained raw records with the archival provider-text policy."""
         from polylogue.core.json_envelope import _LineSource
@@ -247,7 +253,9 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
                         if detail is None:
                             reason = error.reason if isinstance(error, UnicodeDecodeError) else str(error)
                             detail = f"line {line_number}: {reason}"
-            if not tape:
+                    if sample_records is not None and len(tape) >= sample_records:
+                        break
+            if not tape and not allow_empty:
                 raise ValueError("No valid JSONL records found")
             return tape, malformed, detail
         except BaseException:

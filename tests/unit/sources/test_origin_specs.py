@@ -1999,7 +1999,6 @@ def test_array_document_recognition_samples_the_head_and_validates_the_tail(
     admitted although the record parser refuses it; read the root unexpanded
     and the whole array is materialized as one envelope.
     """
-    from polylogue.core.json_envelope import top_level_envelopes as real
     from polylogue.sources import origin_specs
 
     record = '{"atof_version": "0.1", "kind": "mark", "uuid": "u", "timestamp": "t", "name": "n"}'
@@ -2007,13 +2006,14 @@ def test_array_document_recognition_samples_the_head_and_validates_the_tail(
     document.write_text("[" + ",".join([record] * 200) + "]", encoding="utf-8")
     drawn: list[int] = []
 
-    def guarded(handle: object, *, expand_arrays: bool, fields: frozenset[str]):  # type: ignore[no-untyped-def]
-        assert expand_arrays, "array root read unexpanded, materializing the whole document"
-        for index, envelope in enumerate(real(handle, expand_arrays=expand_arrays, fields=fields)):  # type: ignore[arg-type]
-            drawn.append(index)
-            yield envelope
+    real = origin_specs._signature_envelope
 
-    monkeypatch.setattr(origin_specs, "top_level_envelopes", guarded)
+    def guarded(value: object, fields: frozenset[str]) -> object:
+        assert isinstance(value, dict), "array root read unexpanded"
+        drawn.append(len(drawn))
+        return real(value, fields)
+
+    monkeypatch.setattr(origin_specs, "_signature_envelope", guarded)
     recognition = origin_specs.recognize_source_class(Provider.HERMES, document)
     assert recognition is not None and recognition.source_class == "session"
     assert len(drawn) == 200
@@ -2022,6 +2022,22 @@ def test_array_document_recognition_samples_the_head_and_validates_the_tail(
     truncated.write_text("[" + ",".join([record] * 40) + ",", encoding="utf-8")
     refused = origin_specs.recognize_source_class(Provider.HERMES, truncated)
     assert refused is not None and refused.source_class == "unsupported"
+
+
+def test_whole_document_source_recognition_keeps_valid_large_unknown_integer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.schemas.observation_spill import _ScalarTokenStore
+
+    path = tmp_path / "neutral.json"
+    path.write_bytes(_ATOF_RECORD[:-1] + b',"unknown":' + b"9" * 65537 + b"}")
+
+    def unselected(*_args: object) -> object:
+        raise AssertionError("unknown scalar materialization")
+
+    monkeypatch.setattr(_ScalarTokenStore, "read", unselected)
+    result = recognize_source_class(Provider.HERMES, path)
+    assert result is not None and result.source_class == "session"
 
 
 def test_hermes_jsonl_recognition_requires_every_record_to_be_atof(tmp_path: Path) -> None:
@@ -2456,7 +2472,6 @@ def test_json_document_recognition_matches_the_record_parser(tmp_path: Path, mon
     A foreign tail or scalar root still refuses; aggregate width does not
     turn valid individually bounded records into an unsupported document.
     """
-    import polylogue.core.json_envelope as json_envelope
     from polylogue.sources import origin_specs
     from polylogue.sources.origin_specs import recognize_source_class
 
@@ -2469,13 +2484,13 @@ def test_json_document_recognition_matches_the_record_parser(tmp_path: Path, mon
     scalar = tmp_path / "scalar.json"
     scalar.write_bytes(b'"' + b"x" * 64)
     opened: list[object] = []
-    real = json_envelope.top_level_envelopes
+    real = origin_specs._signature_envelope
 
     def tracked(*args: Any, **kwargs: Any) -> Any:
         opened.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(origin_specs, "top_level_envelopes", tracked)
+    monkeypatch.setattr(origin_specs, "_signature_envelope", tracked)
     refused = recognize_source_class(Provider.HERMES, scalar)
     assert refused is not None and refused.source_class == "unsupported" and not opened
 

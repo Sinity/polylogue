@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, BinaryIO, Literal, TypeAlias, cast
@@ -16,7 +16,7 @@ from polylogue.archive.artifact_taxonomy import (
     classify_artifact_stream,
 )
 from polylogue.archive.artifact_taxonomy.support import record_candidacy_projection
-from polylogue.archive.raw_payload.streams import raw_byte_stream, raw_line_stream, rewindable_byte_stream
+from polylogue.archive.raw_payload.streams import raw_byte_stream, rewindable_byte_stream
 from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider
 from polylogue.core.json import (
@@ -41,8 +41,7 @@ JSONRecord: TypeAlias = JSONDocument
 class EmptyJsonlStreamError(ValueError):
     """A JSONL sample holds no inspected record, and no record failed to decode.
 
-    The stream is empty or blank, or every record exceeded the inspection
-    bound. Distinct from a stream whose lines failed to decode, which is
+    The stream is empty or blank. Distinct from a stream whose lines failed to decode, which is
     decode-loss evidence; this is an unresolved sample, not a detection crash.
     """
 
@@ -109,47 +108,6 @@ class JSONLSessionArtifactScan:
 JSONL_RECORD_INSPECTION_BYTES = 64 * 1024
 
 
-def _bounded_raw_lines(
-    stream: IO[bytes] | IO[str],
-    *,
-    max_record_bytes: int | None,
-) -> Iterator[tuple[bytes | str | None, bool]]:
-    """Yield complete lines without allocating beyond an optional record cap.
-
-    Oversized records are consumed in bounded chunks and represented as
-    ``(None, True)`` so callers can continue at the next newline.
-    """
-    if max_record_bytes is None:
-        for raw_line in stream:
-            yield raw_line, False
-        return
-    if max_record_bytes < 1:
-        raise ValueError("max_record_bytes must be positive")
-
-    read_size = max_record_bytes + 1
-    while True:
-        raw_line = stream.readline(read_size)
-        if not raw_line:
-            return
-        has_newline = raw_line.endswith(b"\n") if isinstance(raw_line, bytes) else raw_line.endswith("\n")
-        if has_newline:
-            if len(raw_line) > max_record_bytes:
-                yield None, True
-            else:
-                yield raw_line, False
-            continue
-        if len(raw_line) <= max_record_bytes:
-            yield raw_line, False
-            return
-
-        while raw_line:
-            has_newline = raw_line.endswith(b"\n") if isinstance(raw_line, bytes) else raw_line.endswith("\n")
-            if has_newline:
-                break
-            raw_line = stream.readline(read_size)
-        yield None, True
-
-
 def _decode_jsonl_payload(
     raw: Path | bytes | str,
     *,
@@ -158,76 +116,6 @@ def _decode_jsonl_payload(
     """Decode every physical record while retaining its exact owned tape."""
     with raw_byte_stream(raw) as stream:
         return DecodedRecordSequence.from_archive_jsonl(stream, textual=isinstance(raw, str), dict_only=jsonl_dict_only)
-
-
-def _sample_jsonl_payload_with_detail(
-    raw: Path | bytes | str,
-    *,
-    max_samples: int = 64,
-    jsonl_dict_only: bool = False,
-    scan_full: bool = True,
-    max_record_bytes: int | None = None,
-) -> tuple[list[JSONValue], int, str | None]:
-    """Collect a bounded sample of valid JSONL records.
-
-    This is intended for provider/artifact/schema resolution where full-record
-    materialization is unnecessary. Set ``scan_full`` when malformed-line
-    accounting must reflect the entire source, such as strict validation.
-    Records skipped because they exceed ``max_record_bytes`` are uninspected,
-    not malformed: the bound must not manufacture decode-loss evidence for a
-    syntactically valid stream.
-    """
-    samples: list[JSONValue] = []
-    malformed_lines = 0
-    malformed_detail: str | None = None
-    valid_records = 0
-    uninspected_records = 0
-    first_line = True
-    line_number = 0
-
-    with raw_line_stream(raw) as stream:
-        for raw_line, oversized in _bounded_raw_lines(stream, max_record_bytes=max_record_bytes):
-            line_number += 1
-            if oversized:
-                first_line = False
-                uninspected_records += 1
-                continue
-            assert raw_line is not None
-            try:
-                line = decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
-            except UnicodeDecodeError as exc:
-                malformed_lines += 1
-                if malformed_detail is None:
-                    malformed_detail = f"line {line_number}: {exc.reason}"
-                continue
-            if first_line:
-                line = line.lstrip("\ufeff")
-                first_line = False
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed = _load_json_record(line)
-            except (JSONDecodeError, ValueError) as exc:
-                malformed_lines += 1
-                if malformed_detail is None:
-                    malformed_detail = f"line {line_number}: {exc}"
-                continue
-            if jsonl_dict_only and not isinstance(parsed, dict):
-                continue
-            valid_records += 1
-            if len(samples) < max_samples:
-                samples.append(parsed)
-            if not scan_full and len(samples) >= max_samples:
-                break
-
-    if valid_records == 0:
-        if malformed_lines == 0:
-            # Nothing failed to decode: the stream is empty, blank, or every
-            # record exceeded the inspection bound and was left uninspected.
-            raise EmptyJsonlStreamError("No valid JSONL records found")
-        raise ValueError("No valid JSONL records found")
-    return samples, malformed_lines, malformed_detail
 
 
 def scan_jsonl_session_artifact(
@@ -339,18 +227,34 @@ def jsonl_session_artifact(
     return artifact if artifact is not None and artifact.parse_as_session else None
 
 
-def sample_jsonl_payload(
+@contextmanager
+def owned_jsonl_sample(
     raw: Path | bytes | str,
     *,
     max_samples: int = 64,
     jsonl_dict_only: bool = False,
-) -> tuple[list[JSONValue], int]:
-    samples, malformed_lines, _detail = _sample_jsonl_payload_with_detail(
-        raw,
-        max_samples=max_samples,
-        jsonl_dict_only=jsonl_dict_only,
-    )
-    return samples, malformed_lines
+    scan_full: bool = True,
+) -> Iterator[tuple[list[JSONValue], int, str | None]]:
+    """Borrow exact sampled records through their final schema/diagnostic use.
+
+    The declared sample count bounds observations, never physical record size.
+    Full scans retain malformed-line accounting while large values stay in the
+    same decoder's chunk owner. A prefix scan stops after its sampled records.
+    """
+    with raw_byte_stream(raw) as stream:
+        tape, malformed, detail = DecodedRecordSequence.from_archive_jsonl(
+            stream,
+            textual=isinstance(raw, str),
+            dict_only=jsonl_dict_only,
+            sample_records=None if scan_full else max_samples,
+            allow_empty=True,
+        )
+    with closing(tape):
+        if not tape:
+            if malformed == 0:
+                raise EmptyJsonlStreamError("No valid JSONL records found")
+            raise ValueError("No valid JSONL records found")
+        yield tape[:max_samples], malformed, detail
 
 
 def _decode_raw_payload(
@@ -626,5 +530,5 @@ __all__ = [
     "build_raw_payload_envelope",
     "jsonl_session_artifact",
     "scan_jsonl_session_artifact",
-    "sample_jsonl_payload",
+    "owned_jsonl_sample",
 ]
