@@ -726,6 +726,7 @@ class PricingLaneReport:
     session_count: int = 0
     matched_model_row_count: int = 0
     unmatched_model_row_count: int = 0
+    incomplete_provider_row_count: int = 0
     usage: UsageCounters = field(default_factory=UsageCounters)
     stored_cost_usd: float = 0.0
     catalog_api_equivalent_usd: float | None = None
@@ -748,6 +749,7 @@ class PricingLaneReport:
             "session_count": self.session_count,
             "matched_model_row_count": self.matched_model_row_count,
             "unmatched_model_row_count": self.unmatched_model_row_count,
+            "incomplete_provider_row_count": self.incomplete_provider_row_count,
             "usage": self.usage.to_dict(),
             "stored_cost_usd": round(self.stored_cost_usd, 6),
             "catalog_api_equivalent_usd": _round_optional(self.catalog_api_equivalent_usd),
@@ -767,6 +769,7 @@ class _PricingLaneAccumulator:
     session_count: int = 0
     matched_model_row_count: int = 0
     unmatched_model_row_count: int = 0
+    incomplete_provider_row_count: int = 0
     usage: UsageCounters = field(default_factory=UsageCounters)
     stored_cost_usd: float = 0.0
     catalog_api_equivalent_usd: float = 0.0
@@ -912,7 +915,7 @@ def _usage_lane_authority(provenance: str) -> Literal["provider-reported", "mode
 def _pricing_lane_token_evidence(lane: PricingLaneReport) -> EvidenceValue[int]:
     storage_ref = _pricing_lane_storage_ref(lane)
     fact_ref = _pricing_lane_fact_ref(lane, "exact-total-tokens")
-    known = lane.row_count > 0
+    known = lane.row_count > 0 and lane.incomplete_provider_row_count == 0
     evidence = EvidenceValue(
         family=USAGE_LANE_EXACT_TOKENS_FAMILY.family,
         fact_ref=fact_ref,
@@ -933,8 +936,13 @@ def _pricing_lane_token_evidence(lane: PricingLaneReport) -> EvidenceValue[int]:
             denominator=USAGE_LANE_EXACT_TOKENS_FAMILY.denominator,
             intended_count=lane.row_count,
             observed_count=lane.row_count,
-            supported_count=lane.row_count if known else 0,
+            supported_count=lane.row_count - lane.incomplete_provider_row_count,
             complete=known,
+            exclusions=(
+                (CoverageExclusion(subject_ref=storage_ref, reason="incomplete-provider-lanes"),)
+                if lane.incomplete_provider_row_count
+                else ()
+            ),
         ),
         freshness=FreshnessProvenance(
             state="fresh",
@@ -952,9 +960,16 @@ def _pricing_lane_cost_evidence(lane: PricingLaneReport) -> EvidenceValue[float]
         object_id=f"pricing-catalog:{CATALOG_EFFECTIVE_DATE}",
     )
     fact_ref = _pricing_lane_fact_ref(lane, "catalog-api-equivalent-cost")
-    known = lane.row_count > 0 and lane.unmatched_model_row_count == 0 and lane.catalog_api_equivalent_usd is not None
+    known = (
+        lane.row_count > 0
+        and lane.unmatched_model_row_count == 0
+        and lane.incomplete_provider_row_count == 0
+        and lane.catalog_api_equivalent_usd is not None
+    )
     exclusions: tuple[CoverageExclusion, ...] = ()
-    if lane.unmatched_model_row_count > 0:
+    if lane.incomplete_provider_row_count:
+        exclusions = (CoverageExclusion(subject_ref=storage_ref, reason="incomplete-provider-lanes"),)
+    elif lane.unmatched_model_row_count > 0:
         exclusions = (
             CoverageExclusion(
                 subject_ref=storage_ref,
@@ -2009,6 +2024,7 @@ def _pricing_lane_reports(
                        COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
                        COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
                        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
+                       u.provider_lanes_complete,
                        EXISTS (
                            SELECT 1
                            FROM session_links l
@@ -2021,6 +2037,7 @@ def _pricing_lane_reports(
                 {_where_origin(origin, table_alias="s")}
             ), logical_model AS (
                 SELECT provenance, logical_session_id, model_name,
+                       MIN(provider_lanes_complete) AS provider_lanes_complete,
                        COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN input_tokens END), 0)
                          + COALESCE(SUM(CASE WHEN is_prefix_child THEN input_tokens ELSE 0 END), 0) AS input_tokens,
                        COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN output_tokens END), 0)
@@ -2035,6 +2052,7 @@ def _pricing_lane_reports(
             SELECT provenance,
                    model_name,
                    COUNT(*) AS row_count,
+                   SUM(CASE WHEN provider_lanes_complete = 0 THEN 1 ELSE 0 END) AS incomplete_provider_row_count,
                    COALESCE(SUM(input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
                    COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
@@ -2055,6 +2073,7 @@ def _pricing_lane_reports(
             SELECT CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' ELSE 'unknown' END AS provenance,
                    COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
                    COUNT(*) AS row_count,
+                   SUM(CASE WHEN u.provider_lanes_complete = 0 THEN 1 ELSE 0 END) AS incomplete_provider_row_count,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
                    COALESCE(SUM(u.cache_read_tokens), 0) AS cached_input_tokens,
@@ -2088,6 +2107,10 @@ def _pricing_lane_reports(
             total_key="total_tokens",
         )
         row_count = _int(row["row_count"])
+        incomplete_provider_rows = _int(row["incomplete_provider_row_count"])
+        bucket.incomplete_provider_row_count += incomplete_provider_rows
+        if incomplete_provider_rows:
+            caveats_by_provenance[provenance].add("incomplete_provider_lanes")
         bucket.row_count += row_count
         bucket.session_count = session_counts.get(provenance, 0)
         bucket.usage = bucket.usage.plus(usage)
@@ -2115,7 +2138,7 @@ def _pricing_lane_reports(
                 else:
                     if provenance == "priced" and stored_cost > 0 and not logical:
                         catalog_cost = stored_cost
-                    bucket.matched_model_row_count += row_count
+                    bucket.matched_model_row_count += row_count - incomplete_provider_rows
             else:
                 bucket.unmatched_model_row_count += row_count
                 caveats_by_provenance[provenance].add("missing_price")
@@ -2162,10 +2185,13 @@ def _pricing_lane_reports(
                 session_count=bucket.session_count,
                 matched_model_row_count=bucket.matched_model_row_count,
                 unmatched_model_row_count=bucket.unmatched_model_row_count,
+                incomplete_provider_row_count=bucket.incomplete_provider_row_count,
                 usage=bucket.usage,
                 stored_cost_usd=round(bucket.stored_cost_usd, 6),
                 catalog_api_equivalent_usd=(
-                    None if bucket.unmatched_model_row_count > 0 else round(bucket.catalog_api_equivalent_usd, 6)
+                    None
+                    if bucket.unmatched_model_row_count > 0 or bucket.incomplete_provider_row_count > 0
+                    else round(bucket.catalog_api_equivalent_usd, 6)
                 ),
                 catalog_priced_subtotal_usd=round(bucket.catalog_api_equivalent_usd, 6),
                 subscription_credit_usd=round(bucket.subscription_credit_usd, 6),

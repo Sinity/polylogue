@@ -10,6 +10,7 @@ import aiosqlite
 from polylogue.storage.derived.session.profile_cost import (
     apply_profile_cost_lanes,
     read_model_usage_batch_async,
+    read_session_costs_batch_async,
 )
 from polylogue.storage.query_models import SessionProfileListQuery
 from polylogue.storage.runtime import SessionProfileRecord
@@ -63,7 +64,8 @@ async def get_session_profile(
             return None
         record = _row_to_session_profile_record(row)
         usage = await read_model_usage_batch_async(conn, [str(row["session_id"])])
-    return apply_profile_cost_lanes(record, usage)
+        costs = await read_session_costs_batch_async(conn, [str(row["session_id"])])
+    return apply_profile_cost_lanes(record, usage, costs)
 
 
 async def get_session_profiles_batch(
@@ -80,8 +82,10 @@ async def get_session_profiles_batch(
         )
         rows = await cursor.fetchall()
         usage = await read_model_usage_batch_async(conn, [str(row["session_id"]) for row in rows])
+        costs = await read_session_costs_batch_async(conn, [str(row["session_id"]) for row in rows])
     return {
-        str(row["session_id"]): apply_profile_cost_lanes(_row_to_session_profile_record(row), usage) for row in rows
+        str(row["session_id"]): apply_profile_cost_lanes(_row_to_session_profile_record(row), usage, costs)
+        for row in rows
     }
 
 
@@ -150,4 +154,5 @@ async def list_session_profiles(
         cursor = await conn.execute(sql, tuple(params))
         rows = await cursor.fetchall()
         usage = await read_model_usage_batch_async(conn, [str(row["session_id"]) for row in rows])
-    return [apply_profile_cost_lanes(_row_to_session_profile_record(row), usage) for row in rows]
+        costs = await read_session_costs_batch_async(conn, [str(row["session_id"]) for row in rows])
+    return [apply_profile_cost_lanes(_row_to_session_profile_record(row), usage, costs) for row in rows]

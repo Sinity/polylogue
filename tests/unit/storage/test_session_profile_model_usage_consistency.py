@@ -175,6 +175,7 @@ def _profile_totals(conn: sqlite3.Connection, session_id: str) -> tuple[int, int
     record = apply_profile_cost_lanes(
         _row_to_session_profile_record(row),
         read_model_usage_batch_sync(conn, [session_id]),
+        {},
     )
     return (
         int(record.total_input_tokens),
