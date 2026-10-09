@@ -4846,3 +4846,50 @@ def test_bare_drive_chunks_account_for_skipped_and_future_records(
         assert list(actual.session_events) == list(expected.session_events)
     finally:
         artifact.discard()
+
+
+def test_event_sort_preserves_ties_and_uses_exact_ordinal_lookup(tmp_path: Path) -> None:
+    from polylogue.sources.parsers.base import ParsedSessionEvent
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
+
+    store = SqliteMessageStore(tmp_path / "event-sort.sqlite")
+    plan: list[str] = []
+    try:
+        events = store.new_event_sink()
+        untouched = store.new_event_sink()
+        untouched.append(ParsedSessionEvent(event_type="untouched", payload={"position": -1}))
+        original = [
+            ParsedSessionEvent(
+                timestamp=(None, "2026-01-01T00:00:01Z", "2026-01-01T00:00:02Z")[index % 3],
+                event_type=("early", "late")[index % 2],
+                payload={"position": index},
+            )
+            for index in range(100)
+        ]
+        events.extend(original)
+        tiers = {"early": -1, "late": 1}
+
+        def observe(statement: str) -> None:
+            if statement.startswith("UPDATE prepared_event SET event_ordinal = -1 - ("):
+                plan.extend(row[3] for row in store.conn.execute("EXPLAIN QUERY PLAN " + statement))
+
+        store.conn.set_trace_callback(observe)
+        events.sort_in_place(tiers)
+        store.conn.set_trace_callback(None)
+        expected = sorted(
+            enumerate(original), key=lambda item: (item[1].timestamp or "", tiers[item[1].event_type], item[0])
+        )
+        assert [event.payload["position"] for event in events] == [index for index, _event in expected]
+        assert len(untouched) == 1 and untouched[0].payload["position"] == -1
+        assert any("SEARCH o USING INDEX prepared_event_order_key" in step for step in plan), plan
+        assert not any("SCAN o" in step for step in plan), plan
+        events.append(ParsedSessionEvent(event_type="sidecar", timestamp="2025-01-01T00:00:00Z"))
+        assert events[-1].event_type == "sidecar"
+        assert (
+            store.conn.execute("SELECT COUNT(*) FROM sqlite_temp_master WHERE name='prepared_event_order'").fetchone()[
+                0
+            ]
+            == 0
+        )
+    finally:
+        store.close()

@@ -1622,6 +1622,9 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             (self.session_ordinal,),
         )
         self._writer.execute(
+            "CREATE UNIQUE INDEX temp.prepared_event_order_key ON prepared_event_order(session_ordinal,old_ordinal)"
+        )
+        self._writer.execute(
             "UPDATE prepared_event SET event_ordinal = -1 - ("
             "SELECT new_ordinal FROM prepared_event_order AS o "
             "WHERE o.session_ordinal = prepared_event.session_ordinal "
