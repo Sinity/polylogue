@@ -1144,14 +1144,7 @@ async def _run_convergence_debt_pass(db: Path) -> None:
                 exclusive_bytes=True,
                 estimated_bytes=0,
             )
-            operation = asyncio.wrap_future(submitted.future)
-            try:
-                repaired = await asyncio.shield(operation)
-            except asyncio.CancelledError:
-                submitted.cancellation.cancel()
-                with contextlib.suppress(BaseException):
-                    await asyncio.shield(operation)
-                raise
+            repaired = await submitted.wait()
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
                 pass_span.degraded(
@@ -1559,44 +1552,24 @@ def _drain_convergence_debt_page(
     # it keeps that startup-equivalent recovery, now under the writer.
     cursor = admit_stage_write("maintenance.convergence_debt.initialize", partial(CursorStore, db))
     now = datetime.now(UTC)
-    page = cursor.list_convergence_debt(limit=limit, retry_due_only=True, exclude_stages=_OWNED_DEBT_STAGES)
-    candidate_debt = [
-        debt
-        for debt in page
-        if debt.subject_type in {"source_path", "session_id"}
-        and debt.stage not in _OWNED_DEBT_STAGES
-        and _debt_retry_due(debt, now=now)
-    ]
+    default_stages = make_default_convergence_stages(db, compute_adapter=compute_adapter)
+    stages_by_name = {stage.name: stage for stage in default_stages}
+    stages_by_name["hook_paste_enrichment"] = make_hook_paste_enrichment_stage(db)
+    implemented_stages = set(stages_by_name) | {"convergence"}
+    # Intake-owned and unavailable stages keep their original visible debt,
+    # but cannot occupy this owner's bounded retry page.
+    page = cursor.list_convergence_debt(
+        limit=limit,
+        retry_due_only=True,
+        include_stages=implemented_stages,
+        subject_types=("source_path", "session_id"),
+        exclude_stages=_OWNED_DEBT_STAGES,
+    )
+    candidate_debt = [debt for debt in page if _debt_retry_due(debt, now=now)]
     if not candidate_debt:
         return 0, len(page)
 
-    default_stages = make_default_convergence_stages(db, compute_adapter=compute_adapter)
-    stages_by_name = {stage.name: stage for stage in default_stages}
-    # This stage replays only recorded debt. Putting it in the ordinary
-    # convergence list would rescan hook evidence for every session pass.
-    stages_by_name["hook_paste_enrichment"] = make_hook_paste_enrichment_stage(db)
-    implemented_stages = set(stages_by_name) | {"convergence"}
-
-    # A debt row naming a stage no registered implementation can run was never
-    # retried, so the drain has measured nothing about it. Re-recording it here
-    # would overwrite the original error -- the text naming which evidence was
-    # lost and why -- with a note about the missing stage. Leave the row
-    # exactly as written and surface the gap as a log line instead
-    # (polylogue-ia88n).
-    unavailable_debt = [debt for debt in candidate_debt if debt.stage not in implemented_stages]
-    for stage_name in sorted({debt.stage for debt in unavailable_debt}):
-        emit(
-            "daemon.convergence_debt.stage_unimplemented",
-            level=WARNING,
-            outcome="degraded",
-            reason="retry_stage_unavailable",
-            stage=stage_name,
-            rows=sum(1 for debt in unavailable_debt if debt.stage == stage_name),
-        )
-
-    due_debt = [debt for debt in candidate_debt if debt.stage in implemented_stages]
-    if not due_debt:
-        return 0, len(page)
+    due_debt = candidate_debt
 
     subject_states: dict[tuple[str, str, str], object] = {}
     converged_whole_archive: dict[str, int] = {}

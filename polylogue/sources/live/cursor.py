@@ -2000,13 +2000,17 @@ class CursorStore:
         stage: str | None = None,
         retry_due_only: bool = False,
         exclude_stages: Iterable[str] = (),
+        include_stages: Iterable[str] | None = None,
+        subject_types: Iterable[str] | None = None,
     ) -> list[LiveConvergenceDebt]:
         """Return recent derived convergence debt records.
 
         ``stage`` and ``retry_due_only`` let a stage's own recurring owner
         drain its own backlog without pulling the whole ledger into memory and
         filtering it in Python: an owner that must stay bounded per pass has to
-        bound the query, not the result.
+        bound the query, not the result. An empty ``include_stages`` or
+        ``subject_types`` selects no rows; omitted filters preserve the visible
+        ledger for diagnostic readers.
         """
         now = datetime.now(UTC).isoformat()
         clauses: list[str] = []
@@ -2017,6 +2021,14 @@ class CursorStore:
         if retry_due_only:
             clauses.append("(next_retry_at IS NULL OR next_retry_at <= ?)")
             params.append(now)
+        for column, selected in (("stage", include_stages), ("target_type", subject_types)):
+            if selected is None:
+                continue
+            values = tuple(sorted(set(selected)))
+            if not values:
+                return []
+            clauses.append(f"{column} IN ({','.join('?' for _ in values)})")
+            params.extend(values)
         excluded = tuple(sorted(set(exclude_stages)))
         if excluded:
             # Filtered in the query, not after it: rows owned elsewhere would
