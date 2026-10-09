@@ -198,7 +198,7 @@ def test_cli_status_formats_a_stale_heartbeat_as_not_running(monkeypatch: pytest
     monkeypatch.setattr("polylogue.daemon.lifecycle.lifecycle_status", lambda: stale)
 
     assert _check_daemon_liveness() is False
-    lines = format_daemon_status_lines(json_document({"daemon_liveness": False, "daemon_lifecycle": stale}))
+    lines = list(format_daemon_status_lines(json_document({"daemon_liveness": False, "daemon_lifecycle": stale})))
 
     assert "  Status: vanished heartbeat" in lines
 
@@ -212,7 +212,7 @@ def test_cli_status_marks_a_stale_but_still_running_heartbeat(monkeypatch: pytes
     monkeypatch.setattr("polylogue.daemon.lifecycle.lifecycle_status", lambda: stale)
 
     assert _check_daemon_liveness() is True
-    lines = format_daemon_status_lines(json_document({"daemon_liveness": True, "daemon_lifecycle": stale}))
+    lines = list(format_daemon_status_lines(json_document({"daemon_liveness": True, "daemon_lifecycle": stale})))
 
     assert "  Status: running [STALE] (heartbeat 1369.8s ago)" in lines
 

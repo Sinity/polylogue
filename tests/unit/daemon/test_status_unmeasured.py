@@ -120,7 +120,6 @@ def _build(**kwargs: Any) -> Any:
     )
     return build_daemon_status(
         sources=(),
-        browser_capture_enabled=False,
         include_raw_replay_backlog=False,
         include_exact_raw_materialization_readiness=False,
         registry=StatusComponentRegistry(specs),
@@ -282,7 +281,6 @@ def test_health_fallback_probe_is_not_run_when_the_component_answered(
 
     status = build_daemon_status(
         sources=(),
-        browser_capture_enabled=False,
         include_raw_replay_backlog=False,
         include_exact_raw_materialization_readiness=False,
     )
@@ -360,7 +358,6 @@ def _stale_last_good_status(
 
     fresh = build_daemon_status(
         sources=(),
-        browser_capture_enabled=False,
         include_raw_replay_backlog=False,
         include_exact_raw_materialization_readiness=False,
         registry=registry,
@@ -369,7 +366,6 @@ def _stale_last_good_status(
     fingerprints[component] = "gen-2"
     stale = build_daemon_status(
         sources=(),
-        browser_capture_enabled=False,
         include_raw_replay_backlog=False,
         include_exact_raw_materialization_readiness=False,
         registry=registry,

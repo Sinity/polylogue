@@ -6,6 +6,7 @@ import http.client
 import json
 import mimetypes
 import os
+import secrets
 import shutil
 import sys
 import tempfile
@@ -59,7 +60,12 @@ def _observed_receiver_status(
     host: str | None, port: int | None, allow_no_auth: bool | None
 ) -> Iterator[dict[str, object]]:
     """Own the selected peer and disk-backed status until its consumer finishes."""
-    from polylogue.browser_capture.native_host import _authenticate_receiver_connection, _receiver_response_document
+    from polylogue.browser_capture.native_host import (
+        ReceiverObservationStorageError,
+        ReceiverResponseAuthenticationError,
+        _receiver_response_document,
+    )
+    from polylogue.browser_capture.receiver import receiver_status_proof
     from polylogue.config import resolve_runtime_config
     from polylogue.paths import browser_capture_receiver_identity_path, browser_capture_receiver_token_path
 
@@ -75,27 +81,32 @@ def _observed_receiver_status(
         raise click.ClickException("receiver_identity_unavailable")
     connection = http.client.HTTPConnection(host, port, timeout=None)
     try:
-        headers: dict[str, str] = {}
+        status_auth: tuple[str, str, str] | None = None
         if not allow_no_auth:
             token_path = browser_capture_receiver_token_path()
             token = token_path.read_text().strip() or None if _is_trusted_token_file(token_path) else None
             if token is None:
                 raise click.ClickException("receiver_credential_unavailable")
-            refusal = _authenticate_receiver_connection(connection, expected_identity, token, keep_alive=True)
-            if refusal is not None:
-                raise click.ClickException(refusal)
-            if connection.sock is None:
-                raise click.ClickException("receiver_peer_lost")
-            # The proved TCP peer must receive the credential. HTTPConnection
-            # otherwise reconnects implicitly after a closing attestation response.
-            connection.auto_open = 0
-            headers["Authorization"] = "Bearer " + token
-        connection.request("GET", "/v1/status", headers=headers)
+            challenge = secrets.token_urlsafe(32)
+            request = {
+                "receiver_id": expected_identity,
+                "challenge": challenge,
+                "proof": receiver_status_proof(token, expected_identity, challenge),
+            }
+            status_auth = (token, expected_identity, challenge)
+            connection.request(
+                "POST",
+                "/v1/receiver/status-attest",
+                body=json.dumps(request),
+                headers={"Content-Type": "application/json"},
+            )
+        else:
+            connection.request("GET", "/v1/status")
         response = connection.getresponse()
         if response.status != 200:
             raise click.ClickException(f"receiver_status_refused_{response.status}")
         try:
-            with _receiver_response_document(response) as document:
+            with _receiver_response_document(response, status_auth=status_auth) as document:
                 if not isinstance(document, dict):
                     raise ValueError("status must be an object")
                 origins = document.get("allowed_origins")
@@ -114,8 +125,12 @@ def _observed_receiver_status(
                 observed = payload.model_dump(mode="json")
                 observed["allowed_origins"] = origins
                 yield observed
+        except ReceiverResponseAuthenticationError as exc:
+            raise click.ClickException("receiver_authentication_failed") from exc
         except (ValueError, ValidationError, JSONError) as exc:
             raise click.ClickException("receiver_status_invalid_payload") from exc
+    except ReceiverObservationStorageError as exc:
+        raise click.ClickException("receiver_observation_storage_failed") from exc
     except (OSError, http.client.HTTPException) as exc:
         raise click.ClickException("receiver_unreachable") from exc
     finally:

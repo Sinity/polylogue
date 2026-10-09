@@ -278,13 +278,15 @@ def test_missing_progress_classification_is_rendered_as_unknown() -> None:
     """An attempt without classification is visibly unmeasured."""
     from polylogue.daemon.status import format_daemon_status_lines
 
-    lines = format_daemon_status_lines(
-        {
-            "live_ingest_attempts": {
-                "running_count": 1,
-                "recent": [{"status": "running", "phase": "parse"}],
+    lines = list(
+        format_daemon_status_lines(
+            {
+                "live_ingest_attempts": {
+                    "running_count": 1,
+                    "recent": [{"status": "running", "phase": "parse"}],
+                }
             }
-        }
+        )
     )
 
     assert "  latest: running progress-unknown parse 0/0 files" in lines

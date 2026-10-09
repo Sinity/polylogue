@@ -994,6 +994,20 @@ def receiver_attestation_proof(secret: str, receiver_id: str, challenge: str) ->
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
+RECEIVER_STATUS_REQUEST_DOMAIN = "polylogue-browser-capture-status-request/v1"
+RECEIVER_STATUS_RESPONSE_DOMAIN = "polylogue-browser-capture-status-response/v1"
+
+
+def receiver_status_proof(secret: str, receiver_id: str, challenge: str, *, payload_sha256: str | None = None) -> str:
+    """Authenticate a status request or its exact staged JSON response bytes."""
+    domain = RECEIVER_STATUS_REQUEST_DOMAIN if payload_sha256 is None else RECEIVER_STATUS_RESPONSE_DOMAIN
+    message = f"{domain}\n{receiver_id}\n{challenge}"
+    if payload_sha256 is not None:
+        message += f"\n{payload_sha256}"
+    digest = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
 def attest_receiver(config: BrowserCaptureReceiverConfig, challenge: str) -> str | None:
     """Answer an attestation challenge, or ``None`` when auth is disabled."""
     if config.auth_token is None:

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
+from collections.abc import Iterator
+from contextlib import closing
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
@@ -12,12 +16,13 @@ from click.testing import CliRunner
 
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
-    receiver_attestation_proof,
     receiver_identity,
     receiver_status_payload,
+    receiver_status_proof,
     resolve_receiver_auth_token,
 )
 from polylogue.browser_capture.server import make_server
+from polylogue.core.json import JSONValue
 from polylogue.daemon.browser_capture import status_command
 from polylogue.daemon.status import browser_capture_status_payload, format_daemon_status_lines
 from polylogue.daemon.status_snapshot import (
@@ -150,7 +155,7 @@ def test_receiver_observation_timestamp_refreshes_without_policy_change(
 def test_plain_daemon_status_renders_receiver_policy(
     auth: bool | None, remote: bool | None, auth_text: str, remote_text: str
 ) -> None:
-    lines = format_daemon_status_lines({"browser_capture": {"auth_required": auth, "allow_remote": remote}})
+    lines = list(format_daemon_status_lines({"browser_capture": {"auth_required": auth, "allow_remote": remote}}))
     assert "Browser capture authentication: " + auth_text in lines
     assert "Browser capture remote access: " + remote_text in lines
 
@@ -169,7 +174,7 @@ def test_unobserved_receiver_policy_stays_unknown_without_io(monkeypatch: pytest
     assert summary["spool_ready"] is None
 
 
-@pytest.mark.parametrize("spoof", ["unauthenticated_success", "wrong_identity", "closing_peer", "malformed_proof"])
+@pytest.mark.parametrize("spoof", ["unauthenticated_success", "wrong_identity", "tampered_response", "malformed_proof"])
 def test_status_rejects_schema_valid_impostor_before_trusting_policy(tmp_path: Path, spoof: str) -> None:
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -184,28 +189,22 @@ def test_status_rejects_schema_valid_impostor_before_trusting_policy(tmp_path: P
 
     class Impostor(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            challenge = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["challenge"]
-            proof = (
-                receiver_attestation_proof(secret, identity, challenge)
-                if spoof != "unauthenticated_success"
-                else "invalid"
-            )
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            challenge = request["challenge"]
+            received_tokens.append(self.headers.get("Authorization"))
+            body = json.dumps(payload).encode()
+            proof = receiver_status_proof(secret, identity, challenge, payload_sha256=hashlib.sha256(body).hexdigest())
+            if spoof == "unauthenticated_success":
+                proof = "invalid"
             if spoof == "malformed_proof":
                 proof = "invalid-unicode-\u00e9"
-            body = json.dumps({"proof": proof}).encode()
+            if spoof == "tampered_response":
+                body += b" "
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
-            if spoof == "wrong_identity":
-                self.send_header("Connection", "keep-alive")
-                self.close_connection = False
+            self.send_header("X-Polylogue-Status-Proof", proof)
             self.end_headers()
             self.wfile.write(body)
-
-        def do_GET(self) -> None:
-            received_tokens.append(self.headers.get("Authorization"))
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(json.dumps(payload).encode())
 
         def log_message(self, format: str, *args: object) -> None:
             return None
@@ -219,11 +218,11 @@ def test_status_rejects_schema_valid_impostor_before_trusting_policy(tmp_path: P
         reason = {
             "wrong_identity": "receiver_identity_mismatch",
             "unauthenticated_success": "receiver_authentication_failed",
-            "closing_peer": "receiver_peer_lost",
+            "tampered_response": "receiver_authentication_failed",
             "malformed_proof": "receiver_authentication_failed",
         }[spoof]
         assert reason in result.output
-        assert received_tokens == (["Bearer " + token] if spoof == "wrong_identity" else [])
+        assert received_tokens == [None]
     finally:
         server.shutdown()
         server.server_close()
@@ -337,8 +336,7 @@ def test_status_requires_auth_override_and_streams_large_roster(
 
     def bounded_read(self: HTTPResponse, amt: int | None = None) -> bytes:
         assert amt is not None and 0 < amt <= 65536
-        if self.getheader("Connection") != "keep-alive":
-            status_reads.append(amt)
+        status_reads.append(amt)
         return original_read(self, amt)
 
     monkeypatch.setattr(HTTPResponse, "read", bounded_read)
@@ -365,13 +363,13 @@ def test_status_waits_for_valid_slow_attestation(tmp_path: Path, monkeypatch: py
 
     from polylogue.browser_capture.server import BrowserCaptureHandler
 
-    original = BrowserCaptureHandler._receiver_attest
+    original = BrowserCaptureHandler._receiver_status_attest
 
     def delayed(self: BrowserCaptureHandler) -> None:
         time.sleep(5.1)
         original(self)
 
-    monkeypatch.setattr(BrowserCaptureHandler, "_receiver_attest", delayed)
+    monkeypatch.setattr(BrowserCaptureHandler, "_receiver_status_attest", delayed)
     token = resolve_receiver_auth_token("neutral-slow-token")
     server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
     receiver_identity(server.config)
@@ -387,3 +385,116 @@ def test_status_waits_for_valid_slow_attestation(tmp_path: Path, monkeypatch: py
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_signed_status_relay_never_receives_bearer(tmp_path: Path) -> None:
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    token = resolve_receiver_auth_token("neutral-relay-secret")
+    assert token is not None
+    genuine = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
+    receiver_identity(genuine.config)
+    observed: list[tuple[str, str | None, bytes]] = []
+
+    class Relay(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            observed.append((self.path, self.headers.get("Authorization"), body))
+            with closing(HTTPConnection("127.0.0.1", genuine.server_port)) as connection:
+                connection.request("POST", self.path, body=body, headers={"Content-Type": "application/json"})
+                response = connection.getresponse()
+                data = response.read()
+                self.send_response(response.status)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("X-Polylogue-Status-Proof", response.getheader("X-Polylogue-Status-Proof", ""))
+                self.end_headers()
+                self.wfile.write(data)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return None
+
+    relay = HTTPServer(("127.0.0.1", 0), Relay)
+    threads = [Thread(target=server.serve_forever, daemon=True) for server in (genuine, relay)]
+    for thread in threads:
+        thread.start()
+    try:
+        result = CliRunner().invoke(status_command, ["--port", str(relay.server_port), "--format", "json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["receiver_id"] == receiver_identity(genuine.config)
+        assert len(observed) == 1
+        path, authorization, body = observed[0]
+        assert path == "/v1/receiver/status-attest"
+        assert authorization is None
+        assert token.encode() not in body
+        # A missing request proof never discloses status, even on the genuine owner.
+        with closing(HTTPConnection("127.0.0.1", genuine.server_port)) as connection:
+            connection.request(
+                "POST", path, body=b'{"challenge":"neutral-challenge"}', headers={"Content-Type": "application/json"}
+            )
+            response = connection.getresponse()
+            assert response.status == 400
+            assert b"spool_path" not in response.read()
+    finally:
+        for server in (relay, genuine):
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join()
+
+
+@pytest.mark.parametrize("failure", ["sqlite", "scratch_directory", "spill_directory", "network"])
+def test_status_scratch_sqlite_failure_is_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    token = resolve_receiver_auth_token("neutral-scratch-token")
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
+    receiver_identity(server.config)
+
+    def fail(self: object) -> None:
+        raise sqlite3.OperationalError("neutral full scratch volume")
+
+    if failure == "sqlite":
+        monkeypatch.setattr("polylogue.browser_capture.native_host.StreamedJSONDocument.__enter__", fail)
+    elif failure == "spill_directory":
+
+        def no_spill(self: object) -> None:
+            raise OSError("neutral spill temporary filesystem unavailable")
+
+        monkeypatch.setattr("polylogue.browser_capture.native_host.StreamedJSONDocument.__enter__", no_spill)
+    elif failure == "scratch_directory":
+
+        def no_scratch(*args: object, **kwargs: object) -> None:
+            raise OSError("neutral temporary filesystem unavailable")
+
+        monkeypatch.setattr("polylogue.browser_capture.native_host.tempfile.TemporaryDirectory", no_scratch)
+    else:
+
+        def no_network(self: object, amt: int | None = None) -> bytes:
+            raise OSError("neutral connection reset")
+
+        monkeypatch.setattr("http.client.HTTPResponse.read", no_network)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = CliRunner().invoke(status_command, ["--port", str(server.server_port)])
+        assert result.exit_code == 1
+        assert (
+            "receiver_unreachable" if failure == "network" else "receiver_observation_storage_failed"
+        ) in result.stderr
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_origin_formatter_yields_before_consuming_roster() -> None:
+    class Origins(list[str]):
+        def __iter__(self) -> Iterator[str]:
+            yield "https://first.example"
+            raise AssertionError("remaining origins must not be collected before emission")
+
+    iterator = format_daemon_status_lines(
+        {"browser_capture": {"allowed_origins": cast(list[JSONValue], Origins()), "spool_ready": True}}
+    )
+    assert next(iterator) == "Polylogue daemon"
+    assert next(iterator) == "Browser capture spool: ready"
+    assert next(iterator) == "Browser capture origins:"
+    assert next(iterator) == "  https://first.example"

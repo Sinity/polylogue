@@ -67,6 +67,7 @@ from polylogue.browser_capture.models import (
     BrowserCapturePairingRedeemRequest,
     BrowserCaptureReceiverAttestationPayload,
     BrowserCaptureReceiverAttestationRequest,
+    BrowserCaptureReceiverStatusAttestationRequest,
 )
 from polylogue.browser_capture.pairing import (
     PairingCodeAlreadyUsedError,
@@ -85,6 +86,7 @@ from polylogue.browser_capture.receiver import (
     existing_capture_state,
     receiver_identity,
     receiver_status_payload,
+    receiver_status_proof,
 )
 from polylogue.core.loopback import is_loopback_host
 from polylogue.logging import INFO, WARNING, emit, get_logger
@@ -313,8 +315,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         finally:
             self._finish_observed_request(method, started_at)
 
-    def _send_json(self, status: HTTPStatus, payload: object, *, keep_alive: bool = False) -> None:
-        encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    def _send_json(self, status: HTTPStatus, payload: object, *, status_challenge: str | None = None) -> None:
+        encoder = json.JSONEncoder(
+            ensure_ascii=False, separators=(",", ":"), allow_nan=False, sort_keys=status_challenge is not None
+        )
 
         def encoded_chunks() -> Iterator[bytes]:
             for piece in encoder.iterencode(payload):
@@ -340,9 +344,15 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self.send_header("X-Request-ID", self._request_id())
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(staged.size_bytes))
-            if keep_alive:
-                self.send_header("Connection", "keep-alive")
-                self.close_connection = False
+            if status_challenge is not None:
+                secret = self.server.config.auth_token
+                assert secret is not None
+                self.send_header(
+                    "X-Polylogue-Status-Proof",
+                    receiver_status_proof(
+                        secret, receiver_identity(self.server.config), status_challenge, payload_sha256=staged.sha256
+                    ),
+                )
             if _origin_allowed(origin, self.server.config):
                 self.send_header("Access-Control-Allow-Origin", origin or "null")
                 self.send_header("Vary", "Origin")
@@ -837,6 +847,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         # bearer itself.
         if path == "/v1/receiver/attest":
             self._receiver_attest()
+            return
+        if path == "/v1/receiver/status-attest":
+            self._receiver_status_attest()
             return
         if self._reject_token():
             return
@@ -1460,6 +1473,26 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             ).model_dump(mode="json"),
         )
 
+    def _receiver_status_attest(self) -> None:
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        try:
+            request = BrowserCaptureReceiverStatusAttestationRequest.model_validate(payload)
+        except ValidationError:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_status_attestation_request")
+            return
+        secret = self.server.config.auth_token
+        identity = receiver_identity(self.server.config)
+        if (
+            secret is None
+            or request.receiver_id != identity
+            or not hmac.compare_digest(request.proof, receiver_status_proof(secret, identity, request.challenge))
+        ):
+            self._safe_error(HTTPStatus.UNAUTHORIZED, "receiver_authentication_failed")
+            return
+        self._send_json(HTTPStatus.OK, receiver_status_payload(self.server.config), status_challenge=request.challenge)
+
     def _receiver_attest(self) -> None:
         payload = self._read_json_body()
         if payload is None:
@@ -1481,7 +1514,6 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 receiver_id=receiver_identity(self.server.config),
                 proof=proof,
             ).model_dump(mode="json"),
-            keep_alive=self.headers.get("Connection", "").lower() == "keep-alive",
         )
 
     def _mission_control(self, provider: str, provider_session_id: str) -> None:

@@ -64,6 +64,7 @@ their separate bounded in-memory request contract.
 The receiver listens on `127.0.0.1:8765` by default and accepts the route contracts in `polylogue/browser_capture/route_contracts.py`:
 
 - `GET /v1/status` -> `BrowserCaptureReceiverStatusPayload`
+- `POST /v1/receiver/status-attest` with `receiver_id`, fresh `challenge` and request `proof` -> status payload authenticated by the `X-Polylogue-Status-Proof` response header; the bearer remains local
 - `GET /v1/archive-state?provider=chatgpt&provider_session_id=...` -> `BrowserCaptureArchiveStatePayload`
 - `POST /v1/browser-captures` with `BrowserCaptureEnvelope` -> `BrowserCaptureAcceptedPayload` or `BrowserCaptureErrorPayload`
 - `PUT /v1/browser-action-attachments` -> streamed immutable attachment input, returning its SHA-256 `attachment_ref` and byte count
@@ -97,7 +98,7 @@ Inspect the running receiver's observed policy through the daemon with
 `polylogued status` or `polylogue ops doctor --daemon`.
 `polylogued browser-capture status` reads the configured receiver directly, including
 standalone `browser-capture serve`, using existing credentials without minting or rotation.
-For a standalone listener override, pass the matching `status --host HOST --port PORT`; omitted values use resolved settings. Credentialed observations attest the receiver and use the same TCP connection, with automatic reconnection disabled, before sending its persisted token. Lost peers are refused. The returned identity is checked. For an explicitly unauthenticated listener, use `status --allow-no-auth` (or the matching configured/environment opt-out); this sends no credential and checks identity and disabled authentication. Use `--require-auth` to override a configured no-auth setting for a credentialed listener. Status waits for completion or operator cancellation, stages and validates responses incrementally, and retains the lazy origin roster only through output. Invalid JSON/schema is a named refusal. These routes report the bound server's resolved authentication,
+For a standalone listener override, pass the matching `status --host HOST --port PORT`; omitted values use resolved settings. Credentialed observations use `POST /v1/receiver/status-attest`. A fresh challenge and request HMAC authenticate the caller before status disclosure; a response HMAC binds the challenge, persisted receiver identity and exact staged JSON bytes. The persisted bearer never crosses this observation socket, including through a relay. The returned identity is checked. For an explicitly unauthenticated listener, use `status --allow-no-auth` (or the matching configured/environment opt-out); this sends no credential and checks identity and disabled authentication. Use `--require-auth` to override a configured no-auth setting for a credentialed listener. Status waits for completion or operator cancellation, stages and validates responses incrementally, and retains the lazy origin roster only through output. Invalid JSON/schema is a named refusal; local response-spill failures report `receiver_observation_storage_failed`. These routes report the bound server's resolved authentication,
 allowed origins and remote policy. Before bind or after shutdown, policy remains
 unknown rather than being inferred from defaults. Status never includes bearer
 token values.
@@ -539,7 +540,7 @@ local process can hold the receiver port while the daemon is stopped. The host
 therefore sends a fresh 32-byte challenge to the endpoint's
 `POST /v1/receiver/attest` and releases the bearer only when the answer is the
 HMAC-SHA256, keyed by that bearer, over the receiver identity and the challenge.
-The bearer itself never crosses the socket during this check. An endpoint that
+The bearer itself never crosses the socket during this check. This possession proof alone does not establish endpoint ownership against a forwarding relay; native bootstrap transport remains a separate follow-up (`polylogue-xgj34`). An endpoint that
 does not answer yields `receiver_unreachable`; one that answers with anything
 else yields `receiver_authentication_failed`. When a status probe is refused
 with `401`, the extension asks the host for the current bearer once per health

@@ -115,33 +115,37 @@ def test_text_status_lists_failed_services_and_currently_failing_loops() -> None
     verdict is the recorded outcome of the latest pass, not an ordering of
     wall-clock stamps: the timestamps here are deliberately inverted, as after
     a clock step, and must not change which loop is listed."""
-    lines = format_daemon_status_lines(
-        {
-            "ok": False,
-            "service_failures": [{"service": "secret_scan_sweep", "state": "failed", "reason": "RuntimeError: boom"}],
-            "periodic_loops": [
-                {
-                    "name": "wal_checkpoint",
-                    "last_error": "disk I/O error",
-                    "last_error_type": "OperationalError",
-                    "last_error_at": 200.0,
-                    "last_run_completed_at": 300.0,
-                    "last_run_failed": True,
-                    "failures": 3,
-                    "runs": 10,
-                },
-                {
-                    "name": "fts_sweep",
-                    "last_error": "old",
-                    "last_error_type": "OperationalError",
-                    "last_error_at": 500.0,
-                    "last_run_completed_at": 100.0,
-                    "last_run_failed": False,
-                    "failures": 1,
-                    "runs": 9,
-                },
-            ],
-        }
+    lines = list(
+        format_daemon_status_lines(
+            {
+                "ok": False,
+                "service_failures": [
+                    {"service": "secret_scan_sweep", "state": "failed", "reason": "RuntimeError: boom"}
+                ],
+                "periodic_loops": [
+                    {
+                        "name": "wal_checkpoint",
+                        "last_error": "disk I/O error",
+                        "last_error_type": "OperationalError",
+                        "last_error_at": 200.0,
+                        "last_run_completed_at": 300.0,
+                        "last_run_failed": True,
+                        "failures": 3,
+                        "runs": 10,
+                    },
+                    {
+                        "name": "fts_sweep",
+                        "last_error": "old",
+                        "last_error_type": "OperationalError",
+                        "last_error_at": 500.0,
+                        "last_run_completed_at": 100.0,
+                        "last_run_failed": False,
+                        "failures": 1,
+                        "runs": 9,
+                    },
+                ],
+            }
+        )
     )
     text = "\n".join(lines)
     assert "FAILED SERVICES: 1" in text

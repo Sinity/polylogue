@@ -26,6 +26,7 @@ BrowserCaptureAuthPolicy = Literal[
     # keyed by the bearer, over the client's fresh challenge; it proves
     # possession without revealing the bearer.
     "unauthenticated_receiver_attestation",
+    "authenticated_status_attestation",
 ]
 BrowserCaptureRouteKind = Literal[
     "capabilities",
@@ -65,6 +66,7 @@ BrowserCaptureRouteKind = Literal[
     "capture_job_native_publish",
     "pairing_redeem",
     "receiver_attestation",
+    "receiver_status_attestation",
     "capture_health_report",
     "capture_health_list",
 ]
@@ -433,10 +435,22 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "BrowserCaptureReceiverAttestationPayload | BrowserCaptureErrorPayload",
         (
             "Answers a client's fresh 32-byte challenge with HMAC-SHA256 keyed by the receiver "
-            "bearer over the receiver identity and the challenge, so the native pairing host "
-            "releases the bearer only to the receiver that holds it, never to another process "
-            "listening on the loopback port. Refused with receiver_auth_disabled when the "
+            "bearer over the receiver identity and the challenge. This possession proof alone "
+            "does not establish endpoint ownership against a relay. Refused with receiver_auth_disabled when the "
             "receiver runs without a bearer."
+        ),
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/receiver/status-attest",
+        "receiver_status_attestation",
+        "authenticated_status_attestation",
+        "BrowserCaptureReceiverStatusAttestationRequest",
+        "BrowserCaptureReceiverStatusPayload | BrowserCaptureErrorPayload",
+        (
+            "Authenticates the fresh challenge request with a domain-separated bearer-keyed HMAC before "
+            "disclosing status. X-Polylogue-Status-Proof authenticates the exact staged response bytes "
+            "and challenge. No bearer is transmitted, including through a relay."
         ),
     ),
     BrowserCaptureRouteContract(

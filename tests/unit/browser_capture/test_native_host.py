@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import socket
+import sqlite3
 import struct
 import sys
 from collections.abc import Iterator
@@ -266,3 +267,16 @@ def test_install_refuses_an_unresolvable_executable(tmp_path: Path, monkeypatch:
         native_host.install_native_host(("a-extension",), executable="no-such-launcher", destination=target)
 
     assert not target.exists()
+
+
+def test_native_host_scratch_failure_returns_error_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(self: object) -> None:
+        raise sqlite3.OperationalError("neutral scratch full")
+
+    monkeypatch.setattr("polylogue.browser_capture.native_host.StreamedJSONDocument.__enter__", fail)
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=_SECRET)
+    with _serving(server) as endpoint:
+        code, reply, raw = _run_native_host(monkeypatch, endpoint)
+    assert code == 1
+    assert reply == {"ok": False, "error": "receiver_observation_storage_failed", "receiver_id": "rx-actual"}
+    assert _SECRET.encode() not in raw
