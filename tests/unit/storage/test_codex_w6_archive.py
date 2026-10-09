@@ -236,7 +236,7 @@ def test_attachment_reference_identity_and_order_invalidate_profile_binding(
             [("original", "a.txt"), ("replacement", "b.txt")],
         )
         conn.execute(
-            "INSERT INTO attachment_refs(attachment_id, session_id, message_id, position) VALUES ('original', ?, ?, 0)",
+            "INSERT INTO attachment_refs(native_identity, attachment_id, session_id, message_id, position) VALUES ('666978747572652d746573745f636f6465785f77365f617263686976652d323338', 'original', ?, ?, 0)",
             (session_id, message_id),
         )
         write_session_profile(conn, session_id, input_content_hash="published-binding")

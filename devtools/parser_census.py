@@ -581,12 +581,14 @@ def _explain_member(member: DenominatorMember, path: Path) -> MemberCensus:
 
 def census_member(member: DenominatorMember, *, max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES) -> MemberCensus:
     """Parse one denominator member with no archive and record what happened."""
+    from contextlib import ExitStack
+
     from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
     from polylogue.core.enums import Provider
     from polylogue.core.json import JSONValue
     from polylogue.pipeline.ids import session_content_hash
     from polylogue.sources import dispatch
-    from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
+    from polylogue.sources.decoders import _decode_json_bytes, owned_json_records
 
     path = member.path
     provider_hint = Provider.from_string(member.subject)
@@ -633,68 +635,71 @@ def census_member(member: DenominatorMember, *, max_member_bytes: int = DEFAULT_
     except OSError as exc:
         return refused(OUTCOME_READ_FAILURE, f"read failure: {type(exc).__name__}: {exc}")
 
-    stream_name = path.name
-    try:
-        if dispatch.is_jsonl_source_path(stream_name):
-            payload: JSONValue = cast(JSONValue, list(_iter_json_stream(BytesIO(raw_bytes), stream_name)))
-        else:
-            text = _decode_json_bytes(raw_bytes)
-            if text is None:
-                return refused(OUTCOME_DECODE_FAILURE, "decode failure: unsupported JSON encoding")
-            payload = cast(JSONValue, json.loads(text))
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        return refused(OUTCOME_DECODE_FAILURE, f"decode failure: {type(exc).__name__}: {exc}")
-    finally:
-        del raw_bytes
+    with ExitStack() as ownership:
+        stream_name = path.name
+        try:
+            if dispatch.is_jsonl_source_path(stream_name):
+                payload: JSONValue = cast(
+                    JSONValue, ownership.enter_context(owned_json_records(BytesIO(raw_bytes), stream_name))
+                )
+            else:
+                text = _decode_json_bytes(raw_bytes)
+                if text is None:
+                    return refused(OUTCOME_DECODE_FAILURE, "decode failure: unsupported JSON encoding")
+                payload = cast(JSONValue, json.loads(text))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            return refused(OUTCOME_DECODE_FAILURE, f"decode failure: {type(exc).__name__}: {exc}")
+        finally:
+            del raw_bytes
 
-    detected = dispatch.detect_provider(payload) or provider_hint
-    origin = _origin_token(detected)
-    artifact = path_classification or classify_artifact(payload, provider=detected, source_path=str(path))
-    if not artifact.parse_as_session:
-        return refused(OUTCOME_NOT_SESSION_ARTIFACT, artifact.reason, origin=origin, kind=artifact.kind.value)
+        detected = dispatch.detect_provider(payload) or provider_hint
+        origin = _origin_token(detected)
+        artifact = path_classification or classify_artifact(payload, provider=detected, source_path=str(path))
+        if not artifact.parse_as_session:
+            return refused(OUTCOME_NOT_SESSION_ARTIFACT, artifact.reason, origin=origin, kind=artifact.kind.value)
 
-    try:
-        if dispatch.is_stream_record_provider(str(path), detected):
-            stream_payloads = payload if isinstance(payload, list) else [payload]
-            sessions = dispatch.parse_stream_payload(detected, stream_payloads, path.stem, source_path=str(path))
-        else:
-            sessions = dispatch.parse_payload(detected, payload, path.stem, source_path=str(path))
-    except Exception as exc:
-        return refused(
-            OUTCOME_PARSE_FAILURE,
-            f"parser failure: {type(exc).__name__}: {exc}",
+        try:
+            if dispatch.is_stream_record_provider(str(path), detected):
+                stream_payloads = payload if isinstance(payload, list) else [payload]
+                sessions = dispatch.parse_stream_payload(detected, stream_payloads, path.stem, source_path=str(path))
+            else:
+                sessions = dispatch.parse_payload(detected, payload, path.stem, source_path=str(path))
+        except Exception as exc:
+            return refused(
+                OUTCOME_PARSE_FAILURE,
+                f"parser failure: {type(exc).__name__}: {exc}",
+                origin=origin,
+                kind=artifact.kind.value,
+            )
+
+        messages = [message for session in sessions for message in session.messages]
+        blocks = [block for message in messages for block in message.blocks]
+        tool_outcomes: dict[str, int] = {}
+        for block in blocks:
+            outcome_value = getattr(block, "tool_outcome", None)
+            if outcome_value is None:
+                continue
+            token = str(getattr(outcome_value, "value", outcome_value))
+            tool_outcomes[token] = tool_outcomes.get(token, 0) + 1
+        return MemberCensus(
+            subject=member.subject,
+            root=member.root,
+            relative=member.relative,
+            byte_count=member.byte_count,
+            sha256=member.sha256,
+            depth=DEPTH_FULL,
+            outcome=OUTCOME_PARSED if sessions else OUTCOME_NO_SESSIONS,
             origin=origin,
-            kind=artifact.kind.value,
+            reason=None if sessions else "parser produced no sessions",
+            artifact_kind=artifact.kind.value,
+            parser_mode=None,
+            sessions=len(sessions),
+            messages=len(messages),
+            blocks=len(blocks),
+            actions=sum(1 for block in blocks if block.type.value == "tool_use"),
+            tool_outcomes=tool_outcomes,
+            session_digests=tuple(sorted(str(session_content_hash(session)) for session in sessions)),
         )
-
-    messages = [message for session in sessions for message in session.messages]
-    blocks = [block for message in messages for block in message.blocks]
-    tool_outcomes: dict[str, int] = {}
-    for block in blocks:
-        outcome_value = getattr(block, "tool_outcome", None)
-        if outcome_value is None:
-            continue
-        token = str(getattr(outcome_value, "value", outcome_value))
-        tool_outcomes[token] = tool_outcomes.get(token, 0) + 1
-    return MemberCensus(
-        subject=member.subject,
-        root=member.root,
-        relative=member.relative,
-        byte_count=member.byte_count,
-        sha256=member.sha256,
-        depth=DEPTH_FULL,
-        outcome=OUTCOME_PARSED if sessions else OUTCOME_NO_SESSIONS,
-        origin=origin,
-        reason=None if sessions else "parser produced no sessions",
-        artifact_kind=artifact.kind.value,
-        parser_mode=None,
-        sessions=len(sessions),
-        messages=len(messages),
-        blocks=len(blocks),
-        actions=sum(1 for block in blocks if block.type.value == "tool_use"),
-        tool_outcomes=tool_outcomes,
-        session_digests=tuple(sorted(str(session_content_hash(session)) for session in sessions)),
-    )
 
 
 def _census_member_payload(max_member_bytes: int, member: DenominatorMember) -> dict[str, object]:

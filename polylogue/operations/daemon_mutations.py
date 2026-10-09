@@ -1302,7 +1302,6 @@ def mutation_annotation_import_batch(
     assert context.runtime is not None
     payload = request.payload
     product_request = AnnotationBatchImportRequest(
-        jsonl=str(payload["jsonl"]),
         batch_id=str(payload["batch_id"]),
         schema_id=str(payload["schema_id"]),
         schema_version=int(cast(int, payload["schema_version"])),
@@ -1346,13 +1345,19 @@ def mutation_annotation_import_batch(
         # then commits.
         runtime.begin_unbound_write(request, snapshot=snapshot)
 
+    input_body = context.input_body
+    if input_body is None:
+        raise ValueError("annotation import requires its acquired input body")
+
     async def _run() -> AnnotationBatchImportResult:
-        with adopt_write_lease(delegation):
+        with adopt_write_lease(delegation), input_body.path.open("rb") as input:
             handle = cast(Any, _DaemonImportArchiveHandle())
             if registry is None:
-                return await import_annotation_batch(handle, product_request, before_durable_execution=accept)
+                return await import_annotation_batch(
+                    handle, product_request, input=input, before_durable_execution=accept
+                )
             return await import_annotation_batch(
-                handle, product_request, registry=registry, before_durable_execution=accept
+                handle, product_request, input=input, registry=registry, before_durable_execution=accept
             )
 
     result = asyncio.run(_run())
@@ -1781,7 +1786,7 @@ def _prepare_mutation_selection(
             vector_failure=pinned.vector_failure or dependencies.vector_failure,
             raise_if_aborted=checkpoint,
         )
-        frame = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+        frame = archive_snapshot_epoch(pinned.archive)
         sample: list[str] = []
         count = 0
         with (
@@ -1980,7 +1985,7 @@ def _prepare_identity_reset_selection(
         _validate_identity(request, context, pinned)
         runtime.observe_snapshot(request, pinned)
         authority = OperationControlRead(pinned.identity, dict(pinned.schema_versions), pinned.degraded_components)
-        frame = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+        frame = archive_snapshot_epoch(pinned.archive)
         session = request.payload.get("session")
         selected = (
             iter(_resolve_session_prefixes(pinned.archive, [session]))
@@ -2051,7 +2056,7 @@ async def execute_selected_preview_operation(request: DaemonOperationRequest, co
                 # existing read scope without submitting a nested gate owner.
                 with open_operation_read(context.archive_root) as pinned:
                     _validate_identity(request, context, pinned)
-                    current = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+                    current = archive_snapshot_epoch(pinned.archive)
                     if current != selection.frame:
                         raise MutationSelectionError(
                             "selection_frame_changed", "The deletion selection changed before acceptance."
@@ -2233,7 +2238,7 @@ async def execute_session_mark_operation(request: DaemonOperationRequest, contex
                 # hold would inherit the active lease into another task.
                 with open_operation_read(context.archive_root) as pinned:
                     _validate_identity(request, context, pinned)
-                    current = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+                    current = archive_snapshot_epoch(pinned.archive)
                     if current != selection.frame:
                         raise MutationSelectionError(
                             "selection_frame_changed", "The mutation selection changed before acceptance."

@@ -52,6 +52,101 @@ def _status_gaps(status: dict[str, object]) -> list[str]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_tool_ids", [True, False])
+async def test_workflow_same_message_calls_and_runless_sidecar_keep_all_evidence(
+    one_shot_workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    native_tool_ids: bool,
+) -> None:
+    """Configured ingestion must not collapse calls or lose journal-admitted metadata."""
+    archive_root = one_shot_workspace_env["archive_root"]
+    claude_root = one_shot_workspace_env["data_root"] / ".claude" / "projects"
+    coordinator_path = claude_root / "-fixture-project" / "coordinator-session.jsonl"
+    session_dir = coordinator_path.parent / "coordinator-session"
+    subagents = session_dir / "subagents"
+    transcript_path = subagents / "agent-one.jsonl"
+    meta_path = subagents / "agent-one.meta.json"
+    _write_jsonl(
+        transcript_path,
+        [
+            {
+                "type": "user",
+                "uuid": "worker-prompt",
+                "sessionId": "worker",
+                "message": {"role": "user", "content": "Generated neutral work pack."},
+            }
+        ],
+    )
+    meta_path.write_text(json.dumps({"attemptId": "one", "transcriptPath": str(transcript_path)}))
+    _write_jsonl(
+        subagents / "workflows" / RUN_ID / "journal.jsonl",
+        [
+            {
+                "runId": RUN_ID,
+                "contentKey": "one",
+                "attemptId": "one",
+                "metaPath": str(meta_path),
+                "result": "complete",
+            }
+        ],
+    )
+    run_path = session_dir / "workflows" / f"{RUN_ID}.json"
+    run_path.parent.mkdir(parents=True)
+    run_path.write_text(json.dumps({"runId": RUN_ID, "finalResult": "complete"}))
+    blocks = []
+    for ordinal in range(2):
+        block = {"type": "tool_use", "name": "Workflow", "input": {"runId": RUN_ID}}
+        if native_tool_ids:
+            block["id"] = f"workflow-parallel-{ordinal}"
+            block["input"] = {"runId": RUN_ID, "phases": [f"phase-{ordinal}"]}
+        blocks.append(block)
+    _write_jsonl(
+        coordinator_path,
+        [
+            {
+                "type": "assistant",
+                "uuid": "same-message",
+                "sessionId": "coordinator",
+                "message": {"role": "assistant", "content": blocks},
+            }
+        ],
+    )
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
+    result = await ingest_one_shot_archive(archive_root, [Source(name=Provider.CLAUDE_CODE.value, path=claude_root)])
+    assert result.parse_failures == 0
+    summary = materialize_claude_workflow_archive(archive_root)
+    assert summary.coordinator_invocation_count == 2
+    assert summary.current_artifact_count == 5
+    assert summary.linked_session_count == 1
+    assert summary.metadata_sidecar_count == 1
+    assert summary.excluded_session_count == 0
+    assert claude_workflow_materialization_needed(archive_root) is False
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        payloads = [
+            json.loads(row[0])
+            for row in conn.execute(
+                "SELECT payload_json FROM session_events WHERE event_type='claude_workflow_invocation'"
+            )
+        ]
+        assert len(payloads) == 2
+        identities = {(row["source_block_identity"], row["source_block_occurrence"]) for row in payloads}
+        assert len(identities) == 2
+        if native_tool_ids:
+            assert {row["tool_use_id"] for row in payloads} == {"workflow-parallel-0", "workflow-parallel-1"}
+            assert (
+                conn.execute(
+                    "SELECT COUNT(DISTINCT e.source_ref) FROM work_evidence_edges e "
+                    "JOIN work_evidence_nodes n ON n.graph_id=e.graph_id AND n.node_ref=e.target_ref "
+                    "WHERE n.label='phases' AND e.source_ref IN "
+                    "(SELECT node_ref FROM work_evidence_nodes WHERE node_kind='invocation')"
+                ).fetchone()[0]
+                == 2
+            )
+        else:
+            assert {row["source_block_occurrence"] for row in payloads} == {0, 1}
+
+
+@pytest.mark.asyncio
 async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_rebuilds(
     one_shot_workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,

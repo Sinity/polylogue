@@ -16,12 +16,12 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING
 
+from polylogue.core.staged_body import BodyStorageExhaustedError
 from polylogue.daemon.socket_path import daemon_socket_path, ensure_private_socket_dir
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
     DAEMON_PRINCIPAL_CAPABILITIES,
     MAX_DECLARED_OPERATION_BODY_BYTES,
-    DaemonOperationRequest,
     daemon_operation_spec,
 )
 from polylogue.operations.mutation_transaction import MutationPrincipal
@@ -30,19 +30,6 @@ if TYPE_CHECKING:
     from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
-
-
-def _reject_json_constant(value: str) -> object:
-    raise ValueError(f"invalid JSON constant: {value}")
-
-
-def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON field: {key}")
-        result[key] = value
-    return result
 
 
 def _peer_principal(connection: socket.socket, token: str | None) -> MutationPrincipal:
@@ -102,7 +89,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError, TimeoutError):
                 return
 
-    def _reject(self, status: int, code: str, detail: str) -> None:
+    def _reject(self, status: int, code: str, detail: str, *, retryable: bool = False) -> None:
         """Refuse before dispatch, marking the refusal so no client can call it indeterminate.
 
         Every path here runs before ``operation_runtime.call``, so the actuator
@@ -117,7 +104,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
             "protocol": DAEMON_OPERATION_PROTOCOL,
             "outcome": "rejected",
             "pre_dispatch": True,
-            "error": {"code": code, "detail": detail, "retryable": False},
+            "error": {"code": code, "detail": detail, "retryable": retryable},
         }
         if self._request_identity is not None:
             operation, request_id = self._request_identity
@@ -165,9 +152,6 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
         if self.headers.get("Transfer-Encoding") is not None:
             self._reject(400, "invalid_framing", "chunked operation requests are unsupported")
             return
-        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
-            self._reject(415, "unsupported_media_type", "operation body must be application/json")
-            return
         lengths = self.headers.get_all("Content-Length", [])
         try:
             if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdecimal():
@@ -178,28 +162,42 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._reject(400, "invalid_framing", str(exc))
             return
-        if length > MAX_DECLARED_OPERATION_BODY_BYTES:
+        from polylogue.operations.request_body_transport import UPLOAD_MEDIA_TYPE
+
+        media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if media_type not in {"application/json", UPLOAD_MEDIA_TYPE}:
+            self._reject(415, "unsupported_media_type", "unsupported operation media type")
+            return
+        if media_type == "application/json" and length > MAX_DECLARED_OPERATION_BODY_BYTES:
             self._reject(413, "request_too_large", "operation body exceeds the declared bound")
             return
         try:
-            body = self.rfile.read(length)
-            if len(body) != length:
-                raise ValueError("partial operation body")
-            raw = json.loads(body, parse_constant=_reject_json_constant, object_pairs_hook=_unique_json_object)
-            request = DaemonOperationRequest.from_dict(raw)
+            principal = _peer_principal(self.connection, token)
+        except PermissionError as exc:
+            self._reject(401, "peer_authentication_unavailable", str(exc))
+            return
+        try:
+            from polylogue.operations.request_body_transport import read_operation_body
+
+            request, input_body, control_bytes = read_operation_body(
+                self.rfile,
+                length,
+                media_type,
+                spool_root=self.server.operation_runtime.archive_root / "operation-inputs",
+            )
+        except BodyStorageExhaustedError as exc:
+            self._reject(507, "operation_input_storage_exhausted", str(exc), retryable=True)
+            return
         except (ValueError, TypeError, RecursionError, UnicodeDecodeError, TimeoutError) as exc:
             self._reject(400, "invalid_request", str(exc))
             return
         self._request_identity = (request.operation, request.request_id)
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
-        if length > spec.max_body_bytes:
-            self._reject(413, "request_too_large", "operation body exceeds its declared bound")
-            return
-        try:
-            principal = _peer_principal(self.connection, token)
-        except PermissionError as exc:
-            self._reject(401, "peer_authentication_unavailable", str(exc))
+        if input_body is None and control_bytes > spec.max_body_bytes:
+            if input_body is not None:
+                input_body.discard()
+            self._reject(413, "request_too_large", "operation control exceeds its declared bound")
             return
         from polylogue.daemon.operation_disconnect import observe_peer_disconnect
 
@@ -209,7 +207,8 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
                 principal,
                 started_at=started,
                 client_disconnect=disconnected,
-                request_body_bytes=len(body),
+                request_body_bytes=control_bytes,
+                input_body=input_body,
             )
         outcome = envelope.get("outcome")
         status = 202 if outcome in {"accepted", "running", "indeterminate"} else 200

@@ -7,6 +7,7 @@ import os
 import tempfile
 import zipfile
 from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -39,9 +40,9 @@ from polylogue.sources.cursor import (
 )
 from polylogue.sources.decoders import (
     _decode_json_bytes,
-    _iter_json_stream,
     _zip_entry_provider_hint,
     _ZipEntryValidator,
+    owned_json_records,
 )
 from polylogue.sources.dispatch import (
     _TITLE_EVIDENCE_PRECEDENCE,
@@ -88,6 +89,7 @@ from polylogue.sources.source_parsing import (
 from polylogue.sources.source_walk import layout_source_paths
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
+from tests.infra.json_values import iter_owned_json_values
 from tests.infra.source_builders import GenericSessionBuilder, acquired_payloads, make_claude_chat_message
 from tests.infra.strategies import (
     json_array_bytes_strategy,
@@ -326,43 +328,48 @@ def test_decode_json_bytes_round_trips_supported_encodings(document: dict[str, o
 
 @given(json_array_bytes_strategy())
 @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_iter_json_stream_root_list_round_trips_documents(case: tuple[list[dict[str, object]], bytes]) -> None:
+def test_owned_json_records_root_list_round_trips_documents(case: tuple[list[dict[str, object]], bytes]) -> None:
     """Streaming a root JSON array yields the original item sequence."""
     documents, raw = case
-    assert list(_iter_json_stream(BytesIO(raw), "test.json")) == documents
+    assert list(iter_owned_json_values(BytesIO(raw), "test.json")) == documents
 
 
 @given(sessions_wrapper_bytes_strategy())
 @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_iter_json_stream_sessions_wrapper_round_trips_documents(
+def test_owned_json_records_sessions_wrapper_round_trips_documents(
     case: tuple[list[dict[str, object]], bytes],
 ) -> None:
     """Streaming a `{\"sessions\": [...]}` object yields the wrapped items."""
     documents, raw = case
-    assert list(_iter_json_stream(BytesIO(raw), "test.json")) == documents
+    assert list(iter_owned_json_values(BytesIO(raw), "test.json")) == documents
 
 
 @given(json_array_bytes_strategy())
 @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_iter_json_stream_unpack_lists_false_preserves_single_list(case: tuple[list[dict[str, object]], bytes]) -> None:
+def test_owned_json_records_unpack_lists_false_preserves_single_list(
+    case: tuple[list[dict[str, object]], bytes],
+) -> None:
     """`unpack_lists=False` keeps the JSON root list intact as one item."""
     documents, raw = case
-    assert list(_iter_json_stream(BytesIO(raw), "test.json", unpack_lists=False)) == [documents]
+    assert list(iter_owned_json_values(BytesIO(raw), "test.json", unpack_lists=False)) == [documents]
 
 
 @given(jsonl_bytes_strategy())
 @settings(max_examples=35, suppress_health_check=[HealthCheck.too_slow])
-def test_iter_json_stream_jsonl_preserves_valid_records_with_blank_lines(
+def test_owned_json_records_jsonl_preserves_valid_records_with_blank_lines(
     case: tuple[list[dict[str, object]], bytes],
 ) -> None:
     """JSONL parsing ignores blank lines but preserves valid record order exactly."""
     documents, raw = case
-    assert list(_iter_json_stream(BytesIO(raw), "test.jsonl")) == documents
+    assert list(iter_owned_json_values(BytesIO(raw), "test.jsonl")) == documents
 
 
-def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("blank_tail", [b"", b"\n \t\n"])
+def test_owned_json_records_jsonl_invalid_line_logging_contract(
+    monkeypatch: pytest.MonkeyPatch, blank_tail: bytes
+) -> None:
     # 4 broken lines: first 3 (non-trailing) get warning, last gets debug (truncation tolerance)
-    raw = b'{"id": 1}\n{broken}\n{broken}\n{broken}\n{broken}\n'
+    raw = b'{"id": 1}\n{broken}\n{broken}\n{broken}\n{broken}\n' + blank_tail
     warnings: list[str] = []
     debugs: list[str] = []
 
@@ -377,7 +384,7 @@ def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytes
         lambda message, *args: debugs.append(message % args if args else message),
     )
 
-    items = list(_iter_json_stream(BytesIO(raw), "test.jsonl"))
+    items = list(iter_owned_json_values(BytesIO(raw), "test.jsonl"))
 
     assert items == [{"id": 1}]
     # The first 3 non-trailing broken lines get individual warnings, followed
@@ -389,7 +396,7 @@ def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytes
     assert any("Skipping truncated trailing line in test.jsonl" in d for d in debugs)
 
 
-def test_iter_json_stream_falls_back_to_full_json_load_when_streaming_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_owned_json_records_falls_back_to_full_json_load_when_streaming_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     def broken_items(handle: BytesIO, prefix: str) -> Iterable[object]:
@@ -400,7 +407,7 @@ def test_iter_json_stream_falls_back_to_full_json_load_when_streaming_fails(monk
     monkeypatch.setattr(ijson, "items", broken_items)
 
     raw = b'{"sessions":[{"id":"one"},{"id":"two"}]}'
-    items = list(_iter_json_stream(BytesIO(raw), "test.json"))
+    items = list(iter_owned_json_values(BytesIO(raw), "test.json"))
 
     assert calls == ["item", "sessions.item"]
     assert items == [{"sessions": [{"id": "one"}, {"id": "two"}]}]
@@ -492,7 +499,11 @@ def test_iter_source_sessions_with_raw_capture_contract(
     assert all(str(session.source_name) == generated["provider"] for _, session in items)
     if capture_raw:
         assert all(raw_data is not None for raw_data, _ in items)
-        assert all(raw_data.raw_bytes or raw_data.blob_hash for raw_data, _ in items if raw_data is not None)
+        assert all(
+            raw_data.raw_bytes or raw_data.blob_hash or raw_data.staged_payload
+            for raw_data, _ in items
+            if raw_data is not None
+        )
         assert all(raw_data.file_mtime is not None for raw_data, _ in items if raw_data is not None)
     else:
         assert all(raw_data is None for raw_data, _ in items)
@@ -710,6 +721,8 @@ def test_iter_source_sessions_with_raw_preserves_grouped_bytes_contract(
     else:
         assert raw_data.source_index is None
     raw_bytes = raw_data.raw_bytes
+    if raw_data.staged_payload is not None:
+        raw_bytes = raw_data.staged_payload.path.read_bytes()
     if not raw_bytes and raw_data.blob_hash is not None:
         raw_bytes = get_blob_store().read_all(raw_data.blob_hash)
     assert needle in raw_bytes
@@ -1318,7 +1331,6 @@ def _parse_context(
         "ctx",
         "filename",
         "raw",
-        "pre_read_bytes",
         "expected_ids",
         "expected_provider_hint",
         "expected_source_name",
@@ -1336,7 +1348,6 @@ def _parse_context(
                     {"id": "conv-2", "messages": [{"id": "m2", "role": "assistant", "text": "second"}]},
                 ]
             ).encode("utf-8"),
-            None,
             ["conv-1", "conv-2"],
             Provider.DRIVE,
             Provider.DRIVE,
@@ -1362,7 +1373,6 @@ def _parse_context(
                 ]
             ).encode("utf-8"),
             None,
-            None,
             Provider.CHATGPT,
             Provider.CHATGPT,
             [0],
@@ -1376,7 +1386,6 @@ def _parse_context(
                 b'{"role":"user","content":[{"type":"input_text","text":"hello"}]}\n'
                 b'{"role":"assistant","content":[{"type":"output_text","text":"hi"}]}\n'
             ),
-            None,
             None,
             Provider.CODEX,
             Provider.CODEX,
@@ -1401,7 +1410,6 @@ def _parse_context(
                     },
                 ]
             ).encode("utf-8"),
-            "use-raw",
             None,
             Provider.CODEX,
             Provider.CODEX,
@@ -1416,20 +1424,13 @@ def test_session_emitter_contract_matrix(
     ctx: _ParseContext,
     filename: str,
     raw: bytes,
-    pre_read_bytes: str | None,
     expected_ids: list[str] | None,
     expected_provider_hint: str,
     expected_source_name: str,
     expected_indexes: list[int | None],
     expected_message_count: int | None,
 ) -> None:
-    emitted = list(
-        _SessionEmitter(ctx).emit(
-            BytesIO(raw),
-            filename,
-            pre_read_bytes=raw if pre_read_bytes is not None else None,
-        )
-    )
+    emitted = list(_SessionEmitter(ctx).emit(BytesIO(raw), filename))
 
     assert emitted
     assert [raw_data.source_index for raw_data, _ in emitted if raw_data is not None] == expected_indexes
@@ -1441,7 +1442,11 @@ def test_session_emitter_contract_matrix(
     if expected_message_count is not None:
         assert len(emitted[0][1].messages) == expected_message_count
     if label.startswith("grouped"):
-        assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
+        assert (
+            emitted[0][0] is not None
+            and emitted[0][0].staged_payload is not None
+            and emitted[0][0].staged_payload.path.read_bytes() == raw
+        )
 
 
 def test_session_emitter_resolves_schema_for_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1514,24 +1519,30 @@ def test_session_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
         b'{"role":"assistant","content":[{"type":"output_text","text":"hi"}]}\n'
     )
     parse_calls = 0
-    original_iter_json_stream = _iter_json_stream
+    original_records = owned_json_records
 
-    def tracking_iter_json_stream(
+    @contextmanager
+    def tracking_owned_records(
         handle: IO[bytes],
         path_name: str,
         unpack_lists: bool = True,
-    ) -> Iterable[object]:
+    ) -> Iterator[Iterable[object]]:
         nonlocal parse_calls
         parse_calls += 1
-        yield from original_iter_json_stream(handle, path_name, unpack_lists=unpack_lists)
+        with original_records(handle, path_name, unpack_lists=unpack_lists) as records:
+            yield records
 
-    monkeypatch.setattr("polylogue.sources.emitter._iter_json_stream", tracking_iter_json_stream)
+    monkeypatch.setattr("polylogue.sources.emitter.owned_json_records", tracking_owned_records)
 
     emitted = list(_SessionEmitter(ctx).emit(BytesIO(raw), "session.jsonl"))
 
     assert emitted
     assert parse_calls == 1
-    assert emitted[0][0] is not None and emitted[0][0].raw_bytes == raw
+    assert (
+        emitted[0][0] is not None
+        and emitted[0][0].staged_payload is not None
+        and emitted[0][0].staged_payload.path.read_bytes() == raw
+    )
     assert emitted[0][1].source_name == Provider.CODEX
     assert len(emitted[0][1].messages) == 2
 
@@ -2009,18 +2020,20 @@ def test_session_emitter_reuses_jsonl_sniff_payloads_for_individual_detection(
         b'{"mapping":{"r1":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["second"]}}}}}\n'
     )
     parse_calls = 0
-    original_iter_json_stream = _iter_json_stream
+    original_records = owned_json_records
 
-    def tracking_iter_json_stream(
+    @contextmanager
+    def tracking_owned_records(
         handle: IO[bytes],
         path_name: str,
         unpack_lists: bool = True,
-    ) -> Iterable[object]:
+    ) -> Iterator[Iterable[object]]:
         nonlocal parse_calls
         parse_calls += 1
-        yield from original_iter_json_stream(handle, path_name, unpack_lists=unpack_lists)
+        with original_records(handle, path_name, unpack_lists=unpack_lists) as records:
+            yield records
 
-    monkeypatch.setattr("polylogue.sources.emitter._iter_json_stream", tracking_iter_json_stream)
+    monkeypatch.setattr("polylogue.sources.emitter.owned_json_records", tracking_owned_records)
 
     emitted = list(_SessionEmitter(ctx).emit(NoWholeReadBytesIO(raw), "session.jsonl"))
 

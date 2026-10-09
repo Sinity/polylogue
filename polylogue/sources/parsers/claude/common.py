@@ -13,10 +13,13 @@ from polylogue.archive.message.artifacts import classify_block_message_type, cla
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MessageType, Provider, StopReason, WebConstructType
 from polylogue.core.hashing import hash_payload
+from polylogue.core.json import detach_borrowed_json
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.timestamps import parse_timestamp
 
 from ..base import (
+    AdmissionLedger,
+    AdmissionUnit,
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
@@ -27,7 +30,8 @@ from ..base import (
     human_authored_override,
     synthetic_message_id,
 )
-from ..base_models import upgrade_chat_export_user_authorship
+from ..base_models import ParseAccounting, upgrade_chat_export_user_authorship
+from ..base_support import tool_result_media_attachments
 from .lineage_graph import ClaudeLineageGraph, LineageNode
 
 CLAUDE_MISSING_MESSAGE_ID_INGEST_FLAG = "degraded:claude-missing-message-id"
@@ -46,6 +50,7 @@ class ClaudeMessageNormalization:
     session_events: MutableSequence[ParsedSessionEvent]
     ingest_flags: list[str]
     reported_duration_ms: int | None
+    unit_accounting: ParseAccounting
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,7 +313,7 @@ def _thinking_configuration(item: Mapping[str, object]) -> dict[str, object] | N
 
 
 def reclassify_tool_result_envelope(role: Role, content_blocks: list[ParsedContentBlock]) -> Role:
-    """Reclassify a ``role: user`` envelope whose content is all ``tool_result`` to ``Role.TOOL``.
+    """Reclassify a ``role: user`` envelope whose content is tool results and their nested media to ``Role.TOOL``.
 
     The Anthropic API protocol requires ``tool_result`` blocks to be carried by
     ``role: user`` messages — the assistant emits ``tool_use`` blocks and the
@@ -323,7 +328,10 @@ def reclassify_tool_result_envelope(role: Role, content_blocks: list[ParsedConte
         return role
     if not content_blocks:
         return role
-    if all(block.type == BlockType.TOOL_RESULT for block in content_blocks):
+    if any(block.type is BlockType.TOOL_RESULT for block in content_blocks) and all(
+        block.type is BlockType.TOOL_RESULT or (block.metadata or {}).get("tool_result_media") is True
+        for block in content_blocks
+    ):
         return Role.TOOL
     return role
 
@@ -339,7 +347,7 @@ def extract_text_from_segments(segments: list[object]) -> str | None:
             continue
         seg_type = segment.get("type")
         if seg_type in {"tool_use", "tool_result"}:
-            lines.append(json.dumps(segment, sort_keys=True))
+            lines.append(json.dumps(detach_borrowed_json(segment), sort_keys=True))
             continue
         if seg_type == "thinking":
             seg_thinking = segment.get("thinking")
@@ -601,9 +609,9 @@ def _web_tool_evidence_events(evidence: _ClaudeMessageEvidence) -> list[ParsedSe
 #       chars) with estimated-distinct 1 across all 18 occurrences -- i.e. one
 #       constant opaque flag, not a signal-bearing field. Re-audit if a larger
 #       corpus sample ever shows more than one distinct value.
-def _claude_content_blocks(content: object) -> list[ParsedContentBlock]:
+def _claude_content_blocks(content: object, *, admission: AdmissionLedger | None = None) -> list[ParsedContentBlock]:
     if not isinstance(content, list):
-        return content_blocks_from_segments(content)
+        return content_blocks_from_segments(content, admission=admission)
 
     known_segment_types = {
         "text",
@@ -619,7 +627,7 @@ def _claude_content_blocks(content: object) -> list[ParsedContentBlock]:
     blocks: list[ParsedContentBlock] = []
     for raw_segment in content:
         if not isinstance(raw_segment, Mapping):
-            blocks.extend(content_blocks_from_segments([raw_segment]))
+            blocks.extend(content_blocks_from_segments([raw_segment], admission=admission))
             continue
 
         segment = dict(raw_segment)
@@ -628,17 +636,21 @@ def _claude_content_blocks(content: object) -> list[ParsedContentBlock]:
             # Keep a non-semantic structural witness for provider block types
             # Polylogue does not yet understand. Raw source evidence remains
             # authoritative for the opaque fields.
+            if admission is not None:
+                part_ordinal = admission.next_ordinal(AdmissionUnit.PART)
+                admission.expect(AdmissionUnit.PART, 1)
+                admission.unknown(AdmissionUnit.PART, part_ordinal, provider_type)
+                block_ordinal = admission.next_ordinal(AdmissionUnit.BLOCK)
+                admission.expect(AdmissionUnit.BLOCK, 1)
+                admission.unknown(AdmissionUnit.BLOCK, block_ordinal, provider_type)
             segment_blocks = [
                 ParsedContentBlock(
                     type=BlockType.TEXT,
-                    metadata={
-                        "provider_type": provider_type,
-                        "raw_preserved_in_source": True,
-                    },
+                    metadata={"provider_type": provider_type, "raw_preserved_in_source": True},
                 )
             ]
         else:
-            segment_blocks = content_blocks_from_segments([raw_segment])
+            segment_blocks = content_blocks_from_segments([raw_segment], admission=admission)
             if provider_type in ("tool_use", "tool_result") and segment_blocks:
                 web_tool_evidence = _claude_ai_web_tool_evidence(segment)
                 if web_tool_evidence is not None:
@@ -658,6 +670,10 @@ def _claude_content_blocks(content: object) -> list[ParsedContentBlock]:
             constructs.append(artifact)
 
         if not segment_blocks and isinstance(provider_type, str) and provider_type:
+            if admission is not None:
+                block_ordinal = admission.next_ordinal(AdmissionUnit.BLOCK)
+                admission.expect(AdmissionUnit.BLOCK, 1)
+                admission.materialized(AdmissionUnit.BLOCK, block_ordinal, "text")
             segment_blocks = [
                 ParsedContentBlock(
                     type=BlockType.TEXT,
@@ -935,6 +951,7 @@ def _message_evidence(
     evidence_key_for: Callable[[str], str],
     session_model: str | None,
     session_effort: str | None,
+    admission: AdmissionLedger | None = None,
 ) -> _ClaudeMessageEvidence:
     native_message_id = (
         _first_identity_field(
@@ -962,7 +979,7 @@ def _message_evidence(
     # falls back to a text block for storage whenever `message.blocks`
     # is empty, so this synthesis was pure redundancy with no storage
     # benefit and a real comparison-stability cost.
-    content_blocks = _claude_content_blocks(raw_content)
+    content_blocks = _claude_content_blocks(raw_content, admission=admission)
     role = reclassify_tool_result_envelope(role, content_blocks)
 
     raw_created_at = item.get("created_at") or item.get("create_time") or item.get("timestamp")
@@ -979,6 +996,7 @@ def _message_evidence(
     )
     content_blocks = _pair_idless_tool_blocks(content_blocks, message_key=evidence_key)
     attachments = _message_attachments(item, native_message_id, role=role)
+    attachments.extend(tool_result_media_attachments(raw_content, native_message_id, role=role))
     parent_message_provider_id = _message_parent_id(item)
     explicit_position = _first_non_negative_int_field(item, "position")
     explicit_branch_index = _first_non_negative_int_field(item, "branch_index", "branchIndex")
@@ -1152,6 +1170,7 @@ def _normalize_through_graph(
     session_updated_at: str | None,
     active_leaf_message_provider_id: str | None,
 ) -> ClaudeMessageNormalization:
+    admission = AdmissionLedger()
     for index, raw_item in enumerate(chat_messages, start=1):
         if not isinstance(raw_item, Mapping):
             continue
@@ -1161,6 +1180,7 @@ def _normalize_through_graph(
             evidence_key_for=graph.occurrence_key,
             session_model=session_model,
             session_effort=session_effort,
+            admission=admission,
         )
         store.put(evidence)
         graph.observe(
@@ -1368,6 +1388,7 @@ def _normalize_through_graph(
         session_events=event_rows,
         ingest_flags=ingest_flags,
         reported_duration_ms=duration_total,
+        unit_accounting=admission.close(),
     )
 
 

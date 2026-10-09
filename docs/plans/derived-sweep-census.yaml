@@ -9,6 +9,13 @@
 # unclassified until a reviewer assigns a permitted classification.
 package: polylogue
 sites:
+  - file: "polylogue/sources/tool_outcomes.py"
+    function: "_normalize_message"
+    subject: "source_content_identity"
+    kind: "read_path_substitution"
+    scope: "writing_module"
+    classification: presentation_projection
+    reason: "Pure retained Source preparation captures the input block's exact semantic identity before cross-block outcome association. The immutable carrier is computed from the parser operand, never from an Index row, and no stored producer output is corrected or masked."
   - file: "polylogue/archive/query/archive_execution.py"
     function: "_session_search_relation"
     subject: "sort"
@@ -65,13 +72,6 @@ sites:
     scope: "read_only_module"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/cli/read_views/standard.py"
-    function: "build_read_temporal_window"
-    subject: "limit"
-    kind: "read_path_substitution"
-    scope: "read_only_module"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
   - file: "polylogue/coordination/envelope.py"
     function: "_compact_coordination_payload"
     subject: "resource_episodes"

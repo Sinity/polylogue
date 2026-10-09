@@ -13,6 +13,18 @@ inactive candidates and replays retained bytes without re-acquiring originals.
 Normal services start only after successful preflight. A current successor is
 not rebuilt again. Source parse acknowledgements remain with the regular retained
 replay stage; promotion and restart preserve pending states and current failures.
+Retained startup candidates establish reader-index deferral at creation, before
+canonical preparation seals their SQLite incarnation. Owned inactive replay
+defers per-session FTS, action-pair and delegation-fact maintenance. Readiness
+restores reader indexes, rebuilds the stored action pairs and delegation facts
+through their canonical materializers, then repopulates FTS before promotion.
+Session summaries and lineage still settle during the ordinary writer route.
+Cold promotion binds its completed readiness to the settled candidate file
+identity used by the retained promotion seal. A canonical publication between
+readiness and proof preparation requires another readiness pass; publication
+after preparation still fails the seal's currency checks. Readiness observes
+compute cancellation inside native SQLite work and between FTS pages, then
+removes its progress guard before original-owner cleanup.
 The verified-empty bootstrap transition remains separate,
 and its successful promotion skips populated reconstruction in that startup.
 
@@ -47,6 +59,11 @@ inside an admitted Audit command instead borrows that command's original
 connection under its same-root writer lease. Both discovery scopes end before
 any recovery actuator runs (`AuditRepository.recovery_discovery_read`;
 `OperationExecutor._resolve_dead_operations`).
+
+Startup recovery explicitly fences abandoned staged machine pages and reclaims
+unaccepted Source preparation before request admission. Live request recovery
+resolves dead attempts without touching those rows: an ingest can own its
+committed preparation header between its compute and writer phases.
 
 Recovery resolution events name the resolver: authenticated request recovery uses
 the request principal, while automated startup uses `daemon:recovery`. The
@@ -106,7 +123,19 @@ The live watcher passes acquired Raw IDs to the supplied resident Raw owner for 
 
 The shared compute adapter settles each operation's future even when executor submission races shutdown or the executor cancels work before its worker starts. Cancelling shutdown stops scheduler dispatch. Graceful shutdown closes admission, drains already-admitted work, and closes the executor only after those reservations are released (`polylogue/core/compute.py`).
 
+The compute adapter's ordered map can observe its caller's cancellation while
+waiting for a physical result. Its scheduling checkpoint does not set a work
+deadline; cancellation removes queued units and drains running units through
+the existing creator cleanup owner before the caller releases its state.
+Async daemon callers await the submitted operation itself, not its raw future,
+so cancellation reaches the admission handle and creator-owned SQL settlement.
+Shutdown retains an orphaned intake or watcher candidate while its physical
+writer may still run; compute-thread join at process exit is a final safeguard,
+not a substitute for keeping that candidate in custody.
+
 ## Domain derivations
+
+Recurring and selected convergence retain their owner lock through repeated cancellation until the physical compute future and native cleanup settle. The shared submitted-operation waiter cancels queued work promptly and preserves cancellation together with a cleanup failure. Watcher source selection likewise retains its `to_thread` task through repeated caller cancellation until physical selection and writer admission cleanup settle; a cleanup failure is reported with the original cancellation (`polylogue/sources/live/watcher.py:518-565`).
 
 The typed kernel validates prerequisite names against the supplied ordered domain list. It pages required and excess keys, inspects authoritative output, computes outside the writer lease, and admits each replacement through the writer bridge. Publication adopts the coordinator's delegation on the existing compute worker, so preparation observers retain their creator. Its joined native cleanup boundary drains publication handles before the delegation and writer gate retire. Process-local continuation state is disposable. A partially consumed page retains only its bounded unconsumed key suffix and the next-page cursor; resumption reinspects those exact keys rather than offsetting a fresh query whose demand rows may have disappeared. Smaller resumed budgets split that suffix without losing its remaining keys. Reports distinguish pending policy work from failed attempts (`polylogue/daemon/derivation.py:375-428`; `polylogue/daemon/derivation.py:481-498`; `polylogue/daemon/convergence.py:110-123`).
 
@@ -124,7 +153,9 @@ The generic stage engine remains for optional Sinex publication, raw-authority c
 
 The stage walk itself runs off the writer lease. Each stage declares how it reaches the writer: `bridged` means it computes, downloads and drains outside admission and brackets only its short publication with `admit_stage_write`; `whole_execute` is the named residual for a stage that has not split compute from publication yet, and the engine holds the writer across its whole `execute`. Read the field, not the caller's control flow, to know which a stage is (`polylogue/daemon/convergence.py:690-697`; `polylogue/daemon/convergence.py:760-771`; `polylogue/core/stage_admission.py:59-70`). Live append and full ingest still invoke the generic stage pass through `_converge_paths`; the daemon also runs it for owed recovery. Successful debt settlement must name the actual evaluated subject and stage, rather than infer session completion from a source path (`polylogue/sources/live/batch.py`, `_converge_paths`).
 
-`convergence_debt` remains disposable retry state for those surviving stage callers. The generic drain excludes domain-owned stages through `_OWNED_DEBT_STAGES` (`polylogue/daemon/cli.py:143-151`) and filters them before retry (`polylogue/daemon/cli.py:1728-1734`). FTS, embeddings, raw parsing and session profiles therefore do not use the generic stage rows as publication authority. Raw retention has its own live-ingest retry owner (`polylogue/daemon/cli.py:137-142`).
+`convergence_debt` remains disposable retry state for those surviving stage callers. The generic drain selects its registered executable stage names and supported subjects before the page limit, retaining acquisition-owned and unavailable debt for their owners and status. It excludes domain-owned stages through `_OWNED_DEBT_STAGES` (`polylogue/daemon/cli.py:143-151`) and filters them before retry (`polylogue/daemon/cli.py:1728-1734`). FTS, embeddings, raw parsing and session profiles therefore do not use the generic stage rows as publication authority. Raw retention has its own live-ingest retry owner (`polylogue/daemon/cli.py:137-142`).
+
+A narrowed live pass records `NOT_RUN` as an unexecuted debt observation. It creates a missing obligation, but preserves an existing subject/stage row's retry eligibility, attempt count and failure diagnostic, even after its deadline becomes due or the input changes again. Only an evaluated attempt can change that existing outcome or backoff (`sources/live/convergence_debt.py`; `convergence_outcome.py`; `CursorStore.apply_convergence_debt_batch`).
 
 The generic retry ledger settles or re-records a subject only while its debt predates that stage's run. A failure recorded in the run's start millisecond or later survives the older pass, including the gap between publication and the ledger's writer admission (`DaemonConverger`; `CursorStore.convergence_debt_recorded_before`; `daemon.cli._record_convergence_debt_retries`). Archive-wide settlement uses the same strict cutoff.
 
@@ -136,7 +167,17 @@ Every declared `PERIODIC` service runs through one runner rather than its own `w
 
 Readiness derives from domain inspection and is reported separately from operation health. FTS does not consult a freshness ledger, and debt cannot certify insight readiness (`polylogue/daemon/fts_status.py:162-168`; `polylogue/readiness/claim_guard.py:1-26`; `polylogue/storage/sqlite/archive_tiers/archive.py:1`).
 
-Hook capture is two ordinary steps, not a route of its own. Producers append one line per event to a per-process NDJSON carrier; `hook_carrier_watch_sources` exposes one carrier directory per harness and the fair-intake dispatcher's ordinary file adapter admits them under a `hook_carrier` class, so the durable cost is paid once per carrier revision rather than once per event (`polylogue/sources/live/watcher.py:270-293`; `polylogue/operations/intake_adapters.py:1900-1917`). `HookEventsDerivation._inspect`, `compute` and `publish` implement the derivation keyed by carrier raw id: it decodes the retained bytes, compares the coordinates they imply against the recorded ones, and publishes the missing events in one source-tier transaction with no blob publication (`polylogue/storage/derived/hook_events.py:250-277`; `polylogue/storage/derived/hook_events.py:292-391`; `polylogue/storage/sqlite/archive_tiers/source_write.py:944-1026`). In daemon intake, the compute submission binds `stage_write_admission`; the publisher checks inputs off-writer and rechecks its compact SQL binding after writer admission, then writes enrichment debt and source events through `DaemonWriteThreadBridge`. A standalone derivation has no bridge and stays inline (`polylogue/daemon/cli.py:3166-3190`; `polylogue/core/stage_admission.py:59-70`).
+Current configuration determines whether embedding readiness is required even
+when its status collector cannot complete. Refused registry measurements expose
+unknown readiness and unavailable counts; they cannot disable that requirement.
+Its component fingerprint binds current policy and recipe to the resolved
+purchased-tier file and its adjacent WAL, alongside Source/Index/Ops currency.
+Cached measurements from a previous recipe or paid-tier incarnation cannot be
+published under current configuration; a refresh must measure that binding.
+An unmeasured FTS component likewise withholds convergence and search claims,
+while a measured incomplete index refutes both (`polylogue/daemon/status.py`).
+
+Hook capture is two ordinary steps, not a route of its own. Producers append one line per event to a per-process NDJSON carrier; `hook_carrier_watch_sources` exposes one carrier directory per harness and the fair-intake dispatcher's ordinary file adapter admits them under a `hook_carrier` class, so the durable cost is paid once per carrier revision rather than once per event (`polylogue/sources/live/watcher.py:270-293`; `polylogue/operations/intake_adapters.py:1900-1917`). `HookEventsDerivation._inspect`, `compute` and `publish` implement the derivation keyed by carrier raw id: it decodes the retained bytes, compares root-relative path, absolute byte offset, event identity and canonical payload digest against the recorded authority, and publishes the missing events in one source-tier transaction with no blob publication. Pending discovery follows the raw-ID continuation past complete pages until it fills the requested pending page or reaches the end; cancellation leaves retained Source work for restart (`polylogue/storage/derived/hook_events.py:250-277`; `polylogue/storage/derived/hook_events.py:292-391`; `polylogue/storage/sqlite/archive_tiers/source_write.py:944-1026`). In daemon intake, the compute submission binds `stage_write_admission`; the publisher checks inputs off-writer and rechecks its compact SQL binding after writer admission, then writes enrichment debt and source events through `DaemonWriteThreadBridge`. A standalone derivation has no bridge and stays inline (`polylogue/daemon/cli.py:3166-3190`; `polylogue/core/stage_admission.py:59-70`).
 
 `FairIntakeDispatcher._service_class` owns page planning and admission: it discovers a bounded page per class, plans it against the class's byte share, and hands the whole page to one adapter call, which runs one `ingest_files` batch under one writer hold and one embedding/session-profile convergence pass for the page, both off that hold (`polylogue/daemon/intake.py:461-528`; `polylogue/operations/intake_adapters.py:887-892`; `polylogue/operations/intake_adapters.py:1068-1077`; `polylogue/sources/live/watcher.py:1298-1328`). Outcomes stay per item, read back from `LiveBatchMetrics` by path, so the deficit, retry and isolation accounting is unchanged by the batching. `LiveWatcher._note_intake_hint` owns the filesystem hint: it bumps an intake revision and sets the dispatcher's wakeup (`polylogue/sources/live/watcher.py:574-587`).
 
@@ -230,6 +271,26 @@ Context compilation submits its disposable scheduler ledger with the compilation
 
 ## Resident insight pages
 
+`maintenance.insights.rebuild` freezes its exact selection from one pinned
+Index reader into a private SQLite spool. Target ordinals supply pages of at
+most 256 targets; neither explicit selection nor page count has a population
+ceiling. The manifest digest is accumulated page by page. Audit stages and
+seals the existing durable page rows, verifying the complete predecessor chain
+and digest without retaining all plans or authorization references in memory.
+Execution and historical receipt reads use those exact pages; later sessions
+cannot enter an accepted rebuild. The staging owner removes its private spool
+after physical staging settles, including cancellation and failure.
+
+An insight rebuild has no implicit execution deadline. Audit derives its typed
+expiry policy from the exact persisted maintenance request and page. A live
+request with no accepted deadline owns progress when the preview carries its
+preparation timestamp as a witness. The authorization carries its own issuance
+timestamp. Those integers in the existing expiry columns are witnesses, not
+wall-clock deadlines. Caller-supplied deadlines retain their original expiry
+policy. Standalone previews cannot acquire progress ownership from a timestamp
+or context flag. Cancellation, archive identity, Index generation and recipe
+checks continue to govern publication; the durable plan context is unchanged.
+
 The eleven registered `analyze insights` list commands call `insights.list`
 through the daemon. Its closed discriminated request and result branches use
 the registry's existing query and item models. The canonical page reader is
@@ -310,7 +371,11 @@ paid state still requires the active source-snapshotted Index before deletion
 Drive intake returns `DriveCatchupReport`: `complete`, `pending`, `retryable`,
 `blocked`, or `unknown`. Completion requires a full paged listing and a separate
 post-acquisition listing, exact native file/revision bindings to retained Raw,
-and current materialization in the executing Index snapshot. A private disk
+and current materialization in the executing Index generation. The product Raw
+inspector reads one Source and selected Index snapshot and verifies the selected
+schema validation policy, parser and lowering currency, and exact replay
+application receipts. Missing policy authority stays unknown; stale Raw
+materialization stays pending and resumes retained convergence. A private disk
 relation holds the full listing and per-file bindings. Its digest, denominator,
 selection rule, resolved folder, and observation times travel in the report.
 A measured empty folder has zero members. An absent or unfinished witness has
@@ -327,7 +392,8 @@ withhold full readiness until configured Drive obligations are measured complete
 including when embeddings are disabled.
 Resident collection retains an in-flight scan across its response deadline.
 Its cache fingerprint binds both archive generations and the configured scope
-and listing custody, so replacing a witness invalidates prior readiness even
+and listing custody plus the selected validation policy, so replacing a witness or
+changing policy invalidates prior readiness even
 when no archive file changed. Deferred membership remains pending; conflicting
 membership is blocked debt, and typed terminal parser evidence blocks completion
 even when it has no free-text diagnostic. Shutdown releases listing scratch
@@ -442,3 +508,32 @@ Configured receivers pin the current owner-only persisted token for each HTTP op
 Authenticated status first obtains `/v1/receiver/status-challenge`, a receiver-issued nonce owned by that kept-alive connection. `/v1/receiver/status-attest` consumes it once before checking the signed request. The client prohibits reconnecting before attestation; recorded requests cannot authorize another connection or a restarted receiver. Local native SQL settlement failures produce `receiver_observation_storage_failed` and retain the original cleanup owner.
 
 Pairing-code redemption validates and consumes the code, then returns the receiver’s pinned token; it does not consult or mint an unrelated default credential. A receiver with authentication disabled refuses redemption with `receiver_auth_disabled`. The local `browser-capture action` command enqueues through its spool owner and has no receiver authentication options or credential publication side effect. Lazy JSON read failures are classified at the SQLite view producer; renderer and output exceptions retain their original identity.
+
+HTTP query-unit and transcript reads bind the existing event-driven socket EOF
+observer to their exact query execution context. Scheduled reads bind it to the
+original compute cancellation handle; controlled SQL inherits that signal and
+removes the listener at settlement. Peer cancellation retains read admission
+and creator cleanup until physical SQL completion.
+
+### Annotation input custody
+
+`mutation.annotation.import_batch` uses `/api/operation` on both HTTP and UDS
+with `application/vnd.polylogue.operation-input`. Its finite body begins with
+an eight-byte unsigned big-endian control length, then that many UTF-8 JSON
+operation-control bytes, followed by the exact UTF-8 JSONL input. The control
+payload's `input` descriptor contains its SHA-256 and byte length; both must
+match the observed body before dispatch. The request fingerprint binds that
+descriptor and all batch controls. The client encodes controls and copies
+binary input through private scratch, so it can send an exact Content-Length
+without a whole-batch scalar. Authentication precedes server staging.
+
+The daemon's locked input file belongs to the operation worker after admission.
+A replay or pre-dispatch refusal retires the new input, and a worker's terminal
+future retires its file. A returned or disconnected exchange does not retire
+an active worker's custody. Startup reaps abandoned unlocked input stages.
+Compute admission accounts for control bytes; the input body resides on disk.
+The CLI and MCP process open their input files locally, and the Python facade
+accepts `input: BinaryIO`. The daemon opens only its staged coordinate. Batch
+input and controls have no outcome size ceiling; filesystem exhaustion is a
+typed retryable pre-dispatch refusal. Product control values and individual
+JSONL rows still contribute their own memory allocations.

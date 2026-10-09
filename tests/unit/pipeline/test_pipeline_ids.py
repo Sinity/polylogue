@@ -8,6 +8,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider, WebConstructType
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue
+from polylogue.core.message_native_identity import message_native_key
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import (
@@ -433,23 +434,23 @@ def test_session_revision_projection_golden_hashes() -> None:
     session = _golden_session()
     projection = session_revision_projection(session)
 
-    assert projection.session_hash.hex() == "24bbfd49c1e472a280f300afb7a89085672e7e8cec3d5d5614563728669e99ee"
+    assert projection.session_hash.hex() == "4f97034dc2c1192bd20554fcef25ae4f2a44750bb60b0256769395765b9dc73f"
     assert [h.hex() for h in projection.message_hashes] == [
-        "e2e2d53889ce567ba686f7352cea07edf3abb1857c60271b9a3f282c057c8df1",
-        "355ee4bc9a5be415f35b53a9b6deb37f868e2f9f5e4d2e8e366fa9b19983fe3f",
+        "eee03ae2909d0d412ffa0c0574861c83aad45d2d3b40bd03871c0a71f13a4d2c",
+        "8fbfbd465d8f19c9726262a0ceada57f87e47ba189d3242c9521157b2336c694",
     ]
     # Content-derived identity (message_id, name, mime_type) -- no longer a
     # hash of the provider attachment id (polylogue-aggz / polylogue-d8al):
     # a provider id is not guaranteed present across export vintages, so it
     # is excluded from identity rather than used when present.
     assert {h.hex() for h in projection.attachment_identities} == {
-        "2f18566179352065740615ea89e60130da5a8e46aae224e36b44ed626722da54"
+        "dce6a3d163a77b17db8e079e9721f693d875362b6657476480cc0f2f00be7ed1"
     }
     # The golden attachment declares a size but carries no bytes, so it is
     # referenced-but-unacquired: identity is known, content is not.
     assert projection.attachment_contents == frozenset()
     assert [h.hex() for h in projection.event_hashes] == [
-        "f414d130cfe9ce5c07704082fdaa9bb761d808b833e471166c998b1d0de4fcdd"
+        "70f2d20828a56ecac40825b0a0fea2bc8f259b888596744859edbc4b9feb98f7"
     ]
 
 
@@ -494,9 +495,12 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
     projection = session_revision_projection(session)
 
     independent_message_payloads = [
-        _message_hash_payload(m, m.provider_message_id or f"msg-{i}") for i, m in enumerate(session.messages, start=1)
+        _message_hash_payload(m, message_native_key(m.provider_message_id) or "") for m in session.messages
     ]
-    independent_attachment_payloads = [_attachment_hash_payload(a) for a in session.attachments]
+    independent_attachment_payloads = [
+        _attachment_hash_payload(a, message_owner_anchor=message_native_key(a.message_provider_id))
+        for a in session.attachments
+    ]
     independent_event_payloads: list[dict[str, JSONValue]] = [
         {
             "event_index": idx,
@@ -504,6 +508,9 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
             "timestamp": e.timestamp,
             "source_message_provider_id": e.source_message_provider_id,
             "payload": hash_payload(e.payload),
+            "boundary_start_position": e.boundary_start_position,
+            "boundary_end_position": e.boundary_end_position,
+            "boundary_message_position": e.boundary_message_position,
         }
         for idx, e in enumerate(session.session_events)
     ]

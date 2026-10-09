@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import ExitStack
 from dataclasses import dataclass
-from io import BytesIO
-from itertools import chain
-from typing import IO, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, cast
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact
-from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
+from polylogue.core.content_identity import ContentIdentityRefusal, stream_payload_content_identity
 from polylogue.core.enums import Provider
-from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.logging import get_logger
 
 from .acquisition_boundary import (
-    admit_bound_bytes,
     bind_stream,
     bound_profile_identity,
     bound_source_observation,
@@ -24,10 +21,11 @@ from .acquisition_boundary import (
 )
 from .assembly import get_assembly_spec
 from .cursor import _ParseContext
-from .decoder_json import JsonValue
-from .decoders import _iter_json_stream
+from .decoder_json import DecodedRecordSequence, JsonValue
+from .decoders import owned_json_records
 from .dispatch import GROUP_PROVIDERS, detect_provider, is_jsonl_source_path, parse_payload
 from .parsers.base import ParsedSession, RawSessionData
+from .staged_raw_payload import StagedRawPayload
 
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
@@ -46,18 +44,11 @@ def _schema_registry_factory() -> SchemaRegistryType:
 class _SniffResult:
     provider: Provider
     payloads: Iterable[JsonValue]
-    grouped_payloads: list[JsonValue] | None = None
+    grouped_payloads: DecodedRecordSequence | None = None
 
     @property
     def is_grouped(self) -> bool:
         return self.grouped_payloads is not None
-
-
-@dataclass(frozen=True, slots=True)
-class _PreparedJsonlState:
-    sniff_handle: IO[bytes]
-    pre_read_bytes: bytes | None
-    stream_start: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,26 +81,11 @@ class _SessionEmitter:
         handle: IO[bytes],
         stream_name: str,
         *,
-        pre_read_bytes: bytes | None = None,
         precomputed_raw: RawSessionData | None = None,
         session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
-        """Parse a stream and yield ``(raw, conv)`` tuples.
-
-        Args:
-            handle: Binary stream to read from.
-            stream_name: Filename for ``_iter_json_stream`` (determines
-                JSONL vs JSON parsing strategy).
-            pre_read_bytes: If provided, already-read bytes for raw capture.
-                Used when the caller pre-read the whole file for grouped
-                providers with ``capture_raw=True``.
-        """
-        # Every route into parsing reads through the acquisition boundary: a
-        # record of another origin at a bound location is refused as its
-        # bytes are read, before any record is decoded or parsed.
+        """Parse under the source owner; private captures survive creator pickup."""
         handle = bind_stream(handle, stream_name, self._ctx.bound_provider)
-        if pre_read_bytes is not None:
-            admit_bound_bytes(pre_read_bytes, stream_name, self._ctx.bound_provider)
         canonical, observed = bound_source_observation(handle)
         profile = bound_profile_identity(handle)
         self._profile_identity = (
@@ -120,44 +96,68 @@ class _SessionEmitter:
             else None
         )
 
-        def captured_records() -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
-            for raw, session in self._emit_stream(
-                handle, stream_name, pre_read_bytes, precomputed_raw, session_artifact
-            ):
-                if raw is not None:
-                    if raw.canonical_source_path is None:
-                        raw.canonical_source_path = canonical
-                    if raw.captured_file_observation is None:
-                        raw.captured_file_observation = observed
-                    if profile is not None and session.source_name is Provider.HERMES:
-                        raw.captured_profile_key = profile.key
-                        raw.captured_profile_source_path = str(profile.source_path)
-                yield raw, session
+        with ExitStack() as input_lifetime:
+            input_stage = None
+            if self._ctx.capture_raw and precomputed_raw is None:
+                input_stage = StagedRawPayload.from_stream(handle, directory=self._ctx.raw_directory)
+                handle = input_lifetime.enter_context(input_stage.path.open("rb"))
 
-        emitted = captured_records()
-        if self._ctx.bound_provider is None:
-            yield from emitted
-            return
-        # At a bound location the stream is one admission unit: a record is
-        # refused only when its bytes are read, so no session leaves before
-        # the whole stream validated.
-        collected: list[tuple[RawSessionData | None, ParsedSession]] = []
-        try:
-            collected.extend(emitted)
-        except ContentIdentityRefusal:
-            # An element whose identity cannot be stored is the stream's
-            # recorded gap; the sessions parsed beside it are still emitted
-            # once the rest of the stream validated.
-            drain_bound(handle)
-            yield from collected
-            raise
-        yield from collected
+            def captured_records() -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
+                for raw, session in self._emit_stream(
+                    handle, stream_name, input_stage, precomputed_raw, session_artifact
+                ):
+                    if raw is not None:
+                        if raw.canonical_source_path is None:
+                            raw.canonical_source_path = canonical
+                        if raw.captured_file_observation is None:
+                            raw.captured_file_observation = observed
+                        if profile is not None and session.source_name is Provider.HERMES:
+                            raw.captured_profile_key = profile.key
+                            raw.captured_profile_source_path = str(profile.source_path)
+                        if raw.staged_payload is not None:
+                            raw.staged_payload.retained = True
+                    yield raw, session
+
+            emitted = captured_records()
+            collected: list[tuple[RawSessionData | None, ParsedSession]] = []
+            delivered = 0
+
+            def handoff() -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
+                nonlocal delivered
+                for item in collected:
+                    delivered += 1
+                    yield item
+
+            try:
+                if self._ctx.bound_provider is None:
+                    yield from emitted
+                    return
+                # A bound source is one admission unit. Its captured bytes
+                # have settled before a parser result can leave preparation.
+                try:
+                    collected.extend(emitted)
+                except ContentIdentityRefusal:
+                    drain_bound(handle)
+                    yield from handoff()
+                    raise
+                except BaseException:
+                    for raw, _session in collected:
+                        if raw is not None and raw.staged_payload is not None:
+                            raw.staged_payload.discard()
+                    raise
+                yield from handoff()
+            finally:
+                for raw, _session in collected[delivered:]:
+                    if raw is not None and raw.staged_payload is not None:
+                        raw.staged_payload.discard()
+                if input_stage is not None and not input_stage.retained:
+                    input_stage.discard()
 
     def _emit_stream(
         self,
         handle: IO[bytes],
         stream_name: str,
-        pre_read_bytes: bytes | None,
+        input_stage: StagedRawPayload | None,
         precomputed_raw: RawSessionData | None,
         session_artifact: ArtifactClassification | None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
@@ -167,7 +167,7 @@ class _SessionEmitter:
             yield from self._emit_grouped(
                 handle,
                 stream_name,
-                pre_read_bytes,
+                input_stage,
                 precomputed_raw=precomputed_raw,
                 session_artifact=session_artifact,
             )
@@ -177,7 +177,7 @@ class _SessionEmitter:
             yield from self._emit_jsonl(
                 handle,
                 stream_name,
-                pre_read_bytes=pre_read_bytes,
+                input_stage=input_stage,
                 precomputed_raw=precomputed_raw,
             )
             return
@@ -185,7 +185,7 @@ class _SessionEmitter:
         yield from self._emit_individual(
             handle,
             stream_name,
-            pre_read_bytes=pre_read_bytes,
+            whole_file_raw=(precomputed_raw or self._make_raw(input_stage) if self._ctx.should_group else None),
             session_artifact=session_artifact,
         )
 
@@ -193,70 +193,58 @@ class _SessionEmitter:
         self,
         handle: IO[bytes],
         stream_name: str,
-        pre_read_bytes: bytes | None,
+        input_stage: StagedRawPayload | None,
         *,
         precomputed_raw: RawSessionData | None = None,
-        precomputed_payloads: list[JsonValue] | None = None,
+        precomputed_payloads: DecodedRecordSequence | None = None,
         session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         """Grouped JSONL: entire file = one session."""
-        if precomputed_raw is not None:
-            raw_bytes = None
-        elif self._ctx.capture_raw and pre_read_bytes is None:
-            raw_bytes = handle.read()
-            handle = BytesIO(raw_bytes)
-        else:
-            raw_bytes = pre_read_bytes
-            if raw_bytes is not None:
-                handle = BytesIO(raw_bytes)
-
-        payloads = (
-            precomputed_payloads if precomputed_payloads is not None else list(_iter_json_stream(handle, stream_name))
-        )
-        if not payloads:
-            return
-
-        raw_data = precomputed_raw or (self._make_raw(raw_bytes) if raw_bytes else None)
-        resolved = self._resolve_payload(payloads)
-        if session_artifact is not None:
-            resolved = _ResolvedPayload(
-                provider=resolved.provider,
-                artifact=session_artifact,
+        with ExitStack() as lifetime:
+            records = precomputed_payloads
+            if records is None:
+                records = cast(DecodedRecordSequence, lifetime.enter_context(owned_json_records(handle, stream_name)))
+            if not records:
+                return
+            payloads = cast(JsonValue, records)
+            raw_data = precomputed_raw or self._make_raw(input_stage)
+            resolved = self._resolve_payload(payloads)
+            if session_artifact is not None:
+                resolved = _ResolvedPayload(
+                    provider=resolved.provider,
+                    artifact=session_artifact,
+                    schema_resolution=resolved.schema_resolution,
+                )
+            if not resolved.artifact.parse_as_session:
+                return
+            for conv in parse_payload(
+                resolved.provider,
+                payloads,
+                self._ctx.fallback_id,
                 schema_resolution=resolved.schema_resolution,
-            )
-        if not resolved.artifact.parse_as_session:
-            return
-        for conv in parse_payload(
-            resolved.provider,
-            payloads,
-            self._ctx.fallback_id,
-            schema_resolution=resolved.schema_resolution,
-            source_path=self._ctx.source_path_str,
-            profile_identity=self._profile_identity,
-        ):
-            yield (raw_data, self._maybe_enrich(conv))
+                source_path=self._ctx.source_path_str,
+                profile_identity=self._profile_identity,
+            ):
+                yield (raw_data, self._maybe_enrich(conv))
 
     def _emit_individual(
         self,
         handle: IO[bytes],
         stream_name: str,
         *,
-        pre_read_bytes: bytes | None = None,
+        whole_file_raw: RawSessionData | None = None,
         session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         """Individual items: each payload = one session."""
         unpack = not (stream_name.lower().endswith(".json") and self._ctx.should_group)
 
-        # If caller pre-read the whole file, use that as one raw capture
-        # (for should_group + capture_raw + non-JSONL files)
-        whole_file_raw = self._make_raw(pre_read_bytes) if pre_read_bytes is not None else None
-
-        yield from self._emit_individual_payloads(
-            _iter_json_stream(handle, stream_name, unpack_lists=unpack),
-            stream_name=stream_name,
-            whole_file_raw=whole_file_raw,
-            session_artifact=session_artifact,
-        )
+        with owned_json_records(handle, stream_name, unpack_lists=unpack) as payloads:
+            yield from self._emit_individual_payloads(
+                payloads,
+                stream_name=stream_name,
+                whole_file_raw=whole_file_raw,
+                session_artifact=session_artifact,
+            )
 
     def _emit_individual_payloads(
         self,
@@ -283,31 +271,43 @@ class _SessionEmitter:
                 if whole_file_raw is not None:
                     raw_data: RawSessionData | None = whole_file_raw
                 elif self._ctx.capture_raw:
-                    raw_bytes = json_dumps_bytes(payload)
+                    staged = StagedRawPayload.from_value(payload, directory=self._ctx.raw_directory)
                     try:
                         raw_data = self._make_raw(
-                            raw_bytes,
+                            staged,
                             source_index=source_index,
                             provider_override=resolved.provider,
                         )
                     except ContentIdentityRefusal as refusal:
+                        staged.discard()
                         # This element is the member's recorded gap; the
                         # elements after it are still parsed and captured.
                         refusals.append(refusal)
                         source_index += 1
                         continue
+                    except BaseException:
+                        staged.discard()
+                        raise
                 else:
                     raw_data = None
 
-                for conv in parse_payload(
-                    resolved.provider,
-                    payload,
-                    self._ctx.fallback_id,
-                    schema_resolution=resolved.schema_resolution,
-                    source_path=self._ctx.source_path_str,
-                    profile_identity=self._profile_identity,
-                ):
-                    yield (raw_data, self._maybe_enrich(conv, resolved.provider))
+                try:
+                    for conv in parse_payload(
+                        resolved.provider,
+                        payload,
+                        self._ctx.fallback_id,
+                        schema_resolution=resolved.schema_resolution,
+                        source_path=self._ctx.source_path_str,
+                        profile_identity=self._profile_identity,
+                    ):
+                        yield (raw_data, self._maybe_enrich(conv, resolved.provider))
+                finally:
+                    if (
+                        raw_data is not None
+                        and raw_data.staged_payload is not None
+                        and not raw_data.staged_payload.retained
+                    ):
+                        raw_data.staged_payload.discard()
                 source_index += 1
             except Exception:
                 logger.exception("Error processing payload from %s", stream_name)
@@ -315,148 +315,34 @@ class _SessionEmitter:
         if refusals:
             raise refusals[0]
 
-    def _sniff_jsonl_payloads(
-        self,
-        handle: IO[bytes],
-        stream_name: str,
-    ) -> _SniffResult:
-        payload_iter = iter(_iter_json_stream(handle, stream_name))
-        buffered_payloads: list[JsonValue] = []
-        for payload in payload_iter:
-            buffered_payloads.append(payload)
-            detected_provider = detect_provider(payload)
-            if detected_provider is None:
-                continue
-            if detected_provider in GROUP_PROVIDERS:
-                buffered_payloads.extend(payload_iter)
-                return _SniffResult(
-                    provider=detected_provider,
-                    payloads=buffered_payloads,
-                    grouped_payloads=buffered_payloads,
-                )
-            return _SniffResult(provider=detected_provider, payloads=chain(buffered_payloads, payload_iter))
-
-        detected_provider = detect_provider(buffered_payloads) or self._ctx.provider_hint
-        if detected_provider in GROUP_PROVIDERS:
-            return _SniffResult(
-                provider=detected_provider,
-                payloads=buffered_payloads,
-                grouped_payloads=buffered_payloads,
-            )
-        return _SniffResult(provider=detected_provider, payloads=iter(buffered_payloads))
-
-    def _prepare_jsonl_state(
-        self,
-        handle: IO[bytes],
-        *,
-        pre_read_bytes: bytes | None,
-    ) -> _PreparedJsonlState:
-        if pre_read_bytes is not None:
-            return _PreparedJsonlState(
-                sniff_handle=BytesIO(pre_read_bytes),
-                pre_read_bytes=pre_read_bytes,
-                stream_start=None,
-            )
-        return _PreparedJsonlState(
-            sniff_handle=handle,
-            pre_read_bytes=None,
-            stream_start=self._capture_stream_start(handle),
-        )
-
-    def _non_seekable_jsonl_sniff(
-        self,
-        handle: IO[bytes],
-        stream_name: str,
-    ) -> tuple[bytes, _SniffResult]:
-        sniff_bytes = handle.read()
-        return sniff_bytes, self._sniff_jsonl_payloads(BytesIO(sniff_bytes), stream_name)
-
-    def _grouped_jsonl_source(
-        self,
-        handle: IO[bytes],
-        state: _PreparedJsonlState,
-        *,
-        precomputed_raw: RawSessionData | None,
-    ) -> tuple[IO[bytes], bytes | None]:
-        grouped_bytes = state.pre_read_bytes
-        grouped_handle: IO[bytes] = state.sniff_handle
-        if (
-            grouped_bytes is None
-            and self._ctx.capture_raw
-            and precomputed_raw is None
-            and state.stream_start is not None
-        ):
-            self._restore_stream_start(handle, state.stream_start)
-            grouped_bytes = handle.read()
-            grouped_handle = BytesIO(grouped_bytes)
-        return grouped_handle, grouped_bytes
+    def _sniff_jsonl_payloads(self, records: DecodedRecordSequence) -> _SniffResult:
+        for payload in records:
+            detected = detect_provider(payload)
+            if detected is not None:
+                return _SniffResult(detected, records, records if detected in GROUP_PROVIDERS else None)
+        detected = detect_provider(records) or self._ctx.provider_hint
+        return _SniffResult(detected, records, records if detected in GROUP_PROVIDERS else None)
 
     def _emit_jsonl(
         self,
         handle: IO[bytes],
         stream_name: str,
         *,
-        pre_read_bytes: bytes | None,
+        input_stage: StagedRawPayload | None,
         precomputed_raw: RawSessionData | None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
-        state = self._prepare_jsonl_state(handle, pre_read_bytes=pre_read_bytes)
-        if (
-            state.pre_read_bytes is None
-            and state.stream_start is None
-            and self._ctx.capture_raw
-            and precomputed_raw is None
-        ):
-            sniff_bytes, sniffed = self._non_seekable_jsonl_sniff(handle, stream_name)
+        with owned_json_records(handle, stream_name) as records:
+            sniffed = self._sniff_jsonl_payloads(cast(DecodedRecordSequence, records))
             if sniffed.is_grouped:
                 yield from self._emit_grouped(
-                    BytesIO(sniff_bytes),
+                    handle,
                     stream_name,
-                    sniff_bytes,
+                    input_stage,
                     precomputed_raw=precomputed_raw,
                     precomputed_payloads=sniffed.grouped_payloads,
                 )
                 return
-            yield from self._emit_individual_payloads(
-                sniffed.payloads,
-                stream_name=stream_name,
-            )
-            return
-
-        sniffed = self._sniff_jsonl_payloads(state.sniff_handle, stream_name)
-        if sniffed.is_grouped:
-            grouped_handle, grouped_bytes = self._grouped_jsonl_source(
-                handle,
-                state,
-                precomputed_raw=precomputed_raw,
-            )
-            yield from self._emit_grouped(
-                grouped_handle,
-                stream_name,
-                grouped_bytes,
-                precomputed_raw=precomputed_raw,
-                precomputed_payloads=sniffed.grouped_payloads,
-            )
-            return
-        yield from self._emit_individual_payloads(
-            sniffed.payloads,
-            stream_name=stream_name,
-        )
-
-    def _capture_stream_start(self, handle: IO[bytes]) -> int | None:
-        seekable = getattr(handle, "seekable", None)
-        if callable(seekable):
-            try:
-                if not seekable():
-                    return None
-            except OSError:
-                return None
-        try:
-            return int(handle.tell())
-        except (AttributeError, OSError, ValueError):
-            return None
-
-    def _restore_stream_start(self, handle: IO[bytes], stream_start: int) -> None:
-        handle.seek(stream_start)
+            yield from self._emit_individual_payloads(sniffed.payloads, stream_name=stream_name)
 
     def _resolve_schema(
         self,
@@ -498,16 +384,20 @@ class _SessionEmitter:
 
     def _make_raw(
         self,
-        raw_bytes: bytes | None,
+        staged: StagedRawPayload | None,
         *,
         source_index: int | None = None,
         provider_override: Provider | None = None,
     ) -> RawSessionData | None:
-        """Construct ``RawSessionData``, or ``None`` if no bytes."""
-        if raw_bytes is None or not self._ctx.capture_raw:
+        """Borrow the sealed capture until creator-owned publication pickup."""
+        if staged is None or not self._ctx.capture_raw:
             return None
+        content_identity = None
+        if ":" in self._ctx.source_path_str:
+            with staged.path.open("rb") as source:
+                content_identity = stream_payload_content_identity(source)
         return RawSessionData(
-            raw_bytes=raw_bytes,
+            staged_payload=staged,
             source_path=self._ctx.source_path_str,
             source_index=source_index,
             addressing_mode=(
@@ -515,7 +405,7 @@ class _SessionEmitter:
                 if source_index is not None and ":" in self._ctx.source_path_str
                 else None
             ),
-            content_identity=(payload_content_identity(raw_bytes) if ":" in self._ctx.source_path_str else None),
+            content_identity=content_identity,
             file_mtime=self._ctx.file_mtime,
             provider_hint=provider_override or self._ctx.provider_hint,
             sidecar_snapshot=(

@@ -37,7 +37,7 @@ def _seed_session_with_attachment(index_db: Path, *, attachment_id: str = "att-1
             (attachment_id,),
         )
         conn.execute(
-            "INSERT INTO attachment_refs (attachment_id, session_id, message_id, position) VALUES (?, ?, ?, 0)",
+            "INSERT INTO attachment_refs (native_identity, attachment_id, session_id, message_id, position) VALUES ('666978747572652d746573745f6174746163686d656e745f636173636164655f73776565702d3339', ?, ?, ?, 0)",
             (attachment_id, _SESSION_ID, _MESSAGE_ID),
         )
         conn.commit()
@@ -97,8 +97,7 @@ def test_a_session_delete_leaves_another_session_s_attachment_alone(tmp_path: Pa
             " VALUES ('gemini-cli-session:s2', 'm1', 0, 'user', 'message', zeroblob(32))"
         )
         conn.execute(
-            "INSERT INTO attachment_refs (attachment_id, session_id, message_id, position)"
-            " VALUES ('att-1', 'gemini-cli-session:s2', 'gemini-cli-session:s2:n:m1', 0)"
+            "INSERT INTO attachment_refs (native_identity, attachment_id, session_id, message_id, position) VALUES ('666978747572652d746573745f6174746163686d656e745f636173636164655f73776565702d3939', 'att-1', 'gemini-cli-session:s2', 'gemini-cli-session:s2:n:m1', 0)"
         )
         conn.execute("UPDATE attachments SET ref_count = 2 WHERE attachment_id = 'att-1'")
         conn.commit()

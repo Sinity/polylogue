@@ -14,7 +14,6 @@ import pytest
 
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.operations.insight_acceptance import (
-    MAX_INSIGHT_ACCEPTED_PARTS,
     MAX_INSIGHT_PART_TARGETS,
     accepted_part_from_plan,
 )
@@ -68,16 +67,29 @@ def test_full_manifest_is_exactly_paged_and_digest_stable(tmp_path: Path, count:
 
     assert manifest.scope_kind == "full"
     assert len(manifest.pages) == (count + MAX_INSIGHT_PART_TARGETS - 1) // MAX_INSIGHT_PART_TARGETS
-    assert len(manifest.pages) <= MAX_INSIGHT_ACCEPTED_PARTS
     assert all(len(page) <= MAX_INSIGHT_PART_TARGETS for page in manifest.pages)
     assert sum(len(page) for page in manifest.pages) == count
-    assert manifest.pages == repeated.pages
+    assert tuple(manifest.pages) == tuple(repeated.pages)
     assert manifest.digest == repeated.digest
     assert len(manifest.digest) == 64
     assert all(char in "0123456789abcdef" for char in manifest.digest)
     assert [target.target_ref for page in manifest.pages for target in page] == [
         f"session:codex-session:target-{index:05d}" for index in range(count)
     ]
+
+
+def test_explicit_request_above_ten_thousand_keeps_complete_paged_selection(tmp_path: Path) -> None:
+    from polylogue.operations.daemon_protocol import InsightRebuildRequest
+
+    ids = [f"codex-session:target-{index:05d}" for index in range(10_001)]
+    request = InsightRebuildRequest(session_ids=ids)
+    with _reader(tmp_path, len(ids)) as archive:
+        manifest = _prepare(archive, request.session_ids)
+        repeated = _prepare(archive, [*ids, ids[0]])
+    assert [target.target_ref for page in manifest.pages for target in page] == [f"session:{sid}" for sid in ids]
+    assert len(manifest.pages) == 40
+    assert manifest.digest == repeated.digest
+    assert tuple(manifest.pages) == tuple(repeated.pages)
 
 
 def test_full_manifest_keeps_profile_orphan_as_excess_target(tmp_path: Path) -> None:
@@ -89,6 +101,23 @@ def test_full_manifest_keeps_profile_orphan_as_excess_target(tmp_path: Path) -> 
         ("session:codex-session:orphan", "excess"),
         ("session:codex-session:target-00000", "required"),
     ]
+
+
+def test_full_manifest_can_exceed_former_page_count_ceiling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.operations.insight_planning as planning
+
+    # Scheduling one target per page makes the former 4096-page ceiling observable
+    # without manufacturing an archive with more than a million sessions.
+    monkeypatch.setattr(planning, "MAX_INSIGHT_PART_TARGETS", 1)
+    with _reader(tmp_path, 4097) as archive:
+        manifest = _prepare(archive)
+    assert len(manifest.pages) == 4097
+    assert manifest.pages[4096][0].target_ref == "session:codex-session:target-04096"
+    assert not isinstance(manifest.pages, tuple)
+    path = manifest.pages.path
+    assert path.exists()
+    manifest.close()
+    assert not path.exists()
 
 
 def test_post_pin_index_insert_is_not_added_to_manifest(tmp_path: Path) -> None:
@@ -120,7 +149,7 @@ def test_explicit_alias_dedup_and_no_match_match_canonical_selection(tmp_path: P
         )
 
     assert aliases.scope_kind == canonical.scope_kind == "explicit"
-    assert aliases.pages == canonical.pages
+    assert tuple(aliases.pages) == tuple(canonical.pages)
     assert aliases.digest == canonical.digest
     assert [target.target_ref for target in aliases.pages[0]] == ["session:codex-session:target-00000"]
 

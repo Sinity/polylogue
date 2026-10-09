@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
-from polylogue.core.identity_law import attachment_acquisition_coordinate
+from polylogue.core.compute_cancel import (
+    check_compute_cancelled,
+    raise_if_operation_cancelled,
+)
+from polylogue.core.identity_law import attachment_acquisition_coordinate, attachment_payload_id
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import WARNING, emit, get_logger
@@ -35,6 +39,11 @@ from polylogue.storage.sqlite.queries.attachment_records import (
 logger = get_logger(__name__)
 
 DEFAULT_ATTACHMENT_CONVERGENCE_LIMIT = 25
+
+
+def _stop_verification() -> bool:
+    check_compute_cancelled()
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +115,8 @@ class _Acquired:
     blob_hash: bytes
     byte_count: int
     ref: ArchiveSourceBlobRef
+    ref_id: str
+    target_attachment_id: str
 
 
 #: Placeholder budget for one ``raw_sessions`` membership probe.
@@ -161,7 +172,13 @@ def _attach_source(conn: sqlite3.Connection, source_conn: sqlite3.Connection) ->
         raise ValueError("attachment convergence source attachment changed")
 
 
-def _candidate_rows(conn: sqlite3.Connection, source_conn: sqlite3.Connection, *, limit: int) -> _CandidateWindow:
+def _candidate_rows(
+    conn: sqlite3.Connection,
+    source_conn: sqlite3.Connection,
+    *,
+    limit: int,
+    after: tuple[str, str] | None = None,
+) -> _CandidateWindow:
     """Page obligations before their byte or attribution publication.
 
     Acquiring a shared attachment settles its bytes, not the references outside
@@ -179,6 +196,7 @@ def _candidate_rows(conn: sqlite3.Connection, source_conn: sqlite3.Connection, *
     unresolved = int(conn.execute(f"SELECT COUNT(*) {owed} AND {contested}").fetchone()[0])
     predicate = f"{owed} AND NOT {contested}"
     unattributed = int(conn.execute(f"SELECT COUNT(*) {predicate} AND NOT {retained}").fetchone()[0])
+    position = " AND (a.attachment_id, r.ref_id) > (?, ?)" if after is not None else ""
     rows = conn.execute(
         f"""
         SELECT a.attachment_id, a.acquisition_status, a.blob_hash, a.byte_count,
@@ -188,11 +206,13 @@ def _candidate_rows(conn: sqlite3.Connection, source_conn: sqlite3.Connection, *
                    ({unambiguous_native_id_sql("drive")}),
                    ({unambiguous_native_id_sql("attachment")})
                ) AS provider_file_id
-        {predicate} AND {retained}
+        {predicate} AND {retained}{position}
         ORDER BY a.attachment_id, r.ref_id LIMIT ?
         """,
-        (wanted,),
+        (*after, wanted) if after is not None else (wanted,),
     ).fetchall()
+    if not rows and after is not None:
+        return _candidate_rows(conn, source_conn, limit=wanted)
     return _CandidateWindow(rows=tuple(rows), unattributed=unattributed, unresolved_identity=unresolved)
 
 
@@ -335,7 +355,7 @@ def _surviving_blob_ref(
         return None
     verified = verified_hashes.get(blob_hash)
     if verified is None:
-        verified = blob_store.verify(blob_hash.hex())
+        verified = blob_store.verify(blob_hash.hex(), stop=_stop_verification)
         verified_hashes[blob_hash] = verified
     if not verified:
         if blob_store.exists(blob_hash.hex()):
@@ -366,7 +386,34 @@ def _download_prepared(
     prepared blob, so an attachment of any size costs bounded memory and one
     staged copy on disk.
     """
-    return publisher.prepare_from_writer(lambda handle: download_into(provider_file_id, handle))
+    return publisher.prepare_from_writer(
+        lambda handle: download_into(provider_file_id, handle), heartbeat=check_compute_cancelled
+    )
+
+
+def _sweep_position(archive_root: Path) -> tuple[str, str] | None:
+    from contextlib import closing
+
+    with closing(open_readonly_connection(archive_root / "ops.db")) as ops:
+        row = ops.execute(
+            "SELECT attachment_id, ref_id FROM attachment_convergence_cursor WHERE singleton=1"
+        ).fetchone()
+    return None if row is None else (str(row[0]), str(row[1]))
+
+
+def _publish_binding(index: sqlite3.Connection, item: _Acquired) -> None:
+    """Relink only this measured supplier to its content-version row."""
+    index.execute(
+        """INSERT INTO attachments(
+               attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count)
+           SELECT ?, display_name, media_type, ?, ?, 'acquired', 0 FROM attachments WHERE attachment_id=?
+           ON CONFLICT(attachment_id) DO NOTHING""",
+        (item.target_attachment_id, item.byte_count, item.blob_hash, item.attachment_id),
+    )
+    index.execute(
+        "UPDATE attachment_refs SET attachment_id=? WHERE ref_id=? AND attachment_id=? AND supplying_raw_id=?",
+        (item.target_attachment_id, item.ref_id, item.attachment_id, item.ref.raw_id),
+    )
 
 
 def converge_drive_attachments(
@@ -395,7 +442,7 @@ def converge_drive_attachments(
     this pass off the writer -- the daemon stage engine does -- must supply the
     opener rather than hand in connections it could not have opened yet.
     """
-    window = _candidate_rows(index_conn, source_conn, limit=limit)
+    window = _candidate_rows(index_conn, source_conn, limit=limit, after=_sweep_position(archive_root))
     unresolved_identity = _report_unresolved_identity(window.unresolved_identity)
     unattributed = window.unattributed
     rows = window.rows
@@ -408,7 +455,7 @@ def converge_drive_attachments(
     #: recorded identity; no provider request and no new source blob ref, but
     #: the same durable index outcome -- and the same content evidence -- as a
     #: fresh acquisition.
-    rebound_rows: list[tuple[str, bytes, int]] = []
+    rebound_rows: list[_Acquired] = []
     terminal_ids: list[str] = []
     excised_ids: list[str] = []
     #: Rows this pass refuses to acquire because the canonical destination
@@ -424,6 +471,7 @@ def converge_drive_attachments(
 
     try:
         for row in rows:
+            check_compute_cancelled()
             attachment_id = str(row["attachment_id"])
             provider_file_id = row["provider_file_id"]
             if not isinstance(provider_file_id, str) or not provider_file_id:
@@ -434,15 +482,16 @@ def converge_drive_attachments(
             raw_id = str(row["supplying_raw_id"])
             source_path = _acquisition_coordinate(row)
             if row["acquisition_status"] == "acquired":
-                # Another window already acquired these shared bytes. Publish
-                # this reference's own Source attribution without a provider call.
+                # This reference was lowered with exact captured payload
+                # identity. Metadata-only observations keep a different,
+                # unfetched row and cannot borrow this revision's bytes.
                 blob_hash = bytes(row["blob_hash"])
                 if is_blob_hash_excised(source_conn, blob_hash):
                     excised_ids.append(attachment_id)
                     continue
                 verified = verified_survivors.get(blob_hash)
                 if verified is None:
-                    verified = publisher.verify(blob_hash.hex())
+                    verified = publisher.verify(blob_hash.hex(), stop=_stop_verification)
                     verified_survivors[blob_hash] = verified
                 if not verified:
                     contradicted_ids.append(attachment_id)
@@ -470,6 +519,8 @@ def converge_drive_attachments(
                             size_bytes=int(row["byte_count"]),
                             acquired_at_ms=observed_at_ms,
                         ),
+                        str(row["ref_id"]),
+                        attachment_id,
                     )
                 )
                 continue
@@ -486,7 +537,23 @@ def converge_drive_attachments(
                 # source ledger still points at them.  Re-bind the rebuilt
                 # index row instead of spending a provider request on content
                 # the archive never lost.
-                rebound_rows.append((attachment_id, surviving[0], surviving[1]))
+                rebound_rows.append(
+                    _Acquired(
+                        attachment_id,
+                        surviving[0],
+                        surviving[1],
+                        ArchiveSourceBlobRef(
+                            blob_hash=surviving[0],
+                            raw_id=raw_id,
+                            ref_type="attachment",
+                            source_path=source_path,
+                            size_bytes=surviving[1],
+                            acquired_at_ms=observed_at_ms,
+                        ),
+                        str(row["ref_id"]),
+                        attachment_payload_id(attachment_id, surviving[0]),
+                    )
+                )
                 continue
             cached = fetch_outcomes.get(provider_file_id)
             if cached is not None:
@@ -522,6 +589,8 @@ def converge_drive_attachments(
                             acquired_at_ms=observed_at_ms,
                             publication_receipt_id=publisher.receipt_id(cached_hash.hex()),
                         ),
+                        str(row["ref_id"]),
+                        attachment_payload_id(attachment_id, cached_hash),
                     )
                 )
                 continue
@@ -547,7 +616,9 @@ def converge_drive_attachments(
                         reason="durable excision ledger",
                     )
                     continue
-                if publisher.exists(candidate_hash.hex()) and not publisher.verify(candidate_hash.hex()):
+                if publisher.exists(candidate_hash.hex()) and not publisher.verify(
+                    candidate_hash.hex(), stop=_stop_verification
+                ):
                     # The destination these bytes would publish to already
                     # holds *different* bytes. ``ArchiveBlobPublisher.flush()``
                     # reaches ``BlobStore.publish_prepared``, which discards a
@@ -578,6 +649,7 @@ def converge_drive_attachments(
                 blob_hash_hex, byte_count = publisher.queue_prepared(prepared)
                 prepared = None
             except Exception as exc:
+                raise_if_operation_cancelled(exc)
                 if _permanent_failure(exc):
                     fetch_outcomes[provider_file_id] = ("terminal", None, 0)
                     terminal_ids.append(attachment_id)
@@ -608,6 +680,8 @@ def converge_drive_attachments(
                         acquired_at_ms=observed_at_ms,
                         publication_receipt_id=publisher.receipt_id(blob_hash_hex),
                     ),
+                    str(row["ref_id"]),
+                    attachment_payload_id(attachment_id, blob_hash),
                 )
             )
 
@@ -637,6 +711,10 @@ def converge_drive_attachments(
                 if receipt_id is not None:
                     publisher.discard_pending_receipt(receipt_id)
             acquired[:] = kept
+            rebound_retained = _retained_raw_ids(source_conn, {str(item.ref.raw_id) for item in rebound_rows})
+            rebound_kept = [item for item in rebound_rows if str(item.ref.raw_id) in rebound_retained]
+            unattributed += len(rebound_rows) - len(rebound_kept)
+            rebound_rows[:] = rebound_kept
             publisher.flush()
             # Preserve the publication-boundary excision check after filtering
             # by supplying acquisition. Never publish a source reference for
@@ -652,6 +730,9 @@ def converge_drive_attachments(
             if refused_hashes:
                 excised_ids.extend(item.attachment_id for item in acquired if item.blob_hash in refused_hashes)
                 acquired[:] = [item for item in acquired if item.blob_hash not in refused_hashes]
+            rebound_excised = [item for item in rebound_rows if is_blob_hash_excised(source_conn, item.blob_hash)]
+            excised_ids.extend(item.attachment_id for item in rebound_excised)
+            rebound_rows[:] = [item for item in rebound_rows if item not in rebound_excised]
             if acquired:
                 by_raw_id: dict[str, list[ArchiveSourceBlobRef]] = {}
                 for item in acquired:
@@ -660,18 +741,17 @@ def converge_drive_attachments(
                     write_source_blob_refs(source_conn, raw_id, tuple(refs).__iter__)
             if acquired:
                 source_conn.commit()
-            acquired_rows = [(item.attachment_id, item.blob_hash, item.byte_count) for item in acquired]
-            if acquired_rows or rebound_rows:
+            if acquired or rebound_rows:
+                from polylogue.storage.sqlite.archive_tiers.write import refresh_and_sweep_attachment_rows
+
                 with index_conn:
-                    for attachment_id, blob_hash, byte_count in (*acquired_rows, *rebound_rows):
-                        index_conn.execute(
-                            """
-                            UPDATE attachments
-                            SET blob_hash = ?, byte_count = ?, acquisition_status = 'acquired'
-                            WHERE attachment_id = ? AND acquisition_status = 'unfetched'
-                            """,
-                            (blob_hash, byte_count, attachment_id),
-                        )
+                    bindings = (*acquired, *rebound_rows)
+                    for item in bindings:
+                        _publish_binding(index_conn, item)
+                    refresh_and_sweep_attachment_rows(
+                        index_conn,
+                        (key for item in bindings for key in (item.attachment_id, item.target_attachment_id)),
+                    )
             if excised_ids:
                 # Same terminal index state as an unavailable payload -- the
                 # bytes will never be acquired -- but reached by refusal, which
@@ -688,6 +768,21 @@ def converge_drive_attachments(
                         "UPDATE attachments SET acquisition_status = 'unavailable' WHERE attachment_id = ? AND acquisition_status = 'unfetched'",
                         ((attachment_id,) for attachment_id in terminal_ids),
                     )
+            # Advance after the complete window publication. Cancellation or
+            # failed Source/Index settlement leaves the prior position intact.
+            from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+            check_compute_cancelled()
+            ops = open_daemon_connection(archive_root / "ops.db", archive_root=archive_root)
+            try:
+                with ops:
+                    ops.execute(
+                        "INSERT INTO attachment_convergence_cursor VALUES (1,?,?) "
+                        "ON CONFLICT(singleton) DO UPDATE SET attachment_id=excluded.attachment_id, ref_id=excluded.ref_id",
+                        (str(rows[-1]["attachment_id"]), str(rows[-1]["ref_id"])),
+                    )
+            finally:
+                ops.close()
 
         admit_stage_write("convergence.stage.attachment_bytes.publish", publish_attachment_outcomes)
         if _candidate_rows(index_conn, source_conn, limit=1).rows:

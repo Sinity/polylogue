@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
 from io import BytesIO
-from itertools import chain, groupby
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, Protocol, cast
 
@@ -50,7 +49,6 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
     canonical_authority_logical_key,
     is_work_event_raw_id,
-    parser_census_identity_measurement,
 )
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.session_revision_membership import (
@@ -77,7 +75,7 @@ from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_p
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.assembly import SidecarData
-from polylogue.sources.decoders import _iter_json_stream
+from polylogue.sources.decoders import owned_json_records
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
     admit_parsed_sessions_for_publication,
@@ -103,7 +101,7 @@ from polylogue.sources.prepared_jsonl import (
     PreparedDecodeError,
     PreparedJsonl,
     PreparedSessionSequence,
-    _iter_prefix_lines,
+    _PreparedPrefixInput,
     classify_decode_failure,
     prepare_jsonl_blob,
     terminal_decode_evidence,
@@ -122,7 +120,6 @@ from polylogue.storage.blob_publication import BlobPublicationSourceRead
 from polylogue.storage.io_phase_metrics import connection_cursor
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import (
-    iter_parser_census_logical_keys,
     raw_authority_parser_fingerprint,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -155,7 +152,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_shard,
 )
 from polylogue.storage.sqlite.connection_profile import (
-    StaleContinuationError,
     read_frame,
 )
 from polylogue.storage.sqlite.reference_seal import ReferenceSealError
@@ -437,7 +433,8 @@ def retained_parse_exception(detail: str, decode_failure: DecodeFailure | None) 
     return RuntimeError(detail)
 
 
-def _retained_jsonl_records(payload: bytes, source_name: str, source_path: str) -> list[JSONValue]:
+@contextmanager
+def _retained_jsonl_records(payload: bytes, source_name: str, source_path: str) -> Iterator[Iterable[JSONValue]]:
     """Decode retained bytes as live intake decodes the same capture.
 
     Every complete JSONL record must decode (``fail_on_decode_error``); only
@@ -448,16 +445,21 @@ def _retained_jsonl_records(payload: bytes, source_name: str, source_path: str) 
         prefix_size = jsonl_parse_prefix_size(jsonl_complete_prefix(payload), len(payload))
         if prefix_size is not None:
             payload = payload[:prefix_size]
-    return list(_iter_json_stream(BytesIO(payload), source_name, fail_on_decode_error=True))
+    with BytesIO(payload) as handle, owned_json_records(handle, source_name, fail_on_decode_error=True) as records:
+        yield records
 
 
-def _retained_jsonl_stream(payload: BinaryIO, source_name: str, source_path: str) -> Iterable[JSONValue]:
+@contextmanager
+def _retained_jsonl_stream(payload: BinaryIO, source_name: str, source_path: str) -> Iterator[Iterable[JSONValue]]:
     """Stream retained records under :func:`_retained_jsonl_records`' rule."""
     if not is_jsonl_source_path(source_path):
-        return _iter_json_stream(payload, source_name, fail_on_decode_error=True)
+        with owned_json_records(payload, source_name, fail_on_decode_error=True) as records:
+            yield records
+        return
     prefix_size = jsonl_parse_prefix_size_of_handle(payload)
-    record_input = _iter_prefix_lines(payload, prefix_size) if prefix_size is not None else payload
-    return _iter_json_stream(record_input, source_name, fail_on_decode_error=True)
+    record_input = _PreparedPrefixInput(payload, prefix_size) if prefix_size is not None else payload
+    with owned_json_records(record_input, source_name, fail_on_decode_error=True) as records:
+        yield records
 
 
 @dataclass(slots=True)
@@ -472,6 +474,7 @@ class PreparedRetainedInput:
     parser_fingerprint: str
     fallback_timestamp: str | None
     verified_blob_stat: tuple[int, int, int, int, int]
+    validation_verdict: RetainedValidationVerdict | None
     parser_error: str | None = None
     #: Which decode boundary refused the bytes when ``parser_error`` is a
     #: decode refusal; the census turns that into a terminal outcome.
@@ -766,6 +769,8 @@ def prepare_retained_jsonl_artifact(
     directory: Path,
     allow_generic_object_alias: bool = False,
     validation_mode: ValidationMode = ValidationMode.ADVISORY,
+    schema_registry: SchemaRegistry | None = None,
+    prepare_blob_publications: bool = True,
 ) -> PreparedJsonl:
     """Seal JSON sessions using this creator's actual selected Source inputs.
 
@@ -799,10 +804,12 @@ def prepare_retained_jsonl_artifact(
                 decode_failure=exc.kind,
             )
         if provider is Provider.UNKNOWN:
-            refusal = UnsupportedRetainedJsonShapeError(
+            shape_refusal = UnsupportedRetainedJsonShapeError(
                 f"retained UNKNOWN provider has no recognized complete input shape: {source_path}"
             )
-            return PreparedJsonl(None, None, None, f"{type(refusal).__name__}: {refusal}", unsupported_shape=True)
+            return PreparedJsonl(
+                None, None, None, f"{type(shape_refusal).__name__}: {shape_refusal}", unsupported_shape=True
+            )
     fallback_id = fallback_session_id(source_path, raw_id)
     if kind is RawRevisionKind.APPEND:
         fallback_id = (
@@ -831,7 +838,7 @@ def prepare_retained_jsonl_artifact(
     prepare_per_session = (
         not is_stream_record_provider(source_path, provider)
         and provider in BUNDLE_PROVIDERS
-        and Path(source_path).name.lower().endswith(".json")
+        and not is_jsonl_source_path(source_path)
     )
 
     def finalize(sessions: PreparedSessionSequence) -> Iterator[ParsedSession]:
@@ -884,14 +891,6 @@ def prepare_retained_jsonl_artifact(
                         f"{type(exc).__name__}: {exc}",
                         decode_failure=decode_failure,
                     )
-            if _size == 0 and _is_declared_provider_session_stream(provider, source_path):
-                return PreparedJsonl(
-                    blob_hash,
-                    None,
-                    None,
-                    "zero-byte provider session stream contains no decodable session record",
-                    decode_failure=DecodeFailure.JSONL_RECORD,
-                )
         artifact = prepare_jsonl_blob(
             str(blob_path),
             source_path,
@@ -900,9 +899,10 @@ def prepare_retained_jsonl_artifact(
             is_stream=is_stream_record_provider(source_path, provider),
             profile_identity=profile_identity,
             shard_directory=str(directory),
-            publication_publisher=ArchiveBlobPublisher(
-                evidence_reader.archive_root / "source.db",
-                evidence_reader.archive_root / "blob",
+            publication_publisher=(
+                ArchiveBlobPublisher(evidence_reader.archive_root / "source.db", evidence_reader.archive_root / "blob")
+                if prepare_blob_publications
+                else None
             ),
             publication_source_read=evidence_reader,
             strict_jsonl_records=True,
@@ -945,6 +945,7 @@ def prepare_retained_jsonl_artifact(
         validation_mode=validation_mode,
         captured_zip_coordinate=captured_zip_coordinate,
         jsonl=is_jsonl_source_path(source_path),
+        schema_registry=schema_registry,
     )
 
 
@@ -989,6 +990,7 @@ def _attach_retained_validation_verdict(
     validation_mode: ValidationMode,
     captured_zip_coordinate: CapturedZipMemberCoordinate | None,
     jsonl: bool,
+    schema_registry: SchemaRegistry | None,
 ) -> PreparedJsonl:
     """Bind schema evidence to the exact retained bytes the parser consumed."""
     if (
@@ -1012,6 +1014,8 @@ def _attach_retained_validation_verdict(
                     source_path=source_path,
                     jsonl=jsonl,
                     captured_zip_coordinate=captured_zip_coordinate,
+                    registry=schema_registry,
+                    signature_directory=directory,
                 )
             return dataclasses.replace(artifact, validation_verdict=verdict)
         except BaseException as primary:
@@ -1025,22 +1029,14 @@ def _attach_retained_validation_verdict(
     return artifact
 
 
-def _is_declared_provider_session_stream(provider: Provider, source_path: str) -> bool:
-    """Whether an empty provider JSONL path should be decoded as a session stream."""
-    if provider not in {Provider.CODEX, Provider.CLAUDE_CODE}:
-        return False
-    # Claude's configured history file is raw-only intake metadata. Other
-    # provider JSONL paths that are not explicitly excluded by OriginSpec are
-    # session decode inputs, including neutral and exported path spellings.
-    return not (provider is Provider.CLAUDE_CODE and Path(source_path).name.lower() == "history.jsonl")
-
-
 def prepare_retained_non_json_artifact(
     evidence_reader: RetainedSessionRead,
     raw_id: str,
     *,
     directory: Path,
     validation_mode: ValidationMode = ValidationMode.ADVISORY,
+    schema_registry: SchemaRegistry | None = None,
+    prepare_blob_publications: bool = True,
 ) -> PreparedJsonl:
     """Seal non-JSON sessions through the same original retained read owner."""
     from polylogue.core.compute import DaemonBackpressureError
@@ -1061,11 +1057,19 @@ def prepare_retained_non_json_artifact(
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 
     provider, blob_hash, source_path, _kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
-    # Some providers arrive under neutral or mislabeled filenames. A simple
-    # top-level message envelope has an existing ijson-to-SQLite route in
-    # prepare_jsonl_blob; route by that complete shape before the collecting
-    # non-JSON replay below. The probe validates through EOF and leaves the
-    # retained blob untouched.
+    # Complete export grammars retain their original source path while the
+    # streamed parser chooses the object or array shape from the bytes. A
+    # neutral extension cannot send these documents to the record collector.
+    if provider in BUNDLE_PROVIDERS and not is_jsonl_source_path(source_path):
+        return prepare_retained_jsonl_artifact(
+            evidence_reader,
+            raw_id,
+            directory=directory,
+            allow_generic_object_alias=True,
+            validation_mode=validation_mode,
+            schema_registry=schema_registry,
+            prepare_blob_publications=prepare_blob_publications,
+        )
     if provider in {Provider.DRIVE, Provider.GEMINI} and not (
         is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"
     ):
@@ -1082,17 +1086,25 @@ def prepare_retained_non_json_artifact(
                     directory=directory,
                     allow_generic_object_alias=True,
                     validation_mode=validation_mode,
+                    schema_registry=schema_registry,
+                    prepare_blob_publications=prepare_blob_publications,
                 )
     if path_declaration_refuses_session(provider, source_path):
         # A raw-only member (an export's binary asset) is evidence whatever its
         # suffix: the sealed preparation records its path classification
         # without decoding the bytes, exactly as for a JSON-suffixed member.
         return prepare_retained_jsonl_artifact(
-            evidence_reader, raw_id, directory=directory, validation_mode=validation_mode
+            evidence_reader,
+            raw_id,
+            directory=directory,
+            validation_mode=validation_mode,
+            schema_registry=schema_registry,
+            prepare_blob_publications=prepare_blob_publications,
         )
-    publisher = ArchiveBlobPublisher(
-        evidence_reader.archive_root / "source.db",
-        evidence_reader.archive_root / "blob",
+    publisher = (
+        ArchiveBlobPublisher(evidence_reader.archive_root / "source.db", evidence_reader.archive_root / "blob")
+        if prepare_blob_publications
+        else None
     )
     sessions_path = Path(directory) / f"prepared-{uuid.uuid4().hex}.db"
     shard_path: Path | None = None
@@ -1104,6 +1116,8 @@ def prepare_retained_non_json_artifact(
         if not BlobStore(evidence_reader.archive_root / "blob").verify(blob_hash, stop=compute_cancel_requested):
             raise RetainedPreparationRetryableError(f"retained blob changed for raw {raw_id}")
         if state_descriptor is not None:
+            if not prepare_blob_publications:
+                raise RetainedPreparationRetryableError("retained state material has no session block supplier")
             parsed = True
             artifact = _prepare_codex_state_blob(
                 state_descriptor[0],
@@ -1204,27 +1218,34 @@ def prepare_retained_non_json_artifact(
                     ArtifactStreamClassification(classification, False, 1),
                 )
             verdict = None
-            if envelope is not None and classification.schema_eligible:
-                marker_path = Path(directory) / f"validation-marker-{uuid.uuid4().hex}.json"
-                try:
-                    marker_path.write_text(json.dumps(envelope.payload, ensure_ascii=False), encoding="utf-8")
-                    from polylogue.schemas import validate_retained_document
+            try:
+                if envelope is not None and classification.schema_eligible:
+                    marker_path = Path(directory) / f"validation-marker-{uuid.uuid4().hex}.json"
+                    try:
+                        marker_path.write_text(json.dumps(envelope.payload, ensure_ascii=False), encoding="utf-8")
+                        from polylogue.schemas import validate_retained_document
 
-                    verdict = validate_retained_document(
-                        envelope.provider,
-                        marker_path,
-                        mode=validation_mode,
-                        raw_id=raw_id,
-                        revision_sha256=blob_hash,
-                        evidence_id=raw_id,
-                        source_path=source_path,
-                        jsonl=False,
-                        captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
-                    )
-                finally:
-                    marker_path.unlink(missing_ok=True)
-            _prepare_attachment_publications(store, publisher, Path(directory))
-            _prepare_sidecar_publications(store, publisher, Path(directory))
+                        verdict = validate_retained_document(
+                            envelope.provider,
+                            marker_path,
+                            mode=validation_mode,
+                            raw_id=raw_id,
+                            revision_sha256=blob_hash,
+                            evidence_id=raw_id,
+                            source_path=source_path,
+                            jsonl=False,
+                            captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+                            signature_directory=directory,
+                            registry=schema_registry,
+                        )
+                    finally:
+                        marker_path.unlink(missing_ok=True)
+            finally:
+                if envelope is not None:
+                    envelope.close()
+            if publisher is not None:
+                _prepare_attachment_publications(store, publisher, Path(directory))
+                _prepare_sidecar_publications(store, publisher, Path(directory))
             store.close()
             store = None
             artifact = PreparedJsonl.seal(
@@ -1275,8 +1296,9 @@ def prepare_retained_non_json_artifact(
         )
         if declared is not None:
             record_prepared_classification(store.conn, ArtifactStreamClassification(declared, True, 0))
-        _prepare_attachment_publications(store, publisher, Path(directory))
-        _prepare_sidecar_publications(store, publisher, Path(directory))
+        if publisher is not None:
+            _prepare_attachment_publications(store, publisher, Path(directory))
+            _prepare_sidecar_publications(store, publisher, Path(directory))
         store.close()
         store = None
         artifact = PreparedJsonl.seal(
@@ -1300,6 +1322,7 @@ def prepare_retained_non_json_artifact(
             validation_mode=validation_mode,
             captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
             jsonl=False,
+            schema_registry=schema_registry,
         )
         sealed = True
         return artifact
@@ -1344,7 +1367,8 @@ def prepare_retained_non_json_artifact(
                     failures.append(cleanup)
             if not failures:
                 try:
-                    publisher.discard_pending()
+                    if publisher is not None:
+                        publisher.discard_pending()
                 except BaseException as cleanup:
                     failures.append(cleanup)
             if failures:
@@ -1422,118 +1446,6 @@ class AntigravityTrajectoryDriftError(RuntimeError):
     older revision's ``raw_id``. This refusal counts as a replay degradation
     exactly the way the other replay ``RuntimeError``s do.
     """
-
-
-def uncensused_historical_revision_raw_ids(
-    archive_root: Path,
-    raw_ids: list[str],
-) -> tuple[str, ...]:
-    """Return inputs whose current parser identity has not been persisted.
-
-    The dedicated receipt proves that the parser whose current executable
-    semantics fingerprint is stored actually observed every relevant raw.
-    Any fingerprint change makes a former receipt stale, so no growing list of
-    manually-known revisions can accidentally keep a changed parser authority
-    current.
-
-    Current-fingerprint receipts also have to prove the durable authority
-    shape. Receipts with another fingerprint, or an empty key list when
-    membership rows establish a canonical identity, are selected for
-    recomputation instead of remaining permanently blocked by readiness.
-    """
-    if not raw_ids:
-        return ()
-    current_fingerprint = raw_authority_parser_fingerprint()
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        conn = source_frame.connection
-        uncensused: list[str] = []
-        for offset in range(0, len(raw_ids), 500):
-            raw_id_chunk = raw_ids[offset : offset + 500]
-            placeholders = ",".join("?" for _ in raw_id_chunk)
-            rows = conn.execute(
-                f"""
-                SELECT r.raw_id
-                FROM raw_sessions AS r
-                LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
-                WHERE r.raw_id IN ({placeholders})
-                  AND NOT COALESCE(
-                      c.parser_fingerprint = ?
-                      AND c.status = 'complete'
-                      AND c.detail LIKE 'parser-observed:%',
-                      0
-                  )
-                ORDER BY r.raw_id
-                """,
-                [*raw_id_chunk, current_fingerprint],
-            )
-            uncensused.extend(str(row[0]) for row in rows)
-            with closing(
-                conn.execute(
-                    f"""
-                SELECT r.raw_id, c.logical_keys_json, r.logical_source_key, r.revision_kind,
-                       EXISTS(SELECT 1 FROM raw_artifacts AS a
-                              WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
-                       EXISTS(SELECT 1 FROM raw_membership_census AS mc
-                              WHERE mc.raw_id = r.raw_id
-                                AND mc.parser_fingerprint = ?
-                                AND mc.status = 'non_session'),
-                       EXISTS(SELECT 1 FROM raw_membership_census AS mc
-                              WHERE mc.raw_id = r.raw_id
-                                AND r.source_index < 0
-                                AND mc.parser_fingerprint = ?
-                                AND mc.status = 'failed'
-                                AND mc.revision_authority = ?),
-                       m.logical_source_key
-                FROM raw_sessions AS r
-                JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
-                LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-                WHERE r.raw_id IN ({placeholders})
-                  AND c.parser_fingerprint = ?
-                  AND c.status = 'complete'
-                  AND c.detail LIKE 'parser-observed:%'
-                ORDER BY r.raw_id, m.logical_source_key
-                """,
-                    (
-                        raw_authority_parser_fingerprint(),
-                        raw_authority_parser_fingerprint(),
-                        RawRevisionAuthority.BYTE_PROVEN.value,
-                        *raw_id_chunk,
-                        raw_authority_parser_fingerprint(),
-                    ),
-                )
-            ) as receipt_rows:
-                for raw_id, raw_rows in groupby(receipt_rows, key=lambda row: str(row[0])):
-                    check_compute_cancelled()
-                    first = next(raw_rows)
-                    (
-                        _raw_id,
-                        logical_keys_json,
-                        typed_key,
-                        revision_kind,
-                        typed_non_session,
-                        parser_confirmed_non_session,
-                        byte_governed_fragment,
-                        _membership_key,
-                    ) = first
-                    with parser_census_identity_measurement(
-                        raw_logical_key=typed_key,
-                        revision_kind=revision_kind,
-                        membership_logical_keys=(row[7] for row in chain((first,), raw_rows)),
-                        observed_logical_keys=iter_parser_census_logical_keys(logical_keys_json),
-                        observed_are_receipt=True,
-                        check_stop=check_compute_cancelled,
-                    ) as measured:
-                        if not measured.complete(
-                            typed_non_session=bool(typed_non_session),
-                            parser_confirmed_non_session=bool(parser_confirmed_non_session),
-                            byte_governed_fragment=bool(byte_governed_fragment),
-                        ):
-                            uncensused.append(raw_id)
-        if not source_frame.revalidate():
-            raise StaleContinuationError("source archive changed during parser source census")
-    return tuple(sorted(set(uncensused)))
 
 
 def apply_prepared_revision_census(
@@ -2170,6 +2082,9 @@ def apply_prepared_revision_replay(
     logical_keys: set[str] = set()
     spill = _PreparedReplayInputs(prepared_inputs)
     with _prepared_replay_archive(archive_root, reference_seal, active_index_path) as archive:
+        # Only this validated, never-published destination has a mandatory
+        # readiness pass that rebuilds deferred materializations before readers.
+        bulk_build = archive.owns_inactive_generation
         publication_read = ConnectionBlobPublicationRead(archive._ensure_source_conn())
         with archive.index_mutation_scope(prepared_seal=reference_seal):
             # Source census has its own original prepared unit. Its counts
@@ -2299,7 +2214,7 @@ def apply_prepared_revision_replay(
                             stage_timings_s=stage_timings,
                             manage_transaction=False,
                             bulk_fts=bulk_fts,
-                            bulk_build=False,
+                            bulk_build=bulk_build,
                             fresh_build=False,
                             fresh_build_batch=None,
                             prepared_aggregate_rows=prepared_write.rows,
@@ -2406,6 +2321,7 @@ def apply_prepared_revision_replay(
                     preacquired_attachment_blobs=attachments,
                     stage_timings_s=stage_timings,
                     bulk_fts=bulk_fts,
+                    bulk_build=bulk_build,
                     prepared_write=membership_prepared_write,
                     write_result=record_write_result,
                 )
@@ -2457,6 +2373,8 @@ def apply_prepared_revision_replay(
                     stage_timings_s=stage_timings,
                     stage_timing_prefix="replay.work_event",
                     manage_transaction=False,
+                    bulk_fts=bulk_fts,
+                    bulk_build=bulk_build,
                     preacquired_attachment_blobs={},
                     finalize_raw_parse=False,
                     prepared_required=True,
@@ -2963,7 +2881,7 @@ def _retained_enrichment_sidecar_data(
 def parse_retained_raw_sessions(archive: RetainedRawRead, raw_id: str) -> list[ParsedSession]:
     """Parse retained raw evidence without eagerly loading stream records.
 
-    Raw-revision replay is shared by historical repair and the live full and
+    Raw-revision replay is shared by retained rebuilding and the live full and
     append routes.  Keeping the provider-shape decision here prevents a
     seemingly harmless live replay helper from reintroducing ``read_all()``
     for Codex/Claude JSONL evidence.
@@ -3467,15 +3385,8 @@ def _parse_one_raw(
                     source_path=source_path,
                 )
     if looks_like_sqlite_bytes(payload):
-        # polylogue-qjscw: a retained SQLite PAGE IMAGE reaching this point has
-        # no current parser -- every provider that can replay a database has
-        # already claimed its export above. Feeding these bytes to the JSON
-        # stream parser raises, and on the frozen-candidate route that single
-        # exception is promoted to FrozenSourceRemediationRequiredError, which
-        # ends the WHOLE rebuild rather than failing one raw. The archive
-        # deliberately retained this material, so it becomes terminal
-        # non-session evidence instead: no session, no abort, and a receipt
-        # that still names what the material was.
+        # A retained SQLite page image has no replayable logical export.
+        # Preserve it as terminal non-session evidence with its material receipt.
         return []
     from polylogue.sources.live.batch_support import jsonl_parse_input_of_handle
 
@@ -3496,8 +3407,17 @@ def _parse_one_raw(
     if classification.proved_non_session:
         return []
     if is_stream_record_provider(source_path, str(provider)):
-        records = _retained_jsonl_records(payload, source_name, source_path)
-        return parse_stream_payload(
+        with _retained_jsonl_records(payload, source_name, source_path) as records:
+            return parse_stream_payload(
+                provider,
+                records,
+                fallback_id,
+                source_path=source_path,
+                profile_identity=profile_identity,
+                sidecar_resolver=sidecar_resolver,
+            )
+    with _retained_jsonl_records(payload, source_name, source_path) as records:
+        return parse_payload(
             provider,
             records,
             fallback_id,
@@ -3505,15 +3425,6 @@ def _parse_one_raw(
             profile_identity=profile_identity,
             sidecar_resolver=sidecar_resolver,
         )
-    records = _retained_jsonl_records(payload, source_name, source_path)
-    return parse_payload(
-        provider,
-        records,
-        fallback_id,
-        source_path=source_path,
-        profile_identity=profile_identity,
-        sidecar_resolver=sidecar_resolver,
-    )
 
 
 def _iter_sqlite_path(
@@ -3665,15 +3576,15 @@ def _parse_stream_raw(
 
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or fallback_session_id(source_path, source_path)
-    stream = _retained_jsonl_stream(payload, source_name, source_path)
-    return parse_stream_payload(
-        provider,
-        stream,
-        fallback_id,
-        source_path=source_path,
-        profile_identity=profile_identity,
-        sidecar_resolver=sidecar_resolver,
-    )
+    with _retained_jsonl_stream(payload, source_name, source_path) as stream:
+        return parse_stream_payload(
+            provider,
+            stream,
+            fallback_id,
+            source_path=source_path,
+            profile_identity=profile_identity,
+            sidecar_resolver=sidecar_resolver,
+        )
 
 
 __all__ = [
@@ -3687,7 +3598,6 @@ __all__ = [
     "apply_prepared_revision_census",
     "enrich_sessions_from_retained_read",
     "open_retained_session_enricher",
-    "uncensused_historical_revision_raw_ids",
     "parse_retained_raw_sessions",
 ]
 
@@ -3863,7 +3773,17 @@ def prepare_revision_source_census(
             return True
         prepared = prepared_inputs.get(raw_id)
         artifact = prepared.prepared_artifact if prepared is not None else None
+        if prepared is not None and prepared.parser_error is not None:
+            # A failed preparation has no successful validation obligation.
+            # Publish its original refusal through the same Source custody
+            # used for an uncensused input, including byte-governed appends.
+            apply_outcome(raw_id, source_index)
+            return True
         schema_validation_required = evidence_reader.raw_schema_eligible(raw_id)
+        if artifact is not None and artifact.parsed_prefix_size == 0:
+            # The verified retained capture admitted no complete record.
+            # Its excluded tail is not a schema-validation input.
+            schema_validation_required = False
         stream = artifact.stream_classification() if artifact is not None else None
         if (
             source_index >= 0
@@ -3871,7 +3791,8 @@ def prepare_revision_source_census(
             and stream.classification.parse_as_session
             and not stream.classification.schema_eligible
             and artifact is not None
-            and artifact.validation_verdict is None
+            and prepared is not None
+            and prepared.validation_verdict is None
             and schema_validation_required
         ):
             # An old parser receipt omitted the native grammar's captured
@@ -3941,7 +3862,7 @@ def prepare_revision_source_census(
             state.transient_non_session_raw_ids.add(raw_id)
             return True
 
-        verdict = artifact.validation_verdict
+        verdict = prepared.validation_verdict if prepared is not None else None
         if verdict is None:
             if schema_validation_required:
                 raise RetainedPreparationRetryableError(
@@ -3970,7 +3891,8 @@ def prepare_revision_source_census(
         check_compute_cancelled()
         state.scanned += 1
         state.censused.add(raw_id)
-        if source_index < 0:
+        outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
+        if source_index < 0 and not isinstance(outcome, Exception):
             stage_current_parser_followup(raw_id, source_index)
             if evidence_reader.raw_has_membership_authority(raw_id):
                 record_current_parser_source_census(seal, raw_id)
@@ -3986,7 +3908,6 @@ def prepare_revision_source_census(
                 )
             state.quarantined += 1
             return
-        outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
         provider, _hash, source_path, revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
         observed_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
         if isinstance(outcome, Exception):
@@ -4055,22 +3976,30 @@ def prepare_revision_source_census(
                     state=_raw_parse_failure_state(provider, outcome),
                     manage_transaction=False,
                 )
-                replace_raw_membership_census(
-                    seal,
-                    raw_id,
-                    [],
-                    parser_fingerprint=raw_authority_parser_fingerprint(),
-                    censused_at_ms=0,
-                    detail=str(outcome),
-                    retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
-                    revision_authority=None,
-                )
+                if (
+                    source_index < 0
+                    or evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.BYTE_PROVEN.value
+                ):
+                    # A failed parent or append keeps its proven byte chain;
+                    # a parser refusal cannot retire that authority.
+                    record_current_parser_source_census(seal, raw_id)
+                else:
+                    replace_raw_membership_census(
+                        seal,
+                        raw_id,
+                        [],
+                        parser_fingerprint=raw_authority_parser_fingerprint(),
+                        censused_at_ms=0,
+                        detail=str(outcome),
+                        retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                        revision_authority=None,
+                    )
             state.quarantined += 1
             return
         sessions, _payload_bytes, _parsed_kind = outcome
         prepared = prepared_inputs.get(raw_id)
         artifact = prepared.prepared_artifact if prepared is not None else None
-        verdict = artifact.validation_verdict if artifact is not None else None
+        verdict = prepared.validation_verdict if prepared is not None else None
         stream = artifact.stream_classification() if artifact is not None else None
         if verdict is not None and artifact is not None:
             if (
@@ -4666,8 +4595,7 @@ def prepare_retained_replay_source(
             marker_sessions_by_raw.setdefault(raw_id, set()).add(session_id)
 
         def stage_accepted_marker_history(raw_id: str, selected_session_ids: set[str]) -> None:
-            artifact = prepared_inputs[raw_id].prepared_artifact
-            verdict = artifact.validation_verdict if artifact is not None else None
+            verdict = prepared_inputs[raw_id].validation_verdict
             if verdict is not None and verdict.strict_refusal:
                 return
             request_sessions = request_sessions_for(raw_id)
@@ -4864,6 +4792,9 @@ def _prepared_replay_archive(
         Path(generation.index_path).parent,
         generation_id=generation.generation_id,
         owner_id=generation.owner_id,
+        # Preparation sealed the current layout, whether deferred or restored
+        # by an interrupted readiness pass. Reopening must perform no index DDL.
+        preserve_secondary_index_layout=True,
     ) as archive:
         yield archive
         destination.validate()
@@ -5167,6 +5098,7 @@ class RetainedArtifactPreparer(Protocol):
         *,
         directory: Path,
         validation_mode: ValidationMode,
+        schema_registry: SchemaRegistry,
     ) -> PreparedJsonl: ...
 
 
@@ -5220,6 +5152,8 @@ class SourceRawOutcomeProducer(SourceArtifactProducer, SourceRawStateProducer, P
 
 
 if TYPE_CHECKING:
+    from polylogue.schemas.retained_validation import RetainedValidationVerdict
+    from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
     from polylogue.storage.sqlite.reference_seal import KnownTierMutationPermit, PreparedIndexMutation

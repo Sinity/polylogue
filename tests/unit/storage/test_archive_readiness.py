@@ -506,6 +506,94 @@ def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> No
     assert ready["surfaces"]["raw_artifacts"]["ready"] is True
 
 
+def test_exact_readiness_keeps_complete_census_with_pending_replay_blocked(tmp_path: Path) -> None:
+    """A committed Source phase cannot certify its unwritten Index replay."""
+    from functools import partial
+
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.core.enums import Provider
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.operations.raw_observation_derivation import raw_observation_frame
+    from polylogue.storage.derived.raw import RawObservationDerivation
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.prepared_replay import run_on_convergence_owner
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"pending-readiness"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
+                b'"content":[{"type":"input_text","text":"pending readiness"}]}}\n'
+            ),
+            source_path="codex/pending-readiness.jsonl",
+            canonical_source_path="codex/pending-readiness.jsonl",
+            acquired_at_ms=1,
+        )
+
+    class StopAfterCensusError(Exception):
+        pass
+
+    def census_only(compute: BoundedComputeAdapter) -> None:
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+        frame = raw_observation_frame(tmp_path)
+        replacement = adapter.compute(frame, raw_id)
+
+        def stop(phase: str, _receipt: object) -> None:
+            if phase == "census":
+                raise StopAfterCensusError
+
+        try:
+            admit_stage_write(
+                "test.readiness.partial", partial(adapter.publish, frame, replacement, phase_receipt=stop)
+            )
+        finally:
+            replacement.close()
+
+    with pytest.raises(StopAfterCensusError):
+        run_on_convergence_owner(tmp_path, "test.readiness.partial", census_only)
+    projection = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=False)
+    assert cast(Mapping[str, object], projection["raw_authority_parser_census"])["incomplete_count"] == 0
+    assert projection["unchecked"] == 1
+    surface = archive_readiness_status(tmp_path)["surfaces"]["raw_artifacts"]
+    assert surface["ready"] is False
+    assert "unchecked" in surface["blockers"]
+    assert surface["evidence"]["materialization"]["state"] == assess_raw_materialization(projection).state.value
+
+
+def test_exact_readiness_keeps_source_authority_blocker_visible(tmp_path: Path) -> None:
+    """Current parser and Index rows do not erase an unresolved frontier blocker."""
+    import asyncio
+
+    from polylogue.core.enums import Provider
+    from tests.infra.empty_managed_index import mutate_fixture_database
+    from tests.infra.retained_replay import publish_retained_payload
+
+    asyncio.run(
+        publish_retained_payload(
+            tmp_path,
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"blocked-readiness"}}\n',
+            source_path="codex/blocked-readiness.jsonl",
+            acquired_at_ms=1,
+        )
+    )
+    mutate_fixture_database(
+        tmp_path / "source.db",
+        "INSERT INTO raw_authority_blockers(blocker_id,plan_input_digest,reason,expected_json,observed_json,created_at_ms) "
+        "VALUES ('readiness-blocker',?,'unresolved_authority','{}','{}',1)",
+        ("0" * 64,),
+    )
+    projection = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=False)
+    assert projection["unchecked"] == 0
+    assert projection["raw_authority_blocker_count"] == 1
+    surface = archive_readiness_status(tmp_path)["surfaces"]["raw_artifacts"]
+    assert surface["ready"] is False
+    assert "raw_authority_blocker_count" in surface["blockers"]
+    assert surface["evidence"]["materialization"]["state"] == assess_raw_materialization(projection).state.value
+
+
 def test_archive_readiness_status_uses_active_index_when_conventional_path_is_shadowed(tmp_path: Path) -> None:
     """Surface counts and parser census must come from one pointer-selected generation."""
     initialize_active_archive_root(tmp_path)

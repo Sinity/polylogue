@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.infra.identity import fixture_block_content_identity
+
 
 def _resolve_bench_message(conn: sqlite3.Connection) -> tuple[str, str, int]:
     """Return (message_id, session_id, next_position) for the seeded message.
@@ -42,13 +44,13 @@ def _timed_insert(conn: sqlite3.Connection, message_id: str, session_id: str, po
     """Insert one archive `blocks` row, return elapsed wall time in seconds."""
     start = time.perf_counter()
     conn.execute(
-        """INSERT INTO blocks(message_id, session_id, position, block_type, text)
-        VALUES (?, ?, ?, 'text', ?)""",
+        "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, 0)",
         (
             message_id,
             session_id,
             position,
             f"block {position} text content for fts indexing benchmark",
+            fixture_block_content_identity("text", f"block {position} text content for fts indexing benchmark"),
         ),
     )
     conn.commit()
@@ -118,14 +120,14 @@ def test_content_blocks_batch_insert_is_linear(tmp_path: Path) -> None:
         message_id, session_id, base_position = _resolve_bench_message(conn)
         start = time.perf_counter()
         conn.executemany(
-            """INSERT INTO blocks(message_id, session_id, position, block_type, text)
-            VALUES (?, ?, ?, 'text', ?)""",
+            "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, 0)",
             [
                 (
                     message_id,
                     session_id,
                     base_position + i,
                     f"block {i} text content",
+                    fixture_block_content_identity("text", f"block {i} text content"),
                 )
                 for i in range(n)
             ],

@@ -20,7 +20,8 @@ import pytest
 from hypothesis import given, settings
 
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
+from polylogue.sources.decoders import _decode_json_bytes
+from tests.infra.json_values import iter_owned_json_values
 from tests.infra.large_batches import (
     corrupt_line_bad_utf8,
     corrupt_line_malformed_json,
@@ -47,9 +48,9 @@ def _jsonl_bytes(lines: list[str]) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def _iter_jsonl_stream(data: bytes, name: str = "test.jsonl") -> list[object]:
-    """Convenience: parse JSONL bytes via _iter_json_stream and collect."""
-    return list(_iter_json_stream(BytesIO(data), name))
+def _decoded_jsonl_values(data: bytes, name: str = "test.jsonl") -> list[object]:
+    """Convenience: parse JSONL bytes via iter_owned_json_values and collect."""
+    return list(iter_owned_json_values(BytesIO(data), name))
 
 
 def _as_record(value: object) -> dict[str, object]:
@@ -80,7 +81,7 @@ class TestLargeBatchMalformedJson:
         corrupted = corrupt_line_malformed_json(lines, self.CORRUPT_INDEX)
         data = _jsonl_bytes(corrupted)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = _decoded_jsonl_values(data)
         assert len(parsed) == self.BATCH_SIZE - 1
 
     def test_malformed_json_records_are_valid_dicts(self) -> None:
@@ -89,7 +90,7 @@ class TestLargeBatchMalformedJson:
         corrupted = corrupt_line_malformed_json(lines, self.CORRUPT_INDEX)
         data = _jsonl_bytes(corrupted)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = _decoded_jsonl_values(data)
         assert all(isinstance(record, dict) for record in parsed)
 
     def test_malformed_json_all_records_have_type_field(self) -> None:
@@ -98,7 +99,7 @@ class TestLargeBatchMalformedJson:
         corrupted = corrupt_line_malformed_json(lines, self.CORRUPT_INDEX)
         data = _jsonl_bytes(corrupted)
 
-        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
+        parsed = [_as_record(record) for record in _decoded_jsonl_values(data)]
         assert all(record.get("type") == "message" for record in parsed)
 
 
@@ -114,7 +115,7 @@ class TestLargeBatchTruncatedLine:
         corrupted = corrupt_line_truncated(lines, self.CORRUPT_INDEX)
         data = _jsonl_bytes(corrupted)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = _decoded_jsonl_values(data)
         assert len(parsed) == self.BATCH_SIZE - 1
 
     def test_truncated_produces_valid_records(self) -> None:
@@ -123,7 +124,7 @@ class TestLargeBatchTruncatedLine:
         corrupted = corrupt_line_truncated(lines, self.CORRUPT_INDEX)
         data = _jsonl_bytes(corrupted)
 
-        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
+        parsed = [_as_record(record) for record in _decoded_jsonl_values(data)]
         assert all("type" in r for r in parsed)
 
 
@@ -143,7 +144,7 @@ class TestLargeBatchBadUtf8:
         write_jsonl_with_bad_utf8(path, corrupted)
 
         with open(path, "rb") as f:
-            parsed = list(_iter_json_stream(f, "test.jsonl"))
+            parsed = list(iter_owned_json_values(f, "test.jsonl"))
 
         # The bad UTF-8 line may parse as a dict (the bad bytes are inside a
         # JSON string value, so _decode_json_bytes may succeed with errors="ignore"
@@ -159,7 +160,7 @@ class TestLargeBatchBadUtf8:
         write_jsonl_with_bad_utf8(path, corrupted)
 
         with open(path, "rb") as f:
-            parsed = list(_iter_json_stream(f, "test.jsonl"))
+            parsed = list(iter_owned_json_values(f, "test.jsonl"))
         assert isinstance(parsed, list)
 
 
@@ -170,10 +171,10 @@ class TestLargeBatchWrongEnvelope:
     CORRUPT_INDEX = 450
 
     def test_wrong_envelope_still_parsed_as_json(self) -> None:
-        """Wrong envelope is valid JSON, so _iter_json_stream yields it.
+        """Wrong envelope is valid JSON, so iter_owned_json_values yields it.
 
         The wrong-envelope record IS valid JSON — it just has the wrong
-        structure for the provider. _iter_json_stream accepts it; the
+        structure for the provider. iter_owned_json_values accepts it; the
         provider parser downstream will reject/ignore it. Verify count
         includes the wrong-envelope line (it's not a parse error at the
         JSON level).
@@ -182,7 +183,7 @@ class TestLargeBatchWrongEnvelope:
         corrupted = corrupt_line_wrong_envelope(lines, self.CORRUPT_INDEX)
         data = _jsonl_bytes(corrupted)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = _decoded_jsonl_values(data)
         # Wrong envelope IS valid JSON, so all 500 lines parse
         assert len(parsed) == self.BATCH_SIZE
 
@@ -192,7 +193,7 @@ class TestLargeBatchWrongEnvelope:
         corrupted = corrupt_line_wrong_envelope(lines, self.CORRUPT_INDEX)
         data = _jsonl_bytes(corrupted)
 
-        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
+        parsed = [_as_record(record) for record in _decoded_jsonl_values(data)]
         # Exactly one record should lack the 'type' field
         records_without_type = [r for r in parsed if "type" not in r]
         assert len(records_without_type) == 1
@@ -211,7 +212,7 @@ class TestMultipleCorruptionsInBatch:
             lines = corrupt_line_malformed_json(lines, idx)
         data = _jsonl_bytes(lines)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = _decoded_jsonl_values(data)
         assert len(parsed) == self.BATCH_SIZE - len(corrupt_indices)
 
     def test_mixed_corruption_types(self, tmp_path: Path) -> None:
@@ -223,7 +224,7 @@ class TestMultipleCorruptionsInBatch:
         lines = corrupt_line_malformed_json(lines, 50)
         data = _jsonl_bytes(lines)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = _decoded_jsonl_values(data)
         # 3 corrupted lines should be skipped
         assert len(parsed) == self.BATCH_SIZE - 3
 
@@ -239,7 +240,7 @@ class TestCorruptionAtBoundaries:
         corrupted = corrupt_line_malformed_json(lines, 0)
         data = _jsonl_bytes(corrupted)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = _decoded_jsonl_values(data)
         assert len(parsed) == self.BATCH_SIZE - 1
 
     def test_last_line_corrupted(self) -> None:
@@ -248,7 +249,7 @@ class TestCorruptionAtBoundaries:
         corrupted = corrupt_line_malformed_json(lines, self.BATCH_SIZE - 1)
         data = _jsonl_bytes(corrupted)
 
-        parsed = _iter_jsonl_stream(data)
+        parsed = _decoded_jsonl_values(data)
         assert len(parsed) == self.BATCH_SIZE - 1
 
 
@@ -546,7 +547,7 @@ class TestTimestampPatternsInJsonl:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         data = _jsonl_bytes(lines)
 
-        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
+        parsed = [_as_record(record) for record in _decoded_jsonl_values(data)]
         assert len(parsed) == len(records)
         for record in parsed:
             ts = parse_timestamp(_timestamp_value(record))
@@ -560,7 +561,7 @@ class TestTimestampPatternsInJsonl:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         data = _jsonl_bytes(lines)
 
-        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
+        parsed = [_as_record(record) for record in _decoded_jsonl_values(data)]
         assert len(parsed) == len(records)
         for record in parsed:
             ts = parse_timestamp(_timestamp_value(record))
@@ -574,7 +575,7 @@ class TestTimestampPatternsInJsonl:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         data = _jsonl_bytes(lines)
 
-        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
+        parsed = [_as_record(record) for record in _decoded_jsonl_values(data)]
         assert len(parsed) == len(records)
         for record in parsed:
             ts = parse_timestamp(_timestamp_value(record))
@@ -587,7 +588,7 @@ class TestTimestampPatternsInJsonl:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         data = _jsonl_bytes(lines)
 
-        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
+        parsed = [_as_record(record) for record in _decoded_jsonl_values(data)]
         assert len(parsed) == len(records)
         for record in parsed:
             ts = parse_timestamp(_timestamp_value(record))
@@ -600,7 +601,7 @@ class TestTimestampPatternsInJsonl:
         lines = [json.dumps(r, separators=(",", ":")) for r in records]
         data = _jsonl_bytes(lines)
 
-        parsed = [_as_record(record) for record in _iter_jsonl_stream(data)]
+        parsed = [_as_record(record) for record in _decoded_jsonl_values(data)]
         assert len(parsed) == len(records)
         # Only records with timestamps should parse; missing should be None
         timestamps = [parse_timestamp(_timestamp_value(r)) for r in parsed]
@@ -732,13 +733,13 @@ class TestRerunIdempotency:
                 ("codex_unknown_outer_record", 1)
             ]
 
-    def test_iter_json_stream_idempotent(self) -> None:
-        """_iter_json_stream produces identical output on repeated calls."""
+    def testiter_owned_json_values_idempotent(self) -> None:
+        """iter_owned_json_values produces identical output on repeated calls."""
         lines = generate_large_jsonl(100, provider="codex")
         data = _jsonl_bytes(lines)
 
-        parsed_1 = _iter_jsonl_stream(data)
-        parsed_2 = _iter_jsonl_stream(data)
+        parsed_1 = _decoded_jsonl_values(data)
+        parsed_2 = _decoded_jsonl_values(data)
 
         assert len(parsed_1) == len(parsed_2) == 100
         for r1, r2 in zip(parsed_1, parsed_2, strict=True):
@@ -751,8 +752,8 @@ class TestRerunIdempotency:
             lines = [json.dumps(r, separators=(",", ":")) for r in records]
             data = _jsonl_bytes(lines)
 
-            parsed_1 = _iter_jsonl_stream(data)
-            parsed_2 = _iter_jsonl_stream(data)
+            parsed_1 = _decoded_jsonl_values(data)
+            parsed_2 = _decoded_jsonl_values(data)
 
             assert parsed_1 == parsed_2, f"Idempotency violated for pattern '{pattern_name}'"
 
@@ -764,11 +765,11 @@ class TestRerunIdempotency:
 
 @given(malformed_json_strategy())
 @settings(max_examples=40)
-def test_iter_json_stream_handles_malformed_json_without_crash(malformed: str) -> None:
-    """_iter_json_stream never raises on malformed JSON input — it skips bad lines."""
+def testiter_owned_json_values_handles_malformed_json_without_crash(malformed: str) -> None:
+    """iter_owned_json_values never raises on malformed JSON input — it skips bad lines."""
     raw = malformed.encode("utf-8", errors="replace")
     try:
-        result = list(_iter_json_stream(BytesIO(raw), "fuzz.jsonl"))
+        result = list(iter_owned_json_values(BytesIO(raw), "fuzz.jsonl"))
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
         pass  # Expected for some malformed patterns
     else:
@@ -792,7 +793,7 @@ def test_malformed_json_in_jsonl_batch_does_not_poison_valid_lines(malformed: st
     lines = valid_records[:2] + [malformed] + valid_records[2:]
     data = ("\n".join(lines) + "\n").encode("utf-8", errors="replace")
 
-    parsed = list(_iter_json_stream(BytesIO(data), "batch-fuzz.jsonl"))
+    parsed = list(iter_owned_json_values(BytesIO(data), "batch-fuzz.jsonl"))
     # At least the 5 valid records should survive; the malformed line
     # is either skipped (not a dict) or parsed if it happens to be valid JSON
     assert len(parsed) >= 4  # at worst one valid line adjacent to malformed gets damaged

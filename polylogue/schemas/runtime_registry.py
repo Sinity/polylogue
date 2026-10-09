@@ -9,7 +9,8 @@ import json
 import shutil
 import tempfile
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import cast
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.raw_payload.decode import JSONRecord
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.provider_identity import canonical_schema_provider as _canonical_schema_provider
@@ -33,9 +35,9 @@ from polylogue.schemas.generation.dynamic_keys import (
 from polylogue.schemas.observation import (
     derive_bundle_scope,
     extract_schema_units_from_payload,
-    profile_similarity,
     resolve_provider_config,
 )
+from polylogue.schemas.observation_models import ProfileToken
 from polylogue.schemas.package_publication import publish_provider_tree, read_provider_snapshot
 from polylogue.schemas.packages import (
     SchemaElementManifest,
@@ -212,7 +214,7 @@ class SchemaObservation:
     artifact_kind: str
     bundle_scope: str | None
     exact_structure_id: str | None
-    profile_tokens: tuple[str, ...]
+    profile_tokens: tuple[ProfileToken, ...]
     source_witnesses: tuple[tuple[str, ...], ...] = ()
 
 
@@ -316,7 +318,37 @@ class SchemaRegistry:
         self._schema_cache: dict[SchemaCacheKey, PublicSchemaDocument | None] = {}
         self._workload_profile_cache: dict[WorkloadProfileCacheKey, PublicSchemaDocument | None] = {}
         self._snapshots: dict[Path, dict[str, bytes]] = {}
+        self._current_snapshot_roots: dict[str, tuple[Path, ...]] = {}
         self._cache_lock = threading.RLock()
+
+    @contextmanager
+    def current_provider_snapshot(self, provider: str | Provider) -> Iterator[None]:
+        """Reuse decoded declarations only after reading the exact current bytes.
+
+        Keep resolution on that coherent snapshot through the caller's complete
+        validation. Local overrides can appear, disappear, or be replaced while
+        a preparation owner lives; directory metadata cannot certify their bytes.
+        """
+        provider_token = _provider_token(str(provider))
+        with self._cache_lock:
+            roots = tuple(self._provider_search_roots(provider_token))
+            current: dict[Path, dict[str, bytes]] = {}
+            for root in roots:
+                check_compute_cancelled()
+                current[root] = read_provider_snapshot(root)
+            check_compute_cancelled()
+            previous_roots = self._current_snapshot_roots.get(provider_token)
+            if (
+                (previous_roots is not None and previous_roots != roots)
+                or (previous_roots is None and provider_token in self._catalog_cache)
+                or any(
+                    root in self._snapshots and self._snapshots[root] != snapshot for root, snapshot in current.items()
+                )
+            ):
+                self.clear_cache()
+            self._snapshots.update(current)
+            self._current_snapshot_roots[provider_token] = roots
+            yield
 
     def _snapshot(self, provider_dir: Path) -> dict[str, bytes]:
         with self._cache_lock:
@@ -338,6 +370,7 @@ class SchemaRegistry:
         """Clear internal caches. Call after modifying schema packages."""
         with self._cache_lock:
             self._snapshots.clear()
+            self._current_snapshot_roots.clear()
             self._catalog_cache.clear()
             self._schema_cache.clear()
             self._workload_profile_cache.clear()
@@ -1114,7 +1147,18 @@ class SchemaRegistry:
         observation_index: int,
     ) -> _ResolutionCandidate | None:
         candidates: list[_ResolutionCandidate] = []
-        observed_profile_tokens = set(observation.profile_tokens)
+        from polylogue.schemas.observation_spill import SpilledProfileToken, compare_profile_tokens
+
+        literal_profile_tokens = {token for token in observation.profile_tokens if isinstance(token, str)}
+        spilled_profile_tokens: list[SpilledProfileToken] = []
+        for token in observation.profile_tokens:
+            if isinstance(token, str):
+                continue
+            if not any(compare_profile_tokens(token, prior) == 0 for prior in literal_profile_tokens) and not any(
+                compare_profile_tokens(token, prior) == 0 for prior in spilled_profile_tokens
+            ):
+                spilled_profile_tokens.append(token)
+        observed_token_count = len(literal_profile_tokens) + len(spilled_profile_tokens)
         source_witnesses = observation.source_witnesses
         for package in packages:
             element = package.element(observation.artifact_kind)
@@ -1158,8 +1202,14 @@ class SchemaRegistry:
                         observation_index=observation_index,
                     )
                 )
-            if observed_profile_tokens and element.profile_tokens:
-                score = profile_similarity(set(element.profile_tokens), observed_profile_tokens)
+            if observed_token_count and element.profile_tokens:
+                declared_tokens = set(element.profile_tokens)
+                overlap = sum(
+                    declared in literal_profile_tokens
+                    or any(compare_profile_tokens(declared, observed) == 0 for observed in spilled_profile_tokens)
+                    for declared in declared_tokens
+                )
+                score = ((overlap / len(declared_tokens)) + (overlap / observed_token_count)) / 2.0
                 if score > 0.0:
                     candidates.append(
                         _ResolutionCandidate(
@@ -1231,6 +1281,7 @@ class SchemaRegistry:
         observations = self._observed_payloads(_provider_token(provider), payload, source_path=source_path)
         return self.resolve_observation(provider, observations, source_path=source_path)
 
+    @contextmanager
     def observe_stream(
         self,
         provider: str,
@@ -1238,17 +1289,17 @@ class SchemaRegistry:
         *,
         source_path: str | None = None,
         cohort: str = "session_document",
-    ) -> tuple[tuple[SchemaObservation, ...], str]:
-        """Measure an exhausted JSON document with private disk-backed shape state.
+    ) -> Iterator[tuple[tuple[SchemaObservation, ...], str]]:
+        """Own complete streamed observations through their resolution and use.
 
-        One decoded scalar remains subject to the existing SQLite value bound;
-        record count, property count and schema tree size do not bound support.
+        Profile tokens may borrow exact scalar chunks from this context's tree.
+        The caller must finish consuming observations before leaving it.
         """
         from polylogue.schemas.observation_spill import StreamedJSONDocument
 
         payload_store = StreamedJSONDocument(path)
         with payload_store as payload:
-            return self.observe_payload(
+            yield self.observe_payload(
                 provider,
                 payload,
                 source_path=source_path,

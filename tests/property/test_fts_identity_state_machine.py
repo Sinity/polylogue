@@ -28,7 +28,7 @@ from polylogue.storage.fts.fts_lifecycle import (
     restore_fts_triggers_sync,
 )
 from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_block_id, archive_message_id, fixture_block_content_identity
 
 
 class _Block:
@@ -101,13 +101,16 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
             (session_id, message_native_id, position, content_hash),
         )
         self._conn.execute(
-            """
-            INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash)
-            VALUES (?, ?, 0, 'text', ?, ?)
-            """,
-            (message_id, session_id, text, content_hash),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                text,
+                content_hash,
+                fixture_block_content_identity("text", text),
+            ),
         )
-        block_id = f"{message_id}:0"
+        block_id = archive_block_id(message_id, content_identity=fixture_block_content_identity("text", text))
         block = _Block(block_id, session_native_id, message_native_id, indexed=bool(text))
         self._blocks[block_id] = block
         self._blocks_by_session[session_native_id].append(block_id)
@@ -188,13 +191,18 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
                 (session_id, message_native_id, position, content_hash),
             )
             self._conn.execute(
-                """
-                INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash)
-                VALUES (?, ?, 0, 'text', ?, ?)
-                """,
-                (message_id, session_id, f"replacement {self._next_id}", content_hash),
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, ?, 0)",
+                (
+                    message_id,
+                    session_id,
+                    f"replacement {self._next_id}",
+                    content_hash,
+                    fixture_block_content_identity("text", f"replacement {self._next_id}"),
+                ),
             )
-            block_id = f"{message_id}:0"
+            block_id = archive_block_id(
+                message_id, content_identity=fixture_block_content_identity("text", f"replacement {self._next_id}")
+            )
             block = _Block(block_id, session_native_id, message_native_id, indexed=True)
             self._blocks[block_id] = block
             self._blocks_by_session[session_native_id].append(block_id)
@@ -232,11 +240,14 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
                 (session_id, message_native_id, position, content_hash),
             )
             self._conn.execute(
-                """
-                INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash)
-                VALUES (?, ?, 0, 'text', ?, ?)
-                """,
-                (message_id, session_id, "rolled back", content_hash),
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, ?, 0)",
+                (
+                    message_id,
+                    session_id,
+                    "rolled back",
+                    content_hash,
+                    fixture_block_content_identity("text", "rolled back"),
+                ),
             )
         finally:
             self._conn.execute("ROLLBACK TO rollback_probe")

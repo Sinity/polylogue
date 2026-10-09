@@ -551,7 +551,7 @@ def test_carrier_coordinates_are_byte_offsets_not_ordinals(tmp_path: Path, monke
         recorded = sorted(row[0] for row in conn.execute("SELECT relative_path FROM hook_event_carriers").fetchall())
         sources = {row[0] for row in conn.execute("SELECT DISTINCT source_id FROM hook_event_carriers").fetchall()}
     assert sources == {"primary-hook-spool"}
-    assert recorded == sorted(f"{relative}#{line.byte_offset:012d}" for line in lines)
+    assert recorded == sorted(f"{relative}#{line.byte_offset:012d}:hook:{line.record['event_id']}" for line in lines)
 
 
 def test_events_written_as_files_again_are_never_acquired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1436,3 +1436,161 @@ def test_ordinary_hook_emission_does_not_synchronize_directories(
     record = json.loads(_envelope(0))
     append_event(root=str(tmp_path), **record)
     assert len(list(tmp_path.rglob("*.ndjson"))) == 1
+
+
+def test_recreated_carrier_retains_new_event_at_the_old_byte_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reusing a day/PID path cannot certify a different event from its old offset."""
+    from polylogue.storage.hook_event_authority import census_hook_event_authority
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    arguments: dict[str, Any] = {
+        "event_type": "PostToolUse",
+        "session_id": "replacement-session",
+        "provider": "codex",
+        "timestamp": _TIMESTAMP,
+        "root": spool_root,
+    }
+    path = append_hook_event(**arguments, payload={"text": "old"}, event_id="1" * 32)
+    assert materialize_hook_carriers(archive_root) == 1
+    old_bytes = path.read_bytes()
+    path.unlink()
+    replacement = append_hook_event(**arguments, payload={"text": "new"}, event_id="2" * 32)
+    assert replacement == path
+    assert len(path.read_bytes()) == len(old_bytes)
+    assert materialize_hook_carriers(archive_root) == 2
+    # A fresh route owner repeats acquisition/discovery/materialization.
+    assert materialize_hook_carriers(archive_root) == 2
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        hashes = conn.execute(
+            "SELECT DISTINCT hex(blob_hash) FROM raw_sessions WHERE source_path = ?", (str(path),)
+        ).fetchall()
+        assert len(hashes) == 2
+        assert conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone() == (2,)
+        assert {row[0] for row in conn.execute("SELECT hook_event_id FROM raw_hook_events")} == {
+            "hook:" + "1" * 32,
+            "hook:" + "2" * 32,
+        }
+        assert census_hook_event_authority(conn).issues == ()
+    from polylogue.storage.blob_store import BlobStore
+
+    store = BlobStore(archive_root / "blob")
+    assert {store.read_all(row[0].lower()) for row in hashes} == {old_bytes, path.read_bytes()}
+
+
+def test_pending_hook_discovery_passes_complete_pages_and_restarts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid first page is not an empty pending population."""
+    from polylogue.operations.hook_event_derivation import converge_hook_carriers, discover_pending_hook_carriers
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    for index in range(4):
+        path = append_hook_event(
+            event_type="PostToolUse",
+            session_id="paged-session",
+            provider="codex",
+            timestamp=_TIMESTAMP,
+            payload={"sequence": index},
+            root=spool_root,
+            event_id=f"{index:032x}",
+        )
+        # Four independent producer carriers, all produced by the normal encoder.
+        path.rename(path.with_name(f"neutral-{index}.ndjson"))
+    assert acquire_hook_carriers(archive_root) == 4
+    all_pending = discover_pending_hook_carriers(archive_root, 4)
+    assert len(all_pending) == 4
+    for key, _cost in all_pending[:3]:
+        assert converge_hook_carriers(archive_root, raw_ids=(key,), limit=1).done == 1
+    assert discover_pending_hook_carriers(archive_root, 1) == all_pending[3:]
+    assert materialize_acquired_hook_carriers(archive_root) == 4
+    assert discover_pending_hook_carriers(archive_root, 1) == ()
+    assert materialize_acquired_hook_carriers(archive_root) == 4
+
+
+@pytest.mark.parametrize("materialize_prefix", [True, False])
+def test_cancelled_hook_discovery_leaves_later_pending_for_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, materialize_prefix: bool
+) -> None:
+    """Cancellation between completed pages cannot acknowledge later work."""
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.operations.hook_event_derivation import converge_hook_carriers, discover_pending_hook_carriers
+    from polylogue.storage.derived.hook_events import HookEventsDerivation
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    for index in range(2):
+        path = append_hook_event(
+            event_type="PostToolUse",
+            session_id="cancelled-discovery",
+            provider="codex",
+            timestamp=_TIMESTAMP,
+            payload={"sequence": index},
+            root=spool_root,
+            event_id=f"{index:032x}",
+        )
+        path.rename(path.with_name(f"neutral-{index}.ndjson"))
+    assert acquire_hook_carriers(archive_root) == 2
+    pending = discover_pending_hook_carriers(archive_root, 2)
+    if materialize_prefix:
+        assert converge_hook_carriers(archive_root, raw_ids=(pending[0][0],), limit=1).done == 1
+    cancelled = threading.Event()
+    original = HookEventsDerivation.inspect
+
+    def cancel_after_inspection(self: Any, frame: object, keys: Any) -> Any:
+        result = original(self, frame, keys)
+        cancelled.set()
+        return result
+
+    token = compute_cancel.set(cancelled)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(HookEventsDerivation, "inspect", cancel_after_inspection)
+            with pytest.raises(DaemonOperationCancelled):
+                discover_pending_hook_carriers(archive_root, 1)
+    finally:
+        compute_cancel.reset(token)
+    assert hook_event_count(archive_root) == int(materialize_prefix)
+    assert discover_pending_hook_carriers(archive_root, 1) == (pending[1:] if materialize_prefix else pending[:1])
+    assert materialize_acquired_hook_carriers(archive_root) == 2
+
+
+def test_hook_identity_with_changed_payload_remains_a_reported_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Digest inspection cannot certify a reused identity with changed content."""
+    from polylogue.operations.hook_event_derivation import converge_hook_carriers, discover_pending_hook_carriers
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    path = append_hook_event(
+        event_type="PostToolUse",
+        session_id="immutable-event",
+        provider="codex",
+        timestamp=_TIMESTAMP,
+        payload={"text": "old"},
+        root=spool_root,
+        event_id="e" * 32,
+    )
+    assert materialize_hook_carriers(archive_root) == 1
+    path.unlink()
+    append_hook_event(
+        event_type="PostToolUse",
+        session_id="immutable-event",
+        provider="codex",
+        timestamp=_TIMESTAMP,
+        payload={"text": "new"},
+        root=spool_root,
+        event_id="e" * 32,
+    )
+    assert acquire_hook_carriers(archive_root) == 1
+    pending = discover_pending_hook_carriers(archive_root, 1)
+    assert len(pending) == 1
+    report = converge_hook_carriers(archive_root, raw_ids=(pending[0][0],), limit=1)
+    assert report.failed == 1 and report.done == 0
+    assert discover_pending_hook_carriers(archive_root, 1) == pending
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
+        rows = conn.execute("SELECT payload_json FROM raw_hook_events").fetchall()
+    assert len(rows) == 1
+    assert json.loads(rows[0][0])["payload"]["text"] == "old"

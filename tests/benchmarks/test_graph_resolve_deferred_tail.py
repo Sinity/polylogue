@@ -52,7 +52,7 @@ import pytest
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 
 _INDEX_DDL = ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX]
 
@@ -85,13 +85,23 @@ def _build_deferred_tail_fixture(db_path: Path, *, n_children: int) -> tuple[sql
         message_id = archive_message_id(parent_session_id, native_id)
         role = "user" if position % 2 == 0 else "assistant"
         parent_messages.append((parent_session_id, native_id, position, role, b"x" * 32))
-        parent_blocks.append((message_id, parent_session_id, 0, "text", f"text-{position}"))
+        parent_blocks.append(
+            (
+                message_id,
+                parent_session_id,
+                0,
+                "text",
+                f"text-{position}",
+                fixture_block_content_identity("text", f"text-{position}"),
+                0,
+            )
+        )
     conn.executemany(
         "INSERT INTO messages (session_id, native_id, position, role, content_hash) VALUES (?, ?, ?, ?, ?)",
         parent_messages,
     )
     conn.executemany(
-        "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?)",
         parent_blocks,
     )
 
@@ -115,14 +125,16 @@ def _build_deferred_tail_fixture(db_path: Path, *, n_children: int) -> tuple[sql
             # tail positions diverge (this child's own new content).
             text = f"text-{position}" if position < _PARENT_MESSAGES else f"child{child_index}-own-{position}"
             child_messages.append((child_session_id, native_id, position, role, b"x" * 32))
-            child_blocks.append((message_id, child_session_id, 0, "text", text))
+            child_blocks.append(
+                (message_id, child_session_id, 0, "text", text, fixture_block_content_identity("text", text), 0)
+            )
             child_events.append((child_session_id, message_id, position, "message_event", "e"))
         conn.executemany(
             "INSERT INTO messages (session_id, native_id, position, role, content_hash) VALUES (?, ?, ?, ?, ?)",
             child_messages,
         )
         conn.executemany(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?)",
             child_blocks,
         )
         conn.executemany(

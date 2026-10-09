@@ -221,6 +221,7 @@ HermesSpanEventType: TypeAlias = Literal[
     "hermes_observer_span",
     "hermes_atof_unpaired_scope",
     "hermes_subagent_delegation_evidence",
+    "hermes_atif_parse_accounting",
 ]
 
 
@@ -1110,7 +1111,7 @@ def iter_atif_sessions(
             },
         )
     )
-    skipped = 0
+    malformed_steps = skipped_tool_calls = malformed_subagents = 0
     for index, raw_step in enumerate(raw_steps):
         step = json_document(raw_step)
         # `json_document()` returns `{}` (falsy), never `None`, for a
@@ -1119,11 +1120,11 @@ def iter_atif_sessions(
         # a recognizable shape, so both are skipped and counted the same way
         # `_events_for_step`'s tool_call entries are).
         if not step:
-            skipped += 1
+            malformed_steps += 1
             continue
         step_events, step_skipped = _events_for_step(step, index, model_name)
         events.extend(step_events)
-        skipped += step_skipped
+        skipped_tool_calls += step_skipped
 
     # Deliberately stable across every replay/revision of this session (never
     # embeds live step/event counts): see _atof_session's identical note --
@@ -1134,10 +1135,10 @@ def iter_atif_sessions(
     summary_text = f"Hermes ATIF trajectory: {session_id}"
 
     def child_sessions() -> Iterator[ParsedSession]:
-        nonlocal skipped
+        nonlocal malformed_subagents
         for index, subagent in enumerate(raw_subagents):
             if not subagent.fields and subagent.step_count is None:
-                skipped += 1
+                malformed_subagents += 1
                 continue
             subagent_session_id = _optional_str(subagent.fields.get("session_id"))
             delegation_edge_asserted = bool(
@@ -1155,6 +1156,7 @@ def iter_atif_sessions(
                 )
 
     with retain_children(child_sessions()) as children:
+        _append_atif_parse_accounting(events, malformed_steps, skipped_tool_calls, malformed_subagents)
         parent_session = ParsedSession(
             source_name=Provider.HERMES,
             provider_session_id=provider_session_id,
@@ -1225,12 +1227,16 @@ def _atif_subagent_child_session(
             },
         )
     )
+    malformed_steps = skipped_tool_calls = 0
     for index, raw_step in enumerate(subagent.steps()):
         step = json_document(raw_step)
         if not step:
+            malformed_steps += 1
             continue
-        step_events, _skipped = _events_for_step(step, index, model_name)
+        step_events, step_skipped = _events_for_step(step, index, model_name)
         event_rows.extend(step_events)
+        skipped_tool_calls += step_skipped
+    _append_atif_parse_accounting(event_rows, malformed_steps, skipped_tool_calls)
 
     summary_text = f"Hermes ATIF subagent trajectory: {subagent_session_id}"
     session = ParsedSession(
@@ -1400,6 +1406,25 @@ def _tool_availability_events(
     return [ParsedSessionEvent(event_type="hermes_tool_availability_span", timestamp=timestamp, payload=payload)]
 
 
+def _append_atif_parse_accounting(
+    events: MutableSequence[ParsedSessionEvent],
+    malformed_steps: int,
+    malformed_tool_calls: int,
+    malformed_subagents: int = 0,
+) -> None:
+    if malformed_steps or malformed_tool_calls or malformed_subagents:
+        events.append(
+            ParsedSessionEvent(
+                event_type="hermes_atif_parse_accounting",
+                payload={
+                    "malformed_steps": malformed_steps,
+                    "malformed_tool_calls": malformed_tool_calls,
+                    "malformed_subagents": malformed_subagents,
+                },
+            )
+        )
+
+
 def _atif_document_evidence(payload: JSONDocument, agent: JSONDocument) -> dict[str, object]:
     """Document-level ATIF evidence: trajectory id, agent plugin, and the
     producer's own aggregate token/step totals -- previously unread
@@ -1462,6 +1487,15 @@ def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> 
                 ParsedSessionEvent(event_type="hermes_tool_execution_span", timestamp=timestamp, payload=payload)
             )
         events.extend(_tool_availability_events(extra, index, step_id, timestamp))
+        telemetry = {**_step_invocation_evidence(extra), **_step_usage_evidence(step, extra)}
+        if telemetry:
+            payload = {"step_index": index, "model": model_name, "shape": "tool_calls", **telemetry}
+            if step_id is not None:
+                payload["step_id"] = step_id
+            payload.update(_step_ancestry_evidence(extra))
+            events.append(
+                ParsedSessionEvent(event_type="hermes_llm_request_span", timestamp=timestamp, payload=payload)
+            )
         return events, skipped
 
     if isinstance(message, str) and message:
@@ -1592,8 +1626,8 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
     capabilities = {
         "llm_request_spans": capability(
             llm_spans,
-            "Message-only trajectory steps mapped to LLM response evidence (text length only, no content); "
-            "confirmed by the real NeMo Relay ATIF-v1.7 fixture.",
+            "Message-only trajectory steps retain LLM response length; tool-call steps retain their reported "
+            "invocation and usage once per step. No conversation text is duplicated.",
             verified_by_real_fixture=True,
         ),
         "tool_execution_spans": capability(
@@ -1664,6 +1698,24 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
             counts={},
             detail="Steps matching none of the documented shapes (tool_calls/message/observation) are "
             "retained as generic evidence, never dropped.",
+        )
+    malformed_counts = dict.fromkeys(("malformed_steps", "malformed_tool_calls", "malformed_subagents"), 0)
+    for event in session.session_events:
+        if event.event_type != "hermes_atif_parse_accounting":
+            continue
+        for field in malformed_counts:
+            count = event.payload.get(field, 0)
+            if type(count) is not int or count < 0:
+                raise ValueError(f"Hermes ATIF accounting requires a nonnegative integer for {field}")
+            malformed_counts[field] += count
+    malformed_parts = sum(malformed_counts.values())
+    if malformed_parts:
+        capabilities["malformed_parts"] = HermesFidelityCapability(
+            status="degraded",
+            observed=malformed_parts,
+            expected=malformed_parts,
+            counts=malformed_counts,
+            detail="Malformed steps, tool calls and subagent entries were skipped; their counts remain explicit and raw bytes are retained.",
         )
     caveats = tuple(f"{name}: {cap.detail}" for name, cap in capabilities.items() if cap.status != "exact")
     if not schema_version_verified:

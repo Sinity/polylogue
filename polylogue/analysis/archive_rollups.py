@@ -6,14 +6,12 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from typing import cast
 
 from polylogue.analysis.archive import (
     ArchiveInsightProvenance,
     CostRollupInsight,
     SessionCostInsight,
     SessionLatencyProfileInsight,
-    SessionProfileInsight,
     SessionTagRollupInsight,
     profile_bucket_day,
     profile_timestamp_values,
@@ -336,97 +334,6 @@ def iso_week_bucket_key(canonical_session_date: str | None) -> str:
         return canonical_session_date[:7]
 
 
-def aggregate_session_profiles_by_dimension(
-    profiles: Sequence[SessionProfileInsight],
-    group_by: str,
-) -> dict[str, int]:
-    """GROUP BY session count over workflow_shape / terminal_state / origin (#1691).
-
-    Raises ``ValueError`` for an unsupported ``group_by``.
-    """
-    buckets: dict[str, int] = {}
-    for profile in profiles:
-        if group_by == "workflow_shape":
-            key = (profile.inference.workflow_shape if profile.inference else None) or "unknown"
-        elif group_by == "terminal_state":
-            key = (profile.inference.terminal_state if profile.inference else None) or "unknown"
-        elif group_by == "origin":
-            key = profile.origin
-        else:
-            raise ValueError(f"Unknown group_by: {group_by!r}. Supported: workflow_shape, terminal_state, origin.")
-        buckets[key] = buckets.get(key, 0) + 1
-    return buckets
-
-
-def workflow_shape_distribution_buckets(
-    profiles: Sequence[SessionProfileInsight],
-    group_by: str,
-) -> dict[str, dict[str, int]]:
-    """Histogram session workflow shapes by week / origin / project (#1691).
-
-    Raises ``ValueError`` when ``group_by`` is not one of
-    ``week``, ``origin``, ``project``.
-    """
-    allowed_group_by = {"week", "origin", "project"}
-    if group_by not in allowed_group_by:
-        raise ValueError("group_by must be one of week, origin, project")
-    buckets: dict[str, dict[str, int]] = {}
-    for profile in profiles:
-        evidence = profile.evidence
-        inference = profile.inference
-        shape = inference.workflow_shape if inference is not None else "unknown"
-        keys: tuple[str, ...]
-        if group_by == "origin":
-            keys = (profile.origin,)
-        elif group_by == "project":
-            paths = evidence.cwd_paths if evidence is not None else ()
-            keys = tuple(paths) or ("unattributed",)
-        else:
-            date_value = evidence.canonical_session_date if evidence is not None else None
-            keys = (iso_week_bucket_key(date_value),)
-        for key in keys:
-            bucket = buckets.setdefault(key, {})
-            bucket[shape] = bucket.get(shape, 0) + 1
-    return buckets
-
-
-def abandoned_session_items(
-    profiles: Sequence[SessionProfileInsight],
-    *,
-    min_severity: str,
-) -> list[dict[str, object]]:
-    """Sessions whose terminal state indicates dangling work (#1691).
-
-    Sorted by ``canonical_session_date`` descending (uncapped -- callers
-    apply their own limit). Raises ``ValueError`` for an unknown
-    ``min_severity``.
-    """
-    if min_severity not in ABANDONMENT_SEVERITY_RANK:
-        raise ValueError("min_severity must be one of " + ", ".join(sorted(ABANDONMENT_SEVERITY_RANK)))
-    min_rank = ABANDONMENT_SEVERITY_RANK[min_severity]
-    items: list[dict[str, object]] = []
-    for profile in profiles:
-        inference = profile.inference
-        evidence = profile.evidence
-        state = inference.terminal_state if inference is not None else "unknown"
-        if ABANDONMENT_SEVERITY_RANK.get(cast("TerminalState", state), 0) < min_rank:
-            continue
-        items.append(
-            {
-                "session_id": profile.session_id,
-                "origin": profile.origin,
-                "title": profile.title,
-                "terminal_state": state,
-                "terminal_state_confidence": (inference.terminal_state_confidence if inference is not None else 0.0),
-                "workflow_shape": inference.workflow_shape if inference is not None else "unknown",
-                "canonical_session_date": evidence.canonical_session_date if evidence is not None else None,
-                "evidence": evidence.terminal_state_evidence if evidence is not None else {},
-            }
-        )
-    items.sort(key=lambda item: str(item.get("canonical_session_date") or ""), reverse=True)
-    return items
-
-
 def tool_call_latency_distribution_payload(
     insights: Sequence[SessionLatencyProfileInsight],
     *,
@@ -469,12 +376,9 @@ def tool_call_latency_distribution_payload(
 
 __all__ = [
     "ABANDONMENT_SEVERITY_RANK",
-    "abandoned_session_items",
     "aggregate_cost_rollup_insights",
-    "aggregate_session_profiles_by_dimension",
     "aggregate_session_tag_rollup_insights",
     "build_session_tag_rollup_records",
     "iso_week_bucket_key",
     "tool_call_latency_distribution_payload",
-    "workflow_shape_distribution_buckets",
 ]

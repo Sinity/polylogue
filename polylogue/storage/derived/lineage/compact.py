@@ -38,7 +38,11 @@ from polylogue.analysis.lineage_graph import (
     LineageNodeRole,
     LineagePage,
 )
-from polylogue.archive.topology.edge import status_excludes_composition, topology_status_composes_sql
+from polylogue.archive.topology.edge import (
+    invalidated_prefix_sql,
+    status_excludes_composition,
+    topology_status_composes_sql,
+)
 from polylogue.core.enums import TopologyEdgeStatus
 from polylogue.core.types import MessageId, SessionId
 
@@ -250,6 +254,15 @@ class _CompositionShape:
         ).fetchone()
         return None if row is None else (str(row[0]), str(row[1]))
 
+    def _prefix_lost(self, session_id: str) -> bool:
+        return (
+            self._conn.execute(
+                f"SELECT 1 FROM session_links WHERE src_session_id = ? AND {invalidated_prefix_sql()} LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            is not None
+        )
+
     def _rank_within_own(self, session_id: str, message_id: str) -> int | None:
         """1-based transcript rank of a message inside its session's own rows."""
         row = self._conn.execute(
@@ -299,6 +312,9 @@ class _CompositionShape:
         cursor = session_id
         base: _Segment | None
         while True:
+            if self._prefix_lost(cursor):
+                base = None
+                break
             if cursor != session_id and cursor in self._segments:
                 base = self._segments[cursor]
                 break
@@ -349,6 +365,8 @@ class _CompositionShape:
         return cursor if rank == cursor.length else _Segment(owner, rank, cursor.prev)
 
     def accounting(self, session_id: str) -> LineageMessageAccounting:
+        if self._prefix_lost(session_id):
+            return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason="recorded prefix loss")
         edge = self._prefix_edge(session_id)
         own = self._own_count(session_id)
         if edge is None:

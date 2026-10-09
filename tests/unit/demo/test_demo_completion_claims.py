@@ -17,6 +17,7 @@ from polylogue.demo import (
     seed_demo_archive,
 )
 from polylogue.scenarios import DEMO_CODEX_RECEIPTS_SESSION_ID
+from tests.infra.identity import fixture_block_content_identity
 
 
 @pytest.mark.asyncio
@@ -242,11 +243,16 @@ async def test_completion_claim_experiment_uses_tool_result_time_not_tool_use_ti
             (DEMO_CODEX_RECEIPTS_SESSION_ID, failed[0]),
         )
         conn.execute(
-            """
-            INSERT INTO blocks(message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code)
-            VALUES (?, ?, 0, 'tool_result', ?, ?, ?, ?)
-            """,
-            (late_message_id, DEMO_CODEX_RECEIPTS_SESSION_ID, failed[1], failed[0], failed[2], failed[3]),
+            "INSERT INTO blocks(message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code, content_identity, content_occurrence) VALUES (?, ?, 0, 'tool_result', ?, ?, ?, ?, ?, 0)",
+            (
+                late_message_id,
+                DEMO_CODEX_RECEIPTS_SESSION_ID,
+                failed[1],
+                failed[0],
+                failed[2],
+                failed[3],
+                fixture_block_content_identity("tool_result", failed[1], failed[0], failed[2], failed[3]),
+            ),
         )
         conn.commit()
 

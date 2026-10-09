@@ -25,6 +25,7 @@ from pathlib import Path
 from polylogue.storage.search.query_support import escape_fts5_query
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.identity import fixture_block_content_identity
 
 _WRITE_TOKEN = "quokka-manifesto-9f3c1a"
 _EDIT_OLD_TOKEN = "legacy-walrus-descriptor-77b2"
@@ -66,12 +67,16 @@ def _insert_tool_block(
     tool_input: dict[str, str],
 ) -> None:
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, tool_name, tool_id, tool_input
-        ) VALUES (?, ?, ?, 'tool_use', ?, ?, ?)
-        """,
-        (message_id, session_id, position, tool_name, tool_id, json.dumps(tool_input)),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, tool_input , content_identity, content_occurrence) VALUES (?, ?, ?, 'tool_use', ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            position,
+            tool_name,
+            tool_id,
+            json.dumps(tool_input),
+            fixture_block_content_identity("tool_use", tool_name, tool_id, json.dumps(tool_input)),
+        ),
     )
 
 
@@ -169,6 +174,7 @@ def test_documented_workaround_finds_write_and_edit_tool_bodies(tmp_path: Path) 
 
         # The exact query documented in docs/search.md's "Searchable Content
         # Coverage" workaround.
+        expected_ids = dict(conn.execute("SELECT message_id, block_id FROM blocks"))
         workaround_sql = """
             SELECT block_id, session_id, tool_name,
                    json_extract(tool_input, '$.file_path') AS file_path
@@ -184,14 +190,14 @@ def test_documented_workaround_finds_write_and_edit_tool_bodies(tmp_path: Path) 
         write_hits = conn.execute(
             workaround_sql, (f"%{_WRITE_TOKEN}%", f"%{_WRITE_TOKEN}%", f"%{_WRITE_TOKEN}%")
         ).fetchall()
-        assert [row[0] for row in write_hits] == [write_message_id + ":0"]
+        assert [row[0] for row in write_hits] == [expected_ids[write_message_id]]
 
         old_hits = conn.execute(
             workaround_sql, (f"%{_EDIT_OLD_TOKEN}%", f"%{_EDIT_OLD_TOKEN}%", f"%{_EDIT_OLD_TOKEN}%")
         ).fetchall()
-        assert [row[0] for row in old_hits] == [edit_message_id + ":0"]
+        assert [row[0] for row in old_hits] == [expected_ids[edit_message_id]]
 
         new_hits = conn.execute(
             workaround_sql, (f"%{_EDIT_NEW_TOKEN}%", f"%{_EDIT_NEW_TOKEN}%", f"%{_EDIT_NEW_TOKEN}%")
         ).fetchall()
-        assert [row[0] for row in new_hits] == [edit_message_id + ":0"]
+        assert [row[0] for row in new_hits] == [expected_ids[edit_message_id]]

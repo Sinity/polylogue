@@ -2,7 +2,7 @@ from polylogue.archive.attachment.availability import (
     AttachmentAvailabilityState,
     resolve_attachment_availability,
 )
-from polylogue.daemon.webui_data import classify_attachment_state
+from polylogue.archive.attachment.presentation import classify_attachment_state
 
 
 def test_acquisition_status_does_not_certify_availability() -> None:

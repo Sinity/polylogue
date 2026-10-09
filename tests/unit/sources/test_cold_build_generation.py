@@ -17,6 +17,7 @@ import os
 import sqlite3
 import stat
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -849,6 +850,144 @@ def test_the_readiness_pass_restores_the_reader_shape_before_promotion(
         assert hits[0] >= 1
 
 
+def test_canonical_write_after_readiness_requires_another_readiness_pass(
+    tmp_path: Path, cold_build: ColdBuildGeneration
+) -> None:
+    """An operation's current rows cannot borrow an older readiness pass."""
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "first-ready")
+    cold_build.prepare_promotion_candidate()
+    second = root / "two.jsonl"
+    second.write_bytes(
+        _codex_session("second-ready", "latersearchtoken")
+        + b'{"type":"response_item","payload":{"type":"function_call","id":"fc",'
+        b'"call_id":"call","name":"exec_command","arguments":"{}"}}\n'
+        b'{"type":"response_item","payload":{"type":"function_call_output",'
+        b'"call_id":"call","output":"neutral"}}\n'
+    )
+    metrics = asyncio.run(_ingest_paths(tmp_path, root, [second]))
+    assert metrics.succeeded_file_count == 1
+    # The actual canonical inactive replay defers these models, even after
+    # an earlier readiness pass restored the reader indexes.
+    with closing(sqlite3.connect(f"file:{cold_build.generation.index_path}?mode=ro", uri=True)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'latersearchtoken'").fetchone()[0]
+            == 0
+        )
+    with pytest.raises(ReferenceSealStaleError), cold_build.prepare_promotion_proof():
+        pass
+    assert _active_session_count(tmp_path) == 0
+    assert "idx_messages_role" in _candidate_index_names(cold_build)
+    cold_build.promote()
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
+        assert reader._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 1
+        assert (
+            reader._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'latersearchtoken'"
+            ).fetchone()[0]
+            == 1
+        )
+
+
+def test_readiness_cancellation_interrupts_native_sql_and_preserves_retry(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation inside actual readiness SQL settles on its original writer."""
+    import threading
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "native-cancel")
+    cancelled = threading.Event()
+    original = ArchiveStore.set_read_progress_guard
+    entered_action_sql = []
+
+    def guard(self: ArchiveStore, callback: Any, **kwargs: Any) -> None:
+        original(self, callback, n_opcodes=1, check_cancelled=kwargs["check_cancelled"])
+
+        def cancel_inside_sql(sql: str) -> None:
+            if "INSERT INTO action_pairs" in sql:
+                entered_action_sql.append(sql)
+                cancelled.set()
+
+        self._conn.set_trace_callback(cancel_inside_sql)
+
+    with monkeypatch.context() as control:
+        control.setattr(ArchiveStore, "set_read_progress_guard", guard)
+        token = compute_cancel.set(cancelled)
+        try:
+            with pytest.raises(DaemonOperationCancelled):
+                cold_build.prepare_promotion_candidate()
+        finally:
+            compute_cancel.reset(token)
+    assert entered_action_sql
+    assert _active_session_count(tmp_path) == 0
+    assert cold_build._promotion_candidate_identity is None
+    cold_build.promote()
+    assert _active_session_count(tmp_path) == 1
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+def test_late_readiness_failure_preserves_restored_layout_for_next_canonical_preparation(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException]
+) -> None:
+    """A retry may prepare against restored indexes; its writer must retain them."""
+    from polylogue.storage.fts import fts_lifecycle
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "owned-first")
+    original = fts_lifecycle.rebuild_fts_index_sync
+
+    def fail_after_read_models(_conn: sqlite3.Connection) -> None:
+        raise failure("interrupted before terminal FTS publication")
+
+    with monkeypatch.context() as control:
+        control.setattr(fts_lifecycle, "rebuild_fts_index_sync", fail_after_read_models)
+        with pytest.raises(failure):
+            cold_build.prepare_promotion_candidate()
+    assert cold_build._promotion_candidate_identity is None
+    assert _active_session_count(tmp_path) == 0
+    assert "idx_messages_role" in _candidate_index_names(cold_build)
+    # This is actual acquisition, Source preparation and sealed Index replay,
+    # after the failed pass changed the candidate's reader-index incarnation.
+    _ingest(tmp_path, root, "two.jsonl", "owned-second")
+    assert "idx_messages_role" in _candidate_index_names(cold_build)
+    assert fts_lifecycle.rebuild_fts_index_sync is original
+    cold_build.promote()
+    assert _active_session_count(tmp_path) == 2
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
+        assert (
+            reader._conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'owned'").fetchone()[0]
+            == 2
+        )
+
+
+def test_secondary_layout_preservation_requires_owned_writer_and_excludes_deferral(
+    tmp_path: Path, cold_build: ColdBuildGeneration
+) -> None:
+    with pytest.raises(ValueError, match="owned inactive writable"):
+        ArchiveStore(tmp_path, preserve_secondary_index_layout=True)
+    with pytest.raises(ValueError, match="owned inactive writable"):
+        ArchiveStore(tmp_path, read_only=True, preserve_secondary_index_layout=True)
+    with pytest.raises(ValueError, match="deferred and preserved"):
+        ArchiveStore.open_owned_inactive_generation(
+            cold_build.generation_root,
+            generation_id=cold_build.generation_id,
+            owner_id=cold_build.generation.owner_id,
+            defer_secondary_indexes=True,
+            preserve_secondary_index_layout=True,
+        )
+
+
 def test_a_never_promoted_generation_is_discarded_and_leaves_readers_alone(
     tmp_path: Path, cold_build: ColdBuildGeneration
 ) -> None:
@@ -1006,11 +1145,22 @@ def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
     reads = 0
 
     def measured_revision(
-        path: Path, *, cancelled: Any = None, location: Any = None, source_binding: Any = None
+        path: Path,
+        *,
+        cancelled: Any = None,
+        location: Any = None,
+        source_binding: Any = None,
+        expected_observation: Any = None,
     ) -> tuple[str, int]:
         nonlocal reads
         reads += 1
-        digest, _size = real_revision(path, cancelled=cancelled, location=location, source_binding=source_binding)
+        digest, _size = real_revision(
+            path,
+            cancelled=cancelled,
+            location=location,
+            source_binding=source_binding,
+            expected_observation=expected_observation,
+        )
         return digest, 2 * 1024**3
 
     monkeypatch.setattr(production_baseline, "_revision", measured_revision)

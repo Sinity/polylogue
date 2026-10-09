@@ -24,10 +24,16 @@ PROTOCOL_VERSION = "polylogue.material-protocol/v1"
 #: per-message counter encodes ``null`` (unknown) instead of ``0``; ``0`` now
 #: means a measured zero. The keys are unchanged, but the value domain is not,
 #: and the change moved every message-record digest for identical material.
-SEMANTICS_VERSION = 5
+#: v6: opaque values and keys stay exact; only declared prose folds in NFC.
+#: Blocks carry semantic identities and occurrence coordinates.
+# v7: message records retain original Source occurrence names independently
+# of canonical unique native identity, with exact ASCII JSON spelling.
+# v8: native message names use exact Source carriers and n:/s: namespaces.
+# Attachment references carry exact encoded native identities, never position.
+SEMANTICS_VERSION = 8
 
 #: Version of the canonicalization algorithm (NFC + sorted-key JSON framing).
-CANONICALIZER_VERSION = 1
+CANONICALIZER_VERSION = 2
 
 #: Media type recorded for NDJSON segment content descriptors.
 SEGMENT_MEDIA_TYPE = "application/x-ndjson; charset=utf-8"

@@ -193,5 +193,14 @@ def _admit_population_destination(
             admission = require_population_admission(root)
             if admission.root_identity != (identity.st_dev, identity.st_ino):
                 raise ArchivePopulationPendingError(str(root))
-            marker.unlink()
-            _fsync_directory(root)
+            pending_evidence = marker.read_bytes()
+            try:
+                marker.unlink()
+                _fsync_directory(root)
+            except BaseException:
+                from polylogue.core.durable_fs import atomic_replace
+
+                # A failed retirement cannot leave an admitted-looking root.
+                # Reinstall the same fence and preserve the completed evidence.
+                atomic_replace(marker, pending_evidence)
+                raise

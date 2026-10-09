@@ -44,6 +44,7 @@ from polylogue.sources.source_acquisition_components import ZipEntryReadContext,
 from polylogue.sources.sqlite_snapshot import sqlite_member_revision
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.identity import fixture_block_content_identity
 
 CHECK = "source-conservation"
 
@@ -148,11 +149,12 @@ def _insert_session(
         (session_id, b"m" * 32),
     )
     conn.execute(
-        """
-        INSERT INTO blocks(message_id, session_id, position, block_type, text)
-        VALUES (?, ?, 0, 'text', 'hello world')
-        """,
-        (f"{session_id}:c:0123456789abcdef0123456789abcdef.0", session_id),
+        "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', 'hello world', ?, 0)",
+        (
+            f"{session_id}:c:0123456789abcdef0123456789abcdef.0",
+            session_id,
+            fixture_block_content_identity("text", "hello world"),
+        ),
     )
     return session_id
 

@@ -204,7 +204,7 @@ def read_attachment_library_page(
     """Read attachment references in the same stable order as the repository query."""
 
     from polylogue.storage.sqlite.queries.attachment_records import (
-        _build_attachment_record,
+        AttachmentLibraryWindow,
         attachment_library_page_sql,
     )
 
@@ -222,22 +222,28 @@ def read_attachment_library_page(
             (segment.session_id, segment.upto_position, segment.upto_variant_index) for segment in plan.segments
         )
     sql, args = attachment_library_page_sql(
-        limit=limit,
-        offset=offset,
+        limit=None if state_filter else limit,
+        offset=0 if state_filter else offset,
         mime_filter=mime_filter,
         session_filter=session_filter,
-        state_filter=state_filter,
         segments=segments,
     )
-    rows = archive._conn.execute(sql, args).fetchall()
-    return [
-        (
-            _build_attachment_record(row, session_id=str(row["session_id"])),
-            str(row["title"] or row["session_id"]),
-            row["origin"],
-        )
-        for row in rows
-    ]
+    window = AttachmentLibraryWindow(
+        limit=limit,
+        offset=offset if state_filter else 0,
+        state_filter=state_filter,
+        blob_store=archive._read_blob_store,
+    )
+    if limit <= 0:
+        return []
+    cursor = archive._conn.execute(sql, args)
+    try:
+        for row in cursor:
+            if window.consume((row,)):
+                break
+    finally:
+        cursor.close()
+    return window.rows
 
 
 class _PinnedTopologySource:

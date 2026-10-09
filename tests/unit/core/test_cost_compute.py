@@ -575,3 +575,55 @@ def test_unmappable_zero_provider_lanes_do_not_become_text_estimates() -> None:
     assert summary.cost_confidence == "unknown"
     assert summary.cost_provenance == "unknown"
     assert summary.per_model[0].confidence == "unknown"
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_message_fallback_preserves_cache_and_evidence_under_reorder(partial: bool) -> None:
+    """A heuristic addition cannot erase cache usage or become provider-only."""
+    from polylogue.archive.semantic.pricing import catalog_cost_for_tokens
+
+    measured = make_msg(
+        id="measured",
+        model_name="gpt-4o",
+        role="assistant",
+        text="measured",
+        input_tokens=10,
+        output_tokens=20,
+        cache_read_tokens=100,
+        cache_write_tokens=None if partial else 0,
+    )
+    estimated = make_msg(
+        id="estimated",
+        model_name="gpt-4o",
+        role="assistant",
+        text=" ".join(["synthetic"] * 15),
+        input_tokens=None,
+        output_tokens=None,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+    )
+    forward = compute_session_cost(make_conv(messages=[measured, estimated]), estimate_if_missing=False)
+    backward = compute_session_cost(make_conv(messages=[estimated, measured]), estimate_if_missing=False)
+    assert forward == backward
+    assert forward.total_cache_read_tokens == 100
+    (breakdown,) = forward.per_model
+    assert (
+        breakdown.total_tokens == breakdown.input_tokens + breakdown.output_tokens + 100 + breakdown.cache_write_tokens
+    )
+    assert breakdown.confidence == ("partial" if partial else "estimated")
+    assert breakdown.provenance == "mixed"
+    expected, _ = catalog_cost_for_tokens("gpt-4o", breakdown.input_tokens, breakdown.output_tokens, 100, 0)
+    assert expected is not None
+    assert forward.total_api_cost_usd == pytest.approx(round(expected, 6))
+
+
+def test_measured_zero_usage_does_not_fall_back_to_transcript_estimate() -> None:
+    session = make_conv(id="measured-zero", provider="chatgpt", messages=[make_msg(text="synthetic assistant reply")])
+    summary = compute_session_cost(
+        session,
+        estimate_if_missing=False,
+        model_usage=[ModelUsageTotals(model_name="gpt-4o", provider_lanes_complete=True, provider_usage_observed=True)],
+    )
+    assert summary.total_input_tokens == summary.total_output_tokens == 0
+    assert summary.total_api_cost_usd == 0
+    assert summary.cost_confidence == "reported"

@@ -2,10 +2,9 @@
 
 Projection carry-forward exempts every captured attachment belonging to a
 surviving message from the stale-attachment sweep, on the assumption that the
-restore will put its ``attachment_refs`` row back. The restore is slot-gated,
-and the two identities disagree about what a slot is: ``_attachment_position``
-derives it from ``provider_attachment_id`` alone, while ``_attachment_id`` also
-folds path, name, MIME type and size. A second acquisition that keeps the
+restore will put its ``attachment_refs`` row back. The restore follows the exact native
+reference, while the payload row also folds path, name, MIME type, size and
+known bytes. A second acquisition that keeps the
 provider id but changes the metadata therefore claims the same slot under a
 different ``attachment_id``, the old row is never restored, and -- having been
 exempted -- it keeps ``ref_count=1`` with no ``attachment_refs`` row at all.

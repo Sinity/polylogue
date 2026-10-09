@@ -36,19 +36,31 @@ ObservationCallback = Callable[[JSONDocument], None]
 _AcquisitionItem = TypeVar("_AcquisitionItem")
 
 
+def _discard_staged_capture(item: object) -> None:
+    raw = item.data if isinstance(item, SourceInputRecord) else item
+    if isinstance(raw, RawSessionData) and raw.staged_payload is not None:
+        raw.staged_payload.discard()
+
+
 def _drain_batch(
     iterator: Iterator[_AcquisitionItem],
     *,
     batch_size: int,
     blob_store: BlobStore | None = None,
 ) -> list[_AcquisitionItem]:
-    """Read up to ``batch_size`` items without sentinel gymnastics."""
-    batch = list(islice(iterator, batch_size))
-    if blob_store is not None:
-        from polylogue.storage.blob_publication import flush_blob_publications
+    """Read one page, preserving private-file ownership if a later read fails."""
+    batch: list[_AcquisitionItem] = []
+    try:
+        batch.extend(islice(iterator, batch_size))
+        if blob_store is not None:
+            from polylogue.storage.blob_publication import flush_blob_publications
 
-        flush_blob_publications(blob_store)
-    return batch
+            flush_blob_publications(blob_store)
+        return batch
+    except BaseException:
+        for item in batch:
+            _discard_staged_capture(item)
+        raise
 
 
 async def iter_source_raw_stream(
@@ -89,6 +101,8 @@ async def iter_source_raw_stream(
     from polylogue.storage.sqlite.async_sqlite import _await_settled
 
     with ThreadPoolExecutor(max_workers=1) as executor:
+        batch: list[SourceInputRecord] = []
+        consumed = 0
         try:
             while True:
                 pending = loop.run_in_executor(
@@ -100,17 +114,27 @@ async def iter_source_raw_stream(
                         blob_store=blob_store if execution is None else None,
                     ),
                 )
-                await _await_settled(pending)
+                try:
+                    await _await_settled(pending)
+                except BaseException:
+                    if pending.done() and not pending.cancelled() and pending.exception() is None:
+                        for item in pending.result():
+                            _discard_staged_capture(item)
+                    raise
                 batch = pending.result()
+                consumed = 0
                 if execution is not None and blob_store is not None:
                     from polylogue.storage.blob_publication import flush_blob_publications
 
                     await execution.publish_sync("blobs", lambda: flush_blob_publications(blob_store))
                 if not batch:
                     break
-                for item in batch:
+                for index, item in enumerate(batch):
+                    consumed = index + 1
                     yield item
         finally:
+            for item in batch[consumed:]:
+                _discard_staged_capture(item)
             # Close on the owning I/O worker after its last read settles.
             close = getattr(iterator, "close", None)
             if close is not None:
@@ -367,13 +391,14 @@ async def iter_raw_record_stream(
             raw_data = envelope.data if envelope is not None else item
             if not isinstance(raw_data, RawSessionData):
                 raise TypeError("acquisition record has no raw payload")
-            if not raw_data.raw_bytes and not raw_data.blob_hash:
+            if not raw_data.raw_bytes and not raw_data.blob_hash and raw_data.staged_payload is None:
                 continue
             acquired_at = None
             if raw_data.captured_zip_coordinate is not None:
                 if envelope is None or input_acquired_at is None:
                     raise ValueError("ZIP raw has no accepted acquisition pass")
                 acquired_at = input_acquired_at
+            pending_raw_capture = bool(raw_data.raw_bytes) or raw_data.staged_payload is not None
             record = make_raw_record(
                 raw_data, source.name, blob_root=blob_root, blob_store=blob_store, acquired_at=acquired_at
             )
@@ -392,7 +417,7 @@ async def iter_raw_record_stream(
                     raw_data.addressing_mode.value,
                     raw_data.content_identity,
                 )
-            if blob_store is not None and raw_data.raw_bytes:
+            if blob_store is not None and pending_raw_capture:
                 from polylogue.storage.blob_publication import flush_blob_publications
 
                 if execution is None:

@@ -9,8 +9,6 @@ from __future__ import annotations
 import io
 import json
 
-import pytest
-
 from polylogue.archive.raw_payload.decode import JSONValue
 
 # ---------------------------------------------------------------------------
@@ -25,10 +23,11 @@ class TestDecoderConvergence:
     @staticmethod
     def _sample_decode(raw_bytes: bytes) -> tuple[list[JSONValue], int]:
         """Run the sample decoder path, return (valid_records, malformed_count)."""
-        from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
+        from polylogue.archive.raw_payload.decode import owned_jsonl_sample
+        from tests.infra.json_values import materialize_json
 
-        records, malformed_count, _error = _sample_jsonl_payload_with_detail(raw_bytes)
-        return records, malformed_count
+        with owned_jsonl_sample(raw_bytes) as (records, malformed_count, _error):
+            return [materialize_json(record) for record in records], malformed_count
 
     @staticmethod
     def _stream_decode(raw_bytes: bytes) -> list[JSONValue]:
@@ -38,23 +37,9 @@ class TestDecoderConvergence:
         so it cannot report per-line malformed counts the way the sample
         decoder does. Only record-level agreement is comparable.
         """
-        import logging
+        from tests.infra.json_values import iter_owned_json_values
 
-        from polylogue.sources.decoder_json import iter_json_stream_with
-
-        logger = logging.getLogger("test_differential")
-        handle = io.BytesIO(raw_bytes)
-
-        records = []
-        try:
-            import ijson
-        except ImportError:
-            pytest.skip("ijson is required for streaming decoder convergence tests")
-
-        for record in iter_json_stream_with(logger, ijson, handle, "test.jsonl"):
-            records.append(record)
-
-        return records
+        return list(iter_owned_json_values(io.BytesIO(raw_bytes), "test.jsonl"))
 
     def test_well_formed_jsonl_same_record_count(self) -> None:
         lines = [json.dumps({"id": i, "text": f"message {i}"}) for i in range(10)]

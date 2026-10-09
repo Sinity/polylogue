@@ -8,6 +8,9 @@ from typing import Literal, Protocol, TypeAlias
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocumentList, JSONValue
+from polylogue.schemas.observation_spill import SpilledProfileToken
+
+ProfileToken: TypeAlias = str | SpilledProfileToken
 
 SchemaSampleGranularity: TypeAlias = Literal["document", "record"]
 SchemaClusterPayload: TypeAlias = JSONValue
@@ -62,7 +65,7 @@ class SchemaUnit:
     bundle_scope: str | None = None
     observed_at: str | None = None
     exact_structure_id: str = ""
-    profile_tokens: tuple[str, ...] = ()
+    profile_tokens: tuple[ProfileToken, ...] = ()
 
 
 PROVIDERS: dict[Provider, ProviderConfig] = {

@@ -43,15 +43,20 @@ def _seed_candidate(root: Path, assertion_id: str) -> None:
         )
 
 
-def _annotation_import_fields(session_id: str, batch_id: str) -> dict[str, object]:
-    return {
-        "jsonl": json.dumps(
+def _annotation_import_fields(session_id: str, batch_id: str, root: Path) -> dict[str, object]:
+    source = root / (batch_id + ".jsonl")
+    source.write_text(
+        json.dumps(
             {
                 "row_key": "writer-boundary-row",
                 "value": {"activity": "research", "confidence": 0.9},
                 "evidence_refs": [session_id],
             }
         ),
+        encoding="utf-8",
+    )
+    return {
+        "input_path": str(source),
         "batch_id": batch_id,
         "schema_id": "seed.activity",
         "schema_version": 2,
@@ -90,7 +95,7 @@ async def test_mcp_import_without_daemon_refuses_before_user_commit(tmp_path: Pa
             await invoke_surface_async(
                 write_fn,
                 operation="import_annotation_batch",
-                fields=_annotation_import_fields(session_id, "writer-boundary-batch"),
+                fields=_annotation_import_fields(session_id, "writer-boundary-batch", tmp_path),
             )
         )
     assert result.get("is_error") is True, result
@@ -134,7 +139,7 @@ async def test_mcp_import_roundtrips_through_real_daemon_operation(
                 await invoke_surface_async(
                     write_fn,
                     operation="import_annotation_batch",
-                    fields=_annotation_import_fields(session_ids[0], "writer-boundary-wire"),
+                    fields=_annotation_import_fields(session_ids[0], "writer-boundary-wire", tmp_path),
                 )
             )
         assert result.get("is_error") is not True, result

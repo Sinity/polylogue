@@ -18,6 +18,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.identity import fixture_block_content_identity
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
@@ -149,11 +150,8 @@ def test_pipeline_probe_db_stats_and_fanout_read_archive_file_set(tmp_path: Path
             (b"m" * 32,),
         )
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, text
-            ) VALUES ('codex-session:provider-native-archive:m1', 'codex-session:provider-native-archive', 0, 'text', 'hello')
-            """
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, text , content_identity, content_occurrence) VALUES ('codex-session:provider-native-archive:m1', 'codex-session:provider-native-archive', 0, 'text', 'hello', ?, 0)",
+            (fixture_block_content_identity("text", "hello"),),
         )
 
     stats = _db_row_counts(index_db)

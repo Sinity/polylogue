@@ -37,6 +37,12 @@ from pydantic import BaseModel
 from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.message_native_identity import (
+    message_native_key,
+    native_id_from_key,
+    source_native_id_from_json,
+    source_native_id_json,
+)
 from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.core.work_progress import advance_work_progress
 from polylogue.sources import value_bounds
@@ -105,6 +111,13 @@ def _from_text_json(model: type[_ModelT], encoded: str) -> _ModelT:
     differently in JSON mode (a paste digest's hex) read the
     :data:`SINK_JSON_CONTEXT` flag and parse as JSON mode would.
     """
+    if model is ParsedMessage:
+        payload = json.loads(encoded)
+        for field in ("provider_message_id", "parent_message_provider_id"):
+            if field in payload:
+                payload[field] = source_native_id_from_json(payload[field])
+        payload["provider_message_id"] = payload.get("provider_message_id") or ""
+        return model.model_validate(payload, context=SINK_JSON_CONTEXT)
     if not _may_hold_escaped_surrogate(encoded) or _ESCAPED_SURROGATE.search(encoded) is None:
         return model.model_validate_json(encoded)
     return model.model_validate(json.loads(encoded), context=SINK_JSON_CONTEXT)
@@ -336,6 +349,13 @@ def discard_decoded_sessions_under(directory: Path) -> None:
 
 def _message_json(value: ParsedMessage) -> str:
     payload = value.model_dump(mode="json")
+    # Pydantic excludes the derived carrier from Source content dumps. The
+    # preparation sink must retain it across outcome association and replay.
+    for block, block_payload in zip(value.blocks, payload["blocks"], strict=True):
+        if block.source_content_identity is not None:
+            block_payload["source_content_identity"] = block.source_content_identity
+    payload["provider_message_id"] = source_native_id_json(value.provider_message_id)
+    payload["parent_message_provider_id"] = source_native_id_json(value.parent_message_provider_id)
     payload["parent_message_position"] = value.parent_message_position
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     if value.active_leaf_fallback:
@@ -350,6 +370,7 @@ def _event_json(value: ParsedSessionEvent) -> str:
     ordinary_payload = {key: item for key, item in value.payload.items() if key not in streamed_arrays}
     payload = value.model_dump(mode="json", exclude={"payload"})
     payload["payload"] = ordinary_payload
+    payload["source_message_provider_id"] = source_native_id_json(value.source_message_provider_id)
     payload["boundary_message_position"] = value.boundary_message_position
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     if streamed_arrays:
@@ -365,6 +386,7 @@ def _event_from_json(encoded: str, path: Path, connection: sqlite3.Connection | 
     """Restore explicitly tagged streamed payload arrays from the prepared store."""
     payload = json.loads(encoded)
     if not isinstance(payload, dict) or payload.get("$polylogue_prepared_event") != 1:
+        payload["source_message_provider_id"] = source_native_id_from_json(payload.get("source_message_provider_id"))
         return ParsedSessionEvent.model_validate(payload)
     event = payload.get("event")
     arrays = payload.get("streamed_arrays")
@@ -376,6 +398,7 @@ def _event_from_json(encoded: str, path: Path, connection: sqlite3.Connection | 
             _restore_streamed_arrays(event, arrays, path, reader, marker_connection=None)
     else:
         _restore_streamed_arrays(event, arrays, path, owner, marker_connection=owner)
+    event["source_message_provider_id"] = source_native_id_from_json(event.get("source_message_provider_id"))
     return ParsedSessionEvent.model_validate(event)
 
 
@@ -403,6 +426,7 @@ def _restore_streamed_arrays(
 
 def _attachment_json(value: ParsedAttachment) -> str:
     payload = value.model_dump(mode="json")
+    payload["message_provider_id"] = source_native_id_json(value.message_provider_id)
     payload["message_position"] = value.message_position
     payload["message_variant_index"] = value.message_variant_index
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
@@ -415,6 +439,7 @@ def _attachment_json(value: ParsedAttachment) -> str:
 
 def _attachment_from_json(encoded: str) -> ParsedAttachment:
     payload = json.loads(encoded)
+    payload["message_provider_id"] = source_native_id_from_json(payload.get("message_provider_id"))
     inline = payload.pop("_prepared_inline_bytes", None)
     if inline is not None:
         payload["inline_bytes"] = base64.b64decode(inline, validate=True)
@@ -804,8 +829,8 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             "WHERE session_ordinal = ? AND message_ordinal = ?",
             (
                 _message_json(value),
-                value.provider_message_id,
-                value.parent_message_provider_id,
+                message_native_key(value.provider_message_id),
+                message_native_key(value.parent_message_provider_id),
                 int(bool(value.is_active_leaf)),
                 self.session_ordinal,
                 ordinal,
@@ -829,8 +854,8 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 self.session_ordinal,
                 self._count,
                 _message_json(value),
-                value.provider_message_id,
-                value.parent_message_provider_id,
+                message_native_key(value.provider_message_id),
+                message_native_key(value.parent_message_provider_id),
                 int(bool(value.is_active_leaf)),
             ),
             kind="prepared message row",
@@ -1169,7 +1194,7 @@ class SqliteProviderMessageIds(Set[str | None]):
         with self._connection() as conn:
             row = conn.execute(
                 "SELECT 1 FROM prepared_message WHERE session_ordinal = ? AND provider_id IS ? LIMIT 1",
-                (self.messages.session_ordinal, value),
+                (self.messages.session_ordinal, message_native_key(value)),
             ).fetchone()
             return row is not None
 
@@ -1179,7 +1204,7 @@ class SqliteProviderMessageIds(Set[str | None]):
                 f"SELECT DISTINCT provider_id FROM prepared_message WHERE {self._where()} ORDER BY provider_id",
                 (self.messages.session_ordinal,),
             ):
-                yield provider_id
+                yield native_id_from_key(provider_id) if provider_id is not None else None
             return
         if self.include_none:
             with _prepared_reader(self.messages.path) as connection:
@@ -1204,7 +1229,7 @@ class SqliteProviderMessageIds(Set[str | None]):
                 return
             after = str(rows[-1][0])
             for (provider_id,) in rows:
-                yield str(provider_id)
+                yield native_id_from_key(str(provider_id))
 
     def __len__(self) -> int:
         with self._connection() as conn:
@@ -1595,6 +1620,9 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             "ORDER BY COALESCE(timestamp, ''), sort_tier, event_ordinal) - 1 AS new_ordinal "
             "FROM prepared_event WHERE session_ordinal = ?",
             (self.session_ordinal,),
+        )
+        self._writer.execute(
+            "CREATE UNIQUE INDEX temp.prepared_event_order_key ON prepared_event_order(session_ordinal,old_ordinal)"
         )
         self._writer.execute(
             "UPDATE prepared_event SET event_ordinal = -1 - ("
@@ -2027,7 +2055,7 @@ class _ScratchChatGPTEntries:
         self.conn = conn
         conn.execute(
             "CREATE TABLE chatgpt_entry (node_key TEXT PRIMARY KEY, idx INTEGER NOT NULL, timestamp REAL, "
-            "position INTEGER NOT NULL, provider_id TEXT NOT NULL, message_json TEXT NOT NULL)"
+            "position INTEGER NOT NULL, provider_id TEXT, message_json TEXT NOT NULL)"
         )
         conn.execute("CREATE INDEX chatgpt_entry_provider ON chatgpt_entry(provider_id)")
         conn.execute(f"CREATE INDEX chatgpt_entry_order ON chatgpt_entry({self._ORDER})")
@@ -2036,7 +2064,14 @@ class _ScratchChatGPTEntries:
         _write_row(
             self.conn,
             "INSERT INTO chatgpt_entry VALUES (?, ?, ?, ?, ?, ?)",
-            (node_id, idx, timestamp, message.position, message.provider_message_id, _message_json(message)),
+            (
+                message_native_key(node_id),
+                idx,
+                timestamp,
+                message.position,
+                message_native_key(message.provider_message_id),
+                _message_json(message),
+            ),
             kind="normalized message row",
         )
 
@@ -2053,11 +2088,15 @@ class _ScratchChatGPTEntries:
             cursor.close()
 
     def provider_for_node(self, node_id: str) -> str | None:
-        row = self.conn.execute("SELECT provider_id FROM chatgpt_entry WHERE node_key = ?", (node_id,)).fetchone()
-        return str(row[0]) if row is not None else None
+        row = self.conn.execute(
+            "SELECT provider_id FROM chatgpt_entry WHERE node_key = ?", (message_native_key(node_id),)
+        ).fetchone()
+        return native_id_from_key(str(row[0])) if row is not None and row[0] is not None else None
 
     def position_for_node(self, node_id: str) -> int | None:
-        row = self.conn.execute("SELECT position FROM chatgpt_entry WHERE node_key = ?", (node_id,)).fetchone()
+        row = self.conn.execute(
+            "SELECT position FROM chatgpt_entry WHERE node_key = ?", (message_native_key(node_id),)
+        ).fetchone()
         return int(row[0]) if row is not None else None
 
     def emitted_provider_ids(self) -> Container[str]:
@@ -2065,7 +2104,7 @@ class _ScratchChatGPTEntries:
 
     def last_emitted_among(self, provider_ids: frozenset[str]) -> str | None:
         best: tuple[int, float, int, str] | None = None
-        ordered_ids = sorted(provider_ids)
+        ordered_ids = sorted(key for value in provider_ids if (key := message_native_key(value)) is not None)
         for start in range(0, len(ordered_ids), 500):
             chunk = ordered_ids[start : start + 500]
             placeholders = ",".join("?" for _ in chunk)
@@ -2079,7 +2118,7 @@ class _ScratchChatGPTEntries:
                 candidate = (int(row[0]), float(row[1]), int(row[2]), str(row[3]))
                 if best is None or candidate[:3] > best[:3]:
                     best = candidate
-        return best[3] if best is not None else None
+        return native_id_from_key(best[3]) if best is not None else None
 
 
 class _ScratchProviderIds(Container[str]):
@@ -2089,7 +2128,9 @@ class _ScratchProviderIds(Container[str]):
     def __contains__(self, value: object) -> bool:
         return (
             isinstance(value, str)
-            and self.conn.execute("SELECT 1 FROM chatgpt_entry WHERE provider_id = ? LIMIT 1", (value,)).fetchone()
+            and self.conn.execute(
+                "SELECT 1 FROM chatgpt_entry WHERE provider_id = ? LIMIT 1", (message_native_key(value),)
+            ).fetchone()
             is not None
         )
 

@@ -23,7 +23,7 @@ import aiosqlite
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
 
 _MODEL_USAGE_BATCH_SQL = """
-SELECT session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
+SELECT session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete, provider_usage_observed
 FROM session_model_usage
 WHERE session_id IN ({placeholders})
 ORDER BY session_id, model_name
@@ -34,6 +34,7 @@ def _row_to_model_usage_totals(row: sqlite3.Row) -> ModelUsageTotals:
     return ModelUsageTotals(
         model_name=row["model_name"],
         provider_lanes_complete=bool(row["provider_lanes_complete"]),
+        provider_usage_observed=bool(row["provider_usage_observed"]),
         input_tokens=int(row["input_tokens"] or 0),
         output_tokens=int(row["output_tokens"] or 0),
         cache_read_tokens=int(row["cache_read_tokens"] or 0),

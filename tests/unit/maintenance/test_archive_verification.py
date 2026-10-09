@@ -55,6 +55,7 @@ from tests.infra.claude_vintage_live_proof import (
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
 )
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.thread_state import seed_spawn_edges
 from tests.infra.workload_artifacts import SeededArchiveArtifact
@@ -278,10 +279,8 @@ def _seed_coherent_archive(root: Path) -> None:
             (b"m" * 32,),
         )
         index_conn.execute(
-            """
-            INSERT INTO blocks(message_id, session_id, position, block_type, text)
-            VALUES ('codex-session:session:c:0123456789abcdef0123456789abcdef.0', 'codex-session:session', 0, 'text', 'hello world')
-            """
+            "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES ('codex-session:session:c:0123456789abcdef0123456789abcdef.0', 'codex-session:session', 0, 'text', 'hello world', ?, 0)",
+            (fixture_block_content_identity("text", "hello world"),),
         )
         index_conn.commit()
         index_conn.execute("ANALYZE")
@@ -1760,8 +1759,8 @@ def test_hashless_acquired_attachment_is_blocking(tmp_path: Path) -> None:
         )
         conn.execute(
             """
-            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin, direction)
-            VALUES ('att-no-identity', ?, ?, 0, 'drive', 'user_input')
+            INSERT INTO attachment_refs(native_identity, attachment_id, session_id, message_id, position, upload_origin, direction)
+            VALUES ('666978747572652d746573745f617263686976655f766572696669636174696f6e2d31373630', 'att-no-identity', ?, ?, 0, 'drive', 'user_input')
             """,
             (session_id, message_id),
         )

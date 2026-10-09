@@ -41,7 +41,7 @@ __all__ = [
 ]
 
 _MODEL_USAGE_SQL = """
-SELECT session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
+SELECT session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete, provider_usage_observed
 FROM session_model_usage
 WHERE session_id IN ({placeholders})
 """
@@ -62,6 +62,7 @@ def _group(rows: Iterable[Sequence[object]]) -> dict[str, list[ModelUsageTotals]
             ModelUsageTotals(
                 model_name=str(row[1] or ""),
                 provider_lanes_complete=bool(row[6]),
+                provider_usage_observed=bool(row[7]),
                 input_tokens=_as_int(row[2]),
                 output_tokens=_as_int(row[3]),
                 cache_read_tokens=_as_int(row[4]),

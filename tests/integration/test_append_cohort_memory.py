@@ -25,6 +25,7 @@ import sqlite3
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
@@ -241,14 +242,26 @@ def test_watcher_append_does_not_reclassify_an_established_cohort(tmp_path: Path
     """Anti-vacuity: routing the append through a cohort classifier breaks this route."""
     plan = _seed_cohort_and_append_plan(tmp_path)
 
-    with patch.object(
-        revision_governance,
-        "_classify_raw_revision_cohort",
-        side_effect=AssertionError("the append route classifies no cohort"),
-    ):
+    original = revision_governance._classify_full_revision_byte_inputs
+    classifications: list[tuple[int, int]] = []
+
+    def observe_classification(rows: Any, open_input: Any) -> Any:
+        opened = 0
+
+        def observe_open(raw_id: str, blob_hash: str) -> Any:
+            nonlocal opened
+            opened += 1
+            return open_input(raw_id, blob_hash)
+
+        output = original(rows, observe_open)
+        classifications.append((len(rows), opened))
+        return output
+
+    with patch.object(revision_governance, "_classify_full_revision_byte_inputs", side_effect=observe_classification):
         result = run_owned_append_plans(tmp_path, _owner(tmp_path), [plan])
 
     assert result.succeeded == [plan]
+    assert classifications == [], classifications
 
 
 def test_watcher_append_counter_preserves_multi_plan_batch(tmp_path: Path) -> None:

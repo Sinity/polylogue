@@ -36,6 +36,7 @@ from polylogue.core.raw_failure_evidence import (
     RetainedRawDependencyRefusalError,
 )
 from polylogue.core.stage_admission import stage_write_admission, stage_write_admission_bound
+from polylogue.core.staged_body import StagedBody
 from polylogue.core.write_lease import adopt_write_lease
 from polylogue.daemon.drive_catchup import DriveCatchupExecution
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
@@ -158,6 +159,9 @@ class DaemonOperationRuntime:
         session_maintenance: SessionInsightMaintenance | None = None,
     ) -> None:
         self.archive_root = archive_root.resolve()
+        from polylogue.core.staged_body import reap_stale_staging
+
+        reap_stale_staging(self.archive_root / "operation-inputs")
         self._bridge = write_bridge
         self._kernel = execution_kernel
         self.raw_observation_owner = raw_observation_owner
@@ -338,25 +342,10 @@ class DaemonOperationRuntime:
         submitted = self._kernel.submit(
             propagate(work), admission_class="control", estimated_bytes=_STAGED_REQUEST_BYTES.get()
         )
-        pending = asyncio.wrap_future(submitted.future)
-        try:
-            return await asyncio.shield(pending)
-        except asyncio.CancelledError:
-            # A staged exchange cancels its coroutine before durable
-            # acceptance. Release this phase's scheduler reservation before
-            # waiting for its compute future, so a deadline cannot strand a
-            # queued unit behind saturated workers.
-            submitted.cancellation.cancel()
-            while not pending.done():
-                try:
-                    await asyncio.shield(pending)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
-            if not pending.cancelled():
-                pending.exception()
-            raise
+        # ``SubmittedOperation.wait`` releases queued work, requests creator-
+        # owned SQL settlement, and retains this exchange until physical work
+        # is done even when the caller is cancelled repeatedly.
+        return await submitted.wait()
 
     async def write_phase(self, name: str, work: Callable[[], _T]) -> _T:
         result = await self._bridge.run_async(f"operation.{name}", work)
@@ -467,9 +456,8 @@ class DaemonOperationRuntime:
                 assert isinstance(snapshot, PinnedOperationRead)
                 exchange.cancellation.add_listener(snapshot.archive.interrupt_reads)
 
-    def request_deadline_unix_ms(self, request: DaemonOperationRequest) -> int:
+    def request_deadline_unix_ms(self, request: DaemonOperationRequest) -> int | None:
         deadline = self._exchanges[str(request.request_id)].deadline_unix_ms
-        assert deadline is not None  # only write owners request durable deadline evidence
         return deadline
 
     def stop_reason(self, request: DaemonOperationRequest) -> str | None:
@@ -862,6 +850,45 @@ class DaemonOperationRuntime:
         started_at: float | None = None,
         client_disconnect: CancellationHandle | None = None,
         request_body_bytes: int | None = None,
+        input_body: StagedBody | None = None,
+    ) -> dict[str, object]:
+        """Transfer sealed input custody only to a newly admitted worker."""
+        try:
+            if request.operation == "mutation.annotation.import_batch":
+                descriptor = request.payload.get("input")
+                if (
+                    input_body is None
+                    or not isinstance(descriptor, dict)
+                    or descriptor
+                    != {
+                        "sha256": input_body.sha256,
+                        "size_bytes": input_body.size_bytes,
+                    }
+                ):
+                    raise ValueError("annotation input custody differs from request identity")
+            elif input_body is not None:
+                raise ValueError("operation does not declare an input body")
+            return self._call(
+                request,
+                principal,
+                input_body=input_body,
+                started_at=started_at,
+                client_disconnect=client_disconnect,
+                request_body_bytes=request_body_bytes,
+            )
+        finally:
+            if input_body is not None and not input_body.adopted:
+                input_body.discard()
+
+    def _call(
+        self,
+        request: DaemonOperationRequest,
+        principal: MutationPrincipal,
+        *,
+        started_at: float | None = None,
+        client_disconnect: CancellationHandle | None = None,
+        request_body_bytes: int | None = None,
+        input_body: StagedBody | None = None,
     ) -> dict[str, object]:
         if request_body_bytes is None:
             # Direct callers have no wire body. Count its canonical encoding
@@ -903,7 +930,7 @@ class DaemonOperationRuntime:
             if spec.authority is DaemonAuthority.READ or request.operation.startswith("operation.")
             else None
         )
-        context = OperationContext(self.archive_root, principal, "daemon", self, dependencies, read_control)
+        context = OperationContext(self.archive_root, principal, "daemon", self, dependencies, read_control, input_body)
         try:
             request = validate_execution_request(request, context)
         except (ValueError, PermissionError) as exc:
@@ -1253,6 +1280,9 @@ class DaemonOperationRuntime:
                             self._exchanges.pop(request_id)
                         self._condition.notify_all()
 
+                if input_body is not None:
+                    input_body.adopted = True
+                    exchange.future.add_done_callback(lambda _future: input_body.discard())
                 exchange.future.add_done_callback(settled)
             assert exchange.future is not None
             if client_disconnect is not None:

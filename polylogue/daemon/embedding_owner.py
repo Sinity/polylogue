@@ -259,6 +259,8 @@ class _EmbeddingBackfillExecution:
             parameter_digest = hashlib.sha256(
                 json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
             ).hexdigest()
+            deadline = self.runtime.request_deadline_unix_ms(self.request)
+            assert deadline is not None  # embedding maintenance retains its declared deadline
             self.plan = build_typed_plan(
                 operation=self.request.operation,
                 operation_version=1,
@@ -271,7 +273,7 @@ class _EmbeddingBackfillExecution:
                 destructive_class="maintenance",
                 required_confirmation="role_only",
                 prepared_at_ms=int(time.time() * 1000),
-                expires_at_ms=self.runtime.request_deadline_unix_ms(self.request),
+                expires_at_ms=deadline,
                 context={
                     **payload,
                     "scope": list(self.scope) if self.scope is not None else None,

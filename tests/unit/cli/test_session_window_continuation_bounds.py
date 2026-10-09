@@ -27,6 +27,9 @@ def test_session_window_continuation_keeps_remaining_bound(monkeypatch: pytest.M
         return {
             "session": {"session_id": "w12", "messages": [{"position": i} for i in range(start, start + count)]},
             "complete": False,
+            "outcome": {"state": "ok", "reason": None, "detail": {}},
+            "lineage_complete": True,
+            "lineage_truncation_reason": None,
             "continuation": "fixture-after-five" if resumed else "fixture-after-four",
         }, {}
 
@@ -55,6 +58,9 @@ def test_session_window_resumes_the_original_page_bound(monkeypatch: pytest.Monk
         return {
             "session": {"session_id": "w12", "messages": [{"position": i} for i in range(start, end)]},
             "complete": end == 7,
+            "outcome": {"state": "ok", "reason": None, "detail": {}},
+            "lineage_complete": True,
+            "lineage_truncation_reason": None,
             "continuation": f"after-{end}" if end < 7 else None,
         }, {}
 

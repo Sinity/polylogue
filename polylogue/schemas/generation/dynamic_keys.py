@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from contextlib import closing
 from dataclasses import dataclass
 
 try:
@@ -328,7 +329,11 @@ def observed_structure_schema(
     if isinstance(value, list):
         array_schema: JSONDocument = {"type": "array"}
         items = merge_observed_structure_schemas(
-            (observed_structure_schema(item, store=store) for item in value), store=store
+            (
+                observed_structure_schema(item, store=store)
+                for item in (value.structure_values() if hasattr(value, "structure_values") else value)
+            ),
+            store=store,
         )
         if items:
             array_schema["items"] = items
@@ -336,17 +341,32 @@ def observed_structure_schema(
     if not isinstance(value, Mapping):
         raise TypeError(f"Unsupported schema observation value: {type(value).__name__}")
 
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    def entries() -> Generator[tuple[str | None, JSONValue], None, None]:
+        if isinstance(value, SpilledObject):
+            with closing(value.structure_key_items()) as children:
+                for key, child in children:
+                    yield key.small_name, child
+        else:
+            for key, child in value.items():
+                yield str(key), child
+
     filename_map = field_name == "trackedFileBackups"
-    collapse_all = filename_map or should_collapse_observed_keys(value.keys())
+    collapse_all = filename_map or (
+        value.collapse_observed_keys()
+        if isinstance(value, SpilledObject)
+        else should_collapse_observed_keys(value.keys())
+    )
     properties: JSONDocument = {}
     required: list[JSONValue] = []
     if not collapse_all:
-        for key, child in value.items():
-            key_text = str(key)
-            if is_dynamic_key(key_text):
-                continue
-            properties[key_text] = observed_structure_schema(child, field_name=key_text, store=store)
-            required.append(key_text)
+        with closing(entries()) as children:
+            for key, child in children:
+                if key is None or is_dynamic_key(key):
+                    continue
+                properties[key] = observed_structure_schema(child, field_name=key, store=store)
+                required.append(key)
 
     object_schema: JSONDocument = {"type": "object"}
     if properties:
@@ -354,9 +374,9 @@ def observed_structure_schema(
         object_schema["required"] = required
     dynamic_values = merge_observed_structure_schemas(
         (
-            observed_structure_schema(child, field_name=str(key), store=store)
-            for key, child in value.items()
-            if collapse_all or is_dynamic_key(str(key))
+            observed_structure_schema(child, field_name=key, store=store)
+            for key, child in entries()
+            if collapse_all or key is None or is_dynamic_key(key)
         ),
         store=store,
     )

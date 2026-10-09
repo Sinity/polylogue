@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import IO, ParamSpec, Protocol, TypeVar
 
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.logging import get_logger
 
 from .gateway import DriveListFilesResponse, DrivePayloadRecord
 from .source_support import (
@@ -26,12 +25,11 @@ from .source_support import (
 )
 from .types import (
     FOLDER_MIME_TYPE,
-    DriveAccessDeniedError,
+    DriveError,
     DriveFile,
+    DriveNotFolderError,
     DriveNotFoundError,
 )
-
-logger = get_logger(__name__)
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -65,17 +63,19 @@ class DriveSourceClient:
         self._gateway = gateway
         self._meta_cache: dict[str, DriveFile] = {}
 
-    def _resolve_folder_by_id(self, folder_ref: str) -> str | None:
+    def _resolve_folder_by_id(self, folder_ref: str) -> str:
         meta = self._gateway.get_file(folder_ref, "id,name,mimeType")
-        if _record_string(meta, "mimeType") == FOLDER_MIME_TYPE:
-            file_id = _record_string(meta, "id")
-            return file_id or None
-        return None
+        if _record_string(meta, "mimeType") != FOLDER_MIME_TYPE:
+            raise DriveNotFolderError("Drive reference does not identify a folder")
+        file_id = _record_string(meta, "id")
+        if not file_id:
+            raise DriveError("Drive folder metadata has no native identity")
+        return file_id
 
     def _resolve_folder_by_name(self, folder_ref: str) -> str:
         response = self._gateway.list_files(
             q=_build_folder_lookup_query(folder_ref),
-            fields="files(id,name)",
+            fields="incompleteSearch,files(id,name)",
             page_token=None,
             page_size=1000,
         )
@@ -89,20 +89,17 @@ class DriveSourceClient:
     def resolve_folder_id(self, folder_ref: str) -> str:
         if _looks_like_id(folder_ref):
             try:
-                resolved = self._resolve_folder_by_id(folder_ref)
-                if resolved is not None:
-                    return resolved
-            except (DriveNotFoundError, DriveAccessDeniedError):
-                # Not a folder id this account can read; it may be a name.
+                return self._resolve_folder_by_id(folder_ref)
+            except DriveNotFoundError:
+                # A definitive 404 permits the configured exact-name lookup.
+                # Transport/auth/access faults cannot change the selected root.
                 pass
-            except Exception as exc:
-                logger.warning("Error resolving folder ID %s: %s", folder_ref, exc)
         return self._resolve_folder_by_name(folder_ref)
 
     def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
         page_token: str | None = None
         query = f"'{folder_id}' in parents and trashed = false"
-        fields = "nextPageToken, files(id,name,mimeType,modifiedTime,size)"
+        fields = "nextPageToken,incompleteSearch,files(id,name,mimeType,modifiedTime,size)"
         while True:
             response = self._gateway.list_files(
                 q=query,

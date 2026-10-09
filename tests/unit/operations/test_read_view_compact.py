@@ -74,7 +74,7 @@ def test_compact_keeps_a_large_permitted_projection(monkeypatch: Any) -> None:
     from polylogue.operations import read_view_compact
 
     value = "λ" * (9 * 1024 * 1024)
-    monkeypatch.setattr(read_view_compact, "_select_summaries", lambda *args, **kwargs: [])
+    monkeypatch.setattr(read_view_compact, "select_read_view_summaries", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         read_view_compact,
         "compact_sessions",

@@ -33,7 +33,7 @@ from polylogue.storage.fts.sql import (
     insert_session_rows_sql,
 )
 from polylogue.storage.io_phase_metrics import close_connection_cursor, live_connection_cursors
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 from tests.infra.sqlite_cursor_settlement import ControlledCursor
 
 
@@ -68,11 +68,13 @@ def _seed_text_block(conn: sqlite3.Connection, *, native_session_id: str, native
         (session_id, native_message_id, content_hash),
     )
     conn.execute(
-        """
-        INSERT INTO blocks (message_id, session_id, position, block_type, text)
-        VALUES (?, ?, 0, 'text', ?)
-        """,
-        (message_id, session_id, text),
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            text,
+            fixture_block_content_identity("text", text),
+        ),
     )
     return message_id
 
@@ -617,8 +619,18 @@ def test_partition_deletes_page_canonical_and_residue_rows_under_actual_bind_lim
     )
     session_id = "unknown-export:paged"
     test_conn.executemany(
-        "INSERT INTO blocks(message_id, session_id, position, block_type, text) VALUES (?, ?, ?, 'text', ?)",
-        ((message_id, session_id, position, "paged canonical needle") for position in range(1, 17)),
+        "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, ?)",
+        (
+            (
+                message_id,
+                session_id,
+                position,
+                "paged canonical needle",
+                fixture_block_content_identity("text", "paged canonical needle"),
+                content_occurrence,
+            )
+            for content_occurrence, position in enumerate(range(1, 17), start=1)
+        ),
     )
     test_conn.execute("UPDATE blocks SET rowid = ? WHERE message_id = ? AND position = 0", (-(2**63), message_id))
     for position in range(13):
@@ -753,6 +765,40 @@ def test_full_fts_rebuild_pages_preserve_pairing_and_caller_transaction(
     assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 4
     assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0] == 4
     assert test_conn.execute("SELECT DISTINCT title FROM sessions").fetchone()[0] == "Message repair"
+
+
+def test_full_fts_rebuild_observes_cancellation_between_actual_pages(
+    test_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    monkeypatch.setattr(fts_lifecycle, "FTS_REBUILD_SESSION_PAGE_SIZE", 1)
+    for index in range(3):
+        _seed_text_block(test_conn, native_session_id=f"cancel-{index}", native_message_id="m", text="canonical needle")
+    test_conn.commit()
+    cancelled = threading.Event()
+    events = []
+
+    def cancel_after_first_page(amount: int, processed: int, total: int) -> None:
+        events.append((amount, processed, total))
+        if processed == 1:
+            cancelled.set()
+
+    token = compute_cancel.set(cancelled)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            rebuild_fts_index_sync(test_conn, progress_callback=cancel_after_first_page)
+    finally:
+        compute_cancel.reset(token)
+    assert events == [(0, 0, 3), (1, 1, 3)]
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0] == 1
+    assert not live_connection_cursors(test_conn)
+    test_conn.rollback()
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 3
 
 
 def test_empty_full_fts_rebuild_reports_completion_after_both_orphan_resets(test_conn: sqlite3.Connection) -> None:

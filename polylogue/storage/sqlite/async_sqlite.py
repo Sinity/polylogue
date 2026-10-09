@@ -1,12 +1,7 @@
 """Async SQLite storage backend implementation using aiosqlite.
 
-This backend provides async/await API for all database operations, enabling
-concurrent queries and parallel processing without blocking.
-
-Performance characteristics:
-- Parallel reads: 5-10x faster for batch operations
-- Write serialization: Still uses exclusive locks (SQLite limitation)
-- Connection pooling: Each async context gets its own connection
+Database work runs on aiosqlite workers. Each ordinary read scope owns its
+connection; composed repository reads retain one connection and snapshot.
 """
 
 from __future__ import annotations
@@ -650,7 +645,6 @@ def initialize_backend_state(backend: SQLiteBackend, db_path: Path | None) -> No
     backend._transaction_owner_task = None
     backend._txn_conn = None
     backend._bulk_conn = None
-    backend._read_pool = None
     backend._manual_lease_cm = None
     backend._manual_owner_task = None
 
@@ -1090,30 +1084,6 @@ async def _bulk_connection(backend: SQLiteBackend) -> AsyncIterator[None]:
 
 
 @asynccontextmanager
-async def _read_pool(backend: SQLiteBackend, size: int = 4) -> AsyncIterator[None]:
-    """Open a pool of reusable read connections for concurrent operations."""
-    if not await _read_schema_ready(backend):
-        raise DatabaseError(f"archive index is not initialized for read pooling: {backend._db_path}")
-    pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue()
-    connections: list[aiosqlite.Connection] = []
-    primary = None
-    try:
-        for _ in range(size):
-            conn = await _open_configured_backend_connection(backend, read_only=True)
-            connections.append(conn)
-            pool.put_nowait(conn)
-        backend._read_pool = pool
-        yield
-    except BaseException as exc:
-        primary = exc
-        raise
-    finally:
-        if backend._read_pool is pool:
-            backend._read_pool = None
-        await _cleanup_backend_connections(connections, primary)
-
-
-@asynccontextmanager
 async def _get_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Connection]:
     """Get async database connection with schema ensured."""
     _require_transaction_reader(backend)
@@ -1125,16 +1095,6 @@ async def _get_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Con
 
     if backend._bulk_conn is not None:
         yield backend._bulk_conn
-        return
-
-    if backend._read_pool is not None:
-        pool = backend._read_pool
-        conn = await pool.get()
-        try:
-            yield conn
-        finally:
-            if backend._read_pool is pool:
-                pool.put_nowait(conn)
         return
 
     # This fallback is the writable connection used when no transaction or
@@ -1171,16 +1131,6 @@ async def _get_read_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlit
         yield backend._bulk_conn
         return
 
-    if backend._read_pool is not None:
-        pool = backend._read_pool
-        conn = await pool.get()
-        try:
-            yield conn
-        finally:
-            if backend._read_pool is pool:
-                pool.put_nowait(conn)
-        return
-
     async with _scoped_backend_connection(backend, read_only=True) as connection:
         yield connection
 
@@ -1206,7 +1156,6 @@ class SQLiteBackend(
     _transaction_owner_task: asyncio.Task[object] | None
     _txn_conn: aiosqlite.Connection | None
     _bulk_conn: aiosqlite.Connection | None
-    _read_pool: asyncio.Queue[aiosqlite.Connection] | None
     _manual_lease_cm: object | None
     _manual_owner_task: asyncio.Task[object] | None
     queries: SQLiteQueryStore
@@ -1242,10 +1191,6 @@ class SQLiteBackend(
     def bulk_connection(self) -> AbstractAsyncContextManager[None]:
         """Keep a single connection alive for many sequential operations."""
         return _bulk_connection(self)
-
-    def read_pool(self, size: int = 4) -> AbstractAsyncContextManager[None]:
-        """Open a pool of reusable read connections for concurrent operations."""
-        return _read_pool(self, size=size)
 
     def _get_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Get async database connection with schema ensured."""

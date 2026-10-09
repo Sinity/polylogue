@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from tests.benchmarks.helpers import BenchmarkFixture
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.storage_records import SessionBuilder
 
 _WORDS = [
@@ -133,6 +134,7 @@ def test_read_throughput_with_writes(
         read_count = 0
         read_times: list[float] = []
         position = base_position
+        content_occurrence = 0
 
         for batch in range(10):
             # Do a write: insert archive blocks rows (re-indexed by FTS triggers).
@@ -140,11 +142,18 @@ def test_read_throughput_with_writes(
             try:
                 for _ in range(20):
                     conn.execute(
-                        "INSERT INTO blocks(message_id, session_id, position, block_type, text) "
-                        "VALUES (?, ?, ?, 'text', ?)",
-                        (message_id, session_id, position, "new concurrent analysis data row"),
+                        "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, ?)",
+                        (
+                            message_id,
+                            session_id,
+                            position,
+                            "new concurrent analysis data row",
+                            fixture_block_content_identity("text", "new concurrent analysis data row"),
+                            content_occurrence,
+                        ),
                     )
                     position += 1
+                    content_occurrence += 1
                 conn.commit()
             finally:
                 conn.close()
@@ -264,9 +273,14 @@ def test_wal_growth_under_sustained_writes(
             position = base_position
             for i in range(500):
                 conn.execute(
-                    "INSERT INTO blocks(message_id, session_id, position, block_type, text) "
-                    "VALUES (?, ?, ?, 'text', ?)",
-                    (message_id, session_id, position, f"WAL growth test block {i} with padding " + "x" * 200),
+                    "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, 0)",
+                    (
+                        message_id,
+                        session_id,
+                        position,
+                        f"WAL growth test block {i} with padding " + "x" * 200,
+                        fixture_block_content_identity("text", f"WAL growth test block {i} with padding " + "x" * 200),
+                    ),
                 )
                 position += 1
                 if i % 50 == 0:
@@ -326,8 +340,14 @@ def test_wal_checkpoint_latency(
         position = base_position
         for i in range(1000):
             conn.execute(
-                "INSERT INTO blocks(message_id, session_id, position, block_type, text) VALUES (?, ?, ?, 'text', ?)",
-                (message_id, session_id, position, f"Checkpoint test block {i} " + "y" * 300),
+                "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, 0)",
+                (
+                    message_id,
+                    session_id,
+                    position,
+                    f"Checkpoint test block {i} " + "y" * 300,
+                    fixture_block_content_identity("text", f"Checkpoint test block {i} " + "y" * 300),
+                ),
             )
             position += 1
         conn.commit()

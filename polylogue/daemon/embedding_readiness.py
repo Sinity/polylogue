@@ -2,36 +2,46 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 import polylogue.config as polylogue_config
 from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.logging import WARNING, emit
-from polylogue.storage.embeddings.status_payload import EmbeddingCatchupRunPayload, embedding_status_payload
+from polylogue.operations.embedding_readiness import EmbeddingReadinessUnavailableError, read_embedding_readiness
+from polylogue.storage.embeddings.status_payload import EmbeddingCatchupRunPayload
 
 
-def _defaults(*, enabled: bool, config_enabled: bool, has_key: bool, model: str, dimension: int) -> dict[str, object]:
+def embedding_readiness_settings() -> dict[str, object]:
+    """Read current embedding policy without collecting archive measurements."""
+    cfg = polylogue_config.load_polylogue_config()
+    config_enabled = bool(cfg.embedding_enabled)
+    has_key = cfg.voyage_api_key is not None
     return {
-        "embedding_enabled": enabled,
+        "embedding_enabled": config_enabled and has_key,
         "embedding_config_enabled": config_enabled,
         "embedding_has_voyage_key": has_key,
-        "embedding_model": model,
-        "embedding_dimension": dimension,
-        "embedding_status": "empty",
-        "embedding_freshness_status": "empty",
+        "embedding_model": cfg.embedding_model,
+        "embedding_dimension": cfg.embedding_dimension,
+    }
+
+
+def _defaults(settings: dict[str, object], *, unreadable: bool = False) -> dict[str, object]:
+    return {
+        **settings,
+        "embedding_status": "unknown" if unreadable else "empty",
+        "embedding_freshness_status": "unknown" if unreadable else "empty",
+        "embedding_unmeasurable_reason": "readiness_unreadable" if unreadable else None,
         "embedding_retrieval_ready": False,
-        "embedding_pending_count": 0,
-        "embedding_pending_message_count": 0,
+        "embedding_pending_count": None if unreadable else 0,
+        "embedding_pending_message_count": None if unreadable else 0,
         "embedding_pending_message_count_exact": False,
-        "embedding_stale_count": 0,
-        "embedding_coverage_percent": 0.0,
-        "embedding_failure_count": 0,
-        "embedding_terminal_failure_count": 0,
-        "embedding_retryable_failure_count": 0,
+        "embedding_stale_count": None if unreadable else 0,
+        "embedding_coverage_percent": None if unreadable else 0.0,
+        "embedding_failure_count": None if unreadable else 0,
+        "embedding_terminal_failure_count": None if unreadable else 0,
+        "embedding_retryable_failure_count": None if unreadable else 0,
         "embedding_failure_details": [],
-        "embedding_estimated_cost_usd": 0.0,
+        "embedding_estimated_cost_usd": None if unreadable else 0.0,
         "embedding_latest_catchup_run": None,
         "embedding_latest_material_catchup_run": None,
     }
@@ -47,60 +57,32 @@ def _private_run(run: EmbeddingCatchupRunPayload | None) -> EmbeddingCatchupRunP
 def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str, object]:
     """Query embedding tables for bounded daemon status visibility."""
 
-    cfg = polylogue_config.load_polylogue_config()
+    settings = embedding_readiness_settings()
     from polylogue.storage.archive_identity import ArchiveLocation
 
-    config_enabled = bool(cfg.embedding_enabled)
-    has_key = cfg.voyage_api_key is not None
-    enabled = config_enabled and has_key
-    model = cfg.embedding_model
-    dimension = cfg.embedding_dimension
     index_db = ArchiveLocation.resolve(db_file.parent).active_index_path
     if not db_file.exists() and not index_db.exists():
-        return _defaults(
-            enabled=enabled,
-            config_enabled=config_enabled,
-            has_key=has_key,
-            model=model,
-            dimension=dimension,
-        )
+        return _defaults(settings)
 
     try:
-        payload = embedding_status_payload(
-            SimpleNamespace(config=SimpleNamespace(db_path=db_file)),
-            include_retrieval_bands=False,
-            include_detail=detail,
-        )
-    except (sqlite3.Error, OSError) as exc:
-        # _defaults() reports embedding_status="empty" / retrieval_ready=False
-        # / pending counts of 0 — identical to a genuinely fresh archive with
-        # no embeddings yet. Log loudly so a transient DB error doesn't read
-        # as "nothing to embed" (polylogue-cpf.4).
+        payload = read_embedding_readiness(db_file, detail=detail)
+    except EmbeddingReadinessUnavailableError as exc:
         emit(
             "daemon.embed.readiness_query_failed",
             level=WARNING,
             outcome="degraded",
             reason="readiness_unreadable",
             path=db_file,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_type=type(exc.__cause__).__name__,
+            error_detail=str(exc.__cause__),
         )
-        return _defaults(
-            enabled=enabled,
-            config_enabled=config_enabled,
-            has_key=has_key,
-            model=model,
-            dimension=dimension,
-        )
+        return _defaults(settings, unreadable=True)
 
     return {
-        "embedding_enabled": enabled,
-        "embedding_config_enabled": config_enabled,
-        "embedding_has_voyage_key": has_key,
-        "embedding_model": model,
-        "embedding_dimension": dimension,
+        **settings,
         "embedding_status": payload["status"],
         "embedding_freshness_status": payload["freshness_status"],
+        "embedding_unmeasurable_reason": payload["coverage_unmeasurable_reason"],
         "embedding_retrieval_ready": payload["retrieval_ready"],
         "embedding_pending_count": payload["pending_sessions"],
         "embedding_pending_message_count": payload["pending_messages"],
@@ -120,4 +102,4 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
     }
 
 
-__all__ = ["embedding_readiness_info"]
+__all__ = ["embedding_readiness_info", "embedding_readiness_settings"]

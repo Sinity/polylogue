@@ -25,6 +25,7 @@ from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
 from polylogue.annotations.join_contracts import AnnotationStructuralJoinResult
 from polylogue.archive.query.metadata import terminal_query_cli_surfaces, terminal_query_source_list
+from polylogue.cli.query_output_contracts import RootSessionDocument
 from polylogue.operations.action_contracts import ActionAffordanceListPayload
 from polylogue.surfaces.payloads import (
     ArchiveDebtListPayload,
@@ -62,6 +63,16 @@ class CliOutputSchema:
 
 
 SCHEMAS: tuple[CliOutputSchema, ...] = (
+    CliOutputSchema(
+        name="root-session",
+        title="Root Session Transcript",
+        description=(
+            "Exact root transcript content with the canonical read outcome and lineage completeness. "
+            "Incomplete inherited prefixes remain degraded even when tail messages are available."
+        ),
+        model=RootSessionDocument,
+        surfaces=("polylogue --format json find id:SESSION",),
+    ),
     CliOutputSchema(
         name="annotation-join",
         title="Structural Annotation Join",

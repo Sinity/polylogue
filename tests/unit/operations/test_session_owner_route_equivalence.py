@@ -235,7 +235,9 @@ def _seed_exclusion(root: Path, texts: dict[str, str] | None = None) -> dict[str
     return ids
 
 
-async def _mcp_sessions(root: Path, expression: str, *, limit: int = 50, offset: int = 0) -> dict[str, object]:
+async def _mcp_sessions(
+    root: Path, expression: str, *, limit: int = 50, offset: int = 0, sort: str | None = None
+) -> dict[str, object]:
     import json
     from typing import cast
 
@@ -247,7 +249,7 @@ async def _mcp_sessions(root: Path, expression: str, *, limit: int = 50, offset:
     with installed_runtime_services(root):
         result = json.loads(
             await invoke_surface_async(
-                query_fn, expression=expression, projection="sessions", limit=limit, offset=offset
+                query_fn, expression=expression, projection="sessions", limit=limit, offset=offset, sort=sort
             )
         )
     assert isinstance(result, dict)
@@ -483,6 +485,13 @@ async def test_action_lane_excludes_dialogue_and_reports_its_lane(tmp_path: Path
     assert [item.id for item in listed.items] == [action]
     assert page.total == listed.total == 1
     assert generic["total"] is None  # Ranked action envelopes do not declare an exact total.
+    mcp = await _mcp_sessions(root, "needle lane:actions")
+    assert mcp["retrieval_lane"] == "actions"
+    mcp_hits = mcp["hits"]
+    assert isinstance(mcp_hits, list)
+    assert [hit["session"]["id"] for hit in mcp_hits] == [action]
+    assert mcp_hits[0]["match"]["retrieval_lane"] == "actions"
+
     assert page.items[0].match.retrieval_lane == "actions"
 
 
@@ -516,3 +525,214 @@ async def test_missing_and_ambiguous_scopes_keep_the_generic_outcome(tmp_path: P
     async with Polylogue(archive_root=root) as api:
         with pytest.raises(ValueError, match="ambiguous"):
             await execute_session_operation(api, SessionRead(ref="session:codex-session:equivalence-"))
+
+
+@pytest.mark.asyncio
+async def test_every_typed_indexed_page_keeps_the_explicit_index(tmp_path: Path) -> None:
+    from polylogue.operations.session_contracts import SessionTimeline
+
+    root = tmp_path / "archive"
+    seeded = run_off_event_loop(lambda: _seed(root))
+    selected = root / ".index-generations" / "selected" / "index.db"
+    selected.parent.mkdir(parents=True)
+    (root / "index.db").rename(selected)
+    async with Polylogue(archive_root=root, db_path=selected) as api:
+        for request in (SessionList(limit=1), SessionSearch(expression="needle", limit=1), SessionTimeline(limit=1)):
+            first = await execute_session_operation(api, request)
+            assert first.items and first.continuation
+            second = await execute_session_operation(api, type(request)(continuation=first.continuation))
+            assert second.offset == 1
+            assert second.total == first.total == len(seeded)
+    assert not (root / "index.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_latest_expression_bounds_both_typed_selection_and_window(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    seeded = run_off_event_loop(lambda: _seed(root))
+    async with Polylogue(archive_root=root) as api:
+        listed = await execute_session_operation(api, SessionList(expression='{"latest":true}'))
+        searched = await execute_session_operation(api, SessionSearch(expression='{"query":"needle","latest":true}'))
+        window = await execute_session_operation(api, SessionList(expression='{"limit":2,"offset":1}'))
+        assert window.continuation
+        resumed = await execute_session_operation(api, SessionList(continuation=window.continuation, limit=1))
+    generic = _generic_list(root, query='{"latest":true}')
+    assert [item.id for item in listed.items] == generic[0] == [seeded[-1]]
+    assert [item.session.id for item in searched.items] == [seeded[-1]]
+    for page in (listed, searched):
+        assert page.total == page.limit == 1
+        assert page.continuation is None
+    assert (window.limit, window.offset, window.next_offset) == (2, 1, 3)
+    assert (resumed.limit, resumed.offset) == (1, 3)
+    assert resumed.items[0].id == seeded[1]
+
+
+@pytest.mark.asyncio
+async def test_typed_continuation_refuses_an_equal_counter_other_archive(tmp_path: Path) -> None:
+    from functools import partial
+
+    from polylogue.archive.query.transaction import QueryContinuationStaleError
+
+    roots = (tmp_path / "first", tmp_path / "second")
+    for index, root in enumerate(roots):
+        run_off_event_loop(partial(_seed, root, native_suffix=str(index)))
+    async with Polylogue(archive_root=roots[0]) as api:
+        first = await execute_session_operation(api, SessionList(limit=1))
+    assert first.continuation
+    async with Polylogue(archive_root=roots[1]) as api:
+        with pytest.raises(QueryContinuationStaleError):
+            await execute_session_operation(api, SessionList(continuation=first.continuation))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_missing_date_actions_sort_last_on_both_read_routes(tmp_path: Path, reverse: bool) -> None:
+    import json
+
+    root = tmp_path / "archive"
+
+    def seed() -> list[str]:
+        with ArchiveStore(root) as archive:
+            return [
+                write_index_session(
+                    archive,
+                    ParsedSession(
+                        source_name=Provider.CODEX,
+                        provider_session_id=name,
+                        messages=[
+                            ParsedMessage(
+                                provider_message_id="m",
+                                role=Role.ASSISTANT,
+                                timestamp=timestamp,
+                                blocks=[
+                                    ParsedContentBlock(
+                                        type=BlockType.TOOL_USE,
+                                        tool_id="call",
+                                        tool_name="run",
+                                        tool_input={"command": "needle"},
+                                    )
+                                ],
+                            )
+                        ],
+                    ),
+                )
+                for name, timestamp in (("missing", None), ("dated", "2026-02-01T12:00:00Z"))
+            ]
+
+    missing, dated = run_off_event_loop(seed)
+    expression = json.dumps({"query": "needle", "retrieval_lane": "actions", "sort": "date", "reverse": reverse})
+    async with Polylogue(archive_root=root) as api:
+        owner = await execute_session_operation(api, SessionSearch(expression=expression, limit=1))
+    with open_operation_read(root) as pinned:
+        generic = execute_read_operation(
+            "cli.query",
+            {
+                "params": {
+                    "query": "needle",
+                    "retrieval_lane": "actions",
+                    "sort": "date",
+                    "reverse": reverse,
+                    "limit": 1,
+                }
+            },
+            archive=pinned.archive,
+            serving_identity="direct",
+        )
+    assert [item.session.id for item in owner.items] == [dated]
+    generic_hits = generic["hits"]
+    assert isinstance(generic_hits, list)
+    assert [hit["session"]["id"] for hit in generic_hits] == [dated]
+    assert dated != missing
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_outcome", "exit_code"),
+    [
+        ({"operation": "sessions.list", "expression": "id:session:missing"}, "empty", 2),
+        ({"operation": "sessions.timeline"}, "degraded", 1),
+    ],
+)
+def test_machine_session_cli_returns_the_declared_terminal_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    payload: dict[str, str],
+    expected_outcome: str,
+    exit_code: int,
+) -> None:
+    import io
+    import json
+    import sys
+
+    import polylogue.api
+    from polylogue.cli.session_operations import main
+
+    root = tmp_path / "archive"
+    _seed(root, count=2)  # The second session has a message with no recorded event time.
+    facade = Polylogue
+    monkeypatch.setattr(polylogue.api, "Polylogue", lambda: facade(archive_root=root))
+    monkeypatch.setattr(sys, "argv", ["session_operations", "execute"])
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode())))
+    assert main() == exit_code
+    assert json.loads(capsys.readouterr().out)["outcome"] == expected_outcome
+
+
+@pytest.mark.asyncio
+async def test_root_only_facade_follows_active_index_and_explicit_shadow_stays_selected(tmp_path: Path) -> None:
+    import shutil
+
+    root = tmp_path / "archive"
+    seeded = run_off_event_loop(lambda: _seed(root))
+    selected = root / ".index-generations" / "selected" / "index.db"
+    selected.parent.mkdir(parents=True)
+    shutil.copyfile(root / "index.db", selected)
+
+    # Distinct populations prove the selected Index, independent of title rendering.
+    def prepare_shadow() -> None:
+        with ArchiveStore.open_existing(root, read_only=False) as shadow:
+            shadow.delete_sessions(tuple(seeded[1:]))
+
+    run_off_event_loop(prepare_shadow)
+    (root / ".index-active-pointer").write_text(str(selected), encoding="utf-8")
+    async with Polylogue(archive_root=root) as api:
+        assert api.backend.db_path == selected
+        page = await execute_session_operation(api, SessionList(limit=1))
+        transcript = await execute_session_operation(api, SessionRead(ref=seeded[-1], limit=1))
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as api:
+        assert api.backend.db_path == root / "index.db"
+        explicit = await execute_session_operation(api, SessionList(limit=1))
+    assert page.total == len(seeded)
+    assert page.items[0].id == seeded[-1]
+    assert explicit.total == 1
+    assert explicit.items[0].id == seeded[0]
+    assert transcript.items
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outer_offset", [0, 2])
+async def test_generic_read_executes_compiled_expression_window(tmp_path: Path, outer_offset: int) -> None:
+    root = tmp_path / "archive"
+    run_off_event_loop(lambda: _seed(root))
+    expression = '{"limit":2,"offset":1}'
+    owner = await _owner_list(root, expression=expression, limit=20, offset=outer_offset)
+    generic = _generic_list(root, query=expression, limit=20, offset=outer_offset)
+    assert generic == owner
+    assert generic[2:4] == (2, outer_offset or 1)
+    mcp = await _mcp_sessions(root, expression, limit=20, offset=outer_offset)
+    mcp_items = mcp["items"]
+    assert isinstance(mcp_items, list)
+    assert [item["id"] for item in mcp_items] == generic[0]
+    assert (mcp["limit"], mcp["offset"]) == generic[2:4]
+
+
+@pytest.mark.asyncio
+async def test_mcp_advanced_random_listing_retains_boolean_selection(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    run_off_event_loop(lambda: _seed(root))
+    expression = 'title:"Session 0" OR title:"Session 1"'
+    owner = await _owner_list(root, expression=expression)
+    mcp = await _mcp_sessions(root, expression, limit=20, sort="random")
+    assert mcp["total"] == owner[1] == 2
+    mcp_items = mcp["items"]
+    assert isinstance(mcp_items, list)
+    assert {item["id"] for item in mcp_items} == set(owner[0])

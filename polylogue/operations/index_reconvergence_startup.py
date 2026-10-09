@@ -186,6 +186,15 @@ def reconverge_managed_index_on_startup(
                 elif abandoned.state == "inactive":
                     store.discard_if_inactive(abandoned)
             generation = store.create(owner_id=_OWNER, source_snapshot=snapshot)
+            # Establish the reader-index deferral before any retained
+            # preparation seals this candidate's SQLite incarnation.
+            with ArchiveStore.open_owned_inactive_generation(
+                Path(generation.index_path).parent,
+                generation_id=generation.generation_id,
+                owner_id=generation.owner_id,
+                defer_secondary_indexes=True,
+            ):
+                pass
         emit(
             "daemon.index_reconvergence.startup",
             outcome="degraded",
@@ -239,7 +248,10 @@ def reconverge_managed_index_on_startup(
         with (
             write_admission("daemon.index_reconvergence.readiness"),
             ArchiveStore.open_owned_inactive_generation(
-                Path(generation.index_path).parent, generation_id=generation.generation_id, owner_id=generation.owner_id
+                Path(generation.index_path).parent,
+                generation_id=generation.generation_id,
+                owner_id=generation.owner_id,
+                preserve_secondary_index_layout=True,
             ) as candidate,
         ):
             candidate.run_generation_readiness_pass()

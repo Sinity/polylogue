@@ -49,6 +49,7 @@ class RepositoryArchiveSearchMixin:
             session_records: builtins.list[SessionRecord],
             *,
             ordered_ids: builtins.list[str] | None = None,
+            queries: SQLiteQueryStore,
         ) -> builtins.list[Session]: ...
 
     async def search_summaries(
@@ -59,19 +60,20 @@ class RepositoryArchiveSearchMixin:
     ) -> builtins.list[SessionSummary]:
         from polylogue.storage.hydrators import session_summary_from_record
 
-        hits, records = await self._search_records(query, limit=limit, origins=origins)
-        if not hits.hits:
-            return []
-        # Hydrate message_count from the current sessions aggregate.
-        ids = [str(record.session_id) for record in records]
-        counts_by_id = await self.queries.get_message_counts_batch(ids)
-        return [
-            session_summary_from_record(
-                record,
-                message_count=counts_by_id.get(str(record.session_id)),
-            )
-            for record in records
-        ]
+        async with self.queries.read_snapshot() as queries:
+            hits, records = await self._search_records(query, limit=limit, origins=origins, queries=queries)
+            if not hits.hits:
+                return []
+            # Hydrate message_count from the current sessions aggregate.
+            ids = [str(record.session_id) for record in records]
+            counts_by_id = await queries.get_message_counts_batch(ids)
+            return [
+                session_summary_from_record(
+                    record,
+                    message_count=counts_by_id.get(str(record.session_id)),
+                )
+                for record in records
+            ]
 
     async def search_summary_hits(
         self,
@@ -84,59 +86,60 @@ class RepositoryArchiveSearchMixin:
         from polylogue.core.errors import DatabaseError
         from polylogue.storage.hydrators import session_summary_from_record
 
-        attachment_hits = await self.queries.search_attachment_identity_evidence_hits(
-            query,
-            limit=limit,
-            origins=origins,
-            since=since,
-        )
-        try:
-            message_hits = await self.queries.search_session_evidence_hits(
+        async with self.queries.read_snapshot() as queries:
+            attachment_hits = await queries.search_attachment_identity_evidence_hits(
                 query,
                 limit=limit,
                 origins=origins,
                 since=since,
             )
-        except DatabaseError:
-            message_hits = []
+            try:
+                message_hits = await queries.search_session_evidence_hits(
+                    query,
+                    limit=limit,
+                    origins=origins,
+                    since=since,
+                )
+            except DatabaseError:
+                message_hits = []
 
-        evidence_hits = _merge_evidence_hits(
-            attachment_hits=attachment_hits,
-            message_hits=message_hits,
-            limit=limit,
-        )
-        if not evidence_hits:
-            return []
+            evidence_hits = _merge_evidence_hits(
+                attachment_hits=attachment_hits,
+                message_hits=message_hits,
+                limit=limit,
+            )
+            if not evidence_hits:
+                return []
 
-        records = await self.queries.get_sessions_batch([hit.session_id for hit in evidence_hits])
-        # Hydrate message_count from the current sessions aggregate.
-        ids = [str(record.session_id) for record in records]
-        counts_by_id = await self.queries.get_message_counts_batch(ids) if ids else {}
-        summaries_by_id = {
-            str(record.session_id): session_summary_from_record(
-                record, message_count=counts_by_id.get(str(record.session_id))
-            )
-            for record in records
-        }
-        return [
-            session_search_hit_from_summary(
-                summaries_by_id[hit.session_id],
-                rank=hit.rank,
-                retrieval_lane=hit.retrieval_lane,
-                match_surface=hit.match_surface,
-                message_id=hit.message_id,
-                snippet=hit.snippet,
-                score=hit.score,
-                matched_terms=hit.matched_terms,
-                score_components=hit.score_components,
-                score_kind=hit.score_kind,
-                lane_rank=hit.lane_rank,
-                lane_contribution=hit.lane_contribution,
-                raw_score=hit.raw_score,
-            )
-            for hit in evidence_hits
-            if hit.session_id in summaries_by_id
-        ]
+            records = await queries.get_sessions_batch([hit.session_id for hit in evidence_hits])
+            # Hydrate message_count from the current sessions aggregate.
+            ids = [str(record.session_id) for record in records]
+            counts_by_id = await queries.get_message_counts_batch(ids) if ids else {}
+            summaries_by_id = {
+                str(record.session_id): session_summary_from_record(
+                    record, message_count=counts_by_id.get(str(record.session_id))
+                )
+                for record in records
+            }
+            return [
+                session_search_hit_from_summary(
+                    summaries_by_id[hit.session_id],
+                    rank=hit.rank,
+                    retrieval_lane=hit.retrieval_lane,
+                    match_surface=hit.match_surface,
+                    message_id=hit.message_id,
+                    snippet=hit.snippet,
+                    score=hit.score,
+                    matched_terms=hit.matched_terms,
+                    score_components=hit.score_components,
+                    score_kind=hit.score_kind,
+                    lane_rank=hit.lane_rank,
+                    lane_contribution=hit.lane_contribution,
+                    raw_score=hit.raw_score,
+                )
+                for hit in evidence_hits
+                if hit.session_id in summaries_by_id
+            ]
 
     async def search(
         self,
@@ -144,8 +147,9 @@ class RepositoryArchiveSearchMixin:
         limit: int = 20,
         origins: builtins.list[str] | None = None,
     ) -> builtins.list[Session]:
-        hits, records = await self._search_records(query, limit=limit, origins=origins)
-        return await self._hydrate_sessions(records, ordered_ids=hits.session_ids())
+        async with self.queries.read_snapshot() as queries:
+            hits, records = await self._search_records(query, limit=limit, origins=origins, queries=queries)
+            return await self._hydrate_sessions(records, ordered_ids=hits.session_ids(), queries=queries)
 
     async def search_actions(
         self,
@@ -153,8 +157,9 @@ class RepositoryArchiveSearchMixin:
         limit: int = 20,
         origins: builtins.list[str] | None = None,
     ) -> builtins.list[Session]:
-        hits, records = await self._search_action_records(query, limit=limit, origins=origins)
-        return await self._hydrate_sessions(records, ordered_ids=hits.session_ids())
+        async with self.queries.read_snapshot() as queries:
+            hits, records = await self._search_action_records(query, limit=limit, origins=origins, queries=queries)
+            return await self._hydrate_sessions(records, ordered_ids=hits.session_ids(), queries=queries)
 
     async def _search_records(
         self,
@@ -162,11 +167,12 @@ class RepositoryArchiveSearchMixin:
         *,
         limit: int,
         origins: builtins.list[str] | None,
+        queries: SQLiteQueryStore,
     ) -> tuple[SessionSearchResult, builtins.list[SessionRecord]]:
-        hits = await self.queries.search_session_hits(query, limit=limit, origins=origins)
+        hits = await queries.search_session_hits(query, limit=limit, origins=origins)
         if not hits.hits:
             return hits, []
-        records = await self.queries.get_sessions_batch(hits.session_ids())
+        records = await queries.get_sessions_batch(hits.session_ids())
         return hits, records
 
     async def _search_action_records(
@@ -175,11 +181,12 @@ class RepositoryArchiveSearchMixin:
         *,
         limit: int,
         origins: builtins.list[str] | None,
+        queries: SQLiteQueryStore,
     ) -> tuple[SessionSearchResult, builtins.list[SessionRecord]]:
-        hits = await self.queries.search_action_session_hits(query, limit=limit, origins=origins)
+        hits = await queries.search_action_session_hits(query, limit=limit, origins=origins)
         if not hits.hits:
             return hits, []
-        records = await self.queries.get_sessions_batch(hits.session_ids())
+        records = await queries.get_sessions_batch(hits.session_ids())
         return hits, records
 
 

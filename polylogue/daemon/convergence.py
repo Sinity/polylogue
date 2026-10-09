@@ -15,7 +15,6 @@ so we skip unchanged files entirely.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import sys
 import threading
 import time
@@ -28,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, TypeVar, cast, runtime_checkable
 
 from polylogue.core.compute import DaemonOperationCancelled
-from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.daemon.derivation import (
     Budget,
     DerivationAdapter,
@@ -215,15 +214,11 @@ class DerivationConvergenceOwner:
 
         if coordinator_write_lease_active():
             raise RuntimeError("derivation convergence must start after the daemon writer lease is released")
-        loop = asyncio.get_running_loop()
         admission = _DerivationAdmission(self._write_bridge, loop_thread_id=threading.get_ident())
         # A targeted ingest scope is not a continuation of archive keyset
         # paging: reusing the archive cursor could skip an earlier changed id.
         # Only no-hint archive sweeps retain their own cursor across passes.
         pass_resume = resume if frame.scope is None else False
-        cancelled = threading.Event()
-        # Bound into the context ``propagate`` copies for the compute thread.
-        cancel_token = compute_cancel.set(cancelled)
         submitted = self._compute_adapter.submit(
             propagate(
                 partial(
@@ -244,20 +239,7 @@ class DerivationConvergenceOwner:
             estimated_bytes=estimated_bytes,
             exclusive_bytes=exclusive_bytes,
         )
-        compute_cancel.reset(cancel_token)
-        operation = asyncio.wrap_future(submitted.future, loop=loop)
-        try:
-            return await asyncio.shield(operation)
-        except asyncio.CancelledError:
-            # A caller may stop awaiting this sweep, but cannot let a compute
-            # worker that already owns a bridged publication outlive owner
-            # shutdown.  Settle it before propagating cancellation so the
-            # composition layer can drain the coordinator safely. A retained
-            # preparation the pass is waiting on is stopped, not waited out.
-            cancelled.set()
-            with contextlib.suppress(BaseException):
-                await asyncio.shield(operation)
-            raise
+        return await submitted.wait()
 
 
 class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
@@ -329,10 +311,7 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
         if not isinstance(recipe_version, str):
             raise TypeError("registered session profile derivation has no canonical recipe version")
         adapter = cast("_SelectedSessionAdapter", candidate)
-        loop = asyncio.get_running_loop()
         admission = _DerivationAdmission(self._write_bridge, loop_thread_id=threading.get_ident())
-        cancelled = threading.Event()
-        cancel_token = compute_cancel.set(cancelled)
         submitted = self._compute_adapter.submit(
             propagate(
                 partial(
@@ -351,17 +330,7 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
             ),
             admission_class="incremental-background",
         )
-        compute_cancel.reset(cancel_token)
-        operation = asyncio.wrap_future(submitted.future, loop=loop)
-        try:
-            return await asyncio.shield(operation)
-        except asyncio.CancelledError:
-            # As for recurring passes, a task cancellation cannot detach a
-            # bridged writer admission from owner shutdown.
-            cancelled.set()
-            with contextlib.suppress(BaseException):
-                await asyncio.shield(operation)
-            raise
+        return await submitted.wait()
 
 
 def _selected_session_facts(

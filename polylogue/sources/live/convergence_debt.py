@@ -18,6 +18,9 @@ class ConvergenceDebt:
     # Drives ``convergence_debt.status`` ("deferred" vs "failed") so daemon
     # health/alerting doesn't mistake normal backpressure for breakage.
     deferred: bool = False
+    # NOT_RUN observes existing work without executing the stage. Repeated
+    # observations must not postpone its retry or count as another attempt.
+    attempted: bool = True
 
 
 def debt_by_path(debts: Iterable[ConvergenceDebt]) -> dict[Path, tuple[ConvergenceDebt, ...]]:
@@ -83,6 +86,7 @@ def convergence_debt_from_state(path: Path, state: object) -> list[ConvergenceDe
                 stage=str(stage_name),
                 error=optional_error(last_error) or f"stage state: {state_value}",
                 deferred=state_value in _DEFERRED_STAGE_STATES,
+                attempted=state_value != "not_run",
             )
         )
     if not debts:

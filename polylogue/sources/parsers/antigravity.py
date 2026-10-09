@@ -124,9 +124,6 @@ _MIN_READY_ATTEMPTS = 3
 #: in ~2s on an idle host and has exceeded ``_REQUEST_TIMEOUT_S`` under load.
 _STARTUP_TIMEOUT_S = 60.0
 
-#: ``kind`` seed distinguishing a tool-activity message from a prose section.
-_ACTIVITY_MESSAGE_KIND = "tool_activity"
-
 #: Closed vocabulary of the tool-activity markers the language server renders
 #: into a transcript, as ``(tool_name, pattern body, argument name)``.
 #:
@@ -2306,7 +2303,6 @@ def _section_runs(body: str) -> list[str | tuple[AntigravityActivityMarker, ...]
 def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessage]:
     sections = list(_SECTION_RE.finditer(markdown))
     messages: list[ParsedMessage] = []
-    activity_ordinal = 0
     for index, section in enumerate(sections):
         start = section.end()
         end = sections[index + 1].start() if index + 1 < len(sections) else len(markdown)
@@ -2316,8 +2312,7 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
             if isinstance(run, str):
                 messages.append(_prose_message(run, cascade_id, section_role, heading, len(messages)))
             else:
-                messages.append(_activity_message(run, cascade_id, len(messages), activity_ordinal))
-                activity_ordinal += 1
+                messages.append(_activity_message(run, len(messages)))
 
     if messages:
         return messages
@@ -2379,9 +2374,7 @@ def _prose_message(
 
 def _activity_message(
     markers: tuple[AntigravityActivityMarker, ...],
-    cascade_id: str,
     position: int,
-    ordinal: int,
 ) -> ParsedMessage:
     """Build the agent tool-activity message for one run of vendor markers.
 
@@ -2389,30 +2382,20 @@ def _activity_message(
     ``tool_input``, so the message carries no prose: retaining the rendered
     line as text would count agent activity as authored words again.
 
-    ``ordinal`` counts activity runs within the transcript and enters the
-    identity seed. Two runs can render identical markers -- a lone ``*Edited
-    relevant file*`` recurs throughout a real transcript -- and they are
-    distinct events, so content alone cannot identify them.
+    The export supplies no native message or call ID for these markers.
+    Canonical lowering binds their semantic digest and identical-content
+    occurrence; unrelated earlier activity cannot rename this message.
     """
-    rendered = "\n".join(marker.rendered for marker in markers)
-    provider_message_id = synthetic_message_id(
-        namespace=cascade_id,
-        role=Role.ASSISTANT,
-        text=rendered,
-        timestamp=None,
-        kind=f"{_ACTIVITY_MESSAGE_KIND}.{ordinal}",
-    )
     blocks = [
         ParsedContentBlock(
             type=BlockType.TOOL_USE,
             tool_name=marker.tool_name,
-            tool_id=f"{provider_message_id}.{block_index}",
             tool_input=marker.tool_input,
         )
-        for block_index, marker in enumerate(markers)
+        for marker in markers
     ]
     return ParsedMessage(
-        provider_message_id=provider_message_id,
+        provider_message_id="",
         role=Role.ASSISTANT,
         text=None,
         blocks=blocks,

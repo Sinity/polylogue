@@ -7,10 +7,16 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
-from polylogue.archive.query.archive_execution import _archive_summaries
+from polylogue.archive.hydration import (
+    archive_envelope_to_session,
+    archive_message_to_domain,
+    archive_summary_to_domain,
+)
+from polylogue.archive.query.filter_kwargs import datetime_to_ms
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+from polylogue.core.enums import Origin
 from polylogue.operations.query_lowering import cli_query_spec
+from polylogue.operations.read_view_selection import select_read_view_summaries
 from polylogue.operations.session_contracts import SessionRead
 from polylogue.operations.transcript_window import read_transcript_window_sync
 from polylogue.surfaces.temporal_evidence import (
@@ -101,34 +107,60 @@ def execute_dialogue_read(payload: Mapping[str, object], *, archive: ArchiveStor
     }
 
 
-def _message_events(
-    archive: ArchiveStore, summaries: list[SessionSummary], *, per_session_limit: int = 8
-) -> tuple[list[TemporalEvidenceEvent], tuple[str, ...]]:
-    if not summaries:
-        return [], ()
-    total_limit = per_session_limit * len(summaries)
-    rows = archive.query_session_messages(
-        [str(summary.id) for summary in summaries], limit=total_limit, sort_direction="asc"
-    )
-    caveats = (
-        ("message_events_capped",)
-        if len(rows) >= total_limit and sum(summary.message_count or 0 for summary in summaries) > total_limit
-        else ()
-    )
-    return [event for row in rows if (event := message_row_to_temporal_event(row)) is not None], caveats
+_EVIDENCE_PAGE_SIZE = 256
 
 
-def _action_events(
-    archive: ArchiveStore, summaries: list[SessionSummary], *, per_session_limit: int = 4
+def _occurrence_events(
+    archive: ArchiveStore, summaries: list[SessionSummary]
 ) -> tuple[list[TemporalEvidenceEvent], tuple[str, ...]]:
-    if not summaries:
-        return [], ()
-    total_limit = per_session_limit * len(summaries)
-    rows = archive.query_session_action_occurrences(
-        [str(summary.id) for summary in summaries], limit=total_limit, sort_direction="asc"
-    )
-    caveats = ("action_events_capped",) if len(rows) >= total_limit else ()
-    return [event for row in rows if (event := action_row_to_temporal_event(row)) is not None], caveats
+    """Page every composed occurrence and retain the read's named lineage gaps."""
+    events: dict[str, TemporalEvidenceEvent] = {}
+    gaps: list[str] = []
+    for summary in summaries:
+        offset = 0
+        while True:
+            archive.check_operation_read()
+            page = archive.read_session_page(str(summary.id), limit=_EVIDENCE_PAGE_SIZE, offset=offset)
+            if not page.lineage_complete:
+                gaps.append(f"lineage_truncated:{page.lineage_truncation_reason or 'unknown'}")
+            for message in page.messages:
+                domain = archive_message_to_domain(message, origin=Origin.from_string(summary.origin))
+                event = message_row_to_temporal_event(
+                    SimpleNamespace(
+                        message_id=message.message_id,
+                        session_id=message.source_session_id or str(summary.id),
+                        occurred_at_ms=datetime_to_ms(domain.timestamp),
+                        role=message.role,
+                        message_type=message.message_type,
+                        position=message.position,
+                        text=domain.text,
+                    )
+                )
+                if event is not None:
+                    events[event.event_id] = event
+            message_ids = [message.message_id for message in page.messages]
+            source_ids = list(dict.fromkeys(message.source_session_id or str(summary.id) for message in page.messages))
+            action_offset = 0
+            while message_ids:
+                archive.check_operation_read()
+                rows = archive.query_session_action_occurrences(
+                    source_ids,
+                    message_ids=message_ids,
+                    limit=_EVIDENCE_PAGE_SIZE,
+                    offset=action_offset,
+                    sort_direction="asc",
+                )
+                for row in rows:
+                    event = action_row_to_temporal_event(row)
+                    if event is not None:
+                        events[event.event_id] = event
+                if len(rows) < _EVIDENCE_PAGE_SIZE:
+                    break
+                action_offset += len(rows)
+            offset += len(page.messages)
+            if not page.messages or (page.total_message_count is not None and offset >= page.total_message_count):
+                break
+    return list(events.values()), tuple(dict.fromkeys(gaps))
 
 
 def execute_temporal_read(
@@ -148,19 +180,10 @@ def execute_temporal_read(
             summaries = []
     else:
         plan = spec.to_plan(vector_provider=vector_provider)
-        rows = _archive_summaries(plan, archive, config=None, archive_root=archive.archive_root, default_limit=50)
-        candidates = plan._apply_common_filters([archive_summary_to_domain(row) for row in rows], sql_pushed=True)
-        ordered = candidates
-        ranked = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane in {"semantic", "hybrid"})
-        if (plan.has_post_filters() or ranked) and plan.offset:
-            ordered = ordered[plan.offset :]
-        summaries = plan._finalize(ordered)
+        summaries = select_read_view_summaries(plan, archive=archive, default_limit=50)
     session_events = [event for summary in summaries if (event := summary_to_temporal_event(summary)) is not None]
-    message_events, message_caveats = _message_events(archive, summaries)
-    action_events, action_caveats = _action_events(archive, summaries)
-    window = build_temporal_evidence_window(
-        [*session_events, *message_events, *action_events], caveats=(*message_caveats, *action_caveats)
-    )
+    occurrence_events, gaps = _occurrence_events(archive, summaries)
+    window = build_temporal_evidence_window([*session_events, *occurrence_events], gaps=gaps)
     return {"view": "temporal", "payload": {"temporal_window": window.model_dump(mode="json")}}
 
 

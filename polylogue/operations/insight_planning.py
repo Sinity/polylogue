@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Callable, Sequence
+import tempfile
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass
+from itertools import batched
+from pathlib import Path
 
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.operations.insight_acceptance import (
-    MAX_INSIGHT_ACCEPTED_PARTS,
     MAX_INSIGHT_PART_TARGETS,
     AcceptedInsightPart,
     AcceptedInsightTarget,
@@ -37,8 +40,44 @@ class InsightManifest:
     scope_kind: InsightScopeKind
     index_generation: str
     recipe_version: str
-    pages: tuple[tuple[AcceptedInsightTarget, ...], ...]
+    pages: InsightManifestPages
     digest: str
+
+    def close(self) -> None:
+        self.pages.close()
+
+
+class InsightManifestPages:
+    """Private immutable target ordinals, with one page resident at a time."""
+
+    def __init__(self, directory: tempfile.TemporaryDirectory[str], target_count: int) -> None:
+        self.directory = directory
+        self.target_count = target_count
+        self.path = Path(directory.name) / "targets.db"
+
+    def __len__(self) -> int:
+        return max(1, (self.target_count + MAX_INSIGHT_PART_TARGETS - 1) // MAX_INSIGHT_PART_TARGETS)
+
+    def __getitem__(self, ordinal: int) -> tuple[AcceptedInsightTarget, ...]:
+        if ordinal < 0:
+            ordinal += len(self)
+        if not 0 <= ordinal < len(self):
+            raise IndexError(ordinal)
+        with closing(sqlite3.connect(self.path)) as connection:
+            return tuple(
+                AcceptedInsightTarget(str(row[0]), row[1])
+                for row in connection.execute(
+                    "SELECT target_ref, disposition FROM targets WHERE ordinal >= ? AND ordinal < ? ORDER BY ordinal",
+                    (ordinal * MAX_INSIGHT_PART_TARGETS, (ordinal + 1) * MAX_INSIGHT_PART_TARGETS),
+                )
+            )
+
+    def __iter__(self) -> Iterator[tuple[AcceptedInsightTarget, ...]]:
+        for ordinal in range(len(self)):
+            yield self[ordinal]
+
+    def close(self) -> None:
+        self.directory.cleanup()
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,63 +139,68 @@ def prepare_insight_manifest(
     """
     scope_kind: InsightScopeKind = "full" if session_ids is None else "explicit"
     index_connection = _required_index_connection(archive)
-    targets: list[AcceptedInsightTarget] = []
-    maximum = MAX_INSIGHT_ACCEPTED_PARTS * MAX_INSIGHT_PART_TARGETS
-    if session_ids is None:
-        cursor = ""
-        while True:
-            check_stop()
-            rows = index_connection.execute(
-                "SELECT session_id, disposition FROM ("
-                "SELECT session_id, 'required' AS disposition FROM sessions "
-                "UNION ALL SELECT p.session_id, 'excess' AS disposition FROM session_profiles p "
-                "WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id=p.session_id)) "
-                "WHERE session_id > ? ORDER BY session_id LIMIT ?",
-                (cursor, MAX_INSIGHT_PART_TARGETS),
-            ).fetchall()
-            if not rows:
-                break
-            for row in rows:
-                targets.append(AcceptedInsightTarget(f"session:{row[0]}", row[1]))
-            if len(targets) > maximum:
-                raise ValueError("insight manifest exceeds its bounded page count")
-            cursor = str(rows[-1][0])
-    else:
-        seen: set[str] = set()
-        for requested in session_ids:
-            check_stop()
-            try:
-                resolved = archive.resolve_session_id(requested)
-            except KeyError:
-                continue
-            if resolved not in seen:
-                seen.add(resolved)
-                targets.append(AcceptedInsightTarget(f"session:{resolved}", "required"))
-            if len(targets) > maximum:
-                raise ValueError("insight manifest exceeds its bounded page count")
-    pages = tuple(
-        tuple(targets[offset : offset + MAX_INSIGHT_PART_TARGETS])
-        for offset in range(0, len(targets), MAX_INSIGHT_PART_TARGETS)
-    ) or ((),)
-    # The digest covers only immutable target facts, not subsequently allocated
-    # preview references. Empty explicit scope remains one audited empty page.
-    parts = tuple(
-        AcceptedInsightPart(
-            preview_ref="pending-preview",
-            authorization_ref="pending-authorization",
-            plan_hash="0" * 64,
-            ordinal=ordinal,
-            page_count=len(pages),
-            manifest_digest="0" * 64,
-            previous_preview_ref="pending-preview" if ordinal else None,
-            scope_kind=scope_kind,
-            index_generation=index_generation,
-            recipe_version=recipe_version,
-            targets=page,
-        )
-        for ordinal, page in enumerate(pages)
-    )
-    return InsightManifest(scope_kind, index_generation, recipe_version, pages, insight_manifest_digest(parts))
+    directory = tempfile.TemporaryDirectory(prefix="polylogue-insight-manifest-")
+    count = 0
+    try:
+        with closing(sqlite3.connect(Path(directory.name) / "targets.db")) as spool:
+            spool.execute("PRAGMA cache_size = -64")
+            spool.execute(
+                "CREATE TABLE targets (ordinal INTEGER PRIMARY KEY, target_ref TEXT NOT NULL UNIQUE, "
+                "disposition TEXT NOT NULL) STRICT"
+            )
+            if session_ids is None:
+                cursor = ""
+                while True:
+                    check_stop()
+                    rows = index_connection.execute(
+                        "SELECT session_id, disposition FROM ("
+                        "SELECT session_id, 'required' AS disposition FROM sessions "
+                        "UNION ALL SELECT p.session_id, 'excess' AS disposition FROM session_profiles p "
+                        "WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id=p.session_id)) "
+                        "WHERE session_id > ? ORDER BY session_id LIMIT ?",
+                        (cursor, MAX_INSIGHT_PART_TARGETS),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    for row in rows:
+                        spool.execute("INSERT INTO targets VALUES (?, ?, ?)", (count, f"session:{row[0]}", row[1]))
+                        count += 1
+                    cursor = str(rows[-1][0])
+            else:
+                for requested in session_ids:
+                    check_stop()
+                    try:
+                        resolved = archive.resolve_session_id(requested)
+                    except KeyError:
+                        continue
+                    count += spool.execute(
+                        "INSERT OR IGNORE INTO targets VALUES (?, ?, 'required')", (count, f"session:{resolved}")
+                    ).rowcount
+            spool.commit()
+        pages = InsightManifestPages(directory, count)
+
+        # No preview reference participates in the immutable target digest.
+        def parts() -> Iterator[AcceptedInsightPart]:
+            for ordinal, page in enumerate(pages):
+                check_stop()
+                yield AcceptedInsightPart(
+                    preview_ref="pending-preview",
+                    authorization_ref="pending-authorization",
+                    plan_hash="0" * 64,
+                    ordinal=ordinal,
+                    page_count=len(pages),
+                    manifest_digest="0" * 64,
+                    previous_preview_ref="pending-preview" if ordinal else None,
+                    scope_kind=scope_kind,
+                    index_generation=index_generation,
+                    recipe_version=recipe_version,
+                    targets=page,
+                )
+
+        return InsightManifest(scope_kind, index_generation, recipe_version, pages, insight_manifest_digest(parts()))
+    except BaseException:
+        directory.cleanup()
+        raise
 
 
 def insight_page_plan(
@@ -167,7 +211,7 @@ def insight_page_plan(
     archive_instance_id: str,
     archive_identity_digest: str,
     now_ms: int,
-    expires_at_ms: int,
+    expires_at_ms: int | None,
 ) -> MutationPlan:
     """Bind a single immutable page to the existing maintenance policy."""
     page = manifest.pages[ordinal]
@@ -211,38 +255,44 @@ def insight_page_plan(
         destructive_class="maintenance",
         required_confirmation="role_only",
         prepared_at_ms=now_ms,
-        expires_at_ms=expires_at_ms,
+        expires_at_ms=now_ms if expires_at_ms is None else expires_at_ms,
         context=context,
     )
 
 
 def insight_terminal_view_counts(
-    archive: ArchiveStore, targets: Sequence[AcceptedInsightTarget], *, check_stop: Callable[[], None]
+    archive: ArchiveStore, targets: Iterable[AcceptedInsightTarget], *, check_stop: Callable[[], None]
 ) -> tuple[int, int]:
     """Observe shared views once; page totals must not double-count roots."""
     index_connection = _required_index_connection(archive)
-    session_ids = tuple(
-        target.target_ref.removeprefix("session:") for target in targets if target.disposition == "required"
-    )
-    if not session_ids:
-        return 0, 0
-    roots: set[str] = set()
-    for offset in range(0, len(session_ids), MAX_INSIGHT_PART_TARGETS):
-        check_stop()
-        roots.update(
-            thread_root_ids_sync(index_connection, session_ids[offset : offset + MAX_INSIGHT_PART_TARGETS]).values()
-        )
-    ordered_roots = tuple(sorted(roots))
+    session_ids = (target.target_ref.removeprefix("session:") for target in targets if target.disposition == "required")
+    selected = 0
     threads = 0
-    for offset in range(0, len(ordered_roots), MAX_INSIGHT_PART_TARGETS):
-        check_stop()
-        page = ordered_roots[offset : offset + MAX_INSIGHT_PART_TARGETS]
-        placeholders = ",".join("?" for _ in page)
-        threads += int(
-            index_connection.execute(
-                f"SELECT COUNT(*) FROM threads WHERE thread_id IN ({placeholders})", page
-            ).fetchone()[0]
-        )
+    with (
+        tempfile.TemporaryDirectory(prefix="polylogue-insight-roots-") as scratch,
+        closing(sqlite3.connect(Path(scratch) / "roots.db")) as roots,
+    ):
+        roots.execute("PRAGMA cache_size = -64")
+        roots.execute("CREATE TABLE roots (root_id TEXT PRIMARY KEY) STRICT")
+        for page in batched(session_ids, MAX_INSIGHT_PART_TARGETS):
+            check_stop()
+            selected += len(page)
+            roots.executemany(
+                "INSERT OR IGNORE INTO roots VALUES (?)",
+                ((root,) for root in thread_root_ids_sync(index_connection, page).values()),
+            )
+        with closing(roots.execute("SELECT root_id FROM roots ORDER BY root_id")) as cursor:
+            while rows := cursor.fetchmany(MAX_INSIGHT_PART_TARGETS):
+                check_stop()
+                page = tuple(str(row[0]) for row in rows)
+                placeholders = ",".join("?" for _ in page)
+                threads += int(
+                    index_connection.execute(
+                        f"SELECT COUNT(*) FROM threads WHERE thread_id IN ({placeholders})", page
+                    ).fetchone()[0]
+                )
+    if not selected:
+        return 0, 0
     # Tag rollups retain the existing archive-global public count semantics.
     tags = int(index_connection.execute("SELECT COUNT(*) FROM session_tag_rollups").fetchone()[0])
     return threads, tags

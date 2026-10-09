@@ -1,0 +1,445 @@
+"""Canonical raw captures remain private until creator-owned pickup settles."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import io
+import json
+import threading
+from collections.abc import AsyncGenerator, Generator, Iterator
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.enums import Provider
+from polylogue.core.json import JSONValue
+from polylogue.pipeline.services.acquisition_records import make_raw_record
+from polylogue.pipeline.services.acquisition_streams import _drain_batch
+from polylogue.sources.cursor import _ParseContext
+from polylogue.sources.emitter import _SessionEmitter
+from polylogue.sources.parsers.base import RawSessionData
+from polylogue.sources.staged_raw_payload import StagedRawPayload
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+
+def test_creator_verifies_staged_copy_before_queue_and_retains_shared_outputs(tmp_path: Path) -> None:
+    preparation = tmp_path / "preparation"
+    stage = StagedRawPayload.from_value({"selected": "exact", "float": 1e2}, directory=preparation)
+    expected = stage.path.read_bytes()
+    first = RawSessionData(staged_payload=stage, source_path="neutral.jsonl", source_index=0)
+    second = first.model_copy()
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blobs")
+    record = make_raw_record(first, Provider.CHATGPT.value, blob_store=publisher)
+    assert record.blob_hash == hashlib.sha256(expected).hexdigest()
+    assert record.blob_size == len(expected)
+    assert not publisher._store.blob_path(record.blob_hash).exists()
+    assert not publisher.source_db_path.exists()
+    assert len(publisher._pending) == 1
+    assert not stage.path.exists() and preparation.exists()
+    assert first.staged_payload is None and first.raw_bytes == b""
+    assert make_raw_record(second, Provider.CHATGPT.value, blob_store=publisher).blob_hash == record.blob_hash
+    assert len(publisher._pending) == 1
+    assert "staged_payload" not in second.model_dump()
+    assert str(preparation) not in repr(second)
+    publisher.discard_prepared(publisher._pending[0][1])
+
+
+def test_creator_refuses_changed_staged_inode_and_cleans_capture(tmp_path: Path) -> None:
+    stage = StagedRawPayload.from_value({"selected": "exact"}, directory=tmp_path / "preparation")
+    raw = RawSessionData(staged_payload=stage, source_path="neutral.jsonl")
+    stage.path.unlink()
+    stage.path.write_bytes(b'{"selected":"other"}')
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blobs")
+    with pytest.raises(ValueError, match="identity changed"):
+        make_raw_record(raw, Provider.CHATGPT.value, blob_store=publisher)
+    assert not stage.path.exists()
+    assert not publisher._pending and not publisher.source_db_path.exists()
+
+
+def test_cancelled_creator_copy_and_failed_worker_page_discard_private_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = StagedRawPayload.from_value({"selected": "exact"}, directory=tmp_path / "preparation")
+    raw = RawSessionData(staged_payload=stage, source_path="neutral.jsonl")
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blobs")
+
+    def cancelled(*_args: object, **_kwargs: object) -> object:
+        raise DaemonOperationCancelled()
+
+    monkeypatch.setattr(BlobStore, "prepare_from_path", cancelled)
+    with pytest.raises(DaemonOperationCancelled):
+        make_raw_record(raw, Provider.CHATGPT.value, blob_store=publisher)
+    assert not stage.path.exists() and not publisher._pending
+    page_stage = StagedRawPayload.from_value({"selected": "page"}, directory=tmp_path / "preparation")
+
+    def failed_page() -> Generator[RawSessionData, None, None]:
+        yield RawSessionData(staged_payload=page_stage, source_path="neutral.jsonl")
+        raise OSError("late read failure")
+
+    with pytest.raises(OSError, match="late read"):
+        _drain_batch(failed_page(), batch_size=2)
+    assert not page_stage.path.exists()
+
+
+def test_raw_representation_is_exclusive(tmp_path: Path) -> None:
+    stage = StagedRawPayload.from_value({"selected": "exact"}, directory=tmp_path)
+    try:
+        with pytest.raises(ValidationError, match="mutually exclusive"):
+            RawSessionData(staged_payload=stage, raw_bytes=b"{}", source_path="neutral.json")
+        with pytest.raises(ValidationError, match="mutually exclusive"):
+            RawSessionData(staged_payload=stage, blob_hash=stage.seal.sha256, source_path="neutral.json")
+    finally:
+        stage.discard()
+
+
+@pytest.mark.parametrize("user_data", [True, False])
+def test_admission_scan_keeps_nested_wire_types_without_loading_unselected_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_data: bool
+) -> None:
+    from polylogue.schemas.observation_spill import SpilledKey, StreamedJSONDocument, _ScalarTokenStore
+    from polylogue.sources.parsers.base_support import _unknown_wire_type
+
+    record = {
+        "type": "message",
+        "arguments" if user_data else "content": [{"kind": "future_nested"}],
+        "k" * 65536: "v" * 65536,
+    }
+    path = tmp_path / "neutral.json"
+    path.write_text(json.dumps(record))
+    original_read = _ScalarTokenStore.read
+
+    def selected(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
+        size = self.connection.execute(
+            "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
+        ).fetchone()[0]
+        assert size < 65536
+        return original_read(self, kind, ordinal)
+
+    def selected_key(self: SpilledKey) -> str:
+        name = self.small_name
+        assert name is not None
+        return name
+
+    with StreamedJSONDocument(path) as payload:
+        monkeypatch.setattr(_ScalarTokenStore, "read", selected)
+        monkeypatch.setattr(SpilledKey, "read", selected_key)
+        assert _unknown_wire_type(payload) == (None if user_data else "future_nested")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_source_read_settles_before_discarding_worker_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.config import Source
+    from polylogue.pipeline.services import acquisition as acquisition_module
+    from polylogue.pipeline.services.acquisition_streams import iter_source_raw_stream
+    from polylogue.sources.retained_acquisition import SourceInputRecord
+
+    stage = StagedRawPayload.from_value({"selected": "exact"}, directory=tmp_path / "preparation")
+    started = asyncio.Event()
+    released = threading.Event()
+    settled = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def records(*_args: object, **_kwargs: object) -> Iterator[SourceInputRecord]:
+        try:
+            yield SourceInputRecord(
+                '["physical-file-v1",0]', RawSessionData(staged_payload=stage, source_path="neutral.jsonl")
+            )
+            loop.call_soon_threadsafe(started.set)
+            released.wait()
+        finally:
+            settled.set()
+
+    monkeypatch.setattr(acquisition_module, "iter_source_acquisition_records", records)
+    stream = iter_source_raw_stream(Source(name="neutral", path=tmp_path))
+
+    async def next_record() -> SourceInputRecord:
+        return await anext(stream)
+
+    pending = asyncio.create_task(next_record())
+    try:
+        await started.wait()
+        pending.cancel()
+        await asyncio.sleep(0)
+        assert not pending.done() and stage.path.exists() and not settled.is_set()
+        released.set()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert settled.is_set() and not stage.path.exists()
+    finally:
+        released.set()
+        assert isinstance(stream, AsyncGenerator)
+        await stream.aclose()
+        stage.discard()
+
+
+def test_emitter_streams_unknown_giant_key_and_string_to_canonical_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+    from contextlib import contextmanager
+    from typing import Any
+
+    from polylogue.core.json import dumps_bytes
+    from polylogue.schemas import observation_spill
+    from polylogue.schemas.observation_spill import SpilledKey, _ScalarTokenStore
+
+    class BoundedInput(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            assert size is not None and size >= 0, "whole source read"
+            return super().read(size)
+
+    document = {
+        "id": "neutral-conversation",
+        "mapping": {
+            "node": {
+                "message": {
+                    "id": "neutral-message",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["selected exact text"]},
+                }
+            }
+        },
+        "k" * (4 * 1024 * 1024): "v" * (4 * 1024 * 1024),
+    }
+    expected = dumps_bytes(document)
+    source = json.dumps(document).encode() + b"\n"
+    original_scratch = scratch_connection_context
+
+    @contextmanager
+    def small_cells(**kwargs: Any) -> Generator[sqlite3.Connection, None, None]:
+        with original_scratch(**kwargs) as connection:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 32768)
+            yield connection
+
+    monkeypatch.setattr(observation_spill, "scratch_connection_context", small_cells)
+    original_read = _ScalarTokenStore.read
+
+    def selected(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
+        row = self.connection.execute(
+            "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
+        ).fetchone()
+        assert row[0] < 4 * 1024 * 1024, "giant scalar materialization"
+        return original_read(self, kind, ordinal)
+
+    def no_original_key(self: SpilledKey) -> str:
+        name = self.small_name
+        assert name is not None, "giant original key reconstruction"
+        return name
+
+    monkeypatch.setattr(_ScalarTokenStore, "read", selected)
+    monkeypatch.setattr(SpilledKey, "read", no_original_key)
+    context = _ParseContext(
+        Provider.CHATGPT, False, "neutral.jsonl", "neutral", None, True, {}, raw_directory=tmp_path / "preparation"
+    )
+    emitted = list(_SessionEmitter(context).emit(BoundedInput(source), "neutral.jsonl"))
+    assert len(emitted) == 1
+    raw, session = emitted[0]
+    assert raw is not None and raw.staged_payload is not None and raw.raw_bytes == b""
+    try:
+        assert raw.staged_payload.seal.sha256 == hashlib.sha256(expected).hexdigest()
+        assert raw.staged_payload.seal.size == len(expected)
+        assert raw.staged_payload.path.read_bytes() == expected
+        assert session.messages[0].text == "selected exact text"
+        assert len(list((tmp_path / "preparation").iterdir())) == 1
+    finally:
+        raw.staged_payload.discard()
+
+
+@pytest.mark.parametrize("digits", [4301, 65537])
+def test_emitter_canonicalizes_valid_unknown_integer_without_a_digit_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, digits: int
+) -> None:
+    from polylogue.schemas.observation_spill import _ScalarTokenStore
+
+    root = {
+        "id": "neutral-conversation",
+        "mapping": {
+            "node": {
+                "message": {
+                    "id": "neutral-message",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["selected exact text"]},
+                }
+            }
+        },
+    }
+    prefix = json.dumps(root, separators=(",", ":")).encode()[:-1]
+    canonical = prefix + b',"unknown":' + b"9" * digits + b',"zero":0}'
+    wire = prefix + b',"unknown":' + b"9" * digits + b',"zero":-0}\n'
+    original_read = _ScalarTokenStore.read
+
+    def selected(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
+        size = self.connection.execute(
+            "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
+        ).fetchone()[0]
+        assert size < 4301, "unselected integer materialization"
+        return original_read(self, kind, ordinal)
+
+    monkeypatch.setattr(_ScalarTokenStore, "read", selected)
+    context = _ParseContext(Provider.CHATGPT, False, "neutral.jsonl", "neutral", None, True, {})
+    ((raw, session),) = _SessionEmitter(context).emit(io.BytesIO(wire), "neutral.jsonl")
+    assert raw is not None and raw.staged_payload is not None
+    try:
+        assert raw.staged_payload.path.read_bytes() == canonical
+        assert raw.staged_payload.seal.sha256 == hashlib.sha256(canonical).hexdigest()
+        assert session.messages[0].text == "selected exact text"
+    finally:
+        raw.staged_payload.discard()
+
+
+def test_selected_integer_codec_accepts_exact_large_values_without_global_settings() -> None:
+    import sys
+    from decimal import Decimal
+
+    from polylogue.core.json import dumps_bytes, loads
+
+    configured_limit = sys.get_int_max_str_digits()
+    wire = b'{"n":' + b"9" * 5000 + b',"float":1e2}'
+    value = loads(wire)
+    assert isinstance(value, dict) and value["n"] == int(Decimal("9" * 5000))
+    assert dumps_bytes(value) == b'{"n":' + b"9" * 5000 + b',"float":100.0}'
+    assert sys.get_int_max_str_digits() == configured_limit
+
+
+def test_emitter_selected_nested_tool_input_outlives_record_tape(tmp_path: Path) -> None:
+    selected = {"nested": {"array": [1, {"exact": "selected"}]}}
+    record = {
+        "type": "assistant",
+        "sessionId": "neutral-session",
+        "uuid": "neutral-message",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "neutral-tool", "name": "Read", "input": selected}],
+        },
+        "ignored": "x" * (128 * 1024),
+    }
+    context = _ParseContext(
+        Provider.CLAUDE_CODE, True, "neutral.jsonl", "neutral", None, True, {}, raw_directory=tmp_path / "preparation"
+    )
+    emitted = list(_SessionEmitter(context).emit(io.BytesIO(json.dumps(record).encode() + b"\n"), "neutral.jsonl"))
+    assert len(emitted) == 1
+    raw, session = emitted[0]
+    assert raw is not None and raw.staged_payload is not None
+    try:
+        block = session.messages[0].blocks[0]
+        assert block.tool_input == selected
+        assert block.model_dump(mode="json")["tool_input"] == selected
+        message = record["message"]
+        assert isinstance(message, dict)
+        content = message["content"]
+        assert isinstance(content, list)
+        assert session.messages[0].text == json.dumps(content[0], sort_keys=True)
+    finally:
+        raw.staged_payload.discard()
+
+
+def test_selected_patch_and_draft_outputs_release_borrowed_nested_values() -> None:
+    from contextlib import closing
+
+    from polylogue.sources.decoder_json import DecodedRecordSequence
+    from polylogue.sources.parsers.base_models import ParsedFileEdit, ParsedSession
+
+    value = {"nested": {"array": [1, {"exact": "selected"}]}}
+    wire = json.dumps({"selected": value, "ignored": "x" * (128 * 1024)}).encode() + b"\n"
+    with closing(DecodedRecordSequence.from_jsonl(io.BytesIO(wire), "neutral.jsonl")) as tape:
+        record = tape[0]
+        assert isinstance(record, dict)
+        borrowed = record["selected"]
+        assert isinstance(borrowed, dict)
+        draft: dict[str, object] = dict(borrowed)
+        patch = ParsedFileEdit(structured_patch=[borrowed])
+        session = ParsedSession(
+            source_name=Provider.CLAUDE_CODE, provider_session_id="neutral", messages=[], pending_drafts=[draft]
+        )
+    assert patch.model_dump(mode="json")["structured_patch"] == [value]
+    assert session.pending_drafts == [value]
+
+
+def test_claude_prefix_replay_borrows_ignored_large_scalar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.schemas.observation_spill import _ScalarTokenStore
+    from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+
+    source = tmp_path / "prefix.jsonl"
+    records = [
+        {"contentKey": "ignored-prefix", "agentId": "neutral", "summary": "x" * (128 * 1024)},
+        {"type": "user", "uuid": "before-session", "message": {"role": "user", "content": "prefix selected"}},
+        {
+            "type": "user",
+            "uuid": "after-session",
+            "sessionId": "neutral",
+            "message": {"role": "user", "content": "later selected"},
+        },
+    ]
+    source.write_text("".join(json.dumps(record) + "\n" for record in records))
+    original = _ScalarTokenStore.read
+
+    def selected(store: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
+        (size,) = store.connection.execute(
+            "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
+        ).fetchone()
+        assert size < 128 * 1024, "ignored prefix scalar was reconstructed"
+        return original(store, kind, ordinal)
+
+    monkeypatch.setattr(_ScalarTokenStore, "read", selected)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_CODE.value,
+        "neutral",
+        is_stream=True,
+        strict_jsonl_records=True,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    try:
+        assert artifact.error is None, artifact.error
+        [session] = artifact.iter_sessions()
+        assert [message.text for message in session.messages] == ["prefix selected", "later selected"]
+    finally:
+        artifact.discard()
+
+
+def test_claude_prefix_scratch_borrows_one_tape_and_settles_failed_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import closing
+
+    from polylogue.schemas.observation_spill import SpilledObject
+    from polylogue.sources.decoder_json import DecodedRecordSequence
+    from polylogue.sources.parsers.claude import stream_scratch
+
+    wire = json.dumps({"uuid": "exact", "ignored": "x" * (128 * 1024)}).encode() + b"\n"
+    with closing(DecodedRecordSequence.from_jsonl(io.BytesIO(wire), "prefix.jsonl")) as tape:
+        item = tape[0]
+        assert isinstance(item, SpilledObject)
+        scratch = stream_scratch.ClaudeStreamScratch()
+        try:
+            for position in range(32):
+                scratch.add_prefix(position, item)
+            assert scratch.prefix_count() == 32
+            assert len(scratch._prefix_owners) == 1
+            replayed = 0
+            for _, value in scratch.iter_prefix():
+                assert isinstance(value, dict)
+                assert value["uuid"] == "exact"
+                replayed += 1
+            assert replayed == 32
+
+            def failed_spool() -> None:
+                raise OSError("injected prefix reset failure")
+
+            monkeypatch.setattr(stream_scratch, "PickleSpool", failed_spool)
+            with pytest.raises(OSError, match="prefix reset failure"):
+                scratch.clear_prefix()
+        finally:
+            scratch.close()
+            scratch.close()
+        assert scratch._prefix_owners == {}
+        assert item["uuid"] == "exact"

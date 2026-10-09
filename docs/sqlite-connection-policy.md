@@ -91,7 +91,7 @@ default: a one-shot CLI or API writer has no recurring owner to defer to.
 | --- | --- | --- |
 | `recurring` | PASSIVE | the daemon's 5-minute coordinator, and the cold-build pass boundary (`ArchiveStore.finish_active_cold_build`) — both against a live archive |
 | `quiescent` | PASSIVE, RESTART | a declared quiescent boundary |
-| `exclusive` | PASSIVE, RESTART, TRUNCATE | seal, shutdown, offline generation lifecycle, backup snapshot |
+| `exclusive` | PASSIVE, RESTART, TRUNCATE | seal, shutdown, offline generation lifecycle |
 
 A busy result retains the WAL and reports blockers; it never loops, retries or
 escalates to outlast a live reader. Blocker collection walks `/proc`, so it is

@@ -164,3 +164,70 @@ def test_atomic_publication_accepts_a_maximal_destination_component(tmp_path: Pa
     cast(Callable[[Path, bytes], None], operation)(path, b"complete output")
     assert path.read_bytes() == b"complete output"
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_sync_tree_orders_every_dependency_before_its_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.core.durable_fs import sync_tree
+
+    root = tmp_path / "new" / "package"
+    shard = root / "blob" / "aa"
+    shard.mkdir(parents=True)
+    files = [
+        root / "source.db",
+        root / "user.db",
+        root / "audit.db",
+        root / "embeddings.db",
+        root / "manifest.json",
+        shard / "hash",
+    ]
+    for path in files:
+        path.write_bytes(b"neutral-preservation-bytes")
+    synced: list[Path] = []
+    actual = os.fsync
+
+    def observe(fd: int) -> None:
+        synced.append(Path(os.readlink(f"/proc/self/fd/{fd}")))
+        actual(fd)
+
+    monkeypatch.setattr(os, "fsync", observe)
+    sync_tree(root)
+    for path in files + [shard, shard.parent, root, root.parent]:
+        assert synced.count(path) == 1
+        assert synced.index(path) < synced.index(path.parent)
+    assert tmp_path in synced
+
+
+@pytest.mark.parametrize("relative", ["source.db", "blob/aa/hash", "blob/aa", "."])
+def test_sync_tree_propagates_dependency_barrier_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative: str
+) -> None:
+    from polylogue.core.durable_fs import sync_tree
+
+    root = tmp_path / "package"
+    shard = root / "blob" / "aa"
+    shard.mkdir(parents=True)
+    (root / "source.db").write_bytes(b"tier")
+    (shard / "hash").write_bytes(b"blob")
+    actual = os.fsync
+    target = root / relative
+
+    def fail(fd: int) -> None:
+        if Path(os.readlink(f"/proc/self/fd/{fd}")) == target:
+            raise OSError("synthetic dependency barrier failure")
+        actual(fd)
+
+    monkeypatch.setattr(os, "fsync", fail)
+    with pytest.raises(DurableFilesystemError):
+        sync_tree(root)
+
+
+def test_sync_tree_refuses_symlinks(tmp_path: Path) -> None:
+    from polylogue.core.durable_fs import sync_tree
+
+    root = tmp_path / "package"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"outside")
+    (root / "artifact").symlink_to(outside)
+    with pytest.raises(DurableFilesystemError):
+        sync_tree(root)

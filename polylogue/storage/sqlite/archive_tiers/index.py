@@ -722,6 +722,12 @@ ON messages(session_id, position, variant_index);
 CREATE INDEX IF NOT EXISTS idx_messages_session_sortkey
 ON messages(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id);
 
+-- Names can identify several Source occurrences even when unique native
+-- identity was intentionally suppressed. Lineage resolves inside composed cuts.
+CREATE INDEX IF NOT EXISTS idx_messages_source_native
+ON messages(session_id, source_native_id_json, position, variant_index)
+WHERE source_native_id_json IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_messages_parent
 ON messages(parent_message_id)
 WHERE parent_message_id IS NOT NULL;
@@ -1867,7 +1873,7 @@ AFTER INSERT ON session_model_usage BEGIN
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_demand_model_usage_au
-AFTER UPDATE OF session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, catalog_cost_usd ON session_model_usage BEGIN
+AFTER UPDATE OF session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, catalog_cost_usd, provider_lanes_complete, provider_usage_observed ON session_model_usage BEGIN
     {_profile_demand_sql("OLD.session_id")}
     {_profile_demand_sql("NEW.session_id")}
 END;

@@ -9,12 +9,27 @@ from typing import Any
 import pytest
 
 from polylogue.config import Source
-from polylogue.operations.drive_readiness import DriveCatchupState, inspect_drive_readiness
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.operations.drive_readiness import DriveCatchupState
+from polylogue.operations.drive_readiness import inspect_drive_readiness as _inspect_drive_readiness
 from polylogue.sources.drive.source_client import DriveSourceClient
-from polylogue.sources.drive.types import GEMINI_PROMPT_MIME_TYPE, DriveFile
+from polylogue.sources.drive.types import (
+    GEMINI_PROMPT_MIME_TYPE,
+    DriveAccessDeniedError,
+    DriveAuthError,
+    DriveFile,
+    DriveIncompleteSearchError,
+    DriveNotFolderError,
+)
 from polylogue.sources.drive.witness import DriveListingWitness
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+
+
+def inspect_drive_readiness(*args: Any, **kwargs: Any) -> Any:
+    # These acquisition laws supply settled Raw currency independently. The
+    # retained production route exercises the actual classifier in daemon tests.
+    return _inspect_drive_readiness(*args, inspect_raw=lambda key: "valid", **kwargs)
 
 
 @pytest.mark.parametrize("count", [0, 3])
@@ -25,7 +40,7 @@ def test_listing_witness_pages_the_production_drive_client_before_declaring_comp
         calls: list[str | None] = []
 
         def list_files(self, *, page_token: str | None, **kwargs: Any) -> dict[str, Any]:
-            if kwargs.get("fields") == "files(id,name)":
+            if kwargs.get("fields") == "incompleteSearch,files(id,name)":
                 return {"files": [{"id": "resolved-folder", "name": "configured-folder"}]}
             self.calls.append(page_token)
             ordinal = int(page_token or "0")
@@ -156,5 +171,138 @@ def test_postlisting_detects_named_folder_resolution_change() -> None:
         witness.reobserve(client)  # type: ignore[arg-type]
         assert witness.changed
         assert witness.postlisting_complete
+    finally:
+        witness.close()
+
+
+@pytest.mark.parametrize("incomplete_call", [1, 2])
+def test_provider_incomplete_search_never_certifies_an_empty_folder(tmp_path: Path, incomplete_call: int) -> None:
+    """Removing the provider completeness check makes the unknown report complete."""
+
+    class Gateway:
+        calls = 0
+
+        def get_file(self, file_id: str, fields: str) -> dict[str, Any]:
+            return {"id": file_id, "mimeType": "application/vnd.google-apps.folder"}
+
+        def list_files(self, **kwargs: Any) -> dict[str, Any]:
+            assert "incompleteSearch" in kwargs["fields"]
+            self.calls += 1
+            return {"files": [], "incompleteSearch": self.calls == incomplete_call}
+
+    bootstrap_archive_root(tmp_path)
+    client = DriveSourceClient(gateway=Gateway())  # type: ignore[arg-type]
+    configured = Source("aistudio", folder="native-folder")
+    witness = DriveListingWitness(configured.name, configured.folder or "")
+    try:
+        with pytest.raises(DriveIncompleteSearchError):
+            witness.enumerate(client, client.resolve_folder_id(configured.folder or ""))
+            witness.reobserve(client)
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            report = inspect_drive_readiness(
+                [configured], archive.source_connection, archive.index_connection, {configured.name: witness}
+            )
+        assert report.state is DriveCatchupState.UNKNOWN
+        assert report.enumerated_count is report.acquired_count is report.materialization_pending is None
+        assert "drive_listing_witness_unfinished" in report.gaps
+    finally:
+        witness.close()
+
+
+def test_incomplete_named_folder_search_does_not_select_its_first_match() -> None:
+    class Gateway:
+        def list_files(self, **kwargs: Any) -> dict[str, Any]:
+            assert "incompleteSearch" in kwargs["fields"]
+            return {"files": [{"id": "unproved-folder", "name": "Named Folder"}], "incompleteSearch": True}
+
+    client = DriveSourceClient(gateway=Gateway())  # type: ignore[arg-type]
+    with pytest.raises(DriveIncompleteSearchError):
+        client.resolve_folder_id("Named Folder")
+
+
+def test_restart_discards_failed_listing_and_certifies_a_new_complete_empty_listing(tmp_path: Path) -> None:
+    class Gateway:
+        incomplete = True
+
+        def get_file(self, file_id: str, fields: str) -> dict[str, Any]:
+            return {"id": file_id, "mimeType": "application/vnd.google-apps.folder"}
+
+        def list_files(self, **kwargs: Any) -> dict[str, Any]:
+            return {"files": [], "incompleteSearch": self.incomplete}
+
+    bootstrap_archive_root(tmp_path)
+    gateway = Gateway()
+    client = DriveSourceClient(gateway=gateway)  # type: ignore[arg-type]
+    configured = Source("aistudio", folder="native-folder")
+    prior = DriveListingWitness(configured.name, configured.folder or "")
+    try:
+        with pytest.raises(DriveIncompleteSearchError):
+            prior.enumerate(client, "native-folder")
+    finally:
+        prior.close()
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        missing = inspect_drive_readiness([configured], archive.source_connection, archive.index_connection, {})
+    assert missing.state is DriveCatchupState.UNKNOWN
+    assert "drive_listing_witness_missing" in missing.gaps
+    gateway.incomplete = False
+    current = DriveListingWitness(configured.name, configured.folder or "")
+    try:
+        current.enumerate(client, client.resolve_folder_id(configured.folder or ""))
+        current.reobserve(client)
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            report = inspect_drive_readiness(
+                [configured], archive.source_connection, archive.index_connection, {configured.name: current}
+            )
+        assert report.state is DriveCatchupState.COMPLETE
+        assert report.enumerated_count == report.acquired_count == report.materialization_pending == 0
+        assert report.witness[0]["resolved_folder"] == "native-folder"
+    finally:
+        current.close()
+
+
+@pytest.mark.parametrize("failure_call", [1, 2])
+@pytest.mark.parametrize(
+    "failure_type", [OSError, DriveAuthError, DriveAccessDeniedError, DaemonOperationCancelled, DriveNotFolderError]
+)
+def test_native_lookup_failure_never_substitutes_an_exact_named_empty_folder(
+    tmp_path: Path, failure_call: int, failure_type: type[Exception]
+) -> None:
+    """Restoring failed-ID name fallback certifies the unrelated empty folder."""
+
+    class Gateway:
+        gets = 0
+        name_lookups = 0
+
+        def get_file(self, file_id: str, fields: str) -> dict[str, Any]:
+            self.gets += 1
+            if self.gets == failure_call:
+                if failure_type is DriveNotFolderError:
+                    return {"id": file_id, "mimeType": "application/json"}
+                raise failure_type("synthetic native lookup failure")
+            return {"id": file_id, "mimeType": "application/vnd.google-apps.folder"}
+
+        def list_files(self, **kwargs: Any) -> dict[str, Any]:
+            if "name =" in kwargs["q"]:
+                self.name_lookups += 1
+                return {"files": [{"id": "unrelated-empty-folder", "name": "native-folder"}]}
+            return {"files": [], "incompleteSearch": False}
+
+    bootstrap_archive_root(tmp_path)
+    gateway = Gateway()
+    client = DriveSourceClient(gateway=gateway)  # type: ignore[arg-type]
+    configured = Source("aistudio", folder="native-folder")
+    witness = DriveListingWitness(configured.name, configured.folder or "")
+    try:
+        with pytest.raises(failure_type):
+            witness.enumerate(client, client.resolve_folder_id(configured.folder or ""))
+            witness.reobserve(client)
+        assert gateway.name_lookups == 0
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            report = inspect_drive_readiness(
+                [configured], archive.source_connection, archive.index_connection, {configured.name: witness}
+            )
+        assert report.state is DriveCatchupState.UNKNOWN
+        assert report.enumerated_count is report.acquired_count is report.materialization_pending is None
+        assert witness.folder_id in {None, "native-folder"}
     finally:
         witness.close()

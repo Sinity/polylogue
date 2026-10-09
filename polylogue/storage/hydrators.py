@@ -65,6 +65,7 @@ def attachment_from_record(record: AttachmentRecord, *, blob_store: BlobStore | 
     )
     return Attachment(
         id=record.attachment_id,
+        reference_id=record.reference_id,
         name=record.display_name or record.attachment_id,
         mime_type=record.mime_type,
         size_bytes=record.size_bytes,

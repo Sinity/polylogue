@@ -23,13 +23,17 @@ import json
 import os
 import socket
 import struct
+import tempfile
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any, BinaryIO
+
+if TYPE_CHECKING:
+    from polylogue.operations.request_body_transport import BinaryReader
 
 from polylogue.operations.daemon_errors import (
     DaemonMutationIndeterminateError,
@@ -148,24 +152,53 @@ class DaemonClient:
         mutation: bool = False,
         timeout_s: float | None = None,
         prepare_body: Callable[[], dict[str, object]] | None = None,
+        input_body: BinaryIO | None = None,
     ) -> tuple[int, dict[str, Any] | None] | None:
         """Return the response status with its decoded JSON object, if any."""
 
         connection = _UnixHTTPConnection(self.socket_path, timeout_s)
-        raw = json.dumps(body, separators=(",", ":")).encode() if body is not None else None
+        raw = json.dumps(body, separators=(",", ":")).encode() if body is not None and input_body is None else None
         started_at = perf_counter()
+        control_custody = None
         try:
             # Connect before resolving credentials: an absent socket must cost
             # nothing, least of all a write into the archive root.
             connection.connect()
             if prepare_body is not None:
                 body = prepare_body()
-                raw = json.dumps(body, separators=(",", ":")).encode()
+                if input_body is None:
+                    raw = json.dumps(body, separators=(",", ":")).encode()
             headers = {"Host": "127.0.0.1", "Content-Type": "application/json"}
             token = self.auth_token
             if token:
                 headers["Authorization"] = f"Bearer {token}"
-            connection.request(method, path, body=raw, headers=headers)
+            if input_body is None:
+                connection.request(method, path, body=raw, headers=headers)
+            else:
+                from polylogue.operations.read_result_transport import staged_json_response
+                from polylogue.operations.request_body_transport import UPLOAD_MEDIA_TYPE
+
+                control_custody = staged_json_response(body, ensure_ascii=True)
+                control = control_custody.__enter__()
+                control.seek(0, 2)
+                control_size = control.tell()
+                control.seek(0)
+                input_body.seek(0, 2)
+                size = input_body.tell()
+                input_body.seek(0)
+                prefix = struct.pack("!Q", control_size)
+                headers["Content-Type"] = UPLOAD_MEDIA_TYPE
+                headers["Content-Length"] = str(len(prefix) + control_size + size)
+
+                def chunks() -> Iterator[bytes]:
+                    yield prefix
+                    while chunk := control.read(65536):
+                        yield chunk
+                    while chunk := input_body.read(65536):
+                        yield chunk
+
+                connection.request(method, path, body=chunks(), headers=headers)
+
             with connection.getresponse() as response:
                 lengths = response.headers.get_all("Content-Length", [])
                 if (
@@ -210,6 +243,8 @@ class DaemonClient:
                 return None
             raise DaemonOperationProtocolError("daemon transport failed; direct fallback is not permitted") from exc
         finally:
+            if control_custody is not None:
+                control_custody.__exit__(None, None, None)
             connection.close()
 
     def _response_timeout_s(self, deadline_ms: int | None) -> float | None:
@@ -235,10 +270,37 @@ class DaemonClient:
         expected_generation_id: str | None = None,
         request_id: str | None = None,
         deadline_ms: int | None = None,
-        cancellation_token: str | None = None,
+        input: BinaryReader | None = None,
+        _input_body: BinaryIO | None = None,
     ) -> dict[str, Any] | None:
         """Issue one archive-scoped operation request; no health probe is needed."""
 
+        if input is not None:
+            from polylogue.operations.request_body_transport import ANNOTATION_IMPORT_OPERATION
+
+            if operation != ANNOTATION_IMPORT_OPERATION:
+                raise ValueError("operation does not accept an input stream")
+            with tempfile.TemporaryFile(mode="w+b") as staged:
+                digest = hashlib.sha256()
+                size = 0
+                while chunk := input.read(65536):
+                    if not isinstance(chunk, bytes):
+                        raise TypeError("operation input must be binary")
+                    staged.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+                return self.operation(
+                    operation,
+                    {**(payload or {}), "input": {"sha256": digest.hexdigest(), "size_bytes": size}},
+                    archive_root=archive_root,
+                    index_schema_version=index_schema_version,
+                    daemon_version=daemon_version,
+                    expected_archive_identity=expected_archive_identity,
+                    expected_generation_id=expected_generation_id,
+                    request_id=request_id,
+                    deadline_ms=deadline_ms,
+                    _input_body=staged,
+                )
         spec = daemon_operation_spec(operation)
         if spec is None:
             raise DaemonOperationProtocolError(f"operation is not declared: {operation}")
@@ -253,7 +315,6 @@ class DaemonClient:
             expected_generation_id=expected_generation_id,
             request_id=request_id or uuid.uuid4().hex,
             deadline_ms=deadline_ms if deadline_ms is not None else declared_deadline_ms,
-            cancellation_token=cancellation_token,
         )
         request = DaemonOperationRequest.from_dict(request.to_dict())
         # A write never gives up the way a read does: once the request is on
@@ -311,6 +372,7 @@ class DaemonClient:
             mutation=writes,
             timeout_s=self._response_timeout_s(deadline_ms),
             prepare_body=bound_body,
+            input_body=_input_body,
         )
         if raw is None:
             return None
@@ -546,6 +608,7 @@ class DaemonClient:
         *,
         archive_root: str,
         request_id: str | None = None,
+        input: BinaryReader | None = None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> dict[str, Any] | None:
         """Follow accepted work with event-driven waits, never mutation retries.
@@ -559,7 +622,7 @@ class DaemonClient:
             raise DaemonOperationProtocolError(f"operation is not declared: {operation}")
         started = perf_counter()
         try:
-            envelope = self.operation(operation, payload, archive_root=archive_root, request_id=request_id)
+            envelope = self.operation(operation, payload, archive_root=archive_root, request_id=request_id, input=input)
         except DaemonMutationIndeterminateError as exc:
             if isinstance(exc.__cause__, KeyboardInterrupt) and exc.request_id:
                 # The request identity exists before its first byte is sent.

@@ -38,6 +38,14 @@ reference selects a query set; a missing selected reference stays empty.
 Selected temporal reads do not admit a vector snapshot; ranked query-set reads
 retain their ordinary vector admission and named availability gaps.
 
+Temporal and chronicle query sets apply the canonical content predicates before
+sample, offset and limit. Chronicle streams the composed transcript and keeps
+the exact first and last nonempty authored prose rows. Temporal pages every
+composed message and its action occurrences; untimestamped rows do not stop
+later recorded events from appearing. Shared inherited occurrences appear once
+in a selected temporal set. Both projections retain named lineage gaps in their
+caveats and typed terminal outcome; CLI delivery preserves that outcome.
+
 ## Shared read input
 
 `ReadRequest.normalize` and `read_contract_schema` share the flat input
@@ -62,6 +70,12 @@ parent prefixes and report cycle or dangling-branch-point status rather
 than silently claiming completeness
 (`_composed_transcript_plan` in `polylogue/storage/sqlite/archive_tiers/write.py:3399`).
 
+A recorded inherited-prefix loss also reports `dangling_branch_point`, even
+after its parent identity resolves again. Parent resolution and child append
+cannot certify the stored tail as complete; full child replay settles the
+recorded loss. Synchronous envelopes, asynchronous full and bounded reads, and
+compact lineage accounting use the same edge-evidence predicate.
+
 Hydrated message classification reads textual markers only from declared `TEXT` blocks. Thinking and tool content remain in the complete display text without becoming prose classification evidence. Structured tool block types retain precedence; messages without blocks classify their supplied text. Explicit stored non-message types remain authoritative.
 
 Ordinary block reads preserve the stored language and media type through typed records and domain hydration. Message streams plan inherited prefixes as bounded lineage segments and hydrate blocks and message-owned attachment references in batches on one read snapshot; closing a public stream closes its nested reader before releasing that connection.
@@ -71,6 +85,11 @@ open, independently of subsequent active-pointer promotion. Resuming an idle
 continuation rebinds a stale live frame before proving the anchor against current
 rows; a predecessor's surviving anchor cannot authorize a successor page.
 
+Cached facets bind to the complete pinned Index/User frame as well as the
+archive generation and invalidation epoch. A committed assertion can change
+that frame before its writer announces cache invalidation; the new reader
+must then compute fresh facets.
+
 ## Scoped ranked reads
 
 Semantic and hybrid session requests qualify the canonical SQL and residual scope before ranking. The held ArchiveStore connection supplies current prose and occurrence identity to the retained-vector TEMP projection. Exact L2 scoring covers every eligible stored output; near takes the minimum over all stored seed outputs. Session witness selection, complete hybrid lane ranks and n-ary RRF precede the final session window (`polylogue/archive/query/archive_execution.py`, `polylogue/storage/search_providers/sqlite_vec_queries.py`, `polylogue/storage/sqlite/archive_tiers/archive.py`). TEMP relations use FILE storage selected at connection acquisition. Successful full lane settlement is explicit in `completed_lanes`; unavailable or failed lanes remain named gaps.
@@ -78,6 +97,8 @@ Semantic and hybrid session requests qualify the canonical SQL and residual scop
 Session-level existential DSL filters stay independent of the semantic witness. Semantic under a correlated unit predicate or a non-session terminal source remains a typed compilation refusal (`polylogue/archive/query/expression.py`).
 
 ## Terminal outcome
+
+Exact root transcript reads preserve every bounded `session.read` page's outcome and lineage verdict in the `root-session` JSON document. A missing inherited prefix remains degraded after subsequent successful pages; root message streams report that supplied verdict on stderr and use its exit status. Document exports deliver to named file destinations before reporting an empty or degraded terminal status. `read --all --view summary` always selects the summary-list projection, including when its selection names one exact session ID.
 
 Every row-bearing envelope carries one typed outcome -- `ok`, `empty`,
 `degraded`, or `error` -- decided at the operation boundary
@@ -285,6 +306,11 @@ Python facade. An explicitly supplied Index version is observed through the supp
 
 ## Resident insight pages
 
+Origin or date bounds on profile readiness inspect only the selected session
+partitions in bounded batches on the original reader. Unselected stale profiles
+cannot withhold a filtered profile export; a stale selected partition still
+withholds its product. Unfiltered archive readiness retains its global verdict.
+
 The eleven registered `analyze insights` list commands call `insights.list`
 through the daemon. Its closed discriminated request and result branches use
 the registry's existing query and item models. The canonical page reader is
@@ -300,6 +326,18 @@ The `ops insights audit` command also uses resident `insights.rigor`: every regi
 `ops insights fable-packet` compiles through resident `insights.fable_packet` on one pinned Index/User snapshot. Canonical delegation keyset pages and annotation pages exhaust the population without an outcome-changing row ceiling; cohort operands spill to disposable disk-backed SQLite, and the complete population digest is hashed row by row. Structural coverage is rescanned on the same pinned relation; only selected or labelled structural refs remain in memory. Declared template/stratum counts still require memory proportional to distinct output keys; matching annotation operands and label evidence remain proportional to label cardinality. The manifest binds the actual query frame. Missing annotation schema, batches or supported evidence remains a named `not_supported` packet and degraded outcome. Requested sample size and exact-template sensitivity retain their declared semantics; cancellation reaches each evidence page and compiler stage. The CLI does not open a local facade for this read.
 
 Annotation imports return a committed immutable batch/count summary through CLI, MCP and Python, independent of later evidence reads. Resolving the returned `annotation-batch:` ref pages exact assertion references followed by validation errors through `items`, `total`, `offset` and `next_offset`. Error items preserve the original failure fields (including line and row key) and both failure/error ordinals; empty or non-array error documents remain complete failure items. The original User batch is the sole authority. Count and selected items use one User read transaction. SQLite parses stored JSON and may scan/sort entries for each ordered offset page; Python decodes only the selected window. Scalar and metadata previews retain their explicit partial-evidence descriptors. Collection preview caps and response-row duplication are retired.
+
+Import validation retains rows, admitted row keys and ordered failures on one
+request-owned scratch SQLite relation. Physical LF separates JSONL records;
+legal Unicode line and paragraph characters inside strings remain content.
+Authorization targets the immutable batch reference and binds the complete
+provenance and validated row digests. Schema, streamed batch collection TEXT
+cells and all candidate assertions commit in one User transaction. Retry and
+interruption recovery hash the retained batch incrementally. Python memory
+scales with one JSONL row and the finite control/metadata record, rather than
+the complete row or failure population. No total-byte, line-byte or row-count
+ceiling changes a valid import outcome. Structural annotation grouping retains
+null dimensions as JSON null, distinct from literal strings such as `unknown`.
 
 ## Thread search
 
@@ -351,3 +389,21 @@ Canonical ranked search classifies missing or incomplete message FTS, SQLite con
 Quoted repository operands preserve their literal whitespace, pipes and commas. Public repository CSV filters preserve each comma-delimited segment exactly; typed collections retain each member. Facets preserve stored repository names and root path characters; remote URL labels retain URL cleanup. Query explain field clauses expose the same quoted flag used by execution.
 
 Typed session list and search scopes share the generic read's explicit-reference resolver. Exact IDs, unique prefixes and the outer `session:` namespace resolve before SQL filtering on the pinned reader. Action-lane lexical counts and rows use the same action filter, and hit payloads report that lane. Transcript domain windows retain their resolved session identity for message envelopes while continuations retain the original request selection. Their epoch checks use the repository's explicit Index path, including a selected Index that differs from the default root path.
+
+## Scalar profile analytics
+
+Python profile histograms and workflow distributions use the same profile-existence and session scope predicates as profile insight rows on one controlled read snapshot. Histograms group native workflow, terminal-state and origin columns without profile payload hydration, provenance lookups or usage-cost reads. Week distributions stream the native canonical date; project distributions extract only the declared cwd array. Abandoned-session reads count the complete severity-filtered scope before selecting the requested evidence page, preserving date, recency and identity ordering and Python slice limits. Exact profile-record reads retain their cost projection.
+
+Tool usage applies an exact session ID predicate before entry aggregation and pagination. Its coverage map remains exhaustive across origins. Bidirectional work-evidence neighborhoods union separate source and target index seeks before the final edge order and limit; edges selected by both branches are deduplicated, and distinct parallel edges retain their identities. Typed edge validation remains unchanged. This does not depend on graph planner statistics.
+
+## Digest tool evidence
+
+Session digests and incident run projections lower hydrated message/block
+occurrences to the same causal association SQL used by action reads and parser
+outcome normalization. Reused provider tool IDs do not identify an invocation.
+Summaries and subagent reports retain the admitted replies' original refs;
+ambiguous replies remain unavailable, and parent-proved fanout preserves all
+reply evidence. Canonical unknown outcomes stay unknown. Structured outcome
+events retain each use occurrence even when two commands and outcomes match.
+The temporary association relation uses native scratch custody and never
+opens an archive tier (`analysis/transforms.py`, `core/tool_association.py`).

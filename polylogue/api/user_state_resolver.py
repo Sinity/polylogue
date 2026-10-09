@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import sqlite3
 from builtins import BaseExceptionGroup
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict, TypeVar
 
 from polylogue.api.archive import open_readonly_connection
 from polylogue.core.compute import compute_adapter, current_cancellation
@@ -34,6 +34,11 @@ from polylogue.core.user_state_targets import (
     identity_key,
     validate_target_kind,
 )
+from polylogue.operations.attachment_target_read import _resolve_attachment_in_connections, _source_declares_attachment
+from polylogue.operations.source_target_read import _resolve_block_in_connection
+
+if TYPE_CHECKING:
+    from polylogue.operations.operation_context import PinnedOperationRead
 
 
 class ResolvedTarget(TypedDict, total=False):
@@ -50,6 +55,7 @@ _INSIGHT_QUERIES: dict[str, str] = {
     TARGET_SESSION: "SELECT 1 FROM session_profiles WHERE session_id = ?",
     TARGET_THREAD: "SELECT 1 FROM threads WHERE thread_id = ?",
 }
+_T = TypeVar("_T")
 
 
 @contextmanager
@@ -93,16 +99,16 @@ def _index_db_path(archive_root: Path) -> Evidence[Path]:
     return Measured(candidate) if row is not None else Empty()
 
 
-def _existence(evidence: Evidence[bool], *, subject: str) -> bool:
+def _existence(evidence: Evidence[_T], *, subject: str, empty: Callable[[], _T]) -> _T:
     """Consume an existence probe; an unreadable tier refuses, never denies."""
 
-    def _refuse(case: Unavailable) -> bool:
+    def _refuse(case: Unavailable) -> _T:
         raise ValueError(f"existence of {subject} could not be checked: {case.detail or case.reason}")
 
     return resolve(
         evidence,
         measured=lambda value: value,
-        empty=lambda: False,
+        empty=empty,
         unavailable=_refuse,
         degraded=lambda case: case.value,
     )
@@ -139,50 +145,41 @@ async def _row_exists(archive_root: Path, sql: str, params: tuple[object, ...]) 
     )
 
 
-def _block_exists_sync(
+def _resolve_block_sync(
     db_path: Path,
     *,
     session_id: str,
-    message_id: str,
-    block_index: int,
-) -> bool:
+    target_id: str,
+    message_id: str | None,
+) -> tuple[str, str] | None:
     with _read_connection(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT 1
-            FROM blocks
-            WHERE session_id = ?
-              AND message_id = ?
-              AND position = ?
-            """,
-            (session_id, message_id, block_index),
-        ).fetchone()
-    return row is not None
+        return _resolve_block_in_connection(
+            conn,
+            session_id=session_id,
+            target_id=target_id,
+            message_id=message_id,
+        )
 
 
-async def _block_exists(
+async def _resolve_block(
     archive_root: Path,
     *,
     session_id: str,
-    message_id: str,
-    block_index_token: str,
-) -> Evidence[bool]:
-    try:
-        block_index = int(block_index_token)
-    except ValueError:
-        return Empty()
+    target_id: str,
+    message_id: str | None,
+) -> Evidence[tuple[str, str] | None]:
 
-    def read() -> Evidence[bool]:
+    def read() -> Evidence[tuple[str, str] | None]:
         located = _index_db_path(archive_root)
         if not isinstance(located, Measured):
             return located if isinstance(located, Unavailable) else Empty()
         try:
             return Measured(
-                _block_exists_sync(
+                _resolve_block_sync(
                     located.value,
                     session_id=session_id,
+                    target_id=target_id,
                     message_id=message_id,
-                    block_index=block_index,
                 )
             )
         except sqlite3.Error as exc:
@@ -194,8 +191,8 @@ async def _block_exists(
             read,
             admission_class="interactive-read",
             estimated_bytes=len(session_id.encode("utf-8"))
-            + len(message_id.encode("utf-8"))
-            + len(block_index_token.encode("utf-8")),
+            + len((message_id or "").encode("utf-8"))
+            + len(target_id.encode("utf-8")),
         )
         .wait()
     )
@@ -222,6 +219,9 @@ async def resolve_insight_target(
     target_id: str | None,
     session_id: str,
     message_id: str | None = None,
+    index_connection: sqlite3.Connection | None = None,
+    source_connection: sqlite3.Connection | None = None,
+    snapshot: PinnedOperationRead | None = None,
 ) -> ResolvedTarget:
     """Validate a non-session/non-message target and return its row payload.
 
@@ -240,6 +240,7 @@ async def resolve_insight_target(
         if not _existence(
             await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_SESSION], (session_id,)),
             subject=f"session profile for session {session_id!r}",
+            empty=lambda: False,
         ):
             raise ValueError(f"session profile for session {session_id!r} is not materialized")
         return {
@@ -260,6 +261,7 @@ async def resolve_insight_target(
         if not _existence(
             await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_THREAD], (target_id,)),
             subject=f"thread {target_id!r}",
+            empty=lambda: False,
         ):
             raise ValueError(f"thread {target_id!r} is not a materialized thread root")
         return {
@@ -276,28 +278,28 @@ async def resolve_insight_target(
 
     if target_type == TARGET_BLOCK:
         if not target_id:
-            raise ValueError("block target requires target_id 'message_id:block_index'")
-        msg_id, block_part = parse_block_target_id(target_id)
-        try:
-            block_index = int(block_part)
-        except ValueError:
-            raise ValueError("block target_id must be 'message_id:block_index'") from None
-        if block_index < 0 or str(block_index) != block_part:
-            raise ValueError("block target_id must use a canonical non-negative block_index")
-        canonical_target_id = f"{msg_id}:{block_index}"
-        effective_message_id = message_id or msg_id
-        if effective_message_id != msg_id:
-            raise ValueError("block message_id must match the message_id in target_id")
-        if not _existence(
-            await _block_exists(
-                archive_root,
+            raise ValueError("block target requires a positional selector or stable block_id")
+        if index_connection is not None:
+            resolved_block = _resolve_block_in_connection(
+                index_connection,
                 session_id=session_id,
-                message_id=effective_message_id,
-                block_index_token=str(block_index),
-            ),
-            subject=f"block {target_id!r}",
-        ):
+                target_id=target_id,
+                message_id=message_id,
+            )
+        else:
+            resolved_block = _existence(
+                await _resolve_block(
+                    archive_root,
+                    session_id=session_id,
+                    target_id=target_id,
+                    message_id=message_id,
+                ),
+                subject=f"block {target_id!r}",
+                empty=lambda: None,
+            )
+        if resolved_block is None:
             raise ValueError(f"block {target_id!r} is not present in session {session_id!r}")
+        canonical_target_id, effective_message_id = resolved_block
         return {
             "target_type": TARGET_BLOCK,
             "target_id": canonical_target_id,
@@ -312,18 +314,45 @@ async def resolve_insight_target(
 
     if target_type == TARGET_ATTACHMENT:
         if not target_id:
-            raise ValueError("attachment target requires target_id")
-        # Attachments currently resolve as non-empty tokens scoped to a
-        # session; first-class attachment refs belong with #1845.
+            raise ValueError("attachment target requires a stable attachment reference_id")
+        if index_connection is None or source_connection is None:
+            raise ValueError("attachment target requires a pinned Index and Source read")
+        resolved_attachment = _resolve_attachment_in_connections(
+            index_connection,
+            source_connection,
+            session_id=session_id,
+            reference_id=target_id,
+        )
+        if resolved_attachment is None:
+            raise ValueError(f"attachment reference {target_id!r} is not Source-bound in session {session_id!r}")
+        payload = index_connection.execute(
+            "SELECT a.blob_hash, r.supplying_raw_id FROM attachment_refs r JOIN attachments a "
+            "ON a.attachment_id=r.attachment_id WHERE r.session_id=? AND r.ref_id=?",
+            (session_id, target_id),
+        ).fetchone()
+        if payload is None or (
+            payload[0] is None
+            and (
+                snapshot is None
+                or not _source_declares_attachment(
+                    snapshot,
+                    session_id=session_id,
+                    ref_id=target_id,
+                    raw_id=str(payload[1]),
+                )
+            )
+        ):
+            raise ValueError(f"attachment reference {target_id!r} has no matching retained Source descriptor")
+        canonical_target_id, effective_message_id = resolved_attachment
         return {
             "target_type": TARGET_ATTACHMENT,
-            "target_id": target_id,
+            "target_id": canonical_target_id,
             "session_id": session_id,
-            "message_id": message_id,
+            "message_id": effective_message_id,
             "identity_key": identity_key(
                 TARGET_ATTACHMENT,
                 session_id=session_id,
-                target_id=target_id,
+                target_id=canonical_target_id,
             ),
         }
 

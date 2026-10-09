@@ -11,7 +11,7 @@ from typing import Any, TypeVar, cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, WebConstructType
-from polylogue.core.hashing import hash_text
+from polylogue.core.hashing import hash_payload, hash_text
 from polylogue.core.types import AttachmentDirection
 from polylogue.sources.tool_result_reasons import unknown_reason
 
@@ -240,19 +240,26 @@ def _unknown_wire_type(value: object) -> str | None:
     the parser-specific lowering remains authoritative for known shapes. It
     does not descend into user data (:data:`_USER_DATA_KEYS`).
     """
+    from polylogue.schemas.observation_spill import SpilledArray, SpilledObject
+
     if isinstance(value, dict):
         for key in ("type", "content_type", "kind", "record_type"):
             candidate = value.get(key)
             if _is_unknown_sentinel(candidate):
                 return cast(str, candidate)
-        for key, child in value.items():
-            if key in _USER_DATA_KEYS:
+        entries = (
+            ((key.small_name, child) for key, child in value.structure_key_items())
+            if isinstance(value, SpilledObject)
+            else value.items()
+        )
+        for child_key, child in entries:
+            if child_key in _USER_DATA_KEYS:
                 continue
             found = _unknown_wire_type(child)
             if found is not None:
                 return found
     elif isinstance(value, list):
-        for child in value:
+        for child in value.structure_values() if isinstance(value, SpilledArray) else value:
             found = _unknown_wire_type(child)
             if found is not None:
                 return found
@@ -412,6 +419,13 @@ class AdmissionObserver:
         accounting = session.unit_accounting
         if accounting is None:
             accounting = self._closed_proof(provider)
+        elif AdmissionUnit.OUTER_RECORD not in accounting.expected:
+            outer = self._closed_proof(provider)
+            accounting = ParseAccounting(
+                expected={**outer.expected, **accounting.expected},
+                outcomes=[*outer.outcomes, *accounting.outcomes],
+                materialized_ordinals={**outer.materialized_ordinals, **accounting.materialized_ordinals},
+            )
         elif self._record_stream:
             # The parser accounted for the records it consumed; the complete
             # input is what was observed here, drained to its end.
@@ -717,6 +731,76 @@ def fill_linear_parent_chain(messages: Sequence[ParsedMessage]) -> list[ParsedMe
     return filled
 
 
+def _tool_result_nested_parts(content: object) -> Iterator[tuple[str | None, object]]:
+    if not isinstance(content, list):
+        return
+    for segment in content:
+        if not isinstance(segment, Mapping) or segment.get("type") != "tool_result":
+            continue
+        parts = segment.get("content")
+        if isinstance(parts, list):
+            tool_id = segment.get("tool_use_id")
+            for part in parts:
+                yield tool_id if isinstance(tool_id, str) else None, part
+
+
+def _tool_result_media_block(segment: Mapping[str, object], tool_id: str | None) -> ParsedContentBlock:
+    source = segment.get("source")
+    source = source if isinstance(source, Mapping) else {}
+    metadata: dict[str, object] = {"tool_result_media": True, "tool_result_id": tool_id}
+    # Inline bytes belong to attachment acquisition. The block keeps a stable
+    # witness, so two different images cannot collapse to the same empty block.
+    metadata["source_digest"] = hash_payload(source)
+    for key in ("type", "url", "file_id"):
+        if isinstance(source.get(key), str):
+            metadata[f"source_{key}"] = source[key]
+    media_type = segment.get("media_type") or source.get("media_type")
+    text = source.get("data") if source.get("type") == "text" else None
+    return ParsedContentBlock(
+        type=BlockType.from_string(str(segment["type"])),
+        text=text if isinstance(text, str) else None,
+        media_type=media_type if isinstance(media_type, str) else None,
+        metadata=metadata,
+    )
+
+
+def tool_result_media_attachments(content: object, message_id: str | None, *, role: Role) -> list[ParsedAttachment]:
+    """Conserve Anthropic tool-result media without putting binary data in block metadata."""
+    attachments: list[ParsedAttachment] = []
+    for tool_id, segment in _tool_result_nested_parts(content):
+        if not isinstance(segment, Mapping) or segment.get("type") not in {"image", "document"}:
+            continue
+        source = segment.get("source")
+        if not isinstance(source, Mapping):
+            continue
+        inline_bytes: bytes | None = None
+        if source.get("type") == "base64" and isinstance(source.get("data"), str):
+            inline_bytes = decode_attachment_base64(source["data"], field_name="source.data")
+        elif source.get("type") == "text" and isinstance(source.get("data"), str):
+            inline_bytes = source["data"].encode("utf-8")
+        file_id = source.get("file_id")
+        url = source.get("url")
+        media_type = segment.get("media_type") or source.get("media_type")
+        title = segment.get("title")
+        attachments.append(
+            ParsedAttachment(
+                provider_attachment_id="tool-result-media:"
+                + hash_payload({"message_id": message_id, "tool_id": tool_id, "segment": segment}),
+                message_provider_id=message_id,
+                name=title if isinstance(title, str) else None,
+                mime_type=media_type if isinstance(media_type, str) else None,
+                size_bytes=len(inline_bytes) if inline_bytes is not None else None,
+                provider_file_id=file_id if isinstance(file_id, str) else None,
+                source_url=url if isinstance(url, str) else None,
+                attachment_kind=str(segment["type"]),
+                direction="model_output",
+                producer_ref=f"tool:{tool_id}" if tool_id else None,
+                inline_bytes=inline_bytes,
+            )
+        )
+    return attachments
+
+
 def content_blocks_from_segments(
     content: object,
     *,
@@ -984,6 +1068,30 @@ def content_blocks_from_segments(
             if isinstance(seg.get("text"), str) and seg["text"]:
                 unknown_block = unknown_block.model_copy(update={"type": BlockType.TEXT, "text": seg["text"]})
             blocks.append(unknown_block)
+    for tool_id, part in _tool_result_nested_parts(content):
+        part_type = part.get("type") if isinstance(part, Mapping) else None
+        if admission is not None:
+            ordinal = admission.next_ordinal(AdmissionUnit.PART)
+            admission.expect(AdmissionUnit.PART, 1)
+            if part_type in {"text", "knowledge", "image", "document"}:
+                admission.materialized(AdmissionUnit.PART, ordinal, str(part_type))
+            else:
+                admission.unknown(AdmissionUnit.PART, ordinal, str(part_type or "unsupported"))
+        if isinstance(part, Mapping) and part_type in {"image", "document"}:
+            blocks.append(_tool_result_media_block(part, tool_id))
+        elif part_type not in {"text", "knowledge"}:
+            block = typed_unknown_block(part, wire_type=str(part_type or "unsupported"))
+            blocks.append(
+                block.model_copy(
+                    update={
+                        "metadata": {
+                            **(block.metadata or {}),
+                            "tool_result_media": True,
+                            "tool_result_id": tool_id,
+                        }
+                    }
+                )
+            )
     if admission is not None:
         admission.expect(AdmissionUnit.BLOCK, len(blocks))
         for block in blocks:

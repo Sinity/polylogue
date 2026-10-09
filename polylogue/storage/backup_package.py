@@ -5,8 +5,9 @@ Backups copy the authority and precious tiers plus referenced blobs: audit.db,
 source.db, user.db, embeddings.db, and blob files. Rebuildable index.db and
 disposable ops.db are omitted by profiles that do not request full evidence.
 
-Each SQLite tier is checkpointed and copied while its write lock is held, so
-the copied bytes and recorded source fingerprint describe the same state.
+Each SQLite tier is copied through a pinned read transaction and SQLite's
+backup API. The package binds the copied image separately from the original
+physical tier, whose fingerprint remains authority for migration admission.
 """
 
 from __future__ import annotations
@@ -28,8 +29,9 @@ from typing import IO, Literal
 
 from pydantic import BaseModel
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
-from polylogue.core.durable_fs import atomic_replace
+from polylogue.core.durable_fs import atomic_replace, sync_directory, sync_tree
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.write_lease import require_write_lease
 from polylogue.paths import archive_root
@@ -43,6 +45,7 @@ from polylogue.storage.backup_attestation import (
 from polylogue.storage.backup_blob_closure import (
     SOURCE_DECLARED_ABSENT_FILE,
     package_blob_closure,
+    read_source_declared_absent_assertion,
     source_blob_reservations,
 )
 from polylogue.storage.blob_integrity import (
@@ -66,10 +69,11 @@ from polylogue.storage.source_blob_restoration import (
 )
 from polylogue.storage.source_zip_replay import MemberCandidate, MemberCandidateCache, zip_reacquired_unit
 from polylogue.storage.sqlite.connection_profile import (
-    open_isolated_write_connection,
+    NativeSQLCustodyOwner,
+    _close_failed_native_construction,
     open_readonly_connection,
+    open_scratch_connection,
 )
-from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 BackupProfile = Literal["full_evidence", "user_overlays", "rebuildable_cache_exclude", "diagnostics_bundle"]
 BACKUP_PROFILES: tuple[BackupProfile, ...] = (
@@ -88,7 +92,6 @@ _ARCHIVE_AUTHORITY_FILES = (
 )
 
 
-_SNAPSHOT_LOCK_ATTEMPTS = 5
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _RECOVERY_PROOF_KINDS = frozenset(
     {
@@ -235,7 +238,7 @@ def _discard_scratch_verification_sidecars(scratch_root: Path, *, copied: frozen
 
     A tier copied out of a WAL-mode archive still declares WAL journalling in
     its header even though the backup carries no ``-wal``: ``_backup_sqlite``
-    checkpoints TRUNCATE and copies the main file alone. The archive-format
+    closes the SQLite backup image before publishing it. The archive-format
     lineage gate then inspects that copy through a ``mode=ro`` connection,
     and SQLite materializes an empty ``-shm``/``-wal`` pair for it. Those
     bytes are the verifier's own side effect, not backup content, so leaving
@@ -330,7 +333,7 @@ def _open_backup_readonly_connection(
 def _sqlite_user_version(path: Path) -> int:
     # A live WAL-mode tier can hold committed frames its main file does not;
     # an immutable open refuses such a file, so it is read through the WAL.
-    # Package artifacts and checkpointed copies carry no frames and stay
+    # Package artifacts and closed backup images carry no frames and stay
     # immutable, which creates no sidecar beside them.
     wal = path.with_name(f"{path.name}-wal")
     try:
@@ -359,15 +362,35 @@ def _readable_sqlite_index(path: Path) -> bool:
     return True
 
 
-def _sqlite_source_fingerprint(path: Path) -> dict[str, object]:
+def _sqlite_source_fingerprint(path: Path, *, snapshot_path: Path, user_version: int) -> dict[str, object]:
+    from polylogue.storage.sqlite.physical_file import physical_file_sha256
+
     metadata = path.stat()
+    physical = physical_file_sha256(path, expected_device=metadata.st_dev, expected_inode=metadata.st_ino)
+    wal_path = path.with_name(f"{path.name}-wal")
+    try:
+        wal_metadata = wal_path.stat()
+    except FileNotFoundError:
+        wal_metadata = None
+    wal = None
+    if wal_metadata is not None and wal_metadata.st_size:
+        wal_digest = physical_file_sha256(
+            wal_path, expected_device=wal_metadata.st_dev, expected_inode=wal_metadata.st_ino
+        )
+        wal = {"size_bytes": wal_digest.size_bytes, "sha256": wal_digest.sha256}
     return {
         "path": str(path),
         "device": metadata.st_dev,
         "inode": metadata.st_ino,
-        "size_bytes": metadata.st_size,
-        "sha256": _sha256_file(path),
-        "user_version": _sqlite_user_version(path),
+        "size_bytes": physical.size_bytes,
+        "sha256": physical.sha256,
+        "user_version": user_version,
+        "wal": wal,
+        "snapshot": {
+            "size_bytes": snapshot_path.stat().st_size,
+            "sha256": _sha256_file(snapshot_path),
+            "user_version": user_version,
+        },
     }
 
 
@@ -571,47 +594,61 @@ def _has_backup_error(warnings: list[str]) -> bool:
     return any("not found" in warning for warning in warnings)
 
 
-def _checkpoint_sqlite_for_snapshot(conn: sqlite3.Connection, path: Path) -> None:
-    """Drain the WAL fully, or refuse to copy a tier that is still moving.
-
-    TRUNCATE is correct here and only here on a live tier: a backup snapshot is
-    an exclusive boundary that already requires no concurrent writer, and a
-    partially drained WAL would make the copy an incoherent generation. A busy
-    result refuses the backup rather than retrying against the reader.
-    """
-    busy, log_frames, checkpointed_frames = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
-    if busy or log_frames != checkpointed_frames:
-        raise RuntimeError(f"could not quiesce {path} before backup")
-
-
 def _backup_sqlite(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[int, dict[str, object]]:
-    """Copy a checkpointed tier while excluding concurrent SQLite writers."""
+    """Copy the selected read cut without checkpointing or excluding readers.
+
+    The outer archive writer custody binds sibling tiers and retained blobs.
+    BEGIN plus the first schema read pins this tier before backup starts, so
+    a later WAL commit cannot restart the copy on a newer snapshot.
+    """
+    require_write_lease("archive backup snapshot", archive_root=archive_root_path)
+    check_compute_cancelled()
     live_path = src.resolve(strict=True)
-    conn = open_isolated_write_connection(
-        live_path,
-        purpose=f"backup snapshot({live_path})",
-        archive_root=archive_root_path,
-    )
+    conn = _open_backup_readonly_connection(live_path, immutable=False, timeout_class="offline-bulk")
+    source_owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(dst,))
     try:
-        for _attempt in range(_SNAPSHOT_LOCK_ATTEMPTS):
-            _checkpoint_sqlite_for_snapshot(conn, live_path)
-            conn.execute("BEGIN IMMEDIATE")
-            wal_path = live_path.with_name(f"{live_path.name}-wal")
-            if wal_path.exists() and wal_path.stat().st_size:
-                conn.rollback()
-                continue
-            fingerprint = _sqlite_source_fingerprint(live_path)
-            try:
-                shutil.copy2(live_path, dst)
-            except Exception:
-                dst.unlink(missing_ok=True)
-                raise
-            return dst.stat().st_size, fingerprint
-        raise RuntimeError(f"could not obtain a checkpointed write-locked snapshot of {live_path}")
-    finally:
-        if conn.in_transaction:
-            conn.rollback()
-        conn.close()
+        from polylogue.storage.io_phase_metrics import connection_cursor
+
+        conn.execute("BEGIN").close()
+        with connection_cursor(conn, "SELECT 1 FROM sqlite_master LIMIT 1") as cursor:
+            cursor.fetchall()
+        with connection_cursor(conn, "PRAGMA user_version") as cursor:
+            user_version = int(cursor.fetchone()[0])
+        with connection_cursor(conn, "PRAGMA data_version") as cursor:
+            selected_version = int(cursor.fetchone()[0])
+        # The image is private while SQLite populates it, then retains the
+        # original tier's metadata after physical destination settlement.
+        dst.touch(mode=0o600, exist_ok=False)
+        destination_owner = open_scratch_connection(dst, lifetime_dependencies=(dst,))
+        try:
+            # Page batches bound cooperative cancellation, not accepted input.
+            conn.backup(
+                destination_owner.require_connection(),
+                pages=256,
+                progress=lambda _status, _remaining, _total: check_compute_cancelled(),
+            )
+            check_compute_cancelled()
+        except BaseException as primary:
+            _close_failed_native_construction(destination_owner, primary)
+            raise
+        else:
+            destination_owner.close()
+        shutil.copystat(live_path, dst)
+        conn.rollback()
+        with connection_cursor(conn, "PRAGMA data_version") as cursor:
+            before_fingerprint = int(cursor.fetchone()[0])
+        fingerprint = _sqlite_source_fingerprint(live_path, snapshot_path=dst, user_version=user_version)
+        with connection_cursor(conn, "PRAGMA data_version") as cursor:
+            after_fingerprint = int(cursor.fetchone()[0])
+        # A changing live tier is still a valid recovery image. It cannot
+        # authorize a later migration against physical bytes newer than its cut.
+        fingerprint["live_cut_stable"] = selected_version == before_fingerprint == after_fingerprint
+    except BaseException as primary:
+        _close_failed_native_construction(source_owner, primary)
+        raise
+    else:
+        source_owner.close()
+    return dst.stat().st_size, fingerprint
 
 
 def _source_blob_liveness_projection(
@@ -630,7 +667,9 @@ def _source_blob_liveness_projection(
     return projection, source_blob_reservations(source_db)
 
 
-def _copy_source_declared_absent_assertion(source_db: Path, backup_root: Path) -> Path | None:
+def _copy_source_declared_absent_assertion(
+    source_db: Path, backup_root: Path, *, fingerprint: dict[str, object]
+) -> Path | None:
     """Copy the optional durable source assertion into a backup package."""
 
     source_path = source_db.with_name(SOURCE_DECLARED_ABSENT_FILE)
@@ -639,8 +678,15 @@ def _copy_source_declared_absent_assertion(source_db: Path, backup_root: Path) -
     _require_regular_backup_artifact(
         source_path, backup_root=source_db.parent, label="source declared-absent assertion"
     )
+    if fingerprint.get("live_cut_stable") is not True or fingerprint.get("wal") is not None:
+        raise RuntimeError("source declared-absent assertion does not bind the selected WAL snapshot")
+    assertion, _ = read_source_declared_absent_assertion(source_path, source_db_sha256=str(fingerprint["sha256"]))
+    snapshot = fingerprint.get("snapshot")
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("sha256"), str):
+        raise RuntimeError("source declared-absent assertion lacks the pinned image fingerprint")
+    assertion["source_db_sha256"] = snapshot["sha256"]
     destination = backup_root / SOURCE_DECLARED_ABSENT_FILE
-    shutil.copy2(source_path, destination)
+    atomic_replace(destination, json.dumps(assertion, indent=2, sort_keys=True).encode())
     return destination
 
 
@@ -1228,11 +1274,28 @@ def _backup_archive(
             tier_source_fingerprints[f"{tier}.db"] = fingerprint
             backed_up_files.append(str(dst))
 
-        source_assertion = (
-            _copy_source_declared_absent_assertion(root / "source.db", backup_root)
-            if "source" in included_tiers
-            else None
-        )
+        try:
+            source_assertion = (
+                _copy_source_declared_absent_assertion(
+                    root / "source.db", backup_root, fingerprint=tier_source_fingerprints["source.db"]
+                )
+                if "source" in included_tiers
+                else None
+            )
+        except RuntimeError as exc:
+            # Declaration refusals remain failed package results, as when the
+            # verifier authenticated a byte-identical main-file copy.
+            return BackupResult(
+                ok=False,
+                output_path=str(backup_root),
+                backup_profile=profile,
+                db_size_bytes=db_size,
+                elapsed_s=round(time.monotonic() - started, 3),
+                error=str(exc),
+                warnings=warnings,
+                backed_up_files=backed_up_files,
+                omitted_tiers=[f"{tier}.db" for tier in omitted_tiers],
+            )
 
         blob_reference_debt: BlobReferenceDebtReport | None = None
         if "source" in included_tiers:
@@ -1378,13 +1441,23 @@ def _backup_verification_scratch_parent(path: Path) -> Path | None:
 
 def _copy_backup_artifact_to_scratch(source: Path, scratch_root: Path) -> Path:
     _require_real_backup_directory(source, label="backup output")
+    # copytree breaks hard links. Admit the original inventory before that
+    # transformation, without another full content-hashing pass.
+    for artifact in source.rglob("*"):
+        if stat.S_ISDIR(artifact.lstat().st_mode):
+            _require_real_backup_directory(artifact, label="backup artifact directory")
+        else:
+            _require_regular_backup_artifact(artifact, backup_root=source, label="backup artifact")
     restore_root = scratch_root / "restore"
     shutil.copytree(source, restore_root, symlinks=True)
     return restore_root
 
 
 def _remove_verification_receipt(backup_root: Path) -> None:
-    (backup_root / _VERIFICATION_RECEIPT_FILE).unlink(missing_ok=True)
+    receipt = backup_root / _VERIFICATION_RECEIPT_FILE
+    if receipt.exists() or receipt.is_symlink():
+        receipt.unlink()
+        sync_directory(backup_root)
 
 
 def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
@@ -1619,10 +1692,13 @@ def _receipt_tier_artifacts(
             "user_version": _sqlite_user_version(path),
             "source_fingerprint": source_fingerprint,
         }
-        if not isinstance(source_fingerprint, dict) or any(
-            artifact[field] != source_fingerprint.get(field) for field in ("size_bytes", "sha256", "user_version")
+        snapshot = source_fingerprint.get("snapshot") if isinstance(source_fingerprint, dict) else None
+        if (
+            not isinstance(source_fingerprint, dict)
+            or not isinstance(snapshot, dict)
+            or any(artifact[field] != snapshot.get(field) for field in ("size_bytes", "sha256", "user_version"))
         ):
-            raise RuntimeError(f"{filename} backup artifact does not match its live source fingerprint")
+            raise RuntimeError(f"{filename} backup artifact does not match its pinned snapshot fingerprint")
         source_path_value = source_fingerprint.get("path")
         if isinstance(source_path_value, str) and source_path_value:
             source_path = Path(source_path_value)
@@ -1737,6 +1813,9 @@ def _write_successful_verification_receipt(backup_root: Path, verification: dict
         raise RuntimeError(f"backup changed after scratch verification: {exc}") from exc
     if current_evidence != verified_evidence:
         raise RuntimeError("backup changed after scratch verification")
+    # Reading the accepted bytes is not a destination persistence barrier.
+    # Complete their physical closure before the receipt can authorize them.
+    sync_tree(backup_root)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     receipt_body: dict[str, object] = {
         "format": VERIFICATION_RECEIPT_FORMAT,
@@ -1789,6 +1868,8 @@ def create_backup_package(
     )
     if verify and result.ok and result.output_path is not None:
         _verify_backup_result(result)
+    elif result.ok and result.output_path is not None:
+        sync_tree(Path(result.output_path))
     return result
 
 

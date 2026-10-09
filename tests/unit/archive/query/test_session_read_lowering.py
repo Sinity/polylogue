@@ -35,7 +35,7 @@ async def test_session_query_lowers_selection_through_read_request(monkeypatch: 
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        async def run(self, _work: object) -> object:
+        async def run(self, _work: object, *, index_path: Path) -> object:
             return "stub-page"
 
     monkeypatch.setattr(session_reads, "QueryTransaction", StubTransaction)
@@ -43,6 +43,7 @@ async def test_session_query_lowers_selection_through_read_request(monkeypatch: 
     result = await session_reads.session_query(
         Path("/tmp/archive"),  # transaction is stubbed; no filesystem access occurs
         SessionList(repo="polylogue", limit=3),
+        index_path=Path("/tmp/archive/index.db"),
     )
 
     assert cast(object, result) == "stub-page"
@@ -83,7 +84,7 @@ async def test_session_search_compiles_expression_after_canonical_normalization(
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        async def run(self, _work: object) -> object:
+        async def run(self, _work: object, *, index_path: Path) -> object:
             return "stub-page"
 
     monkeypatch.setattr(session_reads, "QueryTransaction", StubTransaction)
@@ -91,6 +92,7 @@ async def test_session_search_compiles_expression_after_canonical_normalization(
     result = await session_reads.session_query(
         Path("/tmp/archive"),
         SessionSearch(expression="typed_only:true needle", limit=3),
+        index_path=Path("/tmp/archive/index.db"),
     )
 
     assert cast(object, result) == "stub-page"

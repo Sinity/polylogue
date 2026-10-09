@@ -101,7 +101,7 @@ def test_attachment_record_fields_are_pinned_to_the_declared_semantics_version(
     attachments = [record for record in records if record["kind"] == "attachment"]
     assert attachments, "fixture encodes no attachment record to pin"
 
-    assert SEMANTICS_VERSION == 5
+    assert SEMANTICS_VERSION == 8
     assert set(attachments[0]) == {
         "kind",
         "record_id",
@@ -110,6 +110,7 @@ def test_attachment_record_fields_are_pinned_to_the_declared_semantics_version(
         "message_id",
         "position",
         "attachment_id",
+        "native_identity",
         "display_name",
         "media_type",
         "byte_count",
@@ -137,7 +138,7 @@ def test_message_usage_distinguishes_unknown_from_measured_zero(encoded: Encoded
     assertions fail with ``0 is not None``, because the encoder then fabricates
     a measured zero for a message the fixture never gave counters to.
     """
-    assert SEMANTICS_VERSION == 5
+    assert SEMANTICS_VERSION == 8
 
     messages = {
         record["record_id"]: record
@@ -213,6 +214,6 @@ def test_public_spec_tracks_v5_message_usage_value_domain() -> None:
     """
     spec = Path(__file__).resolve().parents[4] / "docs" / "material-protocol-v1.md"
     document = spec.read_text(encoding="utf-8")
-    assert "(semantics v5)" in document
+    assert "(semantics v8)" in document
     assert "Each `message` record's `usage` object has nullable" in document
     assert "`null` counter means the source did not report a value; `0` means" in document

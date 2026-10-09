@@ -45,7 +45,11 @@ def main() -> int:
         print(result.model_dump_json())
         return 1
     print(result.model_dump_json())
-    return 1 if isinstance(result, SessionOperationError) else 0
+    from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
+
+    if isinstance(result, SessionOperationError):
+        return OUTCOME_EXIT_CODES["error"]
+    return OUTCOME_EXIT_CODES[getattr(result, "outcome", "ok")]
 
 
 if __name__ == "__main__":

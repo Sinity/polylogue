@@ -74,7 +74,7 @@ from polylogue.core.protocols import ScopedVectorQuery
 from polylogue.core.refs import ObjectRef
 from tests.infra.daemon_http_harness import execute_session_list_query
 from tests.infra.daemon_operations import cli_daemon_archive
-from tests.infra.identity import archive_block_id, archive_message_id
+from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
 from tests.infra.query_field_laws import (
     QUERY_BOUNDARY_LAWS,
@@ -94,10 +94,6 @@ from tests.infra.query_field_laws import (
 
 def _mid(session_id: str, native_id: str, *, position: int = 0) -> str:
     return archive_message_id(session_id, native_id)
-
-
-def _bid(session_id: str, native_id: str, *, message_position: int = 0, block_position: int = 0) -> str:
-    return archive_block_id(_mid(session_id, native_id, position=message_position), position=block_position)
 
 
 # ---------------------------------------------------------------------------
@@ -3242,11 +3238,12 @@ class TestBooleanQueryExpression:
         assert source.unit == "file"
         with ArchiveStore.open_existing(index_db.parent) as archive:
             rows = archive.query_files(source.predicate, limit=100)
+            [stored_block] = archive._conn.execute("SELECT block_id FROM blocks WHERE tool_id = 'tool-1'").fetchall()
 
         assert [(row.session_id, row.path, row.action_count) for row in rows] == [
             ("claude-code-session:ext-hit", "polylogue/archive/query/expression.py", 2)
         ]
-        assert rows[0].first_tool_use_block_id == _bid("claude-code-session:ext-hit", "m-edit-1")
+        assert rows[0].first_tool_use_block_id == stored_block["block_id"]
 
     def test_exists_file_source_filters_sessions(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

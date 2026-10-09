@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -29,8 +29,21 @@ from polylogue.core.enums import (
     SessionKind,
     ToolOutcome,
 )
-from polylogue.core.identity_law import split_message_local_id
+from polylogue.core.identity_law import (
+    attachment_content_id,
+    attachment_native_identity,
+    attachment_reference_id,
+    split_message_local_id,
+)
+from polylogue.core.identity_law import (
+    message_id as archive_message_id,
+)
 from polylogue.core.json import JSONValue
+from polylogue.core.message_native_identity import (
+    message_native_key,
+    normalized_message_native_id,
+    stored_message_native_id,
+)
 from polylogue.core.timestamps import to_epoch_ms
 from polylogue.core.web_urls import native_id_from_session_id
 from polylogue.material_protocol.v1 import (
@@ -48,7 +61,7 @@ from polylogue.material_protocol.v1 import (
     verify_revision,
 )
 from polylogue.material_protocol.v1.canonical import canonical_bytes
-from polylogue.pipeline.ids import message_content_identities
+from polylogue.pipeline.ids import BlockContentIdentity, block_content_identities, message_content_identities
 from polylogue.sinex.models import PublicationPayload
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -195,9 +208,15 @@ def _block_input(position: int, block: object) -> BlockInput | None:
     language = _attr(block, "language")
     if language is None and isinstance(metadata, Mapping):
         language = metadata.get("language")
+    content_identity = _attr(block, "content_identity")
+    content_occurrence = _attr(block, "content_occurrence")
+    if not isinstance(content_identity, str) or type(content_occurrence) is not int:
+        raise PublicationEncodingError("stored block has no immutable Source identity")
     return BlockInput(
         position=position,
         block_type=block_type,
+        content_identity=content_identity,
+        content_occurrence=content_occurrence,
         text=text if isinstance(text, str) else None,
         tool_name=tool_name if isinstance(tool_name, str) else None,
         tool_id=tool_id if isinstance(tool_id, str) else None,
@@ -228,13 +247,15 @@ def _dropped_block_gap(
     )
 
 
-def _parsed_block_input(position: int, block: ParsedContentBlock) -> BlockInput:
+def _parsed_block_input(position: int, block: ParsedContentBlock, identity: BlockContentIdentity) -> BlockInput:
     metadata = block.metadata or {}
     semantic_type = metadata.get("semantic_type")
     language = metadata.get("language")
     return BlockInput(
         position=position,
         block_type=block.type,
+        content_identity=identity.content_identity,
+        content_occurrence=identity.content_occurrence,
         text=block.text,
         tool_name=block.tool_name,
         tool_id=block.tool_id,
@@ -260,6 +281,13 @@ def _parsed_block_fidelity_gap(
     unsupported = [f"metadata.{key}" for key in sorted(set(metadata) - represented_metadata)]
     if block.web_constructs:
         unsupported.append("web_constructs")
+    if block.file_edit is not None:
+        unsupported.append("file_edit")
+    if block.signature is not None:
+        unsupported.append("signature")
+    for key in represented_metadata:
+        if key in metadata and not isinstance(metadata[key], str):
+            unsupported.append(f"metadata.{key}")
     if not unsupported:
         return None
     return FidelityGapInput(
@@ -271,18 +299,38 @@ def _parsed_block_fidelity_gap(
 
 
 def _parsed_attachment_input(position: int, attachment: ParsedAttachment) -> AttachmentInput:
-    blob_sha = hashlib.sha256(attachment.inline_bytes).hexdigest() if attachment.inline_bytes is not None else None
-    byte_count = attachment.size_bytes
-    if byte_count is None and attachment.inline_bytes is not None:
-        byte_count = len(attachment.inline_bytes)
+    blob_sha = (
+        hashlib.sha256(attachment.inline_bytes).hexdigest()
+        if attachment.inline_bytes is not None
+        else attachment.precomputed_blob[0]
+        if attachment.precomputed_blob is not None
+        else None
+    )
+    byte_count = (
+        len(attachment.inline_bytes)
+        if attachment.inline_bytes is not None
+        else attachment.precomputed_blob[1]
+        if attachment.precomputed_blob is not None
+        else attachment.size_bytes or 0
+    )
     return AttachmentInput(
         position=position,
-        attachment_id=attachment.provider_attachment_id,
+        attachment_id=attachment_content_id(
+            attachment.provider_attachment_id,
+            file_id=attachment.provider_file_id,
+            drive_id=attachment.provider_drive_id,
+            path=attachment.path,
+            name=attachment.name,
+            media_type=attachment.mime_type,
+            declared_size=attachment.size_bytes,
+            blob_hash=bytes.fromhex(blob_sha) if blob_sha is not None else None,
+        ),
+        native_identity=attachment_native_identity(attachment.provider_attachment_id),
         display_name=attachment.name,
         media_type=attachment.mime_type,
         byte_count=max(0, byte_count or 0),
         blob_sha256=blob_sha,
-        acquisition_status="acquired" if attachment.inline_bytes is not None else "unfetched",
+        acquisition_status="acquired" if blob_sha is not None else "unfetched",
         upload_origin=attachment.upload_origin,
         direction=attachment.direction,
         producer_ref=attachment.producer_ref,
@@ -292,7 +340,7 @@ def _parsed_attachment_input(position: int, attachment: ParsedAttachment) -> Att
 
 
 def _parsed_attachment_fidelity_gap(
-    session_id: str,
+    message_id: str,
     attachment: ParsedAttachment,
 ) -> FidelityGapInput | None:
     unsupported = [
@@ -309,7 +357,7 @@ def _parsed_attachment_fidelity_gap(
         return None
     return FidelityGapInput(
         scope="attachment",
-        record_id=f"{session_id}:attachment:{attachment.provider_attachment_id}",
+        record_id=attachment_reference_id(message_id, attachment_native_identity(attachment.provider_attachment_id)),
         gap_kind="unsupported_normalized_fields",
         detail="material-protocol v1 has no field for: " + ", ".join(unsupported),
     )
@@ -386,6 +434,11 @@ def _session_metadata(parsed_session: ParsedSession) -> dict[str, JSONValue]:
         "reported_duration_ms": parsed_session.reported_duration_ms,
         "source_name": parsed_session.source_name,
         "title_source": parsed_session.title_source,
+        "title_ref": parsed_session.title_ref,
+        "team_name": parsed_session.team_name,
+        "display_name": parsed_session.display_name,
+        "pending_drafts": parsed_session.pending_drafts,
+        "session_refs": parsed_session.session_refs,
     }
     metadata: dict[str, JSONValue] = {}
     for field, value in values.items():
@@ -394,7 +447,9 @@ def _session_metadata(parsed_session: ParsedSession) -> dict[str, JSONValue]:
     return metadata
 
 
-def _parsed_event_input(position: int, event: ParsedSessionEvent) -> SessionEventInput:
+def _parsed_event_input(
+    position: int, event: ParsedSessionEvent, duplicate_native_ids: frozenset[str]
+) -> SessionEventInput:
     payload = _json_object(event.payload)
     summary_value = payload.get("summary")
     summary = summary_value if isinstance(summary_value, str) else event.event_type
@@ -403,9 +458,91 @@ def _parsed_event_input(position: int, event: ParsedSessionEvent) -> SessionEven
         event_type=event.event_type,
         summary=summary,
         payload=payload,
-        source_message_native_id=event.source_message_provider_id,
+        source_message_native_id=stored_message_native_id(event.source_message_provider_id, duplicate_native_ids),
         occurred_at_ms=to_epoch_ms(event.timestamp, numeric_unit="seconds"),
     )
+
+
+def _unsupported_fields(
+    value: ParsedSession | ParsedMessage | ParsedSessionEvent,
+    represented: frozenset[str],
+    excluded: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Name every present model field lacking a representation or declared exclusion."""
+    fields = type(value).model_fields
+    return [
+        field
+        for field in fields
+        if field not in represented | excluded
+        and getattr(value, field) not in (None, "", (), [], {})
+        and (getattr(value, field) not in (False, 0) or fields[field].default != getattr(value, field))
+    ]
+
+
+_MESSAGE_FIELDS = frozenset(
+    {
+        "provider_message_id",
+        "position",
+        "variant_index",
+        "role",
+        "text",
+        "message_type",
+        "material_origin",
+        "occurred_at_ms",
+        "timestamp",
+        "model_name",
+        "parent_message_provider_id",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "duration_ms",
+        "blocks",
+    }
+)
+_SESSION_FIELDS = frozenset(
+    {
+        "provider_session_id",
+        "source_name",
+        "title",
+        "session_kind",
+        "created_at",
+        "updated_at",
+        "git_branch",
+        "git_repository_url",
+        "provider_project_ref",
+        "working_directories",
+        "messages",
+        "attachments",
+        "session_events",
+        "ingest_flags",
+        "parent_session_provider_id",
+        "branch_point_provider_message_id",
+        "reported_cost_usd",
+        "active_leaf_message_provider_id",
+        "branch_type",
+        "git_commit_hash",
+        "instructions_text",
+        "models_used",
+        "reported_duration_ms",
+        "title_source",
+        "title_ref",
+        "team_name",
+        "display_name",
+        "pending_drafts",
+        "session_refs",
+    }
+)
+_SESSION_CARRIERS = frozenset(
+    {
+        "created_at_provenance",
+        "updated_at_provenance",
+        "content_hash",
+        "enrichment_evidence_key",
+        "unit_accounting",
+        "provider_session_aliases",
+    }
+)
 
 
 def session_material_from_parsed_session(parsed_session: ParsedSession, *, session_id: str) -> SessionMaterial:
@@ -421,43 +558,49 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
         if attachment.message_provider_id is None:
             unanchored_attachments.append(attachment)
         else:
-            attachments_by_message[attachment.message_provider_id].append(attachment)
+            native = normalized_message_native_id(attachment.message_provider_id)
+            if native is None:
+                unanchored_attachments.append(attachment)
+            else:
+                attachments_by_message[native].append(attachment)
 
     fidelity_gaps: list[FidelityGapInput] = []
     messages: list[MessageInput] = []
     # Same resolution the writer performs, so a material export states the
     # identity the archive stores rather than a parallel positional one.
     content_identities = message_content_identities(list(raw_messages))
+    native_counts = Counter(
+        native for message in raw_messages if (native := message_native_key(message.provider_message_id))
+    )
+    duplicate_native_ids = frozenset(native for native, count in native_counts.items() if count > 1)
     for index, message in enumerate(raw_messages):
         position = message.position if message.position is not None else index
-        native_message_id = message.provider_message_id
-        blocks = [_parsed_block_input(block_index, block) for block_index, block in enumerate(message.blocks)]
+        native_message_id = stored_message_native_id(message.provider_message_id, duplicate_native_ids)
+        block_identities = block_content_identities(message.blocks)
+        blocks = [
+            _parsed_block_input(block_index, block, identity)
+            for block_index, (block, identity) in enumerate(zip(message.blocks, block_identities, strict=True))
+        ]
         for block_index, block in enumerate(message.blocks):
             gap = _parsed_block_fidelity_gap(session_id, index, block_index, block)
             if gap is not None:
                 fidelity_gaps.append(gap)
-        anchored = attachments_by_message.pop(native_message_id, [])
+        anchored = attachments_by_message.pop(native_message_id, []) if native_message_id is not None else []
         attachment_inputs: list[AttachmentInput] = []
         for attachment_position, attachment in enumerate(anchored):
             attachment_inputs.append(_parsed_attachment_input(attachment_position, attachment))
-            gap = _parsed_attachment_fidelity_gap(session_id, attachment)
+            gap = _parsed_attachment_fidelity_gap(
+                archive_message_id(
+                    session_id,
+                    native_message_id,
+                    content_identity=content_identities[index][0],
+                    content_occurrence=content_identities[index][1],
+                ),
+                attachment,
+            )
             if gap is not None:
                 fidelity_gaps.append(gap)
-        message_fields = {
-            "delivery_status": message.delivery_status,
-            "end_turn": message.end_turn,
-            "is_active_leaf": message.is_active_leaf,
-            "is_active_path": message.is_active_path,
-            "model_effort": message.model_effort,
-            "recipient": message.recipient,
-            "sender_name": message.sender_name,
-            "user_context_text": message.user_context_text,
-        }
-        unsupported_message_fields = [field for field, value in message_fields.items() if value not in (None, "")]
-        if message.branch_index != 0:
-            unsupported_message_fields.append("branch_index")
-        if message.paste_spans:
-            unsupported_message_fields.append("paste_spans")
+        unsupported_message_fields = _unsupported_fields(message, _MESSAGE_FIELDS, frozenset({"active_leaf_fallback"}))
         if unsupported_message_fields:
             fidelity_gaps.append(
                 FidelityGapInput(
@@ -470,6 +613,7 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
         messages.append(
             MessageInput(
                 native_id=native_message_id,
+                source_native_id=message.provider_message_id,
                 position=position,
                 role=message.role,
                 text=message.text,
@@ -500,9 +644,9 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
         fidelity_gaps.append(
             FidelityGapInput(
                 scope="attachment",
-                record_id=f"{session_id}:attachment-anchor:native:{message_provider_id}",
+                record_id=f"{session_id}:attachment-anchor:{message_native_key(message_provider_id)}",
                 gap_kind="unresolved_anchor",
-                detail="attachment referenced a message anchor absent from the accepted session",
+                detail="attachment referenced an absent or ambiguous message anchor in the accepted session",
             )
         )
     for index, attachment in enumerate(unanchored_attachments):
@@ -511,7 +655,11 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
         fidelity_gaps.append(
             FidelityGapInput(
                 scope="attachment",
-                record_id=attachment.provider_attachment_id or f"{session_id}:attachment[{index}]",
+                record_id=(
+                    f"{session_id}:attachment-unbound:n:{attachment_native_identity(attachment.provider_attachment_id)}"
+                    if attachment.provider_attachment_id
+                    else f"{session_id}:attachment[{index}]"
+                ),
                 gap_kind="unresolved_anchor",
                 detail="material-protocol v1 requires a message anchor; source attachment had none",
             )
@@ -525,6 +673,7 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
                 dst_origin=origin,
                 dst_native_id=str(parent_native_id),
                 link_type=_link_type(parsed_session.branch_type),
+                branch_point_message_native_id=parsed_session.branch_point_provider_message_id,
                 inheritance="prefix-sharing",
                 status="unresolved",
                 confidence=1.0,
@@ -534,7 +683,48 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
             )
         )
 
-    events = [_parsed_event_input(index, event) for index, event in enumerate(parsed_session.session_events)]
+    events = [
+        _parsed_event_input(index, event, duplicate_native_ids)
+        for index, event in enumerate(parsed_session.session_events)
+    ]
+    emitted_natives = {message.native_id for message in messages if message.native_id is not None}
+    for index, event in enumerate(parsed_session.session_events):
+        if (
+            event.source_message_provider_id is not None
+            and events[index].source_message_native_id not in emitted_natives
+        ):
+            fidelity_gaps.append(
+                FidelityGapInput(
+                    scope="session_event",
+                    record_id=f"{session_id}:{index}",
+                    gap_kind="unresolved_anchor",
+                    detail="session event referenced an absent or ambiguous message anchor in the accepted session",
+                )
+            )
+        unsupported = _unsupported_fields(
+            event, frozenset({"event_type", "timestamp", "payload", "source_message_provider_id"})
+        )
+        if unsupported:
+            fidelity_gaps.append(
+                FidelityGapInput(
+                    scope="session_event",
+                    record_id=f"{session_id}:{index}",
+                    gap_kind="unsupported_normalized_fields",
+                    detail="material-protocol v1 has no field for: " + ", ".join(unsupported),
+                )
+            )
+    unsupported_session_fields = _unsupported_fields(parsed_session, _SESSION_FIELDS, _SESSION_CARRIERS)
+    if not parent_native_id and parsed_session.branch_point_provider_message_id is not None:
+        unsupported_session_fields.append("branch_point_provider_message_id")
+    if unsupported_session_fields:
+        fidelity_gaps.append(
+            FidelityGapInput(
+                scope="session",
+                record_id=session_id,
+                gap_kind="unsupported_normalized_fields",
+                detail="material-protocol v1 has no field for: " + ", ".join(unsupported_session_fields),
+            )
+        )
 
     tags = tuple(parsed_session.ingest_flags)
     return SessionMaterial(
@@ -575,7 +765,9 @@ def session_material_from_session(session: Session) -> SessionMaterial:
                 blocks.append(block)
         # This path reads a hydrated archive tree, not a parsed one, so the
         # identity is restated from the stored id rather than re-derived.
-        stored_native_id, stored_content_identity, stored_content_occurrence = split_message_local_id(message.id)
+        stored_native_id, stored_content_identity, stored_content_occurrence = split_message_local_id(
+            message.id, parent_session_id=session.id
+        )
         messages.append(
             MessageInput(
                 native_id=stored_native_id,

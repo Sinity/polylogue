@@ -364,7 +364,8 @@ def _attachment_records_for_session(conn: sqlite3.Connection, session_id: str) -
 def _content_blocks_by_message(conn: sqlite3.Connection, session_id: str) -> dict[str, list[BlockRecord]]:
     rows = conn.execute(
         """
-        SELECT message_id, position, block_type, text, tool_name, tool_id, tool_input, semantic_type
+        SELECT block_id, message_id, position, content_identity, content_occurrence,
+               block_type, text, tool_name, tool_id, tool_input, semantic_type
         FROM blocks
         WHERE session_id = ?
         ORDER BY message_id, position
@@ -378,7 +379,9 @@ def _content_blocks_by_message(conn: sqlite3.Connection, session_id: str) -> dic
         # exactly as the native ``blocks.tool_input`` column stores it.
         tool_input = row["tool_input"] if isinstance(row["tool_input"], str) else None
         block = BlockRecord(
-            block_id=f"{message_id}:{row['position']}",
+            block_id=str(row["block_id"]),
+            content_identity=str(row["content_identity"]),
+            content_occurrence=int(row["content_occurrence"]),
             message_id=MessageId(message_id),
             session_id=SessionId(session_id),
             block_index=int(row["position"]),

@@ -337,7 +337,7 @@ MESSAGES_SPEC = _make_table_spec(
     (
         _raw_column(
             "message_id",
-            "message_id TEXT GENERATED ALWAYS AS (session_id || ':' || CASE WHEN native_id IS NULL THEN 'c:' || content_identity || '.' || content_occurrence ELSE 'n:' || native_id END) STORED UNIQUE",
+            "message_id TEXT GENERATED ALWAYS AS (session_id || ':' || CASE WHEN native_id IS NULL THEN 'c:' || content_identity || '.' || content_occurrence WHEN json_extract(source_native_id_json, '$.encoding') = 'utf8-surrogatepass' THEN 's:' || native_id ELSE 'n:' || native_id END) STORED UNIQUE",
             record_name="message_id",
             domain_name="id",
         ),
@@ -347,6 +347,9 @@ MESSAGES_SPEC = _make_table_spec(
             record_name="session_id",
         ),
         _raw_column("native_id", "native_id TEXT", record_name="provider_message_id"),
+        # Source-native occurrence evidence is independent of unique identity.
+        # JSON spelling retains exact names, including lone surrogate escapes.
+        _raw_column("source_native_id_json", "source_native_id_json TEXT"),
         # polylogue-eqsri: the identity a message gets when the provider gave
         # it none. A digest of the message's own declared semantic fields
         # (``pipeline.ids.message_content_identity``), so an insertion or
@@ -570,7 +573,7 @@ BLOCKS_SPEC = _make_table_spec(
     (
         _raw_column(
             "block_id",
-            "block_id TEXT GENERATED ALWAYS AS (message_id || ':' || position) STORED UNIQUE",
+            "block_id TEXT GENERATED ALWAYS AS (message_id || ':b:' || content_identity || ':' || content_occurrence) STORED UNIQUE",
             record_name="block_id",
             domain_name="id",
         ),
@@ -584,6 +587,18 @@ BLOCKS_SPEC = _make_table_spec(
             "session_id",
             "session_id TEXT NOT NULL",
             record_name="session_id",
+        ),
+        _raw_column(
+            "content_identity",
+            "content_identity TEXT NOT NULL CHECK(length(content_identity) = 64 AND content_identity NOT GLOB '*[^0-9a-f]*')",
+            record_name="content_identity",
+            domain_name="content_identity",
+        ),
+        _raw_column(
+            "content_occurrence",
+            "content_occurrence INTEGER NOT NULL CHECK(content_occurrence >= 0)",
+            record_name="content_occurrence",
+            domain_name="content_occurrence",
         ),
         _raw_column("position", "position INTEGER NOT NULL CHECK(position >= 0)", record_name="block_index"),
         _raw_column(
@@ -680,6 +695,7 @@ BLOCKS_SPEC = _make_table_spec(
     record_only_columns=(_derived_column("metadata", "NULL"),),
     table_constraints=(
         "PRIMARY KEY(message_id, position)",
+        "UNIQUE(message_id, content_identity, content_occurrence)",
         _MESSAGE_OWNER_FK,
         # An unknown structural outcome is only honest with a reason for it.
         # The reason describes a tool_result's missing outcome, so it may
@@ -1246,6 +1262,7 @@ SESSION_EVENTS_SPEC = _make_table_spec(
             """source_message_id          TEXT REFERENCES messages(message_id) ON DELETE SET NULL""",
         ),
         _raw_column("source_message_provider_id", """source_message_provider_id TEXT"""),
+        _raw_column("source_message_provider_id_json", """source_message_provider_id_json TEXT"""),
         _raw_column("position", """position                   INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column("event_type", """event_type                 TEXT NOT NULL CHECK(length(trim(event_type)) > 0)"""),
         # polylogue-kc8eq: no ``summary`` column. It was a write-time render of
@@ -1518,7 +1535,7 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
     (
         _raw_column(
             "ref_id",
-            """ref_id                 TEXT GENERATED ALWAYS AS (message_id || ':attachment:' || position) STORED UNIQUE""",
+            """ref_id                 TEXT GENERATED ALWAYS AS (message_id || ':attachment:n:' || native_identity) STORED UNIQUE""",
         ),
         _raw_column(
             "attachment_id",
@@ -1527,6 +1544,10 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
         # Bare by design: the owning relation is ``_MESSAGE_OWNER_FK``.
         _raw_column("session_id", """session_id             TEXT NOT NULL"""),
         _raw_column("message_id", """message_id             TEXT NOT NULL"""),
+        _raw_column(
+            "native_identity",
+            """native_identity TEXT NOT NULL CHECK(length(native_identity) > 0 AND length(native_identity) % 2 = 0 AND native_identity NOT GLOB '*[^0-9a-f]*')""",
+        ),
         _raw_column("position", """position               INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column(
             "upload_origin",
@@ -1548,7 +1569,7 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
         # holds it. NULL when the writer had no raw identity.
         _raw_column("supplying_raw_id", """supplying_raw_id       TEXT"""),
     ),
-    table_constraints=("""PRIMARY KEY(message_id, position)""", _MESSAGE_OWNER_FK),
+    table_constraints=("""PRIMARY KEY(message_id, native_identity)""", _MESSAGE_OWNER_FK),
 )
 
 ATTACHMENT_NATIVE_IDS_SPEC = _make_table_spec(
@@ -1615,6 +1636,10 @@ SESSION_MODEL_USAGE_SPEC = _make_table_spec(
         _raw_column(
             "provider_lanes_complete",
             """provider_lanes_complete INTEGER NOT NULL DEFAULT 1 CHECK(provider_lanes_complete IN (0, 1))""",
+        ),
+        _raw_column(
+            "provider_usage_observed",
+            """provider_usage_observed INTEGER NOT NULL DEFAULT 0 CHECK(provider_usage_observed IN (0, 1))""",
         ),
         _raw_column("cost_credits", """cost_credits            REAL"""),
         _raw_column(

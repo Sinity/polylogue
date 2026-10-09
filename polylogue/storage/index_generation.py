@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -149,8 +150,9 @@ def _atomic_json_write(path: Path, payload: dict[str, object], *, label: str) ->
     """Write a record via an exclusive, no-follow temporary file.
 
     A pre-existing ``*.tmp`` symlink is an integrity failure, not an invitation
-    to follow it.  The fixed-name O_EXCL temporary plus the lifecycle lock make
-    check-to-use replacement by cooperating writers impossible; the final
+    to follow it. Each attempt exclusively creates its own temporary, so a
+    regular file left by an interrupted attempt cannot block a later write.
+    The lifecycle lock excludes cooperating replacements; the final
     lstat is a second fail-closed assertion about the installed inode.
     """
     parent = _assert_no_symlink_ancestry(path.parent, label=f"{label} parent")
@@ -160,7 +162,7 @@ def _atomic_json_write(path: Path, payload: dict[str, object], *, label: str) ->
                 raise RuntimeError(f"{label} temporary path is a symlink: {candidate}")
         except OSError as exc:
             raise RuntimeError(f"cannot inspect {label} temporary path: {candidate}") from exc
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary = path.with_name(f"{path.name}.{secrets.token_hex(16)}.tmp")
     encoded = json.dumps(payload, indent=2, sort_keys=True, default=str).encode("utf-8")
     try:
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -802,7 +804,10 @@ def _stable_directory(path: Path, *, label: str) -> tuple[int, int]:
 def _atomic_text_write(path: Path, text: str, *, label: str) -> None:
     """Install a small text anchor with the same no-follow guarantees as JSON."""
     parent = _assert_no_symlink_ancestry(path.parent, label=f"{label} parent")
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    prior_temporary = path.with_suffix(path.suffix + ".tmp")
+    if prior_temporary.is_symlink():
+        raise RuntimeError(f"{label} temporary path is a symlink: {prior_temporary}")
+    temporary = path.with_name(f"{path.name}.{secrets.token_hex(16)}.tmp")
     try:
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except OSError as exc:
@@ -1246,8 +1251,8 @@ class IndexGenerationStore:
             try:
                 _atomic_json_write(rollback, asdict(current), label="generation rollback")
             except BaseException:
-                # Setup is a pair: a lone pointer proof makes a later retry
-                # fail O_EXCL before it can reproduce the rollback record.
+                # Setup is a pair: retire this attempt's completed pointer
+                # proof if preparing its rollback record refuses.
                 with suppress(OSError):
                     pointer_proof.unlink(missing_ok=True)
                     _fsync_directory(pointer_proof.parent)

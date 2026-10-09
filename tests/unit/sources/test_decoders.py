@@ -1,7 +1,7 @@
 """Tests for source decoding, JSON stream iteration, and ZIP processing.
 
 Insightion code under test: polylogue/sources/decoders.py
-Functions: _decode_json_bytes, _iter_json_stream, _ZipEntryValidator, _process_zip
+Functions: _decode_json_bytes, owned_json_records, _ZipEntryValidator, _process_zip
 """
 
 from __future__ import annotations
@@ -23,11 +23,11 @@ from polylogue.sources import decoder_zip
 from polylogue.sources.decoder_json import JsonlDecodeError
 from polylogue.sources.decoders import (
     _decode_json_bytes,
-    _iter_json_stream,
     _ZipEntryValidator,
     open_zip_entry,
 )
 from polylogue.storage.cursor_state import CursorStatePayload
+from tests.infra.json_values import iter_owned_json_values
 
 # =============================================================================
 # _decode_json_bytes
@@ -126,18 +126,18 @@ class TestDecodeJsonBytesFuzz:
 
 
 # =============================================================================
-# _iter_json_stream
+# owned_json_records
 # =============================================================================
 
 
 class TestIterJsonStream:
-    """Tests for _iter_json_stream parsing strategies."""
+    """Tests for owned_json_records parsing strategies."""
 
     def test_jsonl_with_blank_lines(self) -> None:
         """JSONL parsing skips blank lines and yields valid objects."""
         content = b'{"a": 1}\n\n{"b": 2}\n\n\n{"c": 3}\n'
         handle = io.BytesIO(content)
-        items = list(_iter_json_stream(handle, "test.jsonl"))
+        items = list(iter_owned_json_values(handle, "test.jsonl"))
         assert len(items) == 3
         assert items[0] == {"a": 1}
         assert items[1] == {"b": 2}
@@ -147,7 +147,7 @@ class TestIterJsonStream:
         """Root array JSON is unpacked into individual items."""
         content = json.dumps([{"a": 1}, {"b": 2}]).encode("utf-8")
         handle = io.BytesIO(content)
-        items = list(_iter_json_stream(handle, "test.json"))
+        items = list(iter_owned_json_values(handle, "test.json"))
         assert len(items) == 2
         assert items[0] == {"a": 1}
         assert items[1] == {"b": 2}
@@ -156,7 +156,7 @@ class TestIterJsonStream:
         """{"sessions": [...]} is unpacked into individual items."""
         content = json.dumps({"sessions": [{"id": "c1"}, {"id": "c2"}]}).encode("utf-8")
         handle = io.BytesIO(content)
-        items = list(_iter_json_stream(handle, "test.json"))
+        items = list(iter_owned_json_values(handle, "test.json"))
         assert len(items) == 2
         assert items[0] == {"id": "c1"}
         assert items[1] == {"id": "c2"}
@@ -165,7 +165,7 @@ class TestIterJsonStream:
         """A single JSON dict is yielded without unwrapping."""
         content = json.dumps({"key": "value"}).encode("utf-8")
         handle = io.BytesIO(content)
-        items = list(_iter_json_stream(handle, "test.json"))
+        items = list(iter_owned_json_values(handle, "test.json"))
         assert len(items) == 1
         assert items[0] == {"key": "value"}
 
@@ -173,7 +173,7 @@ class TestIterJsonStream:
         """Invalid JSON lines in JSONL are skipped (not crashed on)."""
         content = b'{"valid": 1}\nnot json at all\n{"also_valid": 2}\n'
         handle = io.BytesIO(content)
-        items = list(_iter_json_stream(handle, "data.jsonl"))
+        items = list(iter_owned_json_values(handle, "data.jsonl"))
         assert len(items) == 2
         assert items[0] == {"valid": 1}
         assert items[1] == {"also_valid": 2}
@@ -182,20 +182,20 @@ class TestIterJsonStream:
         """Files with .ndjson extension use JSONL parsing."""
         content = b'{"a": 1}\n{"b": 2}\n'
         handle = io.BytesIO(content)
-        items = list(_iter_json_stream(handle, "data.ndjson"))
+        items = list(iter_owned_json_values(handle, "data.ndjson"))
         assert len(items) == 2
 
     def test_jsonl_txt_extension(self) -> None:
         """Files with .jsonl.txt extension use JSONL parsing."""
         content = b'{"a": 1}\n{"b": 2}\n'
         handle = io.BytesIO(content)
-        items = list(_iter_json_stream(handle, "data.jsonl.txt"))
+        items = list(iter_owned_json_values(handle, "data.jsonl.txt"))
         assert len(items) == 2
 
     def test_strict_jsonl_decode_reports_physical_offending_line(self) -> None:
         content = b'{"valid": 1}\n\nnot json at all\n{"later": 2}\n'
         with pytest.raises(JsonlDecodeError) as exc_info:
-            list(_iter_json_stream(io.BytesIO(content), "data.jsonl", fail_on_decode_error=True))
+            list(iter_owned_json_values(io.BytesIO(content), "data.jsonl", fail_on_decode_error=True))
         assert exc_info.value.line_number == 3
 
 

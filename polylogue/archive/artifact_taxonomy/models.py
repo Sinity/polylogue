@@ -43,10 +43,8 @@ class ArtifactKind(StrEnum):
     # path match wins first and would otherwise mark this content
     # ``parse_as_session=True``. ``classify_artifact`` (content-aware) checks
     # the decoded record types and overrides to this sidecar kind when every
-    # record is one of the known non-conversational envelope types --
-    # mirroring ``archive/raw_materialization.py``'s
-    # ``parsed_non_session_artifact_reason``, which already performs the
-    # equivalent check post-parse for archive-debt/backlog reporting.
+    # record is one of the known non-conversational envelope types. Status
+    # readers consume this complete classification with current receipts.
     FILE_HISTORY_SNAPSHOT = "file_history_snapshot"
     # polylogue-6bebe: a record stream whose rows are conversation turns
     # copied out of transcripts the rows themselves name -- a generated

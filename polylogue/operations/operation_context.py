@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -56,6 +56,9 @@ class PinnedOperationRead:
     #: across the pin, so no single view describes the snapshot and the read
     #: is deliberately uncacheable rather than labelled with a guess.
     read_view: ReadViewIdentity | None = None
+    source_block_reads: dict[tuple[str, str], object] = field(default_factory=dict, compare=False, repr=False)
+    source_target_resources: ExitStack = field(default_factory=ExitStack, compare=False, repr=False)
+    checkpoint: Callable[[], None] | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,7 +311,16 @@ def open_operation_read(
                 # Joint admission owns this exact lender/vector pair. A later
                 # connection with the same filename cannot inherit the proof.
                 vars(archive.operation_vector_connection)["_polylogue_vector_read_canonical_connection"] = archive._conn
-            pinned = PinnedOperationRead(archive, identity, versions, degraded, vector_failure, read_view)
+            pinned = PinnedOperationRead(
+                archive,
+                identity,
+                versions,
+                degraded,
+                vector_failure,
+                read_view,
+                checkpoint=abort_checkpoint(execution_context) if execution_context is not None else None,
+            )
+            cleanup.enter_context(pinned.source_target_resources)
         vector_connection = archive.operation_vector_connection
         if vector_connection is not None:
             from polylogue.storage.search_providers.sqlite_vec_runtime import prepare_vector_read_projection

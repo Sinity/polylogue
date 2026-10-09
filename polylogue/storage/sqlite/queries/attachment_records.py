@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Iterable
 from datetime import datetime
 
 import aiosqlite
 
+from polylogue.archive.attachment.availability import resolve_attachment_availability
+from polylogue.archive.attachment.presentation import classify_attachment_state
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import AttachmentRecord
 from polylogue.storage.search.models import SessionSearchEvidenceRow
 
@@ -98,6 +103,8 @@ def _build_attachment_record(row: aiosqlite.Row, *, session_id: str) -> Attachme
         upload_origin=(value if isinstance((value := _row_value(row, "upload_origin")), str) else None),
         direction=(value if isinstance((value := _row_value(row, "direction")), str) else None),
         producer_ref=(value if isinstance((value := _row_value(row, "producer_ref")), str) else None),
+        reference_id=(value if isinstance((value := _row_value(row, "reference_id")), str) else None),
+        supplying_raw_id=(value if isinstance((value := _row_value(row, "supplying_raw_id")), str) else None),
         blob_hash=(bytes(value) if isinstance((value := _row_value(row, "blob_hash")), (bytes, bytearray)) else None),
         acquisition_status=(value if isinstance((value := _row_value(row, "acquisition_status")), str) else None),
         generation_id=(value if isinstance((value := _row_value(row, "generation_id")), str) else None),
@@ -125,6 +132,8 @@ async def get_attachments(
             r.upload_origin,
             r.direction,
             r.producer_ref,
+            r.ref_id AS reference_id,
+            r.supplying_raw_id,
 {_NATIVE_ID_COLUMNS}
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
@@ -165,6 +174,8 @@ async def get_message_attachments(
             r.upload_origin,
             r.direction,
             r.producer_ref,
+            r.ref_id AS reference_id,
+            r.supplying_raw_id,
 {_NATIVE_ID_COLUMNS}
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
@@ -206,6 +217,8 @@ async def get_attachments_batch(
             r.upload_origin,
             r.direction,
             r.producer_ref,
+            r.ref_id AS reference_id,
+            r.supplying_raw_id,
 {_NATIVE_ID_COLUMNS}
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
@@ -223,11 +236,10 @@ async def get_attachments_batch(
 
 def attachment_library_page_sql(
     *,
-    limit: int,
+    limit: int | None,
     offset: int,
     mime_filter: str,
     session_filter: str,
-    state_filter: str,
     segments: tuple[tuple[str, int | None, int | None], ...] = (),
 ) -> tuple[str, tuple[object, ...]]:
     """Lower one library window after canonical transcript membership."""
@@ -257,35 +269,58 @@ def attachment_library_page_sql(
     if mime_filter:
         clauses.append("instr(COALESCE(a.media_type, ''), ?) > 0")
         args.append(mime_filter)
-    if state_filter:
-        clauses.append(
-            "(CASE WHEN a.blob_hash IS NULL THEN 'missing-blob' "
-            "WHEN lower(COALESCE(a.media_type, '')) IN "
-            "('application/x-tar','application/zip','application/x-7z-compressed','application/x-rar-compressed') "
-            "OR lower(COALESCE(a.media_type, '')) LIKE 'application/x-executable%' "
-            "OR lower(COALESCE(a.media_type, '')) LIKE 'application/x-msdownload%' "
-            "OR lower(COALESCE(a.media_type, '')) LIKE 'application/x-msdos-program%' "
-            "OR lower(COALESCE(a.media_type, '')) LIKE 'application/x-sharedlib%' THEN 'unsupported-kind' "
-            "WHEN a.byte_count > 8388608 THEN 'too-large' ELSE 'available' END) = ?"
-        )
-        args.append(state_filter)
-    # Newest session first, then transcript order. Within one message the
-    # session read orders by attachment ID; ``attachment_refs.position`` is an
-    # identity coordinate, not a display ordinal.
+    # Newest session first, then transcript order and exact native reference.
+    # Physical availability cannot be inferred from Index hash presence.
     sql = f"""
         SELECT a.attachment_id, a.media_type AS mime_type, a.byte_count AS size_bytes,
                NULL AS path, a.blob_hash, a.acquisition_status, a.display_name,
                r.source_url, r.caption, r.message_id, r.session_id,
                r.upload_origin, r.direction, r.producer_ref,
+               r.ref_id AS reference_id, r.supplying_raw_id,
                s.title, s.origin,
                {_NATIVE_ID_COLUMNS}
         {relation}
         WHERE {" AND ".join(clauses)}
         ORDER BY s.sort_key_ms DESC, s.session_id,
                  m.position, m.variant_index, a.attachment_id, r.ref_id
-        LIMIT ? OFFSET ?
         """
-    return sql, (*args, max(0, limit), max(0, offset))
+    if limit is None:
+        return sql, tuple(args)
+    return sql + " LIMIT ? OFFSET ?", (*args, max(0, limit), max(0, offset))
+
+
+class AttachmentLibraryWindow:
+    """Filter physical states before paging, retaining only the requested window."""
+
+    def __init__(self, *, limit: int, offset: int, state_filter: str, blob_store: BlobStore | None) -> None:
+        self.limit = max(0, limit)
+        self.skip = max(0, offset)
+        self.state_filter = state_filter
+        self.blob_store = blob_store
+        self.rows: list[tuple[AttachmentRecord, str, str | None]] = []
+
+    def consume(self, rows: Iterable[aiosqlite.Row]) -> bool:
+        for row in rows:
+            if len(self.rows) >= self.limit:
+                return True
+            record = _build_attachment_record(row, session_id=str(row["session_id"]))
+            if self.blob_store is not None:
+                record.availability = resolve_attachment_availability(
+                    blob_hash=record.blob_hash,
+                    acquisition_status=record.acquisition_status,
+                    verify=self.blob_store.verify_for_read,
+                    exists=self.blob_store.exists,
+                )
+            state = classify_attachment_state(
+                size_bytes=record.size_bytes, mime_type=record.mime_type, availability=record.availability
+            )
+            if self.state_filter and state != self.state_filter:
+                continue
+            if self.skip:
+                self.skip -= 1
+                continue
+            self.rows.append((record, str(row["title"] or row["session_id"]), row["origin"]))
+        return len(self.rows) >= self.limit
 
 
 async def get_attachment_library_page(
@@ -296,6 +331,7 @@ async def get_attachment_library_page(
     mime_filter: str = "",
     session_filter: str = "",
     state_filter: str = "",
+    blob_store: BlobStore | None = None,
 ) -> list[tuple[AttachmentRecord, str, str | None]]:
     """Read one bounded library page under the caller's held read snapshot."""
     segments: tuple[tuple[str, int | None, int | None], ...] = ()
@@ -315,23 +351,25 @@ async def get_attachment_library_page(
             for segment in plan
         )
     sql, args = attachment_library_page_sql(
-        limit=limit,
-        offset=offset,
+        limit=None if state_filter else limit,
+        offset=0 if state_filter else offset,
         mime_filter=mime_filter,
         session_filter=session_filter,
-        state_filter=state_filter,
         segments=segments,
     )
+    window = AttachmentLibraryWindow(
+        limit=limit, offset=offset if state_filter else 0, state_filter=state_filter, blob_store=blob_store
+    )
+    if limit <= 0:
+        return []
     async with conn.execute(sql, args) as cursor:
-        rows = await cursor.fetchall()
-    return [
-        (
-            _build_attachment_record(row, session_id=str(row["session_id"])),
-            str(row["title"] or row["session_id"]),
-            row["origin"],
-        )
-        for row in rows
-    ]
+        while True:
+            rows = tuple(await cursor.fetchmany(64))
+            if not rows:
+                break
+            if await asyncio.to_thread(window.consume, rows):
+                break
+    return window.rows
 
 
 def _parse_since_timestamp(since: str) -> float:

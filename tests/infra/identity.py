@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from hashlib import sha256
 
 from polylogue.core.identity_law import block_id as _block_id
@@ -42,9 +43,15 @@ def fixture_content_identity(*parts: str) -> str:
     return sha256(payload).hexdigest()[:MESSAGE_CONTENT_IDENTITY_HEX_CHARS]
 
 
-def archive_block_id(message_id: str, *, position: int) -> str:
+def fixture_block_content_identity(*parts: object) -> str:
+    """Hash neutral semantic fixture values, preserving their JSON types."""
+    payload = json.dumps(parts, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
+    return sha256(payload).hexdigest()
+
+
+def archive_block_id(message_id: str, *, content_identity: str, content_occurrence: int = 0) -> str:
     """Construct the generated block id used by the archive schema."""
-    return _block_id(message_id, position=position)
+    return _block_id(message_id, content_identity=content_identity, content_occurrence=content_occurrence)
 
 
-__all__ = ["archive_block_id", "archive_message_id", "fixture_content_identity"]
+__all__ = ["archive_block_id", "archive_message_id", "fixture_block_content_identity", "fixture_content_identity"]

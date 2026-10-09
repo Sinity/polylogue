@@ -964,18 +964,26 @@ class CarrierHookEvent:
     event: ArchiveHookEvent
 
 
-def hook_carrier_coordinate(relative_path: str, byte_offset: int) -> str:
+def hook_carrier_coordinate(relative_path: str, byte_offset: int, hook_event_id: str) -> str:
     """The durable carrier coordinate of one event inside an NDJSON carrier.
 
     ``hook_event_carriers`` is keyed by ``(source_id, relative_path)`` because
     a file-per-event spool made the file the event. A carrier holds many
     events, so the coordinate that identifies one of them is the file *plus*
-    the byte offset its line starts at -- a content position, not an ordinal:
-    a carrier that gains lines cannot renumber the events already recorded
-    before them.
+    the byte offset its line starts at and the event identity. Growth cannot
+    renumber existing events, and recreating the path cannot alias a new
+    event onto an old event's physical position.
     """
 
-    return f"{relative_path}#{byte_offset:012d}"
+    # The producer can recreate a lost carrier at the same day/PID path.
+    # A different event at the old byte position retains its own coordinate;
+    # unchanged events keep the same coordinate through append and replay.
+    return f"{relative_path}#{byte_offset:012d}:{hook_event_id}"
+
+
+def hook_event_payload_digest(event: ArchiveHookEvent) -> bytes:
+    """Digest exactly the canonical payload the Source hook writer stores."""
+    return hashlib.sha256(_json_dumps(event.payload).encode()).digest()
 
 
 def write_source_hook_event_batch(
@@ -1019,7 +1027,10 @@ def write_source_hook_event_batch(
         raise ContentExcisedError(blob_hash=carrier_blob_hash, source_path=carrier_source_path)
     from polylogue.storage.blob_publication import consume_blob_publication_receipt
 
-    coordinates = [hook_carrier_coordinate(carrier_relative_path, carried.byte_offset) for carried in events]
+    coordinates = [
+        hook_carrier_coordinate(carrier_relative_path, carried.byte_offset, carried.event.hook_event_id)
+        for carried in events
+    ]
     with conn if manage_transaction else nullcontext():
         # Every read and write is one statement per page or per batch, not per
         # event: Source statements are re-authorized at every prepare, so a
@@ -1075,7 +1086,7 @@ def write_source_hook_event_batch(
             incoming_carrier = (
                 event.hook_event_id,
                 blob_hash,
-                hashlib.sha256(payload_json.encode()).digest(),
+                hook_event_payload_digest(event),
                 carrier_role_value,
             )
             if recorded_carrier is not None:
@@ -1680,6 +1691,7 @@ __all__ = [
     "PENDING_RAW_LOGICAL_SOURCE_PREFIX",
     "deterministic_blob_hash",
     "hook_carrier_coordinate",
+    "hook_event_payload_digest",
     "deterministic_raw_session_id",
     "is_blob_hash_excised",
     "list_hook_events",

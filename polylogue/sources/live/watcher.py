@@ -16,6 +16,7 @@ import os
 import sqlite3
 import threading
 import time
+from builtins import BaseExceptionGroup
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
@@ -541,12 +542,27 @@ class LiveWatcher:
         selection = asyncio.ensure_future(asyncio.to_thread(select))
         try:
             return await asyncio.shield(selection)
-        except asyncio.CancelledError:
-            # The worker may be inside an admitted write; let it settle while
-            # the loop still serves it, then propagate the cancellation.
-            with suppress(BaseException):
-                await selection
-            raise
+        except asyncio.CancelledError as cancelled:
+            # The worker may be inside an admitted write. Keep the task that
+            # owns its to_thread future alive across every cancellation until
+            # that physical work and its admission cleanup have settled.
+            while True:
+                try:
+                    await asyncio.shield(selection)
+                except asyncio.CancelledError:
+                    if selection.cancelled():
+                        raise BaseExceptionGroup(
+                            "watcher selection was cancelled while settling caller cancellation",
+                            [cancelled, asyncio.CancelledError("physical selection task was cancelled")],
+                        ) from None
+                    continue
+                except BaseException as failure:
+                    raise BaseExceptionGroup(
+                        "watcher selection cancellation and physical cleanup failed",
+                        [cancelled, failure],
+                    ) from None
+                break
+            raise cancelled
 
     def _admit_observed_cursor_write(
         self,

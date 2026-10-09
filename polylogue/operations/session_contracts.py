@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
@@ -166,6 +166,7 @@ T = TypeVar("T")
 
 
 class SessionPage(BaseModel, Generic[T]):
+    _transaction_request: object | None = PrivateAttr(default=None)
     items: list[T]
     total: int | None
     limit: int

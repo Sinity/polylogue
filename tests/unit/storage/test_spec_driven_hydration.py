@@ -14,7 +14,7 @@ from polylogue.storage.runtime import BlockRecord, MessageRecord
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC, SESSIONS_SPEC
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries import message_query_reads, sessions_reads
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_block_id, archive_message_id, fixture_block_content_identity
 from tests.infra.live_ingest import ingest_session
 
 
@@ -149,8 +149,13 @@ def test_blocks_spec_declares_every_domain_field_the_hydrator_emits() -> None:
     Red when a block column loses its ``domain_name``: the hydrated block drops
     that field, and a reader that expects it silently sees nothing.
     """
+    content_identity = fixture_block_content_identity(
+        "tool_use", "ran it", "Bash", "toolu_1", {"command": "ls"}, "ok", "synthetic document.txt"
+    )
     record = BlockRecord(
-        block_id="s:m:0",
+        block_id=archive_block_id("s:m", content_identity=content_identity),
+        content_identity=content_identity,
+        content_occurrence=0,
         message_id=MessageId("s:m"),
         session_id=SessionId("s"),
         block_index=0,
@@ -167,6 +172,8 @@ def test_blocks_spec_declares_every_domain_field_the_hydrator_emits() -> None:
     projected = BLOCKS_SPEC.domain_kwargs(record)
     assert set(projected) == {
         "id",
+        "content_identity",
+        "content_occurrence",
         "type",
         "text",
         "tool_name",

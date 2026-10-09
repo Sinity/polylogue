@@ -811,73 +811,6 @@ def test_run_blob_gc_serializes_the_recheck_against_an_index_tier_writer(tmp_pat
     assert not store.exists(orphan_hash)
 
 
-# ---------------------------------------------------------------------------
-# polylogue-kdt2f -- a replaced (wiped/rebuilt) index tier cannot prove absence
-# ---------------------------------------------------------------------------
-
-
-def _replace_index_tier(index_path: Path) -> None:
-    """Wipe and re-bootstrap the index tier, as a reset or rebuild does."""
-    index_path.unlink()
-    initialize_archive_database(index_path, ArchiveTier.INDEX)
-
-
-@pytest.mark.uses_real_clock(
-    "backdates real blob mtimes via os.utime; blob_gc.py's age gate compares them against a real time.time() call"
-)
-def test_run_blob_gc_protects_index_only_blobs_after_the_index_tier_is_replaced(tmp_path: Path) -> None:
-    """A blob only ``index.attachments`` claims survives a wiped, re-bootstrapped index.
-
-    ``index.db`` is rebuildable; a wipe leaves a schema-current, row-empty file
-    whose silence GC used to read as "unreferenced". On the live archive 1,240
-    attachment payloads (~425 MB) have no ``blob_refs`` row, no direct source
-    owner and no publication receipt, so the index's silence was their death
-    warrant and the pass reported clean success with ``blocked_reason=None``.
-
-    Anti-vacuity: the first pass here runs against the *materialized* index and
-    reclaims nothing, which records the witness and proves the candidate walk,
-    the age gate and the liveness route are all reached. Deleting the witness
-    file, or making ``inspect_blob_liveness`` ignore
-    ``index_authority_blocker`` again, unlinks the attachment blob in the
-    second pass and leaves ``blocked_reason`` None.
-    """
-    source_db_path = tmp_path / "source.db"
-    index_db_path = tmp_path / "index.db"
-    blob_root = tmp_path / "blobs"
-    store = BlobStore(blob_root)
-
-    attachment_hash, _size = store.write_from_bytes(b"index-only attachment payload")
-    _backdate(store, attachment_hash)
-
-    source_conn = _make_source_db(source_db_path)
-    source_conn.commit()
-    source_conn.close()
-
-    index_conn = sqlite3.connect(str(index_db_path))
-    index_conn.execute(
-        "INSERT INTO attachments (attachment_id, blob_hash, acquisition_status) VALUES ('a1', ?, 'acquired')",
-        (bytes.fromhex(attachment_hash),),
-    )
-    index_conn.commit()
-    index_conn.close()
-
-    # Pass one: the index is materialized and owns the blob. Nothing is
-    # reclaimed and GC records what the tier held.
-    first = run_blob_gc_report(source_db_path, blob_root, max_batch=10)
-    assert first.blocked_reason is None
-    assert first.deleted_count == 0
-    assert first.skipped_referenced == 1
-    assert store.exists(attachment_hash)
-
-    _replace_index_tier(index_db_path)
-
-    second = run_blob_gc_report(source_db_path, blob_root, max_batch=10)
-    assert store.exists(attachment_hash), "a replaced index tier's silence unlinked an index-only blob"
-    assert second.deleted_count == 0
-    assert second.blocked_reason is not None
-    assert "replacement file" in second.blocked_reason
-
-
 @pytest.mark.uses_real_clock(
     "backdates real blob mtimes via os.utime; blob_gc.py's age gate compares them against a real time.time() call"
 )
@@ -887,8 +820,7 @@ def test_run_blob_gc_still_collects_orphans_against_an_index_that_never_held_blo
     This is the over-blocking failure mode a pass-level preflight refusal has:
     a source-decidable archive whose index is legitimately empty must still
     collect genuinely unreferenced bytes, and a source-referenced blob must
-    still be retained, on both the first and a subsequent pass (the second pass
-    runs against a witness this code recorded itself).
+    still be retained on both the first and a subsequent pass.
 
     Anti-vacuity: the referenced blob clears the same age gate and candidate
     walk as the orphan, so ``deleted_count == 1`` cannot be satisfied by an

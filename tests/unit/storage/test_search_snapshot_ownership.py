@@ -33,7 +33,7 @@ from polylogue.storage.sqlite.queries.sessions_search import (
     search_session_hits,
 )
 from tests.infra.archive_templates import run_off_event_loop
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 
 _ORIGIN = "unknown-export"
 _TERM = "snapshot"
@@ -66,11 +66,14 @@ def _seed_session(conn: sqlite3.Connection, native_session_id: str, text: str) -
         (session_id, content_hash),
     )
     conn.execute(
-        """
-        INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash)
-        VALUES (?, ?, 0, 'text', ?, ?)
-        """,
-        (message_id, session_id, text, content_hash),
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            text,
+            content_hash,
+            fixture_block_content_identity("text", text),
+        ),
     )
 
 

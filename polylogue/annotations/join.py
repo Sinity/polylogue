@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -133,7 +133,7 @@ def _group_value(row: AnnotationStructuralJoinRow, dimension: AnnotationGroupDim
     value = row.structural.get(dimension)
     if dimension == "time" and isinstance(row.structural.get("created_at"), str):
         value = str(row.structural["created_at"])[:10]
-    return value if value is not None else "unknown"
+    return value
 
 
 def _groups(
@@ -183,6 +183,7 @@ async def join_typed_annotations(
     registry_drift = active_schema is not None and active_schema.definition_fingerprint != durable.definition_sha256
     qualified_id = schema.qualified_id
     same_schema_prefix = f"{schema.schema_id}@v"
+    as_of_ms = int(datetime.now(UTC).timestamp() * 1000)
     checkpoint()
     assertions = list_assertion_claims(
         user_conn,
@@ -191,6 +192,7 @@ async def join_typed_annotations(
         statuses=request.statuses,
         annotation_schema_qualified_id=qualified_id,
         annotation_target_kind=request.target_kind,
+        as_of_ms=as_of_ms,
         limit=request.limit,
         offset=request.offset,
     )
@@ -202,6 +204,7 @@ async def join_typed_annotations(
         statuses=request.statuses,
         annotation_schema_qualified_id=qualified_id,
         annotation_target_kind=request.target_kind,
+        as_of_ms=as_of_ms,
     )
     checkpoint()
     drift_count = count_assertion_claims(
@@ -212,6 +215,7 @@ async def join_typed_annotations(
         annotation_schema_prefix=same_schema_prefix,
         annotation_schema_excluded_qualified_id=qualified_id,
         annotation_target_kind=request.target_kind,
+        as_of_ms=as_of_ms,
     )
     checkpoint()
     drift_rows = list_assertion_claims(
@@ -222,6 +226,7 @@ async def join_typed_annotations(
         annotation_schema_prefix=same_schema_prefix,
         annotation_schema_excluded_qualified_id=qualified_id,
         annotation_target_kind=request.target_kind,
+        as_of_ms=as_of_ms,
         limit=_MAX_DIAGNOSTICS,
     )
     source_candidates: dict[str, ArchiveAssertionEnvelope] = {}
@@ -321,10 +326,14 @@ async def join_typed_annotations(
             diagnose("invalid_value", assertion_ref, assertion.target_ref, "; ".join(errors))
             continue
         resolution = await poly.resolve_ref(assertion.target_ref)
-        if not resolution.resolved:
+        exact_session = target_kind != "session" or assertion.target_ref in resolution.object_refs
+        if not resolution.resolved or not exact_session:
             missing_count += 1
             diagnose(
-                "missing_target", assertion_ref, assertion.target_ref, "; ".join(resolution.caveats) or "not found"
+                "missing_target",
+                assertion_ref,
+                assertion.target_ref,
+                "; ".join(resolution.caveats) or "exact target not found",
             )
             continue
         payload = resolution.payload

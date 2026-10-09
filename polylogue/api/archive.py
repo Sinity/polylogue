@@ -12,7 +12,7 @@ from contextlib import aclosing, closing, contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal, TypeVar, cast
 
 from polylogue.analysis.archive import (
     SessionProfileInsight,
@@ -23,7 +23,7 @@ from polylogue.analysis.insight_reads import read_insight_page
 from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.api.facade_client import submit_facade_product
 from polylogue.archive.actions.actions import Action
-from polylogue.archive.blackboard import BlackboardNote
+from polylogue.archive.blackboard import BlackboardNote, BlackboardPage
 from polylogue.archive.context_models import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
@@ -1573,6 +1573,7 @@ def _archive_list_assertion_candidate_reviews(
             kinds=ASSERTION_CANDIDATE_JUDGMENT_KINDS if kinds is None else kinds,
             target_ref=target_ref,
             statuses=statuses,
+            include_expired=True,
         )
         rows = list_assertion_candidate_reviews(
             conn,
@@ -2238,6 +2239,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         self,
         request: AnnotationBatchImportRequest,
         *,
+        input: BinaryIO,
         registry: AnnotationSchemaRegistry | None = None,
     ) -> AnnotationBatchImportResult:
         """Import annotation candidates and return the committed batch summary.
@@ -2262,7 +2264,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 raise
         else:
             payload["schema_definition_json"] = schema.canonical_definition_json()
-        state = await submit_facade_operation(self.config, "mutation.annotation.import_batch", payload)
+        state = await submit_facade_operation(self.config, "mutation.annotation.import_batch", payload, input=input)
         return AnnotationBatchImportResult.model_validate(state["result"])
 
     async def get_session(
@@ -5797,6 +5799,41 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     # Marks
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _user_state_mutation_input(
+        session_id: str,
+        *,
+        target_type: str,
+        target_id: str | None,
+        message_id: str | None,
+    ) -> dict[str, str | None]:
+        """Preserve target selectors for the daemon's pinned Source admission.
+
+        The daemon resolves positional input under its existing Source-bound
+        seal. Resolving it here would consult a separate Index snapshot and
+        could persist whichever block currently occupies the requested slot.
+        """
+        from polylogue.core.user_state_targets import validate_target_kind
+
+        if not session_id:
+            raise ValueError("session_id must not be empty")
+        validate_target_kind(target_type)
+        if target_type == TARGET_MESSAGE and target_id and message_id and target_id != message_id:
+            raise ValueError("message target_id must match message_id")
+        selected_id = target_id
+        if target_type == TARGET_SESSION:
+            selected_id = target_id or session_id
+        elif target_type == TARGET_MESSAGE:
+            selected_id = target_id or message_id
+        elif not selected_id:
+            raise ValueError(f"{target_type} target requires target_id")
+        return {
+            "target_type": target_type,
+            "target_id": selected_id,
+            "session_id": session_id,
+            "message_id": message_id,
+        }
+
     async def _resolve_user_state_target(
         self,
         session_id: str,
@@ -5925,15 +5962,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         Routed through ``OperationExecutor``/``MarkAddActuator`` (t46.9 phase
         2: the first MCP no-spec mutation family to gain executor routing).
-        Target resolution stays here (async, may consult insight-derived
-        indexes) and runs once before the actuator sees an already-resolved
-        ``target_type``/``target_id`` pair, mirroring
-        ``IdentityResetActuator``'s pattern.
+        Raw target selectors travel to the daemon, where positional inputs are
+        canonicalized under the pinned Source-bound seal before persistence.
         """
         from polylogue.core.user_state_targets import validate_mark_type
 
         mark_type = validate_mark_type(mark_type)
-        target = await self._resolve_user_state_target(
+        target = self._user_state_mutation_input(
             session_id,
             target_type=target_type,
             target_id=target_id,
@@ -5944,6 +5979,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             "add_mark",
             target_type=str(target["target_type"]),
             target_id=str(target["target_id"]),
+            message_id=target["message_id"],
             mark_type=mark_type,
             owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
         )
@@ -5966,7 +6002,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.core.user_state_targets import validate_mark_type
 
         mark_type = validate_mark_type(mark_type)
-        target = await self._resolve_user_state_target(
+        target = self._user_state_mutation_input(
             session_id,
             target_type=target_type,
             target_id=target_id,
@@ -5977,6 +6013,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             "remove_mark",
             target_type=str(target["target_type"]),
             target_id=str(target["target_id"]),
+            message_id=target["message_id"],
             mark_type=mark_type,
             owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
         )
@@ -6038,16 +6075,15 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         Routed through ``OperationExecutor``/``AnnotationSaveActuator``
         (t46.9 phase 3); see :meth:`add_mark` for the shared-contract
-        rationale. Target resolution stays here (async, may consult
-        insight-derived indexes) and runs once before the actuator sees an
-        already-resolved ``target_type``/``target_id`` pair.
+        rationale. Raw target selectors are resolved by the daemon under its
+        pinned Source-bound seal before persistence.
         """
         if not annotation_id.strip():
             raise ValueError("annotation_id must not be empty")
         if not note_text.strip():
             raise ValueError("note_text must not be empty")
 
-        target = await self._resolve_user_state_target(
+        target = self._user_state_mutation_input(
             session_id,
             target_type=target_type,
             target_id=target_id,
@@ -6059,6 +6095,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             annotation_id=annotation_id,
             target_type=str(target["target_type"]),
             target_id=str(target["target_id"]),
+            message_id=target["message_id"],
             note_text=note_text,
             owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
         )
@@ -6754,45 +6791,54 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         unresolved: bool = False,
         limit: int = 20,
     ) -> list[BlackboardNote]:
-        """List blackboard notes, newest first, with optional filters (#1697).
-
-        ``unresolved`` narrows to open-work kinds (:data:`UNRESOLVED_KINDS`).
-        Filtering runs on decoded notes, then the result is capped at ``limit``.
-        """
-        from polylogue.archive.blackboard import (
-            UNRESOLVED_KINDS,
-            decode_blackboard_note,
+        """Return the requested prefix of the canonical filtered blackboard page."""
+        return list(
+            (
+                await self.read_blackboard_page(kind=kind, scope_repo=scope_repo, unresolved=unresolved, limit=limit)
+            ).items
         )
 
-        envelopes = await run_archive_read(
+    async def read_blackboard_page(
+        self,
+        *,
+        kind: str | None = None,
+        scope_repo: str | None = None,
+        unresolved: bool = False,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> BlackboardPage:
+        from polylogue.archive.blackboard import BlackboardPage, decode_blackboard_note
+
+        if limit <= 0 or offset < 0:
+            raise ValueError("blackboard page requires a positive limit and nonnegative offset")
+        envelopes, total = await run_archive_read(
             _active_archive_root(self.config),
             operation="user_state.blackboard.list",
             arguments={"kind": kind, "scope_repo": scope_repo, "unresolved": unresolved},
-            work=lambda archive: archive.list_blackboard_notes(),
+            work=lambda archive: archive.read_blackboard_page(
+                kind=kind, scope_repo=scope_repo, unresolved=unresolved, limit=limit, offset=offset
+            ),
             page_size=limit,
+            offset=offset,
             projection="blackboard-notes",
             stable_order="updated_at:desc,note_id",
         )
-        notes: list[BlackboardNote] = []
-        for envelope in envelopes:
-            note = decode_blackboard_note(
-                note_id=envelope.note_id,
-                body=envelope.body,
-                target_type=envelope.target_type,
-                target_id=envelope.target_id,
-                created_at_ms=envelope.created_at_ms,
-                updated_at_ms=envelope.updated_at_ms,
-            )
-            if kind is not None and note.kind != kind:
-                continue
-            if scope_repo is not None and note.scope_repo != scope_repo:
-                continue
-            if unresolved and note.kind not in UNRESOLVED_KINDS:
-                continue
-            notes.append(note)
-            if limit > 0 and len(notes) >= limit:
-                break
-        return notes
+        return BlackboardPage(
+            items=tuple(
+                decode_blackboard_note(
+                    note_id=envelope.note_id,
+                    body=envelope.body,
+                    target_type=envelope.target_type,
+                    target_id=envelope.target_id,
+                    created_at_ms=envelope.created_at_ms,
+                    updated_at_ms=envelope.updated_at_ms,
+                )
+                for envelope in envelopes
+            ),
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
 
     async def get_setting(self, setting_key: str) -> ArchiveUserSettingEnvelope | None:
         """Read one durable ``user_settings`` row, or ``None`` when unset (polylogue-at44).

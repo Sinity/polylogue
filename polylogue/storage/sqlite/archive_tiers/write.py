@@ -46,10 +46,12 @@ from polylogue.archive.topology.edge import (
     HOOK_CONTRADICTED_LINK_METHOD,
     HOOK_DERIVED_LINK_METHODS,
     HOOK_SUPERSEDED_LINK_METHOD,
+    INVALIDATED_PREFIX_EVIDENCE_KEY,
     DispatchResolutionReason,
     TopologyEdgeStatus,
     TopologyEdgeType,
     branch_type_to_edge_type,
+    invalidated_prefix_sql,
     topology_status_composes_sql,
 )
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
@@ -65,10 +67,19 @@ from polylogue.core.enums import (
     admitted_session_kind,
 )
 from polylogue.core.hook_payload import payload_key_spellings
+from polylogue.core.identity_law import attachment_content_id, attachment_native_identity, attachment_reference_id
+from polylogue.core.identity_law import block_id as archive_block_id
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
-from polylogue.core.json_envelope import top_level_envelopes
+from polylogue.core.message_native_identity import (
+    message_native_key,
+    native_id_from_storage,
+    normalized_message_native_id,
+    source_native_id_from_json,
+    source_native_id_json,
+    sqlite_message_native_id,
+)
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.sources import origin_from_provider
@@ -83,6 +94,7 @@ from polylogue.pipeline.ids import (
     MessageContentIdentity,
     MessageOwnerResolution,
     attachment_message_owner_key,
+    block_content_identities,
     bound_session_content_hash,
     disk_message_content_identities,
     disk_message_owner_resolution,
@@ -105,8 +117,6 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.sources.parsers.claude.orchestration import (
-    DOCUMENT_READ_FIELDS,
-    IDENTITY_FIELD_GROUPS,
     parse_claude_orchestration_artifact,
 )
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
@@ -177,6 +187,7 @@ from polylogue.storage.usage import (
     project_provider_usage_events,
     provider_usage_event_identity,
     provider_usage_request_events,
+    provider_usage_required_lane_indices,
 )
 
 
@@ -257,6 +268,8 @@ class ArchiveBlockRow:
     message_id: str
     block_type: str
     text: str | None
+    content_identity: str
+    content_occurrence: int
     content_hash: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None
@@ -2929,6 +2942,9 @@ def write_parsed_session_to_archive(
                         position_offset=position_offset,
                         duplicate_native_ids=duplicate_message_native_ids,
                         content_identities=content_identities,
+                        message_id_remap=projection_carry_forward.incoming_message_id_remap
+                        if projection_carry_forward is not None
+                        else None,
                     )
                     add_timing("index.file_edits", t0)
                     t0 = time.perf_counter()
@@ -2940,6 +2956,9 @@ def write_parsed_session_to_archive(
                         duplicate_native_ids=duplicate_message_native_ids,
                         replace_session=False,
                         content_identities=content_identities,
+                        message_id_remap=projection_carry_forward.incoming_message_id_remap
+                        if projection_carry_forward is not None
+                        else None,
                     )
                     add_timing("index.web_constructs", t0)
                 t0 = time.perf_counter()
@@ -2977,6 +2996,9 @@ def write_parsed_session_to_archive(
                     refresh_attachment_ids=refresh_attachment_ids,
                     preacquired_blobs=preacquired_attachment_blobs,
                     content_identities=content_identities,
+                    message_id_remap=projection_carry_forward.incoming_message_id_remap
+                    if projection_carry_forward is not None
+                    else None,
                     inherited_prefix_message_ids=context.inherited_prefix_message_ids,
                     owner_resolution=prepared_write.rows.owner_resolution,
                     replace_owner_gaps=not merge_append,
@@ -2990,6 +3012,9 @@ def write_parsed_session_to_archive(
                     position_offset=position_offset,
                     duplicate_native_ids=duplicate_message_native_ids,
                     content_identities=content_identities,
+                    message_id_remap=projection_carry_forward.incoming_message_id_remap
+                    if projection_carry_forward is not None
+                    else None,
                 )
                 add_timing("index.paste_spans", t0)
                 if projection_carry_forward is not None:
@@ -3002,20 +3027,9 @@ def write_parsed_session_to_archive(
                     # rebuild didn't recreate.
                     t0 = time.perf_counter()
                     _restore_captured_projection_rows(conn, projection_carry_forward)
-                    # The exemption above assumed every carried-forward attachment
-                    # would get its attachment_refs row back. The restore is
-                    # slot-gated, and the two identities disagree about what a slot
-                    # is: _attachment_position derives it from provider_attachment_id
-                    # alone, while _attachment_id also folds path, name, MIME type
-                    # and size. A second acquisition that keeps the provider id but
-                    # changes the metadata therefore takes the slot under a new
-                    # attachment_id, and the old row is never restored -- and was
-                    # excluded from the sweep, so it kept ref_count=1 with no refs.
-                    # Blob GC treats an attachments row bearing the hash as a live
-                    # reference, so the old bytes were pinned forever. Now that the
-                    # restore has run, the exempted ids are settled: the ones that
-                    # really were restored recount to their live refs, and the ones
-                    # the slot moved away from recount to zero and are swept.
+                    # Recount every previously retained row after native-reference
+                    # restoration; a replaced payload descriptor may have lost
+                    # its last reference while omitted native objects survive.
                     post_restore_attachment_ids: Iterable[str] = carried_forward_attachment_ids
                     if projection_carry_forward.scratch is not None:
                         post_restore_attachment_ids = _UnionSet(
@@ -3031,6 +3045,9 @@ def write_parsed_session_to_archive(
                     position_offset=position_offset,
                     duplicate_native_ids=duplicate_message_native_ids,
                     content_identities=content_identities,
+                    message_id_remap=projection_carry_forward.incoming_message_id_remap
+                    if projection_carry_forward is not None
+                    else None,
                     inherited_message_ids=inherited_source_message_ids,
                     stored_parents=merge_append,
                 )
@@ -3056,6 +3073,7 @@ def write_parsed_session_to_archive(
                     source_read=source_read,
                     prior_links=prior_session_rows,
                     child_source_path=context.child_source_path,
+                    preserve_prefix_loss=merge_append,
                 )
                 add_timing("index.session_link", t0)
                 t0 = time.perf_counter()
@@ -3071,6 +3089,9 @@ def write_parsed_session_to_archive(
                     inherited_source_message_ids=inherited_source_message_ids,
                     ambiguous_source_provider_ids=event_duplicate_message_native_ids,
                     content_identities=content_identities,
+                    message_id_remap=projection_carry_forward.incoming_message_id_remap
+                    if projection_carry_forward is not None
+                    else None,
                     sidecar_blob_locators=sidecar_blob_locators,
                     owner_resolution=prepared_write.rows.owner_resolution,
                 )
@@ -3518,14 +3539,15 @@ def _composed_transcript_plan(
     cursor_session_id = session_id
     plan: _ComposedTranscriptPlan
     while True:
+        prefix_lost = _has_incomplete_prefix(conn, cursor_session_id, before_input)
         edge = _prefix_sharing_edge_sync(conn, cursor_session_id, before_input)
         if edge is None:
             own = own_segment(cursor_session_id)
             plan = _ComposedTranscriptPlan(
                 segments=(own,),
                 total_message_count=own.message_count,
-                lineage_complete=True,
-                lineage_truncation_reason=None,
+                lineage_complete=not prefix_lost,
+                lineage_truncation_reason=LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT if prefix_lost else None,
                 lineage_inheritance="none",
                 lineage_branch_point_message_id=None,
             )
@@ -3551,6 +3573,8 @@ def _composed_transcript_plan(
     composed = _SegmentList(conn, plan.segments, before_input)
     complete, reason = plan.lineage_complete, plan.lineage_truncation_reason
     for child_session_id, parent_session_id, branch_point_message_id in reversed(chain):
+        if _has_invalidated_prefix(conn, child_session_id, before_input) and complete:
+            complete, reason = False, LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
         cut = _branch_point_content_address_matches(
             conn, child_session_id, parent_session_id, branch_point_message_id, before_input
         ) and composed.cut_at(branch_point_message_id)
@@ -4197,6 +4221,7 @@ def _iter_message_rows(
         values: dict[str, object] = {
             "session_id": session_id,
             "native_id": _stored_message_native_id(message, duplicate_native_ids),
+            "source_native_id_json": (source_native_id_json(message.provider_message_id)),
             "position": position,
             "role": _enum_value(message.role),
             "message_type": _enum_value(message.message_type),
@@ -4266,6 +4291,7 @@ def _write_append_messages_and_blocks(
         if column.extract_placeholder == "?"
     ]
     native_index = message_columns.index("native_id")
+    carrier_index = message_columns.index("source_native_id_json")
     message_iter = iter(message_rows)
     block_iter = iter(block_rows)
     pending_messages: list[tuple[object, ...]] = []
@@ -4284,7 +4310,7 @@ def _write_append_messages_and_blocks(
     for message, message_row in zip(messages, message_iter, strict=True):
         message_blocks = _message_blocks(message)
         aligned_blocks = islice(block_iter, len(message_blocks))
-        if _stored_native_id_exists(conn, session_id, message_row[native_index]):
+        if _stored_native_id_exists(conn, session_id, message_row[native_index], carrier=message_row[carrier_index]):
             for _ in aligned_blocks:
                 pass
             continue
@@ -4313,7 +4339,10 @@ def _append_has_new_native_messages(
         if column.extract_placeholder == "?"
     ]
     native_index = columns.index("native_id")
-    return any(not _stored_native_id_exists(conn, session_id, row[native_index]) for row in rows)
+    carrier_index = columns.index("source_native_id_json")
+    return any(
+        not _stored_native_id_exists(conn, session_id, row[native_index], carrier=row[carrier_index]) for row in rows
+    )
 
 
 def _append_has_auxiliary_input(session: ParsedSession) -> bool:
@@ -4657,7 +4686,7 @@ def _iter_block_rows(
             duplicate_native_ids=duplicate_native_ids,
         )
         blocks = _message_blocks(message)
-        for position, block in enumerate(blocks):
+        for position, (block, identity) in enumerate(zip(blocks, block_content_identities(blocks), strict=True)):
             block_type = _block_type(block)
             tool_input_json = _json_dumps(block.tool_input) if block.tool_input is not None else None
             semantic_type = _semantic_type(block)
@@ -4672,6 +4701,8 @@ def _iter_block_rows(
                 "message_id": message_id,
                 "session_id": session_id,
                 "position": position,
+                "content_identity": identity.content_identity,
+                "content_occurrence": identity.content_occurrence,
                 "block_type": block_type.value,
                 "text": _sqlite_text(block.text),
                 "tool_name": _sqlite_text(block.tool_name),
@@ -4793,6 +4824,7 @@ def _build_file_edit_rows(
     messages: Sequence[ParsedMessage],
     *,
     content_identities: Sequence[MessageContentIdentity],
+    message_id_remap: Mapping[str, str] | None = None,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> list[tuple[object, ...]]:
@@ -4803,15 +4835,16 @@ def _build_file_edit_rows(
     originalFile fields live on the wire), but ``file_edits`` is keyed by the
     TOOL_USE block that made the call -- resolved here via the shared
     ``tool_id``, exactly as the ``actions`` view pairs tool_use<->tool_result.
-    A TOOL_RESULT carrying ``file_edit`` with no matching TOOL_USE in this
-    same write (should not happen for a well-formed transcript) is dropped
-    rather than guessing a key.
+    The shared invocation association resolves each result occurrence, so
+    reused tool IDs cannot redirect an edit to a later call. An edit without
+    a unique TOOL_USE in this write refuses instead of guessing a key.
     """
     return list(
         _iter_file_edit_rows(
             session_id,
             messages,
             content_identities=content_identities,
+            message_id_remap=message_id_remap,
             position_offset=position_offset,
             duplicate_native_ids=duplicate_native_ids,
         )
@@ -4823,50 +4856,72 @@ def _iter_file_edit_rows(
     messages: Sequence[ParsedMessage],
     *,
     content_identities: Sequence[MessageContentIdentity],
+    message_id_remap: Mapping[str, str] | None = None,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> Generator[tuple[object, ...], None, None]:
+    from polylogue.sources.tool_outcomes import iter_tool_result_owners
+
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     disk_index = _DiskSourceMessageIds(source.path.parent) if isinstance(source, SqliteMessageSink) else None
-    tool_use_block_id_by_tool_id: dict[str, str] | _DiskSourceMessageIds = disk_index if disk_index is not None else {}
+    tool_use_block_ids: dict[str, str] | _DiskSourceMessageIds = disk_index if disk_index is not None else {}
     try:
+        has_edits = False
         for fallback_position, message in enumerate(messages):
             message_id = _message_id(
                 session_id,
                 message,
                 fallback_position,
                 content_identities=content_identities,
+                message_id_remap=message_id_remap,
                 duplicate_native_ids=duplicate_native_ids,
             )
-            for position, block in enumerate(_message_blocks(message)):
+            blocks = _message_blocks(message)
+            for block_ordinal, (block, identity) in enumerate(
+                zip(blocks, block_content_identities(blocks), strict=True)
+            ):
+                has_edits |= block.file_edit is not None and bool(block.tool_id)
                 if _block_type(block) is BlockType.TOOL_USE and block.tool_id:
-                    tool_use_block_id_by_tool_id[block.tool_id] = f"{message_id}:{position}"
+                    tool_use_block_ids[f"use:{fallback_position}:{block_ordinal}"] = archive_block_id(
+                        message_id,
+                        content_identity=identity.content_identity,
+                        content_occurrence=identity.content_occurrence,
+                    )
+        if not has_edits:
+            return
+        with closing(iter_tool_result_owners(messages)) as associations:
+            for result_message, result_block, use_message, use_block in associations:
+                tool_use_block_ids[f"result:{result_message}:{result_block}"] = tool_use_block_ids[
+                    f"use:{use_message}:{use_block}"
+                ]
         if disk_index is not None:
             disk_index.finish()
 
-        def pending_edits() -> Iterator[tuple[str, ParsedMessage, ParsedContentBlock]]:
+        def pending_edits() -> Iterator[tuple[str, str, ParsedMessage, ParsedContentBlock]]:
             for fallback_position, message in enumerate(messages):
                 message_id = _message_id(
                     session_id,
                     message,
                     fallback_position,
                     content_identities=content_identities,
+                    message_id_remap=message_id_remap,
                     duplicate_native_ids=duplicate_native_ids,
                 )
-                for block in _message_blocks(message):
+                for block_ordinal, block in enumerate(_message_blocks(message)):
                     if block.file_edit is not None and block.tool_id:
-                        yield message_id, message, block
+                        side = "use" if _block_type(block) is BlockType.TOOL_USE else "result"
+                        yield f"{side}:{fallback_position}:{block_ordinal}", message_id, message, block
 
         pending = pending_edits()
         while batch := list(islice(pending, 512)):
             rows: list[tuple[object, ...]] = []
             with disk_index.reader() if disk_index is not None else nullcontext():
-                for message_id, message, block in batch:
+                for owner_key, message_id, message, block in batch:
                     file_edit = block.file_edit
                     assert file_edit is not None and block.tool_id is not None
-                    tool_use_block_id = tool_use_block_id_by_tool_id.get(block.tool_id)
+                    tool_use_block_id = tool_use_block_ids.get(owner_key)
                     if tool_use_block_id is None:
-                        continue
+                        raise MessageOwnerAmbiguityError("file edit has no unique tool-use occurrence")
                     rows.append(
                         (
                             tool_use_block_id,
@@ -4897,6 +4952,7 @@ def _write_file_edits(
     messages: Sequence[ParsedMessage],
     *,
     content_identities: Sequence[MessageContentIdentity],
+    message_id_remap: Mapping[str, str] | None = None,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
@@ -4906,6 +4962,7 @@ def _write_file_edits(
         position_offset=position_offset,
         duplicate_native_ids=duplicate_native_ids,
         content_identities=content_identities,
+        message_id_remap=message_id_remap,
     )
     try:
         conn.executemany(
@@ -4958,6 +5015,7 @@ def _write_web_constructs(
     messages: Sequence[ParsedMessage],
     *,
     content_identities: Sequence[MessageContentIdentity],
+    message_id_remap: Mapping[str, str] | None = None,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     replace_session: bool = True,
@@ -5005,11 +5063,16 @@ def _write_web_constructs(
             message,
             fallback_position,
             content_identities=content_identities,
+            message_id_remap=message_id_remap,
             duplicate_native_ids=duplicate_native_ids,
         )
         blocks = _message_blocks(message)
-        for block_position, block in enumerate(blocks):
-            block_id = f"{message_id}:{block_position}"
+        for block, identity in zip(blocks, block_content_identities(blocks), strict=True):
+            block_id = archive_block_id(
+                message_id,
+                content_identity=identity.content_identity,
+                content_occurrence=identity.content_occurrence,
+            )
             if not replace_session and prior_rows:
                 block_ids.append(block_id)
             for construct_position, construct in enumerate(block.web_constructs):
@@ -5085,7 +5148,7 @@ def _coalesce_scalar(new: object, old: object) -> object:
 _SPLICE_FRONT: object = object()
 
 
-def _splice_merge_keys(old_keys: list[object], new_keys: list[object]) -> list[tuple[str, object]]:
+def _splice_merge_keys(old_keys: Sequence[object], new_keys: Sequence[object]) -> list[tuple[str, object]]:
     """Merge two ordered key sequences, preserving the relative order of both.
 
     A key present in ``old_keys`` but not ``new_keys`` is spliced back in
@@ -5118,33 +5181,45 @@ def _splice_merge_keys(old_keys: list[object], new_keys: list[object]) -> list[t
     return result
 
 
-def _block_structural_keys(rows: list[tuple[object, ...]], b_idx: dict[str, int]) -> list[object]:
-    """Content-addressed identity for a message's block sequence, NOT position.
+def _message_row_id(session_id: str, row: tuple[object, ...], idx: Mapping[str, int]) -> str:
+    return archive_message_id(
+        session_id,
+        native_id_from_storage(
+            cast("str | None", row[idx["native_id"]]),
+            cast("str | None", row[idx["source_native_id_json"]]),
+        ),
+        content_identity=cast("str | None", row[idx["content_identity"]]),
+        content_occurrence=cast(int, row[idx["content_occurrence"]]),
+    )
 
-    polylogue-geop PR review: position shifts when a non-trailing block is
-    dropped (``[text, code, text]`` -> ``[text, text]`` shifts the trailing
-    text from position 2 to position 1), so matching by raw position treats
-    the shifted survivor as the omitted block's old occupant and corrupts
-    both. ``svfj`` (the block evidence hash) already excludes position and
-    ``tool_id`` from a single block's identity for the same reason a block
-    can shift -- this extends that to sequence-level matching: prefer
-    ``tool_id`` (a provider-assigned id, stable across independent export
-    downloads of the same conversation) when present, else fall back to
-    "the Nth block of this type seen so far in this message", which is
-    exactly what distinguishes the two ``text`` blocks in the example above.
-    """
-    keys: list[object] = []
-    occurrence: dict[object, int] = {}
-    for row in rows:
-        block_type = row[b_idx["block_type"]]
-        tool_id = row[b_idx["tool_id"]]
-        if tool_id:
-            keys.append(("tool_id", block_type, tool_id))
-        else:
-            n = occurrence.get(block_type, 0)
-            occurrence[block_type] = n + 1
-            keys.append(("occurrence", block_type, n))
-    return keys
+
+def _message_semantic_key(row: tuple[object, ...], idx: Mapping[str, int]) -> tuple[object, object, object]:
+    # Original names distinguish separate Source occurrences with identical
+    # content; they are evidence, never a substitute for the semantic digest.
+    return row[idx["content_identity"]], row[idx["content_occurrence"]], row[idx["source_native_id_json"]]
+
+
+def _retain_message_identity(
+    new: tuple[object, ...], old: tuple[object, ...], idx: Mapping[str, int]
+) -> tuple[object, ...]:
+    values = [_coalesce_scalar(n, o) for n, o in zip(new, old, strict=True)]
+    # Reconciliation preserves the predecessor's stable owner even when
+    # normalization of duplicate Source names changes the incoming identity.
+    for name in ("native_id", "content_identity", "content_occurrence", "identity_source"):
+        values[idx[name]] = old[idx[name]]
+    if old[idx["source_native_id_json"]] is not None:
+        values[idx["source_native_id_json"]] = old[idx["source_native_id_json"]]
+    return tuple(values)
+
+
+def _block_identity_key(row: tuple[object, ...], b_idx: dict[str, int]) -> tuple[object, object]:
+    """The immutable Source identity used by both reconciliation implementations."""
+    return row[b_idx["content_identity"]], row[b_idx["content_occurrence"]]
+
+
+def _block_identity_keys(rows: list[tuple[object, ...]], b_idx: dict[str, int]) -> list[object]:
+    """Match the same Source content, never a type occurrence or display slot."""
+    return [_block_identity_key(row, b_idx) for row in rows]
 
 
 #: One tool result's outcome, spread across a canonical column and its legacy
@@ -5246,10 +5321,10 @@ class _CapturedProjections:
 @dataclass(frozen=True, slots=True)
 class _ProjectionCarryForward:
     captured: _CapturedProjections
-    block_id_remap: Mapping[str, str]
     live_message_ids: Set[str]
     message_id_remap: Mapping[str, str | None]
     scratch: _UnionScratch | None = None
+    incoming_message_id_remap: Mapping[str, str] = field(default_factory=dict)
 
 
 class _UnionScratch:
@@ -5278,10 +5353,9 @@ class _UnionScratch:
                 self.conn.execute(f"CREATE INDEX {name}_key ON {name}(key)")
                 self.conn.execute(f"CREATE INDEX {name}_owner ON {name}(owner, position)")
             self.conn.execute("CREATE TABLE live_message (message_id TEXT PRIMARY KEY) WITHOUT ROWID")
-            self.conn.execute("CREATE TABLE block_remap (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL) WITHOUT ROWID")
             self.conn.execute("CREATE TABLE message_remap (old_id TEXT PRIMARY KEY, new_id TEXT) WITHOUT ROWID")
             self.conn.execute(
-                "CREATE TABLE native_message (native_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
+                "CREATE TABLE message_owner_map (key TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
             )
             self.conn.execute(
                 "CREATE TABLE old_only (anchor TEXT, old_ordinal INTEGER, native_id TEXT PRIMARY KEY) WITHOUT ROWID"
@@ -5502,6 +5576,7 @@ def _capture_session_projection_rows(
                 "source_url",
                 "caption",
                 "supplying_raw_id",
+                "native_identity",
             ),
             "paste_spans": (
                 "message_id",
@@ -5560,12 +5635,12 @@ def _capture_session_projection_rows(
             "attachment_native_ids",
             ("ref_id", "id_kind", "native_id"),
             "SELECT ani.rowid FROM attachment_native_ids ani JOIN attachment_refs ar "
-            "ON ani.ref_id=ar.message_id || ':attachment:' || ar.position WHERE ar.session_id=?",
+            "ON ani.ref_id=ar.ref_id WHERE ar.session_id=?",
             (session_id,),
         )
     if scratch is not None:
         selections = {
-            "attachment_refs": "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption, supplying_raw_id FROM attachment_refs WHERE session_id = ?",
+            "attachment_refs": "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption, supplying_raw_id, native_identity FROM attachment_refs WHERE session_id = ?",
             "paste_spans": "SELECT message_id, session_id, position, start_offset, end_offset, boundary_state, source_event_id, source_marker, content_hash, observed_at_ms FROM paste_spans WHERE session_id = ?",
             "file_edits": "SELECT tool_use_block_id, session_id, message_id, file_path, structured_patch_json, original_file, old_string, new_string, replace_all, user_modified, observed_at_ms FROM file_edits WHERE session_id = ?",
             "web_content_constructs": "SELECT session_id, message_id, block_id, position, provider, construct_type, provider_key, title, url, text, source_id, group_id, group_title, query, asset_pointer, mime_type, status, task_id, task_type, rank, start_index, end_index FROM web_content_constructs WHERE session_id = ?",
@@ -5585,7 +5660,7 @@ def _capture_session_projection_rows(
         with connection_cursor(
             conn,
             "SELECT ani.ref_id, ani.id_kind, ani.native_id FROM attachment_native_ids ani "
-            "JOIN attachment_refs ar ON ani.ref_id = ar.message_id || ':attachment:' || ar.position "
+            "JOIN attachment_refs ar ON ani.ref_id = ar.ref_id "
             "WHERE ar.session_id = ?",
             (session_id,),
         ) as _input_cursor:
@@ -5610,11 +5685,11 @@ def _capture_session_projection_rows(
     with connection_cursor(
         conn,
         "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, "
-        "caption, supplying_raw_id FROM attachment_refs WHERE session_id = ?",
+        "caption, supplying_raw_id, native_identity FROM attachment_refs WHERE session_id = ?",
         (session_id,),
     ) as _input_cursor:
         attachment_refs = _input_cursor.fetchall()
-    ref_ids = [f"{row[2]}:attachment:{row[3]}" for row in attachment_refs]
+    ref_ids = [attachment_reference_id(str(row[2]), str(row[10])) for row in attachment_refs]
     attachment_native_ids: list[sqlite3.Row] = []
     if ref_ids:
         placeholders = ",".join("?" for _ in ref_ids)
@@ -5674,15 +5749,13 @@ def _restore_captured_projection_rows(
     owning message survived the merge (``live_message_ids``) are eligible --
     a message the field-path union deliberately did not reinject (the
     prefix-sharing-parent guard) must not have its sidecar evidence restored
-    either. ``block_id`` references are remapped through
-    ``block_id_remap`` when the owning block's position shifted during
-    reconciliation (``block_id`` embeds position); ``attachment_refs``/
-    ``paste_spans`` need no remap -- their own PK ``position`` column is an
-    independent per-message ordinal, not the message's transcript position.
+    either. Block references keep immutable Source identities when display
+    positions change. Attachment references retain exact native identity under
+    their owning message; display position is not identity. Paste-span positions
+    are independent per-message ordinals, unrelated to transcript order.
     """
     captured = carry_forward.captured
     live_message_ids = carry_forward.live_message_ids
-    block_id_remap = carry_forward.block_id_remap
 
     restored_attachment_ref_ids: set[str] = set()
     scratch = carry_forward.scratch
@@ -5690,11 +5763,10 @@ def _restore_captured_projection_rows(
         scratch.conn.execute("DELETE FROM restored_attachment_ref")
     for row in captured.attachment_refs:
         message_id = cast(str, row[2])
-        position = row[3]
         if message_id not in live_message_ids:
             continue
         exists = conn.execute(
-            "SELECT 1 FROM attachment_refs WHERE message_id = ? AND position = ?", (message_id, position)
+            "SELECT 1 FROM attachment_refs WHERE message_id = ? AND native_identity = ?", (message_id, row[10])
         ).fetchone()
         if exists is None:
             # ``supplying_raw_id`` travels with the row: the reference comes
@@ -5702,11 +5774,11 @@ def _restore_captured_projection_rows(
             conn.execute(
                 "INSERT OR IGNORE INTO attachment_refs "
                 "(attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, "
-                "caption, supplying_raw_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "caption, supplying_raw_id, native_identity) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 row,
             )
-            ref_id = f"{message_id}:attachment:{position}"
+            ref_id = attachment_reference_id(message_id, str(row[10]))
             if scratch is None:
                 restored_attachment_ref_ids.add(ref_id)
             else:
@@ -5744,27 +5816,25 @@ def _restore_captured_projection_rows(
         message_id = cast(str, row[2])
         if message_id not in live_message_ids:
             continue
-        old_block_id = cast(str, row[0])
-        new_block_id = block_id_remap.get(old_block_id, old_block_id)
-        exists = conn.execute("SELECT 1 FROM file_edits WHERE tool_use_block_id = ?", (new_block_id,)).fetchone()
+        block_id = cast(str, row[0])
+        exists = conn.execute("SELECT 1 FROM file_edits WHERE tool_use_block_id = ?", (block_id,)).fetchone()
         if exists is None:
             conn.execute(
                 "INSERT OR IGNORE INTO file_edits "
                 "(tool_use_block_id, session_id, message_id, file_path, structured_patch_json, "
                 "original_file, old_string, new_string, replace_all, user_modified, observed_at_ms) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (new_block_id, *row[1:]),
+                (block_id, *row[1:]),
             )
 
     for row in captured.web_content_constructs:
         message_id = cast(str, row[1])
         if message_id not in live_message_ids:
             continue
-        old_block_id = cast(str, row[2])
-        new_block_id = block_id_remap.get(old_block_id, old_block_id)
+        block_id = cast(str, row[2])
         position = row[3]
         exists = conn.execute(
-            "SELECT 1 FROM web_content_constructs WHERE block_id = ? AND position = ?", (new_block_id, position)
+            "SELECT 1 FROM web_content_constructs WHERE block_id = ? AND position = ?", (block_id, position)
         ).fetchone()
         if exists is None:
             conn.execute(
@@ -5773,7 +5843,7 @@ def _restore_captured_projection_rows(
                 "title, url, text, source_id, group_id, group_title, query, asset_pointer, mime_type, status, "
                 "task_id, task_type, rank, start_index, end_index"
                 ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (row[0], message_id, new_block_id, *row[3:]),
+                (row[0], message_id, block_id, *row[3:]),
             )
 
 
@@ -6165,12 +6235,9 @@ def _union_with_existing_rows(
     re-parse's retraction be silently defeated by union whenever a caller
     doesn't happen to supply provenance.
 
-    Only messages carrying a stable provider ``native_id`` participate --
-    a message with no native id has no cross-acquisition identity to union
-    against (its archive identity is a position/variant fallback that is
-    not guaranteed stable across independent acquisitions), so those keep
-    the prior whole-row-replace behavior unchanged, exactly as before this
-    change.
+    Every Source message has stable semantic digest and occurrence evidence.
+    Match canonical native identities first, then exact semantic occurrences
+    where duplicate-name normalization changed native versus content identity.
 
     Four things beyond plain field coalescing (PR #3413 review):
 
@@ -6179,8 +6246,7 @@ def _union_with_existing_rows(
          the incoming maximum would silently reorder the conversation
          (worse than dropping it, since it's invisible).
       2. Blocks are matched by content-addressed structural identity
-         (``_block_structural_keys`` -- ``tool_id`` or "Nth block of this
-         type"), not raw position, since dropping a non-trailing block
+         (``_block_identity_keys`` -- exact Source digest and occurrence), not raw position, since dropping a non-trailing block
          shifts everything after it.
       3. Sidecar projection rows (``attachment_refs``/``paste_spans``/
          ``file_edits``/``web_content_constructs``) tied to reinjected or
@@ -6214,16 +6280,26 @@ def _union_with_existing_rows(
     existing_message_rows = conn.execute(
         f"SELECT {', '.join(m_cols)} FROM messages WHERE session_id = ?", (session_id,)
     ).fetchall()
-    existing_by_native_id: dict[str, tuple[object, ...]] = {}
-    for erow in existing_message_rows:
-        row_native_id = erow[m_idx["native_id"]]
-        if row_native_id is not None:
-            existing_by_native_id[cast(str, row_native_id)] = tuple(erow)
-
-    if not existing_by_native_id:
-        # Nothing previously stored under a stable identity -- ordinary
-        # first-write path, nothing to union against.
+    existing_by_key = {_message_row_id(session_id, tuple(row), m_idx): tuple(row) for row in existing_message_rows}
+    if not existing_by_key:
         return message_rows, block_rows, None
+    old_native = {key: key for key, row in existing_by_key.items() if row[m_idx["native_id"]] is not None}
+    old_semantic = {_message_semantic_key(row, m_idx): key for key, row in existing_by_key.items()}
+    new_message_keys: list[str] = []
+    incoming_remap: dict[str, str] = {}
+    for row in message_rows:
+        incoming_id = _message_row_id(session_id, row, m_idx)
+        key = old_native.get(incoming_id)
+        semantic_key = old_semantic.get(_message_semantic_key(row, m_idx))
+        if (
+            key is None
+            and semantic_key is not None
+            and (row[m_idx["native_id"]] is None or existing_by_key[semantic_key][m_idx["native_id"]] is None)
+        ):
+            key = semantic_key
+        key = key or incoming_id
+        new_message_keys.append(key)
+        incoming_remap[incoming_id] = key
 
     existing_block_rows = conn.execute(
         f"SELECT {', '.join(b_cols)} FROM blocks WHERE session_id = ?", (session_id,)
@@ -6267,61 +6343,42 @@ def _union_with_existing_rows(
     # (PR review P1 write.py:2359) A vanished message must be spliced back
     # into its correct relative position, not appended after the incoming
     # maximum -- see `_splice_merge_keys`.
-    old_message_order = sorted(
-        existing_by_native_id.keys(), key=lambda nid: cast(int, existing_by_native_id[nid][position_idx])
-    )
-    incoming_native_ids = {cast(str, row[native_idx]) for row in message_rows if row[native_idx] is not None}
-    matched_native_ids = set(existing_by_native_id.keys()) & incoming_native_ids
-    new_message_keys: list[object] = [
-        (row[native_idx] if row[native_idx] is not None else object()) for row in message_rows
-    ]
+    old_message_order = sorted(existing_by_key, key=lambda key: cast(int, existing_by_key[key][position_idx]))
     incoming_row_by_key = dict(zip(new_message_keys, message_rows, strict=True))
+    matched_message_keys = existing_by_key.keys() & incoming_row_by_key.keys()
     splice_old_keys: list[object] = [] if is_prefix_sharing_parent else list(old_message_order)
-
     merged_message_rows: list[tuple[object, ...]] = []
-    merged_message_ids: dict[str, str] = {}  # native_id -> merged message_id
-    for new_pos, (source, key) in enumerate(_splice_merge_keys(splice_old_keys, new_message_keys)):
+    merged_message_ids: dict[str, str] = {}
+    for new_pos, (source, raw_key) in enumerate(_splice_merge_keys(splice_old_keys, new_message_keys)):
+        key = cast(str, raw_key)
         if source == "new":
             row = incoming_row_by_key[key]
-            nid = row[native_idx]
-            if nid is not None and nid in existing_by_native_id:
-                existing_row = existing_by_native_id[nid]
-                row = tuple(_coalesce_scalar(nv, ov) for nv, ov in zip(row, existing_row, strict=True))
+            if key in existing_by_key:
+                row = _retain_message_identity(row, existing_by_key[key], m_idx)
         else:
-            nid = cast(str, key)
-            row = existing_by_native_id[nid]
-            logger.info(
-                "field-path union (polylogue-geop): reinjecting message native_id=%s session_id=%s "
-                "dropped by newer acquisition, restored at relative position %s",
-                nid,
-                session_id,
-                new_pos,
-            )
-        row_list = list(row)
-        row_list[position_idx] = new_pos
-        row = tuple(row_list)
-        merged_message_rows.append(row)
-        if isinstance(key, str):
-            # ``key`` is a native id here (the splice keys messages by it), so
-            # this takes the ``n:`` branch and never needs a content identity.
-            merged_message_ids[key] = archive_message_id(session_id, key)
-
+            row = existing_by_key[key]
+        values = list(row)
+        values[position_idx] = new_pos
+        merged_message_rows.append(tuple(values))
+        merged_message_ids[key] = key
     live_message_ids = frozenset(merged_message_ids.values())
 
     # --- Block-level reconciliation, per still-live message ---
     # (PR review P1 write.py:2383) Matching by raw position mismatches once a
     # non-trailing block is dropped -- match by content-addressed structural
-    # identity instead (`_block_structural_keys`), then splice-merge exactly
+    # identity instead (`_block_identity_keys`), then splice-merge exactly
     # like messages above.
     incoming_blocks_by_message: dict[str, list[tuple[object, ...]]] = {}
     for row in block_rows:
-        incoming_blocks_by_message.setdefault(cast(str, row[b_idx["message_id"]]), []).append(row)
+        values = list(row)
+        owner = cast(str, row[b_idx["message_id"]])
+        values[b_idx["message_id"]] = incoming_remap.get(owner, owner)
+        incoming_blocks_by_message.setdefault(cast(str, values[b_idx["message_id"]]), []).append(tuple(values))
     for rows in incoming_blocks_by_message.values():
         rows.sort(key=lambda r: cast(int, r[block_position_idx]))
 
     matched_message_ids = incoming_blocks_by_message.keys() & existing_blocks_by_message.keys()
     merged_block_rows: list[tuple[object, ...]] = []
-    block_id_remap: dict[str, str] = {}
     final_blocks_by_message: dict[str, list[tuple[object, ...]]] = {}
 
     for message_id, new_rows in incoming_blocks_by_message.items():
@@ -6330,32 +6387,27 @@ def _union_with_existing_rows(
             final_blocks_by_message[message_id] = new_rows
             continue
         old_rows = existing_blocks_by_message[message_id]
-        new_keys = _block_structural_keys(new_rows, b_idx)
-        old_keys = _block_structural_keys(old_rows, b_idx)
+        new_keys = _block_identity_keys(new_rows, b_idx)
+        old_keys = _block_identity_keys(old_rows, b_idx)
         new_row_by_key = dict(zip(new_keys, new_rows, strict=True))
         old_row_by_key = dict(zip(old_keys, old_rows, strict=True))
-        old_position_by_key = {k: cast(int, r[block_position_idx]) for k, r in zip(old_keys, old_rows, strict=True)}
 
         final_rows: list[tuple[object, ...]] = []
-        for new_block_pos, (source, key) in enumerate(_splice_merge_keys(old_keys, new_keys)):
+        for new_block_pos, (source, block_key) in enumerate(_splice_merge_keys(old_keys, new_keys)):
             if source == "new":
-                row = new_row_by_key[key]
-                if key in old_row_by_key:
+                row = new_row_by_key[block_key]
+                if block_key in old_row_by_key:
                     row = _coalesce_block_row(
-                        row, old_row_by_key[key], b_idx, message_id=message_id, position=new_block_pos
+                        row, old_row_by_key[block_key], b_idx, message_id=message_id, position=new_block_pos
                     )
-                old_pos = old_position_by_key.get(key)
             else:
-                row = old_row_by_key[key]
-                old_pos = old_position_by_key[key]
+                row = old_row_by_key[block_key]
                 logger.info(
                     "field-path union (polylogue-geop): reinjecting block message_id=%s "
                     "dropped by newer acquisition, restored at relative position %s",
                     message_id,
                     new_block_pos,
                 )
-            if old_pos is not None and old_pos != new_block_pos:
-                block_id_remap[f"{message_id}:{old_pos}"] = f"{message_id}:{new_block_pos}"
             row_list = list(row)
             row_list[block_position_idx] = new_block_pos
             final_rows.append(tuple(row_list))
@@ -6378,11 +6430,13 @@ def _union_with_existing_rows(
     # not whatever the incoming acquisition alone reported.
     recomputed_message_rows: list[tuple[object, ...]] = []
     for row in merged_message_rows:
-        nid = row[native_idx]
-        if nid is None or nid not in matched_native_ids:
+        nid = native_id_from_storage(
+            cast("str | None", row[native_idx]), cast("str | None", row[m_idx["source_native_id_json"]])
+        )
+        message_id = _message_row_id(session_id, row, m_idx)
+        if message_id not in matched_message_keys:
             recomputed_message_rows.append(row)
             continue
-        message_id = merged_message_ids[nid]
         final_blocks = final_blocks_by_message.get(message_id, [])
         row_list = list(row)
         row_list[has_tool_use_idx] = (
@@ -6403,16 +6457,12 @@ def _union_with_existing_rows(
 
     # --- Capture sidecar projection rows for restoration after the incoming
     # rebuild (PR review P1 write.py:2433) ---
-    message_id_remap: dict[str, str | None] = {}
-    for nid in existing_by_native_id:
-        # Keyed by native id, so the ``n:`` branch applies unchanged.
-        old_message_id = archive_message_id(session_id, nid)
-        message_id_remap[old_message_id] = merged_message_ids.get(nid)
+    message_id_remap = {key: merged_message_ids.get(key) for key in existing_by_key}
     carry_forward = _ProjectionCarryForward(
         captured=_capture_session_projection_rows(conn, session_id),
-        block_id_remap=block_id_remap,
         live_message_ids=live_message_ids,
         message_id_remap=message_id_remap,
+        incoming_message_id_remap=incoming_remap,
     )
 
     return recomputed_message_rows, merged_block_rows, carry_forward
@@ -6477,27 +6527,52 @@ def _prepare_cross_acquisition_union(
         )
     scratch = _UnionScratch(directory)
     try:
+        scratch.conn.execute(
+            "CREATE TABLE old_semantic (digest TEXT, occurrence INTEGER, key TEXT PRIMARY KEY, native TEXT, source_name TEXT) WITHOUT ROWID"
+        )
+        scratch.conn.execute("CREATE INDEX old_semantic_native ON old_semantic(native)")
+        scratch.conn.execute("CREATE INDEX old_semantic_key ON old_semantic(digest, occurrence, source_name)")
+        scratch.conn.execute(
+            "CREATE TABLE incoming_message_remap (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL) WITHOUT ROWID"
+        )
         with connection_cursor(
             conn,
             f"SELECT {', '.join(m_cols)} FROM messages WHERE session_id = ? ORDER BY position, variant_index",
             (session_id,),
         ) as _input_cursor:
-            for ordinal, row in enumerate(_input_cursor):
-                native = row[mi["native_id"]]
-                if native is not None:
-                    scratch.put(
-                        "old_message",
-                        ordinal,
-                        tuple(row),
-                        key=cast(str, native),
-                        position=cast(int, row[mi["position"]]),
-                    )
+            for ordinal, raw_row in enumerate(_input_cursor):
+                row = tuple(raw_row)
+                key = _message_row_id(session_id, row, mi)
+                scratch.put("old_message", ordinal, row, key=key, position=cast(int, row[mi["position"]]))
+                scratch.conn.execute(
+                    "INSERT INTO old_semantic VALUES (?, ?, ?, ?, ?)",
+                    (
+                        row[mi["content_identity"]],
+                        row[mi["content_occurrence"]],
+                        key,
+                        key if row[mi["native_id"]] is not None else None,
+                        row[mi["source_native_id_json"]],
+                    ),
+                )
         if not len(scratch.rows("old_message")):
             scratch.close()
             return None
         for ordinal, row in enumerate(incoming.message_rows):
+            incoming_id = _message_row_id(session_id, row, mi)
             native = row[mi["native_id"]]
-            scratch.put("new_message", ordinal, tuple(row), key=cast("str | None", native), position=ordinal)
+            matched = (
+                scratch.conn.execute("SELECT key FROM old_semantic WHERE native = ?", (incoming_id,)).fetchone()
+                if native is not None
+                else None
+            )
+            if matched is None:
+                matched = scratch.conn.execute(
+                    "SELECT key FROM old_semantic WHERE digest = ? AND occurrence = ? AND source_name IS ? AND (native IS NULL OR ? IS NULL)",
+                    (*_message_semantic_key(row, mi), native),
+                ).fetchone()
+            key = str(matched[0]) if matched is not None else incoming_id
+            scratch.put("new_message", ordinal, tuple(row), key=key, position=ordinal)
+            scratch.conn.execute("INSERT INTO incoming_message_remap VALUES (?, ?)", (incoming_id, key))
         with connection_cursor(
             conn,
             f"SELECT {', '.join(b_cols)} FROM blocks WHERE session_id = ? ORDER BY message_id, position",
@@ -6512,11 +6587,17 @@ def _prepare_cross_acquisition_union(
                     position=cast(int, row[bi["position"]]),
                 )
         for ordinal, row in enumerate(incoming.block_rows):
+            values = list(row)
+            owner = cast(str, row[bi["message_id"]])
+            remapped = scratch.conn.execute(
+                "SELECT new_id FROM incoming_message_remap WHERE old_id = ?", (owner,)
+            ).fetchone()
+            values[bi["message_id"]] = remapped[0] if remapped is not None else owner
             scratch.put(
                 "new_block",
                 ordinal,
-                tuple(row),
-                owner=cast(str, row[bi["message_id"]]),
+                tuple(values),
+                owner=cast(str, values[bi["message_id"]]),
                 position=cast(int, row[bi["position"]]),
             )
         with connection_cursor(
@@ -6528,7 +6609,7 @@ def _prepare_cross_acquisition_union(
             parent_guard = cursor.fetchone() is not None
 
         # The old-only rows retain their old relative order, anchored after
-        # the nearest preceding native id also present in the new evidence.
+        # the nearest preceding exact message key present in the new evidence.
         anchor: str | None = None
         if not parent_guard:
             old_native_rows = scratch.conn.execute(
@@ -6547,39 +6628,31 @@ def _prepare_cross_acquisition_union(
 
         next_message = 0
 
-        def add_message(row: tuple[object, ...], native: str | None) -> None:
+        def add_message(row: tuple[object, ...], key: str) -> None:
             nonlocal next_message
             values = list(row)
             values[mi["position"]] = next_message
-            message_id = archive_message_id(session_id, native) if native is not None else None
-            scratch.put(
-                "merged_message", next_message, tuple(values), key=native, owner=message_id, position=next_message
-            )
-            if message_id is not None:
-                scratch.conn.execute("INSERT OR IGNORE INTO live_message VALUES (?)", (message_id,))
-                scratch.conn.execute("INSERT OR REPLACE INTO native_message VALUES (?, ?)", (native, message_id))
+            message_id = _message_row_id(session_id, tuple(values), mi)
+            scratch.put("merged_message", next_message, tuple(values), key=key, owner=message_id, position=next_message)
+            scratch.conn.execute("INSERT OR IGNORE INTO live_message VALUES (?)", (message_id,))
+            scratch.conn.execute("INSERT OR REPLACE INTO message_owner_map VALUES (?, ?)", (key, message_id))
             next_message += 1
 
-        def add_old_after(anchor_native: str | None) -> None:
+        def add_old_after(anchor_key: str | None) -> None:
             for (old_ordinal,) in scratch.conn.execute(
-                "SELECT old_ordinal FROM old_only WHERE anchor IS ? ORDER BY old_ordinal", (anchor_native,)
+                "SELECT old_ordinal FROM old_only WHERE anchor IS ? ORDER BY old_ordinal", (anchor_key,)
             ):
                 old_row = scratch.row("old_message", ordinal=old_ordinal)
                 assert old_row is not None
-                add_message(old_row, cast(str, old_row[mi["native_id"]]))
+                add_message(old_row, _message_row_id(session_id, old_row, mi))
 
         add_old_after(None)
-        for row in incoming.message_rows:
-            native = cast("str | None", row[mi["native_id"]])
-            old_row = scratch.row("old_message", key=native) if native is not None else None
-            add_message(
-                tuple(_coalesce_scalar(new, old) for new, old in zip(row, old_row, strict=True))
-                if old_row is not None
-                else tuple(row),
-                native,
-            )
+        for ordinal, row in enumerate(incoming.message_rows):
+            key = str(scratch.conn.execute("SELECT key FROM new_message WHERE ordinal = ?", (ordinal,)).fetchone()[0])
+            old_row = scratch.row("old_message", key=key)
+            add_message(_retain_message_identity(tuple(row), old_row, mi) if old_row is not None else tuple(row), key)
             if old_row is not None:
-                add_old_after(native)
+                add_old_after(key)
 
         # Structural keys and splice anchors stay indexed even when one
         # message contains an exceptionally long block sequence.
@@ -6611,19 +6684,11 @@ def _prepare_cross_acquisition_union(
         scratch.conn.execute("CREATE INDEX old_block_only_anchor ON old_block_only(anchor, ordinal)")
 
         def indexed_block_keys(side: str, owner: str) -> None:
-            occurrence: dict[str, int] = {}
             for ordinal, position, blob in scratch.conn.execute(
                 f"SELECT ordinal, position, row_blob FROM {side}_block WHERE owner = ? ORDER BY position", (owner,)
             ):
                 row = pickle.loads(blob)
-                block_type = cast(str, row[bi["block_type"]])
-                tool_id = row[bi["tool_id"]]
-                if tool_id:
-                    key: tuple[object, ...] = ("tool_id", block_type, tool_id)
-                else:
-                    count = occurrence.get(block_type, 0)
-                    occurrence[block_type] = count + 1
-                    key = ("occurrence", block_type, count)
+                key = _block_identity_key(row, bi)
                 scratch.conn.execute(
                     f"INSERT INTO {side}_block_structural VALUES (?, ?, ?)",
                     (ordinal, pickle.dumps(key, protocol=5), position),
@@ -6673,12 +6738,7 @@ def _prepare_cross_acquisition_union(
                     ).fetchone()[0]
                     previous_row = keyed_block("old", old_key)
                     assert previous_row is not None
-                    row, previous = previous_row
-                    if previous != block_position:
-                        scratch.conn.execute(
-                            "INSERT OR REPLACE INTO block_remap VALUES (?, ?)",
-                            (f"{owner}:{previous}", f"{owner}:{block_position}"),
-                        )
+                    row, _previous = previous_row
                     values = list(row)
                     values[bi["position"]] = block_position
                     add_block(tuple(values))
@@ -6690,14 +6750,8 @@ def _prepare_cross_acquisition_union(
                 assert new_pair is not None
                 row = new_pair[0]
                 old_pair = keyed_block("old", key)
-                previous = old_pair[1] if old_pair is not None else None
                 if old_pair is not None:
                     row = _coalesce_block_row(row, old_pair[0], bi, message_id=message_id, position=block_position)
-                if previous is not None and previous != block_position:
-                    scratch.conn.execute(
-                        "INSERT OR REPLACE INTO block_remap VALUES (?, ?)",
-                        (f"{message_id}:{previous}", f"{message_id}:{block_position}"),
-                    )
                 values = list(row)
                 values[bi["position"]] = block_position
                 add_block(tuple(values))
@@ -6720,36 +6774,37 @@ def _prepare_cross_acquisition_union(
                 or not scratch.conn.execute("SELECT 1 FROM new_message WHERE key = ?", (native,)).fetchone()
             ):
                 continue
-            row = list(pickle.loads(blob))
-            row[mi["has_tool_use"]] = int(
+            rehashed_row = list(cast(tuple[object, ...], pickle.loads(blob)))
+            rehashed_row[mi["has_tool_use"]] = int(
                 any(
                     block[bi["block_type"]] == BlockType.TOOL_USE.value
                     for block in owner_rows("merged_block", message_id)
                 )
             )
-            row[mi["has_thinking"]] = int(
+            rehashed_row[mi["has_thinking"]] = int(
                 any(
                     block[bi["block_type"]] == BlockType.THINKING.value
                     for block in owner_rows("merged_block", message_id)
                 )
             )
-            row[mi["content_hash"]] = _message_row_hash(
+            rehashed_row[mi["content_hash"]] = _message_row_hash(
                 session_id,
-                native,
-                cast(int, row[mi["position"]]),
-                cast(int, row[mi["variant_index"]] or 0),
-                _row_fields_digest(row, mi),
+                native_id_from_storage(
+                    cast("str | None", rehashed_row[mi["native_id"]]),
+                    cast("str | None", rehashed_row[mi["source_native_id_json"]]),
+                ),
+                cast(int, rehashed_row[mi["position"]]),
+                cast(int, rehashed_row[mi["variant_index"]] or 0),
+                _row_fields_digest(rehashed_row, mi),
                 _stored_block_hash_parts(owner_rows("merged_block", message_id), bi),
             )
             scratch.conn.execute(
                 "UPDATE merged_message SET row_blob = ? WHERE ordinal = ?",
-                (pickle.dumps(tuple(row), protocol=5), ordinal),
+                (pickle.dumps(tuple(rehashed_row), protocol=5), ordinal),
             )
         for (native,) in scratch.conn.execute("SELECT key FROM old_message WHERE key IS NOT NULL GROUP BY key"):
-            old_id = archive_message_id(session_id, native)
-            live = scratch.conn.execute(
-                "SELECT message_id FROM native_message WHERE native_id = ?", (native,)
-            ).fetchone()
+            old_id = native
+            live = scratch.conn.execute("SELECT message_id FROM message_owner_map WHERE key = ?", (native,)).fetchone()
             scratch.conn.execute(
                 "INSERT OR REPLACE INTO message_remap VALUES (?, ?)", (old_id, live[0] if live is not None else None)
             )
@@ -6768,10 +6823,10 @@ def _prepare_cross_acquisition_union(
         )
         carry = _ProjectionCarryForward(
             captured,
-            cast(Mapping[str, str], _UnionMap(scratch, "block_remap", "old_id", "new_id")),
             _UnionSet(scratch, "live_message", "message_id"),
             _UnionMap(scratch, "message_remap", "old_id", "new_id"),
             scratch,
+            cast(Mapping[str, str], _UnionMap(scratch, "incoming_message_remap", "old_id", "new_id")),
         )
         with retain_native_sql_lifetimes(scratch):
             builder = SessionShardBuilder(Path(scratch._scratch.name) / "merged.db")
@@ -7048,6 +7103,15 @@ def _replace_full_session_messages_and_blocks(
             content_identities=content_identities,
         )
         add_timing("messages", t0)
+        if carry_forward is not None:
+            leaf = conn.execute(
+                "SELECT active_leaf_message_id FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if leaf is not None and leaf[0] is not None:
+                mapped_leaf = carry_forward.incoming_message_id_remap.get(str(leaf[0]), str(leaf[0]))
+                conn.execute(
+                    "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?", (mapped_leaf, session_id)
+                )
         t0 = time.perf_counter()
         _write_blocks(
             conn,
@@ -7065,6 +7129,7 @@ def _replace_full_session_messages_and_blocks(
             messages,
             duplicate_native_ids=duplicate_native_ids,
             content_identities=content_identities,
+            message_id_remap=carry_forward.incoming_message_id_remap if carry_forward is not None else None,
         )
         add_timing("file_edits", t0)
         t0 = time.perf_counter()
@@ -7075,6 +7140,7 @@ def _replace_full_session_messages_and_blocks(
             duplicate_native_ids=duplicate_native_ids,
             prior_rows=session_membership_existed,
             content_identities=content_identities,
+            message_id_remap=carry_forward.incoming_message_id_remap if carry_forward is not None else None,
         )
         add_timing("web_constructs", t0)
         replacement_complete = True
@@ -7161,6 +7227,7 @@ def _attachment_message_id_maps(
     messages: Sequence[ParsedMessage],
     *,
     content_identities: Sequence[MessageContentIdentity],
+    message_id_remap: Mapping[str, str] | None = None,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] | None = None,
     owner_resolution: MessageOwnerResolution,
@@ -7195,6 +7262,7 @@ def _attachment_message_id_maps(
             message,
             fallback_position,
             content_identities=content_identities,
+            message_id_remap=message_id_remap,
             duplicate_native_ids=duplicates,
         )
         by_owner_key[owner_key] = message_id
@@ -7251,6 +7319,7 @@ def _write_attachments(
     *,
     supplying_raw_id: str | None,
     content_identities: Sequence[MessageContentIdentity],
+    message_id_remap: Mapping[str, str] | None = None,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     refresh_attachment_ids: Iterable[str] | None = None,
@@ -7274,6 +7343,11 @@ def _write_attachments(
     ``INHERITED_OWNER_UNREFERENCED``, never an orphaned metadata row.
     """
     attachments = tuple(attachments)
+
+    def identity(attachment: ParsedAttachment) -> str:
+        acquired = (preacquired_blobs or {}).get(attachment.acquisition_key)
+        return _attachment_id(session_id, attachment, blob_hash=acquired[0] if acquired is not None else None)
+
     if not attachments:
         refresh_and_sweep_attachment_rows(conn, refresh_attachment_ids or ())
         if replace_owner_gaps:
@@ -7295,6 +7369,7 @@ def _write_attachments(
         position_offset=position_offset,
         duplicate_native_ids=duplicate_native_ids,
         content_identities=content_identities,
+        message_id_remap=message_id_remap,
         owner_resolution=owner_resolution,
         wanted_owner_keys=wanted_owner_keys,
     )
@@ -7309,7 +7384,7 @@ def _write_attachments(
         except MessageOwnerAmbiguityError:
             # The attachment remains represented by the session hash and raw
             # evidence, but no message owner is safe to guess.
-            unresolved[_attachment_id(session_id, attachment)] = AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
+            unresolved[identity(attachment)] = AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
             continue
         message_id = by_owner_key.get(owner_key) if owner_key is not None else None
         if message_id is not None:
@@ -7319,7 +7394,7 @@ def _write_attachments(
             tail_unowned.append(attachment)
             # A named owner that no written message carries is a lost owner;
             # an attachment the provider never linked has no owner to lose.
-            unresolved[_attachment_id(session_id, attachment)] = (
+            unresolved[identity(attachment)] = (
                 AttachmentOwnerResolutionReason.PROVIDER_NEVER_LINKED
                 if owner_key is None
                 else AttachmentOwnerResolutionReason.MESSAGE_MISSING
@@ -7334,7 +7409,7 @@ def _write_attachments(
             prefix_ambiguous,
         ):
             for attachment in tail_unowned:
-                attachment_id = _attachment_id(session_id, attachment)
+                attachment_id = identity(attachment)
                 if attachment.acquisition_key in prefix_ambiguous:
                     unresolved[attachment_id] = AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
                     continue
@@ -7347,25 +7422,23 @@ def _write_attachments(
                 else:
                     inherited_unreferenced.add(attachment.acquisition_key)
                     unresolved[attachment_id] = AttachmentOwnerResolutionReason.INHERITED_OWNER_UNREFERENCED
-    for message_id, message_group in attachments_by_message.items():
-        current_ids = {_attachment_id(session_id, attachment) for attachment in message_group}
-        occupied = (
-            {
-                int(row[0])
-                for row in conn.execute(
-                    "SELECT position FROM attachment_refs WHERE message_id = ? AND attachment_id NOT IN ({})".format(
-                        ",".join("?" for _ in current_ids)
-                    ),
-                    (message_id, *sorted(current_ids)),
-                ).fetchall()
-            }
-            if current_ids
-            else set()
-        )
-        attachment_positions.update(_attachment_reference_positions(message_group, occupied_positions=occupied))
+    for message_group in attachments_by_message.values():
+        versions: dict[str, str] = {}
+        for attachment in message_group:
+            native_identity = _attachment_reference_native_identity(attachment)
+            attachment_id = identity(attachment)
+            previous = versions.setdefault(native_identity, attachment_id)
+            if previous != attachment_id:
+                raise AttachmentReferenceAmbiguityError("one native attachment identity has competing objects")
+        native_identities = sorted({_attachment_reference_native_identity(item) for item in message_group})
+        positions = {native_identity: position for position, native_identity in enumerate(native_identities)}
+        for attachment in message_group:
+            attachment_positions[attachment.acquisition_key] = positions[
+                _attachment_reference_native_identity(attachment)
+            ]
     touched_attachment_ids: set[str] = set()
     for attachment in attachments:
-        attachment_id = _attachment_id(session_id, attachment)
+        attachment_id = identity(attachment)
         message_id = resolved_message_ids.get(attachment.acquisition_key)
         if message_id is None and attachment.acquisition_key in inherited_owned:
             # The inherited parent row references this attachment; the child
@@ -7397,29 +7470,27 @@ def _write_attachments(
         touched_attachment_ids.add(attachment_id)
         _write_attachment_row(conn, attachment_id, attachment, preacquired_blobs)
         ref_position = attachment_positions[attachment.acquisition_key]
-        ref_id = f"{message_id}:attachment:{ref_position}"
+        native_identity = _attachment_reference_native_identity(attachment)
+        ref_id = attachment_reference_id(message_id, native_identity)
         # Bulk rebuilds may suspend FK enforcement. Mirror REPLACE's cascade
         # explicitly so identifiers from an older projection cannot survive.
         existing_ref = conn.execute(
-            "SELECT attachment_id FROM attachment_refs WHERE message_id = ? AND position = ?",
-            (message_id, ref_position),
+            "SELECT attachment_id FROM attachment_refs WHERE message_id = ? AND native_identity = ?",
+            (message_id, native_identity),
         ).fetchone()
-        if existing_ref is not None and existing_ref[0] != attachment_id:
-            raise ValueError(
-                "distinct attachments resolved to one reference identity: "
-                f"message_id={message_id!r}, position={ref_position}, "
-                f"existing_attachment_id={existing_ref[0]!r}, incoming_attachment_id={attachment_id!r}"
-            )
+        if existing_ref is not None:
+            touched_attachment_ids.add(str(existing_ref[0]))
         conn.execute("DELETE FROM attachment_native_ids WHERE ref_id = ?", (ref_id,))
         conn.execute(
             """
             INSERT INTO attachment_refs (
                 attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url,
-                caption, supplying_raw_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(message_id, position) DO UPDATE SET
+                caption, supplying_raw_id, native_identity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id, native_identity) DO UPDATE SET
                 attachment_id = excluded.attachment_id,
                 session_id = excluded.session_id,
+                position = excluded.position,
                 upload_origin = excluded.upload_origin,
                 direction = excluded.direction,
                 producer_ref = excluded.producer_ref,
@@ -7428,7 +7499,6 @@ def _write_attachments(
                 -- This acquisition holds the reference too. A write with no
                 -- raw identity keeps the supplier already known to hold it.
                 supplying_raw_id = COALESCE(excluded.supplying_raw_id, attachment_refs.supplying_raw_id)
-            WHERE attachment_refs.attachment_id = excluded.attachment_id
             """,
             (
                 attachment_id,
@@ -7441,6 +7511,7 @@ def _write_attachments(
                 _sqlite_text(_attachment_source_url(attachment)),
                 _sqlite_text(_attachment_caption(attachment)),
                 supplying_raw_id,
+                native_identity,
             ),
         )
         _write_attachment_native_ids(conn, ref_id, attachment)
@@ -7463,7 +7534,7 @@ def _write_attachments(
         session_id,
         gaps,
         replace_session=replace_owner_gaps,
-        written_attachment_ids={_attachment_id(session_id, attachment) for attachment in attachments},
+        written_attachment_ids={identity(attachment) for attachment in attachments},
     )
     return gaps
 
@@ -7606,6 +7677,7 @@ def _write_paste_spans(
     messages: Sequence[ParsedMessage],
     *,
     content_identities: Sequence[MessageContentIdentity],
+    message_id_remap: Mapping[str, str] | None = None,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
@@ -7617,6 +7689,7 @@ def _write_paste_spans(
             message,
             fallback_position,
             content_identities=content_identities,
+            message_id_remap=message_id_remap,
             duplicate_native_ids=duplicate_native_ids,
         )
         text = message.text or ""
@@ -7674,8 +7747,8 @@ class _StoredSessionParents(Mapping[str, str]):
         inherited = self._inherited.get(key)
         if inherited is not None:
             return inherited
-        native_id = _sqlite_text(key.strip())
-        if not native_id or native_id in self._duplicates:
+        native_id = normalized_message_native_id(key)
+        if not native_id or message_native_key(native_id) in self._duplicates:
             raise KeyError(key)
         candidate = archive_message_id(self._session_id, native_id)
         if self._conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (candidate,)).fetchone() is None:
@@ -7695,6 +7768,7 @@ def _write_parent_links(
     messages: Sequence[ParsedMessage],
     *,
     content_identities: Sequence[MessageContentIdentity],
+    message_id_remap: Mapping[str, str] | None = None,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     inherited_message_ids: Mapping[str, str] | None = None,
@@ -7730,6 +7804,7 @@ def _write_parent_links(
                     message,
                     fallback_position,
                     content_identities=content_identities,
+                    message_id_remap=message_id_remap,
                     duplicate_native_ids=duplicate_native_ids,
                 )
                 if message.provider_message_id and _normalized_message_native_id(message) not in duplicate_native_ids:
@@ -7752,6 +7827,7 @@ def _write_parent_links(
                             message,
                             fallback_position,
                             content_identities=content_identities,
+                            message_id_remap=message_id_remap,
                             duplicate_native_ids=duplicate_native_ids,
                         ),
                     )
@@ -7765,6 +7841,7 @@ def _write_parent_links(
             message,
             fallback_position,
             content_identities=content_identities,
+            message_id_remap=message_id_remap,
             duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
@@ -7776,6 +7853,7 @@ def _write_parent_links(
             message,
             fallback_position,
             content_identities=content_identities,
+            message_id_remap=message_id_remap,
             duplicate_native_ids=duplicate_native_ids,
         )
         for fallback_position, message in enumerate(messages)
@@ -7798,6 +7876,7 @@ def _write_parent_links(
                 message,
                 fallback_position,
                 content_identities=content_identities,
+                message_id_remap=message_id_remap,
                 duplicate_native_ids=duplicate_native_ids,
             ),
         )
@@ -8420,7 +8499,7 @@ class PreparedSessionSourceRead:
             for (rowid,) in rows:
                 check_compute_cancelled()
                 with self._seal.verified_namespace():
-                    if self._seal.source_row_is_touched(table, rowid):
+                    if self._seal.source_row_is_loaded(table, rowid):
                         continue
                     image = self._seal.retain_tier_row("source", table, rowid)
                     if image is not None:
@@ -8868,7 +8947,7 @@ class PreparedSessionSourceRead:
         ) as rows:
             for (rowid,) in rows:
                 check_compute_cancelled()
-                if self._seal.source_row_is_touched("raw_session_memberships", rowid):
+                if self._seal.source_row_is_loaded("raw_session_memberships", rowid):
                     continue
                 image = self._seal.retain_tier_row("source", "raw_session_memberships", rowid)
                 if image is not None:
@@ -10431,32 +10510,32 @@ def _bind_asserted_branch_point(
     would be a dangling lineage reference rather than a placeholder --
     ``_refill_inbound_asserted_branch_points`` binds it when the parent lands.
     """
-    if not parent_session_id or not native_id or not native_id.strip():
+    if not parent_session_id or not native_id:
         return None
     # Normalization can move a parent's prefix into its ancestors. The provider
     # still names that original message, including when the child never replays
     # the prefix. Resolve only inside the parent's actual composed segments.
-    normalized = _sqlite_text(native_id.strip())
+    source_name = source_native_id_json(native_id)
     bound: str | None = None
     plan = _composed_transcript_plan(conn, parent_session_id)
     for segment in plan.segments:
-        candidate = archive_message_id(segment.session_id, normalized)
-        row = conn.execute("SELECT position, variant_index FROM messages WHERE message_id = ?", (candidate,)).fetchone()
-        if row is None or (
-            segment.upto_position is not None
-            and segment.upto_variant_index is not None
-            and (int(row[0]), int(row[1])) > (segment.upto_position, segment.upto_variant_index)
-        ):
-            continue
-        if bound is not None and bound != candidate:
-            raise AssertedBranchPointAmbiguousError(
-                f"branch point {native_id!r} names several rows in parent {parent_session_id!r}"
-            )
-        bound = candidate
+        sql = "SELECT message_id FROM messages WHERE session_id = ? AND source_native_id_json = ?"
+        parameters: tuple[object, ...] = (segment.session_id, source_name)
+        if segment.upto_position is not None and segment.upto_variant_index is not None:
+            sql += " AND (position, variant_index) <= (?, ?)"
+            parameters += (segment.upto_position, segment.upto_variant_index)
+        # Two admitted occurrences settle ambiguity; unrelated suffix rows do
+        # not participate. Content IDs never masquerade as native evidence.
+        for (candidate,) in conn.execute(sql + " LIMIT 2", parameters):
+            if bound is not None and bound != candidate:
+                raise AssertedBranchPointAmbiguousError(
+                    f"branch point {native_id!r} names several rows in parent {parent_session_id!r}"
+                )
+            bound = str(candidate)
     return bound
 
 
-def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_session_id: str) -> None:
+def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_session_id: str) -> set[str]:
     """Bind children's asserted branch points now that this parent exists.
 
     The mirror of ``_refill_inbound_dispatch_block_ids`` for the branch point:
@@ -10480,11 +10559,12 @@ def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_sess
         """,
         (parent_session_id,),
     ).fetchall()
+    changed: set[str] = set()
     for src_session_id, dst_origin, dst_native_id, link_type, asserted_json in rows:
         # Read in its JSON spelling and decoded here: a stored lone-surrogate
         # escape would make ``json_extract`` materialize text that is not UTF-8.
-        asserted_native_id = json.loads(asserted_json)
-        bound = _bind_asserted_branch_point(conn, parent_session_id, str(asserted_native_id))
+        asserted_native_id = source_native_id_from_json(asserted_json)
+        bound = _bind_asserted_branch_point(conn, parent_session_id, asserted_native_id)
         if bound is None:
             continue
         conn.execute(
@@ -10505,6 +10585,9 @@ def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_sess
             ),
         )
 
+        changed.add(str(src_session_id))
+    return changed
+
 
 def _write_session_link(
     conn: sqlite3.Connection,
@@ -10517,6 +10600,7 @@ def _write_session_link(
     source_read: SessionSourceRead | None = None,
     prior_links: bool = True,
     child_source_path: str | None = None,
+    preserve_prefix_loss: bool = False,
 ) -> None:
     """Write this child's outbound parent edge, honouring hook authority.
 
@@ -10602,6 +10686,16 @@ def _write_session_link(
     parent_tool_use_block_id = dispatch.block_id
     method = dispatch.method or "parser-parent"
     evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
+    if preserve_prefix_loss:
+        previous = conn.execute(
+            "SELECT evidence_json FROM session_links WHERE src_session_id = ? "
+            "AND dst_origin = ? AND dst_native_id = ? AND link_type = ?",
+            (session_id, origin, dst_native_id, link_type),
+        ).fetchone()
+        if previous is not None:
+            prior_evidence = json.loads(str(previous[0]))
+            if isinstance(prior_evidence, dict) and INVALIDATED_PREFIX_EVIDENCE_KEY in prior_evidence:
+                evidence[INVALIDATED_PREFIX_EVIDENCE_KEY] = prior_evidence[INVALIDATED_PREFIX_EVIDENCE_KEY]
     if hook_claim is not None and hook_parent is None:
         # Hook evidence spoke and contradicted itself. Retain it on the row
         # rather than degrading to silence, so the refusal is inspectable.
@@ -10612,9 +10706,11 @@ def _write_session_link(
     # the child does not physically replay the parent's prefix, so prefix
     # alignment produced none. Alignment wins where both exist: it is measured
     # against stored content, the assertion is a provider claim.
-    asserted_branch_point = (session.branch_point_provider_message_id or "").strip()
+    asserted_branch_point = session.branch_point_provider_message_id or ""
     if asserted_branch_point:
-        evidence[ASSERTED_BRANCH_POINT_EVIDENCE_KEY] = asserted_branch_point
+        evidence[ASSERTED_BRANCH_POINT_EVIDENCE_KEY] = json.loads(
+            cast(str, source_native_id_json(asserted_branch_point))
+        )
         if branch_point_message_id is None:
             branch_point_message_id = _bind_asserted_branch_point(
                 conn,
@@ -11273,6 +11369,7 @@ def _resolve_session_graph(
     # re-anchors the child onto the relocated row. The lookup is an indexed
     # range probe over ``idx_session_links_branch_point``, not a scan.
     anchored_dangling_ids = branch_points_anchored_in_session(conn, session_id)
+    asserted_child_ids = _refill_inbound_asserted_branch_points(conn, session_id)
     record_substage("anchored_branch_points", t0)
     t0 = time.perf_counter()
     if (
@@ -11280,6 +11377,7 @@ def _resolve_session_graph(
         and not inbound_rows
         and not invalidated_session_ids
         and not anchored_dangling_ids
+        and not asserted_child_ids
         and _root_projection_current(conn, session_id)
     ):
         record_substage("root_current_check", t0)
@@ -11360,7 +11458,7 @@ def _resolve_session_graph(
     record_substage("reextract_prefix_tails", t0)
 
     t0 = time.perf_counter()
-    _refill_inbound_asserted_branch_points(conn, session_id)
+    asserted_child_ids |= _refill_inbound_asserted_branch_points(conn, session_id)
     record_substage("inbound_asserted_branch_points", t0)
 
     # polylogue-7xrv5: ``reextract_invalidated_ids`` carries the sessions whose
@@ -11373,6 +11471,7 @@ def _resolve_session_graph(
     impacted_session_ids = {
         session_id,
         *resolved_child_ids,
+        *asserted_child_ids,
         *reextract_invalidated_ids,
         *anchored_dangling_ids,
         *(invalidated_session_ids or set()),
@@ -11794,6 +11893,7 @@ _SessionEventInsertRow = tuple[
     int | None,
     int | None,
     str | None,
+    str | None,
 ]
 
 
@@ -11830,6 +11930,7 @@ def _write_session_events(
     *,
     owner_resolution: MessageOwnerResolution,
     content_identities: Sequence[MessageContentIdentity],
+    message_id_remap: Mapping[str, str] | None = None,
     position_offset: int = 0,
     event_position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
@@ -11858,6 +11959,7 @@ def _write_session_events(
                 message,
                 fallback_position,
                 content_identities=content_identities,
+                message_id_remap=message_id_remap,
                 duplicate_native_ids=duplicate_native_ids,
             )
             if owner_key not in owner_resolution.ambiguous_keys:
@@ -11897,8 +11999,9 @@ def _write_session_events(
                 conn.executemany(
                     "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
                     "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
-                    "boundary_start_position, boundary_end_position, boundary_message_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "boundary_start_position, boundary_end_position, boundary_message_id, "
+                    "source_message_provider_id_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     session_event_rows,
                 )
                 session_event_rows.clear()
@@ -11922,8 +12025,9 @@ def _write_session_events(
             conn.execute(
                 "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
                 "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
-                "boundary_start_position, boundary_end_position, boundary_message_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "boundary_start_position, boundary_end_position, boundary_message_id, "
+                "source_message_provider_id_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 row,
             )
             for payload_key, array in arrays.items():
@@ -11973,8 +12077,8 @@ def _write_session_events(
                     and source_message_provider_id
                     and event.event_type not in _TYPED_USAGE_EVENT_TYPES
                     and (
-                        source_message_provider_id.strip() in duplicate_native_ids
-                        or source_message_provider_id.strip() in ambiguous_source_provider_ids
+                        message_native_key(source_message_provider_id) in duplicate_native_ids
+                        or message_native_key(source_message_provider_id) in ambiguous_source_provider_ids
                     )
                 ):
                     raise MessageOwnerAmbiguityError("event native message ID requires exact occurrence evidence")
@@ -11996,6 +12100,7 @@ def _write_session_events(
                                     message,
                                     fallback_position,
                                     content_identities=content_identities,
+                                    message_id_remap=message_id_remap,
                                     duplicate_native_ids=duplicate_native_ids,
                                 )
                                 break
@@ -12015,7 +12120,7 @@ def _write_session_events(
                 row: _SessionEventInsertRow = (
                     session_id,
                     source_message_id,
-                    _sqlite_text(source_message_provider_id),
+                    sqlite_message_native_id(source_message_provider_id),
                     position,
                     _sqlite_text(event.event_type),
                     _json_dumps(ordinary_payload),
@@ -12025,6 +12130,7 @@ def _write_session_events(
                     else None,
                     event.boundary_end_position + position_offset if event.boundary_end_position is not None else None,
                     boundary_message_id,
+                    source_native_id_json(source_message_provider_id),
                 )
                 if streamed_arrays:
                     _flush_rows()
@@ -12065,8 +12171,8 @@ def _write_session_events(
                 # vanished. The usage is still real evidence about this session;
                 # record it with its declared provider id and a typed statement of
                 # what the attribution actually is.
-                declared_provider_id = _sqlite_text(event.source_message_provider_id)
-                declared_provider_id = declared_provider_id.strip() if declared_provider_id else None
+                declared_provider_id = normalized_message_native_id(event.source_message_provider_id)
+                declared_provider_id = declared_provider_id or None
                 resolution = _provider_usage_source_resolution(
                     declared_provider_id,
                     source_message_id=source_message_id,
@@ -12122,7 +12228,7 @@ class _DiskMessageEventIndex(Mapping[str, str]):
         return self._sql_owner.require_connection()
 
     def __setitem__(self, key: str, value: str) -> None:
-        self._conn.execute("INSERT OR REPLACE INTO owner VALUES (?, ?)", (key, value))
+        self._conn.execute("INSERT OR REPLACE INTO owner VALUES (?, ?)", (message_native_key(key), value))
 
     def add_boundary(self, position: int, message_id: str) -> None:
         self._conn.execute("INSERT OR IGNORE INTO boundary VALUES (?, ?)", (position, message_id))
@@ -12135,7 +12241,9 @@ class _DiskMessageEventIndex(Mapping[str, str]):
         return str(row[0]) if row is not None else None
 
     def __getitem__(self, key: str) -> str:
-        row = self._conn.execute("SELECT message_id FROM owner WHERE provider_id = ?", (key,)).fetchone()
+        row = self._conn.execute(
+            "SELECT message_id FROM owner WHERE provider_id = ?", (message_native_key(key),)
+        ).fetchone()
         if row is None:
             raise KeyError(key)
         return str(row[0])
@@ -12208,7 +12316,10 @@ def _provider_usage_source_resolution(
         return "session"
     if source_message_id is not None:
         return "resolved"
-    if declared_provider_id in ambiguous_source_provider_ids or declared_provider_id in duplicate_native_ids:
+    if (
+        message_native_key(declared_provider_id) in ambiguous_source_provider_ids
+        or message_native_key(declared_provider_id) in duplicate_native_ids
+    ):
         return "ambiguous"
     return "unresolved"
 
@@ -12446,24 +12557,33 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
     """
     stored_rows = conn.execute(
         """
-        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete, provider_usage_observed
         FROM session_model_usage
         WHERE session_id = ? AND model_name != ?
           AND (input_tokens + output_tokens + cache_read_tokens + cache_write_tokens > 0
-               OR provider_lanes_complete = 0)
+               OR provider_lanes_complete = 0 OR provider_usage_observed)
         """,
         (session_id, keep_model),
     ).fetchall()
     if not stored_rows:
         return
     candidate_models = [str(row[0]) for row in stored_rows]
+    observed_sql, complete_sql = _message_usage_presence_sql(conn, session_id)
     message_totals = {
-        str(row[0]): (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0), int(row[4] or 0))
+        str(row[0]): (
+            int(row[1] or 0),
+            int(row[2] or 0),
+            int(row[3] or 0),
+            int(row[4] or 0),
+            bool(row[5]),
+            bool(row[6]),
+        )
         for row in conn.execute(
             f"""
             SELECT model_name,
                    SUM(input_tokens), SUM(output_tokens),
-                   SUM(cache_read_tokens), SUM(cache_write_tokens)
+                   SUM(cache_read_tokens), SUM(cache_write_tokens),
+                   {observed_sql}, {complete_sql}
             FROM messages
             WHERE session_id = ?
               AND model_name IN ({", ".join("?" for _ in candidate_models)})
@@ -12474,8 +12594,12 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
     }
     for row in stored_rows:
         model_name = str(row[0])
-        totals = message_totals.get(model_name, (0, 0, 0, 0))
-        if (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0), int(row[4] or 0)) == totals and row[5]:
+        totals = message_totals.get(model_name, (0, 0, 0, 0, False, True))
+        if (
+            (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0), int(row[4] or 0)) == totals[:4]
+            and bool(row[5]) == totals[5]
+            and bool(row[6]) == totals[4]
+        ):
             continue
         catalog_cost = _price_provider_usage_tokens(
             conn,
@@ -12485,6 +12609,11 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
             cache_read_tokens=totals[2],
             cache_write_tokens=totals[3],
         )
+        if not totals[5]:
+            catalog_cost = None
+        elif totals[4] and not any(totals[:4]):
+            zero_cost, _ = catalog_cost_for_tokens(model_name, 0, 0, 0, 0)
+            catalog_cost = None if zero_cost is None else CatalogCost(zero_cost)
         conn.execute(
             """
             UPDATE session_model_usage
@@ -12493,10 +12622,18 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
                 cache_read_tokens = ?,
                 cache_write_tokens = ?,
                 catalog_cost_usd = ?,
-                provider_lanes_complete = 1
+                provider_lanes_complete = ?,
+                provider_usage_observed = ?
             WHERE session_id = ? AND model_name = ?
             """,
-            (*totals, None if catalog_cost is None else catalog_cost.value, session_id, model_name),
+            (
+                *totals[:4],
+                None if catalog_cost is None else catalog_cost.value,
+                int(totals[5]),
+                int(totals[4]),
+                session_id,
+                model_name,
+            ),
         )
 
 
@@ -12533,7 +12670,7 @@ def _reprice_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
     """
     rows = conn.execute(
         """
-        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete, provider_usage_observed
         FROM session_model_usage
         WHERE session_id = ?
         """,
@@ -12554,6 +12691,9 @@ def _reprice_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
             cache_read_tokens=int(row[3] or 0),
             cache_write_tokens=int(row[4] or 0),
         )
+        if row[6] and not any(row[index] for index in range(1, 5)):
+            zero_cost, _ = catalog_cost_for_tokens(model_name, 0, 0, 0, 0)
+            catalog_cost = None if zero_cost is None else CatalogCost(zero_cost)
         value = None if catalog_cost is None else catalog_cost.value
         changed += conn.execute(
             """
@@ -12571,15 +12711,16 @@ def _upsert_provider_usage_model_rollup(conn: sqlite3.Connection, projection: Us
         """
         INSERT INTO session_model_usage (
             session_id, model_name, input_tokens, output_tokens, cache_read_tokens,
-            cache_write_tokens, catalog_cost_usd, provider_lanes_complete
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            cache_write_tokens, catalog_cost_usd, provider_lanes_complete, provider_usage_observed
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, model_name) DO UPDATE SET
             input_tokens = excluded.input_tokens,
             output_tokens = excluded.output_tokens,
             cache_read_tokens = excluded.cache_read_tokens,
             cache_write_tokens = excluded.cache_write_tokens,
             catalog_cost_usd = excluded.catalog_cost_usd,
-            provider_lanes_complete = excluded.provider_lanes_complete
+            provider_lanes_complete = excluded.provider_lanes_complete,
+            provider_usage_observed = excluded.provider_usage_observed
         """,
         (
             projection.session_id,
@@ -12590,6 +12731,7 @@ def _upsert_provider_usage_model_rollup(conn: sqlite3.Connection, projection: Us
             projection.cache_write_tokens,
             projection.cost_usd,
             int(projection.provider_lanes_complete),
+            int(projection.provider_usage_observed),
         ),
     )
 
@@ -12599,7 +12741,7 @@ def _increment_provider_usage_model_rollup(
     projection: UsageProjectionModel,
 ) -> None:
     existing = conn.execute(
-        """SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
+        """SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete, provider_usage_observed
            FROM session_model_usage WHERE session_id = ? AND model_name = ?""",
         (projection.session_id, projection.model_name),
     ).fetchone()
@@ -12632,6 +12774,7 @@ def _increment_provider_usage_model_rollup(
             state="incomplete" if cost is None else "complete",
             missing_reasons=reasons,
             provider_lanes_complete=provider_lanes_complete,
+            provider_usage_observed=projection.provider_usage_observed or (existing is not None and bool(existing[5])),
         ),
     )
 
@@ -12746,6 +12889,18 @@ def _seed_session_model_usage_rows(
         )
 
 
+def _message_usage_presence_sql(conn: sqlite3.Connection, session_id: str) -> tuple[str, str]:
+    origin_row = conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    origin = str(origin_row[0]) if origin_row is not None else ""
+    lane_names = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+    present = " OR ".join(f"{name} IS NOT NULL" for name in lane_names)
+    missing = " OR ".join(f"{lane_names[index]} IS NULL" for index in provider_usage_required_lane_indices(origin))
+    # Identity-only messages do not assert usage. A partial measurement does.
+    observed_sql = f"MAX(CASE WHEN {present} THEN 1 ELSE 0 END)"
+    complete_sql = f"MIN(CASE WHEN ({present}) AND ({missing}) THEN 0 ELSE 1 END)"
+    return observed_sql, complete_sql
+
+
 def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
     """Aggregate per-message token counts into session_model_usage and compute cost_usd.
 
@@ -12755,10 +12910,9 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     the full message set regardless of append ordering.
 
     Models with no messages carrying token data keep DEFAULT 0 token counts.
-    Models with no catalog price entry, or zero billable tokens, get
-    cost_provenance = NULL / cost_usd = NULL together -- never 'priced' with
-    a NULL cost (polylogue-shnc: that self-contradiction was live on 5,016
-    rows).
+    Identity-only rows and incomplete measurements have no complete catalog
+    price. A fully measured zero receives a zero catalog price when its model
+    is priceable, while a model without a catalog entry remains unpriced.
 
     Empty or NULL model_name values in the messages table are excluded from
     aggregation (the model is unknown so pricing is impossible).
@@ -12773,15 +12927,18 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     rollups started sharing the 'priced' label with real message-derived
     pricing (see ``_price_provider_usage_tokens``).
     """
+    observed_sql, complete_sql = _message_usage_presence_sql(conn, session_id)
     # Aggregate token counts from the messages table for all known models.
     token_rows = conn.execute(
-        """
+        f"""
         SELECT model_name,
                SUM(input_tokens)        AS sum_input,
                SUM(output_tokens)       AS sum_output,
                SUM(cache_read_tokens)   AS sum_cache_read,
                SUM(cache_write_tokens)  AS sum_cache_write,
-               COUNT(*)                 AS msg_count
+               COUNT(*)                 AS msg_count,
+               {observed_sql} AS provider_usage_observed,
+               {complete_sql} AS provider_lanes_complete
         FROM messages
         WHERE session_id = ?
           AND model_name IS NOT NULL
@@ -12801,6 +12958,8 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
         sum_cache_read: int = int(row[3] or 0)
         sum_cache_write: int = int(row[4] or 0)
         msg_count: int = int(row[5] or 0)
+        observed = bool(row[6])
+        complete = bool(row[7])
 
         catalog_cost = _price_provider_usage_tokens(
             conn,
@@ -12810,6 +12969,12 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
             cache_read_tokens=sum_cache_read,
             cache_write_tokens=sum_cache_write,
         )
+
+        if not complete:
+            catalog_cost = None
+        elif observed and sum_input + sum_output + sum_cache_read + sum_cache_write == 0:
+            zero_cost, _ = catalog_cost_for_tokens(model_name, 0, 0, 0, 0)
+            catalog_cost = None if zero_cost is None else CatalogCost(zero_cost)
 
         # UPSERT: the skeleton row was created by _seed_session_model_usage_rows above.
         # For models that somehow landed in messages but not in models_used/
@@ -12822,15 +12987,17 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 session_id, model_name,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                 message_count,
-                catalog_cost_usd
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                catalog_cost_usd, provider_usage_observed, provider_lanes_complete
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, model_name) DO UPDATE SET
                 input_tokens       = excluded.input_tokens,
                 output_tokens      = excluded.output_tokens,
                 cache_read_tokens  = excluded.cache_read_tokens,
                 cache_write_tokens = excluded.cache_write_tokens,
                 message_count      = excluded.message_count,
-                catalog_cost_usd    = excluded.catalog_cost_usd
+                catalog_cost_usd    = excluded.catalog_cost_usd,
+                provider_usage_observed = excluded.provider_usage_observed,
+                provider_lanes_complete = excluded.provider_lanes_complete
             WHERE (
                 COALESCE(session_model_usage.input_tokens, 0)
                 + COALESCE(session_model_usage.output_tokens, 0)
@@ -12847,6 +13014,8 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 sum_cache_write,
                 msg_count,
                 None if catalog_cost is None else catalog_cost.value,
+                int(observed),
+                int(complete),
             ),
         )
 
@@ -12879,7 +13048,8 @@ def _reconcile_session_model_usage_rows(conn: sqlite3.Connection, session_id: st
             message_count = 0,
             provider_cost_usd = NULL,
             catalog_cost_usd = NULL,
-            provider_lanes_complete = 1
+            provider_lanes_complete = 1,
+            provider_usage_observed = 0
         WHERE session_id = ?
         """,
         (session_id,),
@@ -13128,7 +13298,7 @@ def _assert_unique_message_coordinates(
                     try:
                         index.execute(
                             "INSERT INTO coordinate VALUES (?, ?, ?)",
-                            (position, variant_index, native_id),
+                            (position, variant_index, source_native_id_json(native_id)),
                         )
                     except sqlite3.IntegrityError:
                         previous = index.execute(
@@ -13138,7 +13308,7 @@ def _assert_unique_message_coordinates(
                         raise ValueError(
                             f"duplicate message coordinates in session {session_id!r}: "
                             f"(position={position}, variant_index={variant_index}) <- "
-                            f"{[previous[0], native_id]!r}. A parser assigned the same "
+                            f"{[source_native_id_from_json(previous[0]), native_id]!r}. A parser assigned the same "
                             "(position, variant_index) pair to distinct native message ids; "
                             "writing this batch would silently drop one message."
                         ) from None
@@ -13962,6 +14132,10 @@ def _reextract_prefix_tail_db(
     if edge is None:
         return set()
     dst_origin, dst_native_id, link_type = edge
+    # This child is a stored tail, not the full replay that deferred extraction
+    # expects. Its recorded loss remains owned by retained child replay.
+    if _has_invalidated_prefix(conn, child_session_id):
+        return set()
     # A Drive ``branchParent.promptId`` is a source-asserted session edge, not
     # evidence that the child replays the parent's message prefix.  The child
     # may have arrived before its parent, so the normal deferred extraction
@@ -15215,7 +15389,8 @@ def _materialize_inherited_prefix(
     # as a replay of the child computes it.
     _reconcile_tool_use_outcomes(conn, child)
     _rehash_session_messages(conn, child)
-    refresh_action_pairs(conn, child)
+    if not bulk_build:
+        refresh_action_pairs(conn, child)
     refresh_session_summary(conn, child)
     _reconcile_session_model_usage_rows(conn, child)
     _aggregate_message_tokens_into_model_usage(conn, child)
@@ -15408,6 +15583,7 @@ _REHASH_BLOCK_COLUMNS: tuple[str, ...] = (
 _REHASH_MESSAGE_COLUMNS: tuple[str, ...] = (
     "message_id",
     "native_id",
+    "source_native_id_json",
     "position",
     "variant_index",
     "fields_digest",
@@ -15447,7 +15623,10 @@ def _rehash_session_messages(conn: sqlite3.Connection, session_id: str) -> None:
         )
         content_hash = _message_row_hash(
             session_id,
-            cast("str | None", row[m_idx["native_id"]]),
+            native_id_from_storage(
+                cast("str | None", row[m_idx["native_id"]]),
+                cast("str | None", row[m_idx["source_native_id_json"]]),
+            ),
             int(row[m_idx["position"]]),
             int(row[m_idx["variant_index"]] or 0),
             _row_fields_digest(row, m_idx),
@@ -16366,20 +16545,18 @@ def _sidecar_paths_dispatch_tool_ids(
                 # never read whole; the tool_use id itself is kept complete, since
                 # it is the exact join key to the parent block.
                 try:
-                    with source_read.open_sidecar_payload(raw_id, blob_hash) as handle:
-                        (envelope,) = top_level_envelopes(
-                            handle,
-                            expand_arrays=False,
-                            fields=DOCUMENT_READ_FIELDS,
-                            identity_groups=IDENTITY_FIELD_GROUPS,
+                    from polylogue.sources.decoder_json import DecodedRecordSequence
+
+                    with (
+                        source_read.open_sidecar_payload(raw_id, blob_hash) as handle,
+                        closing(DecodedRecordSequence.from_raw_document(handle)) as document,
+                    ):
+                        payload = document[0]
+                        artifact = (
+                            parse_claude_orchestration_artifact(str(source_path), payload)
+                            if isinstance(payload, dict)
+                            else None
                         )
-                    # Only an object root carries dispatch identity; a scalar root
-                    # must not be decoded a second time into a document.
-                    artifact = (
-                        parse_claude_orchestration_artifact(str(source_path), envelope)
-                        if isinstance(envelope, dict)
-                        else None
-                    )
                 # RecursionError is a RuntimeError, not a ValueError: a deeply
                 # nested sidecar would otherwise escape this handler and abort the
                 # whole session write, and because the raw row persists it would
@@ -16424,14 +16601,15 @@ def _resolve_parent_dispatch_block(
     if not _origin_carries_dispatch_identity(origin):
         return _DispatchResolution(None, "origin-no-dispatch-identity")
     rows = conn.execute(
-        """SELECT source_message_provider_id, payload_json
+        """SELECT source_message_provider_id, source_message_provider_id_json, payload_json
            FROM session_events
            WHERE session_id = ? AND event_type = 'claude_delegation_progress'""",
         (parent_session_id,),
     ).fetchall()
     tool_ids: set[str] = set()
     contradicted = False
-    for source_id, payload_json in rows:
+    for stored_source_id, source_id_carrier, payload_json in rows:
+        source_id = native_id_from_storage(stored_source_id, source_id_carrier)
         try:
             payload = json.loads(str(payload_json))
         except (TypeError, ValueError):
@@ -16663,7 +16841,16 @@ def _write_session_identity_claims(
         invalidated_children.update(str(row[0]) for row in rows)
         conn.execute(
             f"""UPDATE session_links
-                SET resolved_dst_session_id = NULL,
+                SET evidence_json = CASE
+                        WHEN inheritance = 'prefix-sharing' AND branch_point_message_id IS NOT NULL
+                        THEN json_set(
+                            CASE WHEN json_type(evidence_json) = 'object' THEN evidence_json ELSE '{{}}' END,
+                            '$.{INVALIDATED_PREFIX_EVIDENCE_KEY}',
+                            json_object('parent_session_id', resolved_dst_session_id,
+                                        'branch_point_message_id', branch_point_message_id,
+                                        'branch_point_content_address', hex(branch_point_content_address)))
+                        ELSE evidence_json END,
+                    resolved_dst_session_id = NULL,
                     resolved_at_ms = NULL,
                     branch_point_message_id = NULL,
                     branch_point_content_address = NULL,
@@ -16690,6 +16877,60 @@ def _write_session_identity_claims(
             (origin, *sorted(ambiguous_values)),
         )
     return invalidated_children
+
+
+def _has_incomplete_prefix(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> bool:
+    """An unresolved asserted anchor is incomplete without a guessed row ID."""
+    if before_input is not None:
+        before_input(
+            "session_links",
+            ("evidence_json", "branch_point_message_id", "status"),
+            "SELECT rowid FROM session_links WHERE src_session_id = ?",
+            (session_id,),
+        )
+        before_input(
+            "session_identity_scopes",
+            ("session_id",),
+            "SELECT rowid FROM session_identity_scopes WHERE session_id = ?",
+            (session_id,),
+        )
+    with connection_cursor(
+        conn,
+        f"""
+        SELECT 1 FROM session_links WHERE src_session_id = ? AND (
+            {invalidated_prefix_sql()} OR (
+                branch_point_message_id IS NULL
+                AND ({topology_status_composes_sql()} OR status = 'unresolved')
+                AND json_valid(evidence_json)
+                AND json_type(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}') IN ('text', 'object')
+                AND evidence_json -> '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}' != '""'
+                AND src_session_id NOT IN (SELECT session_id FROM session_identity_scopes)
+            )
+        ) LIMIT 1""",
+        (session_id,),
+    ) as cursor:
+        return cursor.fetchone() is not None
+
+
+def _has_invalidated_prefix(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> bool:
+    """A full child replay must settle loss; resolving a parent cannot do so."""
+    if before_input is not None:
+        before_input(
+            "session_links",
+            ("evidence_json",),
+            "SELECT rowid FROM session_links WHERE src_session_id = ?",
+            (session_id,),
+        )
+    with connection_cursor(
+        conn,
+        f"SELECT 1 FROM session_links WHERE src_session_id = ? AND {invalidated_prefix_sql()} LIMIT 1",
+        (session_id,),
+    ) as cursor:
+        return cursor.fetchone() is not None
 
 
 def _message_content_address_for_id(
@@ -16763,6 +17004,7 @@ def _message_id(
     fallback_position: int,
     *,
     content_identities: Sequence[MessageContentIdentity],
+    message_id_remap: Mapping[str, str] | None = None,
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> str:
     """Resolve one parsed message's stored ``message_id``.
@@ -16774,24 +17016,21 @@ def _message_id(
     defect the content identity exists to remove (polylogue-eqsri).
     """
     content_identity, content_occurrence = content_identities[fallback_position]
-    return archive_message_id(
+    stored_id = archive_message_id(
         session_id,
-        _stored_message_native_id(message, duplicate_native_ids),
+        _effective_message_native_id(message, duplicate_native_ids),
         content_identity=content_identity,
         content_occurrence=content_occurrence,
     )
+    return message_id_remap.get(stored_id, stored_id) if message_id_remap is not None else stored_id
 
 
 def _duplicate_message_native_ids(messages: Iterable[ParsedMessage]) -> frozenset[str]:
     """Native ids that collide after the same normalization ``messages.native_id`` stores.
 
-    Counts by the stripped, surrogate-substituted (``_sqlite_text``) form,
-    not the raw provider string, so whitespace variants and two distinct raw
-    ids that collapse onto the same U+FFFD-substituted text are treated as
-    ambiguous too. Otherwise the ``messages`` UNIQUE generated ``message_id``
-    column would silently resolve the collision via ``INSERT OR REPLACE`` (one
-    message vanishes) while Python-side code still believed both had distinct
-    identities.
+    Counts by the SQLite-storable form, preserving all whitespace. Exact
+    duplicates use semantic identity and occurrence instead of overwriting
+    another message through the generated unique identity.
     """
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     if isinstance(source, SqliteMessageSink):
@@ -16911,24 +17150,21 @@ class _DiskDuplicateNativeIds(frozenset[str]):
 
 
 def _normalized_message_native_id(message: ParsedMessage) -> str | None:
-    native_id = _sqlite_text(message.provider_message_id)
-    if native_id is None:
-        return None
-    stripped = native_id.strip()
-    return stripped or None
+    from polylogue.core.message_native_identity import message_native_key
+
+    return message_native_key(message.provider_message_id)
 
 
 def _effective_message_native_id(message: ParsedMessage, duplicate_native_ids: frozenset[str]) -> str | None:
     """Return the storage-normalized native id, or ``None`` if ambiguous.
 
     ``duplicate_native_ids`` (from ``_duplicate_message_native_ids``) is keyed
-    by the same stripped, surrogate-substituted form computed here, so
+    by the same exact, surrogate-substituted form computed here, so
     membership is always compared apples-to-apples.
     """
-    native_id = _normalized_message_native_id(message)
-    if native_id in duplicate_native_ids:
-        return None
-    return native_id
+    from polylogue.core.message_native_identity import stored_message_native_id
+
+    return stored_message_native_id(message.provider_message_id, duplicate_native_ids)
 
 
 def _stored_session_native_id(native_id: str) -> str:
@@ -16971,26 +17207,13 @@ def _stored_message_native_id(message: ParsedMessage, duplicate_native_ids: froz
     and a later ``blocks`` insert can reference a ``message_id`` that was
     never written.
 
-    Beyond duplicate suppression and surrogate substitution
-    (``_effective_message_native_id``), this maps an empty or
-    whitespace-only native id to ``None`` -- matching
-    ``identity_law.message_local_id``'s ``native_id.strip()`` truthiness
-    check, which falls back to the ``position.variant_index`` component --
-    and strips a non-empty native id, matching
-    ``identity_law._required_text``'s own ``.strip()``. Without this, a
-    provider-native id of ``"  "`` stores truthy in SQLite (survives the bare
-    ``or None`` the DB write used before this helper existed) while
-    ``identity_law`` strips it to falsy and falls back to the position/variant
-    id -- producing two different message ids for the same message.
+    Native IDs are opaque. Only literal empty is absent; duplicate exact
+    IDs use content identity and occurrence. Whitespace stays significant.
     """
-    native_id = _effective_message_native_id(message, duplicate_native_ids)
-    if native_id is None:
-        return None
-    stripped = native_id.strip()
-    return stripped or None
+    return sqlite_message_native_id(_effective_message_native_id(message, duplicate_native_ids))
 
 
-def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_id: object) -> bool:
+def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_id: object, *, carrier: object) -> bool:
     """Whether a normalized incoming ID already has a row in this session."""
     # Every writer, including prefix materialization, stores this generated
     # identity. Seek its unique key rather than scanning the session's native
@@ -17000,7 +17223,13 @@ def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_i
         and bool(native_id)
         and conn.execute(
             "SELECT 1 FROM messages WHERE message_id = ? AND session_id = ? AND native_id = ? LIMIT 1",
-            (f"{session_id}:n:{native_id}", session_id, native_id),
+            (
+                archive_message_id(
+                    session_id, native_id_from_storage(native_id, carrier if isinstance(carrier, str) else None)
+                ),
+                session_id,
+                native_id,
+            ),
         ).fetchone()
         is not None
     )
@@ -17229,65 +17458,37 @@ def repo_identity_key(origin_url: str, root_path: str) -> str:
     return f"dir:{root_path}"
 
 
-def _attachment_id(_session_id: str, attachment: ParsedAttachment) -> str:
-    return _hash_bytes(
-        "attachment",
-        attachment.provider_attachment_id,
-        attachment.provider_file_id or "",
-        attachment.provider_drive_id or "",
-        attachment.path or "",
-        attachment.name or "",
-        attachment.mime_type or "",
-        str(attachment.size_bytes or 0),
-    ).hex()
+def _attachment_id(_session_id: str, attachment: ParsedAttachment, *, blob_hash: bytes | None = None) -> str:
+    """Separate a descriptor from each measured content revision.
 
-
-def _attachment_position(attachment: ParsedAttachment) -> int:
-    digest = hashlib.sha256()
-    digest.update(attachment.provider_attachment_id.encode("utf-8", errors="surrogatepass"))
-    return int.from_bytes(digest.digest()[:4], "big")
-
-
-def _attachment_reference_positions(
-    attachments: Iterable[ParsedAttachment],
-    *,
-    occupied_positions: Iterable[int] = (),
-) -> dict[object, int]:
-    """Return stable per-object reference positions without silent collisions.
-
-    The historical four-byte position remains the primary identity so ordinary
-    archives retain their existing reference ids. When distinct attachment
-    identities share that truncated value, the canonical attachment-id order
-    keeps the first identity at the historical position and assigns the rest a
-    deterministic full-identity-derived position with collision probing. The
-    result is independent of parser/list order and is shared by write and
-    closure relink routes.
+    Metadata-only records never borrow acquired bytes from another capture
+    merely because a native file id, name and size agree. Acquired rows share
+    only when their descriptor and exact payload hash agree.
     """
-    attachments_by_identity: dict[str, list[ParsedAttachment]] = {}
-    for attachment in attachments:
-        attachments_by_identity.setdefault(_attachment_id("", attachment), []).append(attachment)
+    if blob_hash is None:
+        if attachment.inline_bytes is not None:
+            blob_hash = hashlib.sha256(attachment.inline_bytes).digest()
+        elif attachment.precomputed_blob is not None:
+            blob_hash = bytes.fromhex(attachment.precomputed_blob[0])
+    return attachment_content_id(
+        attachment.provider_attachment_id,
+        file_id=attachment.provider_file_id,
+        drive_id=attachment.provider_drive_id,
+        path=attachment.path,
+        name=attachment.name,
+        media_type=attachment.mime_type,
+        declared_size=attachment.size_bytes,
+        blob_hash=blob_hash,
+    )
 
-    groups: dict[int, list[tuple[str, list[ParsedAttachment]]]] = defaultdict(list)
-    for attachment_id, equivalent_attachments in attachments_by_identity.items():
-        groups[_attachment_position(equivalent_attachments[0])].append((attachment_id, equivalent_attachments))
 
-    occupied = {int(position) for position in occupied_positions}
-    assigned: dict[object, int] = {}
-    for base_position, identity_group in sorted(groups.items()):
-        for collision_index, (attachment_id, equivalent_attachments) in enumerate(sorted(identity_group)):
-            if collision_index == 0 and base_position not in occupied:
-                position = base_position
-            else:
-                position = int.from_bytes(
-                    hashlib.sha256(f"attachment-reference:{attachment_id}".encode()).digest()[:8],
-                    "big",
-                ) & ((1 << 63) - 1)
-                while position in occupied:
-                    position = (position + 1) & ((1 << 63) - 1)
-            occupied.add(position)
-            for attachment in equivalent_attachments:
-                assigned[attachment.acquisition_key] = position
-    return assigned
+class AttachmentReferenceAmbiguityError(ValueError):
+    """One acquisition declares competing objects under one native reference."""
+
+
+def _attachment_reference_native_identity(attachment: ParsedAttachment) -> str:
+    """Use the exact Source native ID; presentation and bytes do not rename it."""
+    return attachment_native_identity(attachment.provider_attachment_id)
 
 
 def _acquire_attachment_blob(
@@ -17516,5 +17717,7 @@ def _provider_usage_projections(
             if values["model_name"] is not None:
                 yield values
 
+    origin_row = conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    origin = str(origin_row[0]) if origin_row is not None else ""
     with closing(provider_usage_request_events(conn, session_id, start_position=start_position)) as selected:
-        return project_provider_usage_events(events(selected), origin="")
+        return project_provider_usage_events(events(selected), origin=origin)

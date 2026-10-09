@@ -57,9 +57,8 @@ _HOOK_EVENT_KEYS = frozenset({"event_type", "session_id", "timestamp", "provider
 _BEADS_INTERACTION_KEYS = frozenset({"id", "kind", "created_at", "issue_id", "extra"})
 #: A Claude Code ``projects/<proj>/<session-uuid>.jsonl`` file whose only
 #: records carry these ``type`` values is a pure file-history checkpoint
-#: stream, never a conversation (polylogue-omsw). Mirrors the type set
-#: ``archive/raw_materialization.py``'s ``parsed_non_session_artifact_reason``
-#: already checks post-parse ("Claude Code file-history snapshot").
+#: stream, never a conversation (polylogue-omsw). This requires the complete
+#: stream; status consumers use the resulting artifact and current receipts.
 _FILE_HISTORY_SNAPSHOT_ONLY_TYPES = frozenset({"file-history-snapshot", "progress"})
 #: Top-level keys whose string value names the transcript a record's content
 #: was copied out of. A generated extract carries this reference because its
@@ -130,7 +129,8 @@ def looks_like_record_stream(payload: list[JSONDocument]) -> bool:
 def looks_like_record_entry(payload: JSONDocument) -> bool:
     has_envelope_marker = any(key in payload for key in _TYPE_ENVELOPE_MARKERS)
     if (
-        _RELATIONSHIP_INDEX_KEYS.issubset(payload) or _RELATIONSHIP_INDEX_KEYS_CONVERSATION.issubset(payload)
+        all(key in payload for key in _RELATIONSHIP_INDEX_KEYS)
+        or all(key in payload for key in _RELATIONSHIP_INDEX_KEYS_CONVERSATION)
     ) and not has_envelope_marker:
         return False
     if any(key in payload for key in _RECORDISH_KEYS):
@@ -222,7 +222,7 @@ def looks_like_hook_event_stream(payload: list[JSONDocument]) -> bool:
 
 def looks_like_beads_interaction(payload: object) -> bool:
     """Return whether a record is one append-only Beads interaction."""
-    if not isinstance(payload, dict) or not _BEADS_INTERACTION_KEYS.issubset(payload):
+    if not isinstance(payload, dict) or not all(key in payload for key in _BEADS_INTERACTION_KEYS):
         return False
     return (
         isinstance(payload.get("id"), str)
@@ -278,7 +278,12 @@ def looks_metadataish_dict(payload: JSONDocument) -> bool:
     complete_values = getattr(payload, "metadata_values_scalarish", None)
     if isinstance(complete_values, bool):
         return complete_values
-    return all(is_scalarish(value) for value in payload.values())
+    values = (
+        (value for _key, value in payload.structure_items())
+        if hasattr(payload, "structure_items")
+        else payload.values()
+    )
+    return all(is_scalarish(value) for value in values)
 
 
 def looks_metadataish_list(payload: Sequence[JSONValue]) -> bool:
@@ -294,10 +299,12 @@ def is_scalarish(value: object, *, depth: int = 0) -> bool:
     if depth >= 2:
         return False
     if isinstance(value, list):
-        return len(value) <= 32 and all(is_scalarish(item, depth=depth + 1) for item in value)
+        children = value.structure_values() if hasattr(value, "structure_values") else value
+        return len(value) <= 32 and all(is_scalarish(item, depth=depth + 1) for item in children)
     if isinstance(value, dict):
         return len(value) <= 8 and all(
-            isinstance(key, str) and is_scalarish(item, depth=depth + 1) for key, item in value.items()
+            isinstance(key, str) and is_scalarish(item, depth=depth + 1)
+            for key, item in (value.structure_items() if hasattr(value, "structure_items") else value.items())
         )
     return False
 

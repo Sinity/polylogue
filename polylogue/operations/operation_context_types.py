@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from polylogue.archive.query.execution_control import QueryExecutionContext
+    from polylogue.core.staged_body import StagedBody
     from polylogue.operations.daemon_execution import OperationRuntime
     from polylogue.operations.daemon_reads import DaemonReadDependencies
     from polylogue.operations.mutation_transaction import MutationPrincipal
@@ -23,3 +24,4 @@ class OperationContext:
     runtime: OperationRuntime | None = None
     read_dependencies: DaemonReadDependencies | None = None
     read_control: QueryExecutionContext | None = None
+    input_body: StagedBody | None = None

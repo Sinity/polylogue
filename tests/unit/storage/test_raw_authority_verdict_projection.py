@@ -22,9 +22,17 @@ from polylogue.core.enums import Provider, RawAuthorityVerdict
 from polylogue.storage.raw_authority_verdict_projection import project_raw_authority_verdicts
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.prepared_replay import publish_fixture_byte_classification
 
 
-def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_source_key: str) -> str:
+def _bind_full(
+    archive: ArchiveStore,
+    *,
+    raw_id: str,
+    payload: bytes,
+    logical_source_key: str,
+    authority: RawRevisionAuthority = RawRevisionAuthority.ASSERTED,
+) -> str:
     written_id = archive.write_raw_payload(
         provider=Provider.CODEX,
         payload=payload,
@@ -35,7 +43,7 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
     )
     archive.bind_raw_revision(
         written_id,
-        RawRevisionEnvelope(logical_source_key, RawRevisionKind.FULL, f"revision-{raw_id}", 0),
+        RawRevisionEnvelope(logical_source_key, RawRevisionKind.FULL, f"revision-{raw_id}", 0, authority=authority),
     )
     return written_id
 
@@ -144,7 +152,13 @@ def test_live_append_chain_projects_the_same_closed_verdict_vocabulary(tmp_path:
     """The production classifier proves an append chain before projection reads it."""
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        _bind_full(archive, raw_id="baseline", payload=b"one\n", logical_source_key="codex:s1")
+        _bind_full(
+            archive,
+            raw_id="baseline",
+            payload=b"one\n",
+            logical_source_key="codex:s1",
+            authority=RawRevisionAuthority.QUARANTINED,
+        )
         _bind_append(
             archive,
             raw_id="append-one",
@@ -168,7 +182,7 @@ def test_live_append_chain_projects_the_same_closed_verdict_vocabulary(tmp_path:
             acquisition_generation=2,
         )
 
-        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex:s1")
+        plan = publish_fixture_byte_classification(archive, "codex:s1")
         verdicts = project_raw_authority_verdicts(archive, "codex:s1")
 
     assert set(plan.accepted_raw_ids) == {"baseline", "append-one", "append-two"}
@@ -191,7 +205,7 @@ def test_verdicts_match_direct_classification_of_the_same_bytes(tmp_path: Path) 
     """Prove the projection reuses real governance evidence, not a shortcut.
 
     Binds the exact cohort the real classifier
-    (``ArchiveStore.classify_raw_revision_cohort``) already has coverage for
+    (``revision_governance.prepare_raw_revision_byte_classification``) already has coverage for
     elsewhere, and checks the projection's verdict for the proven head agrees
     with what governance itself would persist (``revision_authority=
     'byte_proven'`` with no successor -- ``VERIFIED``), rather than merely
@@ -199,10 +213,22 @@ def test_verdicts_match_direct_classification_of_the_same_bytes(tmp_path: Path) 
     """
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        _bind_full(archive, raw_id="oldest", payload=b"one\n", logical_source_key="codex:s1")
-        _bind_full(archive, raw_id="newest", payload=b"one\ntwo\n", logical_source_key="codex:s1")
+        _bind_full(
+            archive,
+            raw_id="oldest",
+            payload=b"one\n",
+            logical_source_key="codex:s1",
+            authority=RawRevisionAuthority.QUARANTINED,
+        )
+        _bind_full(
+            archive,
+            raw_id="newest",
+            payload=b"one\ntwo\n",
+            logical_source_key="codex:s1",
+            authority=RawRevisionAuthority.QUARANTINED,
+        )
 
-        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex:s1")
+        plan = publish_fixture_byte_classification(archive, "codex:s1")
         verdicts = project_raw_authority_verdicts(archive, "codex:s1")
 
         row = (

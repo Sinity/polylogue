@@ -33,6 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.surfaces.payloads import DelegationCardPayload, QueryUnitAggregateRowPayload
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.session_profiles import write_session_profile
 
@@ -117,6 +118,15 @@ def _insert_message(
     )
 
 
+def _first_dispatch_block_id(conn: sqlite3.Connection, message_id: str) -> str:
+    row = conn.execute(
+        "SELECT block_id FROM blocks WHERE message_id = ? AND block_type = 'tool_use' ORDER BY position LIMIT 1",
+        (message_id,),
+    ).fetchone()
+    assert row is not None
+    return str(row["block_id"])
+
+
 def _insert_dispatch_action(
     conn: sqlite3.Connection,
     *,
@@ -130,21 +140,22 @@ def _insert_dispatch_action(
     result_exit_code: int | None = 0,
 ) -> None:
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, tool_name, tool_id, semantic_type, tool_input
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (message_id, session_id, position, "tool_use", "Task", tool_id, "subagent", tool_input),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, semantic_type, tool_input , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            position,
+            "tool_use",
+            "Task",
+            tool_id,
+            "subagent",
+            tool_input,
+            fixture_block_content_identity("tool_use", "Task", tool_id, "subagent", tool_input),
+        ),
     )
     if result_text is not None:
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, text, tool_id,
-                tool_result_is_error, tool_result_exit_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             (
                 message_id,
                 session_id,
@@ -154,6 +165,7 @@ def _insert_dispatch_action(
                 tool_id,
                 result_is_error,
                 result_exit_code,
+                fixture_block_content_identity("tool_result", result_text, tool_id, result_is_error, result_exit_code),
             ),
         )
 
@@ -283,7 +295,7 @@ def test_delegation_resolves_with_canonical_child_to_parent_direction(tmp_path: 
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
-        parent_tool_use_block_id=f"{dispatch_message_id}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, dispatch_message_id),
     )
 
     row = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchone()
@@ -335,7 +347,7 @@ def test_delegation_result_status_error_when_dispatch_action_reports_error(tmp_p
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
-        parent_tool_use_block_id=f"{dispatch_message_id}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, dispatch_message_id),
     )
 
     row = conn.execute(
@@ -380,7 +392,7 @@ def test_delegation_fresh_spawned_child_with_null_branch_point_resolves(tmp_path
         dst_native_id="parent",
         parent_session_id=parent_id,
         branch_point_message_id=None,  # spawned-fresh: no inherited prefix
-        parent_tool_use_block_id=f"{dispatch_message_id}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, dispatch_message_id),
     )
 
     row = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchone()
@@ -423,7 +435,7 @@ def test_delegation_two_dispatches_in_one_message_no_fanout(tmp_path: Path) -> N
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
-        parent_tool_use_block_id=f"{dispatch_message_id}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, dispatch_message_id),
     )
     _insert_session_link(
         conn,
@@ -431,7 +443,12 @@ def test_delegation_two_dispatches_in_one_message_no_fanout(tmp_path: Path) -> N
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
-        parent_tool_use_block_id=f"{dispatch_message_id}:2",
+        parent_tool_use_block_id=str(
+            conn.execute(
+                "SELECT block_id FROM blocks WHERE message_id = ? AND tool_id = 'task-2' AND block_type = 'tool_use'",
+                (dispatch_message_id,),
+            ).fetchone()["block_id"]
+        ),
     )
 
     rows = conn.execute(
@@ -478,7 +495,7 @@ def test_delegation_dispatch_without_matching_content_stays_unresolved(tmp_path:
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
-        parent_tool_use_block_id=f"{dispatch_message_id}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, dispatch_message_id),
     )
     rows = conn.execute(
         "SELECT * FROM delegation_facts WHERE parent_session_id = ? ORDER BY instruction_tool_use_block_id",
@@ -620,7 +637,7 @@ def test_delegation_separates_dispatch_requested_and_child_observed_model_identi
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
-        parent_tool_use_block_id=f"{dispatch_message_id}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, dispatch_message_id),
     )
 
     row = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchone()
@@ -703,7 +720,7 @@ def test_delegation_direction_matches_real_link_resolver(tmp_path: Path) -> None
 
     conn.execute(
         "UPDATE session_links SET parent_tool_use_block_id = ? WHERE src_session_id = ?",
-        (f"{dispatch_message_id}:0", child_id),
+        (_first_dispatch_block_id(conn, dispatch_message_id), child_id),
     )
     conn.commit()
 
@@ -728,8 +745,13 @@ def test_delegation_query_unit_and_card_use_real_attempt_relation(tmp_path: Path
         )
         context_message_ids.append(message_id)
         conn.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
-            (message_id, parent_id, f"bounded context {position}"),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+            (
+                message_id,
+                parent_id,
+                f"bounded context {position}",
+                fixture_block_content_identity("text", f"bounded context {position}"),
+            ),
         )
     dispatch_message_id = _insert_message(
         conn,
@@ -758,13 +780,23 @@ def test_delegation_query_unit_and_card_use_real_attempt_relation(tmp_path: Path
         )
         followup_message_ids.append(message_id)
         conn.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
-            (message_id, parent_id, f"parent followup {position}"),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+            (
+                message_id,
+                parent_id,
+                f"parent followup {position}",
+                fixture_block_content_identity("text", f"parent followup {position}"),
+            ),
         )
     child_message_id = _insert_message(conn, session_id=child_id, native_id="child-result", position=0)
     conn.execute(
-        "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
-        (child_message_id, child_id, "actual child findings"),
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+        (
+            child_message_id,
+            child_id,
+            "actual child findings",
+            fixture_block_content_identity("text", "actual child findings"),
+        ),
     )
     _insert_session_link(
         conn,
@@ -772,7 +804,7 @@ def test_delegation_query_unit_and_card_use_real_attempt_relation(tmp_path: Path
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
-        parent_tool_use_block_id=f"{dispatch_message_id}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, dispatch_message_id),
     )
     conn.commit()
     conn.close()
@@ -809,7 +841,9 @@ def test_delegation_query_unit_and_card_use_real_attempt_relation(tmp_path: Path
         assert len(aggregate_rows) == len(counts.items)
         assert [(row.group_key, row.count) for row in aggregate_rows] == [("resolved", 1)]
 
-        card = archive.get_delegation_card(instruction_tool_use_block_id=f"{dispatch_message_id}:0")
+        card = archive.get_delegation_card(
+            instruction_tool_use_block_id=_first_dispatch_block_id(archive._conn, dispatch_message_id)
+        )
         assert card is not None
         assert card.instruction == instruction
         assert card.parent_session_title == "session parent"
@@ -914,7 +948,8 @@ def test_delegation_instruction_filter_matches_preview_extraction(tmp_path: Path
         empty_payload = next(
             item.model_dump(mode="json")
             for item in empty.items
-            if item.model_dump(mode="json").get("instruction_tool_use_block_id") == f"{message_ids['empty']}:0"
+            if item.model_dump(mode="json").get("instruction_tool_use_block_id")
+            == _first_dispatch_block_id(archive._conn, message_ids["empty"])
         )
         assert empty_payload["instruction_preview"] is None
 
@@ -951,7 +986,7 @@ def _dispatch_chain_level(
         dst_origin="claude-code-session",
         dst_native_id=dispatcher_native_id,
         parent_session_id=dispatcher_id,
-        parent_tool_use_block_id=f"{message_id}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, message_id),
     )
     return child_id
 
@@ -1110,7 +1145,7 @@ def test_delegation_subtree_visited_path_guard_stops_a_two_node_cycle(tmp_path: 
         dst_origin="claude-code-session",
         dst_native_id="cycle-a",
         parent_session_id=a_id,
-        parent_tool_use_block_id=f"{message_a}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, message_a),
     )
 
     message_b = _insert_message(conn, session_id=b_id, native_id="dispatch-b-a", position=0)
@@ -1123,7 +1158,7 @@ def test_delegation_subtree_visited_path_guard_stops_a_two_node_cycle(tmp_path: 
         dst_origin="claude-code-session",
         dst_native_id="cycle-b",
         parent_session_id=b_id,
-        parent_tool_use_block_id=f"{message_b}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, message_b),
     )
     conn.commit()
     conn.close()
@@ -1185,14 +1220,18 @@ def test_delegation_cost_basis_survives_actual_attempt_and_card_reads(
         dst_origin="claude-code-session",
         dst_native_id="basis-parent",
         parent_session_id=parent_id,
-        parent_tool_use_block_id=f"{message_id}:0",
+        parent_tool_use_block_id=_first_dispatch_block_id(conn, message_id),
     )
     conn.commit()
     conn.close()
     initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     with ArchiveStore.open_existing(tmp_path) as archive:
-        row = archive.get_delegation_attempt(instruction_tool_use_block_id=f"{message_id}:0")
-        card = archive.get_delegation_card(instruction_tool_use_block_id=f"{message_id}:0")
+        row = archive.get_delegation_attempt(
+            instruction_tool_use_block_id=_first_dispatch_block_id(archive._conn, message_id)
+        )
+        card = archive.get_delegation_card(
+            instruction_tool_use_block_id=_first_dispatch_block_id(archive._conn, message_id)
+        )
         assert row is not None and card is not None
         assert row.child_cost_usd == expected
         assert row.child_cost_is_estimated == estimated

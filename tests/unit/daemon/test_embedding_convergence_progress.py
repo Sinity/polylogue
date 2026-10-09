@@ -327,6 +327,7 @@ def test_daemon_status_lines_include_latest_embedding_catchup() -> None:
             {
                 "embedding_readiness": {
                     "embedding_enabled": True,
+                    "embedding_status": "partial",
                     "embedding_coverage_percent": 12.5,
                     "embedding_pending_count": 10,
                     "embedding_pending_message_count": 200,

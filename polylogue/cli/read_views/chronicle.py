@@ -81,6 +81,9 @@ def run_read_chronicle(env: AppEnv, request: RootModeRequest, invocation: ReadVi
         else render_chronicle_markdown(payload)
     )
     deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
+    from polylogue.cli.render.outcome import finish_supplied_outcome
+
+    finish_supplied_outcome(payload.outcome)
 
 
 __all__ = [

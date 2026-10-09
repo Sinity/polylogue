@@ -46,13 +46,13 @@ RECOVERY_SERVICE_ACTOR_REF = "daemon:recovery"
 
 
 def recover_interrupted_operations(
-    archive_root: Path, *, resolver_actor_ref: str, input_demand: Callable[[int], None]
+    archive_root: Path, *, resolver_actor_ref: str, input_demand: Callable[[int], None], startup: bool = False
 ) -> None:
-    """Resolve dead operations at the daemon's single-writer startup seam.
+    """Resolve dead operations through admitted daemon writer segments.
 
-    This is deliberately not executor composition.  Request handlers construct
-    executors frequently; only daemon startup owns the writer lease that makes
-    classifying an interrupted effect safe.
+    Startup runs before request admission and may reclaim every unaccepted
+    Source preparation. Live request recovery must preserve preparations and
+    staged machine pages that their current handlers still own.
 
     The work is bounded and one-pass: abandoned attempts are terminalized
     first, then every remaining orphan is classified exactly once, so a
@@ -80,12 +80,11 @@ def recover_interrupted_operations(
     from polylogue.core.stage_admission import admit_stage_write
 
     admit_stage_write("daemon.operation_recovery.continuity", audit.reconcile_continuity)
-    # No handler can still be appending pages to a paged machine batch.
-    admit_stage_write("daemon.operation_recovery.machine-pages", audit.fence_staged_machine_pages)
-    # Startup is the single-writer point where a dead ingest cannot still be
-    # preparing pages. Continuity has promoted every accepted generation or
-    # refused startup, so the remaining unpromoted headers are pre-accept work.
-    _reconcile_startup_source_preparation(archive_root, input_demand=input_demand)
+    if startup:
+        # Request admission has not begun. Continuity has promoted every
+        # accepted generation, so only abandoned preparation remains.
+        admit_stage_write("daemon.operation_recovery.machine-pages", audit.fence_staged_machine_pages)
+        _reconcile_startup_source_preparation(archive_root, input_demand=input_demand)
     # Terminalize dead attempts *before* discovering orphans so one startup
     # converges: otherwise a run this call marks interrupted would only be
     # classified by the next restart.

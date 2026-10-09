@@ -46,6 +46,8 @@ def publish_prepared_source(
     prepare: Callable[[PreparedIndexMutation], None],
     *,
     after_prepare: Callable[[], None] | None = None,
+    before_publish: Callable[[], None] | None = None,
+    index_path: Path | None = None,
 ) -> None:
     """Prepare Source statements on an original seal, then publish that tape.
 
@@ -61,7 +63,11 @@ def publish_prepared_source(
     retained: list[PreparedIndexMutation] = []
 
     def body() -> None:
-        seal = PreparedIndexMutation.source_only(archive_root=root)
+        seal = (
+            PreparedIndexMutation.source_only(archive_root=root)
+            if index_path is None
+            else PreparedIndexMutation(index_path, archive_root=root)
+        )
         retained.append(seal)
         try:
             with seal.original_read_snapshot(), seal.source_producer():
@@ -70,6 +76,8 @@ def publish_prepared_source(
             if after_prepare is not None:
                 # Durable evidence moves after preparation and before publication.
                 admit_stage_write(f"{actor}.intervening", after_prepare)
+            if before_publish is not None:
+                before_publish()
 
             def publish() -> None:
                 with permit.hold_authority(), permit.mutation_connection() as source:
@@ -101,6 +109,52 @@ def publish_prepared_source(
             )
 
     asyncio.run(run())
+
+
+def publish_fixture_byte_classification(archive: ArchiveStore, logical_source_key: str) -> RevisionReplayPlan:
+    """Publish the production byte law for fixtures with supplied parsed sessions.
+
+    Synthetic byte-law fixtures cannot run a provider parser. Their Source
+    authority is prepared on the same admitted owner and original seal as Raw
+    convergence; replay still uses the fixture's explicit parsed sessions.
+    """
+    from polylogue.sources.revision_backfill import _require_classification_inputs_current
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import prepare_raw_revision_byte_classification
+
+    archive.commit()
+    payload_store = BlobStore(archive.archive_root / "blob")
+    blob_stats: tuple[tuple[str, tuple[int, int, int, int, int]], ...] = ()
+
+    def prepare(seal: PreparedIndexMutation) -> None:
+        nonlocal blob_stats
+        _changed, blob_stats = prepare_raw_revision_byte_classification(
+            seal, logical_source_key, payload_store=payload_store
+        )
+
+    publish_prepared_source(
+        archive.archive_root,
+        "test.byte-classification",
+        prepare,
+        before_publish=lambda: _require_classification_inputs_current(blob_stats, payload_store),
+        index_path=archive.index_db_path,
+    )
+    return archive.raw_revision_replay_plan(logical_source_key)
+
+
+def current_fixture_parser_receipts(
+    root: Path, raw_ids: list[str], *, after_prepare: Callable[[], None] | None = None
+) -> tuple[bool, ...]:
+    """Read receipt currency from Raw's original-seal law and validate publication."""
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_parser_census_is_current
+
+    current: list[bool] = []
+
+    def prepare(seal: PreparedIndexMutation) -> None:
+        current.extend(prepared_parser_census_is_current(seal, raw_id) for raw_id in raw_ids)
+
+    publish_prepared_source(root, "test.parser-receipt-currency", prepare, after_prepare=after_prepare)
+    return tuple(current)
 
 
 def apply_prepared_revision_replay(

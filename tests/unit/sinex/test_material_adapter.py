@@ -18,11 +18,14 @@ from polylogue.core.enums import (
     ToolOutcome,
     ToolResultUnknownReason,
 )
+from polylogue.material_protocol.v1 import DecodedSession, RevisionManifest, decode_session_revision, verify_revision
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.sinex.material_adapter import (
     PublicationBackpressureError,
     encode_parsed_session_publication,
     session_material_from_parsed_session,
 )
+from polylogue.sinex.models import PublicationPayload
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -30,6 +33,89 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+
+
+def _decoded_publication(session: ParsedSession) -> tuple[PublicationPayload, DecodedSession]:
+    payload = encode_parsed_session_publication(session, session_id="claude-code-session:s1")
+    manifest = RevisionManifest.from_dict(json.loads(payload.manifest_bytes))
+    names = dict(payload.segments)
+    segments = {
+        descriptor.index: names[descriptor.filename] for descriptor in (*manifest.segments, manifest.head_segment)
+    }
+    verify_revision(manifest, segments)
+    return payload, decode_session_revision(manifest, segments)
+
+
+@pytest.mark.parametrize("natives", [("m", "m"), (" m ", "m")])
+def test_publication_preserves_exact_duplicate_and_distinct_opaque_native_ids(natives: tuple[str, str]) -> None:
+    parsed = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="s1",
+        messages=[
+            ParsedMessage(provider_message_id=natives[0], position=0, role=Role.USER, text="first"),
+            ParsedMessage(provider_message_id=natives[1], position=1, role=Role.USER, text="second"),
+        ],
+    )
+    _payload, decoded = _decoded_publication(parsed)
+    assert [message.text for message in decoded.messages] == ["first", "second"]
+    assert len({message.message_id for message in decoded.messages}) == 2
+    if natives[0] == natives[1]:
+        assert all(":c:" in message.message_id for message in decoded.messages)
+    else:
+        assert [message.native_id for message in decoded.messages] == list(natives)
+        assert [message.message_id for message in decoded.messages] == [
+            f"claude-code-session:s1:n:{native}" for native in natives
+        ]
+
+
+def test_operational_unicode_changes_remain_distinct_publication_revisions() -> None:
+    parsed = _parsed_session()
+    parsed.messages[1].blocks[0].tool_input = {"path": "cafe\u0301", "é": "first", "e\u0301": "second"}
+    first, decoded = _decoded_publication(parsed)
+    first_hash = session_content_hash(parsed)
+    assert decoded.messages[1].blocks[0]["tool_input"] == parsed.messages[1].blocks[0].tool_input
+    parsed.messages[1].blocks[0].tool_input = {"path": "café", "é": "first", "e\u0301": "second"}
+    second, _decoded = _decoded_publication(parsed)
+    assert session_content_hash(parsed) != first_hash
+    assert first.revision_id != second.revision_id
+
+
+def test_parent_cut_and_available_session_context_survive_publication() -> None:
+    parsed = _parsed_session()
+    parsed.branch_point_provider_message_id = "cut"
+    parsed.display_name = "neutral-agent"
+    parsed.pending_drafts = [{"text": "unsent"}]
+    parsed.messages[0].stop_reason = "max_tokens"
+    parsed.session_events[0].boundary_start_position = 0
+    material = session_material_from_parsed_session(parsed, session_id="claude-code-session:s1")
+    assert material.lineage[0].branch_point_message_native_id == "cut"
+    assert material.metadata["display_name"] == "neutral-agent"
+    assert material.metadata["pending_drafts"] == [{"text": "unsent"}]
+    gaps = " ".join(gap.detail for gap in material.fidelity_gaps)
+    assert "stop_reason" in gaps
+    assert "boundary_start_position" in gaps
+
+
+def test_tool_result_association_does_not_rename_source_tool_use() -> None:
+    parsed = _parsed_session()
+    parsed.messages[1].blocks = [parsed.messages[1].blocks[0]]
+    first = session_material_from_parsed_session(parsed, session_id="claude-code-session:s1").messages[1].blocks[0]
+    parsed.messages[1].blocks.append(
+        ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id=first.tool_id, text="done", is_error=False)
+    )
+    second = session_material_from_parsed_session(parsed, session_id="claude-code-session:s1").messages[1].blocks[0]
+    assert first.content_identity == second.content_identity
+    assert first.content_occurrence == second.content_occurrence
+
+
+def test_attachment_and_event_owners_preserve_exact_native_names() -> None:
+    parsed = _parsed_session()
+    parsed.messages[1].provider_message_id = " m2 "
+    parsed.attachments[0].message_provider_id = " m2 "
+    parsed.session_events[0].source_message_provider_id = " m2 "
+    _payload, decoded = _decoded_publication(parsed)
+    assert len(decoded.messages[1].attachments) == 1
+    assert len(decoded.messages[1].session_events) == 1
 
 
 def _parsed_session() -> ParsedSession:
@@ -196,3 +282,17 @@ def test_payload_budget_rejects_before_protocol_encoder(monkeypatch: pytest.Monk
             max_payload_bytes=128,
         )
     assert not called
+
+
+def test_publication_parent_and_block_ids_preserve_opaque_native_whitespace() -> None:
+    parsed = _parsed_session()
+    parsed.messages[0].provider_message_id = " m1 "
+    parsed.messages[1].provider_message_id = " m2 "
+    parsed.messages[1].parent_message_provider_id = " m1 "
+    parsed.attachments[0].message_provider_id = " m2 "
+    parsed.session_events[0].source_message_provider_id = " m2 "
+    _payload, decoded = _decoded_publication(parsed)
+    assert decoded.messages[1].parent_message_id == decoded.messages[0].message_id
+    block_id = decoded.messages[1].blocks[0]["block_id"]
+    assert isinstance(block_id, str)
+    assert block_id.startswith(decoded.messages[1].message_id + ":b:")

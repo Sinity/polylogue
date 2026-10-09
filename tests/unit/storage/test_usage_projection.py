@@ -20,6 +20,7 @@ def test_projection_uses_latest_session_global_cumulative_once() -> None:
             "total_input_tokens": 100,
             "total_output_tokens": 20,
             "total_cached_input_tokens": 40,
+            "total_cache_write_tokens": 0,
         },
         {
             "session_id": "s1",
@@ -29,6 +30,7 @@ def test_projection_uses_latest_session_global_cumulative_once() -> None:
             "total_input_tokens": 300,
             "total_output_tokens": 50,
             "total_cached_input_tokens": 0,
+            "total_cache_write_tokens": 0,
         },
     ]
     (projection,) = project_provider_usage_events(events, origin="codex")
@@ -47,6 +49,9 @@ def test_explicit_zero_cumulative_supersedes_prior_positive() -> None:
                 "provider_event_type": "token_count",
                 "model_name": "gpt-4o",
                 "total_input_tokens": 100,
+                "total_output_tokens": 0,
+                "total_cached_input_tokens": 0,
+                "total_cache_write_tokens": 0,
             },
             {
                 "session_id": "s1",
@@ -54,6 +59,9 @@ def test_explicit_zero_cumulative_supersedes_prior_positive() -> None:
                 "provider_event_type": "token_count",
                 "model_name": "gpt-4o",
                 "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "total_cached_input_tokens": 0,
+                "total_cache_write_tokens": 0,
             },
         ],
         origin="codex",
@@ -70,6 +78,8 @@ def test_projection_splits_models_and_marks_missing_cache_rate_incomplete() -> N
             "model_name": "gpt-4o",
             "last_input_tokens": 100,
             "last_output_tokens": 20,
+            "last_cached_input_tokens": 0,
+            "last_cache_write_tokens": 0,
         },
         {
             "session_id": "s1",
@@ -77,6 +87,9 @@ def test_projection_splits_models_and_marks_missing_cache_rate_incomplete() -> N
             "provider_event_type": "message_usage",
             "model_name": "unknown-model",
             "last_cached_input_tokens": 10,
+            "last_input_tokens": 0,
+            "last_output_tokens": 0,
+            "last_cache_write_tokens": 0,
         },
     ]
     projections = project_provider_usage_events(events, origin="test")
@@ -163,6 +176,8 @@ def test_projection_rejects_paid_model_with_missing_cache_write_rate(
                 "model_name": "paid-without-cache-write-rate",
                 "last_input_tokens": 100,
                 "last_cache_write_tokens": 1_000,
+                "last_output_tokens": 0,
+                "last_cached_input_tokens": 0,
             }
         ],
         origin="test",
@@ -191,6 +206,8 @@ def test_free_model_with_zero_cache_rate_remains_priced(monkeypatch: pytest.Monk
             "model_name": "free-with-zero-cache-rate",
             "last_input_tokens": 100,
             "last_cached_input_tokens": 1_000,
+            "last_output_tokens": 0,
+            "last_cache_write_tokens": 0,
         }
     ]
     (projection,) = project_provider_usage_events(events, origin="test")
@@ -201,8 +218,22 @@ def test_free_model_with_zero_cache_rate_remains_priced(monkeypatch: pytest.Monk
 def test_nullable_model_projection_and_rollup_sort_without_aliasing() -> None:
     projections = project_provider_usage_events(
         [
-            {"session_id": "s1", "model_name": None, "last_input_tokens": 1},
-            {"session_id": "s1", "model_name": "gpt-4o", "last_input_tokens": 1},
+            {
+                "session_id": "s1",
+                "model_name": None,
+                "last_input_tokens": 1,
+                "last_output_tokens": 0,
+                "last_cached_input_tokens": 0,
+                "last_cache_write_tokens": 0,
+            },
+            {
+                "session_id": "s1",
+                "model_name": "gpt-4o",
+                "last_input_tokens": 1,
+                "last_output_tokens": 0,
+                "last_cached_input_tokens": 0,
+                "last_cache_write_tokens": 0,
+            },
         ],
         origin="test",
     )
@@ -227,7 +258,17 @@ def test_unmappable_counters_remain_incomplete(column: str) -> None:
 
 def test_projection_cost_precision_survives_many_tiny_sessions() -> None:
     projections = project_provider_usage_events(
-        ({"session_id": f"s{index}", "model_name": "gpt-4o-mini", "last_input_tokens": 1} for index in range(100)),
+        (
+            {
+                "session_id": f"s{index}",
+                "model_name": "gpt-4o-mini",
+                "last_input_tokens": 1,
+                "last_output_tokens": 0,
+                "last_cached_input_tokens": 0,
+                "last_cache_write_tokens": 0,
+            }
+            for index in range(100)
+        ),
         origin="test",
     )
     assert all(row.cost_usd == estimate_cost(1, 0, "gpt-4o-mini") for row in projections)
@@ -239,13 +280,23 @@ def test_projection_cost_precision_survives_many_tiny_sessions() -> None:
 def test_many_cumulative_sessions_replace_only_their_own_delta() -> None:
     def events() -> Iterator[dict[str, str | int]]:
         for index in range(500):
-            yield {"session_id": f"s{index}", "model_name": "gpt-4o", "last_input_tokens": 100}
+            yield {
+                "session_id": f"s{index}",
+                "model_name": "gpt-4o",
+                "last_input_tokens": 100,
+                "last_output_tokens": 0,
+                "last_cached_input_tokens": 0,
+                "last_cache_write_tokens": 0,
+            }
             yield {
                 "session_id": f"s{index}",
                 "model_name": "gpt-4o",
                 "provider_event_type": "token_count",
                 "position": 1,
                 "total_input_tokens": index,
+                "total_output_tokens": 0,
+                "total_cached_input_tokens": 0,
+                "total_cache_write_tokens": 0,
             }
 
     projections = project_provider_usage_events(events(), origin="test")

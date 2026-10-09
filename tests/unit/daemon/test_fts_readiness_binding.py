@@ -34,6 +34,7 @@ from polylogue.storage.fts.fts_lifecycle import (
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.index_writer import write_fixture_index_session
 
 
@@ -264,8 +265,15 @@ def test_unindexed_block_retires_the_binding(seeded: tuple[Path, sqlite3.Connect
     message_id, session_id = conn.execute("SELECT message_id, session_id FROM blocks LIMIT 1").fetchone()
     suspend_message_fts_triggers_sync(conn)
     conn.execute(
-        "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, ?, ?, ?)",
-        (message_id, session_id, 900, "text", "never indexed"),
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            900,
+            "text",
+            "never indexed",
+            fixture_block_content_identity("text", "never indexed"),
+        ),
     )
     restore_message_fts_triggers_sync(conn)
     conn.commit()

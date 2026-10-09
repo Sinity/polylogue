@@ -42,10 +42,11 @@ sequence of canonical JSON objects, one per line (`\n`-terminated), UTF-8.
 ## Canonical framing (byte-stability)
 
 Every JSON value in this protocol — each record and the manifest — is
-serialized with exactly one rule: recursively NFC-normalize every string,
-then serialize with **sorted object keys** and no incidental whitespace
+serialized with **sorted object keys** and no incidental whitespace. Only
+session title and instructions, message text, and block text fold in NFC.
+Identifiers, paths, tool arguments, metadata and all mapping keys stay exact
 (`polylogue/material_protocol/v1/canonical.py`, backed by
-`orjson.OPT_SORT_KEYS`). Key order therefore never carries meaning. This is
+the shared exact-value JSON framing profile). Key order therefore never carries meaning. This is
 what makes "decode, then re-encode" byte-identical to the original, and what
 lets two independent encoders (Polylogue, Sinex) produce identical bytes for
 identical input.
@@ -59,15 +60,15 @@ Every record is a JSON object with at least `kind`, `record_id`, and `seq`
 - `session`: `record_id = session_id = "{origin}:{native_id}"`
 - `message`: `record_id = message_id = "{session_id}:n:{native_id}"`, or
   `"{session_id}:c:{content_identity}.{content_occurrence}"` when the provider carried no id
-- `block`: `record_id = block_id = "{message_id}:{position}"`
-- `attachment`: `record_id = "{message_id}:attachment:{position}"`
+- `block`: `record_id = block_id = "{message_id}:b:{content_identity}:{content_occurrence}"`
+- `attachment`: `record_id = "{message_id}:attachment:n:{native_identity}"`
 - `lineage`: `record_id = "{session_id}:lineage:{dst_origin}:{dst_native_id}:{link_type}"`
 - `usage`: `record_id = "{session_id}:usage:{model_name}"`
 - `session_event` (covers compaction, via `event_type="compaction"`, and any
   other typed fact the archive records): `record_id = "{session_id}:{position}"`
 
 Records live in one of two **spaces** with different mutability contracts
-(semantics v5), each with its own strictly increasing `seq` starting at 0 —
+(semantics v8), each with its own strictly increasing `seq` starting at 0 —
 together this **is** the manifest's `sequence_rule`:
 
 **Head** (`head.ndjson`, reserved segment index `-1`) — the revision-mutable
@@ -267,3 +268,27 @@ implementation lands.
   `polylogue-303r.4`.
 - Durable user-state outbox — `polylogue-303r.5`.
 - Lifecycle/retention/deletion — `polylogue-303r.6`.
+
+Message records retain `source_native_id_json` as optional ASCII JSON text of
+the original Source occurrence name (semantics version 7). This evidence is
+independent of `native_id`, which remains null when duplicate names require
+content-derived identity. Decoding restores the exact Source name, including
+lone surrogate escapes. It does not promote content IDs into native evidence.
+
+Semantics version 8 preserves each nonempty native message name exactly,
+including whitespace and Unicode normalization form. Only literal empty is
+absent. Exact duplicate names use content identity and occurrence; distinct
+spellings never become duplicate names through whitespace normalization.
+Parent message names and the message part of block IDs use the same law.
+
+A native message name containing a UTF-16 surrogate code unit uses
+`s:{UTF-8-surrogatepass bytes in lowercase hex}` instead of `n:{name}`.
+Its wire `native_id` is the hex value, and `source_native_id_json` holds
+`{"encoding":"utf8-surrogatepass","value":"<hex>"}`. Ordinary names keep
+`n:{name}` and a JSON string carrier. This tagged union preserves exact
+surrogate code units, including a pair distinct from a Unicode scalar.
+Duplicate and owner scratch keys use the complete `n:` or `s:` key.
+
+Lineage's `branch_point_message_native_id` uses the same SQLite-safe hex
+value for a surrogate name, with `branch_point_source_native_id_json`
+carrying the tagged original. Its decoded value restores the exact name.

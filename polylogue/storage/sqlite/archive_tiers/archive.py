@@ -212,21 +212,16 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     PreparedRevisionReplayOutcome,
     _authorize_full_snapshot_fold,
     _flush_pending_raw_parse_states,
-    _promote_contiguous_append_evidence,
     _raw_revision_authority,
     _raw_revision_candidates,
     _raw_revision_matches_segments,
     _raw_revision_payload_digest_and_size,
-    _raw_revision_source_path_has_divergent_evidence,
     admit_raw_artifact_blob_ref,
     admit_raw_artifact_payload,
     admit_work_event_raw,
     apply_raw_revision_replay,
     bind_raw_revision,
     blob_path_for_hash,
-    classify_raw_revision_cohort_for_frozen_candidate,
-    classify_raw_revision_cohort_for_rebuild_repair,
-    classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
     convertible_full_revision_raw_ids,
     defer_raw_revision_adoption,
     expand_raw_membership_selection,
@@ -352,6 +347,11 @@ from polylogue.storage.sqlite.connection_profile import (
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.model_usage_sql import MODEL_USAGE_CATALOG_SUM_SQL, model_usage_cost_estimated_sql
+from polylogue.storage.sqlite.queries.profile_analytics import (
+    PROFILE_WALLCLOCK_SQL,
+    ProfileAnalyticsMode,
+    read_profile_analytics,
+)
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
 from polylogue.storage.sqlite.query_watch import (
     clear_query_watch,
@@ -857,6 +857,7 @@ class ArchiveStore:
         validate_index_layout: bool = True,
         owned_read_generation: IndexGeneration | None = None,
         defer_secondary_indexes: bool = False,
+        preserve_secondary_index_layout: bool = False,
         active_cold_build: bool = False,
         durable_writer: bool = False,
     ) -> None:
@@ -877,6 +878,10 @@ class ArchiveStore:
             raise ValueError("an opened index descriptor is valid only for read-only archive access")
         if defer_secondary_indexes and (read_only or owned_inactive_generation is None):
             raise ValueError("secondary-index deferral requires an owned inactive writable generation")
+        if preserve_secondary_index_layout and (read_only or owned_inactive_generation is None):
+            raise ValueError("preserving secondary-index layout requires an owned inactive writable generation")
+        if defer_secondary_indexes and preserve_secondary_index_layout:
+            raise ValueError("secondary indexes cannot be deferred and preserved in the same open")
         if durable_writer and (read_only or owned_inactive_generation is None):
             raise ValueError("durable_writer requires an owned inactive writable generation")
         if active_cold_build and (read_only or owned_inactive_generation is not None or source_tier_acquisition):
@@ -925,6 +930,7 @@ class ArchiveStore:
         # an ordinary live write.
         self._durable_writer = durable_writer
         self._inactive_candidate_durable_read_only = owned_inactive_generation is not None and not durable_writer
+        authoritative_generation: IndexGeneration | None = None
         # An inactive candidate is physically rooted below the generation
         # lifecycle directory, but its read-through durable members belong to
         # the configured archive.  Bind the write lease to that authoritative
@@ -1058,8 +1064,17 @@ class ArchiveStore:
                 # Creating the deferred reader indexes here and dropping them
                 # two statements later is free on an empty generation and
                 # ruinous on a partially built one.
-                skip_runtime_index_ensure=defer_secondary_indexes,
+                skip_runtime_index_ensure=defer_secondary_indexes or preserve_secondary_index_layout,
             )
+            if preserve_secondary_index_layout:
+                from polylogue.storage.sqlite.schema import assert_readable_archive_layout
+
+                assert authoritative_generation is not None
+                assert_readable_archive_layout(
+                    self._conn,
+                    generation_id=authoritative_generation.generation_id,
+                    owned_inactive_generation=authoritative_generation,
+                )
             if not read_only and not source_tier_acquisition:
                 # Read once, before this store writes anything: it is the
                 # proof that licenses fresh-build writes, and every later
@@ -1259,14 +1274,36 @@ class ArchiveStore:
             # refusal: it names the generation and the lifecycle action the
             # operator must take. The generic open-time check would preempt it
             # with a message carrying neither.
+            from polylogue.storage.sqlite.connection_profile import (
+                GenerationToken,
+                StaleContinuationError,
+                _generation_token,
+            )
+
             try:
+                self.archive_generation = _generation_token(archive_root)
+                selected_path = self.index_db_path.resolve(strict=opened_index_fd is None)
+                if opened_index_fd is None:
+                    self.index_generation = _generation_token(selected_path)
+                else:
+                    selected = os.fstat(opened_index_fd)
+                    self.index_generation = GenerationToken(selected.st_dev, selected.st_ino)
                 self._conn = open_readonly_connection(
-                    self.index_db_path,
+                    selected_path,
                     timeout=read_timeout,
                     opened_main_fd=opened_index_fd,
                     validate_schema=False,
                     profile=replace(READ_CONNECTION_PROFILE, temp_store="FILE"),
                 )
+                if opened_index_fd is None and _generation_token(selected_path) != self.index_generation:
+                    raise StaleContinuationError("selected archive generation changed while opening the reader")
+            except FileNotFoundError as exc:
+                raise ArchiveTierUnavailableError(
+                    tier="index",
+                    path=str(self.index_db_path),
+                    reason="database file not found",
+                    guidance=FIRST_RUN_INDEX_GUIDANCE,
+                ) from exc
             except sqlite3.OperationalError as exc:
                 # A read-only open of an index tier that is not there is the
                 # ordinary first-run condition, not a driver fault. SQLite's
@@ -1318,6 +1355,11 @@ class ArchiveStore:
 
                 write_profile = COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
             pragma_statements = write_connection_pragma_statements(write_profile)
+        from polylogue.storage.sqlite.connection_profile import StaleContinuationError, _generation_token
+
+        if not read_only:
+            self.index_generation = _generation_token(self.index_db_path)
+            self.archive_generation = _generation_token(archive_root)
         self._conn.row_factory = sqlite3.Row
         # One comparator belongs to this actual frame. SQLite retires
         # its callback when this owner's connection closes, after its cursors.
@@ -1361,6 +1403,8 @@ class ArchiveStore:
             )
             self._blob_publisher = publisher_type(self.source_db_path, self.archive_root / "blob")
         self._attach_user_tier_if_present()
+        if read_only and _generation_token(archive_root) != self.archive_generation:
+            raise StaleContinuationError("selected archive root changed while opening the reader")
 
     def _require_sql_owner(self, *, cleanup: bool = False) -> None:
         if self._writer_owner_pid != os.getpid():
@@ -1768,6 +1812,7 @@ class ArchiveStore:
         generation_id: str,
         owner_id: str,
         defer_secondary_indexes: bool = False,
+        preserve_secondary_index_layout: bool = False,
     ) -> ArchiveStore:
         """Open a typed inactive generation without weakening normal identity checks."""
         return cls(
@@ -1776,6 +1821,7 @@ class ArchiveStore:
             read_only=False,
             owned_inactive_generation=(generation_id, owner_id),
             defer_secondary_indexes=defer_secondary_indexes,
+            preserve_secondary_index_layout=preserve_secondary_index_layout,
         )
 
     @classmethod
@@ -1786,6 +1832,7 @@ class ArchiveStore:
         generation_id: str,
         owner_id: str,
         defer_secondary_indexes: bool = True,
+        preserve_secondary_index_layout: bool = False,
     ) -> ArchiveStore:
         """Open an owned inactive generation that the live writer also acquires into.
 
@@ -1809,6 +1856,7 @@ class ArchiveStore:
             read_only=False,
             owned_inactive_generation=(generation_id, owner_id),
             defer_secondary_indexes=defer_secondary_indexes,
+            preserve_secondary_index_layout=preserve_secondary_index_layout,
             durable_writer=True,
         )
 
@@ -1828,29 +1876,50 @@ class ArchiveStore:
 
         One ``CREATE INDEX`` pass for the whole build instead of index
         maintenance on every inserted row, one FTS repopulate instead
-        of per-session trigger work, then the constraint check the build ran
+        of per-session trigger work, one canonical action/delegation rebuild,
+        then the constraint check the build ran
         without. Everything here is idempotent, so an interrupted readiness
         pass is simply re-run on the same never-promoted generation.
         """
         self._require_writable("run a generation readiness pass")
         if self._owned_inactive_generation is None:
             raise RuntimeError("a readiness pass is only meaningful for an owned inactive generation")
+        from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
         from polylogue.storage.fts.fts_lifecycle import (
             rebuild_fts_index_sync,
         )
+        from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
+        from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
         from polylogue.storage.sqlite.runtime_indexes import restore_deferred_secondary_indexes_sync
 
-        restore_deferred_secondary_indexes_sync(self._conn)
-        self._deferred_secondary_indexes = ()
-        self._conn.commit()
-        rebuild_fts_index_sync(self._conn)
-        self._conn.commit()
-        violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)
-        if violations:
-            raise RuntimeError(
-                "cold-build generation left dangling references; it is not publishable: "
-                f"{[tuple(row) for row in violations]}"
-            )
+        self.set_read_progress_guard(lambda: int(compute_cancel_requested()), check_cancelled=check_compute_cancelled)
+        try:
+            check_compute_cancelled()
+            restore_deferred_secondary_indexes_sync(self._conn)
+            self._deferred_secondary_indexes = ()
+            self._conn.commit()
+            # Delegation facts consume the canonical action associations.
+            with self._conn:
+                check_compute_cancelled()
+                rebuild_all_action_pairs_sync(self._conn)
+                check_compute_cancelled()
+                rebuild_all_delegation_facts_sync(self._conn)
+            check_compute_cancelled()
+            rebuild_fts_index_sync(self._conn)
+            check_compute_cancelled()
+            self._conn.commit()
+            violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)
+            if violations:
+                raise RuntimeError(
+                    "cold-build generation left dangling references; it is not publishable: "
+                    f"{[tuple(row) for row in violations]}"
+                )
+        except sqlite3.OperationalError:
+            check_compute_cancelled()
+            raise
+        finally:
+            # Cleanup uses the original creator without a cancellation guard.
+            self.clear_read_progress_guard()
 
     @staticmethod
     def _needs_tier_bootstrap(archive_root: Path) -> bool:
@@ -2873,31 +2942,6 @@ class ArchiveStore:
     def raw_membership_retired_full_revision_siblings(self, logical_source_key: str) -> tuple[str, ...]:
         return raw_membership_retired_full_revision_siblings(self, logical_source_key)
 
-    def _raw_revision_source_path_has_divergent_evidence(self, logical_source_key: str) -> bool:
-        return _raw_revision_source_path_has_divergent_evidence(self, logical_source_key)
-
-    @_archive_mutator
-    def classify_raw_revision_cohort_for_rebuild_repair(
-        self,
-        logical_source_key: str,
-    ) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_rebuild_repair(self, logical_source_key)
-
-    @_archive_mutator
-    def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
-        self, logical_source_key: str
-    ) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_rebuild_repair_in_transaction(self, logical_source_key)
-
-    def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
-        return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
-
-    @staticmethod
-    def _promote_contiguous_append_evidence(conn: sqlite3.Connection, logical_source_key: str) -> None:
-        return _promote_contiguous_append_evidence(conn, logical_source_key)
-
     def _raw_revision_authority(self, raw_id: str) -> str | None:
         return _raw_revision_authority(self, raw_id)
 
@@ -3873,41 +3917,51 @@ class ArchiveStore:
             where.append("s.sort_key_ms <= ?")
             params.append(until_ms)
 
+        # Settle each session/model amount before reducing the cohort. A
+        # session-wide report is attributable only when it has one model.
         rows = self._conn.execute(
             f"""
-            SELECT s.origin AS source_name,
-                   u.model_name AS model_name,
-                   COUNT(DISTINCT u.session_id) AS session_count,
-                   COALESCE(SUM(u.provider_cost_usd), {MODEL_USAGE_CATALOG_SUM_SQL}, CASE WHEN (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
-                   COALESCE(SUM(u.cost_credits), 0.0) AS stored_credits,
-                   COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
-                   COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
-                   COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens,
-                   COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
-                   COALESCE(SUM(
-                       u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens
-                   ), 0) AS total_tokens,
-                   COALESCE(
-                       CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
-                            WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
+            WITH selected_usage AS (
+                SELECT u.*, s.origin AS source_name,
+                       s.updated_at_ms, s.sort_key_ms,
+                       CASE WHEN u.provider_cost_usd IS NOT NULL THEN u.provider_cost_usd
                             WHEN s.reported_cost_usd IS NOT NULL
-                                 AND (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN 'origin_reported' END,
-                       'unknown'
-                   ) AS cost_provenance,
-                   MAX(s.updated_at_ms) AS source_updated_at,
-                   MAX(s.sort_key_ms) AS source_sort_key,
-                   json_group_array(DISTINCT u.session_id) AS session_ids
-            FROM session_model_usage u
-            JOIN sessions s ON s.session_id = u.session_id
-            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
-            WHERE {" AND ".join(where)}
-            GROUP BY s.origin,
-                     u.model_name,
-                     CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
-                          WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
-                          WHEN s.reported_cost_usd IS NOT NULL
-                               AND (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN 'origin_reported'
-                          ELSE 'unknown' END
+                                 AND (SELECT COUNT(*) FROM session_model_usage u2
+                                      WHERE u2.session_id = u.session_id) = 1
+                            THEN s.reported_cost_usd
+                            WHEN u.provider_lanes_complete = 1
+                                 AND (u.provider_usage_observed OR
+                                      u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0)
+                            THEN u.catalog_cost_usd END AS selected_cost_usd,
+                       CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                            WHEN s.reported_cost_usd IS NOT NULL
+                                 AND (SELECT COUNT(*) FROM session_model_usage u2
+                                      WHERE u2.session_id = u.session_id) = 1
+                            THEN 'origin_reported'
+                            WHEN u.provider_lanes_complete = 1
+                                 AND (u.provider_usage_observed OR
+                                      u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0)
+                                 AND u.catalog_cost_usd IS NOT NULL THEN 'priced'
+                            ELSE 'unknown' END AS cost_provenance
+                FROM session_model_usage u
+                JOIN sessions s ON s.session_id = u.session_id
+                WHERE {" AND ".join(where)}
+            )
+            SELECT source_name, model_name,
+                   COUNT(DISTINCT session_id) AS session_count,
+                   SUM(selected_cost_usd) AS stored_cost_usd,
+                   COALESCE(SUM(cost_credits), 0.0) AS stored_credits,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                   COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                   COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens), 0) AS total_tokens,
+                   cost_provenance,
+                   MAX(updated_at_ms) AS source_updated_at,
+                   MAX(sort_key_ms) AS source_sort_key,
+                   json_group_array(DISTINCT session_id) AS session_ids
+            FROM selected_usage
+            GROUP BY source_name, model_name, cost_provenance
             """,
             tuple(params),
         ).fetchall()
@@ -3917,7 +3971,7 @@ class ArchiveStore:
             SELECT s.origin AS source_name,
                    NULL AS model_name,
                    COUNT(DISTINCT s.session_id) AS session_count,
-                   COALESCE(SUM(s.reported_cost_usd), 0.0) AS stored_cost_usd,
+                   SUM(s.reported_cost_usd) AS stored_cost_usd,
                    0.0 AS stored_credits,
                    0 AS input_tokens,
                    0 AS output_tokens,
@@ -3996,17 +4050,17 @@ class ArchiveStore:
             )
 
             entry.session_count += effective_session_count
-            if stored_cost_usd > 0 and provenance in {"exact", "origin_reported"}:
+            if row["stored_cost_usd"] is not None and provenance in {"exact", "origin_reported"}:
                 status = "exact"
                 confidence = 1.0
-            elif stored_cost_usd > 0:
+            elif row["stored_cost_usd"] is not None:
                 status = "priced"
                 confidence = 0.7 if provenance == "estimated" else 0.9
             else:
                 status = "unavailable"
                 confidence = 0.0
             entry.status_counts[status] = entry.status_counts.get(status, 0) + effective_session_count
-            if stored_cost_usd > 0:
+            if row["stored_cost_usd"] is not None:
                 entry.priced_session_count += effective_session_count
                 entry.confidence_total += effective_session_count * confidence
             else:
@@ -4655,7 +4709,7 @@ class ArchiveStore:
             )
         )
 
-    def iter_session_profile_insights(
+    def _session_profile_selection(
         self,
         *,
         origin: str | None = None,
@@ -4671,23 +4725,10 @@ class ArchiveStore:
         session_date_until: str | None = None,
         tier: str = "merged",
         query: str | None = None,
-        limit: int | None = 50,
-        offset: int = 0,
         min_wallclock_seconds: float | None = None,
         max_wallclock_seconds: float | None = None,
-        sort: str | None = None,
-    ) -> Generator[SessionProfileInsight, None, None]:
-        """List archive session profile insights.
-
-        ``min_wallclock_seconds`` / ``max_wallclock_seconds`` filter on the
-        session's message-timestamp span (last minus first message), and
-        ``sort='wallclock'`` orders by that span descending.
-        """
-        # Wallclock span = newest minus oldest message timestamp for the session.
-        wall_expr = (
-            "(SELECT MAX(m.occurred_at_ms) - MIN(m.occurred_at_ms) "
-            "FROM messages m WHERE m.session_id = s.session_id AND m.occurred_at_ms IS NOT NULL)"
-        )
+    ) -> tuple[str, list[object]]:
+        """Share profile existence and complete scope between rows and analytics."""
         where: list[str] = []
         params: list[object] = []
         origin = _origin_value(origin)
@@ -4734,12 +4775,88 @@ class ArchiveStore:
             where.append("sp.canonical_session_date <= date(?)")
             params.append(session_date_until)
         if min_wallclock_seconds is not None:
-            where.append(f"COALESCE({wall_expr}, 0) >= ?")
+            where.append(f"COALESCE({PROFILE_WALLCLOCK_SQL}, 0) >= ?")
             params.append(int(min_wallclock_seconds * 1000))
         if max_wallclock_seconds is not None:
-            where.append(f"COALESCE({wall_expr}, 0) <= ?")
+            where.append(f"COALESCE({PROFILE_WALLCLOCK_SQL}, 0) <= ?")
             params.append(int(max_wallclock_seconds * 1000))
         clause = "WHERE " + " AND ".join(where) if where else ""
+        return f"FROM session_profiles sp JOIN sessions s ON s.session_id = sp.session_id {clause}", params
+
+    def read_session_profile_analytics(
+        self,
+        *,
+        mode: ProfileAnalyticsMode,
+        group_by: str = "",
+        origin: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        min_severity: str = "question_left",
+        limit: int = 20,
+    ) -> dict[str, object]:
+        relation, params = self._session_profile_selection(
+            origin=origin, tag=tag, repo=repo, since_ms=since_ms, until_ms=until_ms
+        )
+        return read_profile_analytics(
+            self._conn,
+            relation,
+            params,
+            mode=mode,
+            group_by=group_by,
+            min_severity=min_severity,
+            limit=limit,
+            checkpoint=self.check_operation_read,
+        )
+
+    def iter_session_profile_insights(
+        self,
+        *,
+        origin: str | None = None,
+        workflow_shape: str | None = None,
+        terminal_state: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        first_message_since: str | None = None,
+        first_message_until: str | None = None,
+        session_date_since: str | None = None,
+        session_date_until: str | None = None,
+        tier: str = "merged",
+        query: str | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+        min_wallclock_seconds: float | None = None,
+        max_wallclock_seconds: float | None = None,
+        sort: str | None = None,
+    ) -> Generator[SessionProfileInsight, None, None]:
+        """List archive session profile insights.
+
+        ``min_wallclock_seconds`` / ``max_wallclock_seconds`` filter on the
+        session's message-timestamp span (last minus first message), and
+        ``sort='wallclock'`` orders by that span descending.
+        """
+        # Wallclock span = newest minus oldest message timestamp for the session.
+        wall_expr = PROFILE_WALLCLOCK_SQL
+        relation, params = self._session_profile_selection(
+            origin=origin,
+            workflow_shape=workflow_shape,
+            terminal_state=terminal_state,
+            tag=tag,
+            repo=repo,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            first_message_since=first_message_since,
+            first_message_until=first_message_until,
+            session_date_since=session_date_since,
+            session_date_until=session_date_until,
+            tier=tier,
+            query=query,
+            min_wallclock_seconds=min_wallclock_seconds,
+            max_wallclock_seconds=max_wallclock_seconds,
+        )
         order_by = f"{wall_expr} DESC, s.session_id" if sort == "wallclock" else "s.sort_key_ms DESC, s.session_id"
         pagination = "" if limit is None else " LIMIT ? OFFSET ?"
         if limit is not None:
@@ -4754,13 +4871,9 @@ class ArchiveStore:
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count,
                    sp.tool_calls_per_minute,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
+                   sp.total_duration_ms,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
-            FROM session_profiles sp
-            JOIN sessions s ON s.session_id = sp.session_id
-            {clause}
+            {relation}
             ORDER BY {order_by}
             {pagination}
             """,
@@ -5024,6 +5137,28 @@ class ArchiveStore:
             tuple(params),
         ).fetchall()
         return {str(row["tag"]): int(row["count"] or 0) for row in rows}
+
+    def origin_session_counts(
+        self,
+        *,
+        origin: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+    ) -> dict[str, tuple[int, int]]:
+        """Count physical sessions and canonical logical roots per origin."""
+        where, params = _session_filter_clause("s", origin=_origin_value(origin), since_ms=since_ms, until_ms=until_ms)
+        rows = self._conn.execute(
+            f"""
+            SELECT s.origin, COUNT(DISTINCT s.session_id) AS physical_count,
+                   COUNT(DISTINCT COALESCE(s.root_session_id, s.session_id)) AS logical_count
+            FROM sessions s
+            {where}
+            GROUP BY s.origin
+            """,
+            params,
+        )
+        with closing(rows):
+            return {str(row["origin"]): (int(row["physical_count"]), int(row["logical_count"])) for row in rows}
 
     def list_session_tag_rollup_insights(
         self,
@@ -6374,6 +6509,28 @@ class ArchiveStore:
         finally:
             self._close_user_connection(user_conn)
 
+    def read_blackboard_page(
+        self,
+        *,
+        limit: int,
+        offset: int = 0,
+        kind: str | None = None,
+        scope_repo: str | None = None,
+        unresolved: bool = False,
+    ) -> tuple[list[ArchiveBlackboardNoteEnvelope], int]:
+        from polylogue.storage.sqlite.archive_tiers.user_write import read_archive_blackboard_page
+
+        if not self.user_db_path.exists():
+            return [], 0
+        user_conn = self._open_read_connection(self.user_db_path)
+        try:
+            user_conn.execute("BEGIN")
+            return read_archive_blackboard_page(
+                user_conn, limit=limit, offset=offset, kind=kind, scope_repo=scope_repo, unresolved=unresolved
+            )
+        finally:
+            self._close_user_connection(user_conn)
+
     @_archive_mutator
     def delete_sessions(
         self,
@@ -6501,13 +6658,21 @@ class ArchiveStore:
             if self._read_only or self._inactive_candidate_durable_read_only
             else str(self.user_db_path)
         )
+        from polylogue.storage.sqlite.connection_profile import StaleContinuationError, _generation_token
+
         try:
+            generation = _generation_token(self.user_db_path)
             if self._read_only:
                 attach_readonly_database(self._conn, self.user_db_path, alias="user_tier")
             else:
                 self._conn.execute("ATTACH DATABASE ? AS user_tier", (user_db_uri,))
+            if _generation_token(self.user_db_path) != generation:
+                raise StaleContinuationError("selected User generation changed while attaching the reader")
+        except StaleContinuationError:
+            raise
         except Exception as exc:
             raise self._user_tier_unavailable(reason=f"cannot open SQLite database ({exc})") from exc
+        self.user_generation = generation
         self._user_tier_attached = True
         self._tags_relation = _all_session_tags_sql()
 
@@ -6675,12 +6840,15 @@ class ArchiveStore:
         # Session-profile inspection recomputes its partition binding from
         # sessions/messages. Retry/debt rows remain operation-health evidence,
         # but a stale historical row cannot replace this authoritative verdict.
-        converged = (
-            status.missing_profile_row_count == 0
-            and status.stale_profile_row_count == 0
-            and status.orphan_profile_row_count == 0
-            and status.profile_row_count == status.total_sessions
-        )
+        if any(value is not None for value in (request.origin, request.since, request.until)):
+            converged = all(not entry.diverged and not entry.incomplete for entry in entries)
+        else:
+            converged = (
+                status.missing_profile_row_count == 0
+                and status.stale_profile_row_count == 0
+                and status.orphan_profile_row_count == 0
+                and status.profile_row_count == status.total_sessions
+            )
         debt_stages = self._derived_operation_debt_stages()
         return InsightReadinessReport(
             checked_at=datetime.now(UTC).isoformat(),
@@ -6937,6 +7105,28 @@ class ArchiveStore:
         # Several insights are backed by query-time views (threads, delegations,
         # actions), which exist and carry rows; presence is relation presence.
         table_present = _relation_exists(self._conn, table_name)
+        if (
+            name == "session_profiles"
+            and table_present
+            and any(value is not None for value in (origin, since_ms, until_ms))
+        ):
+            from polylogue.storage.sqlite.queries.profile_readiness import read_profile_readiness
+
+            where, parameters = _session_filter_clause("s", origin=origin, since_ms=since_ms, until_ms=until_ms)
+            counts = read_profile_readiness(
+                self._conn,
+                f"FROM sessions s LEFT JOIN session_profiles sp ON sp.session_id = s.session_id {where}",
+                parameters,
+                checkpoint=self.check_operation_read,
+            )
+            row_count, expected_row_count, missing_count, stale_count = (
+                counts.rows,
+                counts.expected,
+                counts.missing,
+                counts.stale,
+            )
+            # Orphans have no source session and cannot enter this source-filtered relation.
+            orphan_count = 0
         artifacts = tuple(
             InsightStorageArtifact(
                 name=artifact,
@@ -7999,9 +8189,10 @@ class ArchiveStore:
         limit: int = 50,
         offset: int = 0,
         sort_direction: Literal["asc", "desc"] = "asc",
+        message_ids: Sequence[str] | None = None,
     ) -> list[ArchiveActionQueryRow]:
         return _archive_query_reads.query_session_action_occurrences(
-            self, session_ids, limit=limit, offset=offset, sort_direction=sort_direction
+            self, session_ids, limit=limit, offset=offset, sort_direction=sort_direction, message_ids=message_ids
         )
 
     def get_delegation_attempt(
@@ -8105,28 +8296,6 @@ class ArchiveStore:
             offset=offset,
             sort_direction=sort_direction,
             per_session_limit=per_session_limit,
-        )
-
-    def _query_file_counts(
-        self,
-        predicate: QueryPredicate,
-        *,
-        group_by: str | None,
-        sort: Literal["count", "key"] | None,
-        sort_direction: Literal["asc", "desc"],
-        limit: int,
-        offset: int,
-        session_filters: Mapping[str, object] | None,
-    ) -> list[ArchiveQueryUnitAggregateRow]:
-        return _archive_query_reads._query_file_counts(
-            self,
-            predicate,
-            group_by=group_by,
-            sort=sort,
-            sort_direction=sort_direction,
-            limit=limit,
-            offset=offset,
-            session_filters=session_filters,
         )
 
     def query_blocks(

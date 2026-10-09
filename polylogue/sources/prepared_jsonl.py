@@ -67,7 +67,7 @@ from polylogue.sources.decoder_json import (
     spill_member_arrays,
     spill_otlp_spans,
 )
-from polylogue.sources.decoders import _iter_json_stream
+from polylogue.sources.decoders import owned_json_records
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
     BundleCandidateDrift,
@@ -118,6 +118,7 @@ from polylogue.sources.prepared_message_sink import (
     read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope, SidecarResolver
+from polylogue.sources.streamed_json_output import write_streamed_json
 from polylogue.sources.value_bounds import ValueBoundRefusedError
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
@@ -254,6 +255,10 @@ def terminal_decode_evidence(error: BaseException, *, provider: Provider) -> Raw
     replay both decide from this one rule, so a rebuild refuses exactly the
     bytes live intake refused, and neither re-selects them.
     """
+    from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
+
+    if isinstance(error, RetainedRawDecodeRefusalError):
+        return error.kind
     if classify_decode_failure(error) is None:
         return None
     if provider is Provider.UNKNOWN:
@@ -293,18 +298,25 @@ def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str, 
             shutil.rmtree(holder)
 
 
-def _iter_prefix_lines(handle: BinaryIO, prefix_size: int) -> Iterator[bytes]:
-    """Expose only the proven complete JSONL prefix to the record decoder."""
-    if prefix_size < 0:
-        raise ValueError("JSONL prefix size must be non-negative")
-    remaining = prefix_size
-    while remaining:
+class _PreparedPrefixInput:
+    """Borrow a proven complete JSONL prefix without holding whole lines."""
+
+    def __init__(self, handle: BinaryIO, prefix_size: int) -> None:
+        if prefix_size < 0:
+            raise ValueError("JSONL prefix size must be non-negative")
+        self.handle = handle
+        self.remaining = prefix_size
+
+    def read(self, size: int = -1) -> bytes:
+        if not self.remaining or size == 0:
+            return b""
         check_compute_cancelled()
-        line = handle.readline(remaining)
-        if not line:
+        requested = min(self.remaining, size if size >= 0 else 64 * 1024)
+        chunk = self.handle.read(requested)
+        if not chunk:
             raise OSError("sealed source ended before its prepared JSONL prefix")
-        remaining -= len(line)
-        yield line
+        self.remaining -= len(chunk)
+        return chunk
 
 
 def _hermes_atif_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], bool] | None:
@@ -2649,12 +2661,7 @@ def prepare_jsonl_blob(
         gemini_envelope: dict[str, JSONValue] | None = None
         gemini_sidecar_scope: RetainedSidecarScope | None = None
         grok_count: int | None = None
-        if (
-            input_admitted
-            and not is_stream
-            and provider is Provider.CHATGPT
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider is Provider.CHATGPT and not jsonl_wire:
             with source.open("rb") as handle:
                 read_result = read_chatgpt_mapping_object(handle, store.conn)
             if (
@@ -2669,12 +2676,7 @@ def prepare_jsonl_blob(
             else:
                 for table in _CHATGPT_PARSER_SCRATCH_TABLES:
                     store.conn.execute(f"DROP TABLE IF EXISTS {table}")
-        if (
-            input_admitted
-            and not is_stream
-            and provider is Provider.GEMINI_CLI
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider is Provider.GEMINI_CLI and not jsonl_wire:
             store.conn.execute(
                 "CREATE TABLE gemini_raw_message (ordinal INTEGER PRIMARY KEY, message_json TEXT NOT NULL)"
             )
@@ -2737,16 +2739,16 @@ def prepare_jsonl_blob(
 
             with source.open("rb") as handle:
                 record_input = (
-                    _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
+                    _PreparedPrefixInput(handle, parse_prefix_size) if parse_prefix_size is not None else handle
                 )
-                checkpoint_records = _iter_json_stream(
+                with owned_json_records(
                     record_input, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
-                )
-                gemini_envelope = local_agent.fold_gemini_cli_checkpoint_records(
-                    observe_checkpoint_records(checkpoint_records),
-                    append_message=append_checkpoint_message,
-                    replace_messages=replace_checkpoint_messages,
-                )
+                ) as checkpoint_records:
+                    gemini_envelope = local_agent.fold_gemini_cli_checkpoint_records(
+                        observe_checkpoint_records(checkpoint_records),
+                        append_message=append_checkpoint_message,
+                        replace_messages=replace_checkpoint_messages,
+                    )
             if gemini_envelope is None:
                 store.conn.execute("DROP TABLE gemini_raw_message")
                 if checkpoint_header_admitted:
@@ -2761,12 +2763,7 @@ def prepare_jsonl_blob(
                         gemini_sidecar_scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
-        if (
-            input_admitted
-            and not is_stream
-            and provider is Provider.HERMES
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider is Provider.HERMES and not jsonl_wire:
             with source.open("rb") as handle:
                 hermes_envelope = hermes_snapshot_envelope(handle)
             if hermes_envelope is not None and (
@@ -2775,12 +2772,7 @@ def prepare_jsonl_blob(
                 or hermes_spans.looks_like_atif_payload(hermes_envelope)
             ):
                 hermes_envelope = None
-        if (
-            input_admitted
-            and not is_stream
-            and provider is Provider.GROK
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider is Provider.GROK and not jsonl_wire:
             store.conn.execute(
                 "CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL, future_type TEXT)"
             )
@@ -2797,20 +2789,18 @@ def prepare_jsonl_blob(
                 store.conn.execute("DROP TABLE grok_member_valid")
         if input_admitted and not is_stream and provider in BUNDLE_PROVIDERS and is_jsonl_source_path(source_path):
             bundle_record_stream = True
-            with source.open("rb") as handle:
-                for record in _iter_json_stream(
+            with (
+                source.open("rb") as handle,
+                owned_json_records(
                     handle, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
-                ):
+                ) as records,
+            ):
+                for record in records:
                     check_compute_cancelled()
                     bundle_count += 1
                     bundle_browser_captures = bundle_browser_captures and browser_capture.looks_like(record)
                     del record
-        if (
-            input_admitted
-            and not is_stream
-            and provider in BUNDLE_PROVIDERS
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider in BUNDLE_PROVIDERS and not jsonl_wire:
             with source.open("rb") as handle:
                 record_container = json_record_container(handle)
             if record_container is not None:
@@ -2840,7 +2830,7 @@ def prepare_jsonl_blob(
             input_admitted
             and not is_stream
             and provider is Provider.CLAUDE_DESIGN
-            and Path(source_path).name.lower().endswith(".json")
+            and not jsonl_wire
             and record_container is None
         ):
             with source.open("rb") as handle:
@@ -2849,7 +2839,7 @@ def prepare_jsonl_blob(
             input_admitted
             and not is_stream
             and provider is Provider.CLAUDE_AI
-            and Path(source_path).name.lower().endswith(".json")
+            and not jsonl_wire
             and record_container is None
         ):
             with source.open("rb") as handle:
@@ -2860,7 +2850,7 @@ def prepare_jsonl_blob(
             input_admitted
             and not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI}
-            and Path(source_path).name.lower().endswith(".json")
+            and not jsonl_wire
             and generic_envelope is None
         ):
             with source.open("rb") as handle:
@@ -2871,7 +2861,7 @@ def prepare_jsonl_blob(
             and provider in {Provider.DRIVE, Provider.GEMINI}
             and not jsonl_wire
             and parse_prefix_size is None
-            and Path(source_path).name.lower().endswith(".json")
+            and not jsonl_wire
         ):
             with source.open("rb") as handle:
                 drive_root_array = json_record_container(handle) == "item"
@@ -2885,15 +2875,17 @@ def prepare_jsonl_blob(
 
             def observe_drive_records() -> Iterator[JSONValue]:
                 nonlocal drive_future_type
-                with source.open("rb") as handle:
+                with source.open("rb") as handle, ExitStack() as record_owners:
                     record_input = (
-                        _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
+                        _PreparedPrefixInput(handle, parse_prefix_size) if parse_prefix_size is not None else handle
                     )
                     records = (
                         (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "item"))
                         if drive_root_array
-                        else _iter_json_stream(
-                            record_input, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
+                        else record_owners.enter_context(
+                            owned_json_records(
+                                record_input, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
+                            )
                         )
                     )
                     for record in records:
@@ -2914,7 +2906,7 @@ def prepare_jsonl_blob(
             input_admitted
             and not is_stream
             and provider is Provider.HERMES
-            and Path(source_path).name.lower().endswith(".json")
+            and not jsonl_wire
             and hermes_envelope is None
         ):
             with source.open("rb") as handle:
@@ -2923,12 +2915,7 @@ def prepare_jsonl_blob(
                 with source.open("rb") as handle:
                     if not _spill_atif_subagents(handle, store.conn):
                         atif = None
-        if (
-            input_admitted
-            and not is_stream
-            and provider is Provider.OTEL_GENAI
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider is Provider.OTEL_GENAI and not jsonl_wire:
             with source.open("rb") as handle:
                 otlp = _otlp_envelope(handle)
             if otlp is not None:
@@ -2942,42 +2929,52 @@ def prepare_jsonl_blob(
             gemini_admitted = input_admitted
             gemini_session = None
             if gemini_admitted:
-                gemini_records = (
-                    json.loads(row[0])
-                    for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal")
+                index = (
+                    GeminiToolOutputIndex(store.conn)
+                    if gemini_sidecar_scope is not None and gemini_sidecar_scope.available
+                    else None
                 )
+                admission_document = dict(gemini_envelope)
+
+                def gemini_records() -> Iterator[object]:
+                    # Observe only the final rows after checkpoint replacement
+                    # patches, sharing each decode with the message parser.
+                    assert store is not None
+                    future_type: str | None = None
+                    with closing(
+                        store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal")
+                    ) as rows:
+                        for (encoded,) in rows:
+                            check_compute_cancelled()
+                            record = json.loads(encoded)
+                            if future_type is None:
+                                future_type = _unknown_wire_type(record)
+                                if future_type is not None:
+                                    admission_document["messages"] = [{"type": future_type}]
+                            if index is not None:
+                                index.observe(record)
+                            yield record
+
                 gemini_session = local_agent.parse_gemini_cli_records(
                     gemini_envelope,
-                    gemini_records,
+                    gemini_records(),
                     fallback_id,
                     messages=store.new_sink(),
                     session_events=store.new_event_sink(),
                 )
-                # Admission observes the final canonical document, including
-                # only messages surviving replacement patches. Keep its first
-                # actual future discriminator without retaining the transcript.
-                admission_document = dict(gemini_envelope)
-                for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal"):
-                    check_compute_cancelled()
-                    wire_type = _unknown_wire_type(json.loads(row[0]))
-                    if wire_type is not None:
-                        admission_document["messages"] = [{"type": wire_type}]
-                        break
                 admission = AdmissionObserver()
                 admission.observe_input(admission_document)
                 gemini_session = admission.apply(gemini_session, "gemini_cli")
-                if gemini_sidecar_scope is not None and gemini_sidecar_scope.available:
-                    index = GeminiToolOutputIndex(store.conn)
-                    for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal"):
-                        index.observe(json.loads(row[0]))
+                if index is not None and gemini_sidecar_scope is not None:
                     for outcome in index.join(gemini_sidecar_scope):
                         gemini_session.session_events.append(local_agent.gemini_sidecar_event(outcome))
                     for position in range(len(gemini_session.messages)):
                         message = gemini_session.messages[position]
                         updated_blocks = [
-                            block.model_copy(update={"text": replacement})
+                            local_agent.replace_gemini_tool_result_output(block, replacement)
                             if block.type is BlockType.TOOL_RESULT
                             and block.tool_id is not None
+                            and block.media_type != local_agent.TOOL_RESULT_DISPLAY_MEDIA_TYPE
                             and (replacement := index.replacement_for(block.tool_id)) is not None
                             else block
                             for block in message.blocks
@@ -3277,16 +3274,18 @@ def prepare_jsonl_blob(
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
 
             def drive_chunks() -> Iterator[object]:
-                with source.open("rb") as handle:
+                with source.open("rb") as handle, ExitStack() as record_owners:
                     if drive_record_stream:
                         record_input = (
-                            _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
+                            _PreparedPrefixInput(handle, parse_prefix_size) if parse_prefix_size is not None else handle
                         )
                         records = (
                             (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "item"))
                             if drive_root_array
-                            else _iter_json_stream(
-                                record_input, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
+                            else record_owners.enter_context(
+                                owned_json_records(
+                                    record_input, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
+                                )
                             )
                         )
                         for item in records:
@@ -3608,19 +3607,19 @@ def prepare_jsonl_blob(
                 if stream_prefix is not None:
                     yield from iter_container_member_files(handle, stream_prefix, member_path)
                     return
-                for index, record in enumerate(
-                    _iter_json_stream(handle, Path(source_path).name, fail_on_decode_error=strict_jsonl_records)
-                ):
-                    check_compute_cancelled()
-                    # Reuse the canonical member parser over one original
-                    # decoded record, rather than retaining the input cohort.
-                    if not isinstance(record, dict):
-                        yield None
-                        continue
-                    with member_path.open("w", encoding="utf-8") as member:
-                        json.dump(record, member, ensure_ascii=True)
-                    del record
-                    yield index
+                with owned_json_records(
+                    handle, Path(source_path).name, fail_on_decode_error=strict_jsonl_records
+                ) as records:
+                    for index, record in enumerate(records):
+                        check_compute_cancelled()
+                        # Reuse the canonical member parser over one original
+                        # decoded record, rather than retaining the input cohort.
+                        if not isinstance(record, dict):
+                            yield None
+                            continue
+                        write_streamed_json(record, member_path, member_format=True)
+                        del record
+                        yield index
 
             with source.open("rb") as handle:
                 for bundle_index in original_bundle_members(handle) if bundle_admitted else ():
@@ -3700,13 +3699,15 @@ def prepare_jsonl_blob(
             with ExitStack() as decoded_inputs:
                 handle = decoded_inputs.enter_context(source.open("rb"))
                 record_input = (
-                    _iter_prefix_lines(handle, parse_prefix_size) if parse_prefix_size is not None else handle
+                    _PreparedPrefixInput(handle, parse_prefix_size) if parse_prefix_size is not None else handle
                 )
                 records = (
-                    _iter_json_stream(
-                        record_input,
-                        Path(source_path).name,
-                        fail_on_decode_error=strict_jsonl_records or provider is Provider.UNKNOWN,
+                    decoded_inputs.enter_context(
+                        owned_json_records(
+                            record_input,
+                            Path(source_path).name,
+                            fail_on_decode_error=strict_jsonl_records or provider is Provider.UNKNOWN,
+                        )
                     )
                     if input_admitted
                     else iter(())
@@ -3722,10 +3723,15 @@ def prepare_jsonl_blob(
                         profile_identity=profile_identity,
                         message_sink_factory=store.new_sink,
                         event_sink_factory=store.new_event_sink,
+                        attachment_sink_factory=store.new_attachment_sink,
                         sidecar_resolver=sidecar_resolver,
                     )
                 else:
-                    cohort = decoded_inputs.enter_context(closing(DecodedRecordSequence(records)))
+                    cohort = (
+                        records
+                        if isinstance(records, DecodedRecordSequence)
+                        else decoded_inputs.enter_context(closing(DecodedRecordSequence(records)))
+                    )
                     sessions = iter_parsed_payload(
                         provider,
                         cohort,
@@ -3735,6 +3741,7 @@ def prepare_jsonl_blob(
                         sidecar_resolver=sidecar_resolver,
                         message_sink_factory=store.new_sink,
                         event_sink_factory=store.new_event_sink,
+                        attachment_sink_factory=store.new_attachment_sink,
                     )
                 with closing(sessions) as selected_sessions:
                     for session in selected_sessions:
@@ -3813,7 +3820,6 @@ def prepare_jsonl_blob(
         return result
     except (
         BaseExceptionGroup,
-        DaemonOperationCancelled,
         DaemonBackpressureError,
         ReferenceSealError,
         NativeConnectionSettlementError,

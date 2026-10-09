@@ -45,6 +45,9 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
     "ingest_cursor": OpsTableDisposition("live ingest", "one cursor per source path", True, "retain"),
     "ingest_attempts": OpsTableDisposition("ingest", "one row per ingest attempt", True, "retain"),
     "convergence_debt": OpsTableDisposition("daemon converger", "one retryable debt row per target", True, "retain"),
+    "attachment_convergence_cursor": OpsTableDisposition(
+        "attachment convergence", "one fair archive sweep position", True, "retain"
+    ),
     "cursor_lag_samples": OpsTableDisposition(
         "daemon diagnostics", "one bounded lag sample", False, "retain pending map"
     ),
@@ -78,6 +81,9 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
     ),
     "schema_drift_samples": OpsTableDisposition(
         "schema sentinel", "one bounded drift sample", False, "retain pending map"
+    ),
+    "schema_drift_signature_chunks": OpsTableDisposition(
+        "schema sentinel", "ordered exact signature bytes per drift sample", False, "retain pending map"
     ),
     "context_injection_ledger": OpsTableDisposition(
         "context scheduler", "one admission decision per candidate item", True, "retain"
@@ -113,10 +119,17 @@ CREATE TABLE IF NOT EXISTS schema_drift_samples (
     origin                TEXT NOT NULL CHECK ({check("origin", Origin)}),
     element_kind          TEXT NOT NULL,
     classification        TEXT NOT NULL CHECK ({literal_check("classification", *get_args(DriftClassification))}),
-    unseen_key_signature  TEXT NOT NULL DEFAULT '',
+    signature_byte_count  INTEGER NOT NULL CHECK (signature_byte_count >= 0),
     native_id_example     TEXT NOT NULL,
     raw_id                TEXT NOT NULL,
     observed_at_ms        INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS schema_drift_signature_chunks (
+    sample_id     TEXT NOT NULL REFERENCES schema_drift_samples(sample_id) ON DELETE CASCADE,
+    chunk_ordinal INTEGER NOT NULL CHECK (chunk_ordinal >= 0),
+    chunk_bytes   BLOB NOT NULL CHECK (length(chunk_bytes) <= 4096),
+    PRIMARY KEY (sample_id, chunk_ordinal)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_schema_drift_samples_origin_time
@@ -259,6 +272,12 @@ CREATE TABLE IF NOT EXISTS convergence_debt (
 
 CREATE INDEX IF NOT EXISTS idx_convergence_debt_stage
 ON convergence_debt(stage, priority DESC, updated_at_ms);
+
+CREATE TABLE IF NOT EXISTS attachment_convergence_cursor (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    attachment_id TEXT NOT NULL,
+    ref_id TEXT NOT NULL
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS cursor_lag_samples (
     sample_id        TEXT PRIMARY KEY,
@@ -464,11 +483,10 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 
 -- polylogue-da1: format-drift sentinel. Every ingested record whose shape
 -- did not exactly match a committed provider schema package records one
--- bounded sample here, keyed by (origin, element_kind, unseen_key_signature),
--- so "origin X: N% of records since <date> carry unseen shapes" can be
--- read back as a windowed rate instead of discovered manually. ops.db is
--- disposable, so this is a plain freeform-additive table (no migration),
--- pruned by time and row count like fts_drift_samples.
+-- bounded sample here; exact signature bytes live in ordered child chunks
+-- and are available only through an explicit reader. ops.db is disposable,
+-- so this is a plain freeform-additive table (no migration), pruned by time
+-- and row count like fts_drift_samples.
 --
 -- polylogue-u6tl: `classification` previously hand-listed only 3 of
 -- DriftClassification's 4 values (schemas/drift_sentinel.py), silently

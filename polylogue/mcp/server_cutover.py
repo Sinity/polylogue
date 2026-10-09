@@ -333,6 +333,12 @@ async def _cost_outlook_payload(hooks: ServerCallbacks, *, plan_name: str, metho
     return hooks.json_payload(outlook, exclude_none=True)
 
 
+def _framed_root_payload(source: Any, *, root: dict[str, object]) -> MCPRootPayload[dict[str, object]]:
+    payload = MCPRootPayload(root=root)
+    payload._transaction_request = source._transaction_request
+    return payload
+
+
 async def _query_sessions(
     hooks: ServerCallbacks,
     *,
@@ -373,6 +379,7 @@ async def _query_sessions(
     over ``archive_search_payload`` / ``archive_session_list_payload``.
     """
     from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
+    from polylogue.mcp.query_contracts import build_session_query_request
     from polylogue.operations.session_contracts import SessionList, SessionSearch
     from polylogue.operations.session_reads import execute_session_operation
 
@@ -386,9 +393,29 @@ async def _query_sessions(
     # ``total`` -- while the CLI clamped the same input and answered.
     bounded_limit = hooks.clamp_limit(limit if limit is not None else DEFAULT_SESSION_LIST_LIMIT)
 
-    if continuation is None:
-        from polylogue.mcp.query_contracts import build_session_query_request
+    if continuation is not None:
+        from polylogue.archive.query.transaction import QueryContinuation
 
+        if QueryContinuation.decode(continuation).request.operation == "query":
+            return await _query_advanced_sessions(
+                hooks,
+                expression=expression,
+                limit=limit,
+                offset=offset,
+                origin=origin,
+                tag=tag,
+                repo=repo,
+                since=since,
+                until=until,
+                sort=sort,
+                min_messages=min_messages,
+                max_messages=max_messages,
+                min_words=min_words,
+                continuation=continuation,
+            )
+
+    cls: type[SessionList] | type[SessionSearch] = SessionList
+    if continuation is None:
         probe = (
             build_session_query_request(
                 query=expression,
@@ -406,6 +433,7 @@ async def _query_sessions(
             .build_spec(hooks.clamp_limit)
             .to_plan()
         )
+        cls = SessionSearch if probe.fts_terms else SessionList
         if (
             probe.has_post_filters()
             or probe.similar_text
@@ -430,7 +458,6 @@ async def _query_sessions(
                 min_words=min_words,
             )
 
-    cls = SessionSearch if expression else SessionList
     continuation_request = None
     if continuation:
         from polylogue.archive.query.transaction import QueryContinuation
@@ -464,30 +491,37 @@ async def _query_sessions(
             if continuation_request is not None
             else request
         )
+        envelope_plan = (
+            build_session_query_request(query=envelope_request.expression, sort=envelope_request.sort)
+            .build_spec(hooks.clamp_limit)
+            .to_plan()
+        )
         envelope = build_search_envelope(
             tuple(payload.items),
             total=payload.total,
             limit=payload.limit,
             offset=payload.offset,
             query=envelope_request.expression or "",
-            retrieval_lane="dialogue",
-            sort=envelope_request.sort,
+            retrieval_lane="actions" if envelope_plan.retrieval_lane == "actions" else "dialogue",
+            sort=envelope_plan.sort,
         )
         # This typed owner carries a framed continuation rather than a search cursor.
         envelope = envelope.model_copy(update={"next_offset": payload.next_offset})
         return hooks.json_payload(
-            MCPRootPayload(
+            _framed_root_payload(
+                payload,
                 root={
                     **envelope.model_dump(mode="json"),
                     "continuation": payload.continuation,
                     "coverage": payload.coverage.model_dump(mode="json"),
-                }
+                },
             )
         )
     from polylogue.surfaces.outcome import OutcomeEnvelope
 
     return hooks.json_payload(
-        MCPRootPayload(
+        _framed_root_payload(
+            payload,
             root={
                 **payload.model_dump(mode="json"),
                 "unit": "sessions",
@@ -496,7 +530,7 @@ async def _query_sessions(
                     reason=payload.coverage.gaps[0] if payload.coverage.gaps else None,
                     detail={"gaps": payload.coverage.gaps} if payload.coverage.gaps else {},
                 ).to_dict(),
-            }
+            },
         )
     )
 
@@ -516,6 +550,7 @@ async def _query_advanced_sessions(
     min_messages: int | None,
     max_messages: int | None,
     min_words: int | None,
+    continuation: str | None = None,
 ) -> str:
     """Session-level rows for ``query(projection="sessions", ...)``.
 
@@ -526,7 +561,16 @@ async def _query_advanced_sessions(
     ``list_sessions`` tools used, since ``query_units`` (the DSL path)
     explicitly rejects ``sessions`` as a terminal unit source.
     """
-    from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+    from dataclasses import replace
+
+    from polylogue.archive.query.transaction import (
+        QueryContinuation,
+        QueryContinuationInvalidError,
+        QueryTransaction,
+        QueryTransactionRequest,
+        archive_snapshot_epoch,
+        validate_continuation_epoch,
+    )
     from polylogue.mcp.archive_support import archive_search_payload, archive_session_list_payload, mcp_archive_root
     from polylogue.mcp.query_contracts import build_session_query_request
 
@@ -544,9 +588,60 @@ async def _query_advanced_sessions(
         max_messages=max_messages,
         min_words=min_words,
     )
+    resumed = None
+    if continuation is not None:
+        decoded = QueryContinuation.decode(continuation)
+        resumed = decoded.request
+        if (
+            resumed.operation != "query"
+            or resumed.projection not in {"search-envelope", "session-summary"}
+            or decoded.result_ref != resumed.result_ref
+        ):
+            raise QueryContinuationInvalidError("continuation belongs to another query projection")
+        original = {key: value for key, value in resumed.arguments.items() if key != "resolved_dates"}
+        supplied = {
+            "query": expression,
+            "origin": origin,
+            "tag": tag,
+            "repo": repo,
+            "since": since,
+            "until": until,
+            "sort": sort,
+            "min_messages": min_messages,
+            "max_messages": max_messages,
+            "min_words": min_words,
+        }
+        for key, value in supplied.items():
+            if value is not None and value != original.get(key):
+                raise QueryContinuationInvalidError(f"continuation conflicts with {key}")
+        if offset is not None and offset != resumed.offset:
+            raise QueryContinuationInvalidError("continuation conflicts with offset")
+        if limit is not None and hooks.clamp_limit(limit) > resumed.page_size:
+            raise QueryContinuationInvalidError("continuation cannot widen its bound window")
+        request = build_session_query_request(
+            **{
+                **original,
+                "limit": hooks.clamp_limit(limit) if limit is not None else resumed.page_size,
+                "offset": resumed.offset,
+            }
+        )
+        if request.sort == "random":
+            raise QueryContinuationInvalidError("random ordering cannot resume a framed query")
     clamped_limit = hooks.clamp_limit(request.limit)
     spec = request.build_spec(hooks.clamp_limit)
     effective_offset = max(0, spec.offset)
+    plan = spec.to_plan()
+    resolved_dates = (
+        resumed.arguments["resolved_dates"]
+        if resumed is not None
+        else {
+            "since": plan.since.isoformat() if plan.since else None,
+            "until": plan.until.isoformat() if plan.until else None,
+        }
+    )
+    if not isinstance(resolved_dates, dict) or set(resolved_dates) != {"since", "until"}:
+        raise QueryContinuationInvalidError("continuation has invalid resolved date bounds")
+    spec = replace(spec, since=resolved_dates["since"], until=resolved_dates["until"])
     config = hooks.get_config()
     archive_root = mcp_archive_root(config)
 
@@ -571,52 +666,47 @@ async def _query_advanced_sessions(
             tool="query",
         )
 
-    if searching:
-        transaction = QueryTransaction(
-            archive_root,
-            QueryTransactionRequest(
-                operation="query",
-                arguments=request.response_arguments(),
-                page_size=clamped_limit,
-                offset=effective_offset,
-                projection="search-envelope",
-                stable_order=request.sort or "date",
-            ),
-        )
-        with hooks.response_context("query", request.response_arguments()):
-            return hooks.json_payload(
-                await transaction.run(
-                    lambda archive: archive_search_payload(
-                        archive,
-                        spec,
-                        query=request.query or "",
-                        limit=clamped_limit,
-                        offset=effective_offset,
-                        sort=request.sort,
-                        config=config,
-                        archive_root=archive_root,
-                        include_affordances=False,
-                    )
-                )
-            )
-
-    transaction = QueryTransaction(
-        archive_root,
-        QueryTransactionRequest(
+    tx = (
+        replace(resumed, page_size=clamped_limit)
+        if resumed is not None
+        else QueryTransactionRequest(
             operation="query",
-            arguments=request.response_arguments(),
+            arguments={**request.response_arguments(), "resolved_dates": resolved_dates},
             page_size=clamped_limit,
             offset=effective_offset,
-            projection="session-summary",
+            projection="search-envelope" if searching else "session-summary",
             stable_order=request.sort or "date",
-        ),
-    )
-    with hooks.response_context("query", request.response_arguments()):
-        return hooks.json_payload(
-            await transaction.run(
-                lambda archive: archive_session_list_payload(archive, spec, config=config, archive_root=archive_root)
-            )
         )
+    )
+
+    def read(archive: Any) -> MCPRootPayload[dict[str, object]]:
+        epoch = (
+            validate_continuation_epoch(tx, archive=archive) if tx.archive_epoch else archive_snapshot_epoch(archive)
+        )
+        framed = tx.with_archive_epoch(epoch)
+        payload = (
+            archive_search_payload(
+                archive,
+                spec,
+                query=request.query or "",
+                limit=clamped_limit,
+                offset=effective_offset,
+                sort=spec.sort,
+                config=config,
+                archive_root=archive_root,
+                include_affordances=False,
+            )
+            if searching
+            else archive_session_list_payload(archive, spec, config=config, archive_root=archive_root)
+        )
+        # Retain the answering frame even when the transport cuts this page.
+        result = MCPRootPayload(root=payload.model_dump(mode="json"))
+        if spec.sort != "random":
+            result._transaction_request = framed
+        return result
+
+    with hooks.response_context("query", {"projection": "sessions", **request.response_arguments()}):
+        return hooks.json_payload(await QueryTransaction(archive_root, tx).run(read))
 
 
 #: ``query(projection=..., ...)`` reports the MCP dispatcher compiles itself
@@ -920,10 +1010,9 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
             )
 
         assert projection == "blackboard", f"unhandled personal-state projection: {projection}"
-        notes = await poly.list_blackboard_notes(limit=1_000_000)
-        note_page, note_total, note_offset, note_next_offset = page_items(
-            tuple(blackboard_note_payload(note) for note in notes), limit=clamped_limit, offset=offset
-        )
+        notes = await poly.read_blackboard_page(limit=clamped_limit, offset=offset)
+        note_page = tuple(blackboard_note_payload(note) for note in notes.items)
+        note_total, note_offset, note_next_offset = notes.total, notes.offset, notes.next_offset
         return hooks.json_payload(
             MCPBlackboardNoteListPayload(
                 items=note_page,
@@ -1485,7 +1574,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     exc.corrected_expression = propose_field_correction(expression, exc)
                 raise
 
-        return await hooks.async_safe_call("query", run_with_refinement)
+        return await hooks.async_safe_call("query", run_with_refinement, arguments={"projection": projection})
 
     async def read(
         ref: str,
@@ -1494,17 +1583,17 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         offset: int | None = None,
         continuation: str | None = None,
         around: str | None = None,
+        fragment_offset: int | None = None,
     ) -> str:
         """Read a stable URI or public ref through an explicitly named view.
 
         ``offset`` windows the row-bearing views (``messages``) exactly as the
         CLI ``--offset`` and the HTTP ``?offset=`` parameter do, so the same
-        transcript window is expressible on every public surface rather than
-        only the first page here.  The ``messages`` view continues by decimal
-        offset (``continuation="message-offset:<n>"``), matching the
-        ``topology`` view's existing ``node-offset:`` form; the surfaces share
-        one offset vocabulary rather than one surface inventing a token the
-        others cannot mint.
+        transcript window is expressible on every public surface. The messages
+        view returns opaque snapshot-bound continuations. Oversized rows return
+        lossless ASCII JSON fragments; copy the continuation descriptor's ref,
+        view, token and fragment_offset. Concatenate contiguous json_fragment
+        bytes and JSON-decode only after total_bytes has been reached.
 
         ``around`` names a message whose window is wanted instead of a
         coordinate naming it (polylogue-idrej).  It is sugar over ``offset``:
@@ -1516,6 +1605,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         the CLI: ``limit``/``offset`` bound the page, and the payload's
         opaque ``continuation`` resumes it until ``complete``.
         """
+        if fragment_offset is not None and (view != "messages" or fragment_offset < 0 or continuation is None):
+            return hooks.error_json(
+                "fragment_offset requires a bound messages continuation", code="invalid_argument", tool="read"
+            )
         started_at = monotonic()
         from polylogue.core.refs import parse_delegation_subtree_object_id
 
@@ -1578,21 +1671,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 )
 
                 window_offset = offset or 0
-                window_continuation: str | None = None
-                if continuation is not None:
-                    # Two accepted forms, one issued form. ``message-offset:<n>``
-                    # is the plain decimal coordinate the ``topology`` view also
-                    # speaks; anything else is the opaque snapshot-bound token
-                    # this route now mints and every other surface can read.
-                    if continuation.startswith("message-offset:"):
-                        token = continuation.removeprefix("message-offset:")
-                        if not token.isdecimal():
-                            return hooks.error_json(
-                                "invalid messages continuation", code="invalid_continuation", tool="read"
-                            )
-                        window_offset = int(token)
-                    else:
-                        window_continuation = continuation
+                window_continuation = continuation
                 from polylogue.archive.query.transaction import (
                     QueryContinuationInvalidError,
                     QueryContinuationStaleError,
@@ -1604,7 +1683,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
                 try:
                     window = await hooks.get_polylogue().read_transcript_window(
-                        target,
+                        normalized,
                         limit=hooks.clamp_limit(limit),
                         offset=window_offset,
                         continuation=window_continuation,
@@ -1624,31 +1703,32 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     return hooks.error_json(str(exc), code=exc.code, tool="read")
                 messages = window.rows
                 total = window.total
-                return hooks.json_payload(
-                    SessionMessagesResponsePayload(
-                        session_id=target,
-                        messages=tuple(
-                            message_row_envelope_from_domain(message, session_id=target) for message in messages
-                        ),
-                        total=total,
-                        limit=window.limit,
-                        offset=window.offset,
-                        next_offset=window.next_offset,
-                        continuation=window.continuation,
-                        lineage_complete=window.lineage_complete,
-                        lineage_truncation_reason=window.lineage_truncation_reason,
-                        authority=authority_for_config(
-                            hooks.get_polylogue().config,
-                            server_identity="direct",
-                            started_at=started_at,
-                        ),
-                        outcome=lineage_page_outcome(
-                            matched=len(messages),
-                            complete=window.lineage_complete,
-                            truncation_reason=window.lineage_truncation_reason,
-                        ),
-                    )
+                payload = SessionMessagesResponsePayload(
+                    session_id=target,
+                    messages=tuple(
+                        message_row_envelope_from_domain(message, session_id=target) for message in messages
+                    ),
+                    total=total,
+                    limit=window.limit,
+                    offset=window.offset,
+                    next_offset=window.next_offset,
+                    continuation=window.continuation,
+                    lineage_complete=window.lineage_complete,
+                    lineage_truncation_reason=window.lineage_truncation_reason,
+                    authority=authority_for_config(
+                        hooks.get_polylogue().config,
+                        server_identity="direct",
+                        started_at=started_at,
+                    ),
+                    outcome=lineage_page_outcome(
+                        matched=len(messages),
+                        complete=window.lineage_complete,
+                        truncation_reason=window.lineage_truncation_reason,
+                    ),
                 )
+                payload._transaction_request = window.transaction
+                return hooks.json_payload(payload)
+
             list_projection = SESSION_LIST_PROJECTIONS.get(view) if view is not None else None
             if list_projection is not None:
                 if session_id is None:
@@ -1671,14 +1751,27 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             from polylogue.archive.query.transaction import QueryContinuationInvalidError, QueryContinuationStaleError
 
             try:
-                payload = await hooks.get_polylogue().resolve_ref(
+                resolved_payload = await hooks.get_polylogue().resolve_ref(
                     normalized, limit=hooks.clamp_limit(limit), offset=offset or 0, continuation=continuation
                 )
             except (QueryContinuationInvalidError, QueryContinuationStaleError) as exc:
                 return hooks.error_json(str(exc), code=exc.code, tool="read")
-            return hooks.json_payload(payload)
+            return hooks.json_payload(resolved_payload)
 
-        return await hooks.async_safe_call("read", run, session_id=session_id)
+        return await hooks.async_safe_call(
+            "read",
+            run,
+            session_id=session_id,
+            arguments={
+                "ref": ref,
+                "view": view,
+                "limit": limit,
+                "offset": offset,
+                "continuation": continuation,
+                "around": around,
+                "fragment_offset": fragment_offset,
+            },
+        )
 
     async def get(ref: str, projection: MCPGetProjection = None) -> str:
         """Resolve one exact stable object or evidence identity.
@@ -2599,7 +2692,7 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             )
 
             required = (
-                "jsonl",
+                "input_path",
                 "batch_id",
                 "schema_id",
                 "schema_version",
@@ -2625,7 +2718,6 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             metadata = _field(fields, "metadata")
             try:
                 request = AnnotationBatchImportRequest(
-                    jsonl=str(values["jsonl"]),
                     batch_id=str(values["batch_id"]),
                     schema_id=str(values["schema_id"]),
                     schema_version=schema_version_value,
@@ -2638,8 +2730,11 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 )
                 # The facade checks archive writer ownership before the
                 # importer initializes or opens the durable user tier.
-                import_result = await poly.import_annotation_batch(request)
-            except (AnnotationBatchImportError, ValueError) as exc:
+                from pathlib import Path
+
+                with Path(str(values["input_path"])).open("rb") as source:
+                    import_result = await poly.import_annotation_batch(request, input=source)
+            except (AnnotationBatchImportError, ValueError, OSError) as exc:
                 return hooks.error_json(str(exc), code="invalid_annotation_batch")
             return hooks.json_payload(import_result)
 

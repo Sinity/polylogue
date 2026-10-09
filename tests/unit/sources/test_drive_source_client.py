@@ -286,31 +286,16 @@ def test_resolve_folder_id_contract(
     expect_error: type[Exception] | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _FakeHttpError(Exception):
-        def __init__(self, status: int) -> None:
-            self.resp = SimpleNamespace(status=status, reason="")
-            super().__init__(f"HTTP {status}")
-
     service = MockDriveService()
     resource = service._files_resource
     get_mock = (
         MagicMock(return_value=SimpleNamespace(execute=lambda: get_result))
         if expect_get
-        else MagicMock(side_effect=_FakeHttpError(404))
+        else MagicMock(side_effect=DriveNotFoundError("synthetic missing native ID"))
     )
     list_mock = MagicMock(return_value=SimpleNamespace(execute=lambda: {"files": list_result}))
-    if expect_get:
-        monkeypatch.setattr(resource, "get", get_mock)
-    else:
-        monkeypatch.setattr(resource, "get", get_mock)
+    monkeypatch.setattr(resource, "get", get_mock)
     monkeypatch.setattr(resource, "list", list_mock)
-    monkeypatch.setattr(
-        "polylogue.sources.drive.gateway._import_module",
-        lambda name: (
-            SimpleNamespace(HttpError=_FakeHttpError) if name == "googleapiclient.errors" else __import__(name)
-        ),
-    )
-
     client = _source_client(mock_service=service)
 
     if expect_error is not None:

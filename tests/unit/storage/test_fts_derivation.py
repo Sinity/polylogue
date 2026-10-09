@@ -22,6 +22,7 @@ from polylogue.storage.fts.derivation import (
     FtsPartitionReplacement,
 )
 from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
+from tests.infra.identity import fixture_block_content_identity
 
 
 def _adapter(db_path: Path, *, orphan_interval_s: float | None = None) -> FtsDerivationAdapter:
@@ -66,9 +67,13 @@ def _seed_session(conn: sqlite3.Connection, native_id: str = "derivation") -> tu
     )
     message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
     conn.execute(
-        "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_hash) "
-        "VALUES (?, ?, 0, 'text', 'derivation input', ?)",
-        (message_id, session_id, content_hash),
+        "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_hash, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', 'derivation input', ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            content_hash,
+            fixture_block_content_identity("text", "derivation input"),
+        ),
     )
     conn.commit()
     rowid = conn.execute("SELECT rowid FROM blocks WHERE session_id = ?", (session_id,)).fetchone()[0]
@@ -181,9 +186,15 @@ def test_large_partition_binding_streams_text_and_revalidates_changes(
     message_id = test_conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
     for position in range(1, 65):
         test_conn.execute(
-            "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_hash) "
-            "VALUES (?, ?, ?, 'text', ?, ?)",
-            (message_id, session_id, position, f"{position}:" + "x" * 65536, b"a" * 32),
+            "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_hash, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                position,
+                f"{position}:" + "x" * 65536,
+                b"a" * 32,
+                fixture_block_content_identity("text", f"{position}:" + "x" * 65536),
+            ),
         )
     test_conn.commit()
     adapter = _adapter(test_db)
@@ -413,9 +424,15 @@ def _seed_blocks(conn: sqlite3.Connection, native_id: str, count: int) -> str:
     message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
     for position in range(count):
         conn.execute(
-            "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_hash) "
-            "VALUES (?, ?, ?, 'text', ?, ?)",
-            (message_id, session_id, position, f"derivation input {position}", bytes([position % 251]) * 32),
+            "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_hash, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                position,
+                f"derivation input {position}",
+                bytes([position % 251]) * 32,
+                fixture_block_content_identity("text", f"derivation input {position}"),
+            ),
         )
     conn.commit()
     return session_id

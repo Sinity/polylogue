@@ -262,7 +262,7 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
     assert session.messages[1].model_name == "gemini-test"
     assert session.messages[1].duration_ms == 900
     assert session.messages[1].input_tokens is None
-    assert session.messages[1].output_tokens == 10
+    assert session.messages[1].output_tokens is None
     assert {block.type for block in session.messages[1].blocks} >= {
         BlockType.TEXT,
         BlockType.THINKING,
@@ -1987,6 +1987,36 @@ def test_gemini_usage_event_does_not_assign_total_only_count_to_output() -> None
     event = local_agent._gemini_message_usage_event({"usage": {"total_tokens": 0}}, message)
     assert event is not None
     assert event.payload["last_token_usage"] == {"total_tokens": 0}
+
+
+@pytest.mark.parametrize("provider", ["gemini-cli", "hermes"])
+@pytest.mark.parametrize("total", [0, 15])
+@pytest.mark.parametrize("input_tokens", [None, 10])
+def test_total_only_usage_does_not_fabricate_message_output(
+    provider: str, total: int, input_tokens: int | None
+) -> None:
+    usage: JSONDocument = {"total_tokens": total}
+    wire: JSONDocument = {"id": "answer", "role": "assistant", "type": "gemini", "content": "done", "usage": usage}
+    if input_tokens is not None:
+        usage["input_tokens"] = input_tokens
+    if provider == "gemini-cli":
+        payload = {"sessionId": "neutral-total", "kind": "main", "messages": [wire]}
+    else:
+        payload = {"session_id": "neutral-total", "session_start": "2026-01-01T00:00:00Z", "messages": [wire]}
+    [session] = parse_payload(provider, payload, "fallback")
+    [message] = session.messages
+    assert message.output_tokens is None
+    assert message.input_tokens == input_tokens
+
+
+@pytest.mark.parametrize("api_count", [None, 0, 2])
+def test_hermes_usage_event_preserves_nullable_api_call_count(api_count: int | None) -> None:
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT 5 AS input_tokens, ? AS api_call_count", (api_count,)).fetchone()
+        events = hermes_state._usage_and_lifecycle_events(row, [], session_columns=set(row.keys()))
+    [event] = events
+    assert event.payload["api_call_count"] == api_count
 
 
 def test_hermes_usage_event_keeps_null_and_explicit_zero_distinct() -> None:

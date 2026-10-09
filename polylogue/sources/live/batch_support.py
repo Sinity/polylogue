@@ -800,8 +800,8 @@ def _valid_jsonl_tail(handle: IO[bytes], start: int, end: int, *, check_stop: Ca
 def jsonl_parse_prefix_size(boundary: JsonlBoundary | JsonlFrontier, size: int) -> int | None:
     """The complete-record prefix a strict JSONL parse reads, or ``None`` for all of it.
 
-    Only an unterminated tail -- an append in progress -- is left out, even
-    when it is the whole payload (a capture taken before its first record
+    An empty stream returns zero: it admits no record. Otherwise only an
+    unterminated tail -- an append in progress -- is left out, even when it is the whole payload (a capture taken before its first record
     finished). A newline-terminated final line that does not decode is a
     finished record, so the whole payload is parsed and the strict decoder
     refuses it. Live preparation and retained replay both read through this
@@ -809,6 +809,8 @@ def jsonl_parse_prefix_size(boundary: JsonlBoundary | JsonlFrontier, size: int) 
     incomplete capture is a deferral or corrupt input is live intake's
     decision, recorded on the raw as failure evidence.
     """
+    if size == 0:
+        return 0
     return boundary.prefix_size if 0 <= boundary.prefix_size < size and not boundary.malformed_record else None
 
 

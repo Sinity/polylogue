@@ -86,9 +86,9 @@ def tool_result_outcome(is_error: int | None, exit_code: int | None) -> ToolResu
     Callers must not treat an "unknown" result as a negative claim -- for
     most origins it is the expected, honest outcome, not a gap.
 
-    This is the single canonical implementation of the exit_code/is_error
-    precedence rule; :func:`polylogue.analysis.transforms._tool_status`
-    delegates to it to avoid two independently-maintained copies drifting.
+    This is the canonical implementation of the exit_code/is_error precedence
+    rule. Hydrated block consumers additionally preserve the canonical verdict
+    through :func:`tool_result_block_outcome`.
     """
 
     if exit_code is not None:

@@ -35,7 +35,7 @@ from polylogue.cli.lowering import aggregate_mode
 from polylogue.cli.query_contracts import QueryOutputSpec
 from polylogue.cli.query_output_contracts import QueryOutputDocument
 from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
-from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, emit_empty_page, maybe_subcommand_typo_hint
+from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, OutcomeExit, emit_empty_page, maybe_subcommand_typo_hint
 from polylogue.cli.render.rows import (
     TIMING_ENV,
     emit_rows,
@@ -70,6 +70,7 @@ from polylogue.surfaces.outcome import (
 # runtime, so the gating is safe.
 if TYPE_CHECKING:
     from pathlib import Path
+    from typing import BinaryIO
 
     from polylogue.archive.query.search_cursor import SearchCursor
     from polylogue.archive.stats import ArchiveStats
@@ -126,8 +127,13 @@ def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
         from polylogue.cli.query_output import deliver_query_output
 
         rendered = io.StringIO()
-        with redirect_stdout(rendered):
-            _execute_archive_query_stdout(env, request)
+        terminal_exit: OutcomeExit | None = None
+        try:
+            with redirect_stdout(rendered):
+                _execute_archive_query_stdout(env, request)
+        except OutcomeExit as exc:
+            # Deliver the completed empty/degraded document before its status.
+            terminal_exit = exc
         deliver_query_output(
             env,
             QueryOutputDocument(
@@ -136,6 +142,8 @@ def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
                 destinations=output.destinations,
             ),
         )
+        if terminal_exit is not None:
+            raise terminal_exit
     finally:
         env.finish_timing("execute")
         TIMING_ENV.reset(timing_token)
@@ -262,16 +270,17 @@ def _read_session_windows(
     it can exceed the result-byte budget before a final slice can trim it.
     A resumed window may narrow, but never widen, its predecessor's bound.
 
-    A window that adds no messages also ends the loop.  It cannot advance the
-    composition — the next request would repeat it — so continuing on one is
-    not patience, it is a hang; ending there renders the prefix that was
-    actually read.
+    Every page's supplied verdict belongs to the composed document. Later
+    successful pages cannot certify an inherited prefix reported missing.
     """
     from polylogue.cli.lowering import lower_session_read
+    from polylogue.cli.operation_kernel import OperationEnvelopeError
+    from polylogue.surfaces.outcome import combine_outcomes
 
     messages: list[dict[str, object]] = []
     session: dict[str, object] = {}
     continuation: str | None = None
+    outcome: OutcomeEnvelope | None = None
     window_ceiling = _SESSION_READ_WINDOW
     while True:
         window_limit = window_ceiling
@@ -289,22 +298,46 @@ def _read_session_windows(
         window_ceiling = window_limit
         window = payload.get("session")
         if not isinstance(window, Mapping):
-            raise click.ClickException("session.read returned no session body")
+            raise OperationEnvelopeError("session.read returned no session body")
+        try:
+            declared = OutcomeEnvelope.model_validate(payload.get("outcome"))
+        except ValueError as exc:
+            raise OperationEnvelopeError("session.read returned no valid outcome") from exc
+        if outcome is None:
+            outcome = declared
+        else:
+            composed = combine_outcomes((outcome, declared))
+            outcome = composed.model_copy(update={"detail": {**outcome.detail, **declared.detail, **composed.detail}})
+        lineage_complete = payload.get("lineage_complete")
+        lineage_reason = payload.get("lineage_truncation_reason")
+        if not isinstance(lineage_complete, bool) or (
+            lineage_reason is not None and not isinstance(lineage_reason, str)
+        ):
+            raise OperationEnvelopeError("session.read returned no valid lineage verdict")
         if not session:
             session = {key: value for key, value in window.items() if key != "messages"}
+            session["lineage_complete"] = lineage_complete
+            session["lineage_truncation_reason"] = lineage_reason
+        elif not lineage_complete:
+            session["lineage_complete"] = False
+            session["lineage_truncation_reason"] = lineage_reason
         window_messages = window.get("messages")
         added = 0
         if isinstance(window_messages, list):
             rows = [item for item in window_messages if isinstance(item, dict)]
             messages.extend(rows)
             added = len(rows)
-        if payload.get("complete") or added == 0:
+        if payload.get("complete") is True:
+            break
+        if message_limit is not None and len(messages) >= message_limit:
             break
         next_continuation = payload.get("continuation")
-        if not isinstance(next_continuation, str):
-            break
+        if added == 0 or not isinstance(next_continuation, str) or not next_continuation:
+            raise OperationEnvelopeError("session.read did not complete or advance its message relation")
         continuation = next_continuation
     session["messages"] = messages if message_limit is None else messages[:message_limit]
+    assert outcome is not None
+    session["outcome"] = outcome.to_dict()
     return session
 
 
@@ -315,25 +348,32 @@ def _session_result_payload(session: Mapping[str, object]) -> dict[str, object]:
     and tool-use counts the summary view reads).  Naming the kept fields here
     keeps the machine document stable when the operation grows another one.
     """
+    from polylogue.cli.query_output_contracts import RootSessionDocument
+
     messages = session.get("messages")
     rows = [row for row in messages if isinstance(row, Mapping)] if isinstance(messages, list) else []
-    return {
-        "mode": "session",
-        "session_id": session.get("session_id"),
-        "native_id": session.get("native_id"),
-        # polylogue-1c6j: this document used to emit the same Origin token
-        # twice, once as ``origin`` and once as ``source``.  ``Source`` is a
-        # distinct, richer acquisition identity in this codebase, so a second
-        # key spelling it as the origin taught consumers a vocabulary the
-        # archive does not have.  ``origin`` is the public filter token and
-        # the only one here.
-        "origin": session.get("origin"),
-        "title": session.get("title"),
-        "active_leaf_message_id": session.get("active_leaf_message_id"),
-        "messages": [
-            {key: value for key, value in row.items() if key not in {"word_count", "has_tool_use"}} for row in rows
-        ],
-    }
+    return RootSessionDocument.model_validate(
+        {
+            "mode": "session",
+            "session_id": session.get("session_id"),
+            "native_id": session.get("native_id"),
+            # polylogue-1c6j: this document used to emit the same Origin token
+            # twice, once as ``origin`` and once as ``source``.  ``Source`` is a
+            # distinct, richer acquisition identity in this codebase, so a second
+            # key spelling it as the origin taught consumers a vocabulary the
+            # archive does not have.  ``origin`` is the public filter token and
+            # the only one here.
+            "origin": session.get("origin"),
+            "title": session.get("title"),
+            "active_leaf_message_id": session.get("active_leaf_message_id"),
+            "outcome": session["outcome"],
+            "lineage_complete": session["lineage_complete"],
+            "lineage_truncation_reason": session["lineage_truncation_reason"],
+            "messages": [
+                {key: value for key, value in row.items() if key not in {"word_count", "has_tool_use"}} for row in rows
+            ],
+        }
+    ).model_dump(mode="json")
 
 
 def _session_messages(session: Mapping[str, object]) -> list[Mapping[str, object]]:
@@ -366,28 +406,30 @@ def _emit_session_result(
     fields: str | None,
     view: str = "transcript",
 ) -> None:
+    from polylogue.cli.render.outcome import finish_supplied_outcome
+
     payload = _session_result_payload(session)
+    outcome = OutcomeEnvelope.model_validate(payload["outcome"])
     if output_format == "json":
         click.echo(json.dumps(project_payload(payload, fields), indent=2, sort_keys=True))
-        return
-    if output_format == "yaml":
+    elif output_format == "yaml":
         import yaml
 
         click.echo(yaml.safe_dump(project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
-        return
-    if output_format == "ndjson":
+    elif output_format == "ndjson":
         messages = payload["messages"]
         if not isinstance(messages, list):
             raise TypeError("session payload messages must be a list")
         for message in messages:
             click.echo(json.dumps(message, sort_keys=True))
-        return
-    if output_format not in {"markdown", "plaintext"}:
+    elif output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Full-session reads do not support --format {output_format}.")
-    if view == "summary":
-        click.echo(_session_summary_text(session))
-        return
-    click.echo(_session_text(session))
+    else:
+        line = render_outcome_line(outcome)
+        if line is not None:
+            click.echo(line)
+        click.echo(_session_summary_text(session) if view == "summary" else _session_text(session))
+    finish_supplied_outcome(outcome)
 
 
 def _session_text(session: Mapping[str, object]) -> str:
@@ -460,22 +502,30 @@ def _session_summary_text(session: Mapping[str, object]) -> str:
 
 
 def _emit_stream(session: Mapping[str, object], *, output_format: str) -> None:
+    from polylogue.cli.render.outcome import finish_supplied_outcome
+
     payload = _session_result_payload(session)
+    outcome = OutcomeEnvelope.model_validate(payload["outcome"])
     raw_messages = payload["messages"]
     if not isinstance(raw_messages, list):
         raise TypeError("session payload messages must be a list")
     if output_format in {"json", "json-lines", "ndjson"}:
         for message in raw_messages:
             click.echo(json.dumps(message, sort_keys=True))
+        finish_supplied_outcome(outcome)
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Stream does not support --format {output_format}.")
     lines: list[str] = []
+    line = render_outcome_line(outcome)
+    if line is not None:
+        lines.append(line)
     for message in _session_messages(session):
         lines.append(f"## {message.get('role')}")
         lines.append(_session_message_text(message))
         lines.append("")
     click.echo("\n".join(lines).rstrip())
+    finish_supplied_outcome(outcome)
 
 
 def _archive_stats_from_result(body: Mapping[str, object]) -> ArchiveStats:
@@ -840,9 +890,15 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     # scoped search (``--id X <terms>``) is still a page, inside that session.
     transcript_ref: str | None = None
     certain_ref = False
-    if session_scope_id is not None and compiled_spec.is_exact_session_ref():
+    if not params.get("list_mode") and session_scope_id is not None and compiled_spec.is_exact_session_ref():
         transcript_ref, certain_ref = session_scope_id, True
-    elif session_scope_id is None and query and not similar_text and _single_query_token_looks_like_ref(query):
+    elif (
+        not params.get("list_mode")
+        and session_scope_id is None
+        and query
+        and not similar_text
+        and _single_query_token_looks_like_ref(query)
+    ):
         transcript_ref = query
     if transcript_ref is not None and compiled_spec.exclude_text_terms:
         raise click.UsageError(
@@ -1042,6 +1098,8 @@ def _submit_mutation_operation(
     config: Config,
     operation: str,
     payload: dict[str, object],
+    *,
+    input: BinaryIO | None = None,
 ) -> dict[str, object]:
     """Run one declared write or control operation and return its result.
 
@@ -1055,7 +1113,7 @@ def _submit_mutation_operation(
 
     if daemon_route_disabled():
         raise OperationUnavailableError(f"daemon is unavailable for operation: {operation}")
-    return configured_mutation_operation(config, operation, payload)
+    return configured_mutation_operation(config, operation, payload, **({"input": input} if input is not None else {}))
 
 
 def _decode_cursor(token: str | None) -> SearchCursor | None:
@@ -1335,14 +1393,14 @@ def _emit_stats(
     if output_format == "json":
         click.echo(json.dumps(project_payload(payload, fields), indent=2, sort_keys=True))
         if exit_code:
-            raise SystemExit(exit_code)
+            raise OutcomeExit(outcome)
         return
     if output_format == "yaml":
         import yaml
 
         click.echo(yaml.safe_dump(project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
         if exit_code:
-            raise SystemExit(exit_code)
+            raise OutcomeExit(outcome)
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Stats do not support --format {output_format}.")
@@ -1360,7 +1418,7 @@ def _emit_stats(
         lines.insert(0, outcome_line)
     click.echo("\n".join(lines))
     if exit_code:
-        raise SystemExit(exit_code)
+        raise OutcomeExit(outcome)
 
 
 def _emit_stats_by(
@@ -1437,7 +1495,9 @@ def _emit_user_mutations(
         )
 
 
-def submit_cli_mutation(env: AppEnv, operation: str, payload: dict[str, object]) -> dict[str, object]:
+def submit_cli_mutation(
+    env: AppEnv, operation: str, payload: dict[str, object], *, input: BinaryIO | None = None
+) -> dict[str, object]:
     """Run one declared write for a CLI verb, or refuse in the route's voice.
 
     The single entry point every non-query CLI mutation uses, so that "the CLI
@@ -1449,7 +1509,9 @@ def submit_cli_mutation(env: AppEnv, operation: str, payload: dict[str, object])
     from polylogue.cli.operation_kernel import OperationKernelError
 
     try:
-        return _submit_mutation_operation(load_effective_config(env), operation, payload)
+        return _submit_mutation_operation(
+            load_effective_config(env), operation, payload, **({"input": input} if input is not None else {})
+        )
     except OperationKernelError as exc:
         raise mutation_refusal(exc, operation) from exc
 
@@ -1676,7 +1738,7 @@ def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_form
         pass
     else:
         click.echo(f"No {unit}s matched.")
-    raise SystemExit(outcome_exit_code(outcome))
+    raise OutcomeExit(outcome)
 
 
 def _message_query_line(item: dict[str, object]) -> str:

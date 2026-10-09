@@ -22,6 +22,8 @@ async def get_blocks(
             block_id,
             message_id,
             session_id,
+            content_identity,
+            content_occurrence,
             position AS block_index,
             block_type AS type,
             text,

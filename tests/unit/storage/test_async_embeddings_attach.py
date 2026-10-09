@@ -52,7 +52,7 @@ def test_attached_embeddings_are_measurable_on_async_index_connections(tmp_path:
     assert embedded == 0
 
 
-def test_pending_population_refuses_async_constructor_and_cached_read_pool(tmp_path: Path) -> None:
+def test_pending_population_refuses_async_constructor_and_existing_read_owner(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
     from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
 
@@ -62,7 +62,7 @@ def test_pending_population_refuses_async_constructor_and_cached_read_pool(tmp_p
 
     async def exercise() -> None:
         backend = SQLiteBackend(root / "index.db")
-        async with backend.read_pool(size=1):
+        async with backend.queries.read_snapshot():
             marker = root / POPULATION_PENDING
             marker.write_text('{"fixture":"unfinished-population"}')
             try:
@@ -109,7 +109,7 @@ def test_pending_population_refuses_async_configuration_before_pragmas_or_attach
     asyncio.run(exercise())
 
 
-def test_async_pool_refusal_closes_prior_and_new_configuration_handles(
+def test_async_snapshot_refusal_closes_unconfigured_handle(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from polylogue.storage.sqlite import async_sqlite
@@ -121,7 +121,7 @@ def test_async_pool_refusal_closes_prior_and_new_configuration_handles(
 
     async def configure_with_pending(conn: aiosqlite.Connection, *, archive_root: Path) -> None:
         handles.append(conn)
-        if len(handles) == 2:
+        if len(handles) == 1:
             (root / POPULATION_PENDING).write_text('{"fixture":"unfinished-population"}')
         await configure(conn, archive_root=root)
 
@@ -131,10 +131,9 @@ def test_async_pool_refusal_closes_prior_and_new_configuration_handles(
         monkeypatch.setattr(async_sqlite, "configure_read_connection", configure_with_pending)
         try:
             with pytest.raises(ArchivePopulationPendingError):
-                async with backend.read_pool(size=2):
-                    pytest.fail("a refused pool was published")
-            assert len(handles) == 2
-            assert backend._read_pool is None
+                async with backend.queries.read_snapshot():
+                    pytest.fail("a refused snapshot was published")
+            assert len(handles) == 1
             for conn in handles:
                 with pytest.raises(ValueError):
                     await conn.execute("SELECT 1")
@@ -182,7 +181,7 @@ def test_async_writer_refusal_closes_unconfigured_handle_without_publishing_it(
     asyncio.run(exercise())
 
 
-def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
+def test_snapshot_refusal_retains_failed_raw_handle_until_retirement(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from polylogue.storage.sqlite import async_sqlite
@@ -192,26 +191,21 @@ def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
         await backend._ensure_schema_once()
         handles = []
         close_attempts = []
-        readiness_probe: list[aiosqlite.Connection] = []
         configure = async_sqlite.configure_read_connection
         execute = cast(Callable[..., Awaitable[Any]], aiosqlite.Connection._execute)
         refuse_close = True
         primary = ValueError("synthetic configuration refusal")
 
         async def configure_last(conn: aiosqlite.Connection, *, archive_root: Path) -> None:
-            if not readiness_probe:
-                readiness_probe.append(conn)
-                await configure(conn, archive_root=archive_root)
-                return
             handles.append(conn)
             await configure(conn, archive_root=archive_root)
-            if len(handles) == 3:
+            if len(handles) == 1:
                 raise primary
 
         async def execute_with_close_fault(conn: aiosqlite.Connection, function: Any, *args: Any, **kwargs: Any) -> Any:
             if getattr(function, "__name__", None) == "close_raw" and conn in handles:
                 close_attempts.append(conn)
-                if refuse_close and conn in (handles[0], handles[-1]):
+                if refuse_close and conn is handles[0]:
                     raise OSError("synthetic native close refusal")
             return await execute(conn, function, *args, **kwargs)
 
@@ -219,24 +213,19 @@ def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
         monkeypatch.setattr(aiosqlite.Connection, "_execute", execute_with_close_fault)
         try:
             with pytest.raises(BaseExceptionGroup) as caught:
-                async with backend.read_pool(size=3):
-                    pytest.fail("a refused pool was published")
-            # A connection's own cleanup failure is grouped with the operation
-            # failure it follows; the primary still leads, and both refused
-            # native closes (first and last handle) are reported.
+                async with backend.queries.read_snapshot():
+                    pytest.fail("a refused snapshot was published")
+            # The operation failure and failed native close are both retained.
             leaves = _exception_leaves(caught.value)
             assert leaves[0] is primary, caught.value.exceptions
-            assert [type(error) for error in leaves[1:]] == [OSError, OSError], leaves
-            assert readiness_probe[0]._connection is None and not readiness_probe[0]._thread.is_alive()
-            assert len(close_attempts) == 3 and set(close_attempts) == set(handles)
-            assert backend._read_pool is None
-            for conn in (handles[0], handles[2]):
+            assert [type(error) for error in leaves[1:]] == [OSError], leaves
+            assert len(close_attempts) == 1 and set(close_attempts) == set(handles)
+            for conn in handles:
                 assert conn._connection is not None and conn._running
                 assert async_sqlite._BACKEND_CONNECTIONS[id(conn)].backend is backend
                 async with conn.execute("SELECT 1") as cursor:
                     row = await cursor.fetchone()
                     assert row is not None and row[0] == 1
-            assert handles[1]._connection is None
         finally:
             refuse_close = False
             await backend.close()

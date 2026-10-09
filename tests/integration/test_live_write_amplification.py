@@ -23,6 +23,8 @@ from typing import Any
 
 import pytest
 
+from tests.infra.identity import fixture_block_content_identity
+
 # ---------------------------------------------------------------------------
 # WAL measurement helpers
 # ---------------------------------------------------------------------------
@@ -468,8 +470,13 @@ class TestEnsureFtsTriggersEarlyReturn:
                 ("codex-session:probe-s1", "probe-m1", bytes(32)),
             )
             conn.execute(
-                "INSERT INTO blocks(message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
-                ("codex-session:probe-s1:probe-m1", "codex-session:probe-s1", "automerge probe needle"),
+                "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+                (
+                    "codex-session:probe-s1:probe-m1",
+                    "codex-session:probe-s1",
+                    "automerge probe needle",
+                    fixture_block_content_identity("text", "automerge probe needle"),
+                ),
             )
             conn.commit()
 

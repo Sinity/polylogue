@@ -9,11 +9,13 @@ was rejected and fail closed by default (any uncaught subclass is a rejection).
 
 from __future__ import annotations
 
-from polylogue.core.digest import KeyCollisionError
-
 
 class MaterialProtocolError(Exception):
     """Base class for all material-protocol-v1 compatibility failures."""
+
+
+class MaterialManifestError(MaterialProtocolError):
+    """A manifest declaration has an invalid type, identity or implemented format."""
 
 
 class UnknownOriginVocabularyError(MaterialProtocolError):
@@ -60,20 +62,17 @@ class SemanticClosureError(MaterialProtocolError):
     kind appears in the wrong space (head vs transcript)."""
 
 
-class MaterialKeyCollisionError(MaterialProtocolError, KeyCollisionError):
-    """Two object keys in one material value collide after NFC normalization.
-
-    Encoding would silently drop one of the fields, so the value is refused.
-    It remains a ``KeyCollisionError`` for callers of the digest layer.
-    """
+class MaterialValueError(MaterialProtocolError):
+    """A material value cannot be represented as exact JSON evidence."""
 
 
 __all__ = [
     "AnchorMismatchError",
     "AnchorNotFoundError",
     "DigestMismatchError",
-    "MaterialKeyCollisionError",
+    "MaterialValueError",
     "MaterialProtocolError",
+    "MaterialManifestError",
     "NotAnAppendError",
     "RecordCountMismatchError",
     "SegmentMissingError",

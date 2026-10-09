@@ -32,6 +32,7 @@ from polylogue.core.enums import (
     SessionKind,
     ToolOutcome,
 )
+from polylogue.core.json import JSONValue
 from polylogue.material_protocol.v1 import (
     AttachmentInput,
     BlockInput,
@@ -44,6 +45,45 @@ from polylogue.material_protocol.v1 import (
 )
 
 SMALL_SESSION_REVISION_CREATED_AT = "2026-07-12T00:00:00Z"
+
+
+def _block_input(
+    *,
+    position: int,
+    block_type: BlockType,
+    text: str | None = None,
+    tool_name: str | None = None,
+    tool_id: str | None = None,
+    tool_input: dict[str, JSONValue] | None = None,
+    tool_result_is_error: bool | None = None,
+    tool_result_exit_code: int | None = None,
+    tool_outcome: ToolOutcome | None = None,
+) -> BlockInput:
+    from polylogue.pipeline.ids import block_content_identity
+    from polylogue.sources.parsers.base import ParsedContentBlock
+
+    parsed = ParsedContentBlock(
+        type=block_type,
+        text=text,
+        tool_name=tool_name,
+        tool_id=tool_id,
+        tool_input=tool_input,
+        is_error=tool_result_is_error,
+        exit_code=tool_result_exit_code,
+        tool_outcome=tool_outcome,
+    )
+    return BlockInput(
+        position=position,
+        block_type=block_type,
+        content_identity=block_content_identity(parsed),
+        text=text,
+        tool_name=tool_name,
+        tool_id=tool_id,
+        tool_input=tool_input,
+        tool_result_is_error=tool_result_is_error,
+        tool_result_exit_code=tool_result_exit_code,
+        tool_outcome=tool_outcome,
+    )
 
 
 def build_small_session_material() -> SessionMaterial:
@@ -70,7 +110,7 @@ def build_small_session_material() -> SessionMaterial:
         input_tokens=120,
         output_tokens=40,
         blocks=(
-            BlockInput(
+            _block_input(
                 position=0,
                 block_type=BlockType.TOOL_USE,
                 tool_name="run_tests",
@@ -82,6 +122,7 @@ def build_small_session_material() -> SessionMaterial:
             AttachmentInput(
                 position=0,
                 attachment_id="att-1",
+                native_identity="6174742d31",
                 display_name="log-日本語.txt",
                 media_type="text/plain",
                 byte_count=0,
@@ -101,7 +142,7 @@ def build_small_session_material() -> SessionMaterial:
         # Missing timestamp: ordinal (position=2) is the only order signal.
         occurred_at_ms=None,
         blocks=(
-            BlockInput(
+            _block_input(
                 position=0,
                 block_type=BlockType.TOOL_RESULT,
                 tool_id="tool-ok-1",
@@ -123,7 +164,7 @@ def build_small_session_material() -> SessionMaterial:
         model_name="claude-sonnet-5",
         parent_native_id="msg-3",
         blocks=(
-            BlockInput(
+            _block_input(
                 position=0,
                 block_type=BlockType.TOOL_USE,
                 tool_name="run_tests",
@@ -141,7 +182,7 @@ def build_small_session_material() -> SessionMaterial:
         text=None,
         occurred_at_ms=1_720_000_061_000,
         blocks=(
-            BlockInput(
+            _block_input(
                 position=0,
                 block_type=BlockType.TOOL_RESULT,
                 tool_id="tool-fail-1",

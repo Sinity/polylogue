@@ -16,7 +16,7 @@ from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.schemas import RetainedValidationVerdict
-from polylogue.schemas.drift_sentinel import SchemaDriftObservation
+from polylogue.schemas.drift_sentinel import DriftSignature, SchemaDriftObservation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.raw_owner_routes import converge_pending_raws_with_owner, replay_retained_raws
@@ -175,7 +175,7 @@ async def test_strict_retained_validation_refusal_does_not_publish_marker_inputs
                 origin="codex-session",
                 element_kind="session_record",
                 classification="new_field",
-                unseen_key_signature="payload.synthetic",
+                unseen_key_signature=DriftSignature.from_text("payload.synthetic", directory=tmp_path),
                 native_id_example="strict-marker",
                 raw_id=raw_id,
             ),

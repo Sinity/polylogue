@@ -8,7 +8,7 @@ import threading
 import pytest
 
 from polylogue.core.compute import BoundedComputeAdapter, DaemonOperationCancelled
-from polylogue.sources.decoders import _iter_json_stream
+from tests.infra.json_values import iter_owned_json_values
 
 
 def test_cancelled_decode_stops_before_publishing_the_next_record() -> None:
@@ -21,7 +21,7 @@ def test_cancelled_decode_stops_before_publishing_the_next_record() -> None:
     def decode() -> None:
         try:
             with io.BytesIO(b'{"marker":1}\n{"marker":2}\n') as source:
-                for value in _iter_json_stream(source, "synthetic.jsonl", fail_on_decode_error=True):
+                for value in iter_owned_json_values(source, "synthetic.jsonl", fail_on_decode_error=True):
                     published.append(value)
                     first_record.set()
                     assert resume.wait(5)

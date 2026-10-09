@@ -8,6 +8,7 @@ from pathlib import Path
 
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.identity import fixture_block_content_identity
 
 
 def seed_delegations(archive_root: Path, *, count: int = 1, annotation_count: int = 0) -> None:
@@ -75,14 +76,14 @@ def _seed_one_delegation(archive_root: Path, suffix: str) -> None:
             "SELECT message_id FROM messages WHERE session_id = ? AND native_id = 'dispatch'", (parent_id,)
         ).fetchone()[0]
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, tool_name, tool_id, semantic_type, tool_input
-            ) VALUES (?, ?, 0, 'tool_use', 'Task', 'task-1', 'subagent', '{"prompt":"review"}')
-            """,
-            (message_id, parent_id),
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, semantic_type, tool_input , content_identity, content_occurrence) VALUES (?, ?, 0, 'tool_use', 'Task', 'task-1', 'subagent', '{\"prompt\":\"review\"}', ?, 0)",
+            (
+                message_id,
+                parent_id,
+                fixture_block_content_identity("tool_use", "Task", "task-1", "subagent", '{"prompt":"review"}'),
+            ),
         )
-        # block_id is generated as message_id || ':' || position; a literal
+        # block_id carries the message's semantic digest and occurrence; a literal
         # tool_id ("task-1") is a different value and would leave the join
         # in delegation_facts_source (index.py) unresolved.
         block_id = conn.execute(

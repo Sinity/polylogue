@@ -783,10 +783,11 @@ async def test_prepared_publication_cancellation_reaches_and_settles_the_referen
 
 
 def _read_drive_report(parser: ParsingService, source: Source, witnesses: Any, **kwargs: Any) -> Any:
-    from polylogue.operations.drive_readiness import inspect_drive_readiness
+    from polylogue.core.enums import ValidationMode
+    from polylogue.operations.drive_readiness import inspect_current_drive_readiness
 
-    with sqlite3.connect(parser.archive_root / "source.db") as raw, sqlite3.connect(parser.config.db_path) as index:
-        return inspect_drive_readiness([source], raw, index, witnesses, **kwargs)
+    kwargs.setdefault("validation_mode", ValidationMode.from_string(parser.config.schema_validation))
+    return inspect_current_drive_readiness(parser.archive_root, [source], witnesses, **kwargs)
 
 
 @pytest.mark.parametrize("failure", [None, "download", "persist", "revision_race"])
@@ -984,3 +985,45 @@ async def test_drive_interrupted_acquisition_listing_keeps_the_configured_denomi
         witness.close()
     await parser.repository.close()
     assert await coordinator.shutdown(timeout=30)
+
+
+async def test_drive_readiness_rechecks_selected_raw_validation_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.core.enums import ValidationMode
+    from polylogue.operations.drive_readiness import DriveCatchupState
+
+    parser, source, coordinator = await make_parser(tmp_path, monkeypatch)
+    monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: DriveClient())
+    witnesses = {}
+    try:
+        result = await parser.ingest_sources(sources=[source])
+        witnesses = result.acquire_result.drive_witnesses
+        advisory = _read_drive_report(parser, source, witnesses, validation_mode=ValidationMode.ADVISORY)
+        assert advisory.state is DriveCatchupState.COMPLETE
+        assert advisory.materialization_pending == 0
+        strict = _read_drive_report(parser, source, witnesses, validation_mode=ValidationMode.STRICT)
+        assert strict.state is DriveCatchupState.PENDING
+        assert strict.materialization_pending == 1
+        assert "drive_raw_currency_pending" in strict.gaps
+        unknown = _read_drive_report(parser, source, witnesses, validation_mode=None)
+        assert unknown.state is DriveCatchupState.UNKNOWN
+        assert "drive_raw_currency_unobserved" in unknown.gaps
+    finally:
+        for witness in witnesses.values():
+            witness.close()
+        await parser.repository.close()
+        assert await coordinator.shutdown(timeout=30.0)
+
+
+def test_config_projection_and_readiness_cache_bind_selected_validation_policy() -> None:
+    from polylogue.config import resolve_runtime_config
+    from polylogue.operations.drive_readiness import configured_source_observation_fingerprint
+
+    runtime = resolve_runtime_config(cli_overrides={"schema_validation": "strict"})
+    strict = runtime.as_config()
+    assert strict.schema_validation == "strict"
+    advisory = resolve_runtime_config(cli_overrides={"schema_validation": "advisory"}).as_config()
+    assert advisory.schema_validation == "advisory"
+    assert configured_source_observation_fingerprint(strict) != configured_source_observation_fingerprint(advisory)

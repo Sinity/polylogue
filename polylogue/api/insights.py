@@ -493,9 +493,9 @@ class PolylogueInsightsMixin:
     # These were originally inline MCP-only math in
     # ``mcp/server_insight_tools.py`` -- unreachable from the CLI or this
     # library facade. The reducers/heuristics themselves live in
-    # ``insights/archive_rollups.py`` and ``insights/session_analytics.py``;
-    # these methods are the fetch-then-reduce composition so MCP and any
-    # other caller share one definition of the math.
+    # ``analysis/archive_rollups.py`` and ``analysis/session_analytics.py``;
+    # Scalar profile analytics reduce native fields on the controlled reader;
+    # the remaining profile comparisons share their analysis reducers.
     # ------------------------------------------------------------------
 
     async def aggregate_sessions(
@@ -510,13 +510,21 @@ class PolylogueInsightsMixin:
 
         Raises ``ValueError`` for an unsupported ``group_by``.
         """
-        from polylogue.analysis.archive_rollups import aggregate_session_profiles_by_dimension
-
-        profiles = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
+        request = SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_profile.aggregate_sessions",
+            arguments={"group_by": group_by, "scope": request.model_dump(mode="json")},
+            work=lambda archive: archive.read_session_profile_analytics(
+                mode="counts",
+                group_by=group_by,
+                origin=request.origin,
+                since_ms=_archive_query_date_ms("since", request.since),
+                until_ms=_archive_query_date_ms("until", request.until),
+            ),
+            projection="session-profile-analytics",
+            stable_order="dimension",
         )
-        buckets = aggregate_session_profiles_by_dimension(profiles, group_by)
-        return {"group_by": group_by, "total_sessions": len(profiles), "buckets": buckets}
 
     async def workflow_shape_distribution(
         self,
@@ -531,13 +539,21 @@ class PolylogueInsightsMixin:
         Raises ``ValueError`` when ``group_by`` is not one of
         ``week``, ``origin``, ``project``.
         """
-        from polylogue.analysis.archive_rollups import workflow_shape_distribution_buckets
-
-        profiles = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
+        request = SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_profile.workflow_shape_distribution",
+            arguments={"group_by": group_by, "scope": request.model_dump(mode="json")},
+            work=lambda archive: archive.read_session_profile_analytics(
+                mode="workflow",
+                group_by=group_by,
+                origin=request.origin,
+                since_ms=_archive_query_date_ms("since", request.since),
+                until_ms=_archive_query_date_ms("until", request.until),
+            ),
+            projection="session-profile-analytics",
+            stable_order="dimension",
         )
-        buckets = workflow_shape_distribution_buckets(profiles, group_by)
-        return {"group_by": group_by, "total_sessions": len(profiles), "buckets": buckets}
 
     async def find_abandoned_sessions(
         self,
@@ -554,13 +570,25 @@ class PolylogueInsightsMixin:
 
         Raises ``ValueError`` for an unknown ``min_severity``.
         """
-        from polylogue.analysis.archive_rollups import abandoned_session_items
-
-        profiles = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(origin=origin, tag=tag, repo=repo, since=since, until=until, limit=None)
+        request = SessionProfileInsightQuery(origin=origin, tag=tag, repo=repo, since=since, until=until, limit=None)
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.session_profile.find_abandoned_sessions",
+            arguments={"min_severity": min_severity, "limit": limit, "scope": request.model_dump(mode="json")},
+            work=lambda archive: archive.read_session_profile_analytics(
+                mode="abandoned",
+                min_severity=min_severity,
+                limit=limit,
+                tag=request.tag,
+                repo=request.repo,
+                origin=request.origin,
+                since_ms=_archive_query_date_ms("since", request.since),
+                until_ms=_archive_query_date_ms("until", request.until),
+            ),
+            projection="session-profile-analytics",
+            stable_order="date-desc,recency-desc,session-id",
+            page_size=max(limit, 0),
         )
-        items = abandoned_session_items(profiles, min_severity=min_severity)
-        return {"total": len(items), "items": items[:limit]}
 
     async def tool_call_latency_distribution(
         self,

@@ -38,6 +38,56 @@ def sync_directory(path: Path) -> None:
     _fsync_directory(path)
 
 
+def sync_directory_ancestors(path: Path) -> None:
+    """Persist a directory and its reachability, including newly made ancestors."""
+    path = path.absolute()
+    while True:
+        _fsync_directory(path)
+        if path.parent == path:
+            return
+        path = path.parent
+
+
+def sync_tree(root: Path) -> None:
+    """Persist an exclusively owned regular file tree before publishing authority.
+
+    Entries stream through open directory iterators; files precede their
+    containing directories and ancestors. Symlinks and special files refuse
+    publication rather than syncing a different object's bytes.
+    """
+    root = root.absolute()
+    pending = []
+    try:
+        if not stat.S_ISDIR(root.lstat().st_mode):
+            raise DurableFilesystemError(f"publication root is not a real directory: {root}")
+        pending.append((root, os.scandir(root)))
+        while pending:
+            directory, entries = pending[-1]
+            entry = next(entries, None)
+            if entry is None:
+                entries.close()
+                pending.pop()
+                _fsync_directory(directory)
+                continue
+            path = Path(entry.path)
+            if entry.is_dir(follow_symlinks=False):
+                pending.append((path, os.scandir(path)))
+                continue
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise DurableFilesystemError(f"publication artifact is not a regular file: {path}")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        sync_directory_ancestors(root.parent)
+    except OSError as exc:
+        raise DurableFilesystemError(f"cannot durably publish tree: {root}") from exc
+    finally:
+        for _, entries in pending:
+            entries.close()
+
+
 def write_once(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
     """Create ``path`` exactly once, persisting its bytes and directory entry."""
     created: list[Path] = []
@@ -122,7 +172,16 @@ def append_line(path: Path, line: str | bytes) -> None:
         raise DurableFilesystemError(f"cannot durably append: {path}") from exc
 
 
-__all__ = ["DurableFilesystemError", "append_line", "atomic_create", "atomic_replace", "sync_directory", "write_once"]
+__all__ = [
+    "DurableFilesystemError",
+    "append_line",
+    "atomic_create",
+    "atomic_replace",
+    "sync_directory",
+    "sync_directory_ancestors",
+    "sync_tree",
+    "write_once",
+]
 
 
 def reflink_into(source_fd: int, destination_fd: int) -> bool:

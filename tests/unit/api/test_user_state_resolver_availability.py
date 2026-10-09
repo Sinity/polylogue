@@ -17,8 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.api.user_state_resolver import resolve_insight_target
+from polylogue.api.user_state_resolver import (
+    resolve_insight_target,
+)
 from polylogue.core.user_state_targets import TARGET_SESSION
+from polylogue.operations.attachment_target_read import _resolve_attachment_in_connections
 
 
 def _materialized_index(root: Path) -> Path:
@@ -86,3 +89,146 @@ def test_complete_existence_probe_runs_on_original_bounded_creator(
         _resolve(tmp_path)
     assert len(workers) == 1
     assert workers[0] != creator
+
+
+def test_positional_block_input_returns_stable_block_id_for_persistence(tmp_path: Path) -> None:
+    index_db = _materialized_index(tmp_path)
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE blocks(session_id TEXT, message_id TEXT, position INTEGER, block_id TEXT)")
+        conn.execute(
+            "INSERT INTO blocks VALUES (?, ?, ?, ?)",
+            (
+                "origin:session",
+                "origin:session:n:message",
+                2,
+                "origin:session:n:message:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+            ),
+        )
+
+    resolved = asyncio.run(
+        resolve_insight_target(
+            tmp_path,
+            target_type="block",
+            target_id="origin:session:n:message:2",
+            session_id="origin:session",
+        )
+    )
+
+    assert (
+        resolved["target_id"]
+        == "origin:session:n:message:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0"
+    )
+    assert resolved["message_id"] == "origin:session:n:message"
+
+
+def test_stable_block_target_is_resolved_by_opaque_id(tmp_path: Path) -> None:
+    index_db = _materialized_index(tmp_path)
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE blocks(session_id TEXT, message_id TEXT, position INTEGER, block_id TEXT)")
+        conn.execute(
+            "INSERT INTO blocks VALUES (?, ?, ?, ?)",
+            (
+                "origin:session",
+                "origin:session:n:message",
+                2,
+                "origin:session:n:message:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+            ),
+        )
+
+    resolved = asyncio.run(
+        resolve_insight_target(
+            tmp_path,
+            target_type="block",
+            target_id="origin:session:n:message:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+            session_id="origin:session",
+        )
+    )
+
+    assert (
+        resolved["target_id"]
+        == "origin:session:n:message:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0"
+    )
+    assert resolved["message_id"] == "origin:session:n:message"
+
+
+def test_attachment_target_uses_stable_reference_and_source_supplier() -> None:
+    from polylogue.core.identity_law import attachment_native_identity, attachment_reference_id
+
+    native_identity = attachment_native_identity("file-a")
+    reference_id = attachment_reference_id("message-a", native_identity)
+    index = sqlite3.connect(":memory:")
+    source = sqlite3.connect(":memory:")
+    try:
+        index.executescript(
+            "CREATE TABLE messages(message_id TEXT, session_id TEXT);"
+            "CREATE TABLE attachments(attachment_id TEXT, blob_hash BLOB, byte_count INTEGER);"
+            "CREATE TABLE attachment_refs(ref_id TEXT, attachment_id TEXT, session_id TEXT, message_id TEXT, "
+            "native_identity TEXT, "
+            "supplying_raw_id TEXT);"
+            "CREATE TABLE attachment_native_ids(ref_id TEXT, id_kind TEXT, native_id TEXT);"
+        )
+        source.executescript(
+            "CREATE TABLE raw_sessions(raw_id TEXT, blob_hash BLOB);"
+            "CREATE TABLE blob_refs(ref_id TEXT, ref_type TEXT, source_path TEXT, blob_hash BLOB, size_bytes INTEGER);"
+        )
+        index.execute("INSERT INTO messages VALUES ('message-a', 'session-a')")
+        index.execute("INSERT INTO attachments VALUES ('content-version-1', X'aa', 3)")
+        index.execute(
+            "INSERT INTO attachment_refs VALUES (?, 'content-version-1', 'session-a', 'message-a', ?, 'raw-a')",
+            (reference_id, native_identity),
+        )
+        source.execute("INSERT INTO raw_sessions VALUES ('raw-a', X'01')")
+        index.execute("INSERT INTO attachment_native_ids VALUES (?, 'file', 'file-a')", (reference_id,))
+        source.execute("INSERT INTO blob_refs VALUES ('raw-a', 'attachment', 'attachment:file-a', X'aa', 3)")
+        assert _resolve_attachment_in_connections(index, source, session_id="session-a", reference_id=reference_id) == (
+            reference_id,
+            "message-a",
+        )
+        assert (
+            _resolve_attachment_in_connections(
+                index, source, session_id="session-a", reference_id="message-a:attachment:0"
+            )
+            is None
+        )
+        resolved = asyncio.run(
+            resolve_insight_target(
+                Path("/unused"),
+                target_type="attachment",
+                target_id=reference_id,
+                session_id="session-a",
+                index_connection=index,
+                source_connection=source,
+            )
+        )
+        assert resolved["target_id"] == reference_id
+        assert resolved["message_id"] == "message-a"
+
+        # Acquisition can replace the content-addressed attachment row while
+        # preserving the stable message reference used by new user state.
+        index.execute("UPDATE attachments SET attachment_id='content-version-2'")
+        index.execute("UPDATE attachment_refs SET attachment_id='content-version-2'")
+        assert _resolve_attachment_in_connections(index, source, session_id="session-a", reference_id=reference_id) == (
+            reference_id,
+            "message-a",
+        )
+        assert (
+            _resolve_attachment_in_connections(index, source, session_id="session-a", reference_id="content-version-2")
+            is None
+        )
+
+        assert _resolve_attachment_in_connections(index, source, session_id="session-a", reference_id=reference_id) == (
+            reference_id,
+            "message-a",
+        )
+        source.execute("UPDATE blob_refs SET source_path='attachment:other-file'")
+        assert (
+            _resolve_attachment_in_connections(index, source, session_id="session-a", reference_id=reference_id) is None
+        )
+
+        source.execute("DELETE FROM raw_sessions WHERE raw_id='raw-a'")
+        assert (
+            _resolve_attachment_in_connections(index, source, session_id="session-a", reference_id=reference_id) is None
+        )
+    finally:
+        index.close()
+        source.close()

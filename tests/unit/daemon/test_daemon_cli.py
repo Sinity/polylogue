@@ -394,6 +394,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
             "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
         )
         conn.commit()
+    frozen_clock.advance(1.0)
     stage = ConvergenceStage(
         name="derived",
         description="retry test",
@@ -2170,7 +2171,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     async def fake_configure_fts_automerge() -> None:
         events.append("automerge")
 
-    def fake_operation_recovery(_archive_root_path: Path, *, resolver_actor_ref: str, input_demand: object) -> None:
+    def fake_operation_recovery(
+        _archive_root_path: Path, *, resolver_actor_ref: str, input_demand: object, startup: bool
+    ) -> None:
+        assert startup
         events.append("operation-recovery")
 
     def recording_converger(
@@ -3843,7 +3847,7 @@ def _daemon_startup_stubs(
     stack.enter_context(
         patch(
             "polylogue.operations.mutation_replay.recover_interrupted_operations",
-            lambda _root, *, resolver_actor_ref, input_demand: None,
+            lambda _root, *, resolver_actor_ref, input_demand, startup: None,
         )
     )
     stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
@@ -5617,3 +5621,81 @@ def test_startup_archive_admission_uses_eventual_compute_creator_and_settles(
             assert await coordinator.shutdown(timeout=inf)
 
     asyncio.run(run())
+
+
+@pytest.mark.contract
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
+@pytest.mark.parametrize("unavailable_stage", ["live_ingest_source_read", "live_ingest_deferred", "sinex_publication"])
+@pytest.mark.parametrize("retry_stage", ["hook_paste_enrichment", "lineage_prefix_recompose"])
+def test_debt_retry_selects_executable_stage_before_page_limit(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    unavailable_stage: str,
+    retry_stage: str,
+) -> None:
+    """Filtering unavailable stages after LIMIT100 starves the older subject."""
+    from polylogue.daemon import cli as daemon_cli
+
+    db = tmp_path / "index.db"
+    cursor = CursorStore(db)
+    cursor.record_convergence_debt(stage=retry_stage, subject_type="session_id", subject_id="owed", error="retry owed")
+    for number in range(100):
+        cursor.record_convergence_debt(
+            stage=unavailable_stage,
+            subject_type="source_path",
+            subject_id=f"/synthetic/input-{number}",
+            error="original acquisition debt",
+            deferred=True,
+        )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = NULL, updated_at_ms = 2")
+        conn.execute("UPDATE convergence_debt SET updated_at_ms = 1 WHERE stage = ?", (retry_stage,))
+    before = cursor.list_convergence_debt(limit=101)
+    calls: list[tuple[str, ...]] = []
+
+    def execute(session_ids: Sequence[str]) -> bool:
+        calls.append(tuple(session_ids))
+        return True
+
+    stage = ConvergenceStage(
+        name=retry_stage,
+        description="synthetic executable retry",
+        check=lambda path: False,
+        execute=lambda path: True,
+        check_sessions=lambda ids: set(ids),
+        execute_sessions=execute,
+    )
+    with (
+        patch(
+            "polylogue.daemon.convergence_stages.make_default_convergence_stages",
+            return_value=(stage,) if retry_stage != "hook_paste_enrichment" else (),
+        ),
+        patch(
+            "polylogue.daemon.convergence_stages.make_hook_paste_enrichment_stage",
+            return_value=stage
+            if retry_stage == "hook_paste_enrichment"
+            else ConvergenceStage(
+                name="hook_paste_enrichment",
+                description="idle hook",
+                check=lambda path: False,
+                execute=lambda path: True,
+            ),
+        ),
+    ):
+        assert daemon_cli._drain_convergence_debt_once(db, compute_adapter=bounded_compute_adapter) == 1
+        assert daemon_cli._drain_convergence_debt_once(db, compute_adapter=bounded_compute_adapter) == 0
+    assert calls == [("owed",)]
+    after = cursor.list_convergence_debt(limit=101)
+    assert after == [row for row in before if row.stage == unavailable_stage]
+
+
+@pytest.mark.contract
+def test_convergence_debt_empty_stage_selection_preserves_visible_rows(tmp_path: Path) -> None:
+    """An empty executable roster selects no debt, never every debt."""
+    cursor = CursorStore(tmp_path / "index.db")
+    cursor.record_convergence_debt(stage="owed", subject_type="session_id", subject_id="session", error="original")
+    assert cursor.list_convergence_debt(include_stages=()) == []
+    assert cursor.list_convergence_debt(subject_types=()) == []
+    assert len(cursor.list_convergence_debt()) == 1
+    assert len(cursor.list_convergence_debt(include_stages=("owed",), subject_types=("session_id",))) == 1

@@ -52,14 +52,7 @@ _VALID_SHARD = re.compile(r"[0-9a-f]{2}")
 _VALID_LEAF = re.compile(r"[0-9a-f]{62}")
 _STAGING_DIRNAME = ".staging"
 _NAMESPACE_MARKER_FILENAME = ".polylogue-blob-namespace"
-#: Blob-GC's index-liveness observation, written beside the namespace marker.
-#: Declared here rather than in ``blob_gc_index_watermark`` because this module
-#: owns what may legitimately sit in the namespace root:
-#: :meth:`BlobStore.iter_namespace` reports every other entry as a critical
-#: invalid-namespace finding, so a first-party control file that this list does
-#: not name reads to an operator as blob corruption.
-INDEX_LIVENESS_WATERMARK_FILENAME = ".polylogue-index-liveness-watermark.json"
-_RESERVED_ROOT_ENTRY_NAMES = frozenset({_NAMESPACE_MARKER_FILENAME, INDEX_LIVENESS_WATERMARK_FILENAME})
+_RESERVED_ROOT_ENTRY_NAMES = frozenset({_NAMESPACE_MARKER_FILENAME})
 
 Heartbeat = Callable[[], None]
 

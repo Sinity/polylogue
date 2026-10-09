@@ -10,8 +10,9 @@ import json
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Never, TypeVar, cast
 from unittest.mock import AsyncMock
@@ -23,7 +24,7 @@ from typing_extensions import TypedDict, Unpack
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.session.domain_models import Session
-from polylogue.core.enums import BlockType, Origin, Provider, SemanticBlockType
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
 from polylogue.storage.query_models import SessionRecordQuery
@@ -34,7 +35,6 @@ from polylogue.storage.runtime import (
     MessageRecord,
     SessionRecord,
     _json_or_none,
-    _make_ref_id,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
@@ -43,6 +43,7 @@ from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import (
     make_attachment,
+    make_content_block,
     make_message,
     make_session,
     save_session_to_archive,
@@ -116,7 +117,6 @@ def _content_hash(value: str) -> ContentHash:
 
 def _content_block(
     *,
-    block_id: str,
     message_id: str,
     session_id: str,
     block_index: int,
@@ -144,18 +144,17 @@ def _content_block(
                 base.update(parsed)
         base.setdefault("media_type", media_type)
         metadata = _json_dumps(base)
-    return BlockRecord(
-        block_id=block_id,
-        message_id=_message_id(message_id),
-        session_id=_session_id(session_id),
+    return make_content_block(
+        message_id=message_id,
+        session_id=session_id,
         block_index=block_index,
-        type=BlockType.from_string(block_type),
+        block_type=block_type,
         text=text,
         tool_name=tool_name,
         tool_id=tool_id,
         tool_input=tool_input,
         metadata=metadata,
-        semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
+        semantic_type=semantic_type,
     )
 
 
@@ -199,14 +198,6 @@ def _attachment_record(
         size_bytes=size_bytes,
         display_name=display_name,
         attachment_native_id=attachment_id,
-    )
-
-
-def _ref_id(attachment_id: str, session_id: str, message_id: str | None) -> str:
-    return _make_ref_id(
-        _attachment_id(attachment_id),
-        _session_id(session_id),
-        None if message_id is None else _message_id(message_id),
     )
 
 
@@ -336,7 +327,6 @@ def _file_read_block(*, message_id: str, session_id: str, path: str, block_index
     the path must be carried in ``tool_input`` rather than block metadata.
     """
     return _content_block(
-        block_id=f"{message_id}-{block_index}",
         message_id=message_id,
         session_id=session_id,
         block_index=block_index,
@@ -469,20 +459,26 @@ async def test_list_summaries_by_query_hydrates_session_profile_slice(monkeypatc
     queries = SimpleNamespace(
         list_session_summaries=AsyncMock(return_value=records),
         get_message_counts_batch=AsyncMock(return_value=dict.fromkeys(ids, 4)),
+        get_session_tags_batch=AsyncMock(return_value={}),
+        get_session_profiles_batch=AsyncMock(return_value=profile_records),
     )
+
+    @asynccontextmanager
+    async def snapshot() -> AsyncIterator[SimpleNamespace]:
+        yield queries
+
+    queries.read_snapshot = snapshot
 
     class _Repo(RepositoryArchiveSessionMixin):
         def __init__(self) -> None:
             self.queries = cast(Any, queries)
-            setattr(self, "_fetch_tags_by_session", AsyncMock(return_value={}))  # noqa: B010
-            setattr(self, "get_session_profile_records_batch", AsyncMock(return_value=profile_records))  # noqa: B010
 
     repo = _Repo()
     known, unknown, stale = await repo.list_summaries_by_query(_record_query(origin="codex-session", limit=3))
     assert (known.terminal_state, known.total_cost_usd, known.cost_provenance) == ("refused", 1.75, "provider_reported")
     assert (unknown.terminal_state, unknown.total_cost_usd, unknown.cost_provenance) == ("completed", None, None)
     assert (stale.terminal_state, stale.total_cost_usd, stale.cost_provenance) == (None, None, None)
-    cast(AsyncMock, repo.get_session_profile_records_batch).assert_awaited_once_with(ids)
+    queries.get_session_profiles_batch.assert_awaited_once_with(ids)
 
 
 def test_actions_view_uses_blocks_without_session_payload_bloat(workspace_env: dict[str, Path]) -> None:
@@ -588,7 +584,6 @@ def _tool_block(
     *, message_id: str, session_id: str, tool_name: str, semantic_type: str, tool_input: str | None = None
 ) -> BlockRecord:
     return _content_block(
-        block_id=f"{message_id}-0",
         message_id=message_id,
         session_id=session_id,
         block_index=0,
@@ -887,24 +882,6 @@ def test_json_or_none_contract() -> None:
         else:
             assert result is not None
             assert json.loads(result) == expected
-
-
-def test_make_ref_id_contract() -> None:
-    """Attachment ref IDs must be deterministic and sensitive to attachment, session, and message."""
-    same_1 = _ref_id("att1", "conv1", "msg1")
-    same_2 = _ref_id("att1", "conv1", "msg1")
-    different_attachment = _ref_id("att2", "conv1", "msg1")
-    different_session = _ref_id("att1", "conv2", "msg1")
-    none_message_1 = _ref_id("att1", "conv1", None)
-    none_message_2 = _ref_id("att1", "conv1", None)
-
-    assert same_1 == same_2
-    assert same_1 != different_attachment
-    assert same_1 != different_session
-    assert none_message_1 == none_message_2
-    assert none_message_1 != same_1
-    assert same_1.startswith("ref-")
-    assert len(same_1) == len("ref-") + 16
 
 
 @pytest.mark.slow

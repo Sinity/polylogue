@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Protocol
 
+from polylogue.core.identity_law import block_id as archive_block_id
 from polylogue.markers.lowering import assertion_id_for_marker, iter_candidates_for_block
 from polylogue.storage.accepted_marker_inputs import AcceptedMarkerInputRefusedError
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC
@@ -84,7 +85,14 @@ def marker_candidates_for_prepared_write_stream(prepared: PreparedSessionWrite) 
                 if not isinstance(text, str):
                     continue
                 message_id = str(row["message_id"])
-                block_id = f"{message_id}:{row['position']}"
+                occurrence = row["content_occurrence"]
+                if type(occurrence) is not int:
+                    raise AcceptedMarkerInputRefusedError("accepted block identity has an invalid occurrence")
+                block_id = archive_block_id(
+                    message_id,
+                    content_identity=str(row["content_identity"]),
+                    content_occurrence=occurrence,
+                )
                 for candidate in iter_candidates_for_block(message_id, block_id, text):
                     assertion_id = assertion_id_for_marker(candidate)
                     if assertion_id is not None:

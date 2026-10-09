@@ -188,6 +188,7 @@ class _ParseContext:
     # The origin this file's location binds, or ``None`` where the location
     # classifies (the import inbox, and export archives opened from it).
     bound_provider: Provider | None = None
+    raw_directory: Path | None = None
 
 
 __all__ = [

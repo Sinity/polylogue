@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Generator, Iterable
+from contextlib import closing
 from dataclasses import dataclass, replace
 from itertools import islice
 from pathlib import Path
@@ -16,6 +17,7 @@ from polylogue.schemas.field_stats.detection import is_dynamic_key, should_colla
 from polylogue.schemas.observation_identity import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.observation_models import (
     SCHEMA_SAMPLE_STRING_LIMIT,
+    ProfileToken,
     ProviderConfig,
     SchemaClusterPayload,
     SchemaUnit,
@@ -76,7 +78,7 @@ class _ObservedSchemaUnit:
     schema_samples: list[SchemaSample]
     artifact_kind: str
     session_id: str | None
-    profile_tokens: tuple[str, ...]
+    profile_tokens: tuple[ProfileToken, ...]
 
 
 def _build_observation_context(
@@ -331,15 +333,30 @@ def _coarse_type(value: object) -> str:
 
 
 def _structural_child_keys(keys: Collection[object]) -> tuple[str, ...]:
-    collapse_all = should_collapse_observed_keys(keys)
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    collapse_all = (
+        keys.collapse_observed_keys() if isinstance(keys, SpilledObject) else should_collapse_observed_keys(keys)
+    )
+    if isinstance(keys, SpilledObject):
+        if collapse_all:
+            return ("*",) if keys else ()
+        names = []
+        with closing(keys.key_entries()) as entries:
+            for key, _child in entries:
+                name = key.small_name
+                if name is None:
+                    return ("*",)
+                names.append(name)
+        keys = names
     stable: set[str] = set()
     has_dynamic = False
     for raw_key in keys:
-        key = str(raw_key)
-        if collapse_all or is_dynamic_key(key):
+        literal_key = str(raw_key)
+        if collapse_all or is_dynamic_key(literal_key):
             has_dynamic = True
         else:
-            stable.add(key)
+            stable.add(literal_key)
     ordered = sorted(stable)
     if has_dynamic:
         ordered.append("*")
@@ -363,13 +380,21 @@ def _nested_list_object_keys(value: object) -> tuple[str, ...]:
 
         if isinstance(item, SpilledObject) and len(item) >= _MAX_NESTED_PROFILE_TOKENS:
             return _structural_child_keys(item.key_union(keys))
-        keys.update(str(key) for key in item)
+        if isinstance(item, SpilledObject):
+            with closing(item.key_entries()) as entries:
+                for key, _child in entries:
+                    name = key.small_name
+                    if name is None:
+                        return ("*",)
+                    keys.add(name)
+        else:
+            keys.update(str(key) for key in item)
         if len(keys) >= _MAX_NESTED_PROFILE_TOKENS:
             break
     return _structural_child_keys(keys)
 
 
-def _append_tokens(tokens: list[str], values: Iterable[str]) -> None:
+def _append_tokens(tokens: list[ProfileToken], values: Iterable[ProfileToken]) -> None:
     for value in values:
         if value not in tokens:
             tokens.append(value)
@@ -377,30 +402,38 @@ def _append_tokens(tokens: list[str], values: Iterable[str]) -> None:
             return
 
 
-def _document_profile_tokens(sample: SchemaSample) -> tuple[str, ...]:
-    tokens: list[str] = []
+def _document_profile_tokens(sample: SchemaSample) -> tuple[ProfileToken, ...]:
+    from polylogue.schemas.observation_spill import SpilledKey, SpilledObject, _profile_name
     from polylogue.schemas.shape_fingerprint import ordered_keys
 
-    for key in ordered_keys(sample):
-        value = sample[key]
-        value_type = _coarse_type(value)
-        _append_tokens(
-            tokens,
-            (
-                f"field:{key}",
-                f"type:{key}:{value_type}",
-            ),
-        )
-        if value_type == "object":
-            _append_tokens(tokens, (f"shape:{key}:object",))
-            _append_tokens(tokens, (f"child:{key}:{child}" for child in _nested_object_keys(value)))
-        elif value_type == "array":
-            _append_tokens(tokens, (f"shape:{key}:array",))
-            _append_tokens(tokens, (f"item:{key}:{child}" for child in _nested_list_object_keys(value)))
-        if key in {"mapping", "chat_messages", "chunkedPrompt", "chunks", "messages"}:
-            _append_tokens(tokens, (f"anchor:{key}",))
-        if len(tokens) >= _MAX_PROFILE_TOKENS:
-            break
+    def entries() -> Generator[tuple[str | SpilledKey, object], None, None]:
+        if isinstance(sample, SpilledObject):
+            with closing(sample.structure_key_items(sorted_keys=True)) as children:
+                yield from children
+        else:
+            for key in ordered_keys(sample):
+                yield key, sample[key]
+
+    tokens: list[ProfileToken] = []
+    with closing(entries()) as children:
+        for key, value in children:
+            value_type = _coarse_type(value)
+            _append_tokens(tokens, (_profile_name("field:", key), _profile_name("type:", key, ":" + value_type)))
+            if value_type == "object":
+                _append_tokens(tokens, (_profile_name("shape:", key, ":object"),))
+                _append_tokens(
+                    tokens, (_profile_name("child:", key, ":" + child) for child in _nested_object_keys(value))
+                )
+            elif value_type == "array":
+                _append_tokens(tokens, (_profile_name("shape:", key, ":array"),))
+                _append_tokens(
+                    tokens, (_profile_name("item:", key, ":" + child) for child in _nested_list_object_keys(value))
+                )
+            name = key.small_name if isinstance(key, SpilledKey) else key
+            if name in {"mapping", "chat_messages", "chunkedPrompt", "chunks", "messages"}:
+                _append_tokens(tokens, (_profile_name("anchor:", key),))
+            if len(tokens) >= _MAX_PROFILE_TOKENS:
+                break
     return tuple(tokens[:_MAX_PROFILE_TOKENS])
 
 
@@ -408,8 +441,8 @@ def _record_profile_tokens(
     samples: list[SchemaSample],
     *,
     record_type_key: str | None,
-) -> tuple[str, ...]:
-    from polylogue.schemas.observation_spill import SpilledObject
+) -> tuple[ProfileToken, ...]:
+    from polylogue.schemas.observation_spill import SpilledKey, SpilledObject, _profile_name
 
     spilled = bool(samples) and isinstance(samples[0], SpilledObject)
     bucket_keys: dict[str, set[str]] = {}
@@ -429,6 +462,7 @@ def _record_profile_tokens(
 
     # Sample count is bounded by the established provider/profile semantics.
     # Its individual field sets still need disk storage for large records.
+    groups: Iterable[tuple[str, Iterable[tuple[str | SpilledKey, tuple[str, ...]]]]]
     if samples and isinstance(samples[0], SpilledObject):
         groups = samples[0].record_profile_groups(
             islice(samples, 512),
@@ -443,13 +477,13 @@ def _record_profile_tokens(
             )
             for bucket, keys in sorted(bucket_keys.items())
         )
-    tokens: list[str] = []
+    tokens: list[ProfileToken] = []
     for bucket, fields in groups:
         _append_tokens(tokens, (f"bucket:{bucket}",))
-        for key, kinds in fields:
-            _append_tokens(tokens, (f"field:{bucket}:{key}",))
+        for field_key, kinds in fields:
+            _append_tokens(tokens, (_profile_name(f"field:{bucket}:", field_key),))
             for value_type in kinds:
-                _append_tokens(tokens, (f"type:{bucket}:{key}:{value_type}",))
+                _append_tokens(tokens, (_profile_name(f"type:{bucket}:", field_key, ":" + value_type),))
             if len(tokens) >= _MAX_PROFILE_TOKENS:
                 break
         if len(tokens) >= _MAX_PROFILE_TOKENS:

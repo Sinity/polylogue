@@ -6,6 +6,25 @@ Gemini CLI result blocks retain both model-facing output and error text when
 the provider reports both streams. Divergent terminal renderings remain
 separately marked. Hermes ATIF tool availability events retain each declared
 tool definition in full, including its type and strictness setting.
+Resident and prepared Gemini sidecar joins replace only the primary output;
+stderr and independent terminal renderings survive the shared transform.
+Final Gemini checkpoint rows share one JSON decode across parsing, admission
+and sidecar ownership after replacement patches have settled. Hermes snapshot
+session assembly has one reducer for resident and paged inputs; streamed
+admission applies its retained outer-record witness directly.
+Reported total tokens do not imply output tokens, and absent Hermes API-call
+counts remain absent. ATIF tool-call steps retain invocation and usage evidence
+once per step, independent of the number of calls. Skipped malformed ATIF parts
+remain counted in an accounting event and a degraded fidelity declaration.
+Antigravity markdown activity has no native message or call IDs; canonical
+semantic identity and identical-content occurrence bind those messages.
+
+Claude Workflow invocation events retain the tool block's exact native ID,
+Source semantic identity and occurrence among identical blocks in its message.
+The graph binds each invocation to its canonical message evidence and that
+block identity, so repeated calls in one message remain distinct. Journal
+metadata references and attempt keys admit sidecars whose optional run ID is
+absent; the materializer and graph projector share that membership selection.
 
 Codex event-message mirrors consume one matching response occurrence only
 when exact text and role also carry a shared native identity, timestamp instant,
@@ -19,8 +38,20 @@ publishes Index paste markers through `open_isolated_write_connection` with
 its configured archive root. The factory enforces that root’s writer lease
 without relying on the global SQLite opener interceptor.
 
+Retained schema decoding stores exact string and number tokens as private
+SQLite chunks. Full syntax validation completes before lazy container views
+are exposed. Schema structure, fingerprint and profile consumers use stored
+kinds; boolean additional-property validation and drift checks traverse keys.
+Selected values are reconstructed exactly. Codex recognition does not copy
+unconstrained payload members into its temporary type-validation model; the
+original mapping continues to supply lowering and schema observations.
+
 Decoded detector projections visit only declared fields when no metadata or
-whole-mapping predicate needs the other values. Acquisition classifies each
+whole-mapping predicate needs the other values. Type-only and first-item decoded
+array folds project only their retained values when no metadata fold or array
+predicate needs the tail. Physical record-stream detection shares identical
+declared projections and JSON read views within each record while retaining
+its independent binding order and last winning witness. Acquisition classifies each
 decoded record and its singleton sequence in their independent detector order,
 sharing identical declared projections only for that record. Projected mapping
 read views validate their JSON conversion once for their read-only predicates
@@ -40,6 +71,29 @@ inputs use `prepare_retained_jsonl_artifact` and
 `prepare_retained_non_json_artifact` in `sources/revision_backfill.py`.
 The storage writer lowers their prepared sessions through
 `write_parsed_session_to_archive`.
+
+Canonical replay owns one schema registry for its preparation lifetime. Each
+retained validation boundary rereads the complete current local and packaged
+provider snapshots under the registry lock. Exact byte changes or changed search
+roots invalidate decoded declarations; unchanged snapshots reuse them. Current
+and historical package selection stay on one coherent snapshot, and cancellation
+is checked before and after the snapshot reads. Explicit cache clearing remains
+available to ordinary registry callers.
+
+Ordinary retained JSON preparations share one physical carrier only when their
+bytes, source path and fallback identity, profile, timestamp, append identity,
+ZIP coordinate, sidecar inputs, and validation mode agree. Each raw retains its
+own validation verdict and complete census/publication coordinates; reuse still
+validates that raw against current schema declarations. Codex state and UNKNOWN
+inputs keep per-raw preparation because they can own mutable state projections.
+
+Detached Codex and Claude Code JSONL retries reuse each parser artifact by its
+exact local inputs, including Claude's retained sidecar and sibling witness.
+Changing the selected publication cohort does not invalidate unrelated parses.
+The fresh Source reader still proves the complete ordered selection and parser
+operands before enrichment and publication, and schema evidence is refreshed
+on reuse. Codex prefix checkpoints still prove their complete cohort before
+regenerating its interior artifacts; replaced checkpoint owners are closed.
 
 Retained schema validation owns reducer tables once per spill connection and
 reuses each selected-schema validator across its complete record scan. Lazy
@@ -98,7 +152,10 @@ optimization (`storage/derived/raw.py`;
 
 On its first Source binding, `RawObservationDerivation` keeps the complete
 selected unit and its census/publication boundary, then detaches only the
-eligible Codex and Claude Code JSONL session inputs. It copies those primary
+eligible Codex and Claude Code JSONL session inputs. Exact-source restoration
+of missing retained bytes runs before that capture. Zero-record JSONL streams retain a clean current non-session census on both
+ordinary and detached preparation; malformed complete records retain typed
+decode refusal. Explicit raw-only histories keep their non-session disposition. It copies those primary
 CAS bytes while the original Source witness is current, then closes that
 witness before parser work and retained-schema validation. Other selected
 providers remain on the ordinary fresh-bound preparation path. Claude Code
@@ -110,7 +167,9 @@ plus the exact eligible parser operands and Claude sidecar-scope witness,
 before current enrichment and publication are prepared. If that bind becomes
 stale during enrichment, a new Source witness repeats the comparison and
 reuses detached parser artifacts only when the eligible raws and their parser
-operands still match exactly; changed inputs are reparsed. The neutral
+operands still match exactly; changed inputs are reparsed. Each retry refreshes
+the cached carrier's current schema verdict before rebinding it. Historical
+captured validation receipts keep their original evidence. The neutral
 retained enrichment also resolves any remaining persisted-output tool-result
 envelopes from matching `PostToolUse` rows in `raw_hook_events`. Those rows are
 selected by Claude origin, parent-or-session native ID, and tool-use ID through
@@ -126,6 +185,8 @@ Detached artifacts contain no enrichment state (`storage/derived/raw.py`;
 
 ## Source observation and SQLite reads
 
+Source visits explicitly close and physically drain their owned acquisition
+stream before returning, including when a record callback cancels.
 Configured local acquisition carries each read failure through its async stream
 into scan and acquire error counts. Failed paths withhold their stat cursors;
 successfully committed files retain their cursors. Persistence failures are
@@ -143,6 +204,30 @@ aliases on each selection. ZIP containers
 and mutable SQLite inputs always reach acquisition. ZIP membership comes
 from the captured container, and committed WAL content participates in the
 SQLite logical revision even when the main file's stat tuple is unchanged.
+
+Cold-build root checks distinguish genuinely absent optional roots from unavailable
+stat observations. Permission and I/O failures remain typed baseline faults.
+Logical export plans read SQLite's catalog `wr` flag, preserving row identity
+independently of DDL whitespace or text containing `WITHOUT ROWID`. Declared
+`rowid` columns shadow the native alias case-insensitively.
+
+Cold-build baseline preparation maps contiguous ordinary-file runs through the
+shared bounded compute adapter from the source-observation coordinator.
+Workers classify and hash through the acquisition boundary and return only
+`SourceDecision`; discovery, alias decisions, ordered consumption, progress,
+and sealing remain on the creator. ZIP and SQLite bindings are prepared
+serially after the preceding ordinary run drains. The existing worker and
+byte envelope applies; oversized inputs reserve the full byte envelope.
+The creator captures the regular file's stat evidence used for byte admission;
+classification and the opened revision must still match its device, inode,
+size, mtime and ctime. EOF checks the opened descriptor and its named physical
+coordinate again. Replacement or mutation becomes a retryable observation
+fault, including equal-mtime changes; these observations never substitute for
+the complete byte hash or foreign-tail validation. Cancellation while awaiting
+work cancels and physically drains that map window before Source sealing.
+Failed native cleanup keeps its worker, admission and scratch with the shared
+owner until the creator can settle it (`live/production_baseline.py`,
+`core/compute.py`).
 
 `source_snapshot.py` publishes a declared root's complete member inventory or
 an unavailable result. Frontier member paths use the same captured root identity
@@ -230,8 +315,14 @@ frames stream to the existing sink, with each callback acknowledged before the
 reader advances. A failed callback or final binding check leaves an unfinished
 operation: the blob writer discards its private staging file, digest callers
 raise, and a staged backup is not published. Transport memory is bounded by
-chunks; the existing canonical emitter still allocates an individual row and
-its encoded cells. No whole-export transport buffer or input limit is added.
+chunks. Canonical individual raw payloads stream keys and string tokens into
+private sealed files; grouped JSONL uses the retained record tape. The raw
+carrier retains its preparation directory through physical worker completion.
+Creator pickup verifies the inode and digest, copies into the existing blob
+preparation queue, then releases the worker file. Only writer admission
+publishes queued blobs. Staged paths stay out of serialized raw metadata;
+failed pages and cancellation release unconsumed files. Selected numeric
+normalization remains an explicit decoded-value demand. No input limit is added.
 
 Ordinary byte acquisition lends one isolated reader to the caller's existing
 bounded input page. Each sequential request transfers its original source and
@@ -388,6 +479,16 @@ provider (`docs/provider-origin-identity.md:15-30`;
 
 ## Invariants
 
+ChatGPT's declared `author.metadata.real_author=tool:*` lowers a reply to a
+TOOL_RESULT and resolves its invocation across prior replies, while retaining
+its original envelope role and authorship event. Action association crosses
+structural reply messages as well as tool-role envelopes.
+
+Claude tool-result arrays retain nested image/document blocks and attachment
+witnesses, including inline content, URL and file references. Unsupported
+nested parts receive typed unknown accounting. Media blocks keep source
+identity digests and references; inline bytes remain in attachments.
+
 ChatGPT retains every supported nonnull native mapping message, including empty
 text with zero blocks, with its native identity, parent, role, nullable time and
 active-branch coordinates. Null structural nodes remain topology only.
@@ -442,6 +543,13 @@ is not proof of source-specific timing equivalence.
   bytes, so a carrier is never parsed as a conversation
   (`sources/live/batch.py`; `sources/live/append_ingest.py`).
 
+Checkpoint preparation checks the actual captured Codex head's conservative
+plain-message grammar before reading older revision witnesses. An unsupported
+head selects ordinary retained preparation; every accepted checkpoint still
+proves each raw's exact hash, size and head-prefix bytes independently. Prefix
+message views replay the backing sealed carrier sequentially, including its
+bounded decoded spool, and set the active leaf at that prefix's final message.
+
 ## Retained validation policy
 
 The daemon converts runtime configuration into `ValidationMode` and supplies
@@ -450,12 +558,14 @@ argument; its default is advisory. Changing an environment variable after
 constructing an owner does not change its policy. The derivation recipe
 includes the selected mode, and retained artifacts carry their own detached
 validation verdict. Declared raw-only artifacts bypass session decoding and
-schema validation; empty session inputs retain terminal decoder evidence. A
-current non-session parser census alone does not waive schema validation for
-an eligible structured document that yields no sessions. A missing artifact
-observation is treated as eligible; only that raw revision's exact provider
-path declaration or a recorded ineligible artifact observation can establish
-that no session validation verdict is required.
+schema validation. A zero-record JSONL prefix retains a clean current
+non-session census; its exact retained frontier proves that no record was
+admitted for schema validation. A current non-session census alone does not
+waive schema validation for an eligible structured document that yields no
+sessions. Other missing artifact observations remain eligible; the exact
+provider path declaration or an ineligible artifact establishes the raw-only
+exemption. Empty JSON documents and malformed complete records retain typed
+decode refusal.
 
 When current parser authority confirms a typed raw-only input, canonical
 Source follow-up refreshes its independently stale non-session membership
@@ -481,6 +591,17 @@ durable contract from a surface serializer. The provider guides under
 `docs/providers/` explain format-specific caveats.
 
 ## Settled decode and partial admission
+
+Declared raw JSONL envelopes retain a repeatable read-only record tape. Small
+records use a bounded memory buffer; larger records keep exact scalar chunks
+and lazy containers on disk. The envelope owns that tape until classification,
+schema observation, and all borrowed samples finish. Its archival BOM, Unicode
+whitespace, and provider-surrogate policy remains separate from source repair.
+Complete streamed schema observations are also an owned context: inspection
+retains their JSON tree until exact profile tokens and package resolution finish.
+Large observed field names remain exact token references during profile ordering,
+identity hashing, and package matching; literal catalog and journal output selects
+its complete names explicitly.
 
 Live intake and retained census share `terminal_decode_evidence`: a known-provider
 JSON document or complete JSONL record that cannot decode settles as
@@ -512,6 +633,16 @@ The postlisting resolves the configured folder again and compares every page;
 an alias that now resolves elsewhere leaves the pass pending. Escaped acquisition
 or cancellation releases the private relation after the existing execution owner
 has physically drained its worker.
+
+Folder references keep their ID-or-exact-name contract. An ID-shaped reference
+permits exact-name lookup only after the provider returns a definitive typed
+404. Transport, authentication, access and cancellation failures propagate;
+successful metadata for a nonfolder is a typed refusal. Both folder-name lookup
+and prompt enumeration request the provider's `incompleteSearch` flag and refuse
+an incomplete search before publishing a complete listing witness. The
+[Drive listing contract](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list)
+defines that flag independently of pagination; the provider may change the
+default search corpus according to the query.
 
 Retained preparation emits `storage.raw_observation.preparation_retry` when
 its existing internal retry catches a changed carry or a stale reference seal.

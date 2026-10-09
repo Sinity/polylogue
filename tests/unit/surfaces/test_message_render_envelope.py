@@ -23,10 +23,10 @@ from pydantic import ValidationError
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import BlockType, ToolOutcome
+from polylogue.core.enums import ToolOutcome
 from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.storage.hydrators import message_from_record
-from polylogue.storage.runtime.archive.records import BlockRecord, MessageRecord
+from polylogue.storage.runtime.archive.records import MessageRecord
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow
 from polylogue.surfaces.payloads import (
     _MESSAGE_MASK,
@@ -38,6 +38,8 @@ from polylogue.surfaces.payloads import (
     message_render_envelope_from_domain,
     message_topology_from_domain,
 )
+from tests.infra.identity import archive_block_id, fixture_block_content_identity
+from tests.infra.storage_records import make_content_block
 
 
 def _build_message(**overrides: object) -> Message:
@@ -253,7 +255,16 @@ def test_from_archive_row_preserves_stop_reason_and_block_outcomes() -> None:
         stop_reason="max_tokens",
         blocks=(
             ArchiveBlockRow(
-                block_id="m1:0",
+                block_id=archive_block_id(
+                    "m1",
+                    content_identity=fixture_block_content_identity(
+                        "tool_result", "total 0", "t1", ToolOutcome.UNKNOWN.value, "no_structural_outcome"
+                    ),
+                ),
+                content_identity=fixture_block_content_identity(
+                    "tool_result", "total 0", "t1", ToolOutcome.UNKNOWN.value, "no_structural_outcome"
+                ),
+                content_occurrence=0,
                 message_id="m1",
                 block_type="tool_result",
                 text="total 0",
@@ -290,7 +301,11 @@ def test_from_archive_row_propagates_paste_boundary_state() -> None:
     row = _archive_row(
         blocks=(
             ArchiveBlockRow(
-                block_id="m1:0",
+                block_id=archive_block_id(
+                    "m1", content_identity=fixture_block_content_identity("text", "See [Pasted text #1]")
+                ),
+                content_identity=fixture_block_content_identity("text", "See [Pasted text #1]"),
+                content_occurrence=0,
                 message_id="m1",
                 block_type="text",
                 text="See [Pasted text #1]",
@@ -315,12 +330,11 @@ def test_hydrated_message_envelope_preserves_paste_boundary_state() -> None:
         role=Role.USER,
         content_hash=ContentHash("0" * 64),
         blocks=[
-            BlockRecord(
-                block_id="b1",
-                message_id=MessageId("m1"),
-                session_id=SessionId("c1"),
+            make_content_block(
+                message_id="m1",
+                session_id="c1",
                 block_index=0,
-                type=BlockType.TEXT,
+                block_type="text",
                 text="Large pasted body",
             )
         ],

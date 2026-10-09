@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import sqlite3
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, BinaryIO, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from polylogue.annotations.batch import AnnotationBatch
+from polylogue.annotations.import_spill import AnnotationImportSpill
 from polylogue.annotations.schema import (
     ANNOTATION_SCHEMA_REGISTRY,
     AnnotationSchema,
@@ -22,8 +21,9 @@ from polylogue.annotations.schema import (
     validate_annotation_row,
 )
 from polylogue.annotations.write import assertion_id_for_schema_annotation, upsert_annotation_assertion
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.json import JSONDocument, require_json_document
-from polylogue.core.refs import EvidenceRef, parse_public_ref
+from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
@@ -39,32 +39,20 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_annotations import (
-    persist_annotation_batch,
+    annotation_batch_provenance_digest,
     persist_annotation_schema,
-    read_annotation_batch,
+    persist_spilled_annotation_batch,
     read_durable_annotation_schema,
 )
-from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    connection_context,
+    open_readonly_connection,
+    readonly_connection_context,
+    scratch_connection_context,
+)
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
-
-# Re-exported from the leaf owner so existing importers keep working; see
-# polylogue/core/annotation_limits.py for why they live outside this package.
-from polylogue.core.annotation_limits import (
-    MAX_ANNOTATION_IMPORT_BYTES,
-    MAX_ANNOTATION_IMPORT_LINE_BYTES,
-    MAX_ANNOTATION_IMPORT_REF_BYTES,
-    MAX_ANNOTATION_IMPORT_ROWS,
-)
-
-__all__ = [
-    "MAX_ANNOTATION_IMPORT_BYTES",
-    "MAX_ANNOTATION_IMPORT_LINE_BYTES",
-    "MAX_ANNOTATION_IMPORT_REF_BYTES",
-    "MAX_ANNOTATION_IMPORT_ROWS",
-]
-MAX_ANNOTATION_IMPORT_METADATA_BYTES = 65_536
 
 
 class AnnotationBatchImportError(ValueError):
@@ -76,7 +64,7 @@ class AnnotationImportRow(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    row_key: str = Field(min_length=1, max_length=256)
+    row_key: str = Field(min_length=1)
     value: dict[str, object]
     evidence_refs: tuple[str, ...]
     body_text: str | None = None
@@ -88,15 +76,14 @@ class AnnotationBatchImportRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
 
-    jsonl: str
-    batch_id: str = Field(min_length=1, max_length=256)
-    schema_id: str = Field(min_length=1, max_length=256)
+    batch_id: str = Field(min_length=1)
+    schema_id: str = Field(min_length=1)
     schema_version: int = Field(ge=1)
-    target_ref: str = Field(min_length=1, max_length=4_096)
-    source_result_ref: str = Field(min_length=1, max_length=4_096)
-    actor_ref: str = Field(min_length=1, max_length=4_096)
-    model_ref: str = Field(min_length=1, max_length=4_096)
-    prompt_ref: str = Field(min_length=1, max_length=4_096)
+    target_ref: str = Field(min_length=1)
+    source_result_ref: str = Field(min_length=1)
+    actor_ref: str = Field(min_length=1)
+    model_ref: str = Field(min_length=1)
+    prompt_ref: str = Field(min_length=1)
     metadata: dict[str, object] = Field(default_factory=dict)
     created_at_ms: int | None = Field(default=None, ge=0)
 
@@ -130,84 +117,50 @@ class AnnotationBatchImportResult(BaseModel):
 RefResolver = Callable[[str], Awaitable[bool]]
 
 
-AnnotationImportRowData = tuple[int, AnnotationImportRow, str, float | None]
-
-
 @dataclass(frozen=True, slots=True)
 class AnnotationBatchImportArgs:
-    """Validated batch data shared by the executor's prepare and apply phases."""
+    """Sealed request-owned evidence shared by authorization and apply."""
 
     user_db_path: Path
     schema: AnnotationSchema
     effective_registry: AnnotationSchemaRegistry
     request: AnnotationBatchImportRequest
-    valid_rows: tuple[AnnotationImportRowData, ...]
-    failure_documents: tuple[JSONDocument, ...]
-    abstained_count: int
-    created_at_ms: int
+    batch: AnnotationImportSpill
 
 
-def _build_annotation_batch(args: AnnotationBatchImportArgs) -> AnnotationBatch:
-    return AnnotationBatch(
-        batch_id=args.request.batch_id,
-        schema_id=args.schema.schema_id,
-        schema_version=args.schema.version,
-        target_ref=args.request.target_ref,
-        source_result_ref=args.request.source_result_ref,
-        actor_ref=args.request.actor_ref,
-        model_ref=args.request.model_ref,
-        prompt_ref=args.request.prompt_ref,
-        total_count=len(args.valid_rows) + len(args.failure_documents),
-        valid_count=len(args.valid_rows),
-        invalid_count=len(args.failure_documents),
-        abstained_count=args.abstained_count,
-        assertion_refs=tuple(f"assertion:{assertion_id}" for _, _, assertion_id, _ in args.valid_rows),
-        validation_failures=args.failure_documents,
-        metadata=require_json_document(args.request.metadata, context="annotation import metadata"),
-        created_at_ms=args.created_at_ms,
-    )
-
-
-def _annotation_batch_provenance_digest(batch: AnnotationBatch) -> str:
-    return hashlib.sha256(batch.canonical_provenance_bytes()).hexdigest()
-
-
-def _persist_annotation_batch(
-    args: AnnotationBatchImportArgs,
-    batch: AnnotationBatch,
-) -> None:
-    """Apply the complete user-tier batch write under one SQLite transaction."""
-
-    conn = open_connection(args.user_db_path, archive_root=args.user_db_path.parent)
-    conn.row_factory = sqlite3.Row
-    try:
+def _persist_annotation_batch(args: AnnotationBatchImportArgs) -> None:
+    """Commit schema, complete provenance and every assertion together."""
+    batch = args.batch
+    with connection_context(args.user_db_path, archive_root=args.user_db_path.parent) as conn:
+        conn.row_factory = sqlite3.Row
+        # Complete JSON cells must satisfy durable CHECKs at INSERT. Their
+        # unconstrained staging relation belongs on disk, not in temp memory.
+        conn.execute("PRAGMA temp_store=FILE")
         conn.execute("BEGIN IMMEDIATE")
-        persist_annotation_schema(conn, args.schema, registered_at_ms=batch.created_at_ms)
-        persist_annotation_batch(conn, batch)
-        for _line_number, row, assertion_id, confidence in args.valid_rows:
-            envelope = upsert_annotation_assertion(
-                conn,
-                schema=args.schema,
-                registry=args.effective_registry,
-                target_ref=args.request.target_ref,
-                value=row.value,
-                row_key=row.row_key,
-                evidence_refs=row.evidence_refs,
-                author_ref=args.request.actor_ref,
-                author_kind="agent",
-                confidence=confidence,
-                body_text=row.body_text,
-                batch_ref=batch.batch_ref,
-                now_ms=batch.created_at_ms,
-            )
-            if envelope.assertion_id != assertion_id:
-                raise RuntimeError("annotation assertion identity drifted after batch admission")
+        persist_annotation_schema(conn, args.schema, registered_at_ms=int(cast(int, batch.header["created_at_ms"])))
+        persist_spilled_annotation_batch(conn, batch)
+        with closing(batch.rows()) as rows:
+            for row_json, assertion_ref, confidence in rows:
+                check_compute_cancelled()
+                row = AnnotationImportRow.model_validate_json(row_json)
+                envelope = upsert_annotation_assertion(
+                    conn,
+                    schema=args.schema,
+                    registry=args.effective_registry,
+                    target_ref=args.request.target_ref,
+                    value=row.value,
+                    row_key=row.row_key,
+                    evidence_refs=row.evidence_refs,
+                    author_ref=args.request.actor_ref,
+                    author_kind="agent",
+                    confidence=confidence,
+                    body_text=row.body_text,
+                    batch_ref=batch.batch_ref,
+                    now_ms=int(cast(int, batch.header["created_at_ms"])),
+                )
+                if f"assertion:{envelope.assertion_id}" != assertion_ref:
+                    raise RuntimeError("annotation assertion identity drifted after batch admission")
         conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,39 +172,42 @@ class AnnotationBatchImportActuator:
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: AnnotationBatchImportArgs) -> MutationPlan:
-        batch = _build_annotation_batch(args)
+        batch = args.batch
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
-            target_refs=(batch.batch_ref, *batch.assertion_refs),
+            target_refs=(batch.batch_ref,),
             affected_tiers=("user",),
             reversible=True,
             context={
-                "batch_id": batch.batch_id,
-                "created_at_ms": batch.created_at_ms,
-                "invalid_count": batch.invalid_count,
-                "provenance_sha256": _annotation_batch_provenance_digest(batch),
-                "schema": batch.qualified_schema_id,
-                "valid_count": batch.valid_count,
+                "batch_id": batch.header["batch_id"],
+                "created_at_ms": batch.header["created_at_ms"],
+                "invalid_count": batch.header["invalid_count"],
+                "provenance_sha256": batch.provenance_digest(),
+                "rows_sha256": batch.rows_digest(),
+                "schema": args.schema.qualified_id,
+                "valid_count": batch.header["valid_count"],
             },
         )
 
     def apply(self, plan: MutationPlan, args: AnnotationBatchImportArgs) -> MutationReceipt:
-        batch = _build_annotation_batch(args)
+        batch = args.batch
         expected_digest = str(plan.context["provenance_sha256"])
-        if _annotation_batch_provenance_digest(batch) != expected_digest:
+        if batch.provenance_digest() != expected_digest:
             raise RuntimeError("annotation batch provenance changed after authorization")
-        _persist_annotation_batch(args, batch)
+        if batch.rows_digest() != plan.context["rows_sha256"]:
+            raise RuntimeError("annotation batch row values changed after authorization")
+        _persist_annotation_batch(args)
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
             status="applied",
             target_refs=plan.target_refs,
-            affected_count=batch.valid_count + 1,
+            affected_count=int(cast(int, batch.header["valid_count"])) + 1,
             detail=None,
             receipt_ref=batch.batch_ref,
             applied_at=plan.prepared_at,
-            domain_receipt={"batch": batch},
+            domain_receipt={},
         )
 
     def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
@@ -262,13 +218,9 @@ class AnnotationBatchImportActuator:
         row and every assertion commit together, so the batch row is present
         exactly when the whole import is.
         """
-        with closing(open_readonly_connection(handles.archive_root / "user.db")) as conn:
-            conn.row_factory = sqlite3.Row
-            stored = read_annotation_batch(conn, str(plan.context["batch_id"]))
-        # The batch id alone is not this import: a different batch reusing
-        # the id is refused at persistence by its provenance, so only a stored
-        # batch with this plan's provenance digest is this import's commit.
-        if stored is None or _annotation_batch_provenance_digest(stored) != plan.context["provenance_sha256"]:
+        with readonly_connection_context(handles.archive_root / "user.db") as conn:
+            stored_digest = annotation_batch_provenance_digest(conn, str(plan.context["batch_id"]))
+        if stored_digest != plan.context["provenance_sha256"]:
             return RecoveryResolution("absent", "this batch import never committed")
         return RecoveryResolution(
             "complete",
@@ -340,20 +292,6 @@ def _ref_preview(ref: str) -> str:
     return repr(encoded[:160].decode("utf-8", errors="replace") + "…")
 
 
-def _validate_request_bounds(request: AnnotationBatchImportRequest) -> None:
-    for name in ("target_ref", "source_result_ref", "actor_ref", "model_ref", "prompt_ref"):
-        value = getattr(request, name)
-        if len(value.encode("utf-8")) > MAX_ANNOTATION_IMPORT_REF_BYTES:
-            raise AnnotationBatchImportError(f"{name} exceeds {MAX_ANNOTATION_IMPORT_REF_BYTES} byte limit")
-    metadata_bytes = json.dumps(request.metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
-    if len(metadata_bytes) > MAX_ANNOTATION_IMPORT_METADATA_BYTES:
-        raise AnnotationBatchImportError(
-            f"annotation metadata exceeds {MAX_ANNOTATION_IMPORT_METADATA_BYTES} byte limit"
-        )
-
-
 def _assertion_confidence(schema: AnnotationSchema, row: AnnotationImportRow, errors: list[str]) -> float | None:
     schema_fields = {field.name for field in schema.fields}
     value_confidence = row.value.get("confidence") if "confidence" in schema_fields else None
@@ -362,7 +300,17 @@ def _assertion_confidence(schema: AnnotationSchema, row: AnnotationImportRow, er
         and not isinstance(value_confidence, bool)
         and isinstance(value_confidence, (int, float))
     ):
-        derived = float(value_confidence)
+        # The existing extraction maps a schema's confidence number to the
+        # assertion probability. Validate that domain before narrowing an
+        # arbitrary JSON integer to float; other payload numbers stay exact.
+        if not 0 <= value_confidence <= 1:
+            errors.append("value.confidence must be a finite probability between 0 and 1")
+            return None
+        try:
+            derived = float(value_confidence)
+        except (OverflowError, ValueError):
+            errors.append("value.confidence cannot be represented as an assertion probability")
+            return None
         if row.confidence is not None and row.confidence != derived:
             errors.append("top-level confidence must equal value.confidence")
         return derived
@@ -380,48 +328,44 @@ def _failure_document(outcome: AnnotationImportRowOutcome) -> JSONDocument:
     )
 
 
-def _parse_rows(jsonl: str) -> tuple[list[tuple[int, AnnotationImportRow]], list[AnnotationImportRowOutcome]]:
-    try:
-        payload_bytes = jsonl.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise AnnotationBatchImportError("annotation JSONL must be valid UTF-8") from exc
-    if len(payload_bytes) > MAX_ANNOTATION_IMPORT_BYTES:
-        raise AnnotationBatchImportError(f"annotation JSONL exceeds {MAX_ANNOTATION_IMPORT_BYTES} byte limit")
-
-    parsed: list[tuple[int, AnnotationImportRow]] = []
-    failures: list[AnnotationImportRowOutcome] = []
+def _parse_rows(input: BinaryIO) -> Iterator[tuple[int, AnnotationImportRow | AnnotationImportRowOutcome]]:
     nonempty_count = 0
-    for line_number, raw_line in enumerate(jsonl.splitlines(), start=1):
-        if not raw_line.strip():
+    # Binary iteration splits only physical LF. CRLF remains JSON whitespace;
+    # U+0085/U+2028/U+2029 inside strings remain ordinary content.
+    for line_number, raw_line in enumerate(input, start=1):
+        check_compute_cancelled()
+        try:
+            line = raw_line.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AnnotationBatchImportError("annotation JSONL must be valid UTF-8") from exc
+        if not line.strip(" \t\r\n"):
             continue
         nonempty_count += 1
-        if nonempty_count > MAX_ANNOTATION_IMPORT_ROWS:
-            raise AnnotationBatchImportError(f"annotation JSONL exceeds {MAX_ANNOTATION_IMPORT_ROWS} row limit")
-        if len(raw_line.encode("utf-8")) > MAX_ANNOTATION_IMPORT_LINE_BYTES:
-            failures.append(_failure(line_number, row_key=None, errors=["line exceeds byte limit"]))
-            continue
         try:
-            document = json.loads(raw_line)
-            row = AnnotationImportRow.model_validate(document)
+            row = AnnotationImportRow.model_validate_json(line)
             require_json_document(row.value, context="annotation row value")
-        except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
-            failures.append(_failure(line_number, row_key=None, errors=[str(exc)]))
+        except (ValidationError, TypeError, ValueError) as exc:
+            yield line_number, _failure(line_number, row_key=None, errors=[str(exc)])
             continue
-        parsed.append((line_number, row))
+        yield line_number, row
     if nonempty_count == 0:
         raise AnnotationBatchImportError("annotation JSONL contains no rows")
-    return parsed, failures
 
 
 async def import_annotation_batch(
     poly: Polylogue,
     request: AnnotationBatchImportRequest,
     *,
+    input: BinaryIO,
     resolve_ref: RefResolver | None = None,
     registry: AnnotationSchemaRegistry = ANNOTATION_SCHEMA_REGISTRY,
     before_durable_execution: Callable[[], None] | None = None,
 ) -> AnnotationBatchImportResult:
     """Validate live refs, persist provenance, and write candidates atomically.
+
+    Each exact reference is resolved once per import; results spill on disk
+    rather than reopening the same read for every row. The daemon supplies
+    its pinned operation reader as the resolver.
 
     ``before_durable_execution`` runs after validation and before the first
     audit or ``user.db`` write. A daemon caller fences its acceptance boundary
@@ -429,13 +373,21 @@ async def import_annotation_batch(
     refuses instead of committing after its caller was told it did not.
     """
 
-    _validate_request_bounds(request)
     user_db_path = Path(poly.archive_root) / "user.db"
     initialize_archive_database(user_db_path, ArchiveTier.USER)
     schema, effective_registry = _resolve_import_schema(user_db_path, request, registry)
 
     async def default_resolver(ref: str) -> bool:
-        return (await poly.resolve_ref(ref)).resolved
+        try:
+            resolution = await poly.resolve_ref(ref)
+        except ValueError:
+            return False
+        if not resolution.resolved:
+            return False
+        parsed = parse_public_ref(ref)
+        if isinstance(parsed, ObjectRef) and parsed.kind == "session":
+            return parsed.format() in resolution.object_refs
+        return True
 
     resolver = resolve_ref or default_resolver
     if not await resolver(request.target_ref):
@@ -443,108 +395,107 @@ async def import_annotation_batch(
             f"target_ref {_ref_preview(request.target_ref)} does not resolve in the live archive"
         )
 
-    parsed_rows, outcomes = _parse_rows(request.jsonl)
-    valid_rows: list[tuple[int, AnnotationImportRow, str, float | None]] = []
-    admitted_row_keys: set[str] = set()
-    for line_number, row in parsed_rows:
-        errors = validate_annotation_row(
-            schema,
-            target_ref=request.target_ref,
-            value=row.value,
-            evidence_refs=row.evidence_refs,
-        )
-        for evidence_ref_text in row.evidence_refs:
-            if resolve_ref is not None:
-                resolved = await resolver(evidence_ref_text)
-            else:
-                try:
-                    parsed_ref = parse_public_ref(evidence_ref_text)
-                    resolution = await poly.resolve_ref(evidence_ref_text)
-                    resolved = resolution.resolved
-                    if resolved and isinstance(parsed_ref, EvidenceRef):
-                        resolved = f"session:{parsed_ref.session_id}" in resolution.object_refs
-                except ValueError:
-                    resolved = False
-            if not resolved:
-                errors.append(f"evidence_ref {_ref_preview(evidence_ref_text)} does not resolve in the live archive")
-        confidence = _assertion_confidence(schema, row, errors)
-        if row.row_key in admitted_row_keys:
-            errors.append(f"duplicate row_key {row.row_key!r} in annotation batch")
-        if errors:
-            outcomes.append(_failure(line_number, row_key=row.row_key, errors=errors))
-            continue
-        admitted_row_keys.add(row.row_key)
-        assertion_id = assertion_id_for_schema_annotation(
-            schema_qualified_id=schema.qualified_id,
-            target_ref=request.target_ref,
-            author_ref=request.actor_ref,
-            row_key=row.row_key,
-            batch_ref=f"annotation-batch:{request.batch_id}",
-        )
-        valid_rows.append((line_number, row, assertion_id, confidence))
-
-    outcomes.sort(key=lambda item: item.line)
-    failure_documents = tuple(_failure_document(item) for item in outcomes)
-    abstained_count = sum(
-        row.value.get(schema.abstain_field) is True for _, row, _, _ in valid_rows if schema.abstain_field is not None
-    )
     created_at_ms = request.created_at_ms
     if created_at_ms is None:
-        conn = open_readonly_connection(user_db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            existing_batch = read_annotation_batch(conn, request.batch_id)
-        finally:
-            conn.close()
-        created_at_ms = existing_batch.created_at_ms if existing_batch is not None else int(time.time() * 1000)
-    assert created_at_ms is not None
-
-    args = AnnotationBatchImportArgs(
-        user_db_path=user_db_path,
-        schema=schema,
-        effective_registry=effective_registry,
-        request=request,
-        valid_rows=tuple(valid_rows),
-        failure_documents=failure_documents,
-        abstained_count=abstained_count,
+        with readonly_connection_context(user_db_path) as conn:
+            stored = conn.execute(
+                "SELECT created_at_ms FROM annotation_batches WHERE batch_id=?", (request.batch_id,)
+            ).fetchone()
+        created_at_ms = int(stored[0]) if stored is not None else int(time.time() * 1000)
+    header = AnnotationBatch(
+        batch_id=request.batch_id,
+        schema_id=schema.schema_id,
+        schema_version=schema.version,
+        target_ref=request.target_ref,
+        source_result_ref=request.source_result_ref,
+        actor_ref=request.actor_ref,
+        model_ref=request.model_ref,
+        prompt_ref=request.prompt_ref,
+        total_count=0,
+        valid_count=0,
+        invalid_count=0,
+        abstained_count=0,
+        metadata=require_json_document(request.metadata, context="annotation import metadata"),
         created_at_ms=created_at_ms,
     )
-    executor = OperationExecutor.for_archive_root(user_db_path.parent)
-    actuator = AnnotationBatchImportActuator()
-    binding = runtime_operation_binding(actuator)
-    principal = MutationPrincipal(
-        request.actor_ref,
-        frozenset({"archive.annotation.import_batch"}),
-        "internal",
-        "write",
-    )
-    if before_durable_execution is not None:
-        before_durable_execution()
-    preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=user_db_path.parent)
-    authorization = executor.authorize_bound(binding, preview, principal)
-    receipt = executor.execute_bound(binding, preview, authorization, args)
-    batch = cast(AnnotationBatch, receipt.domain_receipt["batch"])
-    return AnnotationBatchImportResult(
-        status="partial" if batch.invalid_count else "ok",
-        batch_ref=batch.batch_ref,
-        qualified_schema_id=schema.qualified_id,
-        target_ref=batch.target_ref,
-        total_count=batch.total_count,
-        valid_count=batch.valid_count,
-        invalid_count=batch.invalid_count,
-        abstained_count=batch.abstained_count,
-    )
+    with scratch_connection_context(prefix="annotation-import-", filename="validated.sqlite") as scratch:
+        batch = AnnotationImportSpill(scratch, header)
+        for line_number, row in _parse_rows(input):
+            if isinstance(row, AnnotationImportRowOutcome):
+                batch.append_failure(line_number, _failure_document(row))
+                continue
+            errors = validate_annotation_row(
+                schema,
+                target_ref=request.target_ref,
+                value=row.value,
+                evidence_refs=row.evidence_refs,
+            )
+            for evidence_ref_text in row.evidence_refs:
+                resolved = batch.ref_resolution(evidence_ref_text)
+                if resolved is None:
+                    if resolve_ref is not None:
+                        resolved = await resolver(evidence_ref_text)
+                    else:
+                        try:
+                            parsed_ref = parse_public_ref(evidence_ref_text)
+                            resolution = await poly.resolve_ref(evidence_ref_text)
+                            resolved = resolution.resolved
+                            if resolved and isinstance(parsed_ref, EvidenceRef):
+                                resolved = f"session:{parsed_ref.session_id}" in resolution.object_refs
+                        except ValueError:
+                            resolved = False
+                    batch.record_ref_resolution(evidence_ref_text, resolved)
+                if not resolved:
+                    errors.append(
+                        f"evidence_ref {_ref_preview(evidence_ref_text)} does not resolve in the live archive"
+                    )
+            confidence = _assertion_confidence(schema, row, errors)
+            if batch.has_row_key(row.row_key):
+                errors.append(f"duplicate row_key {row.row_key!r} in annotation batch")
+            if errors:
+                batch.append_failure(
+                    line_number, _failure_document(_failure(line_number, row_key=row.row_key, errors=errors))
+                )
+                continue
+            assertion_id = assertion_id_for_schema_annotation(
+                schema_qualified_id=schema.qualified_id,
+                target_ref=request.target_ref,
+                author_ref=request.actor_ref,
+                row_key=row.row_key,
+                batch_ref=f"annotation-batch:{request.batch_id}",
+            )
+            batch.append_row(
+                line_number,
+                row.row_key,
+                row.model_dump_json(),
+                f"assertion:{assertion_id}",
+                confidence,
+                schema.abstain_field is not None and row.value.get(schema.abstain_field) is True,
+            )
+
+        batch.seal()
+        args = AnnotationBatchImportArgs(user_db_path, schema, effective_registry, request, batch)
+        executor = OperationExecutor.for_archive_root(user_db_path.parent)
+        actuator = AnnotationBatchImportActuator()
+        binding = runtime_operation_binding(actuator)
+        principal = MutationPrincipal(
+            request.actor_ref, frozenset({"archive.annotation.import_batch"}), "internal", "write"
+        )
+        if before_durable_execution is not None:
+            before_durable_execution()
+        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=user_db_path.parent)
+        authorization = executor.authorize_bound(binding, preview, principal)
+        executor.execute_bound(binding, preview, authorization, args)
+        return AnnotationBatchImportResult(
+            status="partial" if batch.header["invalid_count"] else "ok",
+            batch_ref=batch.batch_ref,
+            qualified_schema_id=schema.qualified_id,
+            target_ref=str(batch.header["target_ref"]),
+            total_count=int(cast(int, batch.header["total_count"])),
+            valid_count=int(cast(int, batch.header["valid_count"])),
+            invalid_count=int(cast(int, batch.header["invalid_count"])),
+            abstained_count=int(cast(int, batch.header["abstained_count"])),
+        )
 
 
 register_recovery_route(AnnotationBatchImportActuator())
-
-__all__ = [
-    "AnnotationBatchImportError",
-    "AnnotationBatchImportActuator",
-    "AnnotationBatchImportArgs",
-    "AnnotationBatchImportRequest",
-    "AnnotationBatchImportResult",
-    "AnnotationImportRow",
-    "AnnotationImportRowOutcome",
-    "import_annotation_batch",
-]

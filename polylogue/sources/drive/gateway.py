@@ -40,6 +40,7 @@ DrivePayloadRecord: TypeAlias = JSONDocument
 class DriveListFilesResponse(TypedDict, total=False):
     files: JSONDocumentList
     nextPageToken: str
+    incompleteSearch: bool
 
 
 class _DriveGetKwargs(TypedDict):

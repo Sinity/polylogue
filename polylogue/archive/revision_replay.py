@@ -70,7 +70,7 @@ class RevisionReplayPlan:
 def _is_full_duplicate_signature(candidate: RevisionCandidate) -> bool:
     """Detect a byte-identical "duplicate" decision from its stored columns alone.
 
-    ``revision_governance.classify_raw_revision_cohort``'s classifier
+    ``revision_governance.prepare_raw_revision_byte_classification``'s classifier
     (``archive/revision_authority.py``'s prefix-DAG proof) guarantees at most
     one node per cohort is ever the genuine chain root (``relation=
     "baseline"``, ``predecessor_raw_id=None``); every other proven chain

@@ -96,6 +96,7 @@ class UsageProjectionModel:
     missing_reasons: tuple[str, ...] = ()
     cumulative: bool = False
     provider_lanes_complete: bool = field(kw_only=True)
+    provider_usage_observed: bool = field(default=True, kw_only=True)
 
     @property
     def total_tokens(self) -> int:
@@ -158,7 +159,7 @@ def provider_usage_event_identity(row: Mapping[str, object]) -> tuple[str, str, 
     them with an explicit bounded rule (or retain them as ambiguous evidence)
     rather than silently adding duplicate observations.
     """
-    provider_message_id = str(_projection_value(row, "source_message_provider_id") or "").strip()
+    provider_message_id = str(_projection_value(row, "source_message_provider_id") or "")
     if not provider_message_id:
         return None
     event_type = str(_projection_value(row, "provider_event_type") or "")
@@ -178,7 +179,18 @@ def provider_usage_disjoint_lanes(
     return max(input_with_cached - cache_read, 0), output_with_reasoning, cache_read, cache_write
 
 
-def _projection_event_lanes(row: Mapping[str, object]) -> tuple[tuple[int, int, int, int], bool, bool]:
+def provider_usage_required_lane_indices(origin: str) -> tuple[int, ...]:
+    """Required measurements for the origin's disjoint billable lanes.
+
+    Codex has inclusive cached input but no native cache-write counter. Other
+    origins cannot certify omitted cache lanes as measured zero.
+    """
+    return (0, 1, 2) if origin in {Origin.CODEX_SESSION.value, Provider.CODEX.value} else (0, 1, 2, 3)
+
+
+def _projection_event_lanes(
+    row: Mapping[str, object], *, origin: str
+) -> tuple[tuple[int, int, int, int], bool, bool, bool]:
     """Return disjoint lanes, cumulative scope, and missing lane evidence."""
     total_names = ("total_input_tokens", "total_output_tokens", "total_cached_input_tokens", "total_cache_write_tokens")
     last_names = ("last_input_tokens", "last_output_tokens", "last_cached_input_tokens", "last_cache_write_tokens")
@@ -190,8 +202,21 @@ def _projection_event_lanes(row: Mapping[str, object]) -> tuple[tuple[int, int, 
     input_tokens, output_tokens, cache_read, cache_write = lanes
     if cumulative or str(_projection_value(row, "provider_event_type") or "") == "token_count":
         lanes = provider_usage_disjoint_lanes(input_tokens, output_tokens, cache_read, cache_write)
-    missing = not any(_projection_value(row, name) is not None for name in names)
-    return (lanes[0], lanes[1], lanes[2], lanes[3]), cumulative, missing
+    missing = any(
+        _projection_value(row, names[index]) is None for index in provider_usage_required_lane_indices(origin)
+    )
+    observed = any(
+        _projection_value(row, name) is not None
+        for name in (
+            *total_names,
+            *last_names,
+            "last_total_tokens",
+            "last_reasoning_output_tokens",
+            "total_tokens",
+            "total_reasoning_output_tokens",
+        )
+    )
+    return (lanes[0], lanes[1], lanes[2], lanes[3]), cumulative, missing, observed
 
 
 def project_provider_usage_events(
@@ -205,41 +230,44 @@ def project_provider_usage_events(
     Each session's buckets are replaced once without scanning other sessions.
     Unmappable evidence remains incomplete; measured zero remains measured.
     """
-    del origin
-    grouped: dict[str, dict[str | None, tuple[list[int], bool]]] = {}
-    latest_cumulative: dict[str, tuple[int, str | None, tuple[int, int, int, int]]] = {}
+    grouped: dict[str, dict[str | None, tuple[list[int], bool, bool]]] = {}
+    latest_cumulative: dict[str, tuple[int, str | None, tuple[int, int, int, int], bool, bool]] = {}
     latest_unmapped: dict[str, int] = {}
     for row in events:
         session_id = str(_projection_value(row, "session_id") or "")
         if not session_id:
             continue
         model = _normalize_model_name(_projection_value(row, "model_name")) or None
-        lanes, cumulative, missing = _projection_event_lanes(row)
-        if missing:
+        lanes, cumulative, missing, observed = _projection_event_lanes(row, origin=origin)
+        if missing and observed:
             latest_unmapped[session_id] = max(latest_unmapped.get(session_id, -1), _projection_int(row, "position"))
         if cumulative:
             position = _projection_int(row, "position")
             prior = latest_cumulative.get(session_id)
             if prior is None or position >= prior[0]:
-                latest_cumulative[session_id] = (position, model, lanes)
+                latest_cumulative[session_id] = (position, model, lanes, missing, observed)
             continue
         models = grouped.setdefault(session_id, {})
-        bucket, previous_missing = models.setdefault(model, ([0, 0, 0, 0], False))
+        bucket, previous_missing, previous_observed = models.setdefault(model, ([0, 0, 0, 0], False, False))
         for index, value in enumerate(lanes):
             bucket[index] += value
-        models[model] = bucket, previous_missing or missing
+        models[model] = bucket, previous_missing or (missing and observed), previous_observed or observed
 
-    for session_id, (_, model, lanes) in latest_cumulative.items():
+    for session_id, (_, model, lanes, missing, observed) in latest_cumulative.items():
         grouped[session_id] = {
-            model: (list(lanes), latest_unmapped.get(session_id, -1) > latest_cumulative[session_id][0])
+            model: (
+                list(lanes),
+                missing or latest_unmapped.get(session_id, -1) > latest_cumulative[session_id][0],
+                observed,
+            )
         }
 
     result: list[UsageProjectionModel] = []
     for session_id, models in sorted(grouped.items()):
-        for model, (bucket_lanes, missing) in sorted(models.items(), key=lambda item: item[0] or ""):
+        for model, (bucket_lanes, missing, observed) in sorted(models.items(), key=lambda item: item[0] or ""):
             input_tokens, output_tokens, cache_read, cache_write = bucket_lanes
             cost, reasons = catalog_cost_for_tokens(model, input_tokens, output_tokens, cache_read, cache_write)
-            if missing:
+            if missing or not observed:
                 cost = None
                 reasons = (*reasons, "missing_token_lanes")
             result.append(
@@ -255,6 +283,7 @@ def project_provider_usage_events(
                     missing_reasons=reasons,
                     cumulative=session_id in latest_cumulative,
                     provider_lanes_complete=not missing,
+                    provider_usage_observed=observed,
                 )
             )
     return tuple(result)
@@ -727,6 +756,7 @@ class PricingLaneReport:
     matched_model_row_count: int = 0
     unmatched_model_row_count: int = 0
     incomplete_provider_row_count: int = 0
+    unobserved_provider_row_count: int = 0
     usage: UsageCounters = field(default_factory=UsageCounters)
     stored_cost_usd: float = 0.0
     catalog_api_equivalent_usd: float | None = None
@@ -750,6 +780,7 @@ class PricingLaneReport:
             "matched_model_row_count": self.matched_model_row_count,
             "unmatched_model_row_count": self.unmatched_model_row_count,
             "incomplete_provider_row_count": self.incomplete_provider_row_count,
+            "unobserved_provider_row_count": self.unobserved_provider_row_count,
             "usage": self.usage.to_dict(),
             "stored_cost_usd": round(self.stored_cost_usd, 6),
             "catalog_api_equivalent_usd": _round_optional(self.catalog_api_equivalent_usd),
@@ -770,6 +801,7 @@ class _PricingLaneAccumulator:
     matched_model_row_count: int = 0
     unmatched_model_row_count: int = 0
     incomplete_provider_row_count: int = 0
+    unobserved_provider_row_count: int = 0
     usage: UsageCounters = field(default_factory=UsageCounters)
     stored_cost_usd: float = 0.0
     catalog_api_equivalent_usd: float = 0.0
@@ -915,7 +947,7 @@ def _usage_lane_authority(provenance: str) -> Literal["provider-reported", "mode
 def _pricing_lane_token_evidence(lane: PricingLaneReport) -> EvidenceValue[int]:
     storage_ref = _pricing_lane_storage_ref(lane)
     fact_ref = _pricing_lane_fact_ref(lane, "exact-total-tokens")
-    known = lane.row_count > 0 and lane.incomplete_provider_row_count == 0
+    known = lane.row_count > 0 and lane.incomplete_provider_row_count == 0 and lane.unobserved_provider_row_count == 0
     evidence = EvidenceValue(
         family=USAGE_LANE_EXACT_TOKENS_FAMILY.family,
         fact_ref=fact_ref,
@@ -936,11 +968,13 @@ def _pricing_lane_token_evidence(lane: PricingLaneReport) -> EvidenceValue[int]:
             denominator=USAGE_LANE_EXACT_TOKENS_FAMILY.denominator,
             intended_count=lane.row_count,
             observed_count=lane.row_count,
-            supported_count=lane.row_count - lane.incomplete_provider_row_count,
+            supported_count=lane.row_count - lane.incomplete_provider_row_count - lane.unobserved_provider_row_count,
             complete=known,
             exclusions=(
                 (CoverageExclusion(subject_ref=storage_ref, reason="incomplete-provider-lanes"),)
                 if lane.incomplete_provider_row_count
+                else (CoverageExclusion(subject_ref=storage_ref, reason="unobserved-provider-usage"),)
+                if lane.unobserved_provider_row_count
                 else ()
             ),
         ),
@@ -964,10 +998,13 @@ def _pricing_lane_cost_evidence(lane: PricingLaneReport) -> EvidenceValue[float]
         lane.row_count > 0
         and lane.unmatched_model_row_count == 0
         and lane.incomplete_provider_row_count == 0
+        and lane.unobserved_provider_row_count == 0
         and lane.catalog_api_equivalent_usd is not None
     )
     exclusions: tuple[CoverageExclusion, ...] = ()
-    if lane.incomplete_provider_row_count:
+    if lane.unobserved_provider_row_count:
+        exclusions = (CoverageExclusion(subject_ref=storage_ref, reason="unobserved-provider-usage"),)
+    elif lane.incomplete_provider_row_count:
         exclusions = (CoverageExclusion(subject_ref=storage_ref, reason="incomplete-provider-lanes"),)
     elif lane.unmatched_model_row_count > 0:
         exclusions = (
@@ -2025,6 +2062,7 @@ def _pricing_lane_reports(
                        COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
                        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
                        u.provider_lanes_complete,
+                       (u.provider_usage_observed OR u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0) AS provider_usage_observed,
                        EXISTS (
                            SELECT 1
                            FROM session_links l
@@ -2038,6 +2076,7 @@ def _pricing_lane_reports(
             ), logical_model AS (
                 SELECT provenance, logical_session_id, model_name,
                        MIN(provider_lanes_complete) AS provider_lanes_complete,
+                       MIN(provider_usage_observed) AS provider_usage_observed,
                        COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN input_tokens END), 0)
                          + COALESCE(SUM(CASE WHEN is_prefix_child THEN input_tokens ELSE 0 END), 0) AS input_tokens,
                        COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN output_tokens END), 0)
@@ -2052,7 +2091,8 @@ def _pricing_lane_reports(
             SELECT provenance,
                    model_name,
                    COUNT(*) AS row_count,
-                   SUM(CASE WHEN provider_lanes_complete = 0 THEN 1 ELSE 0 END) AS incomplete_provider_row_count,
+                   SUM(CASE WHEN provider_lanes_complete = 0 AND provider_usage_observed THEN 1 ELSE 0 END) AS incomplete_provider_row_count,
+                   SUM(CASE WHEN NOT provider_usage_observed THEN 1 ELSE 0 END) AS unobserved_provider_row_count,
                    COALESCE(SUM(input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(output_tokens), 0) AS output_tokens,
                    COALESCE(SUM(cached_input_tokens), 0) AS cached_input_tokens,
@@ -2073,7 +2113,8 @@ def _pricing_lane_reports(
             SELECT CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' ELSE 'unknown' END AS provenance,
                    COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
                    COUNT(*) AS row_count,
-                   SUM(CASE WHEN u.provider_lanes_complete = 0 THEN 1 ELSE 0 END) AS incomplete_provider_row_count,
+                   SUM(CASE WHEN u.provider_lanes_complete = 0 AND (u.provider_usage_observed OR u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0) THEN 1 ELSE 0 END) AS incomplete_provider_row_count,
+                   SUM(CASE WHEN NOT (u.provider_usage_observed OR u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0) THEN 1 ELSE 0 END) AS unobserved_provider_row_count,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
                    COALESCE(SUM(u.cache_read_tokens), 0) AS cached_input_tokens,
@@ -2109,6 +2150,10 @@ def _pricing_lane_reports(
         row_count = _int(row["row_count"])
         incomplete_provider_rows = _int(row["incomplete_provider_row_count"])
         bucket.incomplete_provider_row_count += incomplete_provider_rows
+        unobserved_provider_rows = _int(row["unobserved_provider_row_count"])
+        bucket.unobserved_provider_row_count += unobserved_provider_rows
+        if unobserved_provider_rows:
+            caveats_by_provenance[provenance].add("unobserved_provider_usage")
         if incomplete_provider_rows:
             caveats_by_provenance[provenance].add("incomplete_provider_lanes")
         bucket.row_count += row_count
@@ -2138,7 +2183,7 @@ def _pricing_lane_reports(
                 else:
                     if provenance == "priced" and stored_cost > 0 and not logical:
                         catalog_cost = stored_cost
-                    bucket.matched_model_row_count += row_count - incomplete_provider_rows
+                    bucket.matched_model_row_count += row_count - incomplete_provider_rows - unobserved_provider_rows
             else:
                 bucket.unmatched_model_row_count += row_count
                 caveats_by_provenance[provenance].add("missing_price")
@@ -2186,11 +2231,14 @@ def _pricing_lane_reports(
                 matched_model_row_count=bucket.matched_model_row_count,
                 unmatched_model_row_count=bucket.unmatched_model_row_count,
                 incomplete_provider_row_count=bucket.incomplete_provider_row_count,
+                unobserved_provider_row_count=bucket.unobserved_provider_row_count,
                 usage=bucket.usage,
                 stored_cost_usd=round(bucket.stored_cost_usd, 6),
                 catalog_api_equivalent_usd=(
                     None
-                    if bucket.unmatched_model_row_count > 0 or bucket.incomplete_provider_row_count > 0
+                    if bucket.unmatched_model_row_count > 0
+                    or bucket.incomplete_provider_row_count > 0
+                    or bucket.unobserved_provider_row_count > 0
                     else round(bucket.catalog_api_equivalent_usd, 6)
                 ),
                 catalog_priced_subtotal_usd=round(bucket.catalog_api_equivalent_usd, 6),
@@ -2855,7 +2903,7 @@ def _model_usage_tokens_evidence(
 ) -> EvidenceValue[int]:
     fact_ref = _session_usage_fact_ref(session_id, "exact-total-tokens")
     source_ref = _session_usage_source_ref(session_id, "session_model_usage")
-    known = bool(rows) and all(row.provider_lanes_complete for row in rows)
+    known = bool(rows) and all(row.has_provider_usage and row.provider_lanes_complete for row in rows)
     return EvidenceValue(
         family=SESSION_USAGE_RECONCILED_TOKENS_FAMILY.family,
         fact_ref=fact_ref,
@@ -2875,7 +2923,14 @@ def _model_usage_tokens_evidence(
             observed_count=1 if known else 0,
             supported_count=1 if known else 0,
             complete=known,
-            exclusions=(CoverageExclusion(subject_ref=source_ref, reason="incomplete-provider-lanes"),)
+            exclusions=(
+                CoverageExclusion(
+                    subject_ref=source_ref,
+                    reason="unobserved-provider-usage"
+                    if any(not row.has_provider_usage for row in rows)
+                    else "incomplete-provider-lanes",
+                ),
+            )
             if rows and not known
             else (),
         ),
@@ -3201,7 +3256,7 @@ def session_usage_costs_for_connection(
             SELECT s.session_id, s.reported_cost_usd,
                    COUNT(CASE WHEN COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) +
                                     COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0) > 0
-                                    OR u.catalog_cost_usd IS NOT NULL
+                                    OR u.catalog_cost_usd IS NOT NULL OR u.provider_usage_observed
                               THEN u.model_name END) AS model_count,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
@@ -3210,9 +3265,10 @@ def session_usage_costs_for_connection(
                    SUM(u.provider_cost_usd) AS provider_cost_usd,
                    {MODEL_USAGE_CATALOG_SUM_SQL} AS catalog_cost_usd,
                    SUM(CASE WHEN u.provider_lanes_complete = 0 THEN 1 ELSE 0 END) AS incomplete_provider_lanes,
+                   SUM(CASE WHEN NOT (u.provider_usage_observed OR COALESCE(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens, 0) > 0) THEN 1 ELSE 0 END) AS unobserved_provider_rows,
                    COUNT(CASE WHEN COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) +
                                     COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0) > 0
-                                    OR u.catalog_cost_usd IS NOT NULL
+                                    OR u.catalog_cost_usd IS NOT NULL OR u.provider_usage_observed
                               THEN u.catalog_cost_usd END) AS priced_model_count,
                    SUM(u.cost_credits) AS stored_credits,
                    GROUP_CONCAT(DISTINCT u.model_name) AS model_names,
@@ -3266,7 +3322,10 @@ def session_usage_costs_for_connection(
                 provider_money = None
             incomplete_provider_lanes = int(row["incomplete_provider_lanes"] or 0)
             catalog_complete = (
-                model_count > 0 and int(row["priced_model_count"] or 0) == model_count and not incomplete_provider_lanes
+                model_count > 0
+                and int(row["priced_model_count"] or 0) == model_count
+                and not incomplete_provider_lanes
+                and not int(row["unobserved_provider_rows"] or 0)
             )
             catalog_cost = (
                 None

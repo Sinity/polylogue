@@ -181,12 +181,12 @@ def execute_read_operation(
     if name == "cli.query":
         from polylogue.archive.query.transaction import archive_snapshot_epoch
 
-        snapshot_epoch = f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}"
+        snapshot_epoch = archive_snapshot_epoch(archive)
     selected_epoch = payload.get("selection_epoch")
     if selected_epoch is not None:
         from polylogue.archive.query.transaction import QueryContinuationStaleError, archive_snapshot_epoch
 
-        current_epoch = f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}"
+        current_epoch = archive_snapshot_epoch(archive)
         if selected_epoch != current_epoch:
             raise QueryContinuationStaleError(issued_epoch=str(selected_epoch), current_epoch=current_epoch)
     cacheable = _cacheable_read(name, payload)
@@ -213,6 +213,12 @@ def execute_read_operation(
         )
     if cacheable:
         assert read_view is not None
+        if name == "facets":
+            from polylogue.archive.query.transaction import archive_snapshot_epoch
+
+            # A committed User write can precede its cache invalidation. Bind
+            # facets to the rows this reader pinned, even while epochs agree.
+            cache_key_payload = {"params": cache_key_payload, "snapshot_epoch": archive_snapshot_epoch(archive)}
         from polylogue.storage.search.cache import get_cached_result
 
         cached = get_cached_result(name, cache_key_payload, view=read_view)
@@ -501,6 +507,11 @@ def _query_payload(
     # CLI root payloads retain presentation-only keys.  The existing query
     # contract intentionally ignores those while compiling selection intent.
     spec = cli_read_request({**params, "limit": limit, "offset": offset}).selection
+    # Execute the compiler's window, including expression overrides and the
+    # declared nonzero outer-offset precedence. Transport defaults are only
+    # inputs to compilation, never a second execution override.
+    limit = clamp_query_limit(spec.limit, default=DEFAULT_SESSION_LIST_LIMIT)
+    offset = spec.offset
     # A proved missing explicit scope still runs the canonical query. Its
     # exact-ID predicate yields no rows on this pinned snapshot, while normal
     # validation and ranked-lane failures remain visible.

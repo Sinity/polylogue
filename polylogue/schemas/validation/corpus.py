@@ -333,72 +333,73 @@ def verify_raw_corpus(
                 _report_progress(request.progress_callback)
                 continue
 
-            actual_provider = envelope.provider
-            tracked_row = _track_selected_row(
-                provider_filter=provider_filter,
-                provider=actual_provider,
-                total_records=total_records,
-                stats_by_provider=stats_by_provider,
-            )
-            if tracked_row is None:
-                continue
-            total_records, provider_stats = tracked_row
-            if malformed_lines:
-                if request.quarantine_malformed:
-                    _record_decode_error(
-                        raw_id=raw_id,
-                        provider=actual_provider,
-                        reason=_format_malformed_jsonl_error(
-                            malformed_lines=malformed_lines,
-                            malformed_detail=malformed_detail,
-                        ),
-                        stats_by_provider=stats_by_provider,
-                        quarantine_updates=quarantine_updates,
-                        quarantine_malformed=request.quarantine_malformed,
-                    )
-                else:
-                    provider_stats.decode_errors += 1
-                _report_progress(request.progress_callback)
-                continue
-            if not envelope.artifact.schema_eligible:
-                provider_stats.skipped_no_schema += 1
-                _report_progress(request.progress_callback)
-                continue
-
-            try:
-                payload_validation = SchemaValidator.validate_payload(
-                    actual_provider,
-                    payload,
-                    source_path=source_path,
-                    max_samples=request.max_samples,
+            with envelope:
+                actual_provider = envelope.provider
+                tracked_row = _track_selected_row(
+                    provider_filter=provider_filter,
+                    provider=actual_provider,
+                    total_records=total_records,
+                    stats_by_provider=stats_by_provider,
                 )
-            except (FileNotFoundError, ImportError):
-                provider_stats.skipped_no_schema += 1
+                if tracked_row is None:
+                    continue
+                total_records, provider_stats = tracked_row
+                if malformed_lines:
+                    if request.quarantine_malformed:
+                        _record_decode_error(
+                            raw_id=raw_id,
+                            provider=actual_provider,
+                            reason=_format_malformed_jsonl_error(
+                                malformed_lines=malformed_lines,
+                                malformed_detail=malformed_detail,
+                            ),
+                            stats_by_provider=stats_by_provider,
+                            quarantine_updates=quarantine_updates,
+                            quarantine_malformed=request.quarantine_malformed,
+                        )
+                    else:
+                        provider_stats.decode_errors += 1
+                    _report_progress(request.progress_callback)
+                    continue
+                if not envelope.artifact.schema_eligible:
+                    provider_stats.skipped_no_schema += 1
+                    _report_progress(request.progress_callback)
+                    continue
+
+                try:
+                    payload_validation = SchemaValidator.validate_payload(
+                        actual_provider,
+                        payload,
+                        source_path=source_path,
+                        max_samples=request.max_samples,
+                    )
+                except (FileNotFoundError, ImportError):
+                    provider_stats.skipped_no_schema += 1
+                    _report_progress(request.progress_callback)
+                    continue
+
+                validation_results = payload_validation.sample_results
+                if not validation_results:
+                    provider_stats.valid_records += 1
+                    _report_progress(request.progress_callback)
+                    continue
+
+                invalid_found = False
+                drift_found = False
+                for _sample, result in validation_results:
+                    if not result.is_valid:
+                        invalid_found = True
+                    if result.has_drift:
+                        drift_found = True
+
+                if invalid_found:
+                    provider_stats.invalid_records += 1
+                else:
+                    provider_stats.valid_records += 1
+                if drift_found:
+                    provider_stats.drift_records += 1
+
                 _report_progress(request.progress_callback)
-                continue
-
-            validation_results = payload_validation.sample_results
-            if not validation_results:
-                provider_stats.valid_records += 1
-                _report_progress(request.progress_callback)
-                continue
-
-            invalid_found = False
-            drift_found = False
-            for _sample, result in validation_results:
-                if not result.is_valid:
-                    invalid_found = True
-                if result.has_drift:
-                    drift_found = True
-
-            if invalid_found:
-                provider_stats.invalid_records += 1
-            else:
-                provider_stats.valid_records += 1
-            if drift_found:
-                provider_stats.drift_records += 1
-
-            _report_progress(request.progress_callback)
 
     if quarantine_updates:
         assert quarantine is not None

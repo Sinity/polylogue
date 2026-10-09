@@ -31,6 +31,7 @@ from polylogue.storage.raw_authority_verdict_cache import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.prepared_replay import publish_fixture_byte_classification
 
 
 @contextmanager
@@ -45,7 +46,14 @@ def _archive_writer(root: Path) -> Iterator[ArchiveStore]:
             yield archive
 
 
-def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_source_key: str) -> str:
+def _bind_full(
+    archive: ArchiveStore,
+    *,
+    raw_id: str,
+    payload: bytes,
+    logical_source_key: str,
+    authority: RawRevisionAuthority = RawRevisionAuthority.ASSERTED,
+) -> str:
     written_id = archive.write_raw_payload(
         provider=Provider.CODEX,
         payload=payload,
@@ -56,7 +64,7 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
     )
     archive.bind_raw_revision(
         written_id,
-        RawRevisionEnvelope(logical_source_key, RawRevisionKind.FULL, f"revision-{raw_id}", 0),
+        RawRevisionEnvelope(logical_source_key, RawRevisionKind.FULL, f"revision-{raw_id}", 0, authority=authority),
     )
     return written_id
 
@@ -156,7 +164,14 @@ def test_append_authority_promotion_invalidates_the_cache(tmp_path: Path) -> Non
     """The cache must follow the persisted byte-proof links used by append verdicts."""
     bootstrap_archive_root(tmp_path)
     with _archive_writer(tmp_path) as archive:
-        _bind_full(archive, raw_id="baseline", payload=b"one\n", logical_source_key="codex:s1")
+        # This cohort has not yet received byte proof; classification owns it.
+        _bind_full(
+            archive,
+            raw_id="baseline",
+            payload=b"one\n",
+            logical_source_key="codex:s1",
+            authority=RawRevisionAuthority.QUARANTINED,
+        )
         append_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=b"two\n",
@@ -181,8 +196,12 @@ def test_append_authority_promotion_invalidates_the_cache(tmp_path: Path) -> Non
         )
 
         initial = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=1000)
-        archive.classify_raw_revision_cohort_for_rebuild_repair("codex:s1")
 
+    # Raw preparation begins outside the cache writer's admitted lease.
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        publish_fixture_byte_classification(archive, "codex:s1")
+
+    with _archive_writer(tmp_path) as archive:
         stale = read_cached_raw_authority_verdicts(archive, "codex:s1")
         promoted = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=2000)
 

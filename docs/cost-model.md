@@ -504,3 +504,12 @@ recorded provider amount of zero remains exact. Catalog totals are estimates;
 incomplete catalog coverage or token lanes leave the dollar amount and estimated
 flag unknown unless a provider amount exists. These read projections do not
 reprice or replace the stored usage evidence.
+
+Canonical model usage records measurement presence independently from lane
+completeness. A model declaration without counters is unobserved, while an
+explicit all-zero measurement remains observed. Missing required billable
+counters leave complete token and catalog totals unknown; measured subtotals
+remain available. Codex's native cache-write field is optional, while its
+inclusive input requires the cached-input counter to form disjoint lanes.
+Message fallback estimates preserve measured cache lanes and retain heuristic
+or incomplete confidence regardless of the order of the source observations.

@@ -6,8 +6,9 @@ from __future__ import annotations
 # The alias is fixed to the model-usage relation named by those SQL owners.
 MODEL_USAGE_CATALOG_SUM_SQL = """
 CASE WHEN MIN(u.provider_lanes_complete) = 1
+          AND MIN(u.provider_usage_observed OR u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0) = 1
           AND COUNT(u.catalog_cost_usd) = COUNT(CASE
-              WHEN u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0
+              WHEN u.provider_usage_observed OR u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0
                    OR u.catalog_cost_usd IS NOT NULL THEN u.model_name END)
      THEN SUM(u.catalog_cost_usd) END
 """.strip()

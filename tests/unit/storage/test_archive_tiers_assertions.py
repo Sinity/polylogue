@@ -59,7 +59,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_transform_candidate_assertions,
 )
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE, open_connection
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 from tests.infra.user_tier import connect_measured_user_tier
 
 
@@ -341,11 +341,7 @@ def test_actions_view_keeps_duplicate_tool_ids_session_scoped(tmp_path: Path) ->
         message_b = _insert_index_message(conn, session_b, "message-b", 0)
 
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO blocks (\n                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type\n            , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             (
                 message_a,
                 session_a,
@@ -355,14 +351,13 @@ def test_actions_view_keeps_duplicate_tool_ids_session_scoped(tmp_path: Path) ->
                 "provider-local-tool-id",
                 json.dumps({"command": "pytest -q"}),
                 "shell",
+                fixture_block_content_identity(
+                    "tool_use", "Bash", "provider-local-tool-id", json.dumps({"command": "pytest -q"}), "shell"
+                ),
             ),
         )
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, text, tool_id
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO blocks (\n                message_id, session_id, position, block_type, text, tool_id\n            , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
             (
                 message_b,
                 session_b,
@@ -370,6 +365,7 @@ def test_actions_view_keeps_duplicate_tool_ids_session_scoped(tmp_path: Path) ->
                 "tool_result",
                 "wrong-session-result",
                 "provider-local-tool-id",
+                fixture_block_content_identity("tool_result", "wrong-session-result", "provider-local-tool-id"),
             ),
         )
 
@@ -386,11 +382,7 @@ def test_actions_view_keeps_duplicate_tool_ids_session_scoped(tmp_path: Path) ->
         assert action["tool_result_block_id"] is None
 
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, text, tool_id
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO blocks (\n                message_id, session_id, position, block_type, text, tool_id\n            , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
             (
                 message_a,
                 session_a,
@@ -398,6 +390,7 @@ def test_actions_view_keeps_duplicate_tool_ids_session_scoped(tmp_path: Path) ->
                 "tool_result",
                 "same-session-result",
                 "provider-local-tool-id",
+                fixture_block_content_identity("tool_result", "same-session-result", "provider-local-tool-id"),
             ),
         )
         action = conn.execute(
@@ -424,21 +417,31 @@ def test_index_json_contracts_reject_non_object_payloads(tmp_path: Path) -> None
 
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
-                """
-                INSERT INTO blocks (
-                    message_id, session_id, position, block_type, tool_name, tool_id, tool_input
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (message_id, session_id, 0, "tool_use", "Bash", "tool-json", "[]"),
+                "INSERT INTO blocks (\n                    message_id, session_id, position, block_type, tool_name, tool_id, tool_input\n                , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                (
+                    message_id,
+                    session_id,
+                    0,
+                    "tool_use",
+                    "Bash",
+                    "tool-json",
+                    "[]",
+                    fixture_block_content_identity("tool_use", "Bash", "tool-json", "[]"),
+                ),
             )
 
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, tool_name, tool_id, tool_input
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (message_id, session_id, 0, "tool_use", "Bash", "tool-json", json.dumps({"command": "true"})),
+            "INSERT INTO blocks (\n                message_id, session_id, position, block_type, tool_name, tool_id, tool_input\n            , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                0,
+                "tool_use",
+                "Bash",
+                "tool-json",
+                json.dumps({"command": "true"}),
+                fixture_block_content_identity("tool_use", "Bash", "tool-json", json.dumps({"command": "true"})),
+            ),
         )
     finally:
         conn.close()
@@ -1136,7 +1139,7 @@ def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
         refs = [
             "session:abc-123",
             "message:abc-123:7",
-            "block:abc-123:7:2",
+            f"block:abc-123:b:{'0' * 64}:2",
             "github-issue:Sinity/polylogue#1883",
             # polylogue-lph4: delegation attempts are a registered ObjectRef
             # target -- candidate annotations/judgments can scope to a
@@ -1158,6 +1161,30 @@ def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
             stored = read_assertion_envelope(conn, f"ref-{idx}")
             assert stored is not None
             assert stored.target_ref == ref
+    finally:
+        conn.close()
+
+
+def test_assertion_write_rejects_positional_block_target(tmp_path: Path) -> None:
+    conn = connect_measured_user_tier(tmp_path / "user.db")
+    try:
+        with pytest.raises(ValueError, match="resolved to a stable block_id"):
+            upsert_assertion(
+                conn,
+                assertion_id="positional-block",
+                target_ref="block:message-1:2",
+                kind=AssertionKind.HANDOFF,
+                now_ms=1_700_000_000_000,
+            )
+        with pytest.raises(ValueError, match="positional block evidence"):
+            upsert_assertion(
+                conn,
+                assertion_id="positional-block-evidence",
+                target_ref="session:session-1",
+                evidence_refs=("session-1::message-1::2",),
+                kind=AssertionKind.HANDOFF,
+                now_ms=1_700_000_000_000,
+            )
     finally:
         conn.close()
 

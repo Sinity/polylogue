@@ -18,6 +18,7 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
+from polylogue.core.durable_fs import sync_directory_ancestors
 from polylogue.paths import state_home
 
 VERIFICATION_RECEIPT_FORMAT = "polylogue-backup-verification-receipt-v2"
@@ -71,6 +72,7 @@ def _prepare_key_directory(path: Path) -> None:
         raise BackupAttestationError(f"backup attestation key directory is not owned by the current user: {path}")
     if stat.S_IMODE(metadata.st_mode) & 0o077:
         path.chmod(0o700)
+    sync_directory_ancestors(path)
 
 
 def _load_key(path: Path) -> bytes:

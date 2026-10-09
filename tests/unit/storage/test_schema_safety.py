@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.sqlite.schema import SCHEMA_DDL, SCHEMA_VERSION
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 
 # =============================================================================
 # Schema DDL parity: sync and async must use the same DDL (f33ef29)
@@ -323,11 +323,12 @@ class TestFTS5CountGuard:
             )
             message_id = archive_message_id(session_id, "m1")
             conn.execute(
-                """
-                INSERT INTO blocks (message_id, session_id, position, block_type, text)
-                VALUES (?, ?, 0, 'text', 'hello world')
-                """,
-                (message_id, session_id),
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', 'hello world', ?, 0)",
+                (
+                    message_id,
+                    session_id,
+                    fixture_block_content_identity("text", "hello world"),
+                ),
             )
             conn.commit()
 
@@ -708,9 +709,12 @@ class TestContentlessFTSDeclaresOnlyIndexedColumns:
             )
             message_id = archive_message_id(session_id, "m1")
             conn.execute(
-                "INSERT INTO blocks (message_id, session_id, position, block_type, text)"
-                " VALUES (?, ?, 0, 'text', 'zarquon indexing probe')",
-                (message_id, session_id),
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', 'zarquon indexing probe', ?, 0)",
+                (
+                    message_id,
+                    session_id,
+                    fixture_block_content_identity("text", "zarquon indexing probe"),
+                ),
             )
             conn.commit()
 

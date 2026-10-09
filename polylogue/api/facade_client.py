@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from polylogue.operations.request_body_transport import BinaryReader, OperationInputKwargs
 
 from polylogue.config import Config, active_archive_root
 from polylogue.core.errors import PolylogueError
@@ -45,6 +48,7 @@ def _wire_request(product: str, fields: dict[str, Any]) -> tuple[str, dict[str, 
             "session_id": fields["owner_session_id"],
             "target_type": fields["target_type"],
             "target_id": fields["target_id"],
+            "message_id": fields.get("message_id"),
             "mark_type": fields["mark_type"],
         }
     if product == "save_annotation":
@@ -54,6 +58,7 @@ def _wire_request(product: str, fields: dict[str, Any]) -> tuple[str, dict[str, 
             "note_text": fields["note_text"],
             "target_type": fields["target_type"],
             "target_id": fields["target_id"],
+            "message_id": fields.get("message_id"),
         }
     if product == "delete_annotation":
         return "user.annotation.delete", {"id": fields["annotation_id"]}
@@ -123,7 +128,9 @@ async def submit_facade_product(
     return receipt, plan
 
 
-async def submit_facade_operation(config: Config, operation: str, payload: dict[str, object]) -> dict[str, Any]:
+async def submit_facade_operation(
+    config: Config, operation: str, payload: dict[str, object], *, input: BinaryReader | None = None
+) -> dict[str, Any]:
     """Submit a declared daemon write and return its validated product result."""
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
@@ -145,6 +152,7 @@ async def submit_facade_operation(config: Config, operation: str, payload: dict[
     from polylogue.operations.daemon_errors import DaemonMutationIndeterminateError
 
     request_id = uuid.uuid4().hex
+    input_kwargs: OperationInputKwargs = {"input": input} if input is not None else {}
     pending = asyncio.create_task(
         asyncio.to_thread(
             client.operation_to_completion,
@@ -152,6 +160,7 @@ async def submit_facade_operation(config: Config, operation: str, payload: dict[
             payload,
             archive_root=str(root),
             request_id=request_id,
+            **input_kwargs,
         )
     )
     try:

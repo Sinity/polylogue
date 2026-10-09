@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "OutcomeEnvelope": {
+      "additionalProperties": false,
+      "description": "The terminal outcome of one operation, decided at the operation boundary.",
+      "properties": {
+        "detail": {
+          "additionalProperties": true,
+          "title": "Detail",
+          "type": "object"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "state": {
+          "enum": [
+            "ok",
+            "empty",
+            "degraded",
+            "error"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "OutcomeEnvelope",
+      "type": "object"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/root-session.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Exact root transcript content with the canonical read outcome and lineage completeness. Incomplete inherited prefixes remain degraded even when tail messages are available.\n\nGenerated from `polylogue.cli.query_output_contracts.RootSessionDocument` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "active_leaf_message_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Active Leaf Message Id"
+    },
+    "lineage_complete": {
+      "title": "Lineage Complete",
+      "type": "boolean"
+    },
+    "lineage_truncation_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Lineage Truncation Reason"
+    },
+    "messages": {
+      "items": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "type": "object"
+      },
+      "title": "Messages",
+      "type": "array"
+    },
+    "mode": {
+      "const": "session",
+      "default": "session",
+      "title": "Mode",
+      "type": "string"
+    },
+    "native_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Native Id"
+    },
+    "origin": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Origin"
+    },
+    "outcome": {
+      "$ref": "#/$defs/OutcomeEnvelope"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Title"
+    }
+  },
+  "required": [
+    "session_id",
+    "native_id",
+    "origin",
+    "title",
+    "active_leaf_message_id",
+    "messages",
+    "outcome",
+    "lineage_complete",
+    "lineage_truncation_reason"
+  ],
+  "title": "Root Session Transcript",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue --format json find id:SESSION"
+  ],
+  "x-polylogue-source-model": "RootSessionDocument"
+}

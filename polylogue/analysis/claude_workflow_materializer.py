@@ -22,6 +22,7 @@ from polylogue.analysis.claude_workflow_evidence import (
     ClaudeWorkflowCoordinatorInvocation,
     ClaudeWorkflowPromptEvidence,
     ClaudeWorkflowSessionEvidence,
+    claude_workflow_artifacts_for_run,
     project_claude_workflow_evidence,
 )
 from polylogue.analysis.work_evidence import WorkEvidenceGraph
@@ -44,7 +45,7 @@ from polylogue.storage.sqlite.population_admission import assert_population_admi
 
 logger = get_logger(__name__)
 
-CLAUDE_WORKFLOW_MATERIALIZER_VERSION = 1
+CLAUDE_WORKFLOW_MATERIALIZER_VERSION = 2
 _GRAPH_PREFIX = "claude-workflow:"
 _FACT_KINDS = frozenset(
     {
@@ -139,7 +140,7 @@ def materialize_claude_workflow_archive(archive_root: Path) -> ClaudeWorkflowMat
     prepared = _prepare_inputs(archive_root)
     graphs: list[WorkEvidenceGraph] = []
     for run_id in prepared.run_ids:
-        run_artifacts = _artifacts_for_run(run_id, prepared.parsed_artifacts)
+        run_artifacts = claude_workflow_artifacts_for_run(run_id, prepared.parsed_artifacts)
         graph = project_claude_workflow_evidence(
             graph_id=f"{_GRAPH_PREFIX}{run_id}",
             run_id=run_id,
@@ -485,29 +486,6 @@ def _run_ids(
     return tuple(sorted(values))
 
 
-def _artifacts_for_run(
-    run_id: str,
-    artifacts: Sequence[ClaudeOrchestrationArtifact],
-) -> tuple[ClaudeOrchestrationArtifact, ...]:
-    directly_scoped = [artifact for artifact in artifacts if any(fact.run_id == run_id for fact in artifact.facts)]
-    journal_facts = [
-        fact for artifact in directly_scoped for fact in artifact.facts if fact.kind == "workflow_journal_entry"
-    ]
-    keys = {value for fact in journal_facts for value in (fact.attempt_id, fact.agent_id) if value is not None}
-    meta_paths = {_normalize_path(path) for fact in journal_facts if (path := fact.meta_path)}
-    selected = list(directly_scoped)
-    for artifact in artifacts:
-        if artifact in selected or artifact.kind != "agent_sidecar_meta":
-            continue
-        normalized = _normalize_path(artifact.source_path)
-        facts = artifact.facts
-        if normalized in meta_paths or any(
-            value in keys for fact in facts for value in (fact.attempt_id, fact.agent_id) if value is not None
-        ):
-            selected.append(artifact)
-    return tuple(sorted(selected, key=lambda item: (_normalize_path(item.source_path), item.kind)))
-
-
 def _corpus_snapshot(
     raw_artifacts: Sequence[_RawArtifact],
     invocations: Sequence[ClaudeWorkflowCoordinatorInvocation],
@@ -650,7 +628,7 @@ def _summarize(
     relevant_sidecars = {
         _normalize_path(artifact.source_path)
         for run_id in prepared.run_ids
-        for artifact in _artifacts_for_run(run_id, prepared.parsed_artifacts)
+        for artifact in claude_workflow_artifacts_for_run(run_id, prepared.parsed_artifacts)
         if artifact.kind == "agent_sidecar_meta"
     }
     journal_results = sum(

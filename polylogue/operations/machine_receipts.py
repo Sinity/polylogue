@@ -60,8 +60,8 @@ class InsightTerminalSummaryHistorical(_Receipt):
 
 class InsightPartHistoricalReceipt(_Receipt):
     kind: Literal["insight-part/v1"] = "insight-part/v1"
-    ordinal: int = Field(ge=0, lt=4096)
-    page_count: int = Field(ge=1, le=4096)
+    ordinal: int = Field(ge=0)
+    page_count: int = Field(ge=1)
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     index_generation: str = Field(min_length=1)
     recipe_version: str = Field(min_length=1)

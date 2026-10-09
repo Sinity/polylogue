@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable
 from contextlib import closing
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -33,6 +33,7 @@ from polylogue.daemon.derivation import (
     converge,
 )
 from polylogue.daemon.status import raw_failure_info_for_root
+from polylogue.logging import capture
 from polylogue.operations.intake_adapters import RawMaterializationDiscovery
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
@@ -741,6 +742,72 @@ def test_codex_neutral_parse_survives_unrelated_source_commit(
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
 
 
+def test_changed_retained_selection_reuses_99_unchanged_parser_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changed publication cohort retains only dependency-identical parses."""
+    from polylogue.sources import prepared_jsonl as prepared_jsonl_module
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from tests.unit.storage.test_raw_observation_derivation import _publish_to_valid
+
+    bootstrap_archive_root(tmp_path)
+    raw_ids = [
+        _admit(
+            tmp_path,
+            (),
+            provider=Provider.CODEX,
+            path=f"codex/cohort-{index:03d}.jsonl",
+            payload=_codex_conversation_bytes(f"cohort-{index:03d}"),
+        )
+        for index in range(100)
+    ]
+    selected = list(raw_ids)
+    parsed_paths: list[str] = []
+    prepare_original = cast(Callable[..., PreparedJsonl], prepared_jsonl_module.prepare_jsonl_blob)
+
+    def counted_prepare(*args: object, **kwargs: object) -> PreparedJsonl:
+        parsed_paths.append(str(args[1]))
+        artifact = prepare_original(*args, **kwargs)
+        if len(parsed_paths) == 100:
+            selected[50] = _admit(
+                tmp_path,
+                (),
+                provider=Provider.CODEX,
+                path="codex/cohort-replacement.jsonl",
+                payload=_codex_conversation_bytes("cohort-replacement", "changed input"),
+                acquired_at_ms=2,
+            )
+        return artifact
+
+    monkeypatch.setattr(prepared_jsonl_module, "prepare_jsonl_blob", counted_prepare)
+
+    def exercise(compute: BoundedComputeAdapter) -> None:
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+        frame = raw_observation_frame(tmp_path, raw_ids=(raw_ids[0],))
+        with capture() as events:
+            replacement = adapter.compute(
+                frame,
+                raw_ids[0],
+                replay_current=True,
+                select_retained_raw_ids=lambda _read: tuple(selected),
+            )
+            assert set(replacement.raw_ids) == set(selected)
+            assert raw_ids[50] not in replacement.raw_ids
+            assert _publish_to_valid(adapter, frame, replacement)
+        retries = [event for event in events if event.get("event") == "storage.raw_observation.preparation_retry"]
+        assert any(event["reason"] == "selection_changed" for event in retries)
+
+    run_on_convergence_owner(tmp_path, "test.raw.dependency-local-cache", exercise)
+
+    assert len(parsed_paths) == 101, parsed_paths
+    assert parsed_paths.count("codex/cohort-replacement.jsonl") == 1
+    assert all(parsed_paths.count(f"codex/cohort-{index:03d}.jsonl") == 1 for index in range(100))
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (100,)
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id=?", (raw_ids[50],)).fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id=?", (selected[50],)).fetchone() == (1,)
+
+
 def test_mixed_default_retained_selection_neutralizes_only_eligible_codex_raw(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -990,7 +1057,8 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     assert report.done == 1
     expected_parser_calls = 2 if replace_sidecar else 1
     assert parse_calls == expected_parser_calls
-    assert validation_raw_ids == [target] * expected_parser_calls, validation_raw_ids
+    assert len(validation_raw_ids) >= 2
+    assert set(validation_raw_ids) == {target}, validation_raw_ids
     assert enrichment_calls == 2
     assert sum(event_type == "claude_tool_result_sidecar" for event_type, _ in neutral_sidecar_events) == (
         expected_parser_calls
@@ -1755,3 +1823,179 @@ def test_deferred_cas_evidence_is_superseded_after_resolution_and_non_cas_failur
     status = raw_failure_info_for_root(tmp_path)
     assert status["terminal_rejections"] == 0
     assert status["unexplained_failures"] == 2
+
+
+@pytest.mark.parametrize("provider", [Provider.CODEX, Provider.CLAUDE_CODE])
+def test_neutral_jsonl_restores_exact_source_before_capture(tmp_path: Path, provider: Provider) -> None:
+    from polylogue.storage.blob_store import BlobStore
+
+    bootstrap_archive_root(tmp_path)
+    payload = (
+        _codex_conversation_bytes("restored-neutral")
+        if provider is Provider.CODEX
+        else b'{"type":"user","sessionId":"restored-neutral","uuid":"m","message":{"role":"user","content":"hi"}}\n'
+    )
+    source = tmp_path / "session.jsonl"
+    source.write_bytes(payload)
+    raw_id = _admit(tmp_path, (), provider=provider, path=str(source), payload=payload)
+    blob_path = BlobStore(tmp_path / "blob").blob_path(hashlib.sha256(payload).hexdigest())
+    blob_path.unlink()
+    report = _derive(tmp_path, validation_mode=ValidationMode.OFF)
+    assert report.failed == 0, report.outcomes
+    assert blob_path.read_bytes() == payload
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("provider", [Provider.CODEX, Provider.CLAUDE_CODE])
+def test_neutral_empty_session_stream_has_clean_non_session_census(tmp_path: Path, provider: Provider) -> None:
+    bootstrap_archive_root(tmp_path)
+    _admit(tmp_path, (), provider=provider, path="session.jsonl", payload=b"")
+    _derive(tmp_path, validation_mode=ValidationMode.OFF)
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 0
+    assert lifecycle.unexplained == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions").fetchone() == (1, None)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+        assert conn.execute("SELECT status, member_count FROM raw_membership_census").fetchall() == [("non_session", 0)]
+        assert conn.execute("SELECT status, logical_keys_json FROM raw_authority_parser_census").fetchall() == [
+            ("complete", "[]")
+        ]
+        assert conn.execute("SELECT COUNT(*) FROM raw_session_memberships").fetchone() == (0,)
+
+
+def test_empty_census_schema_exemption_requires_retained_jsonl_frontier(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, (), provider=Provider.CODEX, path="session.jsonl", payload=b"")
+    assert _derive(tmp_path, validation_mode=ValidationMode.OFF).failed == 0
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "valid"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path='session.json' WHERE raw_id=?", (raw_id,))
+    # A document must prove its own schema policy; an empty stream's current
+    # zero-member receipt cannot exempt an invalid empty JSON document.
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "stale"
+
+
+def test_empty_jsonl_census_missing_cas_reaches_exact_source_restoration(tmp_path: Path) -> None:
+    from polylogue.storage.blob_store import BlobStore
+
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "empty-session.jsonl"
+    source.write_bytes(b"")
+    raw_id = _admit(tmp_path, (), provider=Provider.CODEX, path=str(source), payload=b"")
+    assert _derive(tmp_path, validation_mode=ValidationMode.OFF).failed == 0
+    blob_path = BlobStore(tmp_path / "blob").blob_path(hashlib.sha256(b"").hexdigest())
+    blob_path.unlink()
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "stale"
+    # Fair session discovery excludes settled non-session inputs. An exact
+    # selected Raw request still reaches the resident restoration admission.
+    report = run_on_convergence_owner(
+        tmp_path, "test.raw.empty.restore", lambda compute: _converge_raw(tmp_path, compute, raw_id)
+    )
+    assert report.failed == 0, report.outcomes
+    assert blob_path.read_bytes() == b""
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "valid"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone() == (None,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone() == (0,)
+
+
+def test_sessionless_json_document_still_requires_schema_policy(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, (), provider=Provider.CODEX, path="session.json", payload=b"[]")
+    _derive(tmp_path, validation_mode=ValidationMode.OFF)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT status, member_count FROM raw_membership_census WHERE raw_id=?", (raw_id,)
+        ).fetchone() == ("non_session", 0)
+        # A current census cannot replace this document's missing policy.
+        conn.execute("DELETE FROM raw_artifacts WHERE raw_id=?", (raw_id,))
+        conn.execute("UPDATE raw_sessions SET validation_mode=NULL WHERE raw_id=?", (raw_id,))
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "stale"
+
+
+@pytest.mark.parametrize("payload", [b"", b'{"display":"neutral history","timestamp":1}\n'])
+def test_declared_raw_only_history_keeps_its_schema_exemption(tmp_path: Path, payload: bytes) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, (), provider=Provider.CLAUDE_CODE, path="history.jsonl", payload=payload)
+    assert _derive(tmp_path, validation_mode=ValidationMode.OFF).failed == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT parse_as_session, schema_eligible FROM raw_artifacts WHERE raw_id=?", (raw_id,)
+        ).fetchall() == ([(0, 0)] if payload else [])
+        assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone() == (None,)
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.OFF) == "valid"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        # Exercise the existing typed raw-only exemption when no policy
+        # receipt was captured, rather than overriding a stored OFF verdict.
+        conn.execute("UPDATE raw_sessions SET validation_mode=NULL WHERE raw_id=?", (raw_id,))
+    assert _inspect(tmp_path, raw_id, validation_mode=ValidationMode.ADVISORY) == "valid"
+
+
+def test_neutral_retry_refreshes_validation_without_reparsing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.schemas import validate_retained_document as original_validate
+    from polylogue.schemas.runtime_registry import SchemaRegistry
+    from polylogue.sources import prepared_jsonl
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    bootstrap_archive_root(tmp_path)
+    target = _admit(tmp_path, (), provider=Provider.CODEX, path="session.jsonl", payload=_codex_conversation_bytes())
+    writer = SchemaRegistry(storage_root=tmp_path / "schemas")
+    reader = SchemaRegistry(storage_root=tmp_path / "schemas")
+    original_init = RawObservationDerivation.__init__
+    original_prepare = prepared_jsonl.prepare_jsonl_blob
+    original_compute = RawObservationDerivation._compute_prepared
+    parses = 0
+    validations = 0
+    retried = False
+    versions: list[str] = []
+
+    def initialize(self: RawObservationDerivation, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        self._schema_registry = reader
+
+    def prepare(*args: Any, **kwargs: Any) -> Any:
+        nonlocal parses
+        parses += 1
+        return original_prepare(*args, **kwargs)
+
+    def validate(*args: Any, **kwargs: Any) -> Any:
+        nonlocal validations
+        validations += 1
+        verdict = original_validate(*args, **kwargs)
+        assert verdict.schema_resolution is not None
+        versions.append(verdict.schema_resolution.package_version)
+        return verdict
+
+    def compute(self: RawObservationDerivation, *args: Any, **kwargs: Any) -> Any:
+        nonlocal retried
+        if not retried:
+            retried = True
+            writer.write_schema_version("codex", "v999", {"type": "object"}, element_kind="event_record")
+            raise ReferenceSealStaleError("synthetic Source change after neutral validation")
+        return original_compute(self, *args, **kwargs)
+
+    monkeypatch.setattr(RawObservationDerivation, "__init__", initialize)
+    monkeypatch.setattr(prepared_jsonl, "prepare_jsonl_blob", prepare)
+    monkeypatch.setattr("polylogue.schemas.validate_retained_document", validate)
+    monkeypatch.setattr(RawObservationDerivation, "_compute_prepared", compute)
+    report = run_on_convergence_owner(
+        tmp_path, "test.raw.neutral-retry-schema", lambda owner: _converge_raw(tmp_path, owner, target)
+    )
+    assert report.failed == 0, report.outcomes
+    assert report.done == 1
+    assert parses == 1
+    assert validations == 2
+    assert versions[0] != "v999"
+    assert versions[1] == "v999"
+
+
+def test_empty_claude_history_keeps_raw_only_admission(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    _admit(tmp_path, (), provider=Provider.CLAUDE_CODE, path="history.jsonl", payload=b"")
+    report = _derive(tmp_path, validation_mode=ValidationMode.OFF)
+    assert report.failed == 0, report.outcomes
+    assert read_raw_failure_lifecycle(tmp_path / "source.db").terminal == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT parse_error FROM raw_sessions").fetchone() == (None,)

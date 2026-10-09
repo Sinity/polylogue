@@ -23,6 +23,7 @@ outside this module without a declared reason.
 
 from __future__ import annotations
 
+import codecs
 import errno
 import io
 import json
@@ -31,7 +32,7 @@ import stat
 import tempfile
 import zipfile
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, BinaryIO
@@ -44,7 +45,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError as FacadeJSONDecodeError
 from polylogue.core.json import decode_provider_utf8
 from polylogue.core.json import loads as json_loads
-from polylogue.core.json_envelope import sqlite_value_limit
+from polylogue.core.json_envelope import JSONL_MEMORY_BUFFER_BYTES
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 
 from .dispatch import (
@@ -55,6 +56,7 @@ from .dispatch import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.schemas.observation_spill import _ScalarTokenStore
     from polylogue.sources.parsers.hermes_identity import CapturedHermesProfile
     from polylogue.sources.source_staging import SourceInputBinding
     from polylogue.sources.sqlite_export import SourceBytePage
@@ -114,10 +116,10 @@ class BoundRecordValidator:
             active = not path_declaration_refuses_session(self._bound, Path(name))
         self.active = active
         self._document = _DocumentValidator(self._bound, records=False) if active and not self._is_jsonl else None
-        #: The current JSONL line, held whole up to SQLite's value length;
-        #: a longer line is push-parsed instead of being held.
+        #: Small records use the C decoder. Longer records continue through
+        #: bounded event transport; this threshold changes memory strategy.
         self._pending = bytearray()
-        self._line_limit = sqlite_value_limit() if active and self._is_jsonl else 0
+        self._line_limit = JSONL_MEMORY_BUFFER_BYTES if active and self._is_jsonl else 0
         self._line: _DocumentValidator | None = None
         self._finished = False
         #: A refusal is sticky: a consumer that swallows it and reads on (an
@@ -180,7 +182,8 @@ class BoundRecordValidator:
         if self._line is None:
             self._line = _DocumentValidator(self._bound, records=True)
             held, self._pending = bytes(self._pending), bytearray()
-            self._line.feed(held)
+            if held:
+                self._line.feed(held)
         self._line.feed(data)
 
     def _end_line(self) -> None:
@@ -247,14 +250,22 @@ def _record_evidence_file() -> Iterator[IO[bytes]]:
 class _RecordEvidence:
     """Spool complete parser events without a second in-memory record."""
 
-    def __init__(self) -> None:
+    def __init__(self, tokens: _ScalarTokenStore) -> None:
         self._lifetime = ExitStack()
         self._file = self._lifetime.enter_context(_record_evidence_file())
         self._stack: list[str] = []
         self._pending_key: object = None
+        self._tokens = tokens
 
     def _write(self, event: str, value: object) -> None:
-        self._file.write(json.dumps((event, value), ensure_ascii=True).encode("ascii") + b"\n")
+        from polylogue.schemas.observation_spill import SpilledKey, _ScalarTokenReference
+
+        kind = None
+        if isinstance(value, SpilledKey):
+            kind, value = "key", value.token
+        elif isinstance(value, _ScalarTokenReference):
+            kind, value = value.kind, value.ordinal
+        self._file.write(json.dumps((event, value, kind), ensure_ascii=True).encode("ascii") + b"\n")
 
     def event(self, event: str, value: object) -> None:
         if event == "map_key":
@@ -272,7 +283,15 @@ class _RecordEvidence:
     def events(self) -> Iterator[tuple[str, object]]:
         self._file.seek(0)
         for line in self._file:
-            event, value = json.loads(line)
+            event, value, kind = json.loads(line)
+            if kind is not None:
+                from polylogue.schemas.observation_spill import SpilledKey, _ScalarTokenReference
+
+                value = (
+                    SpilledKey(self._tokens.connection, value, self._tokens)
+                    if kind == "key"
+                    else _ScalarTokenReference(self._tokens, kind, value)
+                )
             yield event, value
         # A syntax fault retains only fields whose values completed. Closing
         # the observed containers reproduces the existing partial-evidence
@@ -302,6 +321,9 @@ class _DocumentValidator:
     """
 
     def __init__(self, bound: Provider | None, *, records: bool) -> None:
+        from polylogue.core.json_envelope import _PrefixStringReader
+        from polylogue.schemas.observation_spill import StreamedJSONDocument, _ScalarTokenStore
+
         self._bound = bound
         self._records = records
         self._events = ijson.sendable_list()
@@ -311,14 +333,29 @@ class _DocumentValidator:
         self._builder: _RecordEvidence | None = None
         self._failed = False
         self._seen = False
+        self._lifetime = ExitStack()
+        owner = StreamedJSONDocument(None)
+        self._lifetime.enter_context(owner)
+        self._tokens = _ScalarTokenStore(owner.connection)
+        self._transport = _PrefixStringReader(
+            io.BytesIO(),
+            scalar_values=True,
+            string_sink=self._tokens.string,
+            number_sink=self._tokens.number,
+            allow_nonfinite=False,
+        )
+        self._utf8 = codecs.getincrementaldecoder("utf-8")()
+        self._strings = self._numbers = 0
 
     def feed(self, chunk: bytes) -> None:
         if self._failed:
             return
         self._seen = self._seen or bool(chunk.strip())
         try:
-            self._parser.send(chunk)
-        except ijson.JSONError:
+            transported = self._transport.feed(self._utf8.decode(chunk).encode("utf-8"))
+            if transported:
+                self._parser.send(transported)
+        except (ijson.JSONError, json.JSONDecodeError, UnicodeError):
             self._failed = True
         self._drain()
         if self._failed:
@@ -328,15 +365,32 @@ class _DocumentValidator:
         if self._failed or not self._seen:
             return
         try:
+            final_text = self._utf8.decode(b"", final=True).encode("utf-8")
+            transported = self._transport.feed(final_text) + self._transport.finish()
+            if transported:
+                self._parser.send(transported)
             self._parser.close()
-        except ijson.JSONError:
+        except (ijson.JSONError, json.JSONDecodeError, UnicodeError):
             self._failed = True
         self._drain()
         if self._failed or self._depth:
             self._validate_partial()
 
     def _drain(self) -> None:
+        from polylogue.schemas.observation_spill import SpilledKey, _ScalarTokenReference
+
         for event, value in self._events:
+            if event in ("map_key", "string"):
+                self._strings += 1
+                reference = _ScalarTokenReference(self._tokens, "string", self._strings)
+                value = (
+                    SpilledKey(self._tokens.connection, self._strings, self._tokens)
+                    if event == "map_key"
+                    else reference
+                )
+            elif event == "number":
+                self._numbers += 1
+                value = _ScalarTokenReference(self._tokens, "number", self._numbers)
             self._event(event, value)
         del self._events[:]
 
@@ -347,7 +401,7 @@ class _DocumentValidator:
             if opening:
                 self._top = event
                 if event == "start_map":
-                    self._builder = _RecordEvidence()
+                    self._builder = _RecordEvidence(self._tokens)
                     self._builder.event(event, value)
                 self._depth = 1
             return
@@ -357,7 +411,7 @@ class _DocumentValidator:
                 return
             if not opening:
                 return  # a scalar array element carries no record shape
-            self._builder = _RecordEvidence()
+            self._builder = _RecordEvidence(self._tokens)
         assert self._builder is not None
         self._builder.event(event, value)
         if opening:
@@ -372,9 +426,16 @@ class _DocumentValidator:
                 self._builder = None
 
     def close(self) -> None:
-        if self._builder is not None:
-            self._builder.close()
-            self._builder = None
+        try:
+            if self._builder is not None:
+                self._builder.close()
+                self._builder = None
+        finally:
+            try:
+                with suppress(ijson.JSONError, UnicodeError):
+                    self._parser.close()
+            finally:
+                self._lifetime.close()
 
     def _validate_partial(self) -> None:
         builder, self._builder = self._builder, None

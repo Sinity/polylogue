@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import replace
@@ -23,14 +24,17 @@ from polylogue.operations.insight_acceptance import (
     build_insight_page_context,
     insight_manifest_digest,
 )
+from polylogue.operations.insight_planning import AcceptedInsightActuator
 from polylogue.operations.mutation_actuators import InsightsRebuildActuator, InsightsRebuildArgs
 from polylogue.operations.mutation_transaction import (
     AuthorizationMismatchError,
     MutationPlan,
+    MutationPreview,
     MutationPrincipal,
     MutationTarget,
     MutationTransactionError,
     OperationExecutor,
+    TokenExpiredError,
     build_typed_plan,
 )
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
@@ -67,6 +71,8 @@ def _page(
     digest: str,
     previous_preview_ref: str | None,
     targets: tuple[AcceptedInsightTarget, ...],
+    expires_at_ms: int = 9_999_999_999_999,
+    forged_context: bool = False,
 ) -> MutationPlan:
     return build_typed_plan(
         operation="mutate-rebuild-insights",
@@ -80,7 +86,7 @@ def _page(
         destructive_class="maintenance",
         required_confirmation="role_only",
         prepared_at_ms=1,
-        expires_at_ms=9_999_999_999_999,
+        expires_at_ms=expires_at_ms,
         context=build_insight_page_context(
             scope_kind=scope_kind,
             index_generation="index-generation:/archive/fixture/index.db",
@@ -90,19 +96,26 @@ def _page(
             manifest_digest=digest,
             previous_preview_ref=previous_preview_ref,
             targets=targets,
-        ),
+        )
+        | ({"expiry_policy": "maintenance_progress"} if forged_context else {}),
     )
 
 
-def test_seal_preserves_over_ten_thousand_exact_targets_without_late_rediscovery(tmp_path: Path) -> None:
+@pytest.mark.parametrize("page_count, targets_per_page", [(41, 256), (4097, 1)])
+@pytest.mark.timeout(0)
+def test_seal_preserves_exact_pages_without_cardinality_ceiling_or_late_rediscovery(
+    tmp_path: Path, page_count: int, targets_per_page: int
+) -> None:
     """Replacing page refs with a live full scan would add the late target and make this red."""
 
     bootstrap_archive_root(tmp_path)
     audit = AuditRepository.for_archive_root(tmp_path)
     principal = _principal()
-    page_count = 41
     page_targets = tuple(
-        tuple(AcceptedInsightTarget(f"session:fixture-{page * 256 + item}", "required") for item in range(256))
+        tuple(
+            AcceptedInsightTarget(f"session:fixture-{page * targets_per_page + item}", "required")
+            for item in range(targets_per_page)
+        )
         for page in range(page_count)
     )
     provisional = tuple(
@@ -158,7 +171,7 @@ def test_seal_preserves_over_ten_thousand_exact_targets_without_late_rediscovery
         deadline_unix_ms=9_999_999_999_999,
     )
     assert len(accepted) == page_count
-    assert sum(len(part.targets) for part in accepted) == 10_496
+    assert sum(len(part.targets) for part in accepted) == page_count * targets_per_page
     assert "session:late-after-seal" not in {target.target_ref for part in accepted for target in part.targets}
     assert [part.authorization_ref for part in accepted] == [str(item.authorization_id) for item in authorizations]
     # A target arriving after acceptance cannot extend the frozen full sweep
@@ -185,6 +198,113 @@ def test_seal_preserves_over_ten_thousand_exact_targets_without_late_rediscovery
         )
         == accepted
     )
+
+
+@pytest.mark.parametrize("policy", ["progress", "standalone", "explicit", "stopped", "wrong_principal"])
+def test_insight_lifetime_requires_live_machine_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: str
+) -> None:
+    """A forged policy cannot extend standalone or explicitly expiring authority."""
+    from polylogue.operations.insight_acceptance import accepted_part_from_plan
+
+    bootstrap_archive_root(tmp_path)
+    audit = AuditRepository.for_archive_root(tmp_path)
+    principal = _principal()
+    clock = [1]
+    monkeypatch.setattr(time, "time", lambda: clock[0] / 1000)
+    executor = OperationExecutor(audit=audit, now_ms=lambda: clock[0])
+    operation = runtime_operation_binding(AcceptedInsightActuator())
+    machine = MachineRequestBinding(
+        "a" * 64, "request:lifetime", principal.actor_ref, "b" * 64, "maintenance.insights.rebuild"
+    )
+    acceptance = InsightAcceptance(audit, machine, principal)
+    targets = (AcceptedInsightTarget("session:one", "required"),)
+    provisional = _page(ordinal=0, count=1, digest="0" * 64, previous_preview_ref=None, targets=targets)
+    digest = insight_manifest_digest(
+        (accepted_part_from_plan(provisional, preview_ref="pending", authorization_ref="pending"),)
+    )
+    plan = _page(
+        ordinal=0,
+        count=1,
+        digest=digest,
+        previous_preview_ref=None,
+        targets=targets,
+        expires_at_ms=300_001 if policy == "explicit" else 1,
+    )
+    if policy == "standalone":
+        preview = MutationPreview(audit.create_preview(plan, principal), plan)
+    else:
+        preview = acceptance.stage_preview(plan)
+    clock[0] = 600_001
+    if policy == "stopped":
+        audit.stop_machine_batch(machine, "cancelled")
+    if policy == "wrong_principal":
+        principal = replace(principal, actor_ref="actor:other")
+    if policy != "progress":
+        with pytest.raises(TokenExpiredError):
+            executor.authorize_bound(operation, preview, principal)
+        return
+    acceptance.ensure_staged_authorization(executor, operation, preview)
+    accepted = acceptance.seal(
+        head_preview_ref=preview.preview_ref, page_count=1, manifest_digest=digest, deadline_unix_ms=None
+    )
+    clock[0] += 600_000
+    with audit.bind_machine_request(machine, transition="consume_authorization_and_start", part=0):
+        started = executor.begin_accepted_insight_part(
+            operation, accepted[0], principal=principal, machine_part=0, args=None
+        )
+    assert started.operation_id
+    record = audit.machine_request(machine)
+    assert record is not None
+    assert record["accepted_deadline_unix_ms"] is None
+
+
+def test_context_flag_cannot_grant_progress_lifetime(tmp_path: Path) -> None:
+    """The persisted v1 context remains closed; there is no caller policy switch."""
+    bootstrap_archive_root(tmp_path)
+    audit = AuditRepository.for_archive_root(tmp_path)
+    plan = _page(
+        ordinal=0, count=1, digest="0" * 64, previous_preview_ref=None, targets=(), expires_at_ms=1, forged_context=True
+    )
+    with pytest.raises(ValueError, match="extra"):
+        audit.create_preview(plan, _principal())
+
+
+def test_explicit_accepted_deadline_remains_expired_at_consume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.operations.insight_acceptance import accepted_part_from_plan
+
+    bootstrap_archive_root(tmp_path)
+    audit = AuditRepository.for_archive_root(tmp_path)
+    principal = _principal()
+    clock = [1]
+    monkeypatch.setattr(time, "time", lambda: clock[0] / 1000)
+    operation = runtime_operation_binding(AcceptedInsightActuator())
+    executor = OperationExecutor(audit=audit, now_ms=lambda: clock[0])
+    machine = MachineRequestBinding(
+        "a" * 64, "request:explicit-expiry", principal.actor_ref, "b" * 64, "maintenance.insights.rebuild"
+    )
+    acceptance = InsightAcceptance(audit, machine, principal)
+    provisional = _page(
+        ordinal=0, count=1, digest="0" * 64, previous_preview_ref=None, targets=(), expires_at_ms=300_001
+    )
+    digest = insight_manifest_digest(
+        (accepted_part_from_plan(provisional, preview_ref="pending", authorization_ref="pending"),)
+    )
+    plan = _page(ordinal=0, count=1, digest=digest, previous_preview_ref=None, targets=(), expires_at_ms=300_001)
+    preview = acceptance.stage_preview(plan)
+    authorization = acceptance.ensure_staged_authorization(executor, operation, preview)
+    acceptance.seal(
+        head_preview_ref=preview.preview_ref, page_count=1, manifest_digest=digest, deadline_unix_ms=300_001
+    )
+    clock[0] = 600_001
+    with (
+        audit.bind_machine_request(machine, transition="consume_authorization_and_start", part=0),
+        pytest.raises(TokenExpiredError),
+    ):
+        audit.consume_authorization_and_start(preview, authorization)
+    raw = audit.machine_part(machine, 0)
+    assert raw is not None
+    assert raw["operation_id"] is None
 
 
 def test_manifest_rejects_a_tampered_predecessor_before_reserving_authority(tmp_path: Path) -> None:

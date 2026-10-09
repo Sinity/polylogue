@@ -3,12 +3,13 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.archive.raw_payload.decode import (
     JSONValue,
-    _sample_jsonl_payload_with_detail,
     build_raw_payload_envelope,
-    sample_jsonl_payload,
+    owned_jsonl_sample,
 )
 from polylogue.sources.sqlite_export import write_logical_export
 from polylogue.sources.sqlite_snapshot import member_export_scope
@@ -24,17 +25,16 @@ def _optional_int(value: JSONValue) -> int | None:
     return value
 
 
-def test_sample_jsonl_payload_accepts_lone_surrogates_via_stdlib_fallback(tmp_path: Path) -> None:
+def test_owned_jsonl_sample_accepts_lone_surrogates_via_stdlib_fallback(tmp_path: Path) -> None:
     path = tmp_path / "surrogate.jsonl"
     path.write_bytes(b'{"ok": 1}\n{"text":"broken \\udce2 surrogate"}\n{"ok": 2}\n')
 
-    samples, malformed = sample_jsonl_payload(path, max_samples=8, jsonl_dict_only=True)
+    with owned_jsonl_sample(path, max_samples=8, jsonl_dict_only=True) as (samples, malformed, _detail):
+        dict_samples = [_as_dict(sample) for sample in samples]
 
-    dict_samples = [_as_dict(sample) for sample in samples]
-
-    assert malformed == 0
-    assert [_optional_int(sample.get("ok")) for sample in dict_samples if "ok" in sample] == [1, 2]
-    assert any(sample.get("text") == "broken \udce2 surrogate" for sample in dict_samples)
+        assert malformed == 0
+        assert [_optional_int(sample.get("ok")) for sample in dict_samples if "ok" in sample] == [1, 2]
+        assert any(sample.get("text") == "broken \udce2 surrogate" for sample in dict_samples)
 
 
 def test_raw_json_payload_preserves_utf8_encoded_lone_surrogates(tmp_path: Path) -> None:
@@ -186,16 +186,59 @@ def test_jsonl_sampling_can_stop_after_bounded_prefix(tmp_path: Path) -> None:
     path = tmp_path / "bounded.jsonl"
     path.write_text('{"ok": 1}\n{"ok": 2}\n{"broken": \n', encoding="utf-8")
 
-    samples, malformed, detail = _sample_jsonl_payload_with_detail(
+    with owned_jsonl_sample(
         path,
         max_samples=2,
         jsonl_dict_only=True,
         scan_full=False,
-    )
+    ) as (samples, malformed, detail):
+        assert [_as_dict(sample)["ok"] for sample in samples] == [1, 2]
+        assert malformed == 0
+        assert detail is None
 
-    assert [_as_dict(sample)["ok"] for sample in samples] == [1, 2]
-    assert malformed == 0
-    assert detail is None
+
+def test_owned_jsonl_sample_keeps_large_unknown_fields_until_consumer_finishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    from collections.abc import Generator
+    from contextlib import contextmanager
+    from typing import Any
+
+    from polylogue.schemas import observation_spill
+    from polylogue.schemas.observation_spill import SpilledKey, StreamedJSONReadError, _ScalarTokenStore
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+    path = tmp_path / "neutral.jsonl"
+    path.write_text(json.dumps({"selected": "exact", "k" * 65537: "v" * 65537}) + '\n{"broken":\n')
+
+    @contextmanager
+    def small_cells(**kwargs: Any) -> Generator[sqlite3.Connection, None, None]:
+        with scratch_connection_context(**kwargs) as connection:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 32768)
+            yield connection
+
+    original_read = _ScalarTokenStore.read
+
+    def selected(self: _ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
+        size = self.connection.execute(
+            "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
+        ).fetchone()[0]
+        assert size < 65537
+        return original_read(self, kind, ordinal)
+
+    def no_keys(_self: SpilledKey) -> str:
+        raise AssertionError("unselected key reconstruction")
+
+    monkeypatch.setattr(observation_spill, "scratch_connection_context", small_cells)
+    monkeypatch.setattr(_ScalarTokenStore, "read", selected)
+    monkeypatch.setattr(SpilledKey, "read", no_keys)
+    with owned_jsonl_sample(path) as (samples, malformed, detail):
+        assert len(samples) == 1 and malformed == 1 and detail is not None
+        record = _as_dict(samples[0])
+        assert len(record) == 2 and record["selected"] == "exact"
+    with pytest.raises(StreamedJSONReadError):
+        _ = record["selected"]
 
 
 def _write_plain_sqlite_db(path: Path) -> None:

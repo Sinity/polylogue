@@ -28,6 +28,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.json import _ValidatedJSONContainer
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import DEBUG, WARNING, emit, get_logger
 from polylogue.sources.detection_projection import DetectorProjection
@@ -130,6 +131,11 @@ def _retained_record_bytes(value: object) -> int:
     pending: list[object] = [value]
     while pending:
         item = pending.pop()
+        if isinstance(item, _ValidatedJSONContainer):
+            # The source tape owns the disk tree. Retaining a view retains
+            # its Python coordinates, not all virtual decoded descendants.
+            size += getsizeof(item) + getsizeof(vars(item))
+            continue
         if isinstance(item, Mapping):
             if id(item) in seen:
                 continue
@@ -152,12 +158,19 @@ def _drain(items: list[object]) -> Iterator[object]:
         yield items.pop()
 
 
+@dataclass(frozen=True, slots=True)
+class _CodexSpilledRecord:
+    tree_id: int
+    node_id: int
+
+
 class _CodexLookaheadIndex:
     """Disk-backed facts shared by the two passes over one rollout."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
         self._spool: PickleSpool[object] | None = None
+        self._borrowed_record_trees: dict[int, sqlite3.Connection] = {}
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS codex_message_echoes (
@@ -255,18 +268,32 @@ class _CodexLookaheadIndex:
         return retained
 
     def spool_records(self, records: Iterable[object]) -> None:
+        from polylogue.schemas.observation_spill import SpilledArray, SpilledObject
+
         spool = self._spool = PickleSpool[object]()
         for record in records:
-            spool.append(record)
+            if isinstance(record, (SpilledObject, SpilledArray)):
+                tree_id = id(record._connection)
+                self._borrowed_record_trees[tree_id] = record._connection
+                spool.append(_CodexSpilledRecord(tree_id, record._node_id))
+            else:
+                spool.append(record)
 
     def replay_records(self) -> Iterator[object]:
         if self._spool is not None:
-            yield from self._spool
+            from polylogue.schemas.observation_spill import _load_node
+
+            for record in self._spool:
+                if isinstance(record, _CodexSpilledRecord):
+                    yield _load_node(self._borrowed_record_trees[record.tree_id], record.node_id)
+                else:
+                    yield record
 
     def close(self) -> None:
         if self._spool is not None:
             self._spool.close()
             self._spool = None
+        self._borrowed_record_trees.clear()
 
     def __iter__(self) -> Iterator[object]:
         return self.replay_records()
@@ -733,7 +760,28 @@ def _validate_record(item: object, *, index: int, context: str = "record") -> Co
     if not isinstance(item, dict):
         return None
     try:
-        return CodexRecord.model_validate(item)
+        # This model is a recognition proof. Its callers read only declared
+        # fields; unknown wire fields remain in the original mapping for
+        # lowering and schema drift, without being copied into model extras.
+        validation_input = item
+        if isinstance(item, _ValidatedJSONContainer):
+            from polylogue.schemas.observation_spill import SpilledArray
+
+            validation_input = {name: item[name] for name in CodexRecord.model_fields if name in item}
+            payload = validation_input.get("payload")
+            if isinstance(payload, dict) and isinstance(payload, _ValidatedJSONContainer):
+                # The complete decoder already proves dict[str, object]. No
+                # recognition consumer reads payload members from this model.
+                validation_input["payload"] = {}
+            content = validation_input.get("content")
+            if isinstance(content, SpilledArray):
+                # Every complete JSON mapping satisfies the dict[str, object]
+                # alternative. Recognition does not read modeled content;
+                # lowering still receives every original block and value.
+                validation_input["content"] = (
+                    [] if all(isinstance(block, dict) for block in content.structure_values()) else list(content)
+                )
+        return CodexRecord.model_validate(validation_input, extra="ignore")
     except ValidationError as exc:
         # Never interpolate the ValidationError itself: Pydantic v2's __str__
         # embeds ``input_value``, i.e. raw captured payload content, into the

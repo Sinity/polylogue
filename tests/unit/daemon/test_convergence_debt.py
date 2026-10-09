@@ -167,6 +167,120 @@ def test_lineage_prefix_debt_is_drained_by_its_stage(truncated_child: Path) -> N
     assert parent == PARENT
     assert anchor is not None
     assert _debt(root) == []
+    assert _composed_texts(root, CHILD) == ["s00-tail-0", "s00-tail-1", "s01-tail-0", "s01-tail-1"]
+    from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+
+    conn = _index(root)
+    try:
+        assert read_archive_session_envelope(conn, CHILD).lineage_complete is True
+    finally:
+        conn.close()
+
+
+def test_parent_rewrite_cannot_discharge_recorded_prefix_loss(truncated_child: Path) -> None:
+    """Resolving a stored tail is not proof that the child's raw prefix returned."""
+    import asyncio
+
+    import aiosqlite
+
+    from polylogue.operations.lineage_prefix_recompose import unrecomposed_prefix_reason
+    from polylogue.storage.derived.lineage.compact import derive_compact_lineage
+    from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+    from polylogue.storage.sqlite.queries.message_query_reads import (
+        get_lineage_completeness,
+        get_messages_with_lineage_completeness,
+    )
+
+    root = truncated_child
+    _write(root, _contender())
+    rewritten = codex_lineage_payload("s00", ["s00-tail-0", "s00-tail-1", "new-parent-turn"])
+    (parent,) = parse_payload(
+        Provider.CODEX, [json.loads(line) for line in rewritten.splitlines()], "s00", source_path="s00.jsonl"
+    )
+    _write(root, parent)
+    assert _child_edge(root)[0] == PARENT
+    assert _composed_texts(root, CHILD) == ["s01-tail-0", "s01-tail-1"]
+    conn = _index(root)
+    try:
+        envelope = read_archive_session_envelope(conn, CHILD)
+        assert envelope.lineage_complete is False
+        assert envelope.lineage_truncation_reason == "dangling_branch_point"
+        assert unrecomposed_prefix_reason(conn, CHILD) == "recorded_prefix_loss"
+        graph = derive_compact_lineage(conn, CHILD)
+        assert graph is not None and graph.seed_node().accounting.status == "unknown"
+        evidence = json.loads(
+            conn.execute("SELECT evidence_json FROM session_links WHERE src_session_id = ?", (CHILD,)).fetchone()[0]
+        )
+        assert evidence["invalidated_prefix"]["branch_point_message_id"] == "codex-session:s00:n:m1"
+        assert len(evidence["invalidated_prefix"]["branch_point_content_address"]) == 64
+    finally:
+        conn.close()
+
+    async def async_completeness() -> None:
+        async with aiosqlite.connect(f"{(root / 'index.db').as_uri()}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            _, full = await get_messages_with_lineage_completeness(conn, CHILD)
+            bounded = await get_lineage_completeness(conn, CHILD)
+            assert full.complete is False and bounded.complete is False
+            assert full.truncation_reason == bounded.truncation_reason == "dangling_branch_point"
+
+    asyncio.run(async_completeness())
+    assert len(_debt(root)) == 1
+    _make_retry_due(root)
+    assert _drain_on_admitted_owner(root) == 1
+    assert _debt(root) == []
+    assert _composed_texts(root, CHILD) == ["s00-tail-0", "s00-tail-1", "s01-tail-0", "s01-tail-1"]
+
+
+def test_cancelled_recompose_keeps_prefix_loss(
+    truncated_child: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
+    import threading
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.operations.lineage_prefix_recompose import recompose_session_prefix, unrecomposed_prefix_reason
+
+    root = truncated_child
+    _write(root, _contender())
+    before = _debt(root)
+    cancelled = threading.Event()
+    cancelled.set()
+    token = compute_cancel.set(cancelled)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            recompose_session_prefix(root, root / "index.db", CHILD, compute_adapter=bounded_compute_adapter)
+    finally:
+        compute_cancel.reset(token)
+    assert [tuple(row) for row in _debt(root)] == [tuple(row) for row in before]
+    conn = _index(root)
+    try:
+        assert unrecomposed_prefix_reason(conn, CHILD) == "recorded_prefix_loss"
+    finally:
+        conn.close()
+
+
+def test_child_append_keeps_recorded_prefix_loss(truncated_child: Path) -> None:
+    from polylogue.archive.session.branch_type import BranchType
+    from polylogue.operations.lineage_prefix_recompose import unrecomposed_prefix_reason
+    from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+
+    root = truncated_child
+    appended = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="s01",
+        parent_session_provider_id="s00",
+        branch_type=BranchType.FORK,
+        messages=[ParsedMessage(provider_message_id="appended", role=Role.USER, text="new-child-turn")],
+    )
+    conn = _index(root)
+    try:
+        write_fixture_index_session(conn, appended, merge_append=True)
+        conn.commit()
+        assert unrecomposed_prefix_reason(conn, CHILD) == "recorded_prefix_loss"
+        assert read_archive_session_envelope(conn, CHILD).lineage_complete is False
+    finally:
+        conn.close()
 
 
 def test_lineage_prefix_debt_survives_live_contradiction(truncated_child: Path) -> None:

@@ -160,7 +160,6 @@ from polylogue.storage.accepted_marker_inputs import (
     MarkerInputExcisionTarget,
     marker_input_excision_targets_sync,
 )
-from polylogue.storage.blob_gc_index_watermark import index_liveness_authority_blocker
 from polylogue.storage.blob_liveness import (
     ConnectionSessionBlobLivenessRead,
     LivenessState,
@@ -2036,9 +2035,6 @@ def _stage_excision_source_blob_dispositions(
                 raise ReferenceSealError("blob classification cannot withhold an independent Index owner")
     source = _PreparedExcisionBlobSourceRead(seal)
     index = seal.observer("index")
-    authority_blocker = index_liveness_authority_blocker(
-        blob_root=seal.archive_root / "blob", index_path=seal.index_path, index_conn=index, record=False
-    )
     fixed = {
         "hash_kind": seal.retain_literal_scalar("blob_hash"),
         "reason": seal.retain_literal_scalar(reason),
@@ -2055,7 +2051,6 @@ def _stage_excision_source_blob_dispositions(
             tuple(blob_hash for blob_hash, _prior in page),
             index_conn=index,
             excluding_session_ids=excluding_session_ids,
-            index_authority_blocker=authority_blocker,
         )
         for blob_hash, prior_revision in page:
             reference = references[blob_hash]

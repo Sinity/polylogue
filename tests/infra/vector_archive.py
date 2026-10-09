@@ -17,6 +17,7 @@ from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingWrite, upsert_message_embeddings
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.identity import fixture_block_content_identity
 
 
 def seed_vector_archive(
@@ -49,9 +50,14 @@ def seed_vector_archive(
                 (session_id, native_message, session_id, len(text.split()), b"m" * 32),
             )
             index_cursor.execute(
-                """INSERT INTO blocks (session_id, message_id, position, block_type, text, content_hash)
-                   VALUES (?, ?, 0, 'text', ?, ?)""",
-                (session_id, message_id, text, b"b" * 32),
+                "INSERT INTO blocks (session_id, message_id, position, block_type, text, content_hash, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, ?, 0)",
+                (
+                    session_id,
+                    message_id,
+                    text,
+                    b"b" * 32,
+                    fixture_block_content_identity("text", text),
+                ),
             )
             if vector is not None:
                 upsert_message_embeddings(

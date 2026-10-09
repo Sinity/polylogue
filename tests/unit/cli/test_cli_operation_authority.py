@@ -250,11 +250,9 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         (
             "annotations",
             "import",
-            # ``click.Path(exists=True)`` and the command's own UTF-8 decode
-            # both run before the daemon probe, so the row needs a real,
-            # valid-UTF8 file on disk -- this module's own source stands in;
-            # its content is never parsed as JSONL because the refusal fires
-            # first.
+            # The command opens a real binary file before its daemon probe.
+            # This module's source stands in; the daemon refusal occurs
+            # before the importer parses the streamed input as JSONL.
             __file__,
             "--batch-id",
             "b1",
@@ -319,6 +317,9 @@ _MACHINE_FORMAT_FLAG: Mapping[str, str | None] = {
 #: Mutating operations the CLI submits whose route cannot reach the daemon
 #: probe from a daemon-down invocation, with the reason.
 _MATRIX_EXEMPT: Mapping[str, str] = {
+    "user.assertions.export.release": (
+        "releases a selection only after the daemon supplied its export; a daemon-down call cannot acquire one"
+    ),
     "maintenance.demo.augment": (
         "submitted only after `import --demo --wait` saw its ingest complete, and that ingest already needs the daemon"
     ),

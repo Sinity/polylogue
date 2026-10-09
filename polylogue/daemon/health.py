@@ -1170,28 +1170,13 @@ def _archive_repeated_stage_failure_info(
         )
         if not has_table:
             return None
-        total_recent = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM (SELECT 1 FROM ingest_attempts ORDER BY started_at_ms DESC LIMIT 20)"
-            ).fetchone()[0]
-            or 0
-        )
-        failed_recent = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM ("
-                "SELECT 1 FROM ingest_attempts "
-                "WHERE status = 'failed' "
-                "ORDER BY started_at_ms DESC LIMIT 20"
-                ")"
-            ).fetchone()[0]
-            or 0
-        )
-        error_row = conn.execute(
-            "SELECT phase, error_message FROM ingest_attempts "
-            "WHERE status = 'failed' AND error_message IS NOT NULL "
-            "ORDER BY started_at_ms DESC LIMIT 1"
-        ).fetchone()
-        return total_recent, failed_recent, error_row
+        recent = conn.execute(
+            "SELECT status, phase, error_message FROM ingest_attempts "
+            "ORDER BY started_at_ms DESC, attempt_id DESC LIMIT 20"
+        ).fetchall()
+        failed = [row for row in recent if row[0] == "failed"]
+        error_row = next(((row[1], row[2]) for row in failed if row[2] is not None), None)
+        return len(recent), len(failed), error_row
     finally:
         conn.close()
 
@@ -1691,6 +1676,15 @@ def _check_embedding_coverage_expensive() -> HealthAlert:
             )
 
         info = embedding_readiness_info(_active_health_db_path())
+        if info.get("embedding_status") == "unknown" or info.get("embedding_unmeasurable_reason"):
+            return HealthAlert(
+                check_name="embedding_coverage",
+                tier=HealthTier.EXPENSIVE,
+                severity=HealthSeverity.ERROR,
+                message=f"embedding coverage unknown: {info.get('embedding_unmeasurable_reason') or 'readiness_unmeasured'}",
+                checked_at=now,
+                consecutive_failures=_record_failure("embedding_coverage", False),
+            )
         coverage = info.get("embedding_coverage_percent", 0.0)
         cov_pct = float(coverage) if isinstance(coverage, (int, float)) and not isinstance(coverage, bool) else 0.0
         failure_count = info.get("embedding_failure_count", 0)

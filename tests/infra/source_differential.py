@@ -19,11 +19,11 @@ from typing import cast
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.sources.assembly import get_assembly_spec
-from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS, parse_payload, parse_stream_payload
 from polylogue.sources.origin_specs import OriginSpec, origin_specs
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions
+from tests.infra.json_values import iter_owned_json_values
 
 # These are transport/runtime fields, not semantic values.  They are typed and
 # path-local so adding a new ignored field requires naming its exact location.
@@ -190,7 +190,7 @@ def run_differential(specimen: SourceSpecimen, *, spec: OriginSpec | None = None
             elif adapter.kind == "streaming":
                 sessions = parse_stream_payload(
                     specimen.provider,
-                    _iter_json_stream(io.BytesIO(specimen.raw_bytes), specimen.filename),
+                    iter_owned_json_values(io.BytesIO(specimen.raw_bytes), specimen.filename),
                     specimen.fallback_id,
                     source_path=str(source_path),
                 )

@@ -27,10 +27,9 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.attachment.presentation import PREVIEW_SIZE_BUDGET, classify_attachment_state
 from polylogue.daemon.webui_data import (
-    PREVIEW_SIZE_BUDGET,
     attachment_to_envelope,
-    classify_attachment_state,
 )
 from tests.visual.conftest import (
     READER_C1,

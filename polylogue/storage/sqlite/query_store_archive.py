@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import aiosqlite
 
 from polylogue.archive.message.roles import MessageRoleFilter
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.runtime import (
     AttachmentRecord,
@@ -84,6 +85,28 @@ async def _hydrate_message_rows(conn: aiosqlite.Connection, messages: list[Messa
 class SQLiteQueryStoreArchiveMixin:
     if TYPE_CHECKING:
         _connection_factory: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]
+
+    async def get_session_tags_batch(self, session_ids: list[str]) -> dict[str, tuple[str, ...]]:
+        """Read tags through the same connection owner as dependent metadata."""
+        if not session_ids:
+            return {}
+        result: dict[str, list[str]] = {session_id: [] for session_id in session_ids}
+        async with self._connection_factory() as conn:
+            for table in ("session_tags", "tags"):
+                async with conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)
+                ) as cursor:
+                    if await cursor.fetchone() is None:
+                        return dict.fromkeys(session_ids, ())
+            placeholders = ",".join("?" for _ in session_ids)
+            async with conn.execute(
+                f"SELECT ct.session_id,t.name FROM session_tags ct JOIN tags t ON t.id=ct.tag_id "
+                f"WHERE ct.session_id IN ({placeholders}) ORDER BY t.name",
+                session_ids,
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    result[str(row[0])].append(str(row[1]))
+        return {session_id: tuple(names) for session_id, names in result.items()}
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         async with self._connection_factory() as conn:
@@ -281,7 +304,14 @@ class SQLiteQueryStoreArchiveMixin:
             return await attachments_q.get_attachments_batch(conn, session_ids)
 
     async def get_attachment_library_page(
-        self, *, limit: int, offset: int, mime_filter: str = "", session_filter: str = "", state_filter: str = ""
+        self,
+        *,
+        limit: int,
+        offset: int,
+        mime_filter: str = "",
+        session_filter: str = "",
+        state_filter: str = "",
+        blob_store: BlobStore | None = None,
     ) -> list[tuple[AttachmentRecord, str, str | None]]:
         async with self._connection_factory() as conn, _message_snapshot(conn):
             return await attachments_q.get_attachment_library_page(
@@ -291,6 +321,7 @@ class SQLiteQueryStoreArchiveMixin:
                 mime_filter=mime_filter,
                 session_filter=session_filter,
                 state_filter=state_filter,
+                blob_store=blob_store,
             )
 
     async def get_session_events(self, session_id: str) -> list[SessionEventRecord]:

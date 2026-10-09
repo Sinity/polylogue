@@ -146,3 +146,25 @@ MCP insight maintenance forwards an explicit session-ID selection to the sealed 
 MCP messages-view authority measures elapsed time from the read operation
 boundary with the shared monotonic authority clock, including the transcript
 window read. Serialization preserves that authority value.
+
+Typed session pages retain their framed request through every adapter. When
+the MCP budget shortens a page, its executable continuation advances from the
+returned prefix under the same operation, projection, filters and archive frame.
+An oversized messages row returns `MCPMessageFragmentPayload`: ASCII JSON row
+bytes with original message identity, row offset, result ref, byte offset and
+exact total, original lineage evidence and owner outcome. Follow the returned read arguments; concatenate contiguous fragments
+then JSON-decode once. `fragment_offset` is accepted only with a bound messages
+continuation. A retry repeats the same fragment; the last fragment advances one
+row. Fragments never masquerade as complete messages or successful empty pages.
+
+The registered signature supplies its input schema; the typed payload owns the
+fragment result schema. Session-operation errors retain their contract and log
+their canonical error code as failed calls. Blackboard query pages count and
+select active notes in one User snapshot rather than enumerate a finite prefix.
+
+Advanced session queries retain the pinned Index/User frame when MCP byte
+paging shortens a deterministic list or ranked page. Their returned query
+descriptor resumes the original selection, resolved date bounds and ordering;
+changing the scope or widening its window refuses the continuation. Random
+session ordering retains its offset-only behavior and cannot resume a framed
+query.

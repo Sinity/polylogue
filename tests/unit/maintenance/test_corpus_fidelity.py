@@ -206,22 +206,22 @@ def test_attachment_gate_requires_provenance_for_unavailable_refs(
         )
         conn.execute(
             """
-            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin)
-            VALUES ('attachment-unfetched', ?, ?, 0, 'drive')
+            INSERT INTO attachment_refs(native_identity, attachment_id, session_id, message_id, position, upload_origin)
+            VALUES ('666978747572652d746573745f636f727075735f666964656c6974792d323037', 'attachment-unfetched', ?, ?, 0, 'drive')
             """,
             (session_id, message_id),
         )
         conn.execute(
             """
-            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin)
-            VALUES ('attachment-unavailable', ?, ?, 1, 'oauth')
+            INSERT INTO attachment_refs(native_identity, attachment_id, session_id, message_id, position, upload_origin)
+            VALUES ('666978747572652d746573745f636f727075735f666964656c6974792d323134', 'attachment-unavailable', ?, ?, 1, 'oauth')
             """,
             (session_id, message_id),
         )
         conn.execute(
             """
-            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position)
-            VALUES ('attachment-unavailable-untyped', ?, ?, 2)
+            INSERT INTO attachment_refs(native_identity, attachment_id, session_id, message_id, position)
+            VALUES ('666978747572652d746573745f636f727075735f666964656c6974792d323231', 'attachment-unavailable-untyped', ?, ?, 2)
             """,
             (session_id, message_id),
         )
@@ -303,15 +303,15 @@ def test_attachment_gate_contradicts_an_acquired_claim_with_no_bytes(
         )
         conn.execute(
             """
-            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin)
-            VALUES ('att-no-bytes', ?, ?, 0, 'drive')
+            INSERT INTO attachment_refs(native_identity, attachment_id, session_id, message_id, position, upload_origin)
+            VALUES ('666978747572652d746573745f636f727075735f666964656c6974792d333034', 'att-no-bytes', ?, ?, 0, 'drive')
             """,
             (session_id, message_id),
         )
         conn.execute(
             """
-            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin)
-            VALUES ('att-no-identity', ?, ?, 1, 'drive')
+            INSERT INTO attachment_refs(native_identity, attachment_id, session_id, message_id, position, upload_origin)
+            VALUES ('666978747572652d746573745f636f727075735f666964656c6974792d333131', 'att-no-identity', ?, ?, 1, 'drive')
             """,
             (session_id, message_id),
         )
@@ -416,8 +416,7 @@ def test_candidate_index_corpus_gate_reads_durable_source_and_inactive_index(
                 "INSERT INTO attachments(attachment_id, acquisition_status) VALUES ('candidate-unfetched', 'unfetched')"
             )
             conn.execute(
-                "INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin) "
-                "VALUES ('candidate-unfetched', ?, ?, 99, 'drive')",
+                "INSERT INTO attachment_refs(native_identity, attachment_id, session_id, message_id, position, upload_origin) VALUES ('666978747572652d746573745f636f727075735f666964656c6974792d343138', 'candidate-unfetched', ?, ?, 99, 'drive')",
                 (session_id, message_row[0]),
             )
         elif violation == "absent":

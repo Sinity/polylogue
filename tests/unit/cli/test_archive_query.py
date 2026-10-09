@@ -66,6 +66,7 @@ from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
 from tests.infra.daemon_operations import accepted_operation_reference
+from tests.infra.identity import archive_block_id, fixture_block_content_identity
 
 
 @pytest.mark.parametrize("output_format", ["json", "yaml", "ndjson", "csv", "plaintext"])
@@ -1534,7 +1535,13 @@ class TestSessionSummaryText:
         def dispatch(_config: object, request: object, **_kwargs: object) -> tuple[dict[str, object], None]:
             limit = request.payload.get("limit")  # type: ignore[attr-defined]
             limits.append(limit if isinstance(limit, int) else None)
-            return {"session": {"session_id": "fixture", "messages": []}, "complete": True}, None
+            return {
+                "session": {"session_id": "fixture", "messages": []},
+                "complete": True,
+                "outcome": {"state": "empty", "reason": "no_rows_in_scope", "detail": {}},
+                "lineage_complete": True,
+                "lineage_truncation_reason": None,
+            }, None
 
         monkeypatch.setattr(archive_query, "dispatch_read", dispatch)
         assert (
@@ -1572,7 +1579,18 @@ class TestSessionSummaryText:
                 variant_index=0,
                 is_active_path=True,
                 is_active_leaf=False,
-                blocks=(ArchiveBlockRow(block_id="s1:1:0", message_id="s1:1", block_type="text", text="hello there"),),
+                blocks=(
+                    ArchiveBlockRow(
+                        block_id=archive_block_id(
+                            "s1:1", content_identity=fixture_block_content_identity("text", "hello there")
+                        ),
+                        content_identity=fixture_block_content_identity("text", "hello there"),
+                        content_occurrence=0,
+                        message_id="s1:1",
+                        block_type="text",
+                        text="hello there",
+                    ),
+                ),
                 word_count=2,
             ),
             ArchiveMessageRow(
@@ -1584,7 +1602,16 @@ class TestSessionSummaryText:
                 is_active_path=True,
                 is_active_leaf=False,
                 blocks=(
-                    ArchiveBlockRow(block_id="s1:2:0", message_id="s1:2", block_type="text", text="using a tool now"),
+                    ArchiveBlockRow(
+                        block_id=archive_block_id(
+                            "s1:2", content_identity=fixture_block_content_identity("text", "using a tool now")
+                        ),
+                        content_identity=fixture_block_content_identity("text", "using a tool now"),
+                        content_occurrence=0,
+                        message_id="s1:2",
+                        block_type="text",
+                        text="using a tool now",
+                    ),
                 ),
                 word_count=4,
                 has_tool_use=True,
@@ -1597,7 +1624,18 @@ class TestSessionSummaryText:
                 variant_index=0,
                 is_active_path=True,
                 is_active_leaf=True,
-                blocks=(ArchiveBlockRow(block_id="s1:3:0", message_id="s1:3", block_type="text", text="all done"),),
+                blocks=(
+                    ArchiveBlockRow(
+                        block_id=archive_block_id(
+                            "s1:3", content_identity=fixture_block_content_identity("text", "all done")
+                        ),
+                        content_identity=fixture_block_content_identity("text", "all done"),
+                        content_occurrence=0,
+                        message_id="s1:3",
+                        block_type="text",
+                        text="all done",
+                    ),
+                ),
                 word_count=2,
             ),
         )

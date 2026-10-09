@@ -44,6 +44,7 @@ from polylogue.daemon.health import (
     check_health,
 )
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.identity import fixture_block_content_identity
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -151,11 +152,15 @@ def _seed_stale_message_fts(index_db: Path) -> None:
             ("codex-session:native-1", "message-1", 0, "user", "message", bytes(32)),
         )
         conn.execute(
-            """
-            INSERT INTO blocks (message_id, session_id, position, block_type, text)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            ("codex-session:native-1:message-1", "codex-session:native-1", 0, "text", "missing from fts"),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (
+                "codex-session:native-1:message-1",
+                "codex-session:native-1",
+                0,
+                "text",
+                "missing from fts",
+                fixture_block_content_identity("text", "missing from fts"),
+            ),
         )
         rowid = conn.execute(
             "SELECT rowid FROM blocks WHERE block_id = ?",

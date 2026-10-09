@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Iterator, Sequence
 from contextlib import closing, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,6 +11,7 @@ from typing import cast
 
 from polylogue.core.enums import BlockType, Origin, ToolOutcome, ToolResultUnknownReason
 from polylogue.core.tool_association import tool_association_ctes_sql
+from polylogue.pipeline.ids import block_content_identity
 from polylogue.sources.origin_specs import tool_outcome_unknown_reasons_for_origin
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSessionEvent
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
@@ -170,9 +171,10 @@ class _OutcomeIndex:
 
 @contextmanager
 def _outcome_index(messages: Sequence[ParsedMessage]) -> Iterator[_OutcomeIndex]:
-    if isinstance(messages, SqliteMessageSink):
+    path = getattr(messages, "path", None)
+    if path is not None:
         with (
-            TemporaryDirectory(prefix="tool-outcomes-", dir=Path(messages.path).parent) as scratch,
+            TemporaryDirectory(prefix="tool-outcomes-", dir=Path(path).parent) as scratch,
             closing(sqlite3.connect(Path(scratch) / "evidence.sqlite3")) as conn,
         ):
             conn.execute("PRAGMA journal_mode = OFF")
@@ -182,6 +184,24 @@ def _outcome_index(messages: Sequence[ParsedMessage]) -> Iterator[_OutcomeIndex]
     else:
         with closing(sqlite3.connect(":memory:")) as conn:
             yield _OutcomeIndex(conn)
+
+
+def iter_tool_result_owners(messages: Sequence[ParsedMessage]) -> Generator[tuple[int, int, int, int], None, None]:
+    """Yield exact result/use occurrences admitted by the shared association law.
+
+    The ordinals address this caller-owned sequence only. They are never
+    archive identities. Ambiguous associations and multiple results for one
+    use have no unique file-edit evidence owner.
+    """
+    with _outcome_index(messages) as index:
+        _index_results(index, messages, origin=None)
+        with closing(
+            index.conn.execute("SELECT result_key,use_key FROM resolved_uses WHERE association_state='paired'")
+        ) as rows:
+            for result_key, use_key in rows:
+                result_message, result_block = map(int, str(result_key).split(":"))
+                use_message, use_block = map(int, str(use_key).split(":"))
+                yield result_message, result_block, use_message, use_block
 
 
 def derive_tool_outcomes(
@@ -254,7 +274,8 @@ def _index_sidecars(index: _OutcomeIndex, events: Sequence[ParsedSessionEvent], 
         index.add_sidecar(tool_id, event.source_message_provider_id, event_candidates[0], exit_code, origin=origin)
 
 
-def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, origin: Origin) -> None:
+def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, origin: Origin | None) -> None:
+    origin_label = f"origin {origin.value!r}" if origin is not None else "parsed transcript"
     for ordinal, message in enumerate(messages):
         native_id = message.provider_message_id
         normalized_id = native_id.strip() if native_id else None
@@ -289,13 +310,13 @@ def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, o
             distinct = set(result_candidates)
             if ToolOutcome.NO_RESULT in distinct or len(distinct) > 1:
                 raise ValueError(
-                    f"tool outcome derivation refused for origin {origin.value!r}: "
+                    f"tool outcome derivation refused for {origin_label}: "
                     f"conflicting result evidence for tool_id={block.tool_id!r}"
                 )
             outcome = next(iter(distinct), None)
             if outcome is None:
                 raise ValueError(
-                    f"tool outcome derivation refused for origin {origin.value!r}: "
+                    f"tool outcome derivation refused for {origin_label}: "
                     f"unsupported tool_result block shape tool_id={block.tool_id!r}"
                 )
             unknown_reason = block.outcome_unknown_reason if outcome is ToolOutcome.UNKNOWN else None
@@ -328,7 +349,7 @@ def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, o
     index.conn.execute(
         "CREATE TABLE resolved_uses AS WITH RECURSIVE "
         + tool_association_ctes_sql()
-        + " SELECT use_key,verdict FROM tool_associations"
+        + " SELECT use_key,result_key,association_state,verdict FROM tool_associations"
     )
     index.conn.execute("CREATE UNIQUE INDEX resolved_use_key ON resolved_uses(use_key)")
 
@@ -336,6 +357,10 @@ def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, o
 def _normalize_message(index: _OutcomeIndex, message: ParsedMessage, *, ordinal: int, origin: Origin) -> ParsedMessage:
     blocks: list[ParsedContentBlock] = []
     for block_ordinal, block in enumerate(message.blocks):
+        # Association enriches a read model. Bind the original Source semantics
+        # first so later results cannot rename an existing tool-use block.
+        if block.source_content_identity is None:
+            block = block.model_copy(update={"source_content_identity": block_content_identity(block)})
         if block.type is BlockType.TOOL_RESULT:
             unknown_reason = (
                 None

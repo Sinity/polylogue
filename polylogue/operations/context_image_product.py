@@ -80,11 +80,15 @@ def context_chronicle_payload(
     """The chronicle context excerpt for one session, with lineage-composed edges."""
     from polylogue.operations.read_view_chronicle import chronicle_edges
 
-    first, last, total = chronicle_edges(
-        archive, str(summary.id), edge_limit, origin=Origin.from_string(summary.origin)
-    )
+    edges = chronicle_edges(archive, str(summary.id), edge_limit, origin=Origin.from_string(summary.origin))
     session = build_chronicle_session_payload(
-        summary, first_messages=first, last_messages=last, total_matching_messages=total, edge_limit=edge_limit
+        summary,
+        first_messages=edges.first,
+        last_messages=edges.last,
+        total_matching_messages=edges.total,
+        edge_limit=edge_limit,
+        lineage_complete=edges.lineage_complete,
+        lineage_truncation_reason=edges.lineage_truncation_reason,
     )
     return build_chronicle_projection_payload([session], edge_limit=edge_limit)
 

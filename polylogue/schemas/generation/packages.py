@@ -13,6 +13,7 @@ from polylogue.schemas.generation.models import (
     _UnitMembership,
 )
 from polylogue.schemas.generation.observation_journal import ObservationJournal
+from polylogue.schemas.observation_spill import profile_token_text
 
 _ANCHOR_ELEMENT_KINDS = {
     "session_document",
@@ -226,7 +227,7 @@ def _assemble_journal_package_candidates(
 def _element_profile_tokens(memberships: Sequence[_UnitMembership]) -> list[str]:
     token_counts: Counter[str] = Counter()
     for membership in memberships:
-        token_counts.update(membership.unit.profile_tokens)
+        token_counts.update(profile_token_text(token) for token in membership.unit.profile_tokens)
     if not token_counts:
         return []
     min_count = max(1, len(memberships) // 2)

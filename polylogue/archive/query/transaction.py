@@ -66,14 +66,10 @@ class QueryResultSemanticsContract:
 
 
 # V2 binds a page to the exact index+user-tier frame that supplied its rows.
-# V1 remains decode-only for continuations issued before frame validation.
 _TOKEN_VERSION = 2
-_LEGACY_TOKEN_VERSION = 1
 _CONTINUATION_TTL_SECONDS = 60 * 60
 
-# Frame-string grammar. ``v2`` carries one component per relation the page
-# read; ``v1`` (a single archive-wide counter) has no relation structure and
-# is compared whole, which after the relation-scoped rebuild always differs.
+# Frames bind the opened archive/generation plus each relation the page read.
 _FRAME_VERSION = "v2"
 _FRAME_PREFIX = f"archive:{_FRAME_VERSION}:"
 
@@ -95,6 +91,7 @@ class QueryArchiveEpochUnreadableError(RuntimeError):
 class ArchiveFrame:
     """One reader snapshot's tier versions plus a per-relation epoch vector."""
 
+    physical_binding: str
     index_version: int
     user_version: int
     epochs: Mapping[str, int]
@@ -103,7 +100,7 @@ class ArchiveFrame:
         """Render the frame, optionally narrowed to the relations read."""
         selected = ALL_FRAME_RELATIONS if relations is None else tuple(sorted(set(relations)))
         components = ",".join(f"{name}={self.epochs[name]}" for name in selected if name in self.epochs)
-        return f"{_FRAME_PREFIX}index:v{self.index_version}:user:v{self.user_version}:{components}"
+        return f"{_FRAME_PREFIX}physical:{self.physical_binding}:index:v{self.index_version}:user:v{self.user_version}:{components}"
 
 
 def _read_archive_frame(archive: ArchiveStore) -> ArchiveFrame:
@@ -132,7 +129,11 @@ def _read_archive_frame(archive: ArchiveStore) -> ArchiveFrame:
         raise sqlite3.OperationalError(
             f"query_unit_frame_state is missing rows for tracked relations: {', '.join(missing)}"
         )
-    return ArchiveFrame(index_version=index_version, user_version=user_version, epochs=epochs)
+    binding = (archive.archive_generation, archive.index_generation, archive.user_generation)
+    physical_binding = hashlib.sha256(repr(binding).encode("ascii")).hexdigest()
+    return ArchiveFrame(
+        physical_binding=physical_binding, index_version=index_version, user_version=user_version, epochs=epochs
+    )
 
 
 def archive_snapshot_epoch(archive: ArchiveStore, *, relations: Iterable[str] | None = None) -> str:
@@ -349,8 +350,6 @@ def validate_continuation_epoch(continuation_request: QueryTransactionRequest, *
     reads unusable during convergence -- leaves the resume valid.
     """
     if not continuation_request.archive_epoch:
-        if continuation_request.continuation_version == _LEGACY_TOKEN_VERSION:
-            return archive_snapshot_epoch(archive)
         raise ValueError("query continuation is missing required archive_epoch")
     issued = continuation_request.archive_epoch
     relations = _issued_frame_relations(issued)

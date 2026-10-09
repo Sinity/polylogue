@@ -32,13 +32,14 @@ from urllib.parse import quote
 
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.iterator_lifetime import settled_iterator
+from polylogue.core.message_native_identity import source_native_id_from_json, source_native_id_json
 from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
 
 #: Bump when the shard's own layout changes shape; it is part of the seal.
-SHARD_LAYOUT_VERSION = 3
+SHARD_LAYOUT_VERSION = 4
 
 #: The tables a shard transports, in the order the writer must copy them:
 #: ``blocks.message_id`` references ``messages.message_id``.
@@ -59,6 +60,25 @@ _OWNER_DDL = (
 
 class ShardRefusedError(Exception):
     """A shard file cannot be trusted and must not be attached."""
+
+
+def _owner_lookup_key_json(kind: str, key: object) -> str:
+    # JSON's escaped surrogate pair aliases a scalar code point. Provider
+    # names use the same exact Source carrier as canonical message rows.
+    if kind == "provider" and isinstance(key, str):
+        encoded = source_native_id_json(key)
+        return "null" if encoded is None else encoded
+    return json.dumps(key, separators=(",", ":"))
+
+
+def _owner_lookup_key_from_json(kind: str, encoded: str) -> object:
+    if kind == "provider":
+        native = source_native_id_from_json(encoded)
+        if native is None:
+            raise ShardRefusedError("message owner lookup lacks a native ID")
+        return native
+    decoded = json.loads(encoded)
+    return tuple(decoded) if kind == "physical" else decoded
 
 
 def _spec(table: str) -> TableColumnSpec:
@@ -266,7 +286,7 @@ class SessionShardBuilder:
             self._conn.executemany(
                 "INSERT INTO shard_owner_lookup VALUES (?, ?, ?, ?)",
                 (
-                    (session, kind, json.dumps(lookup_key, separators=(",", ":")), owner_key)
+                    (session, kind, _owner_lookup_key_json(kind, lookup_key), owner_key)
                     for lookup_key, owner_key in lookup.items()
                 ),
             )
@@ -278,7 +298,7 @@ class SessionShardBuilder:
         ):
             self._conn.executemany(
                 "INSERT INTO shard_owner_ambiguity VALUES (?, ?, ?)",
-                ((session, kind, json.dumps(ambiguous_key, separators=(",", ":"))) for ambiguous_key in ambiguous),
+                ((session, kind, _owner_lookup_key_json(kind, ambiguous_key)) for ambiguous_key in ambiguous),
             )
 
     def add(self, prepared: object) -> None:
@@ -788,7 +808,7 @@ class _ShardOwnerLookup(Mapping[_T, str]):
         with _shard_connection(self.path) as conn:
             row = conn.execute(
                 "SELECT value FROM shard_owner_lookup WHERE session_ordinal=? AND kind=? AND key=?",
-                (self.session, self.kind, json.dumps(key, separators=(",", ":"))),
+                (self.session, self.kind, _owner_lookup_key_json(self.kind, key)),
             ).fetchone()
         if row is None:
             raise KeyError(key)
@@ -806,8 +826,7 @@ class _ShardOwnerLookup(Mapping[_T, str]):
                 return
             after = str(rows[-1][0])
             for row in rows:
-                value = json.loads(row[0])
-                yield cast(_T, tuple(value) if self.kind == "physical" else value)
+                yield cast(_T, _owner_lookup_key_from_json(self.kind, str(row[0])))
 
     def __len__(self) -> int:
         with _shard_connection(self.path) as conn:
@@ -828,7 +847,7 @@ class _ShardOwnerAmbiguities(Set[_T]):
             return (
                 conn.execute(
                     "SELECT 1 FROM shard_owner_ambiguity WHERE session_ordinal=? AND kind=? AND key=?",
-                    (self.session, self.kind, json.dumps(key, separators=(",", ":"))),
+                    (self.session, self.kind, _owner_lookup_key_json(self.kind, key)),
                 ).fetchone()
                 is not None
             )
@@ -845,8 +864,7 @@ class _ShardOwnerAmbiguities(Set[_T]):
                 return
             after = str(rows[-1][0])
             for row in rows:
-                value = json.loads(row[0])
-                yield cast(_T, tuple(value) if self.kind == "physical" else value)
+                yield cast(_T, _owner_lookup_key_from_json(self.kind, str(row[0])))
 
     def __len__(self) -> int:
         with _shard_connection(self.path) as conn:

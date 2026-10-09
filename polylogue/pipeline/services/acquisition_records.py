@@ -56,12 +56,50 @@ def make_raw_record(
     its provider-native session IDs are profile-local.
     """
     blob_hash: str | None = None
+    if raw_data.staged_payload is not None:
+        from polylogue.core.compute_cancel import check_compute_cancelled
+        from polylogue.paths import blob_store_root
+        from polylogue.storage.blob_publication import ArchiveBlobPublisher, publication_receipt_id
+
+        blob_store = blob_store or BlobStore(blob_root or blob_store_root())
+        staged = raw_data.staged_payload
+        owner_root = blob_store.root.resolve()
+        publisher_id = blob_store.publisher_id if isinstance(blob_store, ArchiveBlobPublisher) else None
+        if staged.adopted is None:
+            prepared = None
+            try:
+                staged.seal.verify(staged.path, full=True)
+                prepared = blob_store.prepare_from_path(staged.path, heartbeat=check_compute_cancelled)
+                staged.seal.verify(staged.path, full=False)
+                if prepared.hash_hex != staged.seal.sha256 or prepared.size_bytes != staged.seal.size:
+                    raise ValueError("staged raw copy disagrees with its sealed capture")
+                if isinstance(blob_store, ArchiveBlobPublisher):
+                    blob_hash, blob_size = blob_store.queue_prepared(prepared)
+                else:
+                    blob_hash, blob_size = blob_store.publish_prepared(prepared)
+                prepared = None
+                staged.adopted = (
+                    owner_root,
+                    publisher_id,
+                    blob_hash,
+                    blob_size,
+                    publication_receipt_id(blob_store, blob_hash),
+                )
+            finally:
+                if prepared is not None:
+                    blob_store.discard_prepared(prepared)
+                staged.discard()
+        adopted_root, adopted_publisher, blob_hash, blob_size, receipt = staged.adopted
+        if (adopted_root, adopted_publisher) != (owner_root, publisher_id):
+            raise ValueError("staged raw capture belongs to another creator publication owner")
+        raw_data.staged_payload = None
+        raw_data.blob_hash, raw_data.blob_size = blob_hash, blob_size
+        raw_data.blob_publication_receipt_id = receipt
     if raw_data.blob_hash is not None:
         blob_hash = raw_data.blob_hash
         blob_size = raw_data.blob_size or 0
     elif raw_data.raw_bytes:
-        # Bytes provided without pre-computed blob hash (e.g. from tests
-        # or legacy callers). Write to blob store and use the hash.
+        # Explicit in-memory captures use the same creator publication owner.
         from polylogue.paths import blob_store_root
 
         resolved_blob_root = blob_root or blob_store_root()

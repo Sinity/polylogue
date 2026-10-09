@@ -49,6 +49,7 @@ from .parsers import (
     otel_genai,
 )
 from .parsers.base import (
+    ParsedAttachment,
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
@@ -314,7 +315,7 @@ def _looks_like_antigravity_markdown_record(payload: object) -> bool:
 
 def _looks_like_codex_record(payload: object) -> bool:
     record = _payload_record(payload)
-    return record is not None and codex.looks_like([dict(record)])
+    return record is not None and codex.looks_like([record])
 
 
 def _looks_like_codex_stream(payload: object) -> bool:
@@ -323,7 +324,7 @@ def _looks_like_codex_stream(payload: object) -> bool:
 
 def _looks_like_claude_code_record(payload: object) -> bool:
     record = _payload_record(payload)
-    return record is not None and claude.looks_like_code([dict(record)])
+    return record is not None and claude.looks_like_code([record])
 
 
 def _looks_like_claude_code_stream(payload: object) -> bool:
@@ -1135,6 +1136,7 @@ def _claude_code_multiway_parse(
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    attachment_sink_factory: Callable[[], MutableSequence[ParsedAttachment]] | None = None,
 ) -> Iterator[ParsedSession]:
     if message_sink_factory is None:
         yield from _claude_code_multiway_parse_inner(
@@ -1142,6 +1144,7 @@ def _claude_code_multiway_parse(
             fallback_id,
             source_path=source_path,
             sidecar_resolver=sidecar_resolver,
+            attachment_sink_factory=attachment_sink_factory,
         )
     else:
         with ClaudeStreamScratch() as scratch, ExitStack() as sidecar_stack:
@@ -1152,6 +1155,7 @@ def _claude_code_multiway_parse(
                 sidecar_resolver=sidecar_resolver,
                 message_sink_factory=message_sink_factory,
                 event_sink_factory=event_sink_factory,
+                attachment_sink_factory=attachment_sink_factory,
                 scratch=scratch,
                 sidecar_stack=sidecar_stack,
             )
@@ -1165,6 +1169,7 @@ def _claude_code_multiway_parse_inner(
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    attachment_sink_factory: Callable[[], MutableSequence[ParsedAttachment]] | None = None,
     scratch: ClaudeStreamScratch | None = None,
     sidecar_stack: ExitStack | None = None,
 ) -> Iterator[ParsedSession]:
@@ -1256,6 +1261,8 @@ def _claude_code_multiway_parse_inner(
             acc.messages = message_sink_factory()
         if event_sink_factory is not None:
             acc.session_events = event_sink_factory()
+        if attachment_sink_factory is not None:
+            acc.attachments = attachment_sink_factory()
         if scratch is not None:
             acc.scratch = scratch
             acc.scratch_scope = group_fallback_id
@@ -1294,7 +1301,7 @@ def _claude_code_multiway_parse_inner(
                 if scratch is None:
                     pending_prefix.append((item, record))
                 else:
-                    scratch.add_prefix(record_index, item, record)
+                    scratch.add_prefix(record_index, item)
                 continue
             fold_into(current_group_id, record_index, item, record)
             continue
@@ -1324,9 +1331,9 @@ def _claude_code_multiway_parse_inner(
                     fold_into(session_id, prefix_index, prefix_item, prefix_record)
             else:
                 prefix_index = record_index - scratch.prefix_count()
-                for _, prefix_item, prefix_record in scratch.iter_prefix():
+                for _, prefix_item in scratch.iter_prefix():
                     prefix_index += 1
-                    fold_into(session_id, prefix_index, prefix_item, prefix_record)
+                    fold_into(session_id, prefix_index, prefix_item, _payload_record(prefix_item))
                 scratch.clear_prefix()
             pending_prefix = []
 
@@ -1346,8 +1353,8 @@ def _claude_code_multiway_parse_inner(
             for index, (prefix_item, prefix_record) in enumerate(pending_prefix, start=1):
                 fold_into(fallback_id, index, prefix_item, prefix_record)
         else:
-            for index, prefix_item, prefix_record in scratch.iter_prefix():
-                fold_into(fallback_id, index, prefix_item, prefix_record)
+            for index, prefix_item in scratch.iter_prefix():
+                fold_into(fallback_id, index, prefix_item, _payload_record(prefix_item))
 
     # Provisional groups (non-agent, own sessionId != fallback_id, first
     # encountered before the primary group had started) can only be
@@ -2310,6 +2317,7 @@ def iter_parsed_payload(
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    attachment_sink_factory: Callable[[], MutableSequence[ParsedAttachment]] | None = None,
 ) -> Generator[ParsedSession, None, None]:
     """Drain the canonical lowering without retaining its complete output cohort."""
     resolver = sidecar_resolver if sidecar_resolver is not None else _default_sidecar_resolver()
@@ -2322,7 +2330,11 @@ def iter_parsed_payload(
     )
     try:
         for spec in specs:
-            if (message_sink_factory is not None or event_sink_factory is not None) and (
+            if (
+                message_sink_factory is not None
+                or event_sink_factory is not None
+                or attachment_sink_factory is not None
+            ) and (
                 spec.mode == "claude_code_multiway"
                 or spec.mode == "grouped_records"
                 and spec.provider in STREAM_RECORD_PROVIDERS
@@ -2338,6 +2350,7 @@ def iter_parsed_payload(
                         sidecar_resolver=resolver,
                         message_sink_factory=message_sink_factory,
                         event_sink_factory=event_sink_factory,
+                        attachment_sink_factory=attachment_sink_factory,
                     )
             else:
                 yield from _parse_lowered_spec(spec, resolver, profile_identity=profile_identity)
@@ -2623,6 +2636,7 @@ def parse_stream_payload(
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    attachment_sink_factory: Callable[[], MutableSequence[ParsedAttachment]] | None = None,
 ) -> list[ParsedSession]:
     """Parse a grouped record stream.
 
@@ -2639,6 +2653,7 @@ def parse_stream_payload(
             sidecar_resolver=sidecar_resolver,
             message_sink_factory=message_sink_factory,
             event_sink_factory=event_sink_factory,
+            attachment_sink_factory=attachment_sink_factory,
         )
     )
 
@@ -2653,6 +2668,7 @@ def iter_parsed_stream(
     sidecar_resolver: SidecarResolver | None = None,
     message_sink_factory: Callable[[], MutableSequence[ParsedMessage]] | None = None,
     event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]] | None = None,
+    attachment_sink_factory: Callable[[], MutableSequence[ParsedAttachment]] | None = None,
 ) -> Generator[ParsedSession, None, None]:
     """Parse a grouped record stream.
 
@@ -2668,6 +2684,7 @@ def iter_parsed_stream(
             sidecar_resolver=sidecar_resolver,
             message_sink_factory=message_sink_factory,
             event_sink_factory=event_sink_factory,
+            attachment_sink_factory=attachment_sink_factory,
         )
         return
     if runtime_provider is Provider.CODEX:

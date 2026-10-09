@@ -975,7 +975,10 @@ class OperationExecutor:
             raise CapabilityDeniedError(f"principal lacks declared capabilities: {missing}")
         if identity_reset_custody is not None:
             identity_reset_custody.require_authorization(preview, principal)
-        if identity_reset_custody is None and self._now_ms() >= plan.expires_at_ms:
+        progress_owned = (
+            self._audit is not None and self._audit.insight_expiry_policy(preview, principal) == "maintenance_progress"
+        )
+        if identity_reset_custody is None and not progress_owned and self._now_ms() >= plan.expires_at_ms:
             raise TokenExpiredError("cannot authorize an expired preview")
         # A destructive plan is never authorized with the interim boolean
         # strength.  Callers that omit the strength receive the canonical
@@ -991,6 +994,7 @@ class OperationExecutor:
         if identity_reset_custody is not None and strength != "bound_token":
             raise ConfirmationRequiredError("accepted identity reset requires bound confirmation")
         token = self._token_factory()
+        issued_at_ms = self._now_ms()
         authorization = MutationAuthorization(
             plan_hash=plan.plan_hash,
             actor=principal.actor_ref,
@@ -1000,13 +1004,19 @@ class OperationExecutor:
             authorized_at=_utcnow_iso(),
             preview_ref=preview.preview_ref,
             token=token,
-            expires_at_ms=plan.expires_at_ms if identity_reset_custody is None else identity_reset_custody.issued_at_ms,
+            expires_at_ms=(
+                identity_reset_custody.issued_at_ms
+                if identity_reset_custody is not None
+                else issued_at_ms
+                if progress_owned
+                else plan.expires_at_ms
+            ),
             capabilities=tuple(sorted(required)),
             surface=principal.surface,
         )
         if self._audit is not None:
             authorization_id = self._audit.issue_authorization(
-                preview, principal, authorization, issued_at_ms=self._now_ms()
+                preview, principal, authorization, issued_at_ms=issued_at_ms
             )
             authorization = replace(authorization, authorization_id=authorization_id)
         assert authorization.token is not None

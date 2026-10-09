@@ -10,6 +10,7 @@ from polylogue.mcp.archive_support import archive_messages_payload
 from polylogue.mcp.payloads import MCPArchiveMessagePayload, MCPArchiveSessionPayload
 from polylogue.storage.runtime import LineageTruncationReason
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+from tests.infra.identity import archive_block_id, fixture_block_content_identity
 
 
 def _envelope(
@@ -62,7 +63,16 @@ def test_mcp_archive_message_payload_preserves_unknown_active_path() -> None:
         # the production archive schema currently stores 0/1.
         is_active_path=cast("bool", None),
         is_active_leaf=False,
-        blocks=(ArchiveBlockRow(block_id="m1:0", message_id="m1", block_type="text", text="answer"),),
+        blocks=(
+            ArchiveBlockRow(
+                block_id=archive_block_id("m1", content_identity=fixture_block_content_identity("text", "answer")),
+                content_identity=fixture_block_content_identity("text", "answer"),
+                content_occurrence=0,
+                message_id="m1",
+                block_type="text",
+                text="answer",
+            ),
+        ),
     )
 
     payload = MCPArchiveMessagePayload.from_message(row)
@@ -89,7 +99,16 @@ def test_archive_messages_payload_page_past_the_end_is_empty() -> None:
         variant_index=0,
         is_active_path=True,
         is_active_leaf=True,
-        blocks=(ArchiveBlockRow(block_id="m1:0", message_id="m1", block_type="text", text="answer"),),
+        blocks=(
+            ArchiveBlockRow(
+                block_id=archive_block_id("m1", content_identity=fixture_block_content_identity("text", "answer")),
+                content_identity=fixture_block_content_identity("text", "answer"),
+                content_occurrence=0,
+                message_id="m1",
+                block_type="text",
+                text="answer",
+            ),
+        ),
     )
     session = replace(_envelope(lineage_complete=True, lineage_truncation_reason=None), messages=(row,))
 

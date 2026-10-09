@@ -22,6 +22,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.pipeline.ids import (
     attachment_message_owner_key,
+    disk_message_owner_resolution,
     message_owner_resolution,
     session_content_hash,
     session_revision_projection,
@@ -116,7 +117,7 @@ def test_timestamped_idless_sibling_edit_is_not_a_membership_conflict() -> None:
     assert _relation(older_projection, edited_projection) == "equal"
 
 
-def test_whitespace_native_id_uses_the_same_revision_axis_as_missing_id() -> None:
+def test_whitespace_native_id_uses_a_distinct_revision_axis_from_missing_id() -> None:
     whitespace = _session(
         [ParsedMessage(provider_message_id="  ", role=Role.ASSISTANT, text="same", timestamp="2024-01-01")]
     )
@@ -124,7 +125,7 @@ def test_whitespace_native_id_uses_the_same_revision_axis_as_missing_id() -> Non
 
     assert (
         session_revision_projection(whitespace).message_contents
-        == session_revision_projection(missing).message_contents
+        != session_revision_projection(missing).message_contents
     )
 
 
@@ -365,3 +366,23 @@ def test_duplicate_stable_owner_evidence_without_physical_coordinate_fails_close
 
     with pytest.raises(MessageOwnerAmbiguityError):
         session_revision_projection(_session(messages, [attachment]))
+
+
+@pytest.mark.parametrize("disk", [False, True])
+def test_opaque_native_whitespace_resolves_distinct_message_owners(disk: bool) -> None:
+    from contextlib import nullcontext
+
+    messages = [
+        ParsedMessage(provider_message_id=native, position=position, role=Role.USER, text="same")
+        for position, native in enumerate(("dup", " dup ", "   "))
+    ]
+    context = disk_message_owner_resolution(messages) if disk else nullcontext(message_owner_resolution(messages))
+    with context as resolution:
+        assert not resolution.ambiguous_provider_ids
+        assert dict(resolution.unique_provider_keys) == {native: "n:" + native for native in ("dup", " dup ", "   ")}
+        for message in messages:
+            attachment = ParsedAttachment(
+                provider_attachment_id="file", message_provider_id=message.provider_message_id
+            )
+            assert attachment_message_owner_key(attachment, resolution) == "n:" + message.provider_message_id
+    assert session_content_hash(_session(messages)) != session_content_hash(_session([messages[0]]))

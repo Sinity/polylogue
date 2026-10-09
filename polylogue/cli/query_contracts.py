@@ -105,7 +105,7 @@ class QueryOutputSpec:
         )
 
     def stream_format(self) -> str:
-        if self.output_format == "json":
+        if self.output_format in {"json", "ndjson"}:
             return "json-lines"
         if self.output_format in {"plaintext", "markdown", "json-lines"}:
             return self.output_format

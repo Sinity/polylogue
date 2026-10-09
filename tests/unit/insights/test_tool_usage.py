@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+import aiosqlite
 import pytest
 
 from polylogue import Polylogue
@@ -37,6 +38,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.queries.tool_usage import (
     ToolUsageOriginCoverageRow,
     ToolUsageRow,
+    get_tool_usage_rows,
 )
 from tests.infra.storage_records import SessionBuilder
 
@@ -81,6 +83,39 @@ def _row(
         "affected_path_calls": paths,
         "output_text_calls": outputs,
     }
+
+
+@pytest.mark.asyncio
+async def test_session_tool_rollups_select_exact_session_before_grouping_and_keep_global_coverage(
+    tmp_path: Path,
+) -> None:
+    archive = _archive(tmp_path)
+    builders = [
+        SessionBuilder(tmp_path / "index.db", "selected").provider("claude-code"),
+        SessionBuilder(tmp_path / "index.db", "same-origin").provider("claude-code"),
+        SessionBuilder(tmp_path / "index.db", "foreign-origin").provider("codex"),
+    ]
+    for index, builder in enumerate(builders):
+        builder.add_message(
+            f"message-{index}",
+            role="assistant",
+            text="Tools",
+            blocks=[{"type": "tool_use", "name": "Read", "id": f"read-{index}"}]
+            + ([] if index == 0 else [{"type": "tool_use", "name": "Bash", "id": f"bash-{index}"}]),
+        ).save()
+    request = ToolUsageInsightQuery(session_id=builders[0].native_session_id())
+    [insight] = await archive.list_tool_usage_insights(request)
+    assert [(entry.normalized_tool_name, entry.call_count) for entry in insight.entries] == [("read", 1)]
+    assert sum(entry.action_count for entry in insight.origin_coverage) == 5
+    assert {entry.origin for entry in insight.origin_coverage} == {"claude-code-session", "codex-session"}
+    [missing] = await archive.list_tool_usage_insights(ToolUsageInsightQuery(session_id="claude-code-session:absent"))
+    assert missing.entries == ()
+    assert missing.origin_coverage == insight.origin_coverage
+
+    async with aiosqlite.connect(f"file:{tmp_path / 'index.db'}?mode=ro", uri=True) as conn:
+        conn.row_factory = aiosqlite.Row
+        rows = await get_tool_usage_rows(conn, request)
+    assert [(row["normalized_tool_name"], row["call_count"]) for row in rows] == [("read", 1)]
 
 
 def _coverage(

@@ -6,13 +6,33 @@ import csv
 import io
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputFormat
 from polylogue.core.json import JSONDocument
+from polylogue.surfaces.outcome import OutcomeEnvelope
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
+
+
+class RootSessionDocument(BaseModel):
+    """Exact root transcript content and its supplied composition verdict."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["session"] = "session"
+    session_id: str
+    native_id: str | None
+    origin: str | None
+    title: str | None
+    active_leaf_message_id: str | None
+    messages: list[dict[str, JsonValue]]
+    outcome: OutcomeEnvelope
+    lineage_complete: bool
+    lineage_truncation_reason: str | None
 
 
 def _selected_field_names(fields: str | None) -> frozenset[str] | None:
@@ -100,5 +120,6 @@ class QueryOutputDocument:
 
 __all__ = [
     "QueryOutputDocument",
+    "RootSessionDocument",
     "StructuredRowsDocument",
 ]

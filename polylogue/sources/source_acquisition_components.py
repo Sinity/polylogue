@@ -330,15 +330,16 @@ def iter_entry_payloads(
     """
     handle = bind_stream(handle, stream_name, bound_provider)
     current_provider = provider_hint
-    for payload in _decoders._iter_json_stream(handle, stream_name):
-        normalized_payload = _artifact_payload(payload)
-        detect_start = time.perf_counter()
-        detected_provider = detect_provider(normalized_payload)
-        detect_provider_ms = (time.perf_counter() - detect_start) * 1000.0
-        provider = detected_provider or current_provider
-        if detected_provider is not None and detected_provider is not Provider.UNKNOWN:
-            current_provider = detected_provider
-        yield DetectedEntryPayload(provider, normalized_payload, detect_provider_ms)
+    with _decoders.owned_json_records(handle, stream_name) as records:
+        for payload in records:
+            normalized_payload = _artifact_payload(payload)
+            detect_start = time.perf_counter()
+            detected_provider = detect_provider(normalized_payload)
+            detect_provider_ms = (time.perf_counter() - detect_start) * 1000.0
+            provider = detected_provider or current_provider
+            if detected_provider is not None and detected_provider is not Provider.UNKNOWN:
+                current_provider = detected_provider
+            yield DetectedEntryPayload(provider, normalized_payload, detect_provider_ms)
 
 
 def make_split_entry_raw_data(

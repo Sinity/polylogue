@@ -56,6 +56,8 @@ _SQL_TRANSACTION_CONTROL_RE = re.compile(r"^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOI
 DURABLE_CHANGE_TRAIN_FORMAT: Final = "polylogue.durable-change-train.v2"
 DURABLE_MIGRATION_COLLISION_REPORT_FORMAT: Final = "polylogue.durable-migration-collisions.v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SQL_SCHEMA_IDENTIFIER = r"""(?:[A-Za-z_][A-Za-z_0-9]*|"(?:[^"]|"")*"|'(?:[^']|'')*'|`(?:[^`]|``)*`|\[[^\]]*\])"""
+_SQL_SCHEMA_TRIVIA = r"(?:\s|/\*.*?\*/|--[^\n]*(?:\n|$))*"
 
 
 class MigrationError(RuntimeError):
@@ -202,7 +204,14 @@ _ADDITIVE_STATEMENT_RE = re.compile(
 )
 #: ``CREATE TABLE … AS SELECT`` writes rows at apply time, so it is a create
 #: statement that is not additive-only.
-_CREATE_TABLE_AS_RE = re.compile(r"^CREATE\s+TABLE\b.*\bAS\b\s*(?:WITH|SELECT|VALUES)\b", re.IGNORECASE | re.DOTALL)
+_CREATE_TABLE_AS_RE = re.compile(
+    rf"^CREATE{_SQL_SCHEMA_TRIVIA}TABLE\b{_SQL_SCHEMA_TRIVIA}"
+    rf"(?:IF{_SQL_SCHEMA_TRIVIA}NOT{_SQL_SCHEMA_TRIVIA}EXISTS{_SQL_SCHEMA_TRIVIA})?"
+    rf"{_SQL_SCHEMA_IDENTIFIER}"
+    rf"(?:{_SQL_SCHEMA_TRIVIA}\.{_SQL_SCHEMA_TRIVIA}{_SQL_SCHEMA_IDENTIFIER})?"
+    rf"{_SQL_SCHEMA_TRIVIA}AS\b{_SQL_SCHEMA_TRIVIA}(?:WITH|SELECT|VALUES)\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _iter_migration_statements(sql: str) -> Iterable[str]:
@@ -261,8 +270,6 @@ def _requires_migration_backup(path: Path, sql: str) -> bool:
     return False
 
 
-_SQL_SCHEMA_IDENTIFIER = r"""(?:[A-Za-z_][A-Za-z_0-9]*|"(?:[^"]|"")*"|'(?:[^']|'')*'|`(?:[^`]|``)*`|\[[^\]]*\])"""
-_SQL_SCHEMA_TRIVIA = r"(?:\s|/\*.*?\*/|--[^\n]*(?:\n|$))*"
 _SCHEMA_DROP_STATEMENT_RE = re.compile(
     rf"^(?:DROP\b|ALTER{_SQL_SCHEMA_TRIVIA}TABLE{_SQL_SCHEMA_TRIVIA}"
     rf"{_SQL_SCHEMA_IDENTIFIER}(?:{_SQL_SCHEMA_TRIVIA}\.{_SQL_SCHEMA_TRIVIA}{_SQL_SCHEMA_IDENTIFIER})?"
@@ -880,10 +887,13 @@ def _validate_tier_artifact(
     if _json_int(artifact.get("user_version")) != _sqlite_user_version(artifact_path):
         raise MigrationError(f"migration backup tier artifact user_version mismatch: {filename}")
     source_fingerprint = artifact.get("source_fingerprint")
-    if not isinstance(source_fingerprint, dict) or any(
-        artifact.get(field) != source_fingerprint.get(field) for field in ("size_bytes", "sha256", "user_version")
+    snapshot = source_fingerprint.get("snapshot") if isinstance(source_fingerprint, dict) else None
+    if not isinstance(snapshot, dict) or any(
+        artifact.get(field) != snapshot.get(field) for field in ("size_bytes", "sha256", "user_version")
     ):
-        raise MigrationError(f"migration backup tier artifact does not match its live source fingerprint: {filename}")
+        raise MigrationError(
+            f"migration backup tier artifact does not match its pinned snapshot fingerprint: {filename}"
+        )
 
 
 def _validated_receipt_artifacts(
@@ -936,9 +946,23 @@ def _validate_live_source_fingerprint(conn: sqlite3.Connection, artifact: dict[s
     fingerprint = artifact.get("source_fingerprint")
     if not isinstance(fingerprint, dict):
         raise MigrationError("migration backup receipt is missing the live source fingerprint")
+    if fingerprint.get("live_cut_stable") is not True:
+        raise MigrationError("migration backup receipt live tier changed during its pinned snapshot")
     live_path = _connection_main_path(conn)
     wal_path = live_path.with_name(f"{live_path.name}-wal")
-    if wal_path.exists() and wal_path.stat().st_size:
+    try:
+        wal_metadata = wal_path.stat()
+    except FileNotFoundError:
+        wal_metadata = None
+    recorded_wal = fingerprint.get("wal")
+    if wal_metadata is not None and wal_metadata.st_size:
+        wal_physical = physical_file_sha256(
+            wal_path, expected_device=wal_metadata.st_dev, expected_inode=wal_metadata.st_ino
+        )
+        observed_wal = {"size_bytes": wal_physical.size_bytes, "sha256": wal_physical.sha256}
+    else:
+        observed_wal = None
+    if observed_wal != recorded_wal:
         raise MigrationError("migration backup receipt live tier changed before the migration lock")
     recorded_path_value = fingerprint.get("path")
     recorded_path = Path(str(recorded_path_value)) if recorded_path_value else None
@@ -1382,7 +1406,7 @@ def migrate_archive_tier(
     if precheck_requires_backup:
         # Baseline validation before acquiring the write lock. The paired
         # post-lock call below re-validates with the same connection;
-        # _validate_live_source_fingerprint rejects a nonempty WAL, so a
+        # _validate_live_source_fingerprint compares the recorded main and WAL, so a
         # write that lands on the live tier between this call and BEGIN
         # IMMEDIATE is caught as "changed before the migration lock" instead
         # of migrating over data the verified backup never covered.

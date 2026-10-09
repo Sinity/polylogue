@@ -10,9 +10,111 @@ from polylogue.analysis.claude_workflow_evidence import (
 )
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
-from polylogue.sources.parsers.claude.orchestration import ClaudeOrchestrationArtifact, ClaudeOrchestrationFact
+from polylogue.sources.parsers.claude import parse_code
+from polylogue.sources.parsers.claude.orchestration import (
+    ClaudeOrchestrationArtifact,
+    ClaudeOrchestrationFact,
+    parse_claude_orchestration_artifact,
+)
 
 RUN_ID = "wf_54d4fb2e-841"
+
+
+@pytest.mark.parametrize("native_ids", [True, False])
+def test_workflow_calls_share_a_message_without_sharing_an_invocation(native_ids: bool) -> None:
+    blocks = [
+        {
+            "type": "tool_use",
+            "name": "Workflow",
+            "input": {"runId": RUN_ID},
+            **({"id": f"workflow-{ordinal}"} if native_ids else {}),
+        }
+        for ordinal in range(2)
+    ]
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "same-message",
+                "sessionId": "coordinator",
+                "message": {"role": "assistant", "content": blocks},
+            }
+        ],
+        "coordinator",
+    )
+    events = tuple(event for event in parsed.session_events if event.event_type == "claude_workflow_invocation")
+    assert len(events) == 2
+    graph = project_claude_workflow_evidence(
+        graph_id=f"claude-workflow:{RUN_ID}",
+        run_id=RUN_ID,
+        corpus_snapshot_ref=ObjectRef(kind="context-snapshot", object_id="fixture"),
+        artifacts=(),
+        artifact_evidence={},
+        coordinator_invocations=tuple(
+            ClaudeWorkflowCoordinatorInvocation(
+                session_id="coordinator",
+                event=event,
+                evidence_ref=EvidenceRef(session_id="coordinator", message_id="same-message"),
+            )
+            for event in events
+        ),
+    )
+    assert sum(node.kind == "invocation" for node in graph.nodes) == 2
+    assert sum(edge.kind == "invoked" for edge in graph.edges) == 2
+    if not native_ids:
+        assert {event.payload["source_block_occurrence"] for event in events} == {0, 1}
+
+
+@pytest.mark.parametrize("declared_run", [None, RUN_ID, "other-run"])
+def test_journal_reference_admits_runless_metadata_without_guessing_a_foreign_run(declared_run: str | None) -> None:
+    import json
+
+    journal_path = f"/fixture/subagents/workflows/{RUN_ID}/journal.jsonl"
+    meta_path = "/fixture/subagents/agent-one.meta.json"
+    transcript_path = "/fixture/subagents/agent-one.jsonl"
+    journal = parse_claude_orchestration_artifact(
+        journal_path,
+        json.dumps(
+            {
+                "contentKey": "one",
+                "attemptId": "one",
+                "metaPath": meta_path,
+                "result": "complete",
+            }
+        ),
+    )
+    meta = parse_claude_orchestration_artifact(
+        meta_path,
+        {
+            "attemptId": "one",
+            "transcriptPath": transcript_path,
+            **({"runId": declared_run} if declared_run is not None else {}),
+        },
+    )
+    assert journal is not None and meta is not None
+    session = ClaudeWorkflowSessionEvidence(
+        source_path=transcript_path,
+        raw_artifact_ref=ObjectRef(kind="artifact", object_id="raw:transcript"),
+        session_id="one",
+        session_evidence_ref=EvidenceRef(session_id="one"),
+    )
+    graph = project_claude_workflow_evidence(
+        graph_id=f"claude-workflow:{RUN_ID}",
+        run_id=RUN_ID,
+        corpus_snapshot_ref=ObjectRef(kind="context-snapshot", object_id="fixture"),
+        artifacts=(journal, meta),
+        artifact_evidence={
+            journal_path: ObjectRef(kind="artifact", object_id="raw:journal"),
+            meta_path: ObjectRef(kind="artifact", object_id="raw:meta"),
+        },
+        session_evidence=(session,),
+    )
+    assert sum(node.kind == "session-segment" for node in graph.nodes) == (0 if declared_run == "other-run" else 1)
+    attempt = next(node for node in graph.nodes if node.kind == "attempt")
+    assert attempt.association_state == ("unresolved" if declared_run == "other-run" else "resolved")
+    if declared_run != "other-run":
+        represented = next(edge for edge in graph.edges if edge.kind == "represented_by")
+        assert ObjectRef(kind="artifact", object_id="raw:meta") in represented.evidence_refs
 
 
 def test_claude_projection_uses_provider_references_not_child_topology() -> None:
@@ -173,6 +275,8 @@ def test_claude_projection_uses_provider_references_not_child_topology() -> None
                 event_type="claude_workflow_invocation",
                 source_message_provider_id=f"invoke-{index}",
                 payload={
+                    "source_block_identity": f"{index:064x}",
+                    "source_block_occurrence": 0,
                     "runId": RUN_ID,
                     "taskId": "task-mandate-01",
                     "workflowName": "admission-proof",

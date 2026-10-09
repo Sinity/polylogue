@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 
 from polylogue.archive.hydration import archive_message_to_domain
 from polylogue.core.enums import Origin
-from polylogue.operations.read_view_chronicle import _select_summaries
+from polylogue.operations.read_view_chronicle import _chronicle_plan
+from polylogue.operations.read_view_selection import select_read_view_summaries
 from polylogue.surfaces.compaction import CompactProjectionSpec, compact_sessions
 
 if TYPE_CHECKING:
@@ -63,7 +64,9 @@ def execute_compact_read(
 ) -> dict[str, object]:
     """Execute one corpus-compaction projection against the caller's pinned archive."""
 
-    summaries = _select_summaries(payload, archive=archive, vector_provider=vector_provider)
+    summaries = select_read_view_summaries(
+        _chronicle_plan(payload, vector_provider=vector_provider), archive=archive, default_limit=5
+    )
     sessions: list[dict[str, object]] = []
     links: list[dict[str, object]] = []
     for summary in summaries:

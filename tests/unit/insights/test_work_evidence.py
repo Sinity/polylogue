@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
+import aiosqlite
 import pytest
 
 from polylogue.analysis.run_projection import ObservedEvent, ProjectedRun
@@ -15,11 +16,14 @@ from polylogue.analysis.work_evidence import (
     WorkEvidenceGraph,
     WorkEvidenceNode,
     WorkEvidenceNodeKind,
+    WorkEvidenceTraversal,
     node_from_projected_run,
     session_segment_from_observed_events,
 )
 from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef, ObjectRefKind
+from polylogue.storage.query_models import WorkEvidenceTraversalQuery
 from polylogue.storage.repository import SessionRepository
+from polylogue.storage.sqlite.queries import work_evidence as work_evidence_queries
 
 EVIDENCE = EvidenceRef(session_id="codex-session:work-evidence", message_id="m1", block_index=0)
 SNAPSHOT = ObjectRef(kind="context-snapshot", object_id="corpus:2026-07-17")
@@ -228,6 +232,85 @@ async def test_codex_agent_task_graph_round_trips_and_traverses_bidirectionally(
     assert artifact_traversal is not None
     stored_artifact = next(node for node in artifact_traversal.nodes if node.kind == "artifact")
     assert stored_artifact.evidence_refs == (ObjectRef(kind="artifact", object_id="raw:artifact-result"),)
+
+
+@pytest.mark.asyncio
+async def test_one_hop_union_preserves_parallel_edges_filter_and_global_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    focal = _node("attempt", "focus")
+    neighbor = _node("attempt", "neighbor")
+    base_edges = (
+        _edge("retried", "a-outgoing", focal, neighbor),
+        _edge("invoked", "b-incoming", neighbor, focal),
+        _edge("retried", "c-outgoing", focal, neighbor).model_copy(update={"occurred_at_ms": 10}),
+        _edge("retried", "d-parallel", focal, neighbor).model_copy(update={"occurred_at_ms": 10}),
+    )
+    measured: list[tuple[int, list[str]]] = []
+    actual = work_evidence_queries.get_work_evidence_traversal
+
+    async def measure(conn: aiosqlite.Connection, query: WorkEvidenceTraversalQuery) -> WorkEvidenceTraversal | None:
+        steps = [0]
+        statements: list[str] = []
+
+        def progress() -> int:
+            steps[0] += 1
+            return 0
+
+        await conn.set_progress_handler(progress, 1)
+        await conn.set_trace_callback(statements.append)
+        result = await actual(conn, query)
+        await conn.set_progress_handler(lambda: 0, 0)
+        await conn.set_trace_callback(lambda _: None)
+        sql = next(statement for statement in statements if statement.startswith("SELECT * FROM work_evidence_edges"))
+        cursor = await conn.execute("EXPLAIN QUERY PLAN " + sql)
+        measured.append((steps[0], [row[3] for row in await cursor.fetchall()]))
+        return result
+
+    monkeypatch.setattr(work_evidence_queries, "get_work_evidence_traversal", measure)
+    async with SessionRepository(db_path=tmp_path / "index.db") as repository:
+        for size in (64, 1024):
+            unrelated = tuple(_node("attempt", f"unrelated:{index}") for index in range(size + 1))
+            graph = WorkEvidenceGraph(
+                graph_id="one-hop",
+                corpus_snapshot_ref=SNAPSHOT,
+                nodes=(focal, neighbor, *unrelated),
+                edges=base_edges
+                + tuple(
+                    _edge("retried", f"unrelated:{index}", unrelated[index], unrelated[index + 1])
+                    for index in range(size)
+                ),
+            )
+            await repository.replace_work_evidence_graph(graph)
+            traversal = await repository.traverse_work_evidence(
+                graph_id=graph.graph_id,
+                focal_ref=focal.ref.format(),
+                direction="both",
+                limit=2,
+            )
+            assert traversal is not None
+            assert [edge.ref.object_id for edge in traversal.edges] == ["a-outgoing", "b-incoming"]
+            assert {node.ref.object_id for node in traversal.nodes} == {"focus", "neighbor"}
+        assert measured[1][0] <= measured[0][0] * 2
+        for _, plan in measured:
+            assert any("idx_work_evidence_edges_source" in step and "source_ref=?" in step for step in plan)
+            assert any("idx_work_evidence_edges_target" in step and "target_ref=?" in step for step in plan)
+        filtered = await repository.traverse_work_evidence(
+            graph_id="one-hop",
+            focal_ref=focal.ref.format(),
+            edge_kinds=("retried",),
+            limit=None,
+        )
+        assert filtered is not None
+        assert [edge.ref.object_id for edge in filtered.edges] == ["a-outgoing", "c-outgoing", "d-parallel"]
+        outgoing = await repository.traverse_work_evidence(
+            graph_id="one-hop",
+            focal_ref=focal.ref.format(),
+            direction="outgoing",
+            limit=None,
+        )
+        assert outgoing is not None
+        assert [edge.ref.object_id for edge in outgoing.edges] == ["a-outgoing", "c-outgoing", "d-parallel"]
 
 
 def test_graph_preserves_many_to_many_retries_resumes_and_unresolved_associations() -> None:

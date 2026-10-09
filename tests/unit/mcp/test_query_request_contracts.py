@@ -25,10 +25,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from polylogue.archive.query.fields import mcp_query_field_names
+from polylogue.archive.query.filter_kwargs import plan_filter_kwargs
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.search_contract import ArchiveSearchResult, SearchExecution
 from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
-from polylogue.mcp.archive_support import archive_query_filters, archive_search_payload, archive_session_list_payload
+from polylogue.mcp.archive_support import archive_search_payload, archive_session_list_payload
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest, build_query_spec, build_session_query_request
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 
@@ -45,10 +46,10 @@ def test_mcp_query_request_matches_canonical_query_field_registry() -> None:
     assert mcp_query_field_names() <= dataclass_field_names
 
 
-def test_archive_query_filters_forward_max_words() -> None:
+def test_canonical_query_filters_forward_max_words() -> None:
     spec = MCPSessionQueryRequest(max_words=12).build_spec(_clamp_limit)
 
-    assert archive_query_filters(spec)["max_words"] == 12
+    assert plan_filter_kwargs(spec.to_plan())["max_words"] == 12
 
 
 def test_mcp_query_boundary_rejects_unknown_and_allows_only_declared_paste_alias() -> None:

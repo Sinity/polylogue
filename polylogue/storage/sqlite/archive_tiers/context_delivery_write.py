@@ -17,7 +17,11 @@ from polylogue.archive.context_models import (
     canonical_context_image_json,
     context_image_sha256,
 )
-from polylogue.core.refs import ObjectRef, normalize_object_ref_text
+from polylogue.core.refs import (
+    ObjectRef,
+    normalize_durable_object_ref_text,
+    normalize_durable_public_ref_text,
+)
 from polylogue.storage.io_phase_metrics import connection_cursor
 
 ContextDeliveryWriteOutcome: TypeAlias = Literal["recorded", "idempotent"]
@@ -86,7 +90,7 @@ def _json_dict(value: object) -> dict[str, object]:
 
 
 def _normalized_ref(value: str, *, field: str, kinds: frozenset[str] | None = None) -> str:
-    normalized = normalize_object_ref_text(value)
+    normalized = normalize_durable_object_ref_text(value)
     parsed = ObjectRef.parse(normalized)
     if kinds is not None and parsed.kind not in kinds:
         expected = ", ".join(sorted(kinds))
@@ -117,6 +121,15 @@ def write_context_delivery(
 
     image_json = canonical_context_image_json(image)
     digest = context_image_sha256(image)
+    for ref in image.object_refs:
+        normalize_durable_object_ref_text(ref.format())
+    for evidence_ref in image.evidence_refs:
+        normalize_durable_public_ref_text(evidence_ref.format())
+    for segment in image.segments:
+        for ref in segment.object_refs:
+            normalize_durable_object_ref_text(ref.format())
+        for evidence_ref in segment.evidence_refs:
+            normalize_durable_public_ref_text(evidence_ref.format())
     if record.metadata.get("context_image_sha256") != digest:
         raise ValueError("context snapshot record digest does not match the delivered image")
     segment_refs = tuple(segment.segment_id for segment in image.segments)

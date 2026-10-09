@@ -307,6 +307,23 @@ def test_archive_debt_preserves_unknown_embedding_message_counts(
     assert row.caveats == ("Run `polylogue ops embed status --detail` for bounded exact-count attempts.",)
 
 
+def test_archive_debt_reports_unreadable_embedding_readiness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_current_tier_files(tmp_path)
+    monkeypatch.setattr(
+        module,
+        "embedding_readiness_info",
+        lambda _path, detail=False: {
+            "embedding_status": "unknown",
+            "embedding_unmeasurable_reason": "readiness_unreadable",
+            "embedding_pending_count": None,
+            "embedding_failure_count": None,
+        },
+    )
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("embedding",))
+    assert [row.debt_ref for row in payload.rows] == ["debt:embedding:readiness:unknown"]
+    assert payload.rows[0].details == "readiness_unreadable"
+
+
 def _stamp_tier_version(path: Path, tier: ArchiveTier) -> None:
     """Stamp a hand-built tier fixture with the version its schema emulates."""
     conn = sqlite3.connect(path)
@@ -336,6 +353,8 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
                 origin TEXT NOT NULL,
                 native_id TEXT,
                 source_path TEXT NOT NULL,
+                logical_source_key TEXT,
+                revision_kind TEXT NOT NULL DEFAULT 'unknown',
                 source_index INTEGER NOT NULL DEFAULT 0,
                 blob_hash BLOB NOT NULL,
                 blob_size INTEGER NOT NULL,
@@ -540,15 +559,15 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
-    assert payload.totals.total == 7
-    assert payload.totals.affected_total == 9
-    assert payload.totals.affected_critical == 1
-    assert payload.totals.affected_warning == 4
-    assert payload.totals.affected_info == 4
-    assert payload.totals.affected_actionable == 5
-    assert payload.totals.classified == 2
+    assert payload.totals.total == 8
+    assert payload.totals.affected_total == 10
+    assert payload.totals.affected_critical == 2
+    assert payload.totals.affected_warning == 8
+    assert payload.totals.affected_info == 0
+    assert payload.totals.affected_actionable == 10
+    assert payload.totals.classified == 0
     assert payload.totals.affected_open == 0
-    assert payload.totals.affected_classified == 4
+    assert payload.totals.affected_classified == 0
 
     by_ref = {row.debt_ref: row for row in payload.rows}
     missing_blob = by_ref["debt:raw-materialization:codex-session:missing-blob"]
@@ -606,20 +625,16 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert gemini_session.actions[0].label == "Explain parser output"
     assert gemini_session.actions[1].label == "Run daemon convergence"
 
-    sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-non-session-artifact"]
-    assert sidecars.severity == "info"
-    assert sidecars.status == "classified"
-    assert sidecars.category == "parsed-non-session-artifact"
+    # Byte/path resemblance and validation skips do not supply current receipts.
+    sidecars = by_ref["debt:raw-materialization:claude-code-session:parsed-without-session"]
+    assert sidecars.severity == "warning"
+    assert sidecars.status == "actionable"
     assert sidecars.affected_count == 3
-    assert "parsed as non-session artifacts" in sidecars.summary
-    assert "passed=3" in (sidecars.details or "")
-    assert sidecars.actions == ()
-
-    metadata_only = by_ref["debt:raw-materialization:codex-session:parsed-non-session-artifact"]
-    assert metadata_only.severity == "info"
-    assert metadata_only.status == "classified"
+    assert sidecars.actions
+    metadata_only = by_ref["debt:raw-materialization:codex-session:parsed-without-session"]
+    assert metadata_only.status == "actionable"
     assert metadata_only.affected_count == 1
-    assert "metadata-only" in (metadata_only.details or "") or "non-session artifacts" in metadata_only.summary
+    assert not any(row.category == "parsed-non-session-artifact" for row in payload.rows)
 
 
 def test_archive_debt_keeps_large_non_json_raw_materialization_actionable(tmp_path: Path) -> None:
@@ -847,7 +862,8 @@ def test_archive_debt_raw_materialization_reports_source_path_native_aliases(tmp
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
     refs = {row.debt_ref: row for row in payload.rows}
-    assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
+    # The three other unreceipted sidecars remain gaps; this raw must not add a fourth.
+    assert refs["debt:raw-materialization:claude-code-session:parsed-without-session"].affected_count == 3
     alias = refs["debt:raw-materialization:claude-code-session:materialized-alias"]
     assert alias.severity == "info"
     assert alias.status == "classified"
@@ -944,7 +960,8 @@ def test_archive_debt_reports_partial_embedded_claude_code_aggregates(tmp_path: 
     debt = refs["debt:raw-materialization:claude-code-session:aggregate-partial-materialization"]
     assert "partially materialized" in debt.summary
     assert "1/2 embedded session id(s) materialized" in (debt.details or "")
-    assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
+    # The three other unreceipted sidecars remain gaps; this raw must not add a fourth.
+    assert refs["debt:raw-materialization:claude-code-session:parsed-without-session"].affected_count == 3
 
 
 def test_archive_debt_ignores_fully_materialized_embedded_claude_code_aggregates(tmp_path: Path) -> None:
@@ -976,9 +993,10 @@ def test_archive_debt_ignores_fully_materialized_embedded_claude_code_aggregates
 
     payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
 
-    refs = {row.debt_ref for row in payload.rows}
+    refs = {row.debt_ref: row for row in payload.rows}
     assert "debt:raw-materialization:claude-code-session:aggregate-partial-materialization" not in refs
-    assert "debt:raw-materialization:claude-code-session:parsed-without-session" not in refs
+    # The three other unreceipted sidecars remain gaps; this raw must not add a fourth.
+    assert refs["debt:raw-materialization:claude-code-session:parsed-without-session"].affected_count == 3
     assert "debt:raw-materialization:claude-code-session:materialized-alias" not in refs
     assert "debt:raw-materialization:codex-session:missing-blob" in refs
 
@@ -1203,3 +1221,81 @@ def test_archive_debt_keeps_prepared_jsonl_actionable_past_old_whale_envelope(tm
     row = {r.debt_ref: r for r in payload.rows}["debt:raw-materialization:claude-code-session:parse-pending"]
     assert row.status == "actionable"
     assert row.affected_count == 1
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    ["current", "missing-membership", "stale-parser", "missing-taxonomy", "wrong-identity", "validation-refused"],
+)
+def test_archive_debt_non_session_classification_requires_current_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    from types import SimpleNamespace
+
+    import polylogue.paths as polylogue_paths
+    import polylogue.sources.live.watcher as live_watcher
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.watcher import default_sources
+    from tests.infra.raw_owner_routes import run_ingest_files
+
+    bootstrap_archive_root(tmp_path)
+    claude_root = tmp_path / "neutral-home" / ".claude"
+    claude_root.mkdir(parents=True)
+    source_path = claude_root / "history.jsonl"
+    source_path.write_bytes(b"")
+    monkeypatch.setattr(polylogue_paths, "claude_code_path", lambda: claude_root / "projects")
+    source = next(item for item in default_sources() if item.name == "claude-code-history")
+    processor = LiveBatchProcessor(
+        SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db")),
+        (source,),
+        cursor=CursorStore(tmp_path / "ops.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    metrics = run_ingest_files(processor, [source_path], emit_event=False)
+    assert metrics.excluded_file_count == 1 and metrics.failed_file_count == 0, metrics
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        if evidence == "missing-membership":
+            conn.execute("DELETE FROM raw_membership_census")
+        elif evidence == "stale-parser":
+            conn.execute("UPDATE raw_authority_parser_census SET parser_fingerprint='stale'")
+        elif evidence == "missing-taxonomy":
+            conn.execute("DELETE FROM raw_artifacts")
+        elif evidence == "wrong-identity":
+            conn.execute(
+                "UPDATE raw_authority_parser_census SET logical_keys_json=?", ('["claude-code-session:other"]',)
+            )
+        elif evidence == "validation-refused":
+            conn.execute("UPDATE raw_sessions SET validation_status='failed'")
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+    assert payload.totals.affected_total == 1
+    assert len(payload.rows) == 1
+    row = payload.rows[0]
+    if evidence == "current":
+        assert row.category == "parsed-non-session-artifact"
+        assert row.status == "classified" and row.actions == ()
+    else:
+        assert row.category == ("parse-failed" if evidence == "validation-refused" else "parsed-without-session")
+        assert row.status == "actionable" and row.actions
+
+
+def test_archive_debt_does_not_classify_a_transcript_after_eight_progress_records(tmp_path: Path) -> None:
+    _init_raw_materialization_fixture(tmp_path)
+    records: list[dict[str, object]] = [
+        {"type": "progress", "sessionId": "neutral-session", "uuid": f"p{i}"} for i in range(8)
+    ]
+    records.append(
+        {
+            "type": "user",
+            "sessionId": "neutral-session",
+            "uuid": "u1",
+            "message": {"role": "user", "content": "neutral"},
+        }
+    )
+    blob = tmp_path / "blob" / "de" / ("de" * 31)
+    blob.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+    assert not any(row.category == "parsed-non-session-artifact" for row in payload.rows)
+    gaps = [row for row in payload.rows if row.subject_ref == "raw-origin:claude-code-session"]
+    assert len(gaps) == 1 and gaps[0].status == "actionable" and gaps[0].affected_count == 3

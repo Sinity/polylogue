@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION, validate_mark_type, validate_target_kind
+from polylogue.core.user_state_targets import (
+    TARGET_ATTACHMENT,
+    TARGET_BLOCK,
+    TARGET_MESSAGE,
+    TARGET_SESSION,
+    validate_mark_type,
+    validate_target_kind,
+)
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.daemon_mutations import _resolve_session_target
 from polylogue.operations.mutation_actuators import (
@@ -51,12 +59,25 @@ def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _target(archive: ArchiveStore, root: Any, payload: dict[str, object]) -> tuple[str, str, str, str | None]:
+def _target(
+    snapshot: PinnedOperationRead, root: Any, payload: dict[str, object], *, require_present: bool = True
+) -> tuple[str, str, str, str | None]:
+    archive = snapshot.archive
     session_id = _resolve_session_target(archive, root, _text(payload, "session_id"))
     target_type = _text(payload, "target_type", TARGET_SESSION)
     target_id = _text(payload, "target_id") or None
     message_id = _text(payload, "message_id") or None
     validate_target_kind(target_type)
+    if not require_present and target_id and target_type == TARGET_BLOCK:
+        from polylogue.core.refs import ObjectRef, normalize_durable_object_ref_text
+
+        stable = ObjectRef.parse(normalize_durable_object_ref_text(f"block:{target_id}"))
+        return target_type, stable.object_id, session_id, message_id
+    if not require_present and target_id and target_type == TARGET_ATTACHMENT:
+        from polylogue.operations.mutation_actuators import _bind_stable_attachment_target
+
+        _bind_stable_attachment_target(archive, target_type, target_id, session_id, require_present=False)
+        return target_type, target_id, session_id, message_id
     if target_type == TARGET_SESSION:
         if target_id and _resolve_session_target(archive, root, target_id) != session_id:
             raise ValueError("session target_id must match session_id")
@@ -85,9 +106,34 @@ def _target(archive: ArchiveStore, root: Any, payload: dict[str, object]) -> tup
             target_id=target_id,
             session_id=session_id,
             message_id=message_id,
+            index_connection=archive._conn,
+            source_connection=archive.source_connection,
+            snapshot=snapshot,
         )
     )
     return str(resolved["target_type"]), str(resolved["target_id"]), session_id, resolved.get("message_id")
+
+
+def _source_guard(
+    snapshot: PinnedOperationRead, archive: ArchiveStore, target: tuple[str, str, str, str | None]
+) -> Callable[[], None] | None:
+    target_type, target_id, session_id, _message_id = target
+    if target_type == TARGET_BLOCK:
+        from polylogue.operations.source_target_read import bind_source_block, revalidate_source_block
+
+        bind_source_block(snapshot, session_id=session_id, block_id=target_id)
+        return lambda: revalidate_source_block(snapshot, archive, session_id=session_id, block_id=target_id)
+    if target_type == TARGET_ATTACHMENT:
+        from polylogue.operations.attachment_target_read import bind_attachment_source_guard
+
+        return bind_attachment_source_guard(
+            snapshot,
+            session_id=session_id,
+            ref_id=target_id,
+            current_index_connection=archive._conn,
+            current_source_connection=archive.source_connection,
+        )
+    return None
 
 
 def _execute(
@@ -106,7 +152,7 @@ def _execute(
     executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
     with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
         actuator, args, resolved_target = build(archive)
-        if resolved_target is not None and target is None:
+        if resolved_target is not None:
             target = resolved_target
         binding = runtime_operation_binding(actuator)
         # User overlays are the API's operation family (no CLI route).
@@ -164,13 +210,23 @@ def _execute(
 def user_mark_add(
     request: DaemonOperationRequest, context: OperationContext, audit: AuditRepository, snapshot: PinnedOperationRead
 ) -> dict[str, object]:
-    del snapshot
     payload = request.payload
     mark_type = validate_mark_type(_text(payload, "mark_type"))
 
     def build(archive: ArchiveStore) -> tuple[Any, Any, Any]:
-        target = _target(archive, context.archive_root, payload)
-        return MarkAddActuator(), MarkArgs(archive, target[0], target[1], mark_type, target[2]), target
+        target = _target(snapshot, context.archive_root, payload)
+        return (
+            MarkAddActuator(),
+            MarkArgs(
+                archive,
+                target[0],
+                target[1],
+                mark_type,
+                target[2],
+                source_guard=_source_guard(snapshot, archive, target),
+            ),
+            target,
+        )
 
     public_target = (
         _text(payload, "target_type", TARGET_SESSION),
@@ -186,12 +242,11 @@ def user_mark_add(
 def user_mark_remove(
     request: DaemonOperationRequest, context: OperationContext, audit: AuditRepository, snapshot: PinnedOperationRead
 ) -> dict[str, object]:
-    del snapshot
     payload = request.payload
     mark_type = validate_mark_type(_text(payload, "mark_type"))
 
     def build(archive: ArchiveStore) -> tuple[Any, Any, Any]:
-        target = _target(archive, context.archive_root, payload)
+        target = _target(snapshot, context.archive_root, payload, require_present=False)
         return MarkRemoveActuator(), MarkArgs(archive, target[0], target[1], mark_type, target[2]), target
 
     public_target = (
@@ -208,7 +263,6 @@ def user_mark_remove(
 def user_annotation_save(
     request: DaemonOperationRequest, context: OperationContext, audit: AuditRepository, snapshot: PinnedOperationRead
 ) -> dict[str, object]:
-    del snapshot
     payload = request.payload
     annotation_id = _text(payload, "annotation_id")
     note_text = _text(payload, "note_text")
@@ -216,11 +270,19 @@ def user_annotation_save(
         raise ValueError("annotation_id and note_text are required")
 
     def build(archive: ArchiveStore) -> tuple[Any, Any, Any]:
-        target = _target(archive, context.archive_root, payload)
+        target = _target(snapshot, context.archive_root, payload)
         return (
             AnnotationSaveActuator(),
-            AnnotationSaveArgs(archive, annotation_id, target[0], target[1], note_text, target[2]),
-            None,
+            AnnotationSaveArgs(
+                archive,
+                annotation_id,
+                target[0],
+                target[1],
+                note_text,
+                target[2],
+                source_guard=_source_guard(snapshot, archive, target),
+            ),
+            target,
         )
 
     return _execute(

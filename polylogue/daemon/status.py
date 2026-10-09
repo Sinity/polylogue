@@ -38,7 +38,7 @@ from polylogue.daemon.convergence_debt_status import (
 )
 from polylogue.daemon.cursor_lag_status import CursorLagSummary as CursorLagSummary
 from polylogue.daemon.cursor_lag_status import cursor_lag_summary_info
-from polylogue.daemon.embedding_readiness import embedding_readiness_info
+from polylogue.daemon.embedding_readiness import embedding_readiness_info, embedding_readiness_settings
 from polylogue.daemon.fts_status import FTSReadiness, fts_readiness_info
 from polylogue.daemon.health import (
     DaemonHealth,
@@ -63,6 +63,7 @@ from polylogue.daemon.periodic import periodic_loop_payload
 from polylogue.logging import WARNING, emit
 from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
 from polylogue.operations.daemon_status import archive_identity_status, overall_status_ok
+from polylogue.operations.embedding_readiness import EmbeddingReadinessUnavailableError, embedding_readiness_currency
 from polylogue.operations.quick_check import (
     QuickCheckObservation,
     observe_quick_check,
@@ -315,6 +316,23 @@ def _daemon_status_fingerprint(active_db: Path, *, include_user_tier: bool = Fal
 _UNREADABLE_FINGERPRINT_COUNTER = itertools.count()
 
 
+def _embedding_status_fingerprint(*, settings: dict[str, object] | None = None) -> str:
+    current = embedding_readiness_settings() if settings is None else settings
+    try:
+        currency = embedding_readiness_currency(
+            archive_root(),
+            enabled=bool(current["embedding_config_enabled"]),
+            has_key=bool(current["embedding_has_voyage_key"]),
+            model=str(current["embedding_model"]),
+            dimension=cast(int, current["embedding_dimension"]),
+        )
+    except EmbeddingReadinessUnavailableError:
+        # An unreadable paid tier cannot keep a prior readiness measurement
+        # current. As with the archive token, every failure invalidates it.
+        currency = f"unreadable-{next(_UNREADABLE_FINGERPRINT_COUNTER)}"
+    return f"{_daemon_status_fingerprint(_active_status_db_path())}|embeddings:{currency}"
+
+
 # ---------------------------------------------------------------------------
 # Typed sub-models
 # ---------------------------------------------------------------------------
@@ -354,6 +372,7 @@ class EmbeddingReadiness(BaseModel):
     embedding_dimension: int | None = None
     embedding_status: str = "unavailable"
     embedding_freshness_status: str = "unavailable"
+    embedding_unmeasurable_reason: str | None = None
     embedding_retrieval_ready: bool = False
     embedding_pending_count: int | None = None
     embedding_pending_message_count: int | None = None
@@ -1819,6 +1838,7 @@ def _daemon_claim_guard(
             domain="fts",
             ready=fts_readiness.messages_ready,
             summary=fts_component.summary,
+            determinate=fts_component.state is not CapabilityReadinessState.UNKNOWN,
         ),
     ]
     for name in ("configured_sources", "attachments"):
@@ -1849,7 +1869,9 @@ def _daemon_claim_guard(
         derived_domains=derived_domains,
         search_ready=fts_readiness.messages_ready,
         search_summary=fts_component.summary,
-        search_unmeasured=search_unmeasured_reason(fts_readiness.message_indexable_count),
+        search_unmeasured=fts_component.summary
+        if fts_component.state is CapabilityReadinessState.UNKNOWN
+        else search_unmeasured_reason(fts_readiness.message_indexable_count),
         active_writer=active_writer,
         active_writer_summary="; ".join(writer_parts),
         active_writer_determinate=writer_measurable,
@@ -1881,7 +1903,13 @@ def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness
         state = CapabilityReadinessState.MISSING
     else:
         state = CapabilityReadinessState.STALE
-    summary = "ready" if readiness.messages_ready else "fts index incomplete"
+    summary = (
+        "fts inspection unavailable"
+        if state is CapabilityReadinessState.UNKNOWN
+        else "ready"
+        if readiness.messages_ready
+        else "fts index incomplete"
+    )
     return ComponentReadiness(
         component="search",
         scope="lexical",
@@ -1955,7 +1983,9 @@ def _component_from_insight_freshness(freshness: InsightFreshness) -> ComponentR
 
 
 def _component_from_daemon_embedding_readiness(readiness: EmbeddingReadiness) -> ComponentReadiness:
-    if not readiness.embedding_config_enabled:
+    if readiness.embedding_status == "unknown" or readiness.embedding_unmeasurable_reason:
+        state = CapabilityReadinessState.UNKNOWN
+    elif not readiness.embedding_config_enabled:
         state = CapabilityReadinessState.MISSING
     elif not readiness.embedding_has_voyage_key:
         state = CapabilityReadinessState.BLOCKED
@@ -1975,6 +2005,7 @@ def _component_from_daemon_embedding_readiness(readiness: EmbeddingReadiness) ->
         scope="semantic",
         state=state,
         summary=readiness.embedding_status,
+        caveats=(readiness.embedding_unmeasurable_reason,) if readiness.embedding_unmeasurable_reason else (),
         counts={
             "pending_sessions": readiness.embedding_pending_count,
             "pending_messages": readiness.embedding_pending_message_count,
@@ -2394,7 +2425,7 @@ def _daemon_status_component_specs(
             collector=lambda: embedding_readiness_info(_active_status_db_path()),
             deadline_s=_EMBEDDING_READINESS_DEADLINE_S,
             cost_class="moderate",
-            fingerprint=fingerprint,
+            fingerprint=_embedding_status_fingerprint,
         ),
         # polylogue-s4tkf: health is collected as two components, not one.
         # A single spec had to carry one ttl_s and one fingerprint for both
@@ -2660,6 +2691,8 @@ def build_daemon_status(
     # ephemeral per-call registry below: it holds no previous value, so it can
     # never answer ``stale`` and never consults this.
     current_fingerprint = _daemon_status_fingerprint(active_db) if registry is not None else None
+    current_embedding_settings = embedding_readiness_settings()
+    current_embedding_fingerprint = _embedding_status_fingerprint(settings=current_embedding_settings)
 
     def _v(
         name: str,
@@ -2683,9 +2716,13 @@ def build_daemon_status(
         fresh snapshot or not (polylogue-20d.17 AC10).
         """
         snapshot = snapshots[name]
+        if name == "embedding_readiness" and snapshot.fingerprint != current_embedding_fingerprint:
+            return unmeasured
         if unmeasured is not _UNMEASURED_UNSET and _component_is_unmeasured(
             snapshot,
-            current_fingerprint=_configured_source_status_fingerprint()
+            current_fingerprint=current_embedding_fingerprint
+            if name == "embedding_readiness"
+            else _configured_source_status_fingerprint()
             if name == "configured_source_readiness"
             else current_fingerprint,
         ):
@@ -2790,7 +2827,17 @@ def build_daemon_status(
         _UNMEASURED_BLOB_RESERVATIONS,
         unmeasured=_UNMEASURED_BLOB_RESERVATIONS,
     )
-    embedding_info: dict[str, object] = _v("embedding_readiness", {}, unmeasured={})
+    unmeasured_embedding_info = {
+        "embedding_status": "unknown",
+        "embedding_freshness_status": "unknown",
+        "embedding_unmeasurable_reason": "readiness_unmeasured",
+    }
+    # Collection owns archive measurements; current configuration owns whether
+    # embeddings are required, even when a retained registry value is refused.
+    embedding_info: dict[str, object] = {
+        **_v("embedding_readiness", unmeasured_embedding_info, unmeasured=unmeasured_embedding_info),
+        **current_embedding_settings,
+    }
     # The one deliberate exemption from ``unmeasured=``: health keeps its
     # collected value and is escalated explicitly below against the snapshot
     # state, because a stale OK must become a WARNING/ERROR *alert* naming the
@@ -2893,6 +2940,7 @@ def build_daemon_status(
         embedding_dimension=_optional_int(embedding_info.get("embedding_dimension")),
         embedding_status=str(embedding_info.get("embedding_status", "unavailable")),
         embedding_freshness_status=str(embedding_info.get("embedding_freshness_status", "unavailable")),
+        embedding_unmeasurable_reason=cast(str | None, embedding_info.get("embedding_unmeasurable_reason")),
         embedding_retrieval_ready=bool(embedding_info.get("embedding_retrieval_ready", False)),
         embedding_pending_count=_optional_int(embedding_info.get("embedding_pending_count")),
         embedding_pending_message_count_exact=bool(embedding_info.get("embedding_pending_message_count_exact", False)),
@@ -3922,7 +3970,10 @@ def format_daemon_status_lines(payload: JSONDocument) -> Iterator[str]:
             if embedding.get("embedding_pending_message_count_exact")
             else "pending msgs not calculated"
         )
-        if embedding.get("embedding_enabled"):
+        if status == "unknown" or embedding.get("embedding_unmeasurable_reason"):
+            reason = str(embedding.get("embedding_unmeasurable_reason") or "readiness_unmeasured")
+            lines.append(f"Embeddings: unknown ({reason}); measurements unavailable")
+        elif embedding.get("embedding_enabled"):
             coverage = _safe_float(embedding.get("embedding_coverage_percent"))
             pending = _safe_int(embedding.get("embedding_pending_count"))
             stale = _safe_int(embedding.get("embedding_stale_count"))

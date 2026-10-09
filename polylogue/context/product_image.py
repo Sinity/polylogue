@@ -141,9 +141,9 @@ def _clip_text_to_token_budget(text: str, max_tokens: int) -> str:
 
 def _dedupe_object_refs(refs: Iterable[ObjectRef]) -> tuple[ObjectRef, ...]:
     deduped: list[ObjectRef] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, tuple[str, ...]]] = set()
     for ref in refs:
-        key = (ref.kind, ref.object_id)
+        key = (ref.kind, ref.object_id, ref.qualifiers)
         if key in seen:
             continue
         seen.add(key)
@@ -153,9 +153,9 @@ def _dedupe_object_refs(refs: Iterable[ObjectRef]) -> tuple[ObjectRef, ...]:
 
 def _dedupe_evidence_refs(refs: Iterable[EvidenceRef]) -> tuple[EvidenceRef, ...]:
     deduped: list[EvidenceRef] = []
-    seen: set[tuple[str, str | None, int | None]] = set()
+    seen: set[tuple[str, str | None, int | None, str | None]] = set()
     for ref in refs:
-        key = (ref.session_id, ref.message_id, ref.block_index)
+        key = (ref.session_id, ref.message_id, ref.block_index, ref.block_id)
         if key in seen:
             continue
         seen.add(key)

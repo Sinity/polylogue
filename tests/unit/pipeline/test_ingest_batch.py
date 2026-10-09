@@ -377,15 +377,15 @@ async def test_process_ingest_batch_off_mode_supports_repository_without_source_
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
-    [b"", b"{\n", b'{"type":"session_meta"}\n{nope}\n'],
-    ids=["zero-byte-stream", "undecodable-sole-record", "undecodable-later-record"],
+    [b"{\n", b'{"type":"session_meta"}\n{nope}\n'],
+    ids=["undecodable-sole-record", "undecodable-later-record"],
 )
 async def test_process_ingest_batch_public_route_persists_corrupt_input_readiness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     payload: bytes,
 ) -> None:
-    """A zero-byte provider stream or complete record that does not decode is terminal corrupt input.
+    """A complete record that does not decode is terminal corrupt input.
 
     The canonical route settles a non-empty undecodable record stream as
     ``terminal_corrupt_input`` and makes it status-readable. Removing the
@@ -418,15 +418,15 @@ async def test_process_ingest_batch_public_route_persists_corrupt_input_readines
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
-    [b'{"type":"session_meta"'],
-    ids=["unterminated-sole-record"],
+    [b"", b'{"type":"session_meta"'],
+    ids=["zero-record-stream", "unterminated-sole-record"],
 )
 async def test_process_ingest_batch_public_route_retains_unadmitted_tail_without_terminal_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     payload: bytes,
 ) -> None:
-    """An incomplete JSONL tail fails this parse attempt but stays nonterminal.
+    """A zero-record JSONL prefix retains clean non-session authority.
 
     The shared JSONL parse-prefix rule (``jsonl_parse_prefix_size``) leaves an
     unterminated tail out. The retained census reads immutable bytes and cannot
@@ -444,12 +444,15 @@ async def test_process_ingest_batch_public_route_retains_unadmitted_tail_without
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
         assert conn.execute(
-            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == (
-            None,
-            None,
-        )
+            "SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (1, None)
+        assert conn.execute(
+            "SELECT status, member_count FROM raw_membership_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == ("non_session", 0)
+        assert conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == ("complete", "[]")
     lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
     assert lifecycle.terminal == 0
     assert lifecycle.unexplained == 0
-    assert parse_result.parse_failures == 1
+    assert parse_result.parse_failures == 0

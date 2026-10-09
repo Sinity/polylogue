@@ -16,14 +16,9 @@ from typing import Any, cast
 import pytest
 
 from polylogue.browser_capture import server as server_module
-from polylogue.browser_capture.capture_stream import (
-    CAPTURE_READ_CHUNK_BYTES,
-    SpoolStorageExhaustedError,
-    StagedCapture,
-    stage_capture_body,
-)
 from polylogue.browser_capture.native_preparation import json_chunks
 from polylogue.browser_capture.server import BrowserCaptureHandler, make_server
+from polylogue.core.staged_body import BODY_READ_CHUNK_BYTES, BodyStorageExhaustedError, StagedBody, stage_body
 from polylogue.schemas.observation_spill import StreamedJSONDocument
 
 TOKEN = "capture-http-stream-test-token"
@@ -64,12 +59,12 @@ def test_capture_job_http_streams_arbitrary_nested_request_and_response_collecti
         "unowned_extension_field": {"ignored": True},
     }
     content = json.dumps(body, separators=(",", ":")).encode()
-    assert len(content) > 2 * CAPTURE_READ_CHUNK_BYTES
+    assert len(content) > 2 * BODY_READ_CHUNK_BYTES
     read_sizes: list[int] = []
     response_writes: list[int] = []
-    original_stage = stage_capture_body
+    original_stage = stage_body
 
-    def observed_stage(read: Callable[[int], bytes], length: int, *, spool_root: Path) -> StagedCapture:
+    def observed_stage(read: Callable[[int], bytes], length: int, *, spool_root: Path) -> StagedBody:
         def observed_read(size: int) -> bytes:
             read_sizes.append(size)
             return read(size)
@@ -94,6 +89,9 @@ def test_capture_job_http_streams_arbitrary_nested_request_and_response_collecti
         handler.wfile = cast(Any, RecordingWriter(handler.wfile))
 
     class Registry:
+        def close_maintenance(self) -> None:
+            pass
+
         @contextmanager
         def result_scope(self) -> Iterator[None]:
             yield
@@ -113,7 +111,7 @@ def test_capture_job_http_streams_arbitrary_nested_request_and_response_collecti
             assert nested_payload_values[0] == values[0]
             return {"refs": nested_refs, "payload": nested_payload}
 
-    monkeypatch.setattr("polylogue.browser_capture.server.stage_capture_body", observed_stage)
+    monkeypatch.setattr("polylogue.browser_capture.server.stage_body", observed_stage)
     monkeypatch.setattr(BrowserCaptureHandler, "setup", observed_setup)
     monkeypatch.setattr(server_module, "registry_for_receiver", lambda *_args, **_kwargs: Registry())
     with receiver(tmp_path) as (host, port):
@@ -127,7 +125,7 @@ def test_capture_job_http_streams_arbitrary_nested_request_and_response_collecti
 
     assert actual == {"refs": body["refs"], "payload": body["payload"]}
     assert len(read_sizes) >= 3
-    assert max(read_sizes) <= CAPTURE_READ_CHUNK_BYTES
+    assert max(read_sizes) <= BODY_READ_CHUNK_BYTES
     assert response_writes
     assert max(response_writes) <= 64 * 1024
     assert not list((tmp_path / ".staging").glob(".capture-*.tmp"))
@@ -137,6 +135,9 @@ def test_get_capture_job_event_encodes_lazy_response_inside_registry_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class Registry:
+        def close_maintenance(self) -> None:
+            pass
+
         scope_active = False
 
         @contextmanager
@@ -191,6 +192,9 @@ def test_late_json_scope_value_error_preserves_single_response_and_closes_connec
             raise ValueError("late streamed document cleanup failure")
 
     class Registry:
+        def close_maintenance(self) -> None:
+            pass
+
         @contextmanager
         def result_scope(self) -> Iterator[None]:
             yield
@@ -244,12 +248,12 @@ def test_response_spool_exhaustion_sends_one_fixed_507_without_staging_retry(
 ) -> None:
     attempts = 0
 
-    def exhausted(*_args: object, **_kwargs: object) -> StagedCapture:
+    def exhausted(*_args: object, **_kwargs: object) -> StagedBody:
         nonlocal attempts
         attempts += 1
-        raise SpoolStorageExhaustedError(1, 0)
+        raise BodyStorageExhaustedError(1, 0)
 
-    monkeypatch.setattr(server_module, "stage_capture_chunks", exhausted)
+    monkeypatch.setattr(server_module, "stage_body_chunks", exhausted)
     with receiver(tmp_path) as (host, port):
         connection = HTTPConnection(host, port)
         connection.request("GET", "/v1/no-such", headers={"Authorization": f"Bearer {TOKEN}"})
@@ -296,6 +300,9 @@ def test_capture_job_http_discards_staged_body_after_parse_or_disconnect_failure
     expected_error: str,
 ) -> None:
     class Registry:
+        def close_maintenance(self) -> None:
+            pass
+
         @contextmanager
         def result_scope(self) -> Iterator[None]:
             yield

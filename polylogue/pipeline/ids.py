@@ -25,6 +25,7 @@ from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_item_payload, hash_payload
 from polylogue.core.iterator_lifetime import settled_iterator
 from polylogue.core.json import JSONValue
+from polylogue.core.message_native_identity import message_native_key, native_id_from_key
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.sql_settlement import NativeSQLCustodyOwner, current_native_sql_lifetimes
@@ -116,6 +117,17 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "display_name",
             "pending_drafts",
             "session_refs",
+        }
+    ),
+    "ParsedSessionEvent": frozenset(
+        {
+            "event_type",
+            "timestamp",
+            "payload",
+            "source_message_provider_id",
+            "boundary_start_position",
+            "boundary_end_position",
+            "boundary_message_position",
         }
     ),
 }
@@ -257,6 +269,7 @@ def _iter_typed_streamed_json(value: object) -> Iterator[str]:
 
 _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
     "ParsedContentBlock": {
+        "source_content_identity": "immutable Source-block identity captured before derived outcome association",
         "signature": "provider cryptographic signatures are re-issued on replay",
     },
     "ParsedMessage": {
@@ -285,6 +298,9 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
         "reported_cost_usd": "provider monetary measurement is owned by usage/cost derivation",
         "models_used": "provider usage summary is derived from message model fields",
         "ingest_flags": "parser quality annotations are independent session tags",
+    },
+    "ParsedSessionEvent": {
+        "owner_coordinate": "parser-only ownership evidence resolved to the hashed source_message_owner_key",
     },
 }
 
@@ -320,17 +336,24 @@ _NFC_TEXT_FIELDS: dict[str, frozenset[str]] = {
     "ParsedContentBlock": frozenset({"text"}),
     "ParsedMessage": frozenset({"text", "user_context_text"}),
     "ParsedSession": frozenset({"title", "instructions_text"}),
+    "ParsedSessionEvent": frozenset(),
 }
 
 
 def validate_semantic_hash_partition() -> None:
     """Fail if parsed model fields are missing from the identity decision."""
-    from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.sources.parsers.base_models import (
+        ParsedContentBlock,
+        ParsedMessage,
+        ParsedSession,
+        ParsedSessionEvent,
+    )
 
     models = (
         ("ParsedContentBlock", ParsedContentBlock),
         ("ParsedMessage", ParsedMessage),
         ("ParsedSession", ParsedSession),
+        ("ParsedSessionEvent", ParsedSessionEvent),
     )
     for name, model in models:
         fields = frozenset(cast(Mapping[str, object], model.model_fields))
@@ -402,7 +425,13 @@ def _model_hash_payload(model: object, fields: frozenset[str], prose: frozenset[
     can hash like a missing value (polylogue-vp5qk).
     """
     return {
-        field: _hash_field_value(getattr(model, field), prose=field in prose) for field in _sorted_hash_fields(fields)
+        field: _hash_field_value(
+            message_native_key(getattr(model, field))
+            if field == "parent_message_provider_id"
+            else getattr(model, field),
+            prose=field in prose,
+        )
+        for field in _sorted_hash_fields(fields)
     }
 
 
@@ -1047,6 +1076,45 @@ def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
     return _model_hash_payload(block, _HASHED_FIELDS["ParsedContentBlock"], _NFC_TEXT_FIELDS["ParsedContentBlock"])
 
 
+@dataclass(frozen=True, slots=True)
+class BlockContentIdentity:
+    """Source semantics and ordinal among identical blocks within one message."""
+
+    content_identity: str
+    content_occurrence: int
+
+
+def block_content_identity(block: ParsedContentBlock) -> str:
+    """Hash the exact declared typed Source semantics, never citation equivalence.
+
+    Only declared prose is NFC folded. Identifiers, operational values and
+    mapping keys remain exact; null and empty remain distinct. A provider
+    signature is independently owned attestation, never a native block ID.
+    """
+    if block.source_content_identity is not None:
+        return block.source_content_identity
+    payload = {
+        field: _typed_identity_value(
+            getattr(block, field),
+            prose=field in _NFC_TEXT_FIELDS["ParsedContentBlock"],
+        )
+        for field in _sorted_hash_fields(_HASHED_FIELDS["ParsedContentBlock"])
+    }
+    return hashlib.sha256(b"polylogue.source-block-identity.v1\0" + canonical_bytes(payload, QUERY)).hexdigest()
+
+
+def block_content_identities(blocks: Sequence[ParsedContentBlock]) -> tuple[BlockContentIdentity, ...]:
+    """Bind duplicates by exact semantic identity, independent of other blocks."""
+    occurrences: dict[str, int] = {}
+    identities: list[BlockContentIdentity] = []
+    for block in blocks:
+        identity = block_content_identity(block)
+        occurrence = occurrences.get(identity, 0)
+        occurrences[identity] = occurrence + 1
+        identities.append(BlockContentIdentity(identity, occurrence))
+    return tuple(identities)
+
+
 def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
     """True when ``message.blocks`` is a single TEXT block that just repeats ``message.text``.
 
@@ -1379,6 +1447,8 @@ def _message_identity_payload(
     scalar_fields = _message_scalar_fields(_HASHED_FIELDS["ParsedMessage"])
     for field in _sorted_hash_fields(scalar_fields):
         value = getattr(message, field)
+        if field == "parent_message_provider_id":
+            value = message_native_key(value)
         payload[field] = _identity_normalize_value(
             value,
             path=(("field", field),),
@@ -1597,9 +1667,9 @@ def _message_revision_match_id(message: ParsedMessage) -> str:
     output) is qualified by the record's declared side before it becomes a
     ``provider_message_id``, so a native id names exactly one message.
     """
-    native_id = message.provider_message_id.strip()
+    native_id = message.provider_message_id
     if native_id:
-        return native_id
+        return message_native_key(native_id) or ""
     payload: dict[str, JSONValue] = {
         "role": str(message.role),
         "timestamp": message.timestamp,
@@ -1665,7 +1735,13 @@ class _SqliteOwnerLookup(Mapping[_T, str]):
     def __getitem__(self, key: _T) -> str:
         row = self._conn.execute(
             "SELECT value FROM owner_lookup WHERE kind = ? AND key = ?",
-            (self._kind, json.dumps(key, separators=(",", ":"))),
+            (
+                self._kind,
+                json.dumps(
+                    message_native_key(key) if self._kind == "provider" and isinstance(key, str) else key,
+                    separators=(",", ":"),
+                ),
+            ),
         ).fetchone()
         if row is None:
             raise KeyError(key)
@@ -1674,7 +1750,14 @@ class _SqliteOwnerLookup(Mapping[_T, str]):
     def __iter__(self) -> Iterator[_T]:
         for (key,) in self._conn.execute("SELECT key FROM owner_lookup WHERE kind = ?", (self._kind,)):
             value = json.loads(key)
-            yield cast(_T, tuple(value) if self._kind == "physical" else value)
+            yield cast(
+                _T,
+                tuple(value)
+                if self._kind == "physical"
+                else native_id_from_key(value)
+                if self._kind == "provider"
+                else value,
+            )
 
     def __len__(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM owner_lookup WHERE kind = ?", (self._kind,)).fetchone()[0])
@@ -1692,7 +1775,17 @@ class _SqliteOwnerItems(ItemsView[_T, str]):
         lookup = self._mapping
         for key, value in lookup._conn.execute("SELECT key, value FROM owner_lookup WHERE kind = ?", (lookup._kind,)):
             decoded = json.loads(key)
-            yield cast(_T, tuple(decoded) if lookup._kind == "physical" else decoded), str(value)
+            yield (
+                cast(
+                    _T,
+                    tuple(decoded)
+                    if lookup._kind == "physical"
+                    else native_id_from_key(decoded)
+                    if lookup._kind == "provider"
+                    else decoded,
+                ),
+                str(value),
+            )
 
 
 class _SqliteOwnerAmbiguities(Set[_T]):
@@ -1703,14 +1796,27 @@ class _SqliteOwnerAmbiguities(Set[_T]):
     def __contains__(self, key: object) -> bool:
         row = self._conn.execute(
             "SELECT count FROM owner_count WHERE kind = ? AND key = ?",
-            (self._kind, json.dumps(key, separators=(",", ":"))),
+            (
+                self._kind,
+                json.dumps(
+                    message_native_key(key) if self._kind == "provider" and isinstance(key, str) else key,
+                    separators=(",", ":"),
+                ),
+            ),
         ).fetchone()
         return row is not None and int(row[0]) > 1
 
     def __iter__(self) -> Iterator[_T]:
         for (key,) in self._conn.execute("SELECT key FROM owner_count WHERE kind = ? AND count > 1", (self._kind,)):
             value = json.loads(key)
-            yield cast(_T, tuple(value) if self._kind == "physical" else value)
+            yield cast(
+                _T,
+                tuple(value)
+                if self._kind == "physical"
+                else native_id_from_key(value)
+                if self._kind == "provider"
+                else value,
+            )
 
     def __len__(self) -> int:
         return int(
@@ -1758,7 +1864,7 @@ def disk_message_owner_resolution(messages: Sequence[ParsedMessage]) -> Iterator
                     coordinate = _message_owner_coordinate(message, ordinal)
                     stable = coordinate.stable_key
                     physical = coordinate.physical_key
-                    provider = message.provider_message_id.strip() or None
+                    provider = message_native_key(message.provider_message_id)
                     yield (
                         ordinal,
                         revision,
@@ -1918,11 +2024,9 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
         )
     }
     provider_keys: dict[str, str] = {}
-    provider_counts = Counter(
-        message.provider_message_id.strip() for message in messages if message.provider_message_id
-    )
+    provider_counts = Counter(message.provider_message_id for message in messages if message.provider_message_id)
     for message, key in zip(messages, keys, strict=True):
-        provider_id = message.provider_message_id.strip()
+        provider_id = message.provider_message_id
         if provider_id and provider_counts[provider_id] == 1:
             provider_keys[provider_id] = key
     return MessageOwnerResolution(
@@ -1979,7 +2083,7 @@ def message_owner_key(
     if coordinate.stable_key in resolution.ambiguous_stable_keys:
         raise MessageOwnerAmbiguityError(f"message owner evidence is duplicated: {coordinate.stable_key!r}")
     if provider_message_id:
-        provider_id = provider_message_id.strip()
+        provider_id = provider_message_id
         if provider_id in resolution.ambiguous_provider_ids:
             raise MessageOwnerAmbiguityError(
                 f"message provider message id is duplicated without a private coordinate: {provider_id!r}"
@@ -2146,6 +2250,9 @@ def _event_hash_payload(
         "timestamp": event.timestamp,
         "source_message_provider_id": event.source_message_provider_id,
         "payload": _event_payload_hash(event.event_type, event.payload),
+        "boundary_start_position": event.boundary_start_position,
+        "boundary_end_position": event.boundary_end_position,
+        "boundary_message_position": event.boundary_message_position,
     }
     if event.owner_coordinate is not None:
         if resolution is None:
@@ -2218,6 +2325,9 @@ def _event_content_payload(
         "timestamp": timestamp,
         "source_message_provider_id": event.source_message_provider_id,
         "payload": payload_hash,
+        "boundary_start_position": event.boundary_start_position,
+        "boundary_end_position": event.boundary_end_position,
+        "boundary_message_position": event.boundary_message_position,
     }
 
     if source_owner_key is not None:
@@ -2548,7 +2658,7 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
                 "DO UPDATE SET multiplicity = multiplicity + 1",
                 (identity, content),
             )
-            if not message.provider_message_id.strip() and message.timestamp is not None:
+            if not message.provider_message_id and message.timestamp is not None:
                 conn.execute("INSERT OR IGNORE INTO mutable_message VALUES (?)", (identity,))
 
         if convo.attachments:
@@ -2658,7 +2768,7 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         message_native_id = payload["id"]
         assert isinstance(message_native_id, str)  # built as str above, never anything else
         identity = message_identity_hash(id=message_native_id)
-        if not message.provider_message_id.strip() and message.timestamp is not None:
+        if not message.provider_message_id and message.timestamp is not None:
             mutable_message_identities.add(identity)
         content = bytes.fromhex(hash_item_payload(payload))
         message_content_counts[(identity, content)] += 1

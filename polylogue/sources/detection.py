@@ -261,7 +261,7 @@ class CompiledDetectorRegistry:
         record is held at a time. A record stream is never a single JSON
         document, so record-mode bindings do not apply.
         """
-        from polylogue.sources.detection_projection import project_detection_value
+        from polylogue.sources.detection_projection import detection_read_view, project_detection_value
 
         candidates = (
             *self.by_mode.get(DetectionMode.SEQUENCE_DOCUMENT, ()),
@@ -275,12 +275,17 @@ class CompiledDetectorRegistry:
             if check_stop is not None:
                 check_stop()
             seen = True
+            projections: dict[str, object] = {}
             # Only bindings at or before the current winner can change the
             # outcome; re-testing the winner keeps its last witness, as the
             # complete "any" fold does. Each predicate sees its own declared
             # projection, so no binding walks undeclared record content.
             for index in range(min(best + 1, len(candidates))):
-                projected = project_detection_value(record, rules[index])
+                path = candidates[index].binding.stream_projection_path
+                assert path is not None  # _stream_projection validated every declaration above.
+                if path not in projections:
+                    projections[path] = detection_read_view(project_detection_value(record, rules[index]))
+                projected = projections[path]
                 if candidates[index].predicate([projected]):
                     best, witness = index, projected
                     break

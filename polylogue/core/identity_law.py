@@ -7,6 +7,8 @@ uses this module as the test oracle and for pre-DDL contract checks.
 
 from __future__ import annotations
 
+import hashlib
+
 
 def _required_origin(value: str) -> str:
     candidate = value.strip()
@@ -56,8 +58,11 @@ def message_local_id(
     semantics are byte-identical; it counts only within one digest, so an
     unrelated insertion never moves it.
     """
-    if native_id is not None and native_id.strip():
-        return f"n:{_required_text('message native_id', native_id)}"
+    from polylogue.core.message_native_identity import message_native_key
+
+    native_key = message_native_key(native_id)
+    if native_key is not None:
+        return native_key
     identity = _required_text("content_identity", content_identity or "")
     return f"c:{identity}.{_required_non_negative('content_occurrence', content_occurrence)}"
 
@@ -79,32 +84,40 @@ def message_id(
     return f"{session}:{local}"
 
 
-def split_message_local_id(stored_message_id: str) -> tuple[str | None, str | None, int]:
-    """Invert ``message_local_id`` on a stored ``message_id``.
+def split_message_local_id(stored_message_id: str, *, parent_session_id: str) -> tuple[str | None, str | None, int]:
+    """Invert a stored message identity using its exact known session boundary.
 
-    Returns ``(native_id, content_identity, content_occurrence)`` with exactly
-    one of the first two set, so a surface holding a stored id can restate the
-    identity it was built from without re-deriving it from a position.
-    ``ValueError`` if the id carries neither tagged namespace.
+    Native message names may themselves contain either namespace marker.
+    Searching inside the identifier cannot identify the owning boundary.
     """
-    native_marker = ":n:"
-    content_marker = ":c:"
-    native_at = stored_message_id.rfind(native_marker)
-    content_at = stored_message_id.rfind(content_marker)
-    if native_at > content_at:
-        return stored_message_id[native_at + len(native_marker) :], None, 0
-    if content_at >= 0:
-        local = stored_message_id[content_at + len(content_marker) :]
-        identity, _, occurrence = local.rpartition(".")
-        if identity and occurrence.isdigit():
+    prefix = parent_session_id + ":"
+    if not stored_message_id.startswith(prefix):
+        raise ValueError("message id does not belong to its declared session")
+    local = stored_message_id[len(prefix) :]
+    if local.startswith(("n:", "s:")):
+        from polylogue.core.message_native_identity import native_id_from_key
+
+        return native_id_from_key(local), None, 0
+    if local.startswith("c:"):
+        identity, separator, occurrence = local[2:].rpartition(".")
+        if separator and identity and occurrence.isdigit():
             return None, identity, int(occurrence)
     raise ValueError(f"not a tagged archive message id: {stored_message_id!r}")
 
 
-def block_id(parent_message_id: str, *, position: int) -> str:
-    """Return archive ``block_id`` under a message."""
-    message = _required_text("message_id", parent_message_id)
-    return f"{message}:{_required_non_negative('position', position)}"
+def block_id(parent_message_id: str, *, content_identity: str, content_occurrence: int = 0) -> str:
+    """Return the immutable Source-content ID beneath its owning message."""
+    if parent_message_id == "":
+        raise ValueError("message_id cannot be empty and must be text")
+    message = parent_message_id
+    if (
+        type(content_identity) is not str
+        or len(content_identity) != 64
+        or any(char not in "0123456789abcdef" for char in content_identity)
+    ):
+        raise ValueError("block content_identity must be lowercase SHA-256 hexadecimal text")
+    occurrence = _required_non_negative("content_occurrence", content_occurrence)
+    return f"{message}:b:{content_identity}:{occurrence}"
 
 
 #: The coordinate a session's transcript order is stated in. Content position,
@@ -145,3 +158,60 @@ def attachment_acquisition_coordinate(provider_file_id: str | None, provider_att
     if provider_file_id:
         return f"attachment:{provider_file_id}"
     return f"attachment-ref:{provider_attachment_id}"
+
+
+def attachment_payload_id(descriptor_id: str, blob_hash: bytes) -> str:
+    """Bind one attachment descriptor to the exact acquired payload revision."""
+    if len(blob_hash) != 32:
+        raise ValueError("attachment payload identity requires SHA-256")
+    return hashlib.sha256(bytes.fromhex(descriptor_id) + blob_hash).hexdigest()
+
+
+def attachment_native_identity(native_id: str) -> str:
+    """Encode an opaque Source attachment ID injectively for SQLite text."""
+    if not native_id:
+        raise ValueError("attachment reference requires a declared native identity")
+    return native_id.encode("utf-8", errors="surrogatepass").hex()
+
+
+def attachment_reference_id(message_id: str, native_identity: str) -> str:
+    """Return the exact native attachment reference under its owning message."""
+    if not message_id or not native_identity:
+        raise ValueError("attachment reference requires message and native identity")
+    try:
+        native_id = bytes.fromhex(native_identity).decode("utf-8", errors="surrogatepass")
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("attachment reference requires canonical native identity") from exc
+    if attachment_native_identity(native_id) != native_identity:
+        raise ValueError("attachment reference requires canonical native identity")
+    return f"{message_id}:attachment:n:{native_identity}"
+
+
+def attachment_content_id(
+    native_id: str,
+    *,
+    file_id: str | None = None,
+    drive_id: str | None = None,
+    path: str | None = None,
+    name: str | None = None,
+    media_type: str | None = None,
+    declared_size: int | None = None,
+    blob_hash: bytes | None = None,
+) -> str:
+    """Bind the declared attachment descriptor to its known payload, if any."""
+    digest = hashlib.sha256()
+    for part in (
+        "attachment",
+        native_id,
+        file_id or "",
+        drive_id or "",
+        path or "",
+        name or "",
+        media_type or "",
+        str(declared_size or 0),
+    ):
+        encoded = part.encode("utf-8", errors="surrogatepass")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    descriptor_id = digest.hexdigest()
+    return descriptor_id if blob_hash is None else attachment_payload_id(descriptor_id, blob_hash)

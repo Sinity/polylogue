@@ -1,15 +1,22 @@
 """Canonical Source statements retain allocation, order and their original owner."""
 
+import asyncio
 import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import closing
 from pathlib import Path
+from typing import Never
 
 import pytest
 
 from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
 from polylogue.storage.sqlite.literal_cells import SQLiteLiteralCell
-from polylogue.storage.sqlite.reference_seal import KnownTierCell, PreparedIndexMutation, ReferenceSealError
+from polylogue.storage.sqlite.reference_seal import (
+    KnownTierCell,
+    KnownTierRowImage,
+    PreparedIndexMutation,
+    ReferenceSealError,
+)
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -117,6 +124,208 @@ def test_no_effect_source_statement_still_requires_schedule_consumption_and_refu
             permit.allow_commit(source)
             source.commit()
             seal.accept_known_tier_commit(permit.committed())
+
+
+def test_parser_census_reuses_selected_inputs_before_retaining_cells(
+    source_statement_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import _load_parser_census_source_inputs
+
+    root = source_statement_root
+    _seed_original_raw(root)
+    charges: list[int] = []
+    retained: list[tuple[str, str, int | bytes]] = []
+    with PreparedIndexMutation(root / "index.db", archive_root=root) as seal:
+        retain = seal.retain_tier_row
+
+        def counted_retain(tier: str, table: str, rowid: int | bytes) -> KnownTierRowImage | None:
+            retained.append((tier, table, rowid))
+            return retain(tier, table, rowid)
+
+        monkeypatch.setattr(seal, "retain_tier_row", counted_retain)
+        with seal.original_read_snapshot(input_demand=charges.append), seal.source_producer():
+            assert not seal.source_row_is_loaded("raw_sessions", 1)
+            _load_parser_census_source_inputs(seal, "original-raw")
+            first_charges = tuple(charges)
+            assert first_charges and all(charge > 0 for charge in first_charges)
+            first_retained = tuple(retained)
+            for _ in range(99):
+                _load_parser_census_source_inputs(seal, "original-raw")
+            assert tuple(retained) == first_retained
+            assert retained.count(("source", "raw_sessions", 1)) == 1
+            assert tuple(charges) == first_charges
+            assert seal.source_row_is_loaded("raw_sessions", 1)
+            with seal.source_rows("SELECT raw_id,blob_size FROM raw_sessions WHERE rowid=1") as rows:
+                row = rows.fetchone()
+                assert row is not None and tuple(row) == ("original-raw", 1)
+
+            key = seal.retain_literal_scalar("original-raw")
+            with seal.source_statement(
+                "UPDATE raw_sessions SET validation_status='failed' WHERE rowid=1",
+                table="raw_sessions",
+                writable_targets=(("raw_sessions", (key,)),),
+            ):
+                pass
+            retained_after_update = tuple(retained)
+            _load_parser_census_source_inputs(seal, "original-raw")
+            assert tuple(retained) == retained_after_update
+            with seal.source_rows("SELECT validation_status FROM raw_sessions WHERE rowid=1") as rows:
+                row = rows.fetchone()
+                assert row is not None and tuple(row) == ("failed",)
+            new_rowid = _stage_raw(seal, "new-selected")
+            assert seal.source_row_is_loaded("raw_sessions", new_rowid)
+            with seal.source_statement(
+                "DELETE FROM raw_sessions WHERE rowid=1",
+                table="raw_sessions",
+                writable_targets=(("raw_sessions", (key,)),),
+            ):
+                pass
+            retained_after_delete = tuple(retained)
+            _load_parser_census_source_inputs(seal, "original-raw")
+            assert tuple(retained) == retained_after_delete
+            assert seal.source_row_is_loaded("raw_sessions", 1)
+            with seal.source_rows("SELECT 1 FROM raw_sessions WHERE rowid=1") as rows:
+                assert rows.fetchone() is None
+
+
+@pytest.mark.parametrize("load_state", [0, 1])
+def test_source_input_reuse_refuses_unfinished_loading(source_statement_root: Path, load_state: int) -> None:
+    root = source_statement_root
+    _seed_original_raw(root)
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            image = seal.retain_tier_row("source", "raw_sessions", 1)
+            assert image is not None
+            assert seal.load_source_row(image)
+            with seal._owned_cursor(
+                seal._scratch,
+                "UPDATE temp.polylogue_source_stage_rows SET load_state=? "
+                "WHERE table_name='raw_sessions' AND physical_rowid=1",
+                (load_state,),
+            ):
+                pass
+            with pytest.raises(ReferenceSealError, match="completed original load"):
+                seal.source_row_is_loaded("raw_sessions", 1)
+            with seal._owned_cursor(
+                seal._scratch,
+                "UPDATE temp.polylogue_source_stage_rows SET load_state=2 "
+                "WHERE table_name='raw_sessions' AND physical_rowid=1",
+            ):
+                pass
+
+
+def test_source_input_reuse_keeps_failed_first_load_and_cancellation_visible(
+    source_statement_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import _load_parser_census_source_inputs
+
+    root = source_statement_root
+    _seed_original_raw(root)
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            retain = seal.retain_tier_row
+
+            def failed_retain(tier: str, table: str, rowid: int | bytes) -> Never:
+                raise RuntimeError("synthetic first retention failure")
+
+            monkeypatch.setattr(seal, "retain_tier_row", failed_retain)
+            with pytest.raises(RuntimeError, match="first retention failure"):
+                _load_parser_census_source_inputs(seal, "original-raw")
+            assert not seal.source_row_is_loaded("raw_sessions", 1)
+            monkeypatch.setattr(seal, "retain_tier_row", retain)
+            _load_parser_census_source_inputs(seal, "original-raw")
+            assert seal.source_row_is_loaded("raw_sessions", 1)
+            cancelled = threading.Event()
+            token = compute_cancel.set(cancelled)
+            try:
+                cancelled.set()
+                with pytest.raises(asyncio.CancelledError):
+                    seal.source_row_is_loaded("raw_sessions", 1)
+            finally:
+                cancelled.clear()
+                compute_cancel.reset(token)
+
+
+@pytest.mark.parametrize("operation", ["scalar", "stream", "expression"])
+def test_owned_literal_operation_verifies_namespace_once(
+    source_statement_root: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    with PreparedIndexMutation.source_only(archive_root=source_statement_root) as seal:
+        cell = seal.retain_literal_scalar("synthetic literal")
+        verify = seal._assert_configured_namespace
+        walks = 0
+
+        def counted_verify() -> None:
+            nonlocal walks
+            walks += 1
+            verify()
+
+        monkeypatch.setattr(seal, "_assert_configured_namespace", counted_verify)
+        if operation == "scalar":
+            seal.retain_literal_scalar(b"synthetic literal")
+        elif operation == "stream":
+            seal.retain_literal_stream("blob", 4, (b"ab", b"cd"))
+        else:
+            seal.source_literal_expression(cell)
+        assert walks == 1
+
+
+def test_literal_expression_namespace_change_refuses_next_entry_and_publication(
+    source_statement_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = source_statement_root
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            _stage_raw(seal, "pending-publication")
+            cell = seal.retain_literal_scalar("synthetic literal")
+        metadata = seal._literal_cell_metadata
+        original_path = root / "source.db"
+        retained_path = root / "retained-original-source.db"
+
+        def replace_namespace(current: KnownTierCell) -> tuple[str, int, bytes | None]:
+            original_path.rename(retained_path)
+            original_path.write_bytes(b"synthetic replacement")
+            return metadata(current)
+
+        monkeypatch.setattr(seal, "_literal_cell_metadata", replace_namespace)
+        try:
+            # The expression reads its already-owned private slot. Namespace
+            # replacement cannot make it reread a different original path.
+            expression, parameters = seal.source_literal_expression(cell)
+            assert expression.startswith("CAST(") and parameters == (cell._cell_id,)
+            monkeypatch.setattr(seal, "_literal_cell_metadata", metadata)
+            with pytest.raises(ReferenceSealError, match="namespace"):
+                seal.source_literal_expression(cell)
+            with pytest.raises(ReferenceSealError, match="namespace"):
+                seal.prepare_source_mutation()
+        finally:
+            original_path.rename(root / "replaced-source.db")
+            retained_path.rename(original_path)
+
+
+def test_owned_literal_stream_still_checks_cancellation_between_chunks(source_statement_root: Path) -> None:
+    import threading
+
+    from polylogue.core.compute_cancel import compute_cancel
+
+    with PreparedIndexMutation.source_only(archive_root=source_statement_root) as seal:
+        cancelled = threading.Event()
+        token = compute_cancel.set(cancelled)
+
+        def chunks() -> Iterator[bytes]:
+            yield b"ab"
+            cancelled.set()
+            yield b"cd"
+
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                seal.retain_literal_stream("blob", 4, chunks())
+        finally:
+            cancelled.clear()
+            compute_cancel.reset(token)
 
 
 def test_source_rollback_publishes_no_captured_row_or_commit_receipt(source_statement_root: Path) -> None:

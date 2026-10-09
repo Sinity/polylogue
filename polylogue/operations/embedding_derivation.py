@@ -96,6 +96,8 @@ def embedding_session_ids_for_paths(
     ``source.db`` remains at the archive root.  The shared source-session
     relation accepts that explicit tier path so path hints never silently
     become an empty embedding scope after an index-generation switch.
+    Lookup failures propagate to the ingest owner and preserve retry work;
+    only a successful zero-row relation settles as an empty scope.
     """
 
     normalized = tuple(dict.fromkeys(Path(path) for path in paths))

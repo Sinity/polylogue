@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Final, Literal, TypeAlias
+from urllib.parse import quote_from_bytes, unquote_to_bytes
 
 ObjectRefKind: TypeAlias = Literal[
     "session",
@@ -178,8 +180,9 @@ class ObjectRef:
 
     The DTO intentionally keeps the object id opaque. Existing ids may contain
     colons (``codex-session:demo`` or stored message/block ids), so only the
-    kind delimiter is globally significant. The block form may carry one
-    explicit trailing qualifier for the block index.
+    kind delimiter is globally significant. Legacy positional block selectors
+    remain parseable as input; stable block IDs containing ``:b:`` are always
+    kept whole, including their trailing occurrence number.
     """
 
     kind: ObjectRefKind
@@ -194,9 +197,12 @@ class ObjectRef:
         if not separator:
             raise ValueError("object ref must use 'kind:id' form")
         kind = _parse_object_ref_kind(kind_value)
-        if kind in {"block", "action"} and ":" in tail:
+        if kind in {"block", "action"} and _is_stable_block_id(tail):
+            object_id = tail
+            qualifiers: tuple[str, ...] = ()
+        elif kind in {"block", "action"} and ":" in tail:
             object_id, qualifier = tail.rsplit(":", 1)
-            qualifiers: tuple[str, ...] = (qualifier,)
+            qualifiers = (qualifier,)
         else:
             object_id = tail
             qualifiers = ()
@@ -214,27 +220,49 @@ class ObjectRef:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceRef:
-    """Archive evidence pointer using ``session_id[::message_id[::block]]``."""
+    """Archive evidence pointer to a session, message, positional input, or stable block."""
 
     session_id: str
     message_id: str | None = None
     block_index: int | None = None
+    block_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.session_id:
+            raise ValueError("evidence ref session_id cannot be empty")
+        if self.block_index is not None and self.block_id is not None:
+            raise ValueError("evidence ref cannot carry both positional and stable block identity")
+        if (self.block_index is not None or self.block_id is not None) and self.message_id is None:
+            raise ValueError("block evidence ref requires message_id")
+        if self.block_index is not None and self.block_index < 0:
+            raise ValueError("evidence ref block_index cannot be negative")
+        if self.block_id is not None and not _is_stable_block_id(self.block_id):
+            raise ValueError("stable evidence block_id must contain a SHA-256 identity and canonical occurrence")
 
     @classmethod
     def parse(cls, value: str) -> EvidenceRef:
         """Parse the archive evidence id format.
 
-        ``::`` is used because session ids themselves are often colon-bearing
-        origin-prefixed strings such as ``codex-session:demo``.
+        Positional input keeps its historical ``::`` form. Stable block
+        evidence uses a tagged, percent-encoded form because opaque session and
+        message ids may themselves contain the legacy separator.
         """
 
+        if value.startswith("evidence-block:"):
+            encoded = value.removeprefix("evidence-block:").split(":")
+            if len(encoded) != 3:
+                raise ValueError("stable evidence ref must encode session, message, and block id")
+            stable_session_id, stable_message_id, stable_block_id = (_decode_evidence_segment(part) for part in encoded)
+            return cls(session_id=stable_session_id, message_id=stable_message_id, block_id=stable_block_id)
+
         parts = value.split("::")
-        if not 1 <= len(parts) <= 3:
-            raise ValueError("evidence ref must use session_id[::message_id[::block_index]] form")
+        if not 1 <= len(parts) <= 4:
+            raise ValueError("evidence ref must use session_id[::message_id[::block_index|block:<block_id>]] form")
         if any(part == "" for part in parts):
             raise ValueError("evidence ref segments cannot be empty")
 
         block_index: int | None = None
+        block_id: str | None = None
         if len(parts) == 3:
             try:
                 block_index = int(parts[2])
@@ -242,17 +270,22 @@ class EvidenceRef:
                 raise ValueError("evidence ref block_index must be an integer") from exc
             if block_index < 0:
                 raise ValueError("evidence ref block_index cannot be negative")
+        elif len(parts) > 2:
+            raise ValueError("evidence ref must use session_id[::message_id[::block_index]] form")
 
         return cls(
             session_id=parts[0],
             message_id=parts[1] if len(parts) >= 2 else None,
             block_index=block_index,
+            block_id=block_id,
         )
 
     @property
     def ref_kind(self) -> EvidenceRefKind:
         """Return the most specific archive object kind addressed by this ref."""
 
+        if self.block_id is not None:
+            return "block"
         if self.block_index is not None:
             return "block"
         if self.message_id is not None:
@@ -265,13 +298,21 @@ class EvidenceRef:
         parts = [self.session_id]
         if self.message_id is not None:
             parts.append(self.message_id)
-        if self.block_index is not None:
+        if self.block_id is not None:
+            return "evidence-block:" + ":".join(
+                _encode_evidence_segment(part) for part in (self.session_id, self.message_id or "", self.block_id)
+            )
+        elif self.block_index is not None:
             parts.append(str(self.block_index))
         return "::".join(parts)
 
     def to_object_ref(self) -> ObjectRef:
         """Project the evidence pointer to the closest public object ref shape."""
 
+        if self.block_id is not None:
+            if self.message_id is None:
+                raise ValueError("block evidence ref requires message_id")
+            return ObjectRef(kind="block", object_id=self.block_id)
         if self.block_index is not None:
             if self.message_id is None:
                 raise ValueError("block evidence ref requires message_id")
@@ -429,11 +470,69 @@ def normalize_public_ref_text(value: str) -> str:
     return parse_public_ref(value).format()
 
 
+def normalize_durable_public_ref_text(value: str) -> str:
+    """Normalize a ref for durable storage, refusing positional block selectors.
+
+    Positional block forms remain part of the input grammar so an operation
+    can resolve them against its admitted archive snapshot. They must be
+    converted to a stable block ID before a durable row is prepared.
+    """
+
+    parsed = parse_public_ref(value)
+    if isinstance(parsed, EvidenceRef) and parsed.block_index is not None:
+        raise ValueError("positional block evidence must be resolved to a stable block_id before durable storage")
+    if isinstance(parsed, ObjectRef) and parsed.kind in {"block", "action"} and parsed.qualifiers:
+        raise ValueError("positional block object ref must be resolved to a stable block_id before durable storage")
+    if (
+        isinstance(parsed, ObjectRef)
+        and parsed.kind in {"block", "action"}
+        and not _is_stable_block_id(parsed.object_id)
+    ):
+        raise ValueError("block/action object ref must use a generated stable block_id before durable storage")
+    return parsed.format()
+
+
+def normalize_durable_object_ref_text(value: str) -> str:
+    """Normalize an object-only durable field and reject positional blocks."""
+
+    parsed = ObjectRef.parse(value)
+    if parsed.kind in {"block", "action"} and parsed.qualifiers:
+        raise ValueError("positional block object ref must be resolved to a stable block_id before durable storage")
+    if parsed.kind in {"block", "action"} and not _is_stable_block_id(parsed.object_id):
+        raise ValueError("block/action object ref must use a generated stable block_id before durable storage")
+    return parsed.format()
+
+
+def _encode_evidence_segment(value: str) -> str:
+    return quote_from_bytes(value.encode("utf-8", errors="surrogatepass"), safe="")
+
+
+def _decode_evidence_segment(value: str) -> str:
+    decoded = unquote_to_bytes(value).decode("utf-8", errors="surrogatepass")
+    if not decoded or _encode_evidence_segment(decoded) != value:
+        raise ValueError("stable evidence ref segment is not canonically percent-encoded")
+    return decoded
+
+
 def _parse_object_ref_kind(value: str) -> ObjectRefKind:
     try:
         return _OBJECT_REF_KINDS[value]
     except KeyError as exc:
         raise ValueError(f"unsupported object ref kind: {value!r}") from exc
+
+
+def _is_stable_block_id(value: str) -> bool:
+    """Check the stable block-ID wire shape without parsing its opaque owner ID."""
+
+    parent, separator, suffix = value.rpartition(":b:")
+    if not separator or not parent:
+        return False
+    identity, separator, occurrence = suffix.rpartition(":")
+    return (
+        separator == ":"
+        and re.fullmatch(r"[0-9a-f]{64}", identity) is not None
+        and re.fullmatch(r"(?:0|[1-9][0-9]*)", occurrence) is not None
+    )
 
 
 _DELEGATION_EDGE_PREFIX: Final[str] = "edge:"
@@ -532,6 +631,8 @@ __all__ = [
     "delegation_edge_object_id",
     "delegation_subtree_object_id",
     "normalize_object_ref_text",
+    "normalize_durable_public_ref_text",
+    "normalize_durable_object_ref_text",
     "normalize_public_ref_text",
     "parse_delegation_ancestry_object_id",
     "parse_delegation_edge_object_id",

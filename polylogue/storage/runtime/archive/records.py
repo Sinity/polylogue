@@ -7,11 +7,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from polylogue.archive.attachment.availability import AttachmentAvailability
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Origin, SemanticBlockType, SessionKind, ToolOutcome
-from polylogue.core.hashing import hash_text
+from polylogue.core.identity_law import block_id as archive_block_id
 from polylogue.core.json import json_document, json_document_list
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import canonical_timestamp_text
@@ -119,6 +120,8 @@ class BlockRecord(BaseModel):
     message_id: MessageId
     session_id: SessionId
     block_index: int
+    content_identity: str
+    content_occurrence: int
     type: BlockType
     text: str | None = None
     tool_name: str | None = None
@@ -159,8 +162,8 @@ class BlockRecord(BaseModel):
         return SemanticBlockType.from_string(str(v))
 
     @classmethod
-    def make_id(cls, message_id: str, block_index: int) -> str:
-        return f"blk-{hash_text(f'{message_id}:{block_index}')[:16]}"
+    def make_id(cls, message_id: str, *, content_identity: str, content_occurrence: int = 0) -> str:
+        return archive_block_id(message_id, content_identity=content_identity, content_occurrence=content_occurrence)
 
 
 class MessageRecord(BaseModel):
@@ -269,6 +272,8 @@ class LineageCompleteness(BaseModel):
 
 class AttachmentRecord(BaseModel):
     attachment_id: AttachmentId
+    reference_id: str | None = None
+    supplying_raw_id: str | None = None
     session_id: SessionId
     message_id: MessageId | None = None
     mime_type: str | None = None
@@ -286,6 +291,7 @@ class AttachmentRecord(BaseModel):
     blob_hash: bytes | None = None
     acquisition_status: str | None = None
     generation_id: str | None = None
+    availability: AttachmentAvailability | None = None
 
     @field_validator("attachment_id", "session_id")
     @classmethod

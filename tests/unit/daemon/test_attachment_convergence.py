@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from typing import IO, Any, cast
 from unittest.mock import MagicMock
@@ -133,10 +134,10 @@ def test_polylogue_ck5v_legacy_route_attachment_is_backfilled_and_bounded(tmp_pa
     assert result.acquired == 1
     assert result.complete
     assert calls == ["drive-file-1"]
-    assert set(rows) == set(before)
+    assert len(set(rows) - set(before)) == 1
     assert len(rows) == 2
     acquired = next(row for row in rows.values() if row["acquisition_status"] == "acquired")
-    assert before[str(acquired["attachment_id"])] == (None, "unfetched")
+    assert str(acquired["attachment_id"]) not in before
     assert acquired["acquisition_status"] == "acquired"
     assert acquired["byte_count"] == len(payload)
     assert bytes(acquired["blob_hash"]) == hashlib.sha256(payload).digest()
@@ -363,7 +364,8 @@ def test_shared_attachment_attribution_survives_window_restart_and_new_reference
     index.close()
     source.close()
 
-    # No process-local fetch cache survives. The retained shared hash is enough.
+    # No common provider observation survives for the unattempted supplier.
+    # It must measure the current file rather than borrow older captured bytes.
     index = _open_index(tmp_path / "index.db")
     source = sqlite3.connect(tmp_path / "source.db")
     second = _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
@@ -372,7 +374,7 @@ def test_shared_attachment_attribution_survives_window_restart_and_new_reference
         raw_ids
     )
     assert inspect_attachment_readiness(index, source)["allowed_unfetched"] == 0
-    assert calls == ["shared-file"]
+    assert calls == ["shared-file", "shared-file"]
 
     write_fixture_index_session(index, _session("late-session", file_id="shared-file"), raw_id="late-raw")
     index.commit()
@@ -384,7 +386,7 @@ def test_shared_attachment_attribution_survives_window_restart_and_new_reference
         source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type='attachment' AND ref_id='late-raw'").fetchone()[0]
         == 1
     )
-    assert calls == ["shared-file"]
+    assert calls == ["shared-file", "shared-file", "shared-file"]
     index.close()
     source.close()
 
@@ -411,7 +413,20 @@ def test_shared_attribution_cancellation_retries_without_downloading(
         return b"shared attachment bytes"
 
     assert _converge(index, source, archive_root=tmp_path, download_into=_into(fetch)).complete
-    write_fixture_index_session(index, _session("later", file_id="shared-file"), raw_id="later-raw")
+    later_session = _session("later", file_id="shared-file")
+    later_session.attachments[0].inline_bytes = b"shared attachment bytes"
+    write_fixture_index_session(
+        index,
+        later_session,
+        raw_id="later-raw",
+        preacquired_attachment_blobs={
+            later_session.attachments[0].acquisition_key: (
+                hashlib.sha256(b"shared attachment bytes").digest(),
+                len(b"shared attachment bytes"),
+                "acquired",
+            )
+        },
+    )
     index.commit()
     _retain_raws(source, "later-raw")
     admission = admit_stage_write
@@ -440,6 +455,146 @@ def test_shared_attribution_cancellation_retries_without_downloading(
         == 1
     )
     assert calls == ["shared-file"]
+    index.close()
+    source.close()
+
+
+def test_retryable_prefix_reaches_later_work_across_restart_and_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing the persisted keyset position starves the healthy 26th row."""
+    import asyncio
+
+    import polylogue.operations.attachment_convergence as convergence
+
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    source = sqlite3.connect(tmp_path / "source.db")
+    for i in range(26):
+        write_fixture_index_session(index, _session(f"sweep-{i}"), raw_id=f"sweep-raw-{i}")
+    _retain_raws(source, *(f"sweep-raw-{i}" for i in range(26)))
+    ordered = index.execute(
+        "SELECT a.attachment_id,r.ref_id,ani.native_id FROM attachments a "
+        "JOIN attachment_refs r ON r.attachment_id=a.attachment_id "
+        "JOIN attachment_native_ids ani ON ani.ref_id=r.ref_id AND ani.id_kind='file' "
+        "ORDER BY a.attachment_id,r.ref_id"
+    ).fetchall()
+    healthy = str(ordered[-1][2])
+    calls: list[str] = []
+
+    def fetch(file_id: str) -> bytes:
+        calls.append(file_id)
+        if file_id != healthy:
+            raise OSError("synthetic retryable per-file fault")
+        return b"healthy payload"
+
+    first = _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    assert first.inspected == 25 and first.acquired == 0 and first.transport_pending
+    assert healthy not in calls
+    with closing(sqlite3.connect(tmp_path / "ops.db")) as ops:
+        position = ops.execute("SELECT attachment_id,ref_id FROM attachment_convergence_cursor").fetchone()
+    assert position == tuple(ordered[24][:2])
+    index.close()
+    source.close()
+
+    index = _open_index(tmp_path / "index.db")
+    source = sqlite3.connect(tmp_path / "source.db")
+
+    def cancel(*args: object) -> None:
+        raise asyncio.CancelledError
+
+    with monkeypatch.context() as patch:
+        patch.setattr(convergence, "admit_stage_write", cancel)
+        with pytest.raises(asyncio.CancelledError):
+            _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    with closing(sqlite3.connect(tmp_path / "ops.db")) as ops:
+        assert ops.execute("SELECT attachment_id,ref_id FROM attachment_convergence_cursor").fetchone() == position
+    assert convergence.inspect_attachment_readiness(index, source)["allowed_unfetched"] == 26
+    resumed = _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    assert resumed.inspected == 1 and resumed.acquired == 1 and resumed.transport_pending
+    assert calls.count(healthy) == 2
+    assert convergence.inspect_attachment_readiness(index, source)["allowed_unfetched"] == 25
+    retry = _converge(index, source, archive_root=tmp_path, download_into=_into(fetch))
+    assert retry.inspected == 25 and retry.acquired == 0 and retry.transport_pending
+    assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type='attachment'").fetchone()[0] == 1
+    index.close()
+    source.close()
+
+
+def test_new_supplier_observes_new_bytes_and_renamed_old_supplier_rebinds_its_own_revision(tmp_path: Path) -> None:
+    """A global descriptor shortcut replaces raw-A's AA with raw-B's BB."""
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    source = sqlite3.connect(tmp_path / "source.db")
+    _retain_raws(source, "raw-a", "raw-b")
+    old = _session("capture-a", file_id="revision-file")
+    old.attachments[0].inline_bytes = b"AA"
+    old.attachments[0].size_bytes = 2
+    digest, size = BlobStore(tmp_path / "blob").write_from_bytes(b"AA")
+    write_fixture_index_session(
+        index,
+        old,
+        raw_id="raw-a",
+        preacquired_attachment_blobs={old.attachments[0].acquisition_key: (bytes.fromhex(digest), size, "acquired")},
+    )
+
+    def no_download(_file: str) -> bytes:
+        raise AssertionError("captured bytes require no provider download")
+
+    assert _converge(index, source, archive_root=tmp_path, download_into=_into(no_download)).complete
+    original = tuple(source.execute("SELECT ref_id,source_path,blob_hash FROM blob_refs WHERE ref_type='attachment'"))
+    new = _session("capture-b", file_id="revision-file")
+    new.attachments[0].size_bytes = 2
+    write_fixture_index_session(index, new, raw_id="raw-b")
+    calls: list[str] = []
+
+    def current(file_id: str) -> bytes:
+        calls.append(file_id)
+        return b"BB"
+
+    assert _converge(index, source, archive_root=tmp_path, download_into=_into(current)).complete
+    assert calls == ["revision-file"]
+    rows = index.execute(
+        "SELECT r.supplying_raw_id,a.blob_hash FROM attachments a JOIN attachment_refs r "
+        "ON r.attachment_id=a.attachment_id ORDER BY r.supplying_raw_id"
+    ).fetchall()
+    assert [(row[0], bytes(row[1])) for row in rows] == [
+        ("raw-a", hashlib.sha256(b"AA").digest()),
+        ("raw-b", hashlib.sha256(b"BB").digest()),
+    ]
+    assert (
+        tuple(
+            source.execute(
+                "SELECT ref_id,source_path,blob_hash FROM blob_refs WHERE ref_type='attachment' AND ref_id='raw-a'"
+            )
+        )
+        == original
+    )
+    # A renamed descriptor does not change the exact retained raw/file
+    # coordinate. Reparse binds AA from Source, rather than current BB.
+    renamed = _session("capture-a", file_id="revision-file")
+    renamed.attachments[0].name = "renamed.txt"
+    renamed.attachments[0].size_bytes = 2
+    write_fixture_index_session(index, renamed, raw_id="raw-a", force_replace=True)
+    rebound = _converge(index, source, archive_root=tmp_path, download_into=_into(no_download))
+    assert rebound.acquired == 1 and rebound.complete
+    assert (
+        bytes(
+            index.execute(
+                "SELECT a.blob_hash FROM attachments a JOIN attachment_refs r ON r.attachment_id=a.attachment_id "
+                "WHERE r.supplying_raw_id='raw-a'"
+            ).fetchone()[0]
+        )
+        == hashlib.sha256(b"AA").digest()
+    )
+    assert (
+        tuple(
+            source.execute(
+                "SELECT ref_id,source_path,blob_hash FROM blob_refs WHERE ref_type='attachment' AND ref_id='raw-a'"
+            )
+        )
+        == original
+    )
     index.close()
     source.close()
 

@@ -194,6 +194,7 @@ async def test_valid_full_membership_conversion_publishes_each_original_member(t
                         reader.raw_revision_file_mtime(raw_id),
                         (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns),
                         captured_profile_key=reader.raw_profile_identity(raw_id),
+                        validation_verdict=artifact.validation_verdict,
                         prepared_artifact=artifact,
                     )
                 converted = prepare_revision_source_membership_conversion(

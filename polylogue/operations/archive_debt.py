@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.archive.raw_materialization import (
-    parsed_non_session_artifact_reason,
     raw_jsonl_leading_objects,
     source_path_native_id_candidates,
 )
@@ -23,7 +22,7 @@ from polylogue.daemon.convergence_debt_status import convergence_debt_summary_in
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.sources.parsers.local_agent import gemini_cli_chat_identity
-from polylogue.storage.archive_readiness import RAW_ALIAS_BLOB_MISSING_CATEGORY
+from polylogue.storage.archive_readiness import RAW_ALIAS_BLOB_MISSING_CATEGORY, current_typed_non_session_raw
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidates
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
@@ -253,6 +252,8 @@ def _raw_materialization_rows(archive_root: Path, *, index_db: Path | None = Non
                     r.raw_id,
                     r.native_id,
                     r.source_path,
+                    r.logical_source_key,
+                    r.revision_kind,
                     coordinate.captured_coordinate,
                     r.blob_hash,
                     r.blob_size,
@@ -269,11 +270,6 @@ def _raw_materialization_rows(archive_root: Path, *, index_db: Path | None = Non
                  AND s_by_native.origin = r.origin
                  AND s_by_native.native_id = r.native_id
                 WHERE s_by_raw.raw_id IS NULL
-                  AND NOT (
-                    r.validation_status = 'skipped'
-                    AND r.parsed_at_ms IS NOT NULL
-                    AND r.parse_error IS NULL
-                  )
                 ORDER BY r.origin, r.blob_size DESC, r.raw_id
                 """,
                 quarantine_params,
@@ -431,10 +427,16 @@ def _raw_materialized_by_embedded_session_ids(conn: sqlite3.Connection, row: sql
 def _raw_materialization_category(conn: sqlite3.Connection, row: sqlite3.Row, archive_root: Path) -> str:
     if not _raw_blob_path(archive_root, row).exists():
         return "missing-blob"
-    if row["parse_error"]:
+    if row["parse_error"] or row["validation_status"] == "failed":
         return "parse-failed"
     if row["parsed_at_ms"] is not None:
-        if _parsed_non_session_artifact_reason(archive_root, row) is not None:
+        if current_typed_non_session_raw(
+            conn,
+            row,
+            source_schema="main",
+            has_membership_census=_table_exists(conn, "raw_membership_census"),
+            has_session_memberships=_table_exists(conn, "raw_session_memberships"),
+        ):
             return "parsed-non-session-artifact"
         embedded_ids = _embedded_source_path_session_ids(row)
         if embedded_ids:
@@ -449,15 +451,6 @@ def _raw_materialization_category(conn: sqlite3.Connection, row: sqlite3.Row, ar
     if _revision_quarantined(row):
         return "revision-authority-quarantined"
     return "parse-pending"
-
-
-def _parsed_non_session_artifact_reason(archive_root: Path, row: sqlite3.Row) -> str | None:
-    return parsed_non_session_artifact_reason(
-        archive_root=archive_root,
-        origin=str(row["origin"] or ""),
-        source_path=str(row["source_path"] or ""),
-        blob_hash=row["blob_hash"],
-    )
 
 
 def _parsed_session_shape_reason(archive_root: Path, row: sqlite3.Row) -> str | None:
@@ -820,8 +813,8 @@ def _raw_materialization_debt_row(
         summary = f"{count} {origin} raw artifact(s) parsed as non-session artifacts"
         details = (
             f"Validation states: {_format_counts(validation_counts)}; max raw payload size: {max_blob_size_text}. "
-            "These source rows are recognized sidecars or metadata-only records, not transcript sessions, so replaying "
-            "them should not be expected to create index sessions."
+            "Complete typed artifact evidence and current parser/membership receipts prove these source rows "
+            "contain no transcript sessions. Replay does not owe Index sessions for these receipts."
         )
         actions = ()
     else:
@@ -999,6 +992,21 @@ def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
 
 def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
     info = embedding_readiness_info(index_db, detail=True)
+    if info.get("embedding_status") == "unknown" or info.get("embedding_unmeasurable_reason"):
+        return [
+            ArchiveDebtRowPayload(
+                debt_ref="debt:embedding:readiness:unknown",
+                kind="embedding",
+                stage="readiness",
+                subject_ref="embedding:readiness",
+                severity="warning",
+                status="blocked",
+                owner="daemon",
+                summary="Embedding readiness is unknown",
+                details=str(info.get("embedding_unmeasurable_reason") or "readiness_unmeasured"),
+                evidence_refs=(f"archive-tier:{index_db.with_name('embeddings.db')}",),
+            )
+        ]
     rows: list[ArchiveDebtRowPayload] = []
     config_enabled = _bool_value(info.get("embedding_config_enabled"))
     has_key = _bool_value(info.get("embedding_has_voyage_key"))

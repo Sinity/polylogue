@@ -6,20 +6,19 @@ from polylogue.analysis.tag_rollups import synthesize_origin_tag_rollups
 
 
 class _FakeArchive:
-    """Minimal stand-in for ``ArchiveStore.stats_by`` used by tag rollups."""
+    """Minimal stand-in for ``ArchiveStore.origin_session_counts`` used by tag rollups."""
 
     def __init__(self, counts: dict[str, int]) -> None:
         self._counts = counts
 
-    def stats_by(
+    def origin_session_counts(
         self,
-        group_by: str,
         *,
+        origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
-    ) -> dict[str, int]:
-        assert group_by == "origin"
-        return dict(self._counts)
+    ) -> dict[str, tuple[int, int]]:
+        return {key: (value, value) for key, value in self._counts.items() if origin is None or key == origin}
 
 
 def _counts() -> dict[str, int]:

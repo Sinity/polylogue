@@ -38,6 +38,8 @@ from polylogue.core.json import JSONValue
 class BlockInput:
     position: int
     block_type: BlockType
+    content_identity: str
+    content_occurrence: int = 0
     text: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None
@@ -55,6 +57,7 @@ class BlockInput:
 class AttachmentInput:
     position: int
     attachment_id: str
+    native_identity: str
     display_name: str | None = None
     media_type: str | None = None
     byte_count: int = 0
@@ -73,6 +76,8 @@ class MessageInput:
     position: int
     role: Role
     text: str | None = None
+    #: Original Source occurrence name, independent of unique native identity.
+    source_native_id: str | None = None
     #: The content-derived identity a message without a provider id is stored
     #: under (``pipeline.ids.message_content_identity``), with its occurrence
     #: ordinal. Required whenever ``native_id`` is None -- the record id

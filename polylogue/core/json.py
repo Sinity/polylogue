@@ -49,7 +49,7 @@ from __future__ import annotations
 import codecs
 import json as _stdlib_json
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import suppress
 from decimal import Decimal
 from itertools import islice
@@ -78,8 +78,43 @@ class JSONDecodeError(ValueError):
     """
 
 
+class _ValidatedJSONContainer:
+    """Internal container whose owner validated every key and JSON value.
+
+    Lazy decoded trees cannot recheck representation by loading all scalar
+    content. Only a complete validating decoder may attach this proof.
+    """
+
+
+def detach_borrowed_json(value: object) -> object:
+    """Make a selected JSON output independent of its decoder owner.
+
+    Ordinary mappings and lists retain their identity unless a nested borrowed
+    container needs replacement. This is an eager selected-output boundary;
+    callers must not apply it to an entire unselected input record.
+    """
+    if isinstance(value, Mapping):
+        detached: dict[object, object] = {}
+        changed = isinstance(value, _ValidatedJSONContainer)
+        for key, item in value.items():
+            detached_item = detach_borrowed_json(item)
+            detached[key] = detached_item
+            changed = changed or detached_item is not item
+        if changed:
+            return detached
+    elif isinstance(value, (list, tuple)):
+        detached_items = [detach_borrowed_json(item) for item in value]
+        if isinstance(value, _ValidatedJSONContainer) or any(
+            left is not right for left, right in zip(detached_items, value, strict=True)
+        ):
+            return tuple(detached_items) if isinstance(value, tuple) else detached_items
+    return value
+
+
 def is_json_value(value: object) -> TypeGuard[JSONValue]:
     """Return whether *value* is representable as JSON."""
+    if isinstance(value, _ValidatedJSONContainer):
+        return True
     if value is None or isinstance(value, (str, int, float, bool)):
         return True
     if isinstance(value, list):
@@ -91,7 +126,10 @@ def is_json_value(value: object) -> TypeGuard[JSONValue]:
 
 def is_json_document(value: object) -> TypeGuard[JSONDocument]:
     """Return whether *value* is a JSON object with string keys."""
-    return isinstance(value, dict) and all(isinstance(key, str) and is_json_value(item) for key, item in value.items())
+    return isinstance(value, dict) and (
+        isinstance(value, _ValidatedJSONContainer)
+        or all(isinstance(key, str) and is_json_value(item) for key, item in value.items())
+    )
 
 
 def json_document(value: object) -> JSONDocument:
@@ -132,6 +170,8 @@ def normalize_json_decimal(value: object) -> object:
     record. ``ijson`` is the only decoder in the pipeline that produces
     ``Decimal``; msgspec and stdlib ``json`` never do.
     """
+    if isinstance(value, _ValidatedJSONContainer):
+        return value
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     if isinstance(value, list):
@@ -173,6 +213,8 @@ def json_document_or_none(value: object) -> JSONDocument | None:
     """
     if not isinstance(value, dict):
         return None
+    if isinstance(value, _ValidatedJSONContainer):
+        return value
     lowered = _lower_json_value(value)
     return cast(JSONDocument, lowered) if lowered is not _NOT_JSON else None
 
@@ -193,7 +235,11 @@ def _lower_json_value(value: object) -> object:
     pending = value
     lowered: object
     while True:
-        if pending is None or isinstance(pending, (str, bool, int, float)):
+        if (
+            isinstance(pending, _ValidatedJSONContainer)
+            or pending is None
+            or isinstance(pending, (str, bool, int, float))
+        ):
             lowered = pending
         elif isinstance(pending, Decimal):
             lowered = int(pending) if pending == pending.to_integral_value() else float(pending)
@@ -277,6 +323,11 @@ def _prepare_for_msgspec(value: object, encoder: JSONEncoder) -> object:
         return {key: _prepare_for_msgspec(item, encoder) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_prepare_for_msgspec(item, encoder) for item in value]
+    if isinstance(value, int) and not -(1 << 63) <= value < (1 << 64):
+        # Preserve native integer bytes beyond the codec's ordinary range
+        # without Python's capped decimal-string conversion. Raw is created
+        # only from this exact integer conversion, never from supplied text.
+        return msgspec.Raw(format(Decimal(value), "f").encode("ascii"))
     if isinstance(value, _JSON_NATIVE_SCALAR):
         return value
     return encoder(value)
@@ -522,7 +573,9 @@ def loads(obj: str | bytes | bytearray) -> JSONValue:
                 with suppress(UnicodeDecodeError):
                     second = decode_provider_utf8(raw)
         try:
-            return _loaded_json_value(_stdlib_json.loads(second, parse_constant=_reject_non_finite_token))
+            return _loaded_json_value(
+                _stdlib_json.loads(second, parse_constant=_reject_non_finite_token, parse_int=_decode_integer)
+            )
         except (_stdlib_json.JSONDecodeError, ValueError):
             if second is obj:
                 raise exc from None
@@ -530,9 +583,16 @@ def loads(obj: str | bytes | bytearray) -> JSONValue:
         # BOM-less UTF-16 document can hold an ``ED A0 80`` triple): the
         # stdlib's own encoding detection reads the original bytes.
         try:
-            return _loaded_json_value(_stdlib_json.loads(obj, parse_constant=_reject_non_finite_token))
+            return _loaded_json_value(
+                _stdlib_json.loads(obj, parse_constant=_reject_non_finite_token, parse_int=_decode_integer)
+            )
         except (_stdlib_json.JSONDecodeError, ValueError):
             raise exc from None
+
+
+def _decode_integer(text: str) -> int:
+    """Decode a grammar-validated integer without an interpreter digit cap."""
+    return int(Decimal(text))
 
 
 __all__ = [

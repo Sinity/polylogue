@@ -871,6 +871,7 @@ class TestArchiveReadinessCounts:
             )
             conn.commit()
             source_conn.commit()
+            conn.execute("ATTACH DATABASE ? AS source_tier", (str(source_path),))
             result = _archive_readiness_counts(conn, source_conn=source_conn, source_check_available=True)
             assert result["missing_raw_session_count"] == 1  # raw3 is missing
         finally:

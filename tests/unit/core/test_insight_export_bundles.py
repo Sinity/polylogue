@@ -122,6 +122,42 @@ async def test_insight_export_bundle_writes_bounded_insights(cli_workspace: dict
     }
 
 
+@pytest.mark.parametrize("selection", [{"origin": "codex-session"}, {"until": "2026-03-02T23:59:59+00:00"}])
+@pytest.mark.parametrize("selected_stale", [False, True])
+@pytest.mark.asyncio
+async def test_filtered_profile_export_inspects_only_selected_partitions(
+    cli_workspace: dict[str, Path], selection: dict[str, str], selected_stale: bool
+) -> None:
+    import sqlite3
+
+    db_path = cli_workspace["db_path"]
+    _seed_export_insights(db_path)
+    await _rebuild_insights(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("UPDATE sessions SET title='changed unselected input' WHERE native_id='ext-claude-export'")
+        if selected_stale:
+            connection.execute("UPDATE sessions SET title='changed selected input' WHERE native_id='ext-codex-export'")
+    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+    target = cli_workspace["archive_root"] / "exports" / "filtered-profiles"
+    result = await archive.export_insight_bundle(
+        InsightExportBundleRequest(
+            output_path=target, insights=("profiles",), origin=selection.get("origin"), until=selection.get("until")
+        )
+    )
+    summary = result.manifest.insights[0]
+    assert summary.row_count == (0 if selected_stale else 1)
+    assert bool(summary.withheld_reason) == selected_stale
+    rows = _jsonl_file(target / "insights" / "session_profiles.jsonl")
+    assert [row["session_id"] for row in rows] == ([] if selected_stale else ["codex-session:ext-codex-export"])
+    coverage = _json_file(target / "coverage.json")
+    assert coverage["converged"] is (not selected_stale)
+    coverage_insights = coverage["insights"]
+    assert isinstance(coverage_insights, list)
+    profile_coverage = coverage_insights[0]
+    assert isinstance(profile_coverage, dict)
+    assert profile_coverage["stale_count"] == int(selected_stale)
+
+
 @pytest.mark.asyncio
 async def test_insight_export_bundle_protects_existing_targets(cli_workspace: dict[str, Path]) -> None:
     db_path = cli_workspace["db_path"]

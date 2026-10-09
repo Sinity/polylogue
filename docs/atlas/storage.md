@@ -24,6 +24,21 @@ arrays. Ingest, hashing, prepared serialization and index writes replay the
 ordered item rows without collecting them. The table is part of the rebuildable
 index schema and cascades with its event.
 
+Session-event native message anchors retain their exact Source spelling in
+`source_message_provider_id_json`, using the shared lossless native-name carrier.
+The companion SQLite text column carries the SQLite-safe native value, never a
+replacement character. Typed event reads and delegation resolution decode the
+same carrier. Event interval bounds and the boundary-message position are
+declared semantic hash inputs; NULL and zero remain distinct in complete and
+revision projections. Array event position continues to state order.
+
+File-edit evidence binds to the exact tool-use block occurrence admitted by
+the shared invocation association. Reusing a tool ID cannot transfer an earlier
+result's edit to a later call. An edit with no unique call owner refuses, and
+prepared indexing closes its scratch readers before transferring result pages.
+These Index schema and lowering changes move the derived identity and require
+reconvergence. They add no durable-tier migration.
+
 Provider-asserted branch points resolve against the parent's composed transcript,
 including prefix rows physically owned by ancestors. Resolution keeps the
 canonical owning message ID and respects the composed branch cut. Several rows
@@ -45,7 +60,8 @@ selected path without inspecting every source row
 `polylogue/storage/sqlite/archive_tiers/source.py:525-531`;
 `polylogue/storage/sqlite/archive_tiers/ops.py:218-225`).
 
-Raw/index materialization readiness may settle an unmatched raw as a valid
+Raw/index materialization readiness and the archive-debt diagnostic share
+`current_typed_non_session_raw`. They may settle an unmatched raw as a valid
 non-session only from a complete typed, non-terminal artifact
 (`parse_as_session=0`, not schema-eligible, without decode errors or malformed
 JSONL), a current complete parser receipt, and a current zero-member
@@ -61,9 +77,19 @@ publishes the current receipt before replay; a schema exemption cannot skip it.
 The bounded daemon status projection reuses this durable receipt and identity
 check without opening raw blobs. It keeps the raw/index join count visible
 while excluding only receipt-backed non-session raws from its unchecked-gap
-count. Every artifact in the cohort must remain raw-only and free of terminal
-support, decode, malformed-line, or validation evidence for that fast
+count. Exact raw readiness consumes the same materialization assessment, so
+complete parser receipts cannot erase replay debt or authority blockers.
+Missing Source reference counts and samples use the pinned Source attachment's
+SQL anti-join instead of collecting both corpora in Python. Every artifact in
+the cohort must remain raw-only and free of terminal support, decode, malformed-line, or validation evidence for that fast
 classification to apply.
+
+Schema-drift samples keep their signature byte count in `schema_drift_samples`
+and exact UTF-8 `surrogatepass` bytes in ordered 4 KiB
+`schema_drift_signature_chunks` rows. Metadata list and rate readers omit
+signature content; an explicit iterator reads chunks through the caller-owned
+Ops connection. The sampler rechunks larger carrier reads before SQLite sees
+them, and pruning a sample cascades its signature chunks.
 
 Prepared frontier inspection uses the resident preparation owner and the same
 original Source, Index and Ops inputs through publication. Source migration
@@ -82,6 +108,22 @@ Recovery uses the same supplied compute owner and short writer admissions; no
 Source capability crosses the preparation lifetime.
 
 ## Backup readability
+
+The archive writer holds cross-tier custody and excludes Source blob publishers
+through the package's tier and blob copies. Each SQLite tier is copied through
+SQLite's backup API from an explicitly pinned read transaction, including its
+committed WAL frames without draining unrelated readers. Later commits are
+excluded from that tier's cut. Backup page batches provide cancellation points;
+physical connection settlement precedes publication. The recorded source
+fingerprint retains the original physical main-file identity and hash plus
+nonempty WAL bytes, separately from its `snapshot` image fingerprint used by
+package verification. Data-version reobservation after releasing the pinned
+read records whether those live bytes still describe the selected cut. Only a
+stable cut can authorize migration, whose pre-lock and post-lock checks compare
+both physical carriers. A concurrent commit leaves valid recovery evidence but
+does not authorize migration. A declared-absent assertion is authenticated
+against its original stable main image without WAL, then rebound to the copied
+image; an unbound WAL cut cannot inherit that declaration.
 
 The backup manifest retains the original live-store blob debt before acquisition
 recovery. Restore reports unrestored references from the authenticated package's
@@ -201,6 +243,12 @@ Every caller closes through its context or ExitStack. Only declared cancellation
 may interrupt from another thread. Independent read frames do not acquire writer
 custody; readers inside an admitted async write operation retain that operation's
 existing grant until actual SQL close and original worker exit.
+
+Composed async repository reads own one query-store snapshot for selection,
+metadata, counts, profiles, messages, events and tags. Each overlapping operation
+retains its own read connection; hydration does not borrow a backend-global pool.
+The scoped query store refuses another task or use after its operation ends.
+Cancellation and failed native close retain the existing backend cleanup owner.
 
 Per-operation `sqlite3` readers use `contextlib.closing` or an explicit `finally`
 to end the connection lifetime. SQLite's connection context manager commits or
@@ -326,6 +374,17 @@ and preserves original receipts as detached provenance. Fixture clones use the
 same deep owner. Partial durable cores refuse operational restoration; omitted
 purchased Embeddings remain unrestored and produce degraded admission.
 
+Backup publication streams a filesystem barrier over every copied tier, CAS
+blob, metadata file and directory, then persists ancestor reachability before
+publishing the signed verification receipt. Unverified package success requires
+the same barrier. The first attestation-key directory also persists its parent
+chain. Explicit restore persists the complete destination, including purchased
+Embeddings and detached original receipts, before removing its population fence;
+a failed fence-retirement barrier reinstalls the original pending evidence.
+These barriers establish syscall ordering; neutral tests do not simulate an
+actual power loss (`core/durable_fs.py`, `storage/backup_package.py`,
+`storage/sqlite/population_admission.py`).
+
 Literal row evidence streams current durable ROWID table TEXT and BLOB cells
 through same-connection incremental handles, including primary keys and invalid
 UTF-8. Metadata projections fetch only storage classes and numeric scalars.
@@ -360,7 +419,9 @@ memory contributors.
 - `messages.content_address` witnesses the complete declared message hash projection, including block metadata, file edits and web constructs. A parent replacement may retain a branch edge only where that complete witness agrees; a same-ID message with changed content cannot silently become the child's inherited prefix (`_message_content_address` in `polylogue/storage/sqlite/archive_tiers/write.py`).
 - `messages.identity_source` records which identity path fired; its index CHECK is generated from the semantic `MessageIdentitySource` Literal (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:360-365`; `polylogue/core/types.py:13-16`).
 - Id-less appends continue above the greatest stored occurrence for each content digest. Materialized-prefix replay preserves existing ordinals, including gaps left by removed tail messages; an append never renumbers those anchors (`_stored_content_occurrences` in `polylogue/storage/sqlite/archive_tiers/write.py`).
-- `blocks.block_id` is stored-generated as `message_id || ':' || position`; tool command/path and `search_text` projections are virtual generated columns (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:561-566`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:635-650`).
+- `blocks.block_id` is stored-generated as `message_id || ':b:' || content_identity || ':' || content_occurrence`. The identity is the full SHA-256 digest of the parser's declared typed semantic fields, with NFC only on prose and exact tool IDs, identifiers, mapping keys, null and empty values. The occurrence counts only identical semantic identities within the owning message. It is bound before cross-block outcome association and retained by preparation sinks; later associated outcomes and citation hash updates never change it. Position states display order. Cross-export union matches only this identity, retains distinct rich and poor Source variants, and keeps existing file-edit, web, marker and action references stable (`pipeline/ids.py:block_content_identity`; `sources/tool_outcomes.py:_normalize_message`; `storage/sqlite/archive_tiers/archive_tiers_specs.py:BLOCKS_SPEC`).
+- Durable block target and evidence refs carry this stable block ID. Positional selectors are inputs to an archive-bound resolution; stored positional User refs stay unchanged and unresolved because the current slot cannot prove their historical target. Index replay and promotion compare the immutable semantic identity and occurrence, never an occupant's current position (`storage/sqlite/reference_seal.py:_block_reference_row`; `core/refs.py:EvidenceRef`).
+- A new block mutation retains its Source/Index operation pin through apply. A parent block selected in a child scope is proved by replaying the candidate scopes' retained Raw suppliers into an operation-owned scratch Index, using the production lineage writer. The selected exact block must belong to the resulting composed transcript. Raw rows, accepted-marker witnesses and parser dependencies are revalidated before durable apply; a Source replacement or deletion refuses. Scratch preparation publishes no archive blobs and closes with the pin (`operations/source_target_read.py`; `operations/source_composition_read.py`).
 - Sessions, messages, and blocks are `STRICT`; message and block ownership is enforced by cascading FKs (`polylogue/storage/sqlite/archive_tiers/index.py:527-647`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:330-333`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:93`).
 - `material_origin` is independently constrained from role, preserving authoredness as a separate axis (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:399-405`).
 - `blocks.tool_outcome` is the canonical structural outcome; a deliberate
@@ -415,6 +476,15 @@ Pending generations are restartable; a restart resumes their exact member set in
 
 ## Lineage storage model
 
+A provider-session identity contradiction records the child's original inherited
+branch point and content witness in `session_links.evidence_json.invalidated_prefix`
+before clearing resolution. Ordinary parent resolution and child append retain
+that loss evidence; deferred extraction cannot classify the stored tail as a
+fresh child. Full retained child replay replaces the edge evidence after lowering
+its complete source transcript. Until then, composed reads report incomplete
+lineage, compact accounting remains unknown, and the lineage recompose debt stays
+pending.
+
 The exported synchronous topology adapter discovers both children and outbound links for every fetched node, including ancestors found after the initial target. Its visited queue terminates cycles and includes ancestor siblings and their descendants; the shared topology composition engine retains edge classification and deterministic breadth-first output.
 
 - A prefix-sharing child stores only its divergent tail. The writer resolves the parent, compares composed signatures, records the last inherited message as the branch point, and lowers only the remaining messages (`_prepared_message_context` in `polylogue/storage/sqlite/archive_tiers/write.py:1694-1753`).
@@ -433,7 +503,7 @@ The exported synchronous topology adapter discovers both children and outbound l
 - Membership preparation stores accepted session output and attachment claims on the canonical sealed PreparedJsonl artifact. Publication queues the same publisher's closed-page claims before the Source transaction, then reads attachment values and references from that artifact. A private captured copy can survive collection of an unreferenced public blob; losing or changing the sealed private capture refuses publication (`polylogue/sources/prepared_jsonl.py`).
 - GC history counters are summaries derived only after all member outcomes close; member rows are the crash-recovery authority (`gc_generation_members` in `polylogue/storage/sqlite/archive_tiers/source.py:706-721`; `polylogue/storage/blob_gc.py:571-588`).
 - A retained agent work event (`append_work_event`) is its own logical source: its `agent-work-event:` raw id is also its logical key and source path, admitted as a byte-proven singleton baseline, so it never joins the byte-revision cohort or accepted head of the transcript it annotates (`write_work_event_raw_and_parsed_result` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). Its write is event-only and keeps the session's `raw_id` and `content_hash`. A cold build replays work-event keys after every byte and membership cohort, so the transcript's fresh write never meets a session an event created (`apply_prepared_revision_replay` in `polylogue/sources/revision_backfill.py`). Excision seeds work-event raws by the session's `(origin, native_id)`, and source conservation counts one as materialized when its session is indexed.
-- Rebuildable `index.db` must not become authority for an irreversible durable mutation; blob GC therefore requires source-ledger and active-index checks to agree (`polylogue/storage/blob_gc.py:7-20`; `polylogue/storage/blob_liveness.py:321-359`).
+- Acquired attachment bytes remain live through durable Source acquisition rows and Raw-owned attachment references, including while Index is reconstructed. Blob GC checks these current owners and publication reservations again before unlink; active Index references can also withhold deletion. Replacing a complete Index with a smaller attachment population does not block collection of unrelated unreferenced bytes (`polylogue/storage/blob_gc.py`; `polylogue/storage/blob_liveness.py`).
 
 ## DISCREPANCIES
 
@@ -460,6 +530,12 @@ A populated managed Index with canonical physical DDL and a stale fingerprint
 is reconstructed at startup from retained Source, before ordinary preflight.
 The existing Raw owner performs bounded canonical census, classification and
 replay into an owned inactive generation; external originals are unnecessary.
+Canonical parsing supplies membership and parser receipts from its prepared
+artifacts; the same original Source seal stages byte authority before replay.
+There is no separate direct classifier or historical receipt backfill selector.
+A cohort whose full authority is already retained skips prefix reclassification;
+its original blob integrity and currentness checks and append metadata fixed
+point remain active. New undecided full evidence compares the required anchors.
 The acquisition snapshot binds raw identities, captured coordinates, verified
 payload bytes, blob claims and capture observations to the current Index recipe.
 Origin and revision interpretation may refine only through those original
@@ -469,6 +545,11 @@ previously resolving purchased message references must all pass before the
 normal reference-checked promotion. No durable or purchased tier is replaced.
 Interrupted MEMORY candidates are discarded through their owner and rebuilt;
 a published successor completes its existing promotion tail on restart.
+Lifecycle JSON and the first-touch pointer anchor use exclusive no-follow,
+attempt-owned temporary files. A regular temporary left by an interrupted
+write remains untouched and cannot reserve the next attempt's pathname.
+Temporary symlinks still refuse; publication retains file and parent-directory
+fsync and the existing lifecycle lock and pointer identity checks.
 Promotion and restart do not derive durable parse success from Index receipts.
 Unacknowledged successful session components remain eligible for ordinary retained
 replay, which prepares current evidence and publishes its original Source permit
@@ -530,12 +611,29 @@ being validated and explicitly promoted through
 build or switch generations (`storage/embeddings/generations.py`;
 `storage/embeddings/materialization.py`; `storage/embeddings/derivation.py`).
 
+Embedding lifecycle startup resolves configured tier links through
+`ArchiveLocation`. Generation metadata and retention stay beside the actual
+Embeddings tier, including a separately located tier; writer admission remains
+bound to the configured archive. The configured link and physical directory
+are checked before admission and publication. An exception while staging the
+first adoption discards only that operation's unpublished copy, preserving the
+original database for the next startup attempt. Published promotion intent
+continues through normal lifecycle recovery.
+Copy bytes and metadata are staged outside committed `gen-*` inventory and
+published together by a directory rename. A process killed before publication
+can leave staging evidence, which inventory preserves and ignores rather than
+treating incomplete metadata as a generation or guessing authority to delete
+it. Restart can adopt the untouched original tier normally.
+
 Embedding status measures coverage from Index and the canonical Embeddings tier.
 Its separately guarded Ops history reader returns nullable catchup history when
 the disposable tier is missing or unreadable; that absence does not abort
 otherwise measurable coverage. Supplied pinned connections keep their original
 attached snapshot authority. Owned diagnostic readers close even when an
 Embeddings attachment refuses (`storage/embeddings/status_payload.py`).
+The daemon readiness adapter preserves an unreadable query as `unknown`, with
+nullable counts, coverage and cost. Status components, health, plain rendering
+and archive debt keep that unavailable measurement visible.
 
 Ordinary full FTS rebuilds clear text and identity residue together and stream
 session pages through the existing paired SQL projections. Progress counts
@@ -554,7 +652,13 @@ Provider total-only or reasoning-only counters cannot establish the priced input
 
 Event projection and stored catalog costs retain precision; the origin/model rollup rounds only after summing. Session buckets are replaced directly for cumulative observations without rescanning other sessions. Memory follows the distinct session/model result cardinality, with stored source events streamed. The caller owns the transaction; projection performs no commits. This additive-derived column moves the Index identity and must land before reconvergence; there is no durable migration or live rebuild in this delivery.
 
+Public cost rollups settle each session/model's dollar basis before summing the origin/model cohort. Per-model provider dollars take precedence, followed by a session report attributable to exactly one model, then an observed complete catalog amount. Unknown amounts remain absent through SQL reduction and contribute to unavailable counts; a reported zero remains exact. Session-wide reports are never repeated across several models. Origin tag rollups count distinct physical sessions and distinct `COALESCE(root_session_id, session_id)` logical roots under the requested origin/date scope, matching the scalar thread membership projection without loading profiles or transcripts.
+
 ## Retained schema coverage
+
+Replay preparation owns the schema registry and its exact current-snapshot
+refresh boundary, with per-raw validation evidence beside a shared physical
+preparation carrier, as described in [the source atlas](sources-parsers.md).
 
 Artifact inspection measures large JSON documents through the same semantic
 observations as decoded registry resolution. Its private SQLite spill keeps
@@ -572,12 +676,37 @@ These checks inspect CAS existence, while retained-byte validation owns full
 body fidelity.
 
 Drive attachment convergence pages byte and supplier-attribution obligations.
-A shared acquired attachment still owes each reference's exact retained raw,
-acquisition coordinate and blob hash in Source. References beyond the current
-window and references added after acquisition bind verified retained bytes
-without another provider request. Attachment readiness includes these pending
-attributions in its `allowed_unfetched` count; global acquired status alone
-does not discharge them (`operations/attachment_convergence.py`).
+Acquired attachment identity binds the descriptor and actual payload hash, so
+equal-size revisions with the same native file identity cannot replace older
+captured bytes. Metadata-only references remain unfetched until their exact
+supplier and acquisition coordinate have retained Source bytes or a current
+provider observation acquires them. One bounded window can share one provider
+observation; a later window cannot infer unchanged content from a native file
+ID. Publication relinks only the measured reference to its payload-version
+row and sweeps unreferenced descriptor rows. Attachment references use the
+owning message and the exact provider attachment native ID, encoded as UTF-8
+with surrogatepass and full lowercase hex in `attachment_refs.native_identity`.
+The generated reference is `{message_id}:attachment:n:{native_identity}`;
+position states display order only. Inserting a different native attachment,
+renaming presentation fields, acquiring a byte revision or enriching optional
+file/Drive identifiers does not rename this reference. One acquisition that
+declares competing objects under the same native ID is explicitly refused.
+Old positional User tokens remain untouched and unresolved; no alias or
+migration guesses their original object. Existing readers and GC continue
+to follow `attachment_refs` and `attachments.blob_hash`; Source evidence is
+never rewritten to match an Index observation. A persisted Ops keyset position
+advances only after window publication, wraps over retryable debt, and resumes
+after restart. Attachment readiness includes pending attribution in its
+`allowed_unfetched` count (`operations/attachment_convergence.py`).
+
+Attachment library states use the same read-side CAS hash verification as
+session attachments. An Index blob hash or acquired status alone does not
+establish physical availability. The shared preview classifier derives
+`missing-blob`, `unsupported-kind`, `too-large` or `available` from that proof.
+Both pinned HTTP and async repository readers stream candidates and apply
+physical state filters before offset and limit, retaining only the requested
+window. The returned records carry the observed availability used for filtering,
+so HTTP rows and page count evidence describe the same matches.
 
 ## Derived session records and FTS discovery
 
@@ -588,3 +717,34 @@ a second run projection to obtain unused counters. Unscoped FTS discovery merges
 the ordered session and block-membership indexes with one distinct session-key
 page, retaining empty sessions and blocks-only keys without collecting the
 remaining archive for every page (`storage/fts/derivation.py`, `required_page`).
+
+Blackboard paging counts and selects active NOTE assertions in one User read
+snapshot, ordered by updated_at_ms descending then assertion_id. Structured
+kind/repo/unresolved filters use the canonical body decoder before pagination.
+Only the selected page is hydrated; the MCP no longer reads a million-note prefix.
+
+Native message names are opaque: only literal empty is absent. Whitespace
+and Unicode normalization form remain significant in native identity,
+message ownership, and Source revision hashing. Exact repeated names use
+semantic content identity plus occurrence rather than replacing a row.
+
+Across distinct acquisitions, message reconciliation retains prior canonical
+owners. A canonical native match takes precedence; where duplicate-name
+normalization changes native and content identity, exact semantic digest and
+occurrence identify the same message. Incoming block and projection owners
+follow that explicit mapping. Original Source-native occurrence names remain
+separate Index evidence for asserted lineage anchors inside composed cuts.
+Same-acquisition replay and explicit replacement retain their replacement
+semantics.
+
+An asserted native anchor without a stored occurrence keeps lineage incomplete.
+A later parent write binds it only when the exact composed occurrence is unique;
+several admitted occurrences refuse the assertion rather than select a row.
+
+Embedding watcher scopes resolve retained Source paths through the active Index
+relation. Interrupted or failed native SQL remains an exception, preserving the
+existing deferred embedding obligation; it cannot certify an empty scope. A
+missing required Source tier raises `ArchiveTierUnavailableError`. The shared
+lookup retains the caller connection's attachment policy (profiled query-only
+readers attach Source read-only) and returns empty only for a successful
+zero-row join (`storage/source_sessions.py`; `operations/embedding_derivation.py`).

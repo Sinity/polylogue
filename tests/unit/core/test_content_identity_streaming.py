@@ -644,24 +644,18 @@ def test_a_long_number_is_canonicalized_as_it_streams(token: bytes, monkeypatch:
     assert max(len(run) for run in content_identity._BARE_TOKEN.findall(handed_on)) <= 32
 
 
-def test_a_long_integer_is_exact_or_not_json_as_the_decoder_reads_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity: canonicalize a long integer as a float and it loses digits;
-    accept one past the runtime's digit limit and a member the decoder
-    refuses gets a structural identity."""
+def test_a_long_integer_is_exact_without_runtime_digit_limit_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
     import sys
+    from decimal import Decimal
 
     from polylogue.core import content_identity
 
     monkeypatch.setattr(content_identity, "_HOLD_NUMBER_BYTES", 32)
     digits = b"9" * 5000
     payload = b"[-" + digits + b"]"
-    assert payload_content_identity(payload) == sha256(payload).hexdigest()
     previous = sys.get_int_max_str_digits()
-    sys.set_int_max_str_digits(0)
-    try:
-        assert payload_content_identity(payload) == structural_content_identity([-int(digits)])
-    finally:
-        sys.set_int_max_str_digits(previous)
+    assert payload_content_identity(payload) == structural_content_identity([-int(Decimal(digits.decode()))])
+    assert sys.get_int_max_str_digits() == previous
 
 
 def test_a_long_key_is_never_held_whole(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -709,20 +703,15 @@ def test_the_identity_pass_calls_the_checkpoint_per_window(monkeypatch: pytest.M
         stream_payload_content_identity(io.BytesIO(json.dumps({"a": "x" * 64}).encode()), checkpoint=checkpoint)
 
 
-def test_an_integer_the_decoder_refuses_is_not_json_before_it_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An integer past both the digit limit and the value limit is not JSON.
-
-    Anti-vacuity: record the value-limit refusal first and the later duplicate
-    key replaces it, giving the member the identity of ``{"a": 1}`` although
-    ``json.loads`` rejects its bytes.
-    """
+def test_valid_large_integer_duplicate_settles_before_physical_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A valid replaced integer does not poison the final exact JSON value."""
     from polylogue.core import content_identity
 
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
     payload = b'{"a": ' + b"9" * 5000 + b', "a": 1}'
-    assert payload_content_identity(payload) == sha256(payload).hexdigest()
+    assert payload_content_identity(payload) == payload_content_identity(b'{"a": 1}')
     monkeypatch.setattr(content_identity, "_HOLD_NUMBER_BYTES", 64)
-    assert payload_content_identity(payload) == sha256(payload).hexdigest()
+    assert payload_content_identity(payload) == payload_content_identity(b'{"a": 1}')
 
 
 def test_an_encoded_surrogate_after_an_escaped_backslash_keeps_its_identity() -> None:
@@ -780,3 +769,14 @@ def test_a_key_past_a_small_physical_limit_is_refused(monkeypatch: pytest.Monkey
     with pytest.raises(content_identity.ContentIdentityRefusal) as refusal:
         payload_content_identity(json.dumps({"k" * 40: 1}).encode())
     assert refusal.value.token == "object key"
+
+
+@pytest.mark.parametrize("digits", [4301, 65537])
+def test_valid_large_integer_stream_identity_matches_exact_selected_value(digits: int) -> None:
+    from decimal import Decimal
+
+    from polylogue.core.content_identity import structural_content_identity
+
+    value = int(Decimal("9" * digits))
+    payload = b'{"a":' + b"9" * digits + b"}"
+    assert payload_content_identity(payload) == structural_content_identity({"a": value})

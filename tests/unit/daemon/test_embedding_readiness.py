@@ -505,34 +505,58 @@ def test_readiness_failure_branch_counts_error_message_rows(tmp_path: Path) -> N
 # ── a clean, empty archive ─────────────────────────────────────────────
 
 
-def test_readiness_query_failure_logs_instead_of_looking_like_a_clean_archive(
+@pytest.mark.parametrize("enabled", [True, False])
+def test_readiness_query_failure_remains_unknown_through_daemon_surfaces(
     tmp_path: Path,
+    enabled: bool,
 ) -> None:
-    """A transient query failure returns the same shape as "nothing to embed
-    yet", so the failure must be logged loudly — otherwise it is invisible
-    that ``embedding_status="empty"`` came from an error, not a fresh archive.
-    """
+    """Query failure cannot become measured zeroes or a missing capability."""
+    from polylogue.daemon.status import (
+        EmbeddingReadiness,
+        _component_from_daemon_embedding_readiness,
+        format_daemon_status_lines,
+    )
+    from polylogue.readiness.capability import CapabilityReadinessState
+
     db = tmp_path / "status.sqlite"
     db.parent.mkdir(parents=True, exist_ok=True)
     db.touch()
 
-    cfg = _config(embedding_enabled=True, voyage_api_key="vk-live")
+    cfg = _config(embedding_enabled=enabled, voyage_api_key="vk-test")
 
     def _boom(*args: object, **kwargs: object) -> object:
         raise sqlite3.OperationalError("database is locked")
 
     with (
         patch("polylogue.config.load_polylogue_config", return_value=cfg),
-        patch("polylogue.daemon.embedding_readiness.embedding_status_payload", side_effect=_boom),
+        patch("polylogue.operations.embedding_readiness.embedding_status_payload", side_effect=_boom),
         plog.capture() as records,
     ):
         info = embedding_readiness_info(db)
 
-    # Same shape as a genuinely empty archive -- this is exactly the
-    # ambiguity the doctrine flags. The log line is what makes the two
-    # distinguishable.
-    assert info["embedding_status"] == "empty"
+    assert info["embedding_status"] == "unknown"
+    assert info["embedding_freshness_status"] == "unknown"
+    assert info["embedding_unmeasurable_reason"] == "readiness_unreadable"
+    for field in (
+        "pending_count",
+        "pending_message_count",
+        "stale_count",
+        "coverage_percent",
+        "failure_count",
+        "terminal_failure_count",
+        "retryable_failure_count",
+        "estimated_cost_usd",
+    ):
+        assert info[f"embedding_{field}"] is None
     assert info["embedding_retrieval_ready"] is False
+    readiness = EmbeddingReadiness.model_validate(info)
+    component = _component_from_daemon_embedding_readiness(readiness)
+    assert component.state is CapabilityReadinessState.UNKNOWN
+    assert component.counts["coverage_pct"] is None
+    assert component.counts["pending_sessions"] is None
+    assert component.caveats == ("readiness_unreadable",)
+    rendered = list(format_daemon_status_lines({"embedding_readiness": readiness.model_dump()}))
+    assert "Embeddings: unknown (readiness_unreadable); measurements unavailable" in rendered
     # Anti-vacuity: delete the emit() in embedding_readiness and this is red.
     failures = [r for r in records if r["event"] == "daemon.embed.readiness_query_failed"]
     assert len(failures) == 1

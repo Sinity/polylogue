@@ -28,6 +28,7 @@ def recover_on_admitted_owner(archive_root: Path) -> None:
                 archive_root,
                 resolver_actor_ref=RECOVERY_SERVICE_ACTOR_REF,
                 input_demand=owner._compute_adapter.amend_current_input_demand,
+                startup=True,
             )
 
     run_off_event_loop(lambda: asyncio.run(run()))

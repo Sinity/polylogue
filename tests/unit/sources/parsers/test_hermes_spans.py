@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.sources.dispatch import detect_provider, parse_payload, parse_stream_payload
@@ -92,6 +94,54 @@ def test_dispatch_detects_and_parses_atif_trace_through_the_real_pipeline() -> N
     assert len(session.messages[0].text or "") < 500
 
 
+@pytest.mark.parametrize("parallel_calls", [1, 3])
+def test_atif_tool_step_keeps_invocation_and_usage_once(parallel_calls: int) -> None:
+    step: JSONDocument = {
+        "step_id": "step-1",
+        "source": "agent",
+        "tool_calls": [{"tool_call_id": f"call-{i}", "function_name": "terminal"} for i in range(parallel_calls)],
+        "extra": {
+            "invocation": {"invocation_id": "inv-1", "framework": "neutral", "start_timestamp": 1, "end_timestamp": 2},
+            "llm_response": {"usage": {"prompt_tokens": 3, "completion_tokens": 4}},
+        },
+    }
+    payload = hermes_spans.marker_payload("tool-telemetry", [step])
+    [session] = parse_payload(Provider.HERMES, payload, "fallback")
+    tools = [e for e in session.session_events if e.event_type == "hermes_tool_execution_span"]
+    assert len(tools) == parallel_calls
+    telemetry = [e for e in session.session_events if "llm_response_usage" in e.payload]
+    [event] = telemetry
+    assert event.payload["invocation_invocation_id"] == "inv-1"
+    assert event.payload["invocation_framework"] == "neutral"
+    assert event.payload["invocation_start_timestamp"] == 1
+    assert event.payload["invocation_end_timestamp"] == 2
+    assert event.payload["llm_response_usage"] == {"prompt_tokens": 3, "completion_tokens": 4}
+    assert all("llm_response_usage" not in tool.payload for tool in tools)
+
+
+def test_atif_malformed_parts_keep_explicit_parent_and_child_fidelity(tmp_path: Path) -> None:
+    payload = hermes_spans.marker_payload(
+        "parent-accounting",
+        [None, {"tool_calls": [{"tool_call_id": "valid", "function_name": "terminal"}, {"function_name": "terminal"}]}],
+    )
+    payload["subagent_trajectories"] = [
+        None,
+        {"session_id": "child-accounting", "steps": [None, {"tool_calls": [{"function_name": "terminal"}]}]},
+    ]
+    parent, child = hermes_spans.parse_atif_document(payload, "fallback", profile_root=tmp_path)
+    for session, expected in (
+        (parent, {"malformed_steps": 1, "malformed_tool_calls": 1, "malformed_subagents": 1}),
+        (child, {"malformed_steps": 1, "malformed_tool_calls": 1, "malformed_subagents": 0}),
+    ):
+        [accounting] = [e for e in session.session_events if e.event_type == "hermes_atif_parse_accounting"]
+        assert accounting.payload == expected
+        fidelity = hermes_spans.import_fidelity_declaration(session)
+        capability = fidelity.capabilities["malformed_parts"]
+        assert capability.status == "degraded"
+        assert capability.counts == expected
+        assert any(caveat.startswith("malformed_parts:") for caveat in fidelity.caveats)
+
+
 def test_atif_step_timestamp_reaches_session_events_through_dispatch() -> None:
     payload = {
         "schema_version": "ATIF-v1.7",
@@ -123,8 +173,13 @@ def test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser() -> None:
     assert session.provider_session_id == "observer:atif:real-nemo-relay-session-redacted"
     assert len(payload["steps"]) == 6
     llm_events = [event for event in session.session_events if event.event_type == "hermes_llm_request_span"]
-    assert len(llm_events) == 5
-    assert all(event.payload["message_char_len"] == len("<redacted>") for event in llm_events)
+    assert len(llm_events) == 6
+    message_events = [event for event in llm_events if "message_char_len" in event.payload]
+    assert len(message_events) == 5
+    assert all(event.payload["message_char_len"] == len("<redacted>") for event in message_events)
+    [tool_step] = [event for event in llm_events if event.payload.get("shape") == "tool_calls"]
+    assert tool_step.payload["llm_call_count"] == 1
+    assert tool_step.payload["invocation_framework"] == payload["steps"][-1]["extra"]["invocation"]["framework"]
 
     # Step 6 (real evidence: 4 parallel tool_calls plus observation.results,
     # drawn from a separate live trajectory -- see fixtures/hermes/atif/README.md)
@@ -872,7 +927,10 @@ def test_malformed_steps_and_tool_calls_are_skipped_and_counted_not_crashing() -
         for event in session.session_events
         if event.event_type not in {"hermes_observer_span", "hermes_observer_trace_correlation"}
     ]
-    assert real_events == []
+    [accounting] = real_events
+    assert accounting.event_type == "hermes_atif_parse_accounting"
+    assert accounting.payload == {"malformed_steps": 1, "malformed_tool_calls": 2, "malformed_subagents": 0}
+    assert hermes_spans.import_fidelity_declaration(session).capabilities["malformed_parts"].status == "degraded"
 
     # A non-object step is genuinely skipped-and-counted, not silently
     # coerced into a generic ``hermes_observer_span`` event (review-adjacent

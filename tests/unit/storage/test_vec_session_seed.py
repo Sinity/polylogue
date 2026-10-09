@@ -21,6 +21,7 @@ from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.identity import fixture_block_content_identity
 
 
 def _unit_vector(*, axis0: float, axis1: float) -> list[float]:
@@ -117,12 +118,14 @@ def test_managed_connection_retains_current_index_embeddings(tmp_path: Path) -> 
             (session_id, len(text.split()), b"m" * 32),
         )
         conn.execute(
-            """
-            INSERT INTO blocks (
-                session_id, message_id, position, block_type, text, content_hash
-            ) VALUES (?, ?, 0, 'text', ?, ?)
-            """,
-            (session_id, message_id, text, b"b" * 32),
+            "INSERT INTO blocks ( session_id, message_id, position, block_type, text, content_hash , content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, ?, 0)",
+            (
+                session_id,
+                message_id,
+                text,
+                b"b" * 32,
+                fixture_block_content_identity("text", text),
+            ),
         )
         conn.commit()
     finally:

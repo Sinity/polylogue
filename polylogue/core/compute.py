@@ -23,7 +23,7 @@ import threading
 from builtins import BaseExceptionGroup
 from collections import deque
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from functools import partial
 from time import monotonic
@@ -243,14 +243,22 @@ class CancellationHandle:
         with self._lock:
             self._connections.pop(id(connection), None)
 
-    def add_listener(self, listener: Callable[[], None]) -> None:
+    def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Run ``listener`` when cancellation fires, or immediately if it already has."""
 
         with self._lock:
-            if not self.cancelled:
+            already_cancelled = self.cancelled
+            if not already_cancelled:
                 self._listeners.append(listener)
-                return
-        listener()
+        if already_cancelled:
+            listener()
+
+        def remove() -> None:
+            with self._lock:
+                if listener in self._listeners:
+                    self._listeners.remove(listener)
+
+        return remove
 
     def cancel(self) -> None:
         self._cancelled.set()
@@ -839,13 +847,16 @@ class BoundedComputeAdapter:
         estimated_bytes: Callable[[InputT], int] = lambda _item: 0,
         discard_unconsumed: Callable[[T], None] | None = None,
         exclusive_bytes: bool = False,
+        checkpoint: Callable[[], None] | None = None,
     ) -> Generator[T, None, None]:
         """Run pure units in input order through this adapter's admission.
 
         The window owns only its submitted operations, never the shared pool.
         A failure or consumer cancellation drains those operations before the
         caller can discard their scratch. Nested maps execute synchronously
-        under the parent's exact reservation.
+        under the parent's exact reservation. ``checkpoint`` observes caller
+        cancellation while waiting; its failure cancels and physically drains
+        this window before the caller can release its owned state.
         """
         if admission_class not in self._classes:
             raise ValueError(f"unknown compute admission class: {admission_class!r}")
@@ -858,6 +869,8 @@ class BoundedComputeAdapter:
         try:
             exhausted = False
             while pending or not exhausted:
+                if checkpoint is not None:
+                    checkpoint()
                 while not exhausted and len(pending) < window:
                     if waiting_item is None:
                         try:
@@ -884,6 +897,12 @@ class BoundedComputeAdapter:
                     waiting_item = None
                     pending.append(operation)
                 if pending:
+                    if checkpoint is not None:
+                        while not pending[0].future.done():
+                            # A scheduling checkpoint, never a work deadline.
+                            wait((pending[0].future,), timeout=0.05)
+                            checkpoint()
+                        checkpoint()
                     result = pending[0].future.result()
                     pending.popleft()
                     yield result

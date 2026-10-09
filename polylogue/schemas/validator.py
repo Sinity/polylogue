@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable, Mapping
+from collections.abc import Generator, Iterable, Mapping
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from re import compile as compile_pattern
@@ -37,6 +38,7 @@ from .validator_resolution import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.schemas.observation_spill import SpilledKey
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.retained_validation import RetainedValidationVerdict
 
@@ -456,6 +458,57 @@ def detect_drift(
     return [f"Unexpected field: {field_path}" for field_path in _iter_drift_paths(data, schema, path, root)]
 
 
+@dataclass(frozen=True)
+class _DriftPath:
+    """A diagnostic path borrowing exact keys from the completed JSON owner."""
+
+    parts: tuple[str | SpilledKey, ...] = ()
+
+    def iter_utf8_chunks(self) -> Generator[bytes, None, None]:
+        from polylogue.schemas.observation_spill import SpilledKey
+
+        for part in self.parts:
+            if isinstance(part, SpilledKey):
+                with closing(part.iter_utf8_chunks()) as chunks:
+                    yield from chunks
+            else:
+                for offset in range(0, len(part), 1024):
+                    yield part[offset : offset + 1024].encode("utf-8", "surrogatepass")
+
+    def text(self) -> str:
+        return "".join(chunk.decode("utf-8", "surrogatepass") for chunk in self.iter_utf8_chunks())
+
+    def has_text(self) -> bool:
+        from polylogue.schemas.observation_spill import SpilledKey
+
+        return any(part.small_name != "" if isinstance(part, SpilledKey) else bool(part) for part in self.parts)
+
+    def field(self, key: str | SpilledKey) -> _DriftPath:
+        return _DriftPath(self.parts + ((".",) if self.has_text() else ()) + (key,))
+
+    def item(self, index: int) -> _DriftPath:
+        return _DriftPath(self.parts + (f"[{index}]",))
+
+
+def _drift_keys(data: Mapping[str, object]) -> Generator[str | SpilledKey, None, None]:
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    if isinstance(data, SpilledObject):
+        with closing(data.key_entries()) as keys:
+            for key, _child in keys:
+                yield key
+    else:
+        yield from data
+
+
+def _drift_value(data: Mapping[str, object], key: str | SpilledKey) -> object:
+    from polylogue.schemas.observation_spill import SpilledKey, SpilledObject
+
+    if isinstance(key, SpilledKey) and isinstance(data, SpilledObject):
+        return data.value_for_key(key)
+    return data[key.read() if isinstance(key, SpilledKey) else key]
+
+
 def _iter_drift_paths(
     data: Mapping[str, object],
     schema: Mapping[str, object],
@@ -463,7 +516,22 @@ def _iter_drift_paths(
     root: Mapping[str, object] | None = None,
     connection: sqlite3.Connection | None = None,
 ) -> Iterable[str]:
-    """Yield every unexpected-field path without collecting warning strings."""
+    """Materialize complete paths only for an explicitly selected warning caller."""
+    with closing(_iter_drift_key_paths(data, schema, _DriftPath((path,)), root, connection)) as paths:
+        for key_path in paths:
+            yield key_path.text()
+
+
+def _iter_drift_key_paths(
+    data: Mapping[str, object],
+    schema: Mapping[str, object],
+    path: _DriftPath,
+    root: Mapping[str, object] | None = None,
+    connection: sqlite3.Connection | None = None,
+) -> Generator[_DriftPath, None, None]:
+    """Retain exact unexpected names without retrieving unknown values or names."""
+    from polylogue.schemas.observation_spill import SpilledKey
+
     root = root if root is not None else schema
     selected_schema = _schema_branch_for_value(schema, data, root, connection=connection)
     if not isinstance(selected_schema, Mapping):
@@ -472,47 +540,59 @@ def _iter_drift_paths(
     properties = properties_value if isinstance(properties_value, Mapping) else {}
     has_additional = selected_schema.get("additionalProperties", True)
     dynamic_container = bool(selected_schema.get("x-polylogue-dynamic-keys"))
-    for key, value in data.items():
-        check_compute_cancelled()
-        current_path = f"{path}.{key}" if path else str(key)
-        if key not in properties:
-            property_schema = _schema_for_property(selected_schema, str(key), value, root, connection=connection)
-            if _has_matching_pattern_property(selected_schema, str(key)):
-                yield from _iter_nested_drift_paths(value, property_schema, current_path, root, connection)
-            elif has_additional is False:
-                yield current_path
-            elif has_additional is True:
-                if not dynamic_container:
+    patterns = selected_schema.get("patternProperties")
+    with closing(_drift_keys(data)) as keys:
+        for key in keys:
+            check_compute_cancelled()
+            name = key.small_name if isinstance(key, SpilledKey) else key
+            if name is None:
+                assert isinstance(key, SpilledKey)
+                # Declared literal names can be compared exactly without reading
+                # an unknown key. Generic regex evaluation remains a selected
+                # full-name demand when the schema actually declares patterns.
+                name = next((declared for declared in properties if key.matches(declared)), None)
+                if name is None and isinstance(patterns, Mapping) and patterns:
+                    name = key.read()
+            current_path = path.field(key)
+            if name not in properties:
+                if name is not None and _has_matching_pattern_property(selected_schema, name):
+                    value = _drift_value(data, key)
+                    property_schema = _schema_for_property(selected_schema, name, value, root, connection=connection)
+                    yield from _iter_nested_drift_key_paths(value, property_schema, current_path, root, connection)
+                elif has_additional is False:
                     yield current_path
-            else:
-                if not dynamic_container and not looks_dynamic_key(str(key)):
-                    yield current_path
-                yield from _iter_nested_drift_paths(value, has_additional, current_path, root, connection)
-            continue
-        yield from _iter_nested_drift_paths(value, properties.get(key), current_path, root, connection)
+                elif has_additional is True:
+                    if not dynamic_container:
+                        yield current_path
+                else:
+                    if not dynamic_container and name is not None and not looks_dynamic_key(name):
+                        yield current_path
+                    yield from _iter_nested_drift_key_paths(
+                        _drift_value(data, key), has_additional, current_path, root, connection
+                    )
+                continue
+            yield from _iter_nested_drift_key_paths(
+                _drift_value(data, key), properties.get(name), current_path, root, connection
+            )
 
 
-def _iter_nested_drift_paths(
+def _iter_nested_drift_key_paths(
     value: object,
     schema: object,
-    path: str,
+    path: _DriftPath,
     root: Mapping[str, object],
     connection: sqlite3.Connection | None,
-) -> Iterable[str]:
+) -> Generator[_DriftPath, None, None]:
     selected_schema = _schema_branch_for_value(schema, value, root, connection=connection)
     if not isinstance(selected_schema, Mapping):
         return
     if isinstance(value, Mapping):
-        yield from _iter_drift_paths(value, selected_schema, path, root, connection)
+        yield from _iter_drift_key_paths(value, selected_schema, path, root, connection)
     elif isinstance(value, list):
         for index, item in enumerate(value):
             check_compute_cancelled()
-            yield from _iter_nested_drift_paths(
-                item,
-                _schema_for_items(selected_schema, item, root),
-                f"{path}[{index}]",
-                root,
-                connection,
+            yield from _iter_nested_drift_key_paths(
+                item, _schema_for_items(selected_schema, item, root), path.item(index), root, connection
             )
 
 
@@ -746,6 +826,7 @@ def validate_retained_document(
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
     registry: SchemaRegistry | None = None,
+    signature_directory: Path,
 ) -> RetainedValidationVerdict:
     """Validate a retained source revision with a compact spill-backed verdict.
 
@@ -753,22 +834,31 @@ def validate_retained_document(
     its original evidence remain owned.  Importing lazily keeps the ordinary
     in-memory validation surface independent of the retained storage adapter.
     """
+    from contextlib import AbstractContextManager, nullcontext
+
     from polylogue.schemas.retained_validation import validate_retained_document as validate
 
-    return validate(
-        provider,
-        path,
-        mode=mode,
-        raw_id=raw_id,
-        revision_sha256=revision_sha256,
-        evidence_id=evidence_id,
-        source_path=source_path,
-        jsonl=jsonl,
-        captured_zip_coordinate=captured_zip_coordinate,
-        schema_resolution=schema_resolution,
-        schema_resolution_is_explicit=schema_resolution_is_explicit,
-        registry=registry,
-    )
+    active_registry = registry
+    snapshot: AbstractContextManager[None] = nullcontext()
+    if ValidationMode.from_string(mode) is not ValidationMode.OFF:
+        active_registry = registry or SchemaRegistry()
+        snapshot = active_registry.current_provider_snapshot(provider)
+    with snapshot:
+        return validate(
+            provider,
+            path,
+            mode=mode,
+            raw_id=raw_id,
+            revision_sha256=revision_sha256,
+            evidence_id=evidence_id,
+            source_path=source_path,
+            jsonl=jsonl,
+            captured_zip_coordinate=captured_zip_coordinate,
+            schema_resolution=schema_resolution,
+            schema_resolution_is_explicit=schema_resolution_is_explicit,
+            registry=active_registry,
+            signature_directory=signature_directory,
+        )
 
 
 __all__ = [

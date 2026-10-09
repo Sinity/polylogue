@@ -11,8 +11,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from polylogue.core.json import JSONValue
+from polylogue.core.message_native_identity import native_id_from_storage, source_native_id_from_json
 from polylogue.material_protocol.v1.canonical import parse_json_value
-from polylogue.material_protocol.v1.errors import SegmentMissingError, SequenceOrderError
+from polylogue.material_protocol.v1.errors import SegmentMissingError, SemanticClosureError, SequenceOrderError
 from polylogue.material_protocol.v1.manifest import RevisionManifest, SegmentDescriptor, require_current_semantics
 
 
@@ -30,6 +31,7 @@ class DecodedMessage:
     model_name: str | None
     parent_message_id: str | None
     usage: dict[str, JSONValue]
+    source_native_id: str | None = None
     blocks: list[dict[str, JSONValue]] = field(default_factory=list)
     attachments: list[dict[str, JSONValue]] = field(default_factory=list)
     session_events: list[dict[str, JSONValue]] = field(default_factory=list)
@@ -63,7 +65,7 @@ def _read_space_records(
             if not isinstance(parsed, dict):
                 raise SequenceOrderError(f"segment {index} contains a non-object record")
             seq = parsed.get("seq")
-            if seq != expected_seq:
+            if type(seq) is not int or seq != expected_seq:
                 raise SequenceOrderError(f"expected seq={expected_seq}, got seq={seq!r} in segment {index}")
             records.append(parsed)
             expected_seq += 1
@@ -78,9 +80,16 @@ def iter_records(manifest: RevisionManifest, segment_bytes: dict[int, bytes]) ->
     return head + transcript
 
 
-def decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int, bytes]) -> DecodedSession:
+def _decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int, bytes]) -> DecodedSession:
     require_current_semantics(manifest)
     records = iter_records(manifest, segment_bytes)
+    from polylogue.material_protocol.v1.verify import _check_semantic_closure
+
+    _check_semantic_closure(
+        manifest,
+        [r for r in records if r.get("kind") in {"session", "lineage", "usage"}],
+        [r for r in records if r.get("kind") not in {"session", "lineage", "usage"}],
+    )
 
     session_records = [r for r in records if r["kind"] == "session"]
     if len(session_records) != 1:
@@ -95,11 +104,18 @@ def decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int,
         if kind == "session":
             continue
         if kind == "lineage":
+            branch = record.get("branch_point_message_native_id")
+            carrier = record.get("branch_point_source_native_id_json")
+            record["branch_point_message_native_id"] = native_id_from_storage(
+                branch if isinstance(branch, str) else None, carrier if isinstance(carrier, str) else None
+            )
             decoded.lineage.append(record)
         elif kind == "usage":
             decoded.usage.append(record)
         elif kind == "message":
             message_id = str(record["message_id"])
+            if message_id in messages_by_id:
+                raise SemanticClosureError(f"duplicate message identity {message_id!r}")
             message_order.append(message_id)
             usage_payload = record["usage"]
             assert isinstance(usage_payload, dict)
@@ -107,7 +123,13 @@ def decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int,
             parent_message_id = record.get("parent_message_id")
             messages_by_id[message_id] = DecodedMessage(
                 message_id=message_id,
-                native_id=str(native_id) if native_id is not None else None,
+                native_id=native_id_from_storage(
+                    str(native_id) if native_id is not None else None,
+                    str(record["source_native_id_json"]) if record.get("source_native_id_json") is not None else None,
+                ),
+                source_native_id=source_native_id_from_json(
+                    str(record["source_native_id_json"]) if record.get("source_native_id_json") is not None else None
+                ),
                 position=int(record["position"]),  # type: ignore[arg-type]
                 variant_index=int(record["variant_index"]),  # type: ignore[arg-type]
                 role=str(record["role"]),
@@ -136,6 +158,13 @@ def decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int,
 
     decoded.messages = [messages_by_id[message_id] for message_id in message_order]
     return decoded
+
+
+def decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int, bytes]) -> DecodedSession:
+    try:
+        return _decode_session_revision(manifest, segment_bytes)
+    except (KeyError, TypeError, ValueError, AssertionError) as exc:
+        raise SemanticClosureError("invalid material record declaration") from exc
 
 
 __all__ = ["DecodedMessage", "DecodedSession", "decode_session_revision", "iter_records"]

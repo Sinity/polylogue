@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.archive.session_revision_membership import MembershipDecision
+from polylogue.core.enums import ValidationMode
 from polylogue.core.evidence import Measured
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS
 from polylogue.sources.drive.source_support import _parse_modified_time
@@ -20,6 +21,7 @@ from polylogue.storage.tier_access import capture_sqlite_read
 
 if TYPE_CHECKING:
     from polylogue.config import Config, DriveConfig, PolylogueConfig, Source
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
 class DriveCatchupState(str, Enum):
@@ -110,6 +112,8 @@ def inspect_drive_readiness(
     *,
     changed_count: int = 0,
     raw_owner_available: bool = True,
+    inspect_raw: Callable[[str], str] | None = None,
+    index_schema: str = "main",
 ) -> DriveCatchupReport:
     """Bind every listed revision to retained Source and the supplied Index view.
 
@@ -214,11 +218,18 @@ def inspect_drive_readiness(
                 if (
                     head is None
                     or index.execute(
-                        "SELECT 1 FROM sessions WHERE session_id=? AND raw_id=?", (key, head[0])
+                        f"SELECT 1 FROM {index_schema}.sessions WHERE session_id=? AND raw_id=?", (key, head[0])
                     ).fetchone()
                     is None
                 ):
                     materialized = False
+            if inspect_raw is None:
+                unknown = True
+                gaps.add("drive_raw_currency_unobserved")
+                materialized = False
+            elif inspect_raw(str(raw_id)) != "valid":
+                materialized = False
+                gaps.add("drive_raw_currency_pending")
             if not member_count or not materialized:
                 pending += 1
                 gaps.add("drive_materialization_pending")
@@ -303,6 +314,7 @@ def configured_source_observation_fingerprint(config: Config | PolylogueConfig) 
     identity = (
         str(root.absolute()),
         None if sources is None else tuple((source.name, source.folder) for source in sources if source.is_drive),
+        getattr(config, "schema_validation", None),
         DriveListingWitness.selection_rule,
         tuple(sorted((name, id(witness), witness.generation) for name, witness in witnesses.items())),
     )
@@ -320,11 +332,11 @@ def configured_source_readiness_from_archive(archive: object, config: object | N
         report = DriveCatchupReport(DriveCatchupState.UNKNOWN, gaps=("drive_configuration_unobserved",))
     else:
         measured = capture_sqlite_read(
-            lambda: inspect_drive_readiness(
+            lambda: _inspect_selected_drive_readiness(
+                archive,
                 sources,
-                None if "source" in archive.operation_degraded_components else archive.source_connection,
-                archive.index_connection,
                 drive_readiness_observation(Path(archive.archive_root)).witnesses,
+                validation_mode=_configured_validation_mode(config),
             )
         )
         report = (
@@ -342,6 +354,7 @@ def inspect_current_drive_readiness(
     *,
     changed_count: int = 0,
     raw_owner_available: bool = True,
+    validation_mode: ValidationMode | None = None,
 ) -> DriveCatchupReport:
     """Inspect the pinned current generation without opening an independent frame."""
     from polylogue.core.errors import ArchiveTierUnavailableError, SchemaRefusalError
@@ -349,13 +362,13 @@ def inspect_current_drive_readiness(
 
     def read() -> DriveCatchupReport:
         with open_operation_read(root) as pinned:
-            return inspect_drive_readiness(
+            return _inspect_selected_drive_readiness(
+                pinned.archive,
                 sources,
-                None if "source" in pinned.degraded_components else pinned.archive.source_connection,
-                pinned.archive.index_connection,
                 witnesses,
                 changed_count=changed_count,
                 raw_owner_available=raw_owner_available,
+                validation_mode=validation_mode,
             )
 
     try:
@@ -369,3 +382,41 @@ def inspect_current_drive_readiness(
         if isinstance(measured, Measured)
         else DriveCatchupReport(DriveCatchupState.UNKNOWN, changed_count, gaps=("drive_archive_authority_unavailable",))
     )
+
+
+def _configured_validation_mode(config: object | None) -> ValidationMode | None:
+    mode = getattr(config, "schema_validation", None)
+    return None if mode is None else ValidationMode.from_string(mode)
+
+
+def _inspect_selected_drive_readiness(
+    archive: ArchiveStore,
+    sources: Sequence[Source],
+    witnesses: Mapping[str, DriveListingWitness],
+    *,
+    validation_mode: ValidationMode | None,
+    changed_count: int = 0,
+    raw_owner_available: bool = True,
+) -> DriveCatchupReport:
+    from polylogue.storage.derived.raw import RawObservationInspection
+
+    if not any(source.is_drive for source in sources):
+        return inspect_drive_readiness(sources, None, None, witnesses, changed_count=changed_count)
+    if archive.index_connection is None or "source" in archive.operation_degraded_components:
+        return inspect_drive_readiness(sources, None, None, witnesses, changed_count=changed_count)
+    inspector = RawObservationInspection(
+        Path(archive.archive_root),
+        index_db_path=archive.index_db_path,
+        validation_mode=validation_mode,
+    )
+    with inspector.read_current() as conn:
+        return inspect_drive_readiness(
+            sources,
+            conn,
+            conn,
+            witnesses,
+            changed_count=changed_count,
+            raw_owner_available=raw_owner_available,
+            index_schema="index_tier",
+            inspect_raw=None if validation_mode is None else lambda key: inspector.inspect_current(conn, key),
+        )

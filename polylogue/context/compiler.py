@@ -475,7 +475,10 @@ def _object_refs_from_query_unit_item(item: dict[str, object]) -> tuple[ObjectRe
         refs.append(ObjectRef(kind="message", object_id=message_id))
     block_index = item.get("block_index")
     if isinstance(message_id, str) and message_id and isinstance(block_index, int):
-        refs.append(ObjectRef(kind="block", object_id=message_id, qualifiers=(str(block_index),)))
+        block_id = item.get("block_id")
+        if not isinstance(block_id, str) or not block_id:
+            raise ValueError("query unit block position requires a stable block_id before context delivery")
+        refs.append(ObjectRef(kind="block", object_id=block_id))
     assertion_id = item.get("assertion_id")
     if isinstance(assertion_id, str) and assertion_id:
         refs.append(ObjectRef(kind="assertion", object_id=assertion_id))
@@ -496,7 +499,10 @@ def _evidence_refs_from_query_unit_item(item: dict[str, object]) -> tuple[Eviden
         if isinstance(message_id, str) and message_id:
             refs.append(EvidenceRef(session_id=session_id, message_id=message_id))
             if isinstance(block_index, int):
-                refs.append(EvidenceRef(session_id=session_id, message_id=message_id, block_index=block_index))
+                block_id = item.get("block_id")
+                if not isinstance(block_id, str) or not block_id:
+                    raise ValueError("query unit block position requires a stable block_id before context delivery")
+                refs.append(EvidenceRef(session_id=session_id, message_id=message_id, block_id=block_id))
         else:
             refs.append(EvidenceRef(session_id=session_id))
     return tuple(refs)

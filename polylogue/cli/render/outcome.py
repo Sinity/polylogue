@@ -127,13 +127,20 @@ def print_diagnostics_lines(diagnostics: dict[str, object]) -> None:
 # ---------------------------------------------------------------------------
 
 
+class OutcomeExit(SystemExit):
+    """A completed read document's terminal status, distinct from a refusal."""
+
+    def __init__(self, outcome: OutcomeEnvelope) -> None:
+        super().__init__(outcome_exit_code(outcome))
+
+
 def finish_supplied_outcome(outcome: OutcomeEnvelope) -> None:
     """Finish a delivered projection with its original selection verdict."""
     if outcome.state in {"degraded", "error"}:
         click.echo(json.dumps({"outcome": outcome.to_dict()}, sort_keys=True), err=True)
     status = outcome_exit_code(outcome)
     if status:
-        raise SystemExit(status)
+        raise OutcomeExit(outcome)
 
 
 def exit_for(outcome: OutcomeEnvelope) -> NoReturn:
@@ -144,7 +151,7 @@ def exit_for(outcome: OutcomeEnvelope) -> NoReturn:
     report ``empty`` (2) for a page the operation called ``degraded`` (1).
     """
 
-    raise SystemExit(outcome_exit_code(outcome))
+    raise OutcomeExit(outcome)
 
 
 #: Exit status of a read the operator interrupted. 128 + SIGINT, the shell
@@ -378,6 +385,7 @@ def emit_no_results(
 
 
 __all__ = [
+    "OutcomeExit",
     "CANCELLED_EXIT_CODE",
     "EMPTY_EXIT_CODE",
     "FAILED_READ_EXIT_CODE",

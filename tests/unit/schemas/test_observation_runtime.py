@@ -9,6 +9,7 @@ from pathlib import Path
 from polylogue.core.enums import Provider
 from polylogue.schemas.generation.evidence import SchemaEvidence
 from polylogue.schemas.observation import ProviderConfig, extract_schema_units_from_payload, resolve_provider_config
+from polylogue.schemas.observation_spill import profile_token_text
 from polylogue.schemas.source_inference import SchemaSourceInput, _collect_candidate, _SourceCandidate, infer_sources
 
 
@@ -63,7 +64,7 @@ class TestExtractSchemaUnitsFromPayload:
         unit = units[0]
         assert unit.session_id == "raw-1"
         assert unit.bundle_scope == "session"
-        assert any(token.startswith("bucket:") for token in unit.profile_tokens)
+        assert any(profile_token_text(token).startswith("bucket:") for token in unit.profile_tokens)
         content = unit.schema_samples[1]["content"]
         assert isinstance(content, list)
         first_block = content[0]

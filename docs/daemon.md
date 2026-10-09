@@ -132,6 +132,12 @@ machine API remains at `--api-port`. The ports must differ. A specific
 non-loopback API bind cannot be used with `--browser-port` because it has no
 loopback upstream; wildcard API binds use the corresponding loopback address.
 
+## Operation request identity
+
+`/api/operation` accepts `protocol`, `operation`, `payload`, `request_id`, and the optional envelope fields `archive_root`, `index_schema_version`, `daemon_version`, `expected_archive_identity`, `expected_generation_id`, and `deadline_ms`. Unknown envelope fields are refused before dispatch. Each operation's declared payload schema separately controls its product inputs.
+
+Keep the same `request_id` when recovering a durable request. The daemon checks its authenticated principal and intent fingerprint, returns the recorded result for the same intent, and refuses conflicting reuse. Cancel through `operation.cancel` with the target `request_id` in its payload, or `DaemonUDSClient.cancel(request_id)`. Operation-specific payload idempotency remains owned by the operation that declares it.
+
 ## Operation read lifetime
 
 Declared `READ` operations expose `deadline_s: null` in operation discovery. Reads wait for their valid result or cancellation; archive-scan classification reserves the appropriate compute capacity without imposing a shorter execution lifetime. A caller can supply a positive `deadline_ms` to request a bounded execution. The client forwards that value and leaves enough socket time for its typed terminal response. An omitted read deadline also leaves the socket wait unbounded. Mutation and control execution deadlines, durable acceptance, and receipt recovery keep their declared contracts.
@@ -1207,6 +1213,22 @@ Its original operation-read owner revalidates archive identity across the pin;
 a generation republished during that interval produces a typed retryable refusal.
 Pages retain `matched_annotation_count`, `next_offset` and
 `selection_truncated`; the page budget bounds delivery rather than total scope.
+
+Stored session targets resolve by exact canonical identity. An absent session
+remains a missing target even when a surviving session shares its ID prefix.
+Expired labels and schema-drift labels use one selection time for row and count
+queries, so continuation offsets advance over the same eligible population.
+
+An automated candidate's inputs become immutable after an operator judgment.
+An identical same-ID replay preserves the original candidate, judgment history
+and timestamps; changed inputs raise `AssertionJudgedInputConflictError` before
+writing. Submit a changed label with a new row key or batch identity for review.
+Unjudged, unbatched annotation candidates remain editable in place.
+
+Both ordinary and streamed batch writes validate durable object coordinates
+in their provenance header and assertion roster. Positional block/action refs
+refuse before publication. Streamed admission reads only each staged roster
+ref and retains the complete provenance cells on disk.
 
 ### Working-directory completion
 

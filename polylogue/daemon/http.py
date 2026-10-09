@@ -47,6 +47,7 @@ from polylogue.core.errors import (
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+from polylogue.core.staged_body import BodyStorageExhaustedError, StagedBody
 from polylogue.daemon import workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
@@ -1629,7 +1630,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             payload.update(extra_payload)
         self._send_json(status, payload, extra_headers=extra_headers)
 
-    def _reject_operation(self, status: HTTPStatus, code: str, detail: str | None = None) -> None:
+    def _reject_operation(
+        self, status: HTTPStatus, code: str, detail: str | None = None, *, retryable: bool = False
+    ) -> None:
         """Refuse a machine operation before dispatch, marked so no client calls it indeterminate.
 
         A pre-dispatch refusal on ``/api/operation`` proves nothing ran, so it
@@ -1649,7 +1652,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "protocol": DAEMON_OPERATION_PROTOCOL,
                 "outcome": "rejected",
                 "pre_dispatch": True,
-                "error": {"code": code, "detail": detail, "retryable": False},
+                "error": {"code": code, "detail": detail, "retryable": retryable},
             },
         )
 
@@ -1710,6 +1713,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return _MUTATION_WAIT_TIMEOUT_S
         return declared_s
 
+    @contextlib.contextmanager
+    def _observe_read_peer(self, cancel: Callable[[], None]) -> Iterator[None]:
+        from polylogue.daemon.operation_disconnect import observe_peer_disconnect
+
+        with observe_peer_disconnect(self.connection) as disconnected:
+            remove = disconnected.add_listener(cancel)
+            try:
+                yield
+            finally:
+                remove()
+
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
         """Run reads on compute workers and admitted writes on writer workers."""
         mutating = getattr(self, "_write_gate_depth", 0) > 0
@@ -1761,18 +1775,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     cancellation=cancellation,
                 )
                 try:
-                    try:
+                    with self._observe_read_peer(cancellation.cancel):
                         result = submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
-                    except FutureTimeoutError as error:
-                        cancellation.cancel()
-                        submitted.future.cancel()
-                        route_span.set(
-                            reason="archive_query_timeout", timeout_ms=round(_ARCHIVE_QUERY_TIMEOUT_S * 1000, 3)
-                        )
-                        raise TimeoutError(
-                            f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
-                            "the daemon may be busy with catch-up ingestion/embedding"
-                        ) from error
+                except FutureTimeoutError as error:
+                    cancellation.cancel()
+                    submitted.future.cancel()
+                    route_span.set(reason="archive_query_timeout", timeout_ms=round(_ARCHIVE_QUERY_TIMEOUT_S * 1000, 3))
+                    raise TimeoutError(
+                        f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
+                        "the daemon may be busy with catch-up ingestion/embedding"
+                    ) from error
+                else:
                     route_span.ok()
                     return result
                 finally:
@@ -4129,14 +4142,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "session_filters": request.session_filters or {},
                 }
             )
-            payload = transaction.run_sync(
-                lambda archive: _query_units_payload(
-                    operation_params,
-                    archive=archive,
-                    serving_identity="daemon",
-                    execution_context=transaction.context,
+            with self._observe_read_peer(transaction.context.cancel):
+                payload = transaction.run_sync(
+                    lambda archive: _query_units_payload(
+                        operation_params,
+                        archive=archive,
+                        serving_identity="daemon",
+                        execution_context=transaction.context,
+                    )
                 )
-            )
         except QueryTimeoutError:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "query_deadline_exceeded")
             return
@@ -4590,23 +4604,32 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         continuation: str | None = None,
         around: str | None = None,
     ) -> object | None:
-        with archive_read_context(
+        from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
+
+        transaction = QueryTransaction(
             archive_root,
-            operation="http.archive.read",
-            arguments={"path": getattr(self, "path", "")},
-            projection="http-read",
-        ) as archive:
-            return execute_http_session_messages(
-                {
-                    "session_id": conv_id,
-                    "limit": limit,
-                    "offset": offset,
-                    "continuation": continuation,
-                    "around": around,
-                },
-                archive=archive,
-                adapters=_http_session_projection_adapters(),
-                server_identity="daemon",
+            QueryTransactionRequest(
+                operation="http.archive.read",
+                arguments={"path": getattr(self, "path", "")},
+                projection="http-read",
+                page_size=limit,
+                offset=offset,
+            ),
+        )
+        with self._observe_read_peer(transaction.context.cancel):
+            return transaction.run_sync(
+                lambda archive: execute_http_session_messages(
+                    {
+                        "session_id": conv_id,
+                        "limit": limit,
+                        "offset": offset,
+                        "continuation": continuation,
+                        "around": around,
+                    },
+                    archive=archive,
+                    adapters=_http_session_projection_adapters(),
+                    server_identity="daemon",
+                )
             )
 
     # ------------------------------------------------------------------
@@ -4832,7 +4855,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         """Authenticate transport, then invoke the same canonical machine runtime."""
         from polylogue.operations.daemon_protocol import (
             MAX_DECLARED_OPERATION_BODY_BYTES,
-            DaemonOperationRequest,
             daemon_operation_spec,
         )
 
@@ -4851,29 +4873,61 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return
         length = int(lengths[0])
-        if length <= 0 or length > MAX_DECLARED_OPERATION_BODY_BYTES:
-            self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
+        if length <= 0:
+            self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return
-        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+        from polylogue.operations.request_body_transport import UPLOAD_MEDIA_TYPE
+
+        media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if media_type not in {"application/json", UPLOAD_MEDIA_TYPE}:
             self._reject_operation(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
             return
-        self.connection.settimeout(5.0)
+        if media_type == "application/json" and length > MAX_DECLARED_OPERATION_BODY_BYTES:
+            self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
+            return
         try:
-            body = self.rfile.read(length)
-            if len(body) != length:
-                raise ValueError("partial body")
-            request = DaemonOperationRequest.from_dict(json.loads(body))
-        except (ValueError, TypeError, TimeoutError, OSError):
-            self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_request")
+            from polylogue.operations.request_body_transport import read_operation_body
+
+            request, input_body, control_bytes = read_operation_body(
+                self.rfile,
+                length,
+                media_type,
+                spool_root=self.server.archive_root / "operation-inputs",
+            )
+        except BodyStorageExhaustedError as exc:
+            self._reject_operation(
+                HTTPStatus.INSUFFICIENT_STORAGE, "operation_input_storage_exhausted", str(exc), retryable=True
+            )
+            return
+        except (ValueError, TypeError, RecursionError, UnicodeDecodeError) as exc:
+            self._reject_operation(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))
             return
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
-        if length > spec.max_body_bytes:
+        if input_body is None and control_bytes > spec.max_body_bytes:
+            if input_body is not None:
+                input_body.discard()
             self._reject_operation(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large")
             return
-        self._send_daemon_operation(self._execute_daemon_operation(request))
+        from polylogue.operations.request_body_transport import OperationBodyKwargs
 
-    def _execute_daemon_operation(self, request: DaemonOperationRequest) -> dict[str, object]:
+        body_kwargs: OperationBodyKwargs = (
+            {"input_body": input_body, "request_body_bytes": control_bytes} if input_body is not None else {}
+        )
+        self._send_daemon_operation(
+            self._execute_daemon_operation(
+                request,
+                **body_kwargs,
+            )
+        )
+
+    def _execute_daemon_operation(
+        self,
+        request: DaemonOperationRequest,
+        *,
+        input_body: StagedBody | None = None,
+        request_body_bytes: int | None = None,
+    ) -> dict[str, object]:
         from polylogue.operations.daemon_protocol import DAEMON_PRINCIPAL_CAPABILITIES
         from polylogue.operations.mutation_transaction import MutationPrincipal
 
@@ -4900,7 +4954,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.operation_disconnect import observe_peer_disconnect
 
         with observe_peer_disconnect(self.connection) as disconnected:
-            return runtime.call(request, principal, client_disconnect=disconnected)
+            return runtime.call(
+                request,
+                principal,
+                client_disconnect=disconnected,
+                input_body=input_body,
+                request_body_bytes=request_body_bytes,
+            )
 
     def _send_daemon_operation(self, payload: dict[str, object]) -> None:
         status = (
@@ -5423,6 +5483,7 @@ async def _recover_startup_with_compute(
                 archive_root,
                 resolver_actor_ref=RECOVERY_SERVICE_ACTOR_REF,
                 input_demand=kernel.amend_current_input_demand,
+                startup=True,
             )
 
     await bridge.coordinator.run_prepared_sync(

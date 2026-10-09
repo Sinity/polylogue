@@ -12,14 +12,16 @@ TRANSFER_BYTES = 64 * 1024
 
 
 @contextmanager
-def staged_json_response(payload: object, *, append_newline: bool = False) -> Iterator[BinaryIO]:
+def staged_json_response(
+    payload: object, *, append_newline: bool = False, ensure_ascii: bool = False
+) -> Iterator[BinaryIO]:
     """Finish encoding before publishing headers; retire scratch on every exit.
 
     The product still owns its Python values. Scratch avoids retaining an
     additional whole-envelope string and bytes object during delivery.
     """
     with TemporaryFile(mode="w+b") as staged:
-        encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        encoder = json.JSONEncoder(ensure_ascii=ensure_ascii, separators=(",", ":"), allow_nan=False)
         for fragment in encoder.iterencode(payload):
             # A single JSON string fragment can itself exceed the transfer size.
             for offset in range(0, len(fragment), TRANSFER_BYTES):

@@ -16,7 +16,12 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
-from tests.infra.identity import archive_message_id, fixture_content_identity
+from tests.infra.identity import (
+    archive_block_id,
+    archive_message_id,
+    fixture_block_content_identity,
+    fixture_content_identity,
+)
 
 _HASH = b"x" * 32
 
@@ -162,15 +167,22 @@ def test_a_block_cannot_claim_a_session_its_message_does_not_belong_to(tmp_path:
 
         # The agreeing row is ordinary and must stay ordinary.
         conn.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', 'owned')",
-            (message_id, "codex-session:owner-a"),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', 'owned', ?, 0)",
+            (
+                message_id,
+                "codex-session:owner-a",
+                fixture_block_content_identity("text", "owned"),
+            ),
         )
 
         with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY constraint failed"):
             conn.execute(
-                "INSERT INTO blocks (message_id, session_id, position, block_type, text) "
-                "VALUES (?, ?, 1, 'text', 'claims the other session')",
-                (message_id, "codex-session:other-b"),
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 1, 'text', 'claims the other session', ?, 0)",
+                (
+                    message_id,
+                    "codex-session:other-b",
+                    fixture_block_content_identity("text", "claims the other session"),
+                ),
             )
 
         assert conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0] == 1
@@ -205,10 +217,16 @@ def _seed_two_sessions(conn: sqlite3.Connection) -> tuple[str, list[str]]:
         (_OWNER_A, _HASH),
     )
     message_id = str(conn.execute("SELECT message_id FROM messages").fetchone()["message_id"])
-    for position in (0, 1):
+    for content_occurrence, position in enumerate((0, 1)):
         conn.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, ?, 'text', 'b')",
-            (message_id, _OWNER_A, position),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', 'b', ?, ?)",
+            (
+                message_id,
+                _OWNER_A,
+                position,
+                fixture_block_content_identity("text", "b"),
+                content_occurrence,
+            ),
         )
     block_ids = [str(row["block_id"]) for row in conn.execute("SELECT block_id FROM blocks ORDER BY position")]
     conn.execute("INSERT INTO attachments (attachment_id) VALUES ('att-1')")
@@ -221,8 +239,8 @@ def _seed_two_sessions(conn: sqlite3.Connection) -> tuple[str, list[str]]:
 # contradictory insert can only fail for the reason under test.
 _OWNER_ROWS: dict[str, Callable[[str, list[str], str, int], tuple[str, tuple[object, ...]]]] = {
     "attachment_refs": lambda message_id, blocks, session_id, slot: (
-        "INSERT INTO attachment_refs (attachment_id, session_id, message_id, position) VALUES ('att-1', ?, ?, ?)",
-        (session_id, message_id, slot),
+        "INSERT INTO attachment_refs (attachment_id, session_id, message_id, position, native_identity) VALUES ('att-1', ?, ?, ?, ?)",
+        (session_id, message_id, slot, f"fixture-{slot}".encode().hex()),
     ),
     "paste_spans": lambda message_id, blocks, session_id, slot: (
         "INSERT INTO paste_spans (message_id, session_id, position, boundary_state, content_hash) "
@@ -397,19 +415,18 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
     ]
 
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, text
-        ) VALUES (?, ?, ?, ?, ?)
-        """,
-        (messages[0]["message_id"], session["session_id"], 0, "text", "needle prose"),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, text , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, 0)",
+        (
+            messages[0]["message_id"],
+            session["session_id"],
+            0,
+            "text",
+            "needle prose",
+            fixture_block_content_identity("text", "needle prose"),
+        ),
     )
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, tool_name, tool_id, tool_input
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, tool_input , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
         (
             messages[0]["message_id"],
             session["session_id"],
@@ -418,16 +435,22 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
             "shell",
             "tool-1",
             '{"command": "pytest -q", "path": "tests"}',
+            fixture_block_content_identity("tool_use", "shell", "tool-1", '{"command": "pytest -q", "path": "tests"}'),
         ),
     )
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id,
-            tool_result_is_error, tool_result_exit_code
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (messages[0]["message_id"], session["session_id"], 2, "tool_result", "passed", "tool-1", 0, 0),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            messages[0]["message_id"],
+            session["session_id"],
+            2,
+            "tool_result",
+            "passed",
+            "tool-1",
+            0,
+            0,
+            fixture_block_content_identity("tool_result", "passed", "tool-1", 0, 0),
+        ),
     )
     conn.execute(
         """
@@ -452,12 +475,16 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
         "SELECT message_id FROM messages WHERE session_id = ?", (other_session["session_id"],)
     ).fetchone()
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (other_message["message_id"], other_session["session_id"], 0, "tool_result", "wrong session", "tool-1"),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            other_message["message_id"],
+            other_session["session_id"],
+            0,
+            "tool_result",
+            "wrong session",
+            "tool-1",
+            fixture_block_content_identity("tool_result", "wrong session", "tool-1"),
+        ),
     )
 
     blocks = conn.execute(
@@ -465,9 +492,19 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
         (session["session_id"],),
     ).fetchall()
     assert [row["block_id"] for row in blocks] == [
-        archive_message_id("codex-session:native-session", "native-message") + ":0",
-        archive_message_id("codex-session:native-session", "native-message") + ":1",
-        archive_message_id("codex-session:native-session", "native-message") + ":2",
+        archive_block_id(
+            messages[0]["message_id"], content_identity=fixture_block_content_identity("text", "needle prose")
+        ),
+        archive_block_id(
+            messages[0]["message_id"],
+            content_identity=fixture_block_content_identity(
+                "tool_use", "shell", "tool-1", '{"command": "pytest -q", "path": "tests"}'
+            ),
+        ),
+        archive_block_id(
+            messages[0]["message_id"],
+            content_identity=fixture_block_content_identity("tool_result", "passed", "tool-1", 0, 0),
+        ),
     ]
     assert blocks[1]["tool_command"] == "pytest -q"
     assert blocks[1]["tool_path"] == "tests"
@@ -493,7 +530,7 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
         WHERE f.text MATCH 'needle'
         """
     ).fetchone()
-    assert fts_row["block_id"] == archive_message_id("codex-session:native-session", "native-message") + ":0"
+    assert fts_row["block_id"] == blocks[0]["block_id"]
 
 
 def test_agent_action_and_delegation_views_are_indexed_projections(tmp_path: Path) -> None:
@@ -633,20 +670,30 @@ def test_actions_view_pairs_reemitted_tool_id_by_transcript_rank_not_cross_produ
 
     for i, message_id in enumerate(message_ids):
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, tool_name, tool_id, tool_input
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (message_id, session_id, 0, "tool_use", "shell", "toolu_reemitted", f'{{"command": "cmd-{i}"}}'),
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, tool_input , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                0,
+                "tool_use",
+                "shell",
+                "toolu_reemitted",
+                f'{{"command": "cmd-{i}"}}',
+                fixture_block_content_identity("tool_use", "shell", "toolu_reemitted", f'{{"command": "cmd-{i}"}}'),
+            ),
         )
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, text, tool_id, tool_result_is_error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (message_id, session_id, 1, "tool_result", f"output-{i}", "toolu_reemitted", 0),
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_result_is_error , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                1,
+                "tool_result",
+                f"output-{i}",
+                "toolu_reemitted",
+                0,
+                fixture_block_content_identity("tool_result", f"output-{i}", "toolu_reemitted", 0),
+            ),
         )
 
     actions = conn.execute(
@@ -720,11 +767,7 @@ def test_actions_view_ranks_variant_messages_deterministically(tmp_path: Path) -
     # both CTEs then happen to tie-break in the same coincidental order.
     for variant_index, message_id in enumerate(message_ids):
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, tool_name, tool_id, tool_input
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, tool_input , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
             (
                 message_id,
                 session_id,
@@ -733,16 +776,26 @@ def test_actions_view_ranks_variant_messages_deterministically(tmp_path: Path) -
                 "shell",
                 "toolu_variant_tied",
                 f'{{"command": "variant-cmd-{variant_index}"}}',
+                fixture_block_content_identity(
+                    "tool_use", "shell", "toolu_variant_tied", f'{{"command": "variant-cmd-{variant_index}"}}'
+                ),
             ),
         )
     for variant_index, message_id in reversed(list(enumerate(message_ids))):
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, text, tool_id, tool_result_is_error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (message_id, session_id, 1, "tool_result", f"variant-output-{variant_index}", "toolu_variant_tied", 0),
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_result_is_error , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                1,
+                "tool_result",
+                f"variant-output-{variant_index}",
+                "toolu_variant_tied",
+                0,
+                fixture_block_content_identity(
+                    "tool_result", f"variant-output-{variant_index}", "toolu_variant_tied", 0
+                ),
+            ),
         )
 
     actions = conn.execute(
@@ -795,30 +848,47 @@ def test_actions_view_never_cross_pairs_empty_string_tool_id(tmp_path: Path) -> 
         "message_id"
     ]
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, tool_name, tool_id, tool_input, tool_outcome
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (message_id, session_id, 0, "tool_use", "shell", "", '{"command": "unlinked-1"}', "no_result"),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, tool_input, tool_outcome , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            0,
+            "tool_use",
+            "shell",
+            "",
+            '{"command": "unlinked-1"}',
+            "no_result",
+            fixture_block_content_identity("tool_use", "shell", "", '{"command": "unlinked-1"}', "no_result"),
+        ),
     )
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, tool_name, tool_id, tool_input, tool_outcome
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (message_id, session_id, 1, "tool_use", "shell", "", '{"command": "unlinked-2"}', "no_result"),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, tool_input, tool_outcome , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            1,
+            "tool_use",
+            "shell",
+            "",
+            '{"command": "unlinked-2"}',
+            "no_result",
+            fixture_block_content_identity("tool_use", "shell", "", '{"command": "unlinked-2"}', "no_result"),
+        ),
     )
     # An empty-string tool_result too -- if the guard were missing, this could
     # cross-pair with EITHER use above since both share tool_id=''.
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id, tool_outcome
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (message_id, session_id, 2, "tool_result", "unrelated output", "", "ok"),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_outcome , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            2,
+            "tool_result",
+            "unrelated output",
+            "",
+            "ok",
+            fixture_block_content_identity("tool_result", "unrelated output", "", "ok"),
+        ),
     )
 
     actions = conn.execute(
@@ -865,70 +935,112 @@ def test_actions_view_distinguishes_result_presence_and_outcome(tmp_path: Path) 
         (4, "distrusted", "distrusted-exit-code", "unknown"),
     ):
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, tool_outcome
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (message_id, session_id, position, "tool_use", "shell", tool_id, f'{{"command": "{command}"}}', outcome),
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, tool_input, tool_outcome , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                position,
+                "tool_use",
+                "shell",
+                tool_id,
+                f'{{"command": "{command}"}}',
+                outcome,
+                fixture_block_content_identity("tool_use", "shell", tool_id, f'{{"command": "{command}"}}', outcome),
+            ),
         )
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id, tool_outcome,
-            tool_result_outcome_unknown_reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (message_id, session_id, 5, "tool_result", "provider omitted outcome", "unknown", "unknown", "not_reported"),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_outcome, tool_result_outcome_unknown_reason , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            5,
+            "tool_result",
+            "provider omitted outcome",
+            "unknown",
+            "unknown",
+            "not_reported",
+            fixture_block_content_identity(
+                "tool_result", "provider omitted outcome", "unknown", "unknown", "not_reported"
+            ),
+        ),
     )
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id, tool_result_is_error,
-            tool_result_exit_code, tool_outcome
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (message_id, session_id, 6, "tool_result", "success", "success", 0, 0, "ok"),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code, tool_outcome , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            6,
+            "tool_result",
+            "success",
+            "success",
+            0,
+            0,
+            "ok",
+            fixture_block_content_identity("tool_result", "success", "success", 0, 0, "ok"),
+        ),
     )
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id, tool_result_is_error,
-            tool_result_exit_code, tool_outcome
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (message_id, session_id, 7, "tool_result", "error", "error", 1, 2, "error"),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code, tool_outcome , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            7,
+            "tool_result",
+            "error",
+            "error",
+            1,
+            2,
+            "error",
+            fixture_block_content_identity("tool_result", "error", "error", 1, 2, "error"),
+        ),
     )
     # A provider exit code the parser deliberately refused to trust. The legacy
     # compatibility columns still carry the wire values; the canonical outcome
     # says unknown, and the view must report the canonical answer.
     conn.execute(
-        """
-        INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id, tool_result_is_error,
-            tool_result_exit_code, tool_outcome, tool_result_outcome_unknown_reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (message_id, session_id, 8, "tool_result", "sentinel", "distrusted", None, 0, "unknown", "distrusted"),
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code, tool_outcome, tool_result_outcome_unknown_reason , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            8,
+            "tool_result",
+            "sentinel",
+            "distrusted",
+            None,
+            0,
+            "unknown",
+            "distrusted",
+            fixture_block_content_identity("tool_result", "sentinel", "distrusted", None, 0, "unknown", "distrusted"),
+        ),
     )
 
     rows = conn.execute(
         "SELECT tool_command, tool_result_block_id, result_state FROM actions WHERE session_id = ? ORDER BY tool_command",
         (session_id,),
     ).fetchall()
+    result_ids = {
+        row["tool_id"]: row["block_id"]
+        for row in conn.execute(
+            "SELECT tool_id, block_id FROM blocks WHERE message_id = ? AND block_type = 'tool_result'", (message_id,)
+        )
+    }
 
     assert [dict(row) for row in rows] == [
         {
             "tool_command": "distrusted-exit-code",
-            "tool_result_block_id": f"{message_id}:8",
+            "tool_result_block_id": result_ids["distrusted"],
             "result_state": "outcome_unknown",
         },
-        {"tool_command": "failed", "tool_result_block_id": f"{message_id}:7", "result_state": "outcome_error"},
+        {"tool_command": "failed", "tool_result_block_id": result_ids["error"], "result_state": "outcome_error"},
         {"tool_command": "no-result", "tool_result_block_id": None, "result_state": "no_result"},
-        {"tool_command": "successful", "tool_result_block_id": f"{message_id}:6", "result_state": "outcome_success"},
+        {
+            "tool_command": "successful",
+            "tool_result_block_id": result_ids["success"],
+            "result_state": "outcome_success",
+        },
         {
             "tool_command": "unknown-outcome",
-            "tool_result_block_id": f"{message_id}:5",
+            "tool_result_block_id": result_ids["unknown"],
             "result_state": "outcome_unknown",
         },
     ]
@@ -967,13 +1079,17 @@ def test_blocks_reject_an_unknown_outcome_without_a_structural_reason(tmp_path: 
 
     def insert(position: int, block_type: str, outcome: str | None, reason: str | None) -> None:
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, tool_id, tool_outcome,
-                tool_result_outcome_unknown_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (message_id, session_id, position, block_type, "tool-1", outcome, reason),
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_id, tool_outcome, tool_result_outcome_unknown_reason , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                position,
+                block_type,
+                "tool-1",
+                outcome,
+                reason,
+                fixture_block_content_identity(block_type, "tool-1", outcome, reason),
+            ),
         )
 
     refused = [

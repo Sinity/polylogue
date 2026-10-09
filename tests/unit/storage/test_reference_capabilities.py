@@ -9,9 +9,15 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.core.refs import EvidenceRef
 from polylogue.storage.io_phase_metrics import _MeasuredConnection, connection_cursor
 from polylogue.storage.sqlite import connection_profile as profiles
-from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError, ReferenceSealStaleError
+from polylogue.storage.sqlite.reference_seal import (
+    PreparedIndexMutation,
+    ReferenceSealError,
+    ReferenceSealStaleError,
+    _resolve_target,
+)
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
@@ -130,4 +136,37 @@ def test_foreign_creator_cannot_query_original_capability(capability_root: Path)
         thread = threading.Thread(target=query)
         thread.start()
         thread.join()
-        assert len(failures) == 1 and isinstance(failures[0], ReferenceSealError)
+    assert len(failures) == 1 and isinstance(failures[0], ReferenceSealError)
+
+
+def test_durable_reference_resolution_uses_stable_block_identity(capability_root: Path) -> None:
+    from tests.infra.storage_records import SessionBuilder
+
+    builder = SessionBuilder(capability_root / "index.db", "stable-ref")
+    builder.provider("codex").add_message(
+        "message-1", role="user", text="hello", blocks=[{"type": "text", "text": "hello"}]
+    ).save()
+    session_id = builder.native_session_id()
+
+    with closing(sqlite3.connect(capability_root / "index.db")) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT message_id, block_id, content_identity, content_occurrence "
+            "FROM messages JOIN blocks USING(message_id) WHERE blocks.session_id=?",
+            (session_id,),
+        ).fetchone()
+        assert row is not None
+        positional = EvidenceRef(session_id=session_id, message_id=str(row["message_id"]), block_index=0)
+        stable = EvidenceRef(
+            session_id=session_id,
+            message_id=str(row["message_id"]),
+            block_id=str(row["block_id"]),
+        )
+
+        assert _resolve_target(conn, positional) is None
+        resolved = _resolve_target(conn, stable)
+
+    assert resolved is not None
+    assert resolved.kind == "block-id"
+    assert resolved.object_id == str(row["block_id"])
+    assert resolved.qualifier == f"{row['content_identity']}:{row['content_occurrence']}"

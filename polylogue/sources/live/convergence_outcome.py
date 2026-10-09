@@ -50,7 +50,10 @@ def record_convergence_outcomes(
     entries = [ConvergenceDebtBatchEntry(tuple(settlements))]
     for path, debts in outcomes:
         writes = tuple(
-            ConvergenceDebtWrite(debt.stage, "source_path", str(path), debt.error, debt.deferred) for debt in debts
+            ConvergenceDebtWrite(
+                debt.stage, "source_path", str(path), debt.error, debt.deferred, attempted=debt.attempted
+            )
+            for debt in debts
         )
         entries.append(ConvergenceDebtBatchEntry(writes=writes))
     cursor.apply_convergence_debt_batch(entries)

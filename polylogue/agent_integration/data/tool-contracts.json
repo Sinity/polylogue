@@ -222,10 +222,17 @@
           "required_initial": false
         },
         {
-          "description": "Opaque token from the preceding read response; send alone.",
+          "description": "Opaque bound token; preserve the returned ref and view.",
           "enum_values": [],
           "kind": "string",
           "name": "continuation",
+          "required_initial": false
+        },
+        {
+          "description": "Byte offset in an oversized message's ASCII JSON; copy only from its bound continuation descriptor.",
+          "enum_values": [],
+          "kind": "integer",
+          "name": "fragment_offset",
           "required_initial": false
         }
       ],

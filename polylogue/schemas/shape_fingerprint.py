@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import ExitStack
+from collections.abc import Generator, Iterator, Mapping, Sequence
+from contextlib import ExitStack, closing
 from functools import cmp_to_key
 from itertools import islice
 from tempfile import TemporaryFile
@@ -116,13 +116,25 @@ def fingerprint_parts(value: object, *, depth: int = 0) -> Iterator[str]:
     elif isinstance(value, dict):
         yield "('object', ("
         count = 0
-        for key in ordered_keys(value):
-            if count:
-                yield ", "
-            yield "(" + repr("*" if is_dynamic_key(key) else key) + ", "
-            yield from fingerprint_parts(value[key], depth=depth + 1)
-            yield ")"
-            count += 1
+
+        def entries() -> Generator[tuple[str, object], None, None]:
+            if isinstance(value, SpilledObject):
+                with closing(value.structure_key_items(sorted_keys=True)) as children:
+                    for key, child in children:
+                        name = key.small_name
+                        yield "*" if name is None or is_dynamic_key(name) else name, child
+            else:
+                for literal_key in ordered_keys(value):
+                    yield "*" if is_dynamic_key(literal_key) else literal_key, value[literal_key]
+
+        with closing(entries()) as object_children:
+            for name, child in object_children:
+                if count:
+                    yield ", "
+                yield "(" + repr(name) + ", "
+                yield from fingerprint_parts(child, depth=depth + 1)
+                yield ")"
+                count += 1
         if count == 1:
             yield ","
         yield "))"
@@ -131,7 +143,8 @@ def fingerprint_parts(value: object, *, depth: int = 0) -> Iterator[str]:
         # complete repr can itself be large, so sort and deduplicate on disk.
         with ExitStack() as owned:
             files: list[BinaryIO] = []
-            for item in islice(value, _FINGERPRINT_ARRAY_SAMPLE):
+            children = value.structure_values() if isinstance(value, SpilledArray) else value
+            for item in islice(children, _FINGERPRINT_ARRAY_SAMPLE):
                 output: BinaryIO = owned.enter_context(TemporaryFile())
                 for part in fingerprint_parts(item, depth=depth + 1):
                     output.write(part.encode("utf-8"))

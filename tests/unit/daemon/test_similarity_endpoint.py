@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_messag
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import CheckpointEscalation
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.vector_archive import record_owned_vector_closes, record_similarity_read_closes
 
 if TYPE_CHECKING:
@@ -174,16 +175,13 @@ def _seed_ready_similarity_archive() -> tuple[str, Path, dict[str, str]]:
                 (session_id, "m1", len(text_by_native_id[native_id].split()), b"x" * 32),
             )
             conn.execute(
-                """
-                INSERT OR REPLACE INTO blocks (
-                    session_id, message_id, position, block_type, text, content_hash
-                ) VALUES (?, ?, 0, 'text', ?, ?)
-                """,
+                "INSERT OR REPLACE INTO blocks (\n                    session_id, message_id, position, block_type, text, content_hash\n                , content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, ?, 0)",
                 (
                     session_id,
                     f"{session_id}:n:m1",
                     text_by_native_id[native_id],
                     b"x" * 32,
+                    fixture_block_content_identity("text", text_by_native_id[native_id]),
                 ),
             )
         message_id_by_session = {

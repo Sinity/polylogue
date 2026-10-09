@@ -28,7 +28,7 @@ from polylogue.sources.decoder_zip import (
     prepare_zip_entry,
     zip_entry_session_artifact,
 )
-from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
+from polylogue.sources.decoders import _decode_json_bytes, owned_json_records
 from polylogue.sources.dispatch import (
     GROUP_PROVIDERS,
     detect_provider,
@@ -813,96 +813,99 @@ def _explain_bytes(
     provider_hint: Provider,
     path_classification: ArtifactClassification | None,
 ) -> ImportExplainEntryPayload:
-    try:
-        payload = _load_payload(raw_bytes, stream_name)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        return _skipped_entry(
-            Path(source_path),
-            provider_hint=provider_hint,
-            artifact=path_classification,
-            reason=f"decode failure: {exc}",
-        )
-
-    detected_provider = detect_provider(payload) or provider_hint
-    artifact = path_classification or classify_artifact(payload, provider=detected_provider, source_path=source_path)
-    detector_evidence = (
-        _evidence(
-            "provider_shape",
-            matched=detected_provider is not Provider.UNKNOWN,
-            reason=detected_provider.value
-            if detected_provider is not Provider.UNKNOWN
-            else "no provider-shaped payload",
-        ),
-        _evidence("artifact_taxonomy.payload", matched=artifact.parse_as_session, reason=artifact.reason),
-    )
-    if not artifact.parse_as_session:
-        return _skipped_entry(
-            Path(source_path),
-            provider_hint=provider_hint,
-            artifact=artifact,
-            reason=artifact.reason,
-            detector_evidence=detector_evidence,
-            detected_provider=detected_provider,
-        )
-
-    try:
-        if is_stream_record_provider(source_path, detected_provider):
-            stream_payloads = payload if isinstance(payload, list) else [payload]
-            sessions = parse_stream_payload(
-                detected_provider,
-                stream_payloads,
-                Path(stream_name).stem,
-                source_path=source_path,
+    with ExitStack() as lifetime:
+        try:
+            payload = _load_payload(raw_bytes, stream_name, lifetime)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            return _skipped_entry(
+                Path(source_path),
+                provider_hint=provider_hint,
+                artifact=path_classification,
+                reason=f"decode failure: {exc}",
             )
-        else:
-            sessions = parse_payload(
-                detected_provider,
-                payload,
-                Path(stream_name).stem,
-                source_path=source_path,
-            )
-    except Exception as exc:
-        return _skipped_entry(
-            Path(source_path),
-            provider_hint=provider_hint,
-            artifact=artifact,
-            reason=f"parser failure: {type(exc).__name__}: {exc}",
-            detector_evidence=detector_evidence,
-            detected_provider=detected_provider,
-        )
 
-    fidelity = None
-    if detected_provider is Provider.HERMES:
-        observer_session = next(
-            (
-                session
-                for session in sessions
-                if {"hermes:atif-trajectory", "hermes:atof-observer"}.intersection(session.ingest_flags)
+        detected_provider = detect_provider(payload) or provider_hint
+        artifact = path_classification or classify_artifact(
+            payload, provider=detected_provider, source_path=source_path
+        )
+        detector_evidence = (
+            _evidence(
+                "provider_shape",
+                matched=detected_provider is not Provider.UNKNOWN,
+                reason=detected_provider.value
+                if detected_provider is not Provider.UNKNOWN
+                else "no provider-shaped payload",
             ),
-            None,
+            _evidence("artifact_taxonomy.payload", matched=artifact.parse_as_session, reason=artifact.reason),
         )
-        fidelity = _fidelity_payload(
-            hermes_spans.import_fidelity_declaration(observer_session)
-            if observer_session is not None
-            else hermes_state.import_fidelity_declaration(sessions, acquisition_method="json_fallback")
+        if not artifact.parse_as_session:
+            return _skipped_entry(
+                Path(source_path),
+                provider_hint=provider_hint,
+                artifact=artifact,
+                reason=artifact.reason,
+                detector_evidence=detector_evidence,
+                detected_provider=detected_provider,
+            )
+
+        try:
+            if is_stream_record_provider(source_path, detected_provider):
+                stream_payloads = payload if isinstance(payload, list) else [payload]
+                sessions = parse_stream_payload(
+                    detected_provider,
+                    stream_payloads,
+                    Path(stream_name).stem,
+                    source_path=source_path,
+                )
+            else:
+                sessions = parse_payload(
+                    detected_provider,
+                    payload,
+                    Path(stream_name).stem,
+                    source_path=source_path,
+                )
+        except Exception as exc:
+            return _skipped_entry(
+                Path(source_path),
+                provider_hint=provider_hint,
+                artifact=artifact,
+                reason=f"parser failure: {type(exc).__name__}: {exc}",
+                detector_evidence=detector_evidence,
+                detected_provider=detected_provider,
+            )
+
+        fidelity = None
+        if detected_provider is Provider.HERMES:
+            observer_session = next(
+                (
+                    session
+                    for session in sessions
+                    if {"hermes:atif-trajectory", "hermes:atof-observer"}.intersection(session.ingest_flags)
+                ),
+                None,
+            )
+            fidelity = _fidelity_payload(
+                hermes_spans.import_fidelity_declaration(observer_session)
+                if observer_session is not None
+                else hermes_state.import_fidelity_declaration(sessions, acquisition_method="json_fallback")
+            )
+        return ImportExplainEntryPayload(
+            source_path=source_path,
+            artifact_kind=artifact.kind.value,
+            provider_hint=provider_hint.value,
+            detected_origin=_origin_value(detected_provider),
+            detected_provider=detected_provider.value,
+            detector="provider_shape",
+            detector_evidence=detector_evidence,
+            parser=detected_provider.value,
+            parser_mode=_parser_mode(detected_provider, payload),
+            produced=_produced_rows(sessions),
+            caveats=(
+                (() if sessions else ("parser produced no sessions",)) + (() if fidelity is None else fidelity.caveats)
+            ),
+            raw_evidence_refs=(),
+            fidelity=fidelity,
         )
-    return ImportExplainEntryPayload(
-        source_path=source_path,
-        artifact_kind=artifact.kind.value,
-        provider_hint=provider_hint.value,
-        detected_origin=_origin_value(detected_provider),
-        detected_provider=detected_provider.value,
-        detector="provider_shape",
-        detector_evidence=detector_evidence,
-        parser=detected_provider.value,
-        parser_mode=_parser_mode(detected_provider, payload),
-        produced=_produced_rows(sessions),
-        caveats=(
-            (() if sessions else ("parser produced no sessions",)) + (() if fidelity is None else fidelity.caveats)
-        ),
-        raw_evidence_refs=(),
-        fidelity=fidelity,
-    )
 
 
 def _fidelity_payload(fidelity: hermes_state.HermesImportFidelity) -> ImportFidelityDeclarationPayload:
@@ -926,9 +929,9 @@ def _fidelity_payload(fidelity: hermes_state.HermesImportFidelity) -> ImportFide
     )
 
 
-def _load_payload(raw_bytes: bytes, stream_name: str) -> JSONValue:
+def _load_payload(raw_bytes: bytes, stream_name: str, lifetime: ExitStack) -> JSONValue:
     if is_jsonl_source_path(stream_name):
-        return list(_iter_json_stream(BytesIO(raw_bytes), stream_name))
+        return list(lifetime.enter_context(owned_json_records(BytesIO(raw_bytes), stream_name)))
     text = _decode_json_bytes(raw_bytes)
     if text is None:
         raise UnicodeDecodeError("utf-8", raw_bytes, 0, min(len(raw_bytes), 1), "unsupported JSON encoding")

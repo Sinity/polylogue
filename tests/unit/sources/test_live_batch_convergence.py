@@ -21,6 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.frozen_clock import FrozenClock
 
 
 class _SessionFirstConverger:
@@ -287,3 +288,98 @@ async def test_page_admission_runs_lease_free_owners_outside_the_writer_gate(
         ("embedding_owner", False, (source,)),
     ]
     assert session_observed == [(False, ("session-1", "session-2"))]
+
+
+@pytest.mark.asyncio
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
+@pytest.mark.parametrize("existing_failure", [False, True])
+async def test_narrowed_page_observations_preserve_owed_retry(
+    tmp_path: Path, frozen_clock: FrozenClock, existing_failure: bool
+) -> None:
+    """Re-arming a NOT_RUN row makes these repeated pages never become due."""
+    from polylogue.daemon.convergence import DaemonConverger
+    from polylogue.daemon.convergence_stages import make_raw_authority_verdict_cache_stage
+
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    path = source_root / "session.jsonl"
+    path.write_text('{"revision":1}\n', encoding="utf-8")
+    source = WatchSource(name="projects", root=source_root)
+    cursor = CursorStore(tmp_path / "index.db")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path)),
+        (source,),
+        cursor=cursor,
+        converger=DaemonConverger([make_raw_authority_verdict_cache_stage(tmp_path / "index.db")]),
+        parser_fingerprint="synthetic",
+    )
+
+    async def initialize(_actor: str, work: Any) -> Any:
+        return work()
+
+    async def select(paths: list[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        return tuple(paths), ()
+
+    async def ingest(paths: list[Path], *, whole_archive_convergence: bool, **_kwargs: object) -> object:
+        # Acquisition is already accounted for here. Exercise the real page's
+        # narrowing, engine verdict, debt classifier and ledger publication.
+        assert whole_archive_convergence is False
+        _done, _elapsed, _timings, debts, settlements = processor._converge_paths(
+            paths, whole_archive=whole_archive_convergence
+        )
+        processor._record_convergence_outcomes(((path, debts),), settlements)
+        return SimpleNamespace(succeeded_paths=(path,), source_payload_read_bytes=path.stat().st_size)
+
+    watcher = SimpleNamespace(
+        _cursor=cursor,
+        intake_revision=lambda _source: 0,
+        has_write_coordinator=True,
+        _run_writer_sync=initialize,
+        classify_ingest_candidates=lambda paths: (tuple(paths), ()),
+        classify_ingest_candidates_off_writer=select,
+        _ingest_files=ingest,
+    )
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=cast(Any, watcher), sources=(source,)), source
+    )
+    if existing_failure:
+        cursor.record_convergence_debt(
+            stage="raw_authority_verdict_cache",
+            subject_type="source_path",
+            subject_id=str(path),
+            error="synthetic prior execution failure",
+        )
+    initial = None
+    for revision in range(5):
+        if revision:
+            frozen_clock.advance(30)
+        if revision == 3:
+            path.write_text('{"revision":2}\n', encoding="utf-8")
+        item = IntakeItem(
+            item_id=f"file:{path}",
+            class_name="projects",
+            payload=path,
+            estimated_cost=1,
+            revision="1" if revision < 3 else "2",
+        )
+        outcomes = await adapter.admit_page((item,))
+        assert outcomes[item.item_id].outcome is AdmissionOutcome.ADMITTED
+        [debt] = cursor.list_convergence_debt()
+        if revision == 0:
+            initial = debt
+        assert initial is not None
+        assert debt == initial
+        assert bool(cursor.list_convergence_debt(retry_due_only=True)) is (revision >= 2)
+    [debt] = cursor.list_convergence_debt()
+    assert debt.status == ("failed" if existing_failure else "deferred")
+    assert debt.failure_count == 1
+
+    # A newly evaluated failure owns a new diagnostic and normal backoff.
+    cursor.record_convergence_debt(
+        stage=debt.stage, subject_type=debt.subject_type, subject_id=debt.subject_id, error="new execution failure"
+    )
+    [failed] = cursor.list_convergence_debt()
+    assert failed.status == "failed"
+    assert failed.last_error == "new execution failure"
+    assert failed.failure_count == 2
+    assert cursor.list_convergence_debt(retry_due_only=True) == []

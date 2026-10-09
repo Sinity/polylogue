@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from polylogue.operations.request_body_transport import BinaryReader, OperationInputKwargs
 
 from polylogue.operations.daemon_errors import (
     DaemonMutationIndeterminateError,
@@ -332,7 +335,9 @@ def configured_read_operation(
     )
 
 
-def configured_mutation_operation(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+def configured_mutation_operation(
+    config: Any, operation: str, payload: dict[str, object], *, input: BinaryReader | None = None
+) -> dict[str, object]:
     """Execute a declared mutation through the resident daemon only.
 
     A missing socket becomes the typed ``daemon_required`` result; transport
@@ -361,11 +366,13 @@ def configured_mutation_operation(config: Any, operation: str, payload: dict[str
             allow_no_auth=config.api_allow_no_auth,
         ),
     )
+    input_kwargs: OperationInputKwargs = {"input": input} if input is not None else {}
     result = OperationKernel(
         lambda request: client.operation_to_completion(
             request.operation,
             dict(request.payload),
             archive_root=str(root),
+            **input_kwargs,
         )
     ).execute(OperationRequest(operation, payload))
     if not isinstance(result.value, Mapping):

@@ -33,8 +33,6 @@ from polylogue.sources.live.cold_build import (
 from polylogue.sources.revision_backfill import (
     LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
     _browser_snapshot_fidelity,
-    _is_declared_provider_session_stream,
-    uncensused_historical_revision_raw_ids,
 )
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_store import BlobStore
@@ -45,9 +43,10 @@ from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection_profile import StaleContinuationError
+from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+from tests.infra.prepared_replay import current_fixture_parser_receipts, publish_fixture_byte_classification
 from tests.infra.raw_owner_routes import replay_retained_raws, seed_parser_census
 from tests.infra.retained_parser_payloads import (
     _chatgpt_session,
@@ -58,19 +57,6 @@ from tests.infra.revision_backfill_benchmark import (
     build_independent_raw_corpus,
     build_revision_chain_corpus,
 )
-
-
-@pytest.mark.parametrize(
-    ("provider", "source_path", "expected"),
-    [
-        (Provider.CODEX, "2026/10/07/rollout-a.jsonl", True),
-        (Provider.CLAUDE_CODE, "-home-user-repo/session.jsonl", True),
-        (Provider.CLAUDE_CODE, "history.jsonl", False),
-        (Provider.CHATGPT, "sessions/abc.jsonl", False),
-    ],
-)
-def test_declared_provider_session_stream_boundary(provider: Provider, source_path: str, expected: bool) -> None:
-    assert _is_declared_provider_session_stream(provider, source_path) is expected
 
 
 def _seed_historical_revision(archive: ArchiveStore, raw_id: str, revision: RawRevisionEnvelope) -> None:
@@ -120,7 +106,6 @@ def test_revision_backfill_archive_readers_use_declared_tier_profiles(
     assert revision_backfill._expand_frozen_revision_link_selection(root, []) == ()
     # Representative selection reads only its supplied reader; no keys means no read.
     assert revision_backfill._replay_representative_raw_ids([], cast(Any, None)) == {}
-    assert revision_backfill.uncensused_historical_revision_raw_ids(root, ["missing-raw"]) == ()
 
     frames = revision_backfill._RebindingEvidenceFrames(
         source_db_path=root / "source.db",
@@ -203,15 +188,14 @@ def test_current_parser_source_census_keeps_progress_after_elapsed_frame_time(
             yield measured
 
     monkeypatch.setattr(
-        "polylogue.sources.revision_backfill.parser_census_identity_measurement", advance_after_measurement
+        "polylogue.storage.sqlite.archive_tiers.revision_governance.parser_census_identity_measurement",
+        advance_after_measurement,
     )
-    assert revision_backfill.uncensused_historical_revision_raw_ids(root, raw_ids) == ()
+    assert current_fixture_parser_receipts(root, raw_ids) == (True, True)
     assert measured_raws == 2
 
 
-def test_current_parser_source_census_refuses_reused_rowid_frontier(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_current_parser_source_census_refuses_reused_rowid_frontier(tmp_path: Path) -> None:
     """A deleted maximum rowid cannot admit a concurrent replacement.
 
     Anti-vacuity: replace the only raw row after frontier capture, confirm
@@ -255,40 +239,24 @@ def test_current_parser_source_census_refuses_reused_rowid_frontier(
             .fetchone()[0]
         )
 
-    real_measurement = parser_census_identity_measurement
-    replaced = False
     replacement_raw_id: str | None = None
 
-    @contextmanager
-    def replace_after_observation(**kwargs: Any) -> Iterator[Any]:
-        nonlocal replaced, replacement_raw_id
-        with real_measurement(**kwargs) as measured:
-            if not replaced:
-                replaced = True
-                # An out-of-band delete: the archive's custody authorizer
-                # refuses raw deletion from an ordinary writer connection.
-                with closing(sqlite3.connect(root / "source.db")) as external:
-                    external.execute("PRAGMA foreign_keys=ON")
-                    external.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (original_raw_id,))
-                    external.commit()
-                with ArchiveStore.open_existing(root, read_only=False) as archive:
-                    replacement_raw_id = write_terminal_non_session(archive, 1)
-                seed_parser_census(root, [replacement_raw_id])
-                with ArchiveStore.open_existing(root, read_only=False) as archive:
-                    replacement_rowid = (
-                        archive._ensure_source_conn()
-                        .execute("SELECT rowid FROM raw_sessions WHERE raw_id = ?", (replacement_raw_id,))
-                        .fetchone()[0]
-                    )
-                    assert int(replacement_rowid) == original_rowid
-            yield measured
+    def replace_after_observation() -> None:
+        nonlocal replacement_raw_id
+        # An out-of-band delete: ordinary Source custody refuses deletion.
+        with closing(sqlite3.connect(root / "source.db")) as external:
+            external.execute("PRAGMA foreign_keys=ON")
+            external.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (original_raw_id,))
+            external.commit()
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            replacement_raw_id = write_terminal_non_session(archive, 1)
+            replacement_rowid = archive.source_connection.execute(
+                "SELECT rowid FROM raw_sessions WHERE raw_id = ?", (replacement_raw_id,)
+            ).fetchone()[0]
+            assert int(replacement_rowid) == original_rowid
 
-    monkeypatch.setattr(
-        "polylogue.sources.revision_backfill.parser_census_identity_measurement", replace_after_observation
-    )
-    with pytest.raises(StaleContinuationError):
-        revision_backfill.uncensused_historical_revision_raw_ids(root, [original_raw_id])
-    assert replaced
+    with pytest.raises(ReferenceSealStaleError):
+        current_fixture_parser_receipts(root, [original_raw_id], after_prepare=replace_after_observation)
     assert replacement_raw_id is not None and replacement_raw_id != original_raw_id
 
 
@@ -367,7 +335,7 @@ def test_owned_inactive_generation_binds_the_prepared_session_rows(tmp_path: Pat
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:sealed-shard")
+        publish_fixture_byte_classification(archive, "chatgpt-export:sealed-shard")
     replay_retained_components(root)
     source_before = (root / "source.db").read_bytes()
     # The owned candidate is the registered cold-build destination; retained
@@ -393,6 +361,11 @@ def test_owned_inactive_generation_binds_the_prepared_session_rows(tmp_path: Pat
             receipts = replay_retained_raws(root)
 
         assert sum(receipt.replayed_logical_sources for receipt in receipts) == 1
+        assert (root / "source.db").read_bytes() == source_before
+        # Inactive replay defers reader models until the production candidate
+        # readiness pass; inspecting FTS before that pass is premature.
+        with write_lease("test.owned-shard.readiness", archive_root=root):
+            cold_build.prepare_promotion_candidate()
         assert (root / "source.db").read_bytes() == source_before
         with sqlite3.connect(generation.index_path) as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
@@ -447,9 +420,9 @@ def test_previous_dynamic_parser_fingerprint_requires_reobservation(
 
     previous_fingerprint = raw_authority_parser_fingerprint()
     changed_fingerprint = previous_fingerprint[:-1] + ("0" if previous_fingerprint[-1] != "0" else "1")
-    monkeypatch.setattr(revision_backfill, "raw_authority_parser_fingerprint", lambda: changed_fingerprint)
+    monkeypatch.setattr(archive_revision_governance, "raw_authority_parser_fingerprint", lambda: changed_fingerprint)
 
-    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == (raw_id,)
+    assert current_fixture_parser_receipts(tmp_path, [raw_id]) == (False,)
 
 
 def test_antigravity_trajectory_page_image_is_terminal_during_frozen_backfill(tmp_path: Path) -> None:
@@ -719,7 +692,7 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
     # legacy append fragment. Its receipt records the durable identity set
     # available to byte revision governance (empty here because this fixture
     # has no membership binding) -- a ``failed`` receipt there matched neither branch of
-    # ``uncensused_historical_revision_raw_ids``'s gate, so the fragment was
+    # the current prepared parser receipt gate, so the fragment was
     # re-selected for census forever and raw-replay planning never started.
     # The fragment is still ``quarantined`` (asserted above); only the
     # census receipt changed, not its authority.
@@ -1328,15 +1301,7 @@ def test_byte_proof_refuses_a_head_between_forks(monkeypatch: pytest.MonkeyPatch
             )
         }
 
-    original = revision_backfill.prepare_retained_jsonl_artifact
-    parsed: list[str] = []
-
-    def counted(evidence_reader: Any, raw_id: str, *, directory: Path, **kwargs: Any) -> Any:
-        parsed.append(raw_id)
-        return original(evidence_reader, raw_id, directory=directory, **kwargs)
-
-    monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted)
-
+    parsed = _observe_retained_jsonl_parse_calls(monkeypatch, tmp_path)
     replay_retained_components(tmp_path)
 
     # Every member is opened: nothing inherits an identity byte proof cannot

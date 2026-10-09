@@ -3586,10 +3586,10 @@ def test_streamed_jsonl_decoder_reads_a_cesu8_pair_as_one_character() -> None:
     record is skipped or its pair split."""
     import io
 
-    from polylogue.sources.decoders import _iter_json_stream
+    from tests.infra.json_values import iter_owned_json_values
 
     line = b'{"type": "note", "text": "a\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80"}\n'
-    (record,) = list(_iter_json_stream(io.BytesIO(line), "rollout.jsonl"))
+    (record,) = list(iter_owned_json_values(io.BytesIO(line), "rollout.jsonl"))
     assert record["text"] == "a\U0001f600 \ud800"  # type: ignore[index,call-overload]
 
 

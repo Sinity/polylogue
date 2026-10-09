@@ -118,6 +118,7 @@ def test_real_shaped_gemini_payload_does_not_classify_as_unseen_shape(tmp_path: 
         raw_id="raw-gemini",
         revision_sha256="e" * 64,
         evidence_id="raw-gemini",
+        signature_directory=(source).parent,
     )
     assert verdict.schema_resolution is not None
     assert verdict.schema_resolution.reason != "package_default"

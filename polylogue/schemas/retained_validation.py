@@ -11,8 +11,8 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
-from collections.abc import Iterator, KeysView, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Generator, Iterator, KeysView, Mapping, Sequence
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -42,8 +42,10 @@ from polylogue.schemas.drift_sentinel import (
     NEW_FIELD,
     UNSEEN_SHAPE,
     DriftClassification,
+    DriftSignature,
     SchemaDriftObservation,
 )
+from polylogue.schemas.observation_models import ProfileToken
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaObservation, SchemaRegistry
 from polylogue.schemas.schema_parser_coverage import unread_field_names
@@ -107,9 +109,10 @@ def _retained_validation_productive_identity(
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
     registry: SchemaRegistry | None = None,
+    signature_directory: Path,
 ) -> str:
     """Identify validation work by its retained source recipe, never scratch path."""
-    del path, registry
+    del path, registry, signature_directory
     resolution = None
     if schema_resolution is not None:
         resolution = (
@@ -215,7 +218,9 @@ class _SampleValidationReducer:
         connection: sqlite3.Connection,
         *,
         source_path: str | None,
+        signature_directory: Path,
     ) -> None:
+        self.signature_directory = signature_directory
         self.schema = schema
         self.provider = provider
         self.resolution = resolution
@@ -267,8 +272,9 @@ class _SampleValidationReducer:
             raw_id="",
             native_id_example=self.source_path or "",
             is_valid=valid,
+            signature_directory=self.signature_directory,
         )
-        self.connection.execute("DELETE FROM retained_drift WHERE sample=?", (self.sample_count,))
+        _clear_sample_drift(self.connection, self.sample_count)
         self.connection.execute("DELETE FROM retained_unread WHERE sample=?", (self.sample_count,))
         self.strongest = _stronger_drift(self.strongest, sample_drift)
 
@@ -336,7 +342,9 @@ class PrefixValidationState:
         mode: ValidationMode,
         registry: SchemaRegistry | None = None,
         scratch_directory: Path | None = None,
+        signature_directory: Path,
     ) -> None:
+        self.signature_directory = signature_directory
         self.provider = canonical_provider(provider)
         self.source_path = source_path
         self.mode = ValidationMode.from_string(mode)
@@ -358,7 +366,7 @@ class PrefixValidationState:
         self._header_witness: tuple[str, ...] = ()
         self._message_witness: tuple[str, ...] = ()
         self._message_fingerprint: str | None = None
-        self._message_profile: tuple[str, ...] | None = None
+        self._message_profile: tuple[ProfileToken, ...] | None = None
         self._record_count = 0
         self._closed = False
 
@@ -477,6 +485,7 @@ class PrefixValidationState:
                 self._base_resolution,
                 self.connection,
                 source_path=self.source_path,
+                signature_directory=self.signature_directory,
             )
         return _PrefixSchemaReducer(version, schema, reducer)
 
@@ -628,12 +637,14 @@ def validate_retained_document(
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
     registry: SchemaRegistry | None = None,
+    signature_directory: Path,
 ) -> RetainedValidationVerdict:
     """Decode and validate a complete retained JSON document using disk spill.
 
     Validation mode controls schema validation only.  Decoding remains the
     caller's independent admission concern, and drift never changes whether
-    the source revision can be published.
+    the source revision can be published. The caller retains signature_directory
+    until the verdict's drift observation has been sampled after publication.
     """
     mode = ValidationMode.from_string(mode)
     if mode is ValidationMode.OFF:
@@ -692,6 +703,7 @@ def validate_retained_document(
             resolved,
             spill.connection,
             source_path=source_path,
+            signature_directory=signature_directory,
         )
         for sample in _validation_samples(payload, selected_schema, canonical):
             reducer.observe(sample)
@@ -1010,7 +1022,9 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
         properties = schema_node.get("properties", {}) if isinstance(schema_node, Mapping) else {}
         patterns = schema_node.get("patternProperties", {}) if isinstance(schema_node, Mapping) else {}
         compiled = [(re.compile(pattern), subschema) for pattern, subschema in patterns.items()]
-        for key, value in instance.items():
+        if additional is True and not compiled:
+            return
+        for key in instance:
             check_compute_cancelled()
             if key in properties:
                 continue
@@ -1021,8 +1035,8 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
                 error = ValidationError("additional property is not allowed", instance=instance, schema=schema_node)
                 error.path.append(key)
                 yield error
-            else:
-                yield from validator.descend(value, additional, path=key)
+            elif additional is not True:
+                yield from validator.descend(instance[key], additional, path=key)
 
     def unique_items(
         validator: Any, enabled: object, instance: object, schema_node: object
@@ -1108,9 +1122,23 @@ def _ensure_reducer_tables(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE TABLE IF NOT EXISTS retained_unique(scope INTEGER NOT NULL,digest BLOB NOT NULL,PRIMARY KEY(scope,digest)) WITHOUT ROWID"
     )
-    connection.execute(
-        "CREATE TABLE IF NOT EXISTS retained_drift(sample INTEGER NOT NULL,path TEXT NOT NULL,PRIMARY KEY(sample,path)) WITHOUT ROWID"
+    drift_created = (
+        connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='retained_drift'").fetchone()
+        is None
     )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS retained_drift(sample INTEGER NOT NULL,path INTEGER NOT NULL,digest BLOB NOT NULL,"
+        "PRIMARY KEY(sample,path)) WITHOUT ROWID"
+    )
+    connection.execute("CREATE INDEX IF NOT EXISTS retained_drift_digest ON retained_drift(sample,digest)")
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS retained_drift_chunks(sample INTEGER NOT NULL,path INTEGER NOT NULL,ordinal INTEGER NOT NULL,"
+        "data BLOB NOT NULL,PRIMARY KEY(sample,path,ordinal)) WITHOUT ROWID"
+    )
+    if drift_created:
+        connection.create_collation(
+            "retained_path_order", lambda left, right: _compare_stored_drift_paths(connection, left, right)
+        )
     connection.execute(
         "CREATE TABLE IF NOT EXISTS retained_unread(sample INTEGER NOT NULL,path TEXT NOT NULL,PRIMARY KEY(sample,path)) WITHOUT ROWID"
     )
@@ -1262,22 +1290,96 @@ def _json_equality_digest(value: object) -> bytes:
     return digest.digest()
 
 
+def _stored_drift_chunks(connection: sqlite3.Connection, sample: int, path: int) -> Generator[bytes, None, None]:
+    from polylogue.schemas.observation_spill import _read_rows
+
+    with closing(
+        _read_rows(
+            connection,
+            "SELECT data FROM retained_drift_chunks WHERE sample=? AND path=? ORDER BY ordinal",
+            (sample, path),
+        )
+    ) as rows:
+        for (data,) in rows:
+            check_compute_cancelled()
+            yield bytes(data)
+
+
+def _compare_stored_drift_paths(connection: sqlite3.Connection, left: str, right: str) -> int:
+    from polylogue.schemas.observation_spill import _compare_key_chunks
+
+    left_sample, left_path = (int(part) for part in left.split(":"))
+    right_sample, right_path = (int(part) for part in right.split(":"))
+    return _compare_key_chunks(
+        _stored_drift_chunks(connection, left_sample, left_path),
+        _stored_drift_chunks(connection, right_sample, right_path),
+    )
+
+
+def _clear_sample_drift(connection: sqlite3.Connection, sample: int) -> None:
+    connection.execute("DELETE FROM retained_drift_chunks WHERE sample=?", (sample,))
+    connection.execute("DELETE FROM retained_drift WHERE sample=?", (sample,))
+
+
 def _collect_drift_paths(
     sample: Mapping[str, object],
     schema: Mapping[str, object],
     connection: sqlite3.Connection,
     sample_index: int,
 ) -> int:
-    from polylogue.schemas.validator import _iter_drift_paths
+    from polylogue.schemas.observation_spill import _compare_key_chunks, _read_rows
+    from polylogue.schemas.validator import _DriftPath, _iter_drift_key_paths
 
     if (active := _ACTIVE_VALIDATION_SCRATCH.get()) is None or active.connection is not connection:
         _ensure_reducer_tables(connection)
     count = 0
-    connection.execute("DELETE FROM retained_drift WHERE sample=?", (sample_index,))
-    for path in _iter_drift_paths(sample, schema, "", schema, connection):
-        check_compute_cancelled()
-        count += 1
-        connection.execute("INSERT OR IGNORE INTO retained_drift VALUES (?,?)", (sample_index, path))
+    _clear_sample_drift(connection, sample_index)
+    with closing(_iter_drift_key_paths(sample, schema, _DriftPath(), schema, connection)) as paths:
+        for path in paths:
+            check_compute_cancelled()
+            count += 1
+            digest = hashlib.sha256()
+            with closing(path.iter_utf8_chunks()) as chunks:
+                for chunk in chunks:
+                    digest.update(chunk)
+            duplicate = False
+            with closing(
+                _read_rows(
+                    connection,
+                    "SELECT path FROM retained_drift WHERE sample=? AND digest=?",
+                    (sample_index, digest.digest()),
+                )
+            ) as candidates:
+                for (candidate,) in candidates:
+                    if (
+                        _compare_key_chunks(
+                            path.iter_utf8_chunks(), _stored_drift_chunks(connection, sample_index, int(candidate))
+                        )
+                        == 0
+                    ):
+                        duplicate = True
+                        break
+            if duplicate:
+                continue
+            connection.execute("INSERT INTO retained_drift VALUES (?,?,?)", (sample_index, count, digest.digest()))
+            pending = bytearray()
+            ordinal = 0
+            with closing(path.iter_utf8_chunks()) as chunks:
+                for chunk in chunks:
+                    for offset in range(0, len(chunk), 4096):
+                        pending.extend(chunk[offset : offset + 4096])
+                        while len(pending) >= 4096:
+                            connection.execute(
+                                "INSERT INTO retained_drift_chunks VALUES (?,?,?,?)",
+                                (sample_index, count, ordinal, bytes(pending[:4096])),
+                            )
+                            del pending[:4096]
+                            ordinal += 1
+                if pending:
+                    connection.execute(
+                        "INSERT INTO retained_drift_chunks VALUES (?,?,?,?)",
+                        (sample_index, count, ordinal, bytes(pending)),
+                    )
     return count
 
 
@@ -1292,37 +1394,23 @@ def _reduce_sample_drift(
     raw_id: str,
     native_id_example: str,
     is_valid: bool,
+    signature_directory: Path,
 ) -> SchemaDriftObservation | None:
     if resolution is None:
         return None
     path_count = int(
         connection.execute("SELECT COUNT(*) FROM retained_drift WHERE sample=?", (sample_index,)).fetchone()[0]
     )
-    path_signature = str(
-        connection.execute(
-            "SELECT group_concat(path, ',') FROM (SELECT path FROM retained_drift WHERE sample=? ORDER BY path)",
-            (sample_index,),
-        ).fetchone()[0]
-        or ""
-    )
     unread_count = 0
-    unread_signature = ""
     if not path_count and is_valid:
         unread_names = unread_field_names(normalize_provider_token(str(provider)))
         connection.execute("DELETE FROM retained_unread WHERE sample=?", (sample_index,))
-        for key in sample:
+        for key in unread_names:
             check_compute_cancelled()
-            if str(key) in unread_names:
-                connection.execute("INSERT OR IGNORE INTO retained_unread VALUES (?,?)", (sample_index, str(key)))
+            if key in sample:
+                connection.execute("INSERT OR IGNORE INTO retained_unread VALUES (?,?)", (sample_index, key))
         unread_count = int(
             connection.execute("SELECT COUNT(*) FROM retained_unread WHERE sample=?", (sample_index,)).fetchone()[0]
-        )
-        unread_signature = str(
-            connection.execute(
-                "SELECT group_concat(path, ',') FROM (SELECT path FROM retained_unread WHERE sample=? ORDER BY path)",
-                (sample_index,),
-            ).fetchone()[0]
-            or ""
         )
     classification: DriftClassification | None
     if not is_valid:
@@ -1337,7 +1425,32 @@ def _reduce_sample_drift(
         classification = None
     if classification is None:
         return None
-    signature = unread_signature if classification == KNOWN_FIELD_UNREAD else path_signature
+    table = "retained_unread" if classification == KNOWN_FIELD_UNREAD else "retained_drift"
+
+    def signature_chunks() -> Generator[bytes, None, None]:
+        from polylogue.schemas.observation_spill import _read_rows
+
+        order = (
+            "(CAST(sample AS TEXT)||':'||CAST(path AS TEXT)) COLLATE retained_path_order"
+            if table == "retained_drift"
+            else "path"
+        )
+        with closing(
+            _read_rows(connection, f"SELECT path FROM {table} WHERE sample=? ORDER BY {order}", (sample_index,))
+        ) as rows:
+            first = True
+            for (path,) in rows:
+                check_compute_cancelled()
+                if not first:
+                    yield b","
+                first = False
+                if table == "retained_drift":
+                    with closing(_stored_drift_chunks(connection, sample_index, int(path))) as chunks:
+                        yield from chunks
+                else:
+                    yield path.encode("utf-8", "surrogatepass")
+
+    signature = DriftSignature.from_utf8_chunks(signature_chunks(), directory=signature_directory)
     return SchemaDriftObservation(
         origin=str(origin_from_provider(provider)),
         element_kind=resolution.element_kind,
@@ -1360,4 +1473,4 @@ def _stronger_drift(
     right = _DRIFT_STRENGTH[candidate.classification]
     if right != left:
         return candidate if right > left else current
-    return min(current, candidate, key=lambda item: item.unseen_key_signature)
+    return candidate if candidate.unseen_key_signature.compare(current.unseen_key_signature) < 0 else current

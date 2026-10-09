@@ -479,7 +479,8 @@ def frontier_source_inputs(frontier: SchemaFrontier, subject: str) -> tuple[Sche
     declared denominator, so it would read every member of a shared drop root
     under this subject. Such a root is expanded into its recorded members, one
     explicit file input each, which binds generation to exactly the baseline
-    that was recorded and checked. An unrestricted root is passed whole.
+    that was recorded and checked. A declared file root remains that file for
+    its recorded member. An unrestricted root is passed whole.
     """
     declared = frontier.subject(subject)
     if declared is None:
@@ -494,8 +495,10 @@ def frontier_source_inputs(frontier: SchemaFrontier, subject: str) -> tuple[Sche
             raise SchemaFrontierError(
                 f"root {root.path} restricts its denominator but has no recorded baseline to expand"
             )
+        file_root = root.path.is_file()
         inputs.extend(
-            SchemaSourceInput(provider=subject, root=root.path / member.relative) for member in baseline.members
+            SchemaSourceInput(provider=subject, root=root.path if file_root else root.path / member.relative)
+            for member in baseline.members
         )
     return tuple(inputs)
 

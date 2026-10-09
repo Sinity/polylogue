@@ -184,8 +184,8 @@ READER_SEM1_TASK_USE = archive_message_id(READER_SEM1, "reader-sem1-task-use")
 def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -> None:
     """(Re)ingest the ``reader-c1`` session, optionally with the six
     MK3-state attachments linked to its first message."""
+    from polylogue.archive.attachment.presentation import PREVIEW_SIZE_BUDGET
     from polylogue.core.enums import BlockType
-    from polylogue.daemon.webui_data import PREVIEW_SIZE_BUDGET
     from tests.infra.storage_records import SessionBuilder
 
     builder = (

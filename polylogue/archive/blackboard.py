@@ -45,6 +45,19 @@ class BlackboardNote:
     updated_at_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class BlackboardPage:
+    items: tuple[BlackboardNote, ...]
+    total: int
+    limit: int
+    offset: int
+
+    @property
+    def next_offset(self) -> int | None:
+        end = self.offset + len(self.items)
+        return end if end < self.total else None
+
+
 def build_blackboard_body(
     *,
     kind: str,

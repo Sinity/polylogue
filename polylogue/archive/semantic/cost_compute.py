@@ -117,7 +117,7 @@ def compute_session_cost(
         session is not None
         and model_usage
         and all(row.provider_lanes_complete for row in model_usage)
-        and not any(breakdown.total_tokens for breakdown in per_model.values())
+        and not any(row.has_provider_usage for row in model_usage)
     ):
         # session_model_usage carries model identity but no real usage
         # counters for every row (e.g. chatgpt-export/claude-ai-export
@@ -308,18 +308,13 @@ def compute_session_cost(
 def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict[str, SessionCostBreakdown]:
     """Build the per-model breakdown seed from canonical ``session_model_usage`` rows.
 
-    A row's existence proves a model-identity fact (an ingested usage event or
-    message asserted this model was used), but not that the row carries real
-    usage *counts* -- some origins (chatgpt-export, claude-ai-export) write a
-    row with a real ``model_name`` and zero token counters because their
-    exports don't carry provider token counters at all. Only rows whose
-    aggregated tokens are actually nonzero are labelled ``reported``/
-    ``provider_reported``; a model-identity-only row with no real token
-    evidence is labelled ``unknown``/``unknown`` instead, so it can't be
-    mistaken for a provider that genuinely reported and billed zero
-    (polylogue-9kjtc).
+    A row can name a model without measuring its usage. Positive counts or
+    ``provider_usage_observed`` establish token evidence; the latter preserves
+    an explicitly measured zero independently of catalog price availability.
+    Identity-only rows remain unknown, and missing required lanes stay partial.
     """
     per_model: dict[str, SessionCostBreakdown] = {}
+    observed: set[str] = set()
     for row in model_usage:
         model_name = row.model_name or None
         norm_model = _normalize_model(model_name) if model_name else None
@@ -328,6 +323,8 @@ def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict
         # whichever route's name happened to come last.
         raw_key = (model_name or "").strip().casefold()
         key = raw_key if raw_key in PRICING else (norm_model or "unknown")
+        if row.has_provider_usage:
+            observed.add(key)
         existing = per_model.get(key)
         base_input = existing.input_tokens if existing else 0
         base_output = existing.output_tokens if existing else 0
@@ -346,13 +343,15 @@ def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict
             ),
             confidence=(
                 "reported"
-                if row.provider_lanes_complete and (existing is None or existing.confidence != "partial")
+                if row.has_provider_usage
+                and row.provider_lanes_complete
+                and (existing is None or existing.confidence != "partial")
                 else "partial"
             ),
             provenance="provider_reported",
         )
     for key, breakdown in per_model.items():
-        if breakdown.total_tokens == 0:
+        if key not in observed:
             per_model[key] = breakdown.model_copy(update={"confidence": "unknown", "provenance": "unknown"})
     return per_model
 
@@ -430,9 +429,13 @@ def _per_model_from_messages(
                 provider_model_name=per_model[key].provider_model_name,
                 input_tokens=per_model[key].input_tokens + est.input_tokens,
                 output_tokens=per_model[key].output_tokens + est.output_tokens,
+                cache_read_tokens=per_model[key].cache_read_tokens,
+                cache_write_tokens=per_model[key].cache_write_tokens,
                 total_tokens=per_model[key].total_tokens + est.total_tokens,
                 confidence="partial" if per_model[key].confidence == "partial" else "estimated",
-                provenance="mixed" if per_model[key].confidence == "partial" else "heuristic_estimated",
+                provenance="mixed"
+                if per_model[key].confidence in {"partial", "reported"} or per_model[key].provenance == "mixed"
+                else "heuristic_estimated",
             )
     return per_model
 
@@ -500,8 +503,12 @@ def _add_provider_reported_tokens(
         # already means for a mixed session two functions down.
         confidence="partial"
         if getattr(tokens, "unmeasured_lanes", ()) or breakdown.confidence == "partial"
+        else "estimated"
+        if breakdown.confidence == "estimated"
         else "reported",
-        provenance="provider_reported",
+        provenance="mixed"
+        if breakdown.confidence == "estimated" or breakdown.provenance == "mixed"
+        else "provider_reported",
     )
 
 

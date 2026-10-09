@@ -60,9 +60,6 @@ writer_modules:
           interruption: atomic
       entrypoints:
         [apply_prepared_membership_index, apply_raw_revision_replay,
-        classify_raw_revision_cohort_for_frozen_candidate,
-        classify_raw_revision_cohort_for_rebuild_repair,
-        classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
         prepare_membership_classification_source,
         promote_reconstructed_legacy_append_revisions, record_current_parser_source_census,
         record_prepared_membership_census_receipt, refine_prepared_raw_origin, release_provisional_full_revisions,
@@ -150,7 +147,7 @@ writer_modules:
         - tier: user
           durability: durable
           interruption: atomic
-      entrypoints: [persist_annotation_batch, persist_annotation_schema, persist_builtin_annotation_schemas]
+      entrypoints: [persist_annotation_batch, persist_annotation_schema, persist_builtin_annotation_schemas, persist_spilled_annotation_batch]
     - path: polylogue/storage/sqlite/archive_tiers/context_delivery_write.py
       surfaces:
         - tier: user

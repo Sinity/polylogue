@@ -202,23 +202,24 @@ async def get_work_evidence_traversal(
     if focal_row is None:
         return None
 
-    predicates: list[str] = []
-    params: list[object] = [query.graph_id]
-    if query.direction == "incoming":
-        predicates.append("target_ref = ?")
-        params.append(focal)
-    elif query.direction == "outgoing":
-        predicates.append("source_ref = ?")
-        params.append(focal)
-    else:
-        predicates.append("(source_ref = ? OR target_ref = ?)")
-        params.extend([focal, focal])
-    if query.edge_kinds:
-        placeholders = ", ".join("?" for _ in query.edge_kinds)
-        predicates.append(f"edge_kind IN ({placeholders})")
-        params.extend(query.edge_kinds)
-    sql = "SELECT * FROM work_evidence_edges WHERE graph_id = ? AND " + " AND ".join(predicates)
-    sql += " ORDER BY occurred_at_ms, edge_ref"
+    endpoints = {
+        "incoming": ("target_ref",),
+        "outgoing": ("source_ref",),
+        "both": ("source_ref", "target_ref"),
+    }[query.direction]
+    branches: list[str] = []
+    params: list[object] = []
+    for endpoint in endpoints:
+        predicates = ["graph_id = ?", f"{endpoint} = ?"]
+        params.extend((query.graph_id, focal))
+        if query.edge_kinds:
+            placeholders = ", ".join("?" for _ in query.edge_kinds)
+            predicates.append(f"edge_kind IN ({placeholders})")
+            params.extend(query.edge_kinds)
+        branches.append("SELECT * FROM work_evidence_edges WHERE " + " AND ".join(predicates))
+    # Separate endpoint seeks avoid a graph-wide OR scan before planner stats
+    # exist. UNION deduplicates branch membership; distinct edge refs stay distinct.
+    sql = " UNION ".join(branches) + " ORDER BY occurred_at_ms, edge_ref"
     if query.limit is not None:
         sql += " LIMIT ?"
         params.append(query.limit)

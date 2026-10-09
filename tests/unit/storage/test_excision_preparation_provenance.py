@@ -341,8 +341,8 @@ def test_frozen_cascade_blob_exclusion_exceeds_actual_index_variable_limit(tmp_p
                 ):
                     with connection_cursor(
                         index,
-                        "INSERT INTO attachment_refs(attachment_id,session_id,message_id,position) VALUES (?,?,?,?)",
-                        (attachment_id, session_id, message_id, position),
+                        "INSERT INTO attachment_refs(attachment_id,session_id,message_id,position,native_identity) VALUES (?,?,?,?,?)",
+                        (attachment_id, session_id, message_id, position, attachment_id.encode().hex()),
                     ):
                         pass
             index.commit()

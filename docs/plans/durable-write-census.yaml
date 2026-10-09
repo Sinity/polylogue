@@ -99,17 +99,22 @@ runtime_tables:
     reason: "The table is created in refs.db under this object's TemporaryDirectory and holds prefix references for one prepared session; the connection and directory are removed with the object."
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_UnionScratch.__init__"
-    table: "block_remap"
-    disposition: disposable_scratch
-    reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and maps block ids during one cross-acquisition preparation; close() removes the private scratch store."
-  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
-    function: "_UnionScratch.__init__"
     table: "message_remap"
     disposition: disposable_scratch
     reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and maps message ids during one cross-acquisition preparation; close() removes the private scratch store."
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_prepare_cross_acquisition_union"
+    table: "old_semantic"
+    disposition: disposable_scratch
+    reason: "The table belongs to the cross-acquisition union private scratch owner and is removed when preparation closes."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_prepare_cross_acquisition_union"
+    table: "incoming_message_remap"
+    disposition: disposable_scratch
+    reason: "The table belongs to the cross-acquisition union private scratch owner and is removed when preparation closes."
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_UnionScratch.__init__"
-    table: "native_message"
+    table: "message_owner_map"
     disposition: disposable_scratch
     reason: "The table is in union.db under _UnionScratch's TemporaryDirectory and indexes merged message ids during one cross-acquisition preparation; close() removes the private scratch store."
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
@@ -172,7 +177,7 @@ writes:
     kind: "update"
     tier: "unresolved"
     classification: guarded_producer_refinement
-    reason: "The shared incremental TEXT writer requires the exact retained original native connection owner and an active transaction. Audit retains its allowlist of operation_events.detail_json and audit_continuity_control.pending_payload_json and verified canonical literal chunks. The CaptureJob producer fills its same-transaction placeholders in capture_jobs.intent_json, capture_job_events.refs_json/payload_json, capture_job_native_acquisitions.header_json, capture_job_native_members.metadata_json, and capture_job_native_assets.outcome_json; duplicate/CAS/acquisition-state checks precede publication. These are current receiver registry cells, not archive tiers. The helper fills the producer-selected row before commit, enforces physical SQLite length and exact streamed byte count, and retains failed Blob settlement with its creator. This moves the previous Audit placeholder refinement without permitting revisions of already published confident payloads."
+    reason: "The shared incremental TEXT writer requires the exact retained original native connection owner and an active transaction. Audit retains its allowlist of operation_events.detail_json and audit_continuity_control.pending_payload_json and verified canonical literal chunks. The CaptureJob producer fills its same-transaction placeholders in capture_jobs.intent_json, capture_job_events.refs_json/payload_json, capture_job_native_acquisitions.header_json, capture_job_native_members.metadata_json, and capture_job_native_assets.outcome_json; duplicate/CAS/acquisition-state checks precede publication. These are current receiver registry cells, not archive tiers. The annotation importer fills only refs/failures/metadata cells of temp.annotation_import_literals on the same native User connection. Its completed canonical values enter annotation_batches through one checked INSERT…SELECT inside the atomic schema/batch/assertion transaction, after immutable existing-batch digest and schema checks; complete provenance is verified before commit. No durable JSON CHECK is bypassed or temporarily weakened. The helper fills the producer-selected row before commit, enforces physical SQLite length and exact streamed byte count, and retains failed Blob settlement with its creator. This moves the previous Audit placeholder refinement without permitting revisions of already published confident payloads."
   - file: "polylogue/storage/sqlite/archive_tiers/user_write.py"
     function: "advance_session_marker_delivery"
     table: "session_marker_delivery"
@@ -188,12 +193,12 @@ writes:
     classification: lifecycle_transition
     reason: "The singleton is the durable sink acknowledgement for immutable accepted-marker source history. Its writer first verifies the exact prior stream and sequence, then advances only to the immediate successor inside the caller-owned assertion-lowering transaction; stale or skipped work raises instead of changing the cursor. It stores delivery progress, not a recomputable producer judgement."
   - file: "polylogue/operations/audit.py"
-    function: "AuditRepository._bind_machine_batch"
+    function: "AuditRepository._bind_insight_machine_seal"
     table: "machine_request_parts"
     kind: "update"
     tier: "audit"
     classification: lifecycle_transition
-    reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
+    reason: "The insight seal binds each staged immutable preview page to its active authorization for the same authenticated actor and surface. The UPDATE requires authorization_ref and operation_id to remain NULL, then requires the affected count to equal the sealed page count; a mismatch raises MachineRequestConflictError before publication."
   - file: "polylogue/operations/audit.py"
     function: "AuditRepository._bind_machine_batch"
     table: "machine_requests"
@@ -202,12 +207,12 @@ writes:
     classification: lifecycle_transition
     reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
   - file: "polylogue/operations/audit.py"
-    function: "AuditRepository._bind_machine_batch"
+    function: "AuditRepository._bind_insight_machine_seal"
     table: "machine_requests"
     kind: "update"
     tier: "audit"
     classification: lifecycle_transition
-    reason: "Separate statement 2 of this function on machine_requests (UPDATE machine_requests SET artifact_kind = ?, artifact_ref = ?, accepted_at_ms = ?,). audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
+    reason: "The insight seal advances only the authenticated insight-preview-pages request whose immutable part_count equals the completed page chain. It binds the first authorization and accepted deadline, requires exactly one affected request, and raises MachineRequestConflictError on stale or different custody."
   - file: "polylogue/operations/audit.py"
     function: "AuditRepository._bind_machine_result"
     table: "machine_request_parts"
@@ -768,20 +773,6 @@ writes:
     tier: "source"
     classification: declared_retention
     reason: "cleanup_superseded_raw_snapshots deletes only raws that superseded_raw_snapshot_candidates ranked outside the declared keep_full_snapshots/keep_append_snapshots window, minus the caller's protected_raw_ids and outside its eligible_raw_ids set; it is dry-run by default and reports skipped_referenced_count rather than deleting a protected row"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "_classify_raw_revision_cohort"
-    table: "raw_sessions"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "_promote_contiguous_append_evidence"
-    table: "raw_sessions"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
     function: "promote_reconstructed_legacy_append_revisions"
     table: "raw_authority_parser_census"

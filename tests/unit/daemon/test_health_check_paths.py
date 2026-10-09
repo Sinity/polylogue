@@ -27,6 +27,7 @@ import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -57,6 +58,7 @@ from polylogue.storage.blob_integrity import BlobIntegrityFinding, BlobIntegrity
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.identity import fixture_block_content_identity
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,11 +83,14 @@ def _init_blocks_db(path: Path, *, fts_rows: int = 0, block_rows: int = 0) -> No
         conn.execute("DELETE FROM blocks")
         for i in range(block_rows):
             conn.execute(
-                """
-                INSERT INTO blocks(message_id, session_id, position, block_type, text)
-                VALUES (?, ?, ?, 'text', ?)
-                """,
-                (f"m{i}", f"s{i}", 0, f"body {i}"),
+                "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, 0)",
+                (
+                    f"m{i}",
+                    f"s{i}",
+                    0,
+                    f"body {i}",
+                    fixture_block_content_identity("text", f"body {i}"),
+                ),
             )
         for row in conn.execute(
             "SELECT rowid, text FROM blocks ORDER BY rowid LIMIT ?",
@@ -917,6 +922,64 @@ def test_repeated_stage_failures_error_when_many_recent_failures(
     assert "recent attempts failed" in alert.message
 
 
+@pytest.mark.parametrize("current_failures, current_diagnostic", [(0, False), (1, True), (3, True), (3, False)])
+def test_health_repeated_failures_uses_one_recent_attempt_window(
+    workspace_env: dict[str, Path],
+    current_failures: int,
+    current_diagnostic: bool,
+) -> None:
+    ops_db = archive_root() / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        for index in range(3):
+            record_ingest_attempt(
+                conn,
+                attempt_id=f"old-failure-{index}",
+                status="failed",
+                phase="old-phase",
+                started_at_ms=1_770_000_000_000 + index,
+                error_message="historical failure",
+            )
+        for index in range(20):
+            record_ingest_attempt(
+                conn,
+                attempt_id=f"recent-success-{index}",
+                status="completed",
+                phase="done",
+                started_at_ms=1_770_000_001_000 + index,
+            )
+        for index in range(current_failures):
+            record_ingest_attempt(
+                conn,
+                attempt_id=f"current-failure-{index}",
+                status="failed",
+                phase="current-phase",
+                started_at_ms=1_770_000_002_000 + index,
+                error_message="current failure" if current_diagnostic else None,
+            )
+
+    health = health_module.check_health(tiers={health_module.HealthTier.MEDIUM})
+    alert = next(alert for alert in health.alerts if alert.check_name == "repeated_stage_failures")
+    expected = (
+        HealthSeverity.OK
+        if current_failures == 0
+        else HealthSeverity.WARNING
+        if current_failures == 1
+        else HealthSeverity.ERROR
+    )
+    assert alert.severity == expected
+    assert alert.consecutive_failures == int(current_failures > 0)
+    assert "historical failure" not in alert.message
+    if current_failures == 0:
+        assert alert.message == "no failures in last 20 attempts"
+    else:
+        assert f"{current_failures}/20 recent attempts failed" in alert.message
+    if current_failures == 3 and current_diagnostic:
+        assert "phase=current-phase: current failure" in alert.message
+    elif current_failures == 3:
+        assert "phase=" not in alert.message
+
+
 def test_repeated_stage_failures_reads_ops_tier_from_archive_tiers(
     workspace_env: dict[str, Path],
 ) -> None:
@@ -1234,6 +1297,32 @@ def test_embedding_coverage_error_when_enabled_with_failures(
     assert alert.severity == HealthSeverity.ERROR
     assert alert.consecutive_failures == 1
     assert "failures" in alert.message
+
+
+def test_embedding_coverage_reports_unknown_measurements(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("polylogue.daemon.health._active_health_db_path", lambda: tmp_path / "index.db")
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: SimpleNamespace(
+            embedding_enabled=True,
+            voyage_api_key="vk-test",
+        ),
+    )
+    monkeypatch.setattr(
+        "polylogue.daemon.health.embedding_readiness_info",
+        lambda _path: {
+            "embedding_status": "unknown",
+            "embedding_unmeasurable_reason": "readiness_unreadable",
+            "embedding_coverage_percent": None,
+            "embedding_failure_count": None,
+        },
+    )
+    alert = _check_embedding_coverage_expensive()
+    assert alert.severity == HealthSeverity.ERROR
+    assert alert.message == "embedding coverage unknown: readiness_unreadable"
 
 
 @pytest.mark.parametrize(

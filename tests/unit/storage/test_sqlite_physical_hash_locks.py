@@ -61,6 +61,8 @@ def test_migration_physical_fingerprint_preserves_its_transaction_locks(
     _database(path)
     fingerprint = {
         "path": str(path),
+        "live_cut_stable": True,
+        "wal": None,
         "size_bytes": path.stat().st_size,
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "user_version": 1,

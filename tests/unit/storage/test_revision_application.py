@@ -15,6 +15,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_application import (
     assert_session_fts_exact_sync,
     record_revision_application_sync,
 )
+from tests.infra.identity import fixture_block_content_identity
 
 
 def _receipt(
@@ -114,13 +115,8 @@ def test_session_fts_proof_detects_missing_row_and_trigger_mutation() -> None:
         (b"m" * 32,),
     )
     conn.execute(
-        """
-        INSERT INTO blocks(message_id, session_id, position, block_type, text)
-        VALUES (
-            'codex-session:session:c:0123456789abcdef0123456789abcdef.0',
-            'codex-session:session', 0, 'text', 'proof'
-        )
-        """
+        "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES ( 'codex-session:session:c:0123456789abcdef0123456789abcdef.0', 'codex-session:session', 0, 'text', 'proof' , ?, 0)",
+        (fixture_block_content_identity("text", "proof"),),
     )
     assert_session_fts_exact_sync(conn, "codex-session:session")
 

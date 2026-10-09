@@ -41,6 +41,7 @@ from polylogue.browser_capture.receiver import (
 )
 from polylogue.browser_capture.route_contracts import browser_capture_route_contract_for
 from polylogue.browser_capture.server import make_server
+from polylogue.core import staged_body
 from polylogue.core.enums import Provider
 from polylogue.logging import add_sink, make_stream_sink, remove_sink
 from polylogue.sources.dispatch import parse_payload
@@ -2020,8 +2021,8 @@ def test_native_upload_preserves_paused_producer_and_fences_changed_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authority_change: str, frozen_clock: Any
 ) -> None:
     """Real partial-body reads resume beyond expiry only under unchanged authority."""
-    from polylogue.browser_capture.capture_stream import STAGING_DIRNAME
     from polylogue.browser_capture.receiver import receiver_identity
+    from polylogue.core.staged_body import STAGING_DIRNAME
 
     first_chunk = Event()
     original_progress = CaptureJobRegistry.artifact_progress
@@ -2419,7 +2420,7 @@ def test_native_artifact_hash_cancellation_fences_finalization_and_publication(
     monkeypatch: pytest.MonkeyPatch,
     cancel_stage: str,
 ) -> None:
-    from polylogue.browser_capture.capture_stream import STAGING_DIRNAME
+    from polylogue.core.staged_body import STAGING_DIRNAME
 
     phase: str | None = None
     cancelled = False
@@ -2957,7 +2958,7 @@ def test_large_native_metadata_and_asset_outcomes_survive_prepare_plan_and_final
 def test_event_physical_publication_refusal_keeps_event_and_cas_unpublished(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, physical_failure: str
 ) -> None:
-    from polylogue.browser_capture.capture_stream import SpoolStorageExhaustedError
+    from polylogue.core.staged_body import BodyStorageExhaustedError
 
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
@@ -2973,9 +2974,9 @@ def test_event_physical_publication_refusal_keeps_event_and_cas_unpublished(
             if physical_failure == "spool":
 
                 def exhausted(chunks: Iterator[bytes], *, spool_root: Path, durable: bool) -> object:
-                    raise SpoolStorageExhaustedError(1, 0)
+                    raise BodyStorageExhaustedError(1, 0)
 
-                failure.setattr(capture_jobs_module, "stage_capture_chunks", exhausted)
+                failure.setattr(capture_jobs_module, "stage_body_chunks", exhausted)
             else:
                 original_connect = CaptureJobRegistry._connect
 
@@ -3079,7 +3080,6 @@ def test_large_intent_payload_survives_create_discover_events_update_and_get(
 def test_staged_artifact_durability_is_distinct_from_transient_json_cells(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, durable: bool
 ) -> None:
-    from polylogue.browser_capture import capture_stream
 
     observed: list[int] = []
 
@@ -3090,15 +3090,13 @@ def test_staged_artifact_durability_is_distinct_from_transient_json_cells(
     monkeypatch.setattr(os, "fsync", unavailable_sync)
     if durable:
         with pytest.raises(OSError) as refusal:
-            capture_stream.stage_capture_chunks(iter([b'{"neutral":"retained"}']), spool_root=tmp_path, durable=True)
+            staged_body.stage_body_chunks(iter([b'{"neutral":"retained"}']), spool_root=tmp_path, durable=True)
         assert refusal.value.errno == errno.EIO and len(observed) == 1
         with pytest.raises(OSError) as closed:
             os.fstat(observed[0])
         assert closed.value.errno == errno.EBADF
     else:
-        staged = capture_stream.stage_capture_chunks(
-            iter([b'{"neutral":"retained"}']), spool_root=tmp_path, durable=False
-        )
+        staged = staged_body.stage_body_chunks(iter([b'{"neutral":"retained"}']), spool_root=tmp_path, durable=False)
         try:
             assert staged.path.read_bytes() == b'{"neutral":"retained"}'
             assert observed == []

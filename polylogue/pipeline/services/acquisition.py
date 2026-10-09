@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+import asyncio
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.json import JSONDocument
@@ -29,6 +30,7 @@ from polylogue.sources.source_snapshot import (
 )
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
+from polylogue.storage.sqlite.async_sqlite import _await_settled
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
@@ -213,7 +215,7 @@ class AcquisitionService:
                 captured[semantic] = (physical, observed, profile)
 
             try:
-                async for record in iter_raw_record_stream(
+                records = iter_raw_record_stream(
                     source,
                     drive_witness=witness,
                     blob_root=self.backend.db_path.parent / "blob",
@@ -229,16 +231,23 @@ class AcquisitionService:
                     input_repository=self.repository if before_input_complete is not None else None,
                     before_input_complete=before_input_complete,
                     input_observation_callback=observe_input,
-                ):
-                    if record.canonical_source_path is not None and record.captured_file_observation is not None:
-                        observations[record.source_path] = (
-                            record.canonical_source_path,
-                            record.captured_file_observation,
-                            record.captured_profile_key,
-                        )
-                    await _consume(record)
-                    if progress_callback:
-                        progress_callback(1, desc=f"{progress_label} [{source.name}]")
+                )
+                try:
+                    async for record in records:
+                        if record.canonical_source_path is not None and record.captured_file_observation is not None:
+                            observations[record.source_path] = (
+                                record.canonical_source_path,
+                                record.captured_file_observation,
+                                record.captured_profile_key,
+                            )
+                        await _consume(record)
+                        if progress_callback:
+                            progress_callback(1, desc=f"{progress_label} [{source.name}]")
+                finally:
+                    # The visit owns this generator and must settle its I/O
+                    # worker and captured input before returning cancellation.
+                    owned_records = cast(AsyncGenerator[RawSessionRecord, None], records)
+                    await _await_settled(asyncio.ensure_future(owned_records.aclose()))
             except DaemonOperationCancelled:
                 raise
             except Exception as exc:

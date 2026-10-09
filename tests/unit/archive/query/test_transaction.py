@@ -4,7 +4,7 @@ import base64
 import json
 import sqlite3
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -262,3 +262,112 @@ def test_q2_rejects_tampering_and_legacy_versions(tmp_path: Path) -> None:
 def test_query_continuation_rejects_malformed_payloads_as_value_errors(token: str) -> None:
     with pytest.raises(ValueError, match="unsupported query continuation version"):
         QueryContinuation.decode(token)
+
+
+def test_equal_counter_generation_replacement_invalidates_shared_frame(tmp_path: Path) -> None:
+    import shutil
+
+    with ArchiveStore(tmp_path) as archive:
+        archive.close()
+    issued = _snapshot_epoch(tmp_path)
+    replacement = tmp_path / "replacement.db"
+    shutil.copyfile(tmp_path / "index.db", replacement)
+    replacement.replace(tmp_path / "index.db")
+    assert _snapshot_epoch(tmp_path) != issued
+
+
+def test_open_reader_frame_keeps_its_captured_physical_generation(tmp_path: Path) -> None:
+    import shutil
+
+    with ArchiveStore(tmp_path) as archive:
+        archive.close()
+    with ArchiveStore.open_existing(tmp_path) as reader:
+        reader.begin_read_snapshot()
+        issued = archive_snapshot_epoch(reader)
+        replacement = tmp_path / "replacement.db"
+        shutil.copyfile(tmp_path / "index.db", replacement)
+        replacement.replace(tmp_path / "index.db")
+        assert archive_snapshot_epoch(reader) == issued
+        reader.end_read_snapshot()
+    assert _snapshot_epoch(tmp_path) != issued
+
+
+def test_archive_frame_uses_the_retained_open_descriptor_generation(tmp_path: Path) -> None:
+    import os
+    import shutil
+
+    with ArchiveStore(tmp_path) as archive:
+        archive.close()
+    issued = _snapshot_epoch(tmp_path)
+    index = tmp_path / "index.db"
+    with index.open("rb") as selected:
+        index.rename(tmp_path / "predecessor.db")
+        shutil.copyfile(tmp_path / "predecessor.db", index)
+        with ArchiveStore.open_existing(tmp_path, index_path=index, opened_main_fd=selected.fileno()) as reader:
+            reader.begin_read_snapshot()
+            assert reader.index_generation.inode == os.fstat(selected.fileno()).st_ino
+            assert archive_snapshot_epoch(reader) == issued
+            reader.end_read_snapshot()
+    assert _snapshot_epoch(tmp_path) != issued
+
+
+def test_archive_reader_refuses_leaf_replaced_during_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+
+    import polylogue.storage.sqlite.archive_tiers.archive as store_module
+    from polylogue.storage.sqlite.connection_profile import StaleContinuationError
+
+    with ArchiveStore(tmp_path) as archive:
+        archive.close()
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    open_connection = open_readonly_connection
+
+    def replacing_open(path: str | Path, **kwargs: Any) -> sqlite3.Connection:
+        conn = open_connection(path, **kwargs)
+        replacement = tmp_path / "replacement.db"
+        shutil.copyfile(tmp_path / "index.db", replacement)
+        replacement.replace(tmp_path / "index.db")
+        return conn
+
+    monkeypatch.setattr(store_module, "open_readonly_connection", replacing_open)
+    with pytest.raises(StaleContinuationError):
+        ArchiveStore.open_existing(tmp_path)
+
+
+def test_shared_frame_keeps_open_user_generation_and_refuses_equal_counter_replacement(tmp_path: Path) -> None:
+    import shutil
+
+    with ArchiveStore(tmp_path) as archive:
+        archive.close()
+    with ArchiveStore.open_existing(tmp_path) as reader:
+        reader.begin_read_snapshot()
+        issued = archive_snapshot_epoch(reader)
+        replacement = tmp_path / "replacement-user.db"
+        shutil.copyfile(tmp_path / "user.db", replacement)
+        replacement.replace(tmp_path / "user.db")
+        assert archive_snapshot_epoch(reader) == issued
+        reader.end_read_snapshot()
+    assert _snapshot_epoch(tmp_path) != issued
+
+
+def test_archive_reader_refuses_user_replaced_during_attachment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    import polylogue.storage.sqlite.archive_tiers.archive as store_module
+    from polylogue.storage.sqlite.connection_profile import StaleContinuationError, attach_readonly_database
+
+    with ArchiveStore(tmp_path) as archive:
+        archive.close()
+
+    def replacing_attach(conn: sqlite3.Connection, path: str | Path, *, alias: str) -> None:
+        attach_readonly_database(conn, path, alias=alias)
+        replacement = tmp_path / "replacement-user.db"
+        shutil.copyfile(tmp_path / "user.db", replacement)
+        replacement.replace(tmp_path / "user.db")
+
+    monkeypatch.setattr(store_module, "attach_readonly_database", replacing_attach)
+    with pytest.raises(StaleContinuationError):
+        ArchiveStore.open_existing(tmp_path)

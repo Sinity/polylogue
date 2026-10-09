@@ -26,6 +26,7 @@ from pathlib import Path
 
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.storage_records import SessionBuilder
 
 _SESSION = "claude-code-session:ext-snapshot"
@@ -53,11 +54,16 @@ def _seed(root: Path) -> Path:
 
 def _insert_tool_block(conn: sqlite3.Connection, *, position: int, tool_name: str) -> None:
     conn.execute(
-        """
-        INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, text)
-        VALUES (?, ?, ?, 'tool_use', ?, ?, ?)
-        """,
-        (f"{_SESSION}:n:m-0", _SESSION, position, tool_name, f"tool-{position}", tool_name),
+        "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'tool_use', ?, ?, ?, ?, 0)",
+        (
+            f"{_SESSION}:n:m-0",
+            _SESSION,
+            position,
+            tool_name,
+            f"tool-{position}",
+            tool_name,
+            fixture_block_content_identity("tool_use", tool_name, f"tool-{position}", tool_name),
+        ),
     )
 
 
