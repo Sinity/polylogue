@@ -772,6 +772,16 @@ def test_full_evidence_backup_carries_recovered_missing_raw_blob(
     assert missing_source["ok"] is True
     assert missing_source["missing_canonical_blob_count"] == 0
 
+    # Historical live-store debt remains evidence after exact package recovery.
+    manifest_bytes = (backup_root / "manifest.json").read_bytes()
+    assert json.loads(manifest_bytes)["blob_reference_debt"]["missing_referenced_blobs"] == 1
+    destination = tmp_path / "restored-recovered"
+    detail = backup_operations.restore_verified_backup(backup_dir=backup_root, destination=destination)
+    assert detail["unrestored_referenced_blobs"] == 0
+    assert detail["operational_admission"] == "ready"
+    assert (destination / "blob" / blob_hex[:2] / blob_hex[2:]).read_bytes() == payload
+    assert (backup_root / "manifest.json").read_bytes() == manifest_bytes
+
 
 def test_migration_gate_refuses_package_missing_a_source_recoverable_blob(
     workspace_env: dict[str, Path],
@@ -2039,6 +2049,13 @@ def test_backup_verification_rejects_missing_source_references_and_reservations(
             "source_path": "/tmp/missing.jsonl",
         }
     ]
+    package = Path(result.output_path or "")
+    assert json.loads((package / "manifest.json").read_text())["blob_reference_debt"]["missing_referenced_blobs"] == 1
+    assert not (package / "verification-receipt.json").exists()
+    destination = tmp_path / "unresolved-restore"
+    with pytest.raises(FileNotFoundError):
+        backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
+    assert not destination.exists()
 
 
 def test_pre_generation_source_uses_declared_absence(

@@ -16,7 +16,7 @@ from polylogue.paths import archive_root
 from polylogue.storage import backup_package as package
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.backup_attestation import VERIFICATION_RECEIPT_FORMAT
-from polylogue.storage.backup_blob_closure import SOURCE_DECLARED_ABSENT_FILE
+from polylogue.storage.backup_blob_closure import SOURCE_DECLARED_ABSENT_FILE, package_blob_closure
 from polylogue.storage.backup_package import BACKUP_PROFILES, BackupProfile, BackupResult
 
 if TYPE_CHECKING:
@@ -323,8 +323,8 @@ def restore_verified_backup(*, backup_dir: Path, destination: Path) -> dict[str,
     if not included.issubset({f"{tier.value}.db" for tier in ArchiveTier}):
         raise ArchiveRestoreRefusalError("restore_unsupported_package")
     debt = manifest.get("blob_reference_debt")
-    missing_blobs = debt.get("missing_referenced_blobs", 0) if isinstance(debt, dict) else 0
-    if type(missing_blobs) is not int or missing_blobs < 0:
+    original_missing_blobs = debt.get("missing_referenced_blobs", 0) if isinstance(debt, dict) else 0
+    if type(original_missing_blobs) is not int or original_missing_blobs < 0:
         raise ArchiveRestoreRefusalError("restore_invalid_package")
     if not {"source.db", "user.db", "audit.db"}.issubset(included):
         # Overlay and diagnostics packages retain their evidence contract;
@@ -346,6 +346,11 @@ def restore_verified_backup(*, backup_dir: Path, destination: Path) -> dict[str,
         validate()
 
     artifacts = validate()
+    # The manifest's debt describes the original live store before backup
+    # recovery. Only the authenticated package determines unrestored bytes.
+    closure = package_blob_closure(backup_dir)
+    carried_blobs = {str(blob["blob_hash"]) for blob in receipt["blobs"]}
+    missing_blobs = len((closure.source_hashes | closure.index_hashes | closure.reservations) - carried_blobs)
     original_identities: dict[ArchiveTier, str] = {}
     for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT):
         fingerprint = artifacts[tier.value]["source_fingerprint"]

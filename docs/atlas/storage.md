@@ -77,6 +77,11 @@ Source capability crosses the preparation lifetime.
 
 ## Backup readability
 
+The backup manifest retains the original live-store blob debt before acquisition
+recovery. Restore reports unrestored references from the authenticated package's
+own closure and carried bytes, so exact recovery does not remain a destination
+gap. Declared-absent Source references remain visible as unrestored bytes.
+
 Backup preflight preserves SQLite read failures and cancellation through both
 check-only and acquisition operations before a package is published. Its
 original connection and statement remain owned through physical settlement;
