@@ -48,6 +48,9 @@ match. A path or payload that merely resembles a sidecar does not settle an
 unreceipted raw; decode failures, unsupported/refused artifacts, validation
 refusals, mixed session cohorts, and missing or stale receipts remain visible
 gaps (`storage/archive_readiness.py`).
+Retained replay uses the same membership currency requirement. Missing or older
+non-session membership receipts remain pending, and the canonical Source census
+publishes the current receipt before replay; a schema exemption cannot skip it.
 
 The bounded daemon status projection reuses this durable receipt and identity
 check without opening raw blobs. It keeps the raw/index join count visible

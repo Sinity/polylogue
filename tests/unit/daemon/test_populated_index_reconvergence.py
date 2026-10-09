@@ -15,12 +15,13 @@ from tests.infra.populated_managed_index import logical_rows, make_populated_sta
 
 
 @pytest.mark.parametrize(
-    ("multi_session", "include_history", "include_codex_materials"),
+    ("multi_session", "include_history", "include_codex_materials", "missing_history_membership"),
     [
-        (False, False, False),
-        (True, False, False),
-        (False, True, False),
-        (False, True, True),
+        (False, False, False, False),
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, True, True, False),
+        pytest.param(False, True, False, True, id="missing-history-membership"),
     ],
 )
 def test_actual_startup_replays_populated_source_after_original_disappears(
@@ -29,6 +30,7 @@ def test_actual_startup_replays_populated_source_after_original_disappears(
     multi_session: bool,
     include_history: bool,
     include_codex_materials: bool,
+    missing_history_membership: bool,
 ) -> None:
     root = tmp_path / "archive"
     source = tmp_path / "external" / ("bundle.json" if multi_session else "session.jsonl")
@@ -52,6 +54,12 @@ def test_actual_startup_replays_populated_source_after_original_disappears(
                     "SELECT raw_id FROM raw_sessions WHERE source_path LIKE '%/.claude/history.jsonl'"
                 ).fetchone()[0]
             )
+            if missing_history_membership:
+                from tests.infra.empty_managed_index import mutate_fixture_database
+
+                mutate_fixture_database(
+                    root / "source.db", "DELETE FROM raw_membership_census WHERE raw_id=?", (history_id,)
+                )
             history_binding = tuple(
                 conn.execute(
                     "SELECT logical_source_key,revision_kind,revision_authority,source_revision,"
@@ -64,6 +72,13 @@ def test_actual_startup_replays_populated_source_after_original_disappears(
                 read = PreparedSessionSourceRead(seal, blob_store=BlobStore(root / "blob"))
                 assert prepared_parser_census_is_current(seal, history_id)
                 assert not read.raw_parser_confirmed_non_session(history_id)
+        from polylogue.operations.raw_observation_derivation import raw_observation_inspection_frame
+        from polylogue.storage.derived.raw import RawObservationInspection
+
+        inspection = RawObservationInspection(root, index_db_path=old)
+        assert inspection.inspect(raw_observation_inspection_frame(root, index_db_path=old), (history_id,)) == {
+            history_id: "stale"
+        }
     if include_codex_materials:
         with closing(open_readonly_connection(root / "source.db")) as conn:
             materials_before = tuple(

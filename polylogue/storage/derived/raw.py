@@ -830,6 +830,17 @@ class RawObservationInspection:
             ).fetchone()
             is not None
         )
+        parser_non_session = (
+            membership is not None
+            and membership["status"] == "non_session"
+            and membership["parser_fingerprint"] == parser_fingerprint
+        )
+        if (
+            non_session or (membership is not None and membership["status"] == "non_session")
+        ) and not parser_non_session:
+            # Typed raw-only taxonomy and its independent parser membership
+            # receipt must describe the same current classification.
+            return "stale"
         member_count = 0
 
         def member_keys(rows: sqlite3.Cursor) -> Iterator[object]:
@@ -878,11 +889,6 @@ class RawObservationInspection:
                     ) as identity:
                         if identity.fetchone() is None:
                             return "excess"
-            parser_non_session = (
-                membership is not None
-                and membership["status"] == "non_session"
-                and membership["parser_fingerprint"] == parser_fingerprint
-            )
             if not measured.observed_count or non_session or parser_non_session:
                 # A non-session artifact (a hook carrier on its physical
                 # chain) inherits its own durable chain key into the census
@@ -2316,22 +2322,21 @@ class RawObservationDerivation(RawObservationInspection):
                     for raw_id in raw_ids:
                         if not prepared_parser_census_is_current(reference_seal, raw_id):
                             continue
+                        provider, _blob_hash, source_path, _kind, _raw_size = descriptors[raw_id]
+                        declared_non_session = path_declaration_refuses_session(provider, source_path)
+                        # A raw-only declaration needs its independent current
+                        # membership receipt even when taxonomy excludes schema
+                        # validation. Native session grammars remain exempt.
+                        if declared_non_session and not census_read.raw_parser_confirmed_non_session(raw_id):
+                            continue
                         validation_mode = census_read.raw_validation_mode(raw_id)
                         if validation_mode == self._validation_mode.value:
                             complete_census.add(raw_id)
                             continue
                         if validation_mode is not None:
                             continue
-                        declared_non_session = False
                         schema_eligible = census_read.raw_schema_eligible(raw_id)
-                        if schema_eligible:
-                            provider, _blob_hash, source_path, _kind, _raw_size = census_read.raw_revision_descriptor(
-                                raw_id
-                            )
-                            declared_non_session = path_declaration_refuses_session(provider, source_path)
-                        if not schema_eligible or (
-                            declared_non_session and census_read.raw_parser_confirmed_non_session(raw_id)
-                        ):
+                        if not schema_eligible or declared_non_session:
                             complete_census.add(raw_id)
                 # Every retained raw needs its actual parser authority before
                 # replay can select a session. A singleton can still refine an
