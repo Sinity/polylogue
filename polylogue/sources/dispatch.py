@@ -31,6 +31,7 @@ from polylogue.logging import WARNING, emit, get_logger
 from .chunk_positions import ChunkPositions
 from .decoder_json import DecodedRecordSequence
 from .detection import DetectionMode
+from .detection_projection import DetectionReadMapping
 from .origin_specs import detector_registry
 from .parsers import (
     antigravity,
@@ -139,6 +140,8 @@ class ChatGPTLoweredDocument:
 
 
 def _payload_record(value: object) -> PayloadRecord | None:
+    if isinstance(value, DetectionReadMapping):
+        return value.json_record()
     return json_document_or_none(value)
 
 

@@ -16,12 +16,13 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from decimal import Decimal
 from json import JSONDecodeError
-from typing import IO, Literal, Protocol
+from typing import IO, Literal, Protocol, cast
 
 import ijson
 
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
+from polylogue.core.json import JSONDocument, json_document_or_none
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 
@@ -38,7 +39,33 @@ class DetectorProjection:
     capture_metadata_values: bool = False
 
 
-class _ProjectedMapping(dict[str, object]):
+_UNREAD_RECORD = object()
+_RECORD_IS_SELF = object()
+
+
+class DetectionReadMapping(dict[str, object]):
+    """One detector projection with a lazily validated JSON record view.
+
+    Detector predicates only read projections. Repeated predicates and a
+    dynamic resolver therefore share this conversion within the record's
+    lifetime, without trusting arbitrary projection witnesses as JSON.
+    """
+
+    def __init__(self, fields: dict[str, object]) -> None:
+        super().__init__(fields)
+        self._json_record: object = _UNREAD_RECORD
+
+    def json_record(self) -> JSONDocument | None:
+        if self._json_record is _UNREAD_RECORD:
+            record = json_document_or_none(self)
+            # Avoid a self-reference cycle on every accepted record.
+            self._json_record = _RECORD_IS_SELF if record is self else record
+        if self._json_record is _RECORD_IS_SELF:
+            return cast(JSONDocument, self)
+        return cast(JSONDocument | None, self._json_record)
+
+
+class _ProjectedMapping(DetectionReadMapping):
     """Selected predicate fields carrying the original unique-key count."""
 
     def __init__(
@@ -50,6 +77,20 @@ class _ProjectedMapping(dict[str, object]):
 
     def __len__(self) -> int:
         return self.original_size
+
+
+def _detection_read_view(value: object) -> object:
+    """Attach conversion reuse only to the root records a detector will read."""
+    if isinstance(value, dict) and not isinstance(value, DetectionReadMapping):
+        return DetectionReadMapping(value)
+    if isinstance(value, list):
+        return [
+            DetectionReadMapping(item)
+            if isinstance(item, dict) and not isinstance(item, DetectionReadMapping)
+            else item
+            for item in value
+        ]
+    return value
 
 
 class _ByteReader(Protocol):
@@ -141,14 +182,16 @@ def _project(
     rule: DetectorProjection | None,
     stack: ExitStack,
 ) -> object:
-    return _project_value(
-        events,
-        event,
-        value,
-        rule,
-        stack,
-        scalarish_depth=-1 if rule is not None and rule.capture_metadata_values else None,
-    )[0]
+    return _detection_read_view(
+        _project_value(
+            events,
+            event,
+            value,
+            rule,
+            stack,
+            scalarish_depth=-1 if rule is not None and rule.capture_metadata_values else None,
+        )[0]
+    )
 
 
 def _consume_scalarish(events: Iterator[tuple[str, object]], event: str, depth: int) -> bool:
@@ -423,7 +466,9 @@ def project_detection_value(value: object, rule: DetectorProjection) -> object:
 
 def project_detection_root(value: object, root_rule: DetectorProjection) -> object:
     """Project a decoded value under an already chosen root rule, as :func:`_project` does."""
-    return _project_object(value, root_rule, scalarish_depth=-1 if root_rule.capture_metadata_values else None)[0]
+    return _detection_read_view(
+        _project_object(value, root_rule, scalarish_depth=-1 if root_rule.capture_metadata_values else None)[0]
+    )
 
 
 def _object_scalarish(value: object, depth: int) -> bool:

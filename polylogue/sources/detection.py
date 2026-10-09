@@ -173,61 +173,75 @@ class CompiledDetectorRegistry:
                     return cast(Provider | None, resolved_provider), binding.evidence_label
         return None, None
 
-    def detect_record_value(self, value: object, *, sequence: bool) -> tuple[Provider | None, str | None]:
-        """:meth:`detect_record_events` over one already decoded record.
+    def iter_record_detections(self, value: object) -> Iterator[tuple[Provider | None, str | None]]:
+        """Classify a decoded record, then its singleton-sequence view.
 
-        Each binding's declared projection is applied to the decoded value,
-        so only declared fields are visited and no event stream is replayed.
+        Both results retain their independent binding order. Identical declared
+        projections share one read view of this record, held only until the
+        iterator closes. Predicates and resolvers must only read those views.
+        Actual root arrays retain each binding's own complete any-fold.
         """
         from polylogue.sources.detection_projection import DetectorProjection, project_detection_root
 
-        array_input = sequence or isinstance(value, list)
-        modes = (
-            (DetectionMode.SEQUENCE_DOCUMENT, DetectionMode.SEQUENCE_RECORD_STREAM)
-            if array_input
-            else (DetectionMode.RECORD,)
-        )
-        for mode in modes:
-            for compiled in self.by_mode.get(mode, ()):
-                binding = compiled.binding
-                rule = _stream_projection(binding)
-                payload: object
+        projections: dict[str, object] = {}
+        for sequence in (False, True):
+            array_input = sequence or isinstance(value, list)
+            modes = (
+                (DetectionMode.SEQUENCE_DOCUMENT, DetectionMode.SEQUENCE_RECORD_STREAM)
+                if array_input
+                else (DetectionMode.RECORD,)
+            )
+            result: tuple[Provider | None, str | None] = (None, None)
+            matched = False
+            for mode in modes:
+                for compiled in self.by_mode.get(mode, ()):
+                    binding = compiled.binding
+                    payload: object
 
-                if sequence:
-                    # ``sequence`` wraps one decoded value as a singleton
-                    # document sequence. Its any-fold can only return that
-                    # value, whether the predicate accepts it or not, and
-                    # currently evaluates the predicate twice. Preserve the
-                    # wrapper seen by the detector while projecting directly.
-                    payload = [project_detection_root(value, rule)]
-                else:
-                    if array_input:
+                    if not sequence and array_input:
+                        rule = _stream_projection(binding)
 
                         def array_predicate(item: object, predicate: Predicate = compiled.predicate) -> bool:
                             return predicate([item])
 
                         root_rule = DetectorProjection(item=rule, array_fold="any", array_predicate=array_predicate)
+                        payload = project_detection_root(value, root_rule)
                     else:
-                        root_rule = rule
-                    payload = project_detection_root(value, root_rule)
-                if not compiled.predicate(payload):
-                    continue
-                resolved_provider: object = (
-                    binding.fixed_provider
-                    if compiled.provider_resolver is None
-                    else compiled.provider_resolver(payload)
-                )
-                if (
-                    compiled.provider_resolver is not None
-                    and resolved_provider is not None
-                    and (
-                        not isinstance(resolved_provider, Provider)
-                        or resolved_provider not in binding.dynamic_provider_allowlist
+                        # A singleton sequence uses exactly the record rule;
+                        # its outer any-fold has one possible witness. Cache by
+                        # the declaration, never by a mutable object's ID or a
+                        # union of different provider projections.
+                        path = binding.stream_projection_path
+                        if path is None:
+                            raise DetectorBindingError(
+                                f"{binding.binding_id}: complete stream projection is undeclared"
+                            )
+                        if path not in projections:
+                            projections[path] = project_detection_root(value, _stream_projection(binding))
+                        projected = projections[path]
+                        payload = [projected] if sequence else projected
+                    if not compiled.predicate(payload):
+                        continue
+                    resolved_provider: object = (
+                        binding.fixed_provider
+                        if compiled.provider_resolver is None
+                        else compiled.provider_resolver(payload)
                     )
-                ):
-                    raise DetectorBindingError(f"{binding.binding_id}: invalid projected dynamic provider")
-                return cast(Provider | None, resolved_provider), binding.evidence_label
-        return None, None
+                    if (
+                        compiled.provider_resolver is not None
+                        and resolved_provider is not None
+                        and (
+                            not isinstance(resolved_provider, Provider)
+                            or resolved_provider not in binding.dynamic_provider_allowlist
+                        )
+                    ):
+                        raise DetectorBindingError(f"{binding.binding_id}: invalid projected dynamic provider")
+                    result = cast(Provider | None, resolved_provider), binding.evidence_label
+                    matched = True
+                    break
+                if matched:
+                    break
+            yield result
 
     def detect_record_stream(
         self, records: Iterable[object], *, check_stop: Callable[[], None] | None = None

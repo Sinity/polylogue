@@ -20,8 +20,13 @@ its configured archive root. The factory enforces that root’s writer lease
 without relying on the global SQLite opener interceptor.
 
 Decoded detector projections visit only declared fields when no metadata or
-whole-mapping predicate needs the other values. Event projections still consume
-and validate the complete input; acquisition retains every origin check.
+whole-mapping predicate needs the other values. Acquisition classifies each
+decoded record and its singleton sequence in their independent detector order,
+sharing identical declared projections only for that record. Projected mapping
+read views validate their JSON conversion once for their read-only predicates
+and resolvers. Actual root arrays keep each binding's own complete fold. Event
+projections still consume and validate the complete input; acquisition retains
+every origin check.
 
 The artifact classifier proves a complete first physical JSONL value has a
 later nonblank line before trying the existing record fold first. The syntax
