@@ -32,7 +32,10 @@ archive-backed sampler. Selecting ordinary sources requires no archive rebuild.
 
 `--frontier` takes the inputs from the declared source frontier
 (`devtools schema frontier`) instead of repeating `--source`, and refuses when
-the live roots no longer match the recorded baseline. A subject whose declared
+the live roots no longer match the recorded baseline. Restricted directory roots
+supply their recorded members as individual inputs. A restricted single-file root
+supplies that declared file, including when its recorded member names a resolved
+target. A subject whose declared
 roots admit no member reports `zero_eligible_material` with the declared reason
 rather than falling back to the archive-backed sampler over a different
 population.

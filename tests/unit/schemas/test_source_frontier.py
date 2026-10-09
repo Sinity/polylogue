@@ -30,6 +30,7 @@ from polylogue.schemas.source_frontier import (
     record_frontier,
     write_frontier,
 )
+from polylogue.schemas.source_inference import infer_sources, inventory_schema_sources
 
 
 def write_member(root: Path, name: str, *, marker: str = "a") -> Path:
@@ -233,3 +234,44 @@ def test_declaration_refuses_a_subject_outside_the_inference_denominator(tmp_pat
             }
         )
     assert "must not carry a recorded baseline" in str(baseline.value)
+
+
+@pytest.mark.parametrize("restriction", ["admit", "exclusion"])
+@pytest.mark.parametrize("file_alias", [False, True])
+def test_restricted_file_root_reaches_generation_as_the_declared_file(
+    tmp_path: Path, restriction: str, file_alias: bool
+) -> None:
+    target = tmp_path / "neutral.jsonl"
+    target.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "sessionId": "neutral-session",
+                "version": "1.2.3",
+                "message": {"role": "user", "content": "neutral content"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    selected = tmp_path / "selected.jsonl" if file_alias else target
+    if file_alias:
+        selected.symlink_to(target)
+    root = FrontierRoot(
+        selected,
+        "one explicit input",
+        admit=("*.jsonl",) if restriction == "admit" else (),
+        exclusions=(FrontierExclusion("*.ignored", "unselected material"),) if restriction == "exclusion" else (),
+    )
+    frontier = record_frontier(SchemaFrontier(subjects=(FrontierSubject("claude-code", (root,)),)))
+    check = check_frontier(frontier, verify_content=True)
+    assert check.ok
+    assert check.checked_members == 1
+    assert [member.relative for member in frontier.baselines[0].members] == [target.name]
+
+    inputs = frontier_source_inputs(frontier, "claude-code")
+    assert [item.root for item in inputs] == [selected]
+    assert [candidate.path for candidate in inventory_schema_sources(inputs)] == [target]
+    result = infer_sources(inputs, cache_path=tmp_path / "source-cache.sqlite3", max_workers=1)
+    assert result.terminal_counts == {"included": 1}
+    assert result.record_count == 1
