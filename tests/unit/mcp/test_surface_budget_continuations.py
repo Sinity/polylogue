@@ -8,7 +8,7 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
-from polylogue.archive.query.transaction import QueryContinuation
+from polylogue.archive.query.transaction import QueryContinuation, QueryContinuationStaleError
 from polylogue.core.enums import Provider
 from polylogue.mcp.payloads import MCPMessageFragmentPayload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -86,10 +86,11 @@ async def test_registered_typed_pages_keep_budget_continuation(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("entry", ["read", "session-operations"])
+@pytest.mark.parametrize("complete", [True, False])
 async def test_registered_read_reassembles_oversized_unicode_message(
-    tmp_path: Path, mcp_server: MCPServerUnderTest, entry: str
+    tmp_path: Path, mcp_server: MCPServerUnderTest, entry: str, complete: bool
 ) -> None:
-    text = 'neutral é U0001f642 \\ "\n' * 4000
+    text = 'neutral é 🙂 \\ "\n' * 4000
 
     def seed() -> str:
         with ArchiveStore(tmp_path) as archive:
@@ -115,6 +116,14 @@ async def test_registered_read_reassembles_oversized_unicode_message(
             "projection": "session-operations",
             "session_operation": {"operation": "sessions.read", "ref": f"session:{session_id}", "limit": 1},
         }
+    from dataclasses import replace
+
+    from polylogue.operations.transcript_window import message_transcript_window
+
+    async def bounded_window(*args: object, **kwargs: object) -> object:
+        window = await message_transcript_window(*args, **kwargs)
+        return replace(window, lineage_complete=complete, lineage_truncation_reason=None if complete else "cycle")
+
     parts = []
     offset = 0
     expected = None
@@ -123,6 +132,7 @@ async def test_registered_read_reassembles_oversized_unicode_message(
         with (
             patch("polylogue.mcp.server._get_polylogue", return_value=api),
             patch("polylogue.mcp.server_support._record_mcp_call_log"),
+            patch("polylogue.operations.transcript_window.message_transcript_window", side_effect=bounded_window),
         ):
             for _ in range(100):
                 raw = await invoke_surface_async(fn, **args)
@@ -133,6 +143,10 @@ async def test_registered_read_reassembles_oversized_unicode_message(
                 assert fragment.offset == offset
                 assert fragment.session_ref == f"session:{session_id}"
                 assert fragment.json_fragment.isascii()
+                assert fragment.outcome.state == ("ok" if complete else "degraded")
+                assert fragment.lineage_complete is complete
+                assert fragment.lineage_truncation_reason == (None if complete else "cycle")
+                assert fragment.total_rows == 2
                 parts.append(fragment.json_fragment)
                 offset += len(fragment.json_fragment)
                 if fragment.next_fragment_offset is None:
@@ -172,7 +186,7 @@ async def test_registered_read_reassembles_oversized_unicode_message(
 
             run_off_event_loop(change)
             stale = json.loads(await invoke_surface_async(fn, **stale_arguments))
-            assert stale["code"] == "stale_continuation"
+            assert stale["code"] == QueryContinuationStaleError.code, stale
     finally:
         await api.close()
     row = json.loads("".join(parts))

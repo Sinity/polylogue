@@ -477,6 +477,7 @@ def _message_fragment(payload: BaseModel, context: _ResponseContext) -> str:
 
     from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
     from polylogue.mcp.payloads import MCPMessageFragmentPayload
+    from polylogue.surfaces.outcome import OutcomeEnvelope
 
     request = getattr(payload, "_transaction_request", None)
     rows = getattr(payload, "messages", getattr(payload, "items", ()))
@@ -489,6 +490,15 @@ def _message_fragment(payload: BaseModel, context: _ResponseContext) -> str:
         raise ValueError("fragment_offset is outside the message JSON bytes")
     framed = replace(request, page_size=1)
     ref = str(request.arguments["ref"])
+    coverage = getattr(payload, "coverage", None)
+    gaps = getattr(coverage, "gaps", ())
+    complete = getattr(payload, "lineage_complete", not gaps)
+    truncation_reason = getattr(payload, "lineage_truncation_reason", gaps[0] if gaps else None)
+    outcome = payload.outcome
+    if not isinstance(outcome, OutcomeEnvelope):
+        outcome = OutcomeEnvelope(
+            state=outcome, reason=gaps[0] if gaps else None, detail={"gaps": list(gaps)} if gaps else {}
+        )
 
     def fragment(end: int) -> str:
         next_fragment = end if end < len(encoded) else None
@@ -512,6 +522,10 @@ def _message_fragment(payload: BaseModel, context: _ResponseContext) -> str:
                 row_offset=framed.offset,
                 offset=offset,
                 total_bytes=len(encoded),
+                total_rows=payload.total,
+                lineage_complete=complete,
+                lineage_truncation_reason=truncation_reason,
+                outcome=outcome,
                 json_fragment=encoded[offset:end],
                 next_fragment_offset=next_fragment,
                 continuation=continuation,
@@ -763,7 +777,7 @@ def _record_mcp_call_log(
 
 
 def _mcp_error_detail(result: object) -> str | None:
-    """Return the canonical error code when a tool returned MCPErrorPayload."""
+    """Return the canonical code from a declared terminal error payload."""
     if not isinstance(result, str):
         return None
     try:

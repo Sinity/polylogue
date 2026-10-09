@@ -44,7 +44,7 @@ def test_peer_eof_interrupts_actual_native_read(tmp_path: Path, route: str) -> N
     def run() -> None:
         try:
             if route == "query-units":
-                DaemonAPIHandler._handle_query_units.__wrapped__(handler, {"expression": ["messages"]})
+                DaemonAPIHandler._handle_query_units.__wrapped__(handler, {"expression": ["messages where role:user"]})
             else:
                 handler._do_archive_get_messages(tmp_path, "neutral", limit=1, offset=0)
         except BaseException as exc:
@@ -91,7 +91,9 @@ def test_scheduled_http_read_keeps_peer_cancellation_in_nested_query(tmp_path: P
     handler.path = "/api/sessions"
 
     async def read(_self: DaemonAPIHandler, _handler: object) -> object:
-        transaction = QueryTransaction(tmp_path, QueryTransactionRequest(operation="http.archive.read", arguments={}))
+        transaction = QueryTransaction(
+            tmp_path, QueryTransactionRequest(operation="http.archive.read", arguments={}, page_size=1)
+        )
         contexts.append(transaction.context)
 
         def sql(archive: ArchiveStore) -> object:

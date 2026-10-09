@@ -89,6 +89,10 @@ class MCPMessageFragmentPayload(SurfacePayloadModel):
     encoding: Literal["ascii-json"] = "ascii-json"
     offset: int = Field(ge=0)
     total_bytes: int = Field(ge=1)
+    total_rows: int = Field(ge=1)
+    lineage_complete: bool
+    lineage_truncation_reason: str | None
+    outcome: OutcomeEnvelope
     json_fragment: str
     next_fragment_offset: int | None
     continuation: dict[str, object] | None

@@ -152,7 +152,7 @@ the MCP budget shortens a page, its executable continuation advances from the
 returned prefix under the same operation, projection, filters and archive frame.
 An oversized messages row returns `MCPMessageFragmentPayload`: ASCII JSON row
 bytes with original message identity, row offset, result ref, byte offset and
-exact total. Follow the returned read arguments; concatenate contiguous fragments
+exact total, original lineage evidence and owner outcome. Follow the returned read arguments; concatenate contiguous fragments
 then JSON-decode once. `fragment_offset` is accepted only with a bound messages
 continuation. A retry repeats the same fragment; the last fragment advances one
 row. Fragments never masquerade as complete messages or successful empty pages.
