@@ -3363,7 +3363,7 @@ async def _run_daemon_services_under_active_writer_lease(
                             ),
                             admission_class="incremental-background",
                         )
-                        return await asyncio.wrap_future(submitted.future)
+                        return await submitted.wait()
 
                     async def admit_raw_intake(raw_id: str) -> AdmissionResult:
                         if raw_observation_owner is None:
@@ -3385,7 +3385,7 @@ async def _run_daemon_services_under_active_writer_lease(
                             propagate(functools.partial(discover_pending_hook_carriers, archive_root_path, limit)),
                             admission_class="incremental-background",
                         )
-                        return await asyncio.wrap_future(submitted.future)
+                        return await submitted.wait()
 
                     async def admit_hook_events(raw_id: str) -> AdmissionResult:
                         """Materialize exactly one acquired carrier's events.
@@ -3416,7 +3416,7 @@ async def _run_daemon_services_under_active_writer_lease(
                                 ),
                                 admission_class="incremental-background",
                             )
-                        report = await asyncio.wrap_future(submitted.future)
+                        report = await submitted.wait()
                         return _derivation_admission(report, raw_id, subject="hook event")
 
                     drive_sources_configured = _drive_sources_configured()

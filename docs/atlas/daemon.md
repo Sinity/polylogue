@@ -122,6 +122,11 @@ The compute adapter's ordered map can observe its caller's cancellation while
 waiting for a physical result. Its scheduling checkpoint does not set a work
 deadline; cancellation removes queued units and drains running units through
 the existing creator cleanup owner before the caller releases its state.
+Async daemon callers await the submitted operation itself, not its raw future,
+so cancellation reaches the admission handle and creator-owned SQL settlement.
+Shutdown retains an orphaned intake or watcher candidate while its physical
+writer may still run; compute-thread join at process exit is a final safeguard,
+not a substitute for keeping that candidate in custody.
 
 ## Domain derivations
 

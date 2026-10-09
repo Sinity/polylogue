@@ -83,9 +83,12 @@ class DriveCatchupExecution:
         submitted = self._compute_adapter.submit(
             propagate(operation), admission_class="incremental-background", cancellation=cancellation
         )
-        return await self.settle(
-            asyncio.wrap_future(submitted.future), label="prepare", cancel_requested=cancellation.cancel
-        )
+
+        def cancel_preparation() -> None:
+            cancellation.cancel()
+            submitted.retry_sql_settlement()
+
+        return await self.settle(submitted.wait(), label="prepare", cancel_requested=cancel_preparation)
 
     async def publish(self, actor: str, operation: Callable[[], Awaitable[T]]) -> T:
         return await self.settle(self.coordinator.run(f"maintenance.drive_catchup.{actor}", operation), label=actor)

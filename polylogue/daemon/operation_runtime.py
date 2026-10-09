@@ -342,25 +342,10 @@ class DaemonOperationRuntime:
         submitted = self._kernel.submit(
             propagate(work), admission_class="control", estimated_bytes=_STAGED_REQUEST_BYTES.get()
         )
-        pending = asyncio.wrap_future(submitted.future)
-        try:
-            return await asyncio.shield(pending)
-        except asyncio.CancelledError:
-            # A staged exchange cancels its coroutine before durable
-            # acceptance. Release this phase's scheduler reservation before
-            # waiting for its compute future, so a deadline cannot strand a
-            # queued unit behind saturated workers.
-            submitted.cancellation.cancel()
-            while not pending.done():
-                try:
-                    await asyncio.shield(pending)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
-            if not pending.cancelled():
-                pending.exception()
-            raise
+        # ``SubmittedOperation.wait`` releases queued work, requests creator-
+        # owned SQL settlement, and retains this exchange until physical work
+        # is done even when the caller is cancelled repeatedly.
+        return await submitted.wait()
 
     async def write_phase(self, name: str, work: Callable[[], _T]) -> _T:
         result = await self._bridge.run_async(f"operation.{name}", work)
