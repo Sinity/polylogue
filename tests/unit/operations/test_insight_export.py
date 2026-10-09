@@ -443,3 +443,28 @@ def test_export_preserves_primary_and_cleanup_failure_with_staged_residue(
     assert (residue / "insights").is_dir()
     if stage == "producer":
         assert (residue / "insights/session_profiles.jsonl").read_text()
+
+
+def test_profileless_thread_export_validates_against_its_bundled_schema(tmp_path: Path) -> None:
+    import sqlite3
+
+    import jsonschema
+
+    from polylogue.analysis.archive import ThreadInsight
+
+    root = tmp_path / "archive"
+    _seed(root)
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute("DELETE FROM session_profiles")
+    target = tmp_path / "bundle"
+    with open_operation_read(root) as pinned:
+        result = export_insight_bundle(
+            pinned.archive, InsightExportBundleRequest(output_path=target, insights=("threads",))
+        )
+    assert result.manifest.insights[0].row_count == 1
+    schema = json.loads((target / "schemas/threads.schema.json").read_text())["schema"]
+    rows = [json.loads(line) for line in (target / "insights/threads.jsonl").read_text().splitlines()]
+    assert rows[0]["provenance"]["materializer_version"] is None
+    for row in rows:
+        jsonschema.validate(row, schema)
+        ThreadInsight.model_validate(row)

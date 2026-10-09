@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import json
+from collections.abc import Callable, Sequence
 from html import escape
 
 from polylogue.core.enums import BlockType
-from polylogue.core.tool_identity import tool_input_command, tool_input_path
 from polylogue.rendering.block_models import RenderableBlock
 
 # -------------------------------------------------------------------
@@ -20,7 +20,7 @@ def render_blocks_markdown(blocks: Sequence[RenderableBlock]) -> str:
     Each block is rendered according to its type:
     - ``text``: prose, passed through
     - ``thinking``: collapsible ``<details>`` section
-    - ``tool_use``: tool header with name and input summary
+    - ``tool_use``: tool header with name and complete arguments
     - ``tool_result``: code-fenced output
     - ``code``: language-tagged code fence
     - ``image``/``document``/``file``: reference with metadata, then any
@@ -48,11 +48,12 @@ def _render_thinking_markdown(block: RenderableBlock) -> str:
 
 def _render_tool_use_markdown(block: RenderableBlock) -> str:
     name = block.tool_name or "unknown"
-    summary = _tool_input_summary(name, block.tool_input)
     header = f"**Tool: {name}**"
-    if summary:
-        header += f" {summary}"
-    return header
+    arguments = _tool_input_text(block)
+    if not arguments:
+        return header
+    fence = "`" * max(3, _longest_backtick_run(arguments) + 1)
+    return f"{header}\n\n{fence}json\n{arguments}\n{fence}"
 
 
 def _render_tool_result_markdown(block: RenderableBlock) -> str:
@@ -102,59 +103,11 @@ def _render_text_block_markdown(block: RenderableBlock) -> str:
     return _strip_text(block.text)
 
 
-def _tool_input_summary(name: str | None, tool_input: Mapping[str, object] | None) -> str:
-    """Produce a short summary of tool input for display."""
-    del name
-    if tool_input is None:
-        return ""
-
-    # Common tool patterns
-    path = tool_input_path(tool_input)
-    if path:
-        return f"`{path}`"
-
-    command = tool_input_command(tool_input)
-    if command:
-        # Truncate long commands
-        if len(str(command)) > 80:
-            return f"`{str(command)[:77]}...`"
-        return f"`{command}`"
-
-    pattern = tool_input.get("pattern")
-    if pattern:
-        return f"`{pattern}`"
-
-    query = tool_input.get("query") or tool_input.get("prompt")
-    if query:
-        q = str(query)
-        if len(q) > 60:
-            return f'"{q[:57]}..."'
-        return f'"{q}"'
-
-    # ChatGPT web-search tool shape: {"search_query": [{"q": "..."}, ...], ...}.
-    # Without this, the generic key=value fallback below picks the first
-    # scalar-valued key (e.g. "response_length=medium") and the actual search
-    # terms -- previously visible as raw JSON text before #e2yk -- vanish
-    # from the folded summary entirely (#2629 review).
-    search_query = tool_input.get("search_query")
-    if isinstance(search_query, list) and search_query:
-        queries: list[str] = []
-        for item in search_query:
-            candidate = item.get("q") if isinstance(item, Mapping) else item
-            if isinstance(candidate, str) and candidate:
-                queries.append(candidate)
-        if queries:
-            joined = "; ".join(queries)
-            if len(joined) > 60:
-                return f'"{joined[:57]}..."'
-            return f'"{joined}"'
-
-    # Generic: show first key=value
-    for key, value in tool_input.items():
-        if isinstance(value, str) and len(value) < 60:
-            return f"{key}={value}"
-
-    return ""
+def _tool_input_text(block: RenderableBlock) -> str:
+    """Preserve the complete selected tool argument object in transcript output."""
+    if block.tool_input is None:
+        return block.tool_input_raw or ""
+    return json.dumps(block.tool_input, ensure_ascii=False, indent=2)
 
 
 # -------------------------------------------------------------------
@@ -191,11 +144,9 @@ def _render_thinking_html(block: RenderableBlock) -> str:
 
 def _render_tool_use_html(block: RenderableBlock) -> str:
     name = escape(block.tool_name or "unknown")
-    summary = _tool_input_summary(block.tool_name, block.tool_input)
-    summary_html = ""
-    if summary:
-        summary_html = " <code>" + escape(summary.strip('`"')) + "</code>"
-    return f'<div class="tool-use-block"><span class="tool-name">{name}</span>{summary_html}</div>'
+    arguments = _tool_input_text(block)
+    body = f'<pre class="tool-input-block">{escape(arguments)}</pre>' if arguments else ""
+    return f'<div class="tool-use-block"><span class="tool-name">{name}</span>{body}</div>'
 
 
 def _render_tool_result_html(block: RenderableBlock) -> str:
@@ -316,8 +267,8 @@ def _render_text_block_plaintext(block: RenderableBlock) -> str:
 
 def _render_tool_use_plaintext(block: RenderableBlock) -> str:
     name = block.tool_name or "unknown"
-    summary = _tool_input_summary(name, block.tool_input)
-    return f"[Tool: {name}] {summary}".strip()
+    arguments = _tool_input_text(block)
+    return f"[Tool: {name}]\n{arguments}".rstrip()
 
 
 def _render_thinking_plaintext(block: RenderableBlock) -> str:

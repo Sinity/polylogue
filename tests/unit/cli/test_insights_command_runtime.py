@@ -353,3 +353,41 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
                 output_format=None,
                 overwrite=False,
             )
+
+
+@pytest.mark.parametrize("state,expected", [("ok", 0), ("empty", 2), ("degraded", 1), ("error", 1)])
+@pytest.mark.parametrize("output_format", [None, "json"])
+def test_export_finishes_with_the_resident_outcome(tmp_path: Path, state: str, expected: int, output_format) -> None:
+    from polylogue.surfaces.outcome import OutcomeEnvelope
+
+    outcome = OutcomeEnvelope(state=state, reason="insight_output_incomplete" if state == "degraded" else None)
+    bundle = _export_result(tmp_path).model_copy(update={"outcome": outcome})
+    payload = {"bundle": bundle.model_dump(mode="json"), "outcome": outcome.to_dict()}
+    callback = _command_callback(insights_module.insights_export_command)
+    with patch("polylogue.cli.commands.insights.dispatch_read", return_value=(payload, "daemon")):
+        if expected:
+            with pytest.raises(SystemExit) as caught:
+                callback(
+                    _export_context(SimpleNamespace(config=object())),
+                    output_path=tmp_path / "bundle",
+                    insights=("profiles",),
+                    origin=None,
+                    since=None,
+                    until=None,
+                    bundle_format="jsonl",
+                    output_format=output_format,
+                    overwrite=False,
+                )
+            assert caught.value.code == expected
+        else:
+            callback(
+                _export_context(SimpleNamespace(config=object())),
+                output_path=tmp_path / "bundle",
+                insights=("profiles",),
+                origin=None,
+                since=None,
+                until=None,
+                bundle_format="jsonl",
+                output_format=output_format,
+                overwrite=False,
+            )
