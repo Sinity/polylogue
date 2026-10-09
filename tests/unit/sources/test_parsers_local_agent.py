@@ -262,7 +262,7 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
     assert session.messages[1].model_name == "gemini-test"
     assert session.messages[1].duration_ms == 900
     assert session.messages[1].input_tokens is None
-    assert session.messages[1].output_tokens == 10
+    assert session.messages[1].output_tokens is None
     assert {block.type for block in session.messages[1].blocks} >= {
         BlockType.TEXT,
         BlockType.THINKING,
@@ -1991,8 +1991,13 @@ def test_gemini_usage_event_does_not_assign_total_only_count_to_output() -> None
 
 @pytest.mark.parametrize("provider", ["gemini-cli", "hermes"])
 @pytest.mark.parametrize("total", [0, 15])
-def test_total_only_usage_does_not_fabricate_message_output(provider: str, total: int) -> None:
+@pytest.mark.parametrize("input_tokens", [None, 10])
+def test_total_only_usage_does_not_fabricate_message_output(
+    provider: str, total: int, input_tokens: int | None
+) -> None:
     wire = {"id": "answer", "role": "assistant", "type": "gemini", "content": "done", "usage": {"total_tokens": total}}
+    if input_tokens is not None:
+        wire["usage"]["input_tokens"] = input_tokens
     if provider == "gemini-cli":
         payload = {"sessionId": "neutral-total", "kind": "main", "messages": [wire]}
     else:
@@ -2000,7 +2005,7 @@ def test_total_only_usage_does_not_fabricate_message_output(provider: str, total
     [session] = parse_payload(provider, payload, "fallback")
     [message] = session.messages
     assert message.output_tokens is None
-    assert message.input_tokens is None
+    assert message.input_tokens == input_tokens
 
 
 @pytest.mark.parametrize("api_count", [None, 0, 2])

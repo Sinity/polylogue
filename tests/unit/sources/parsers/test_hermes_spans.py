@@ -173,8 +173,12 @@ def test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser() -> None:
     assert session.provider_session_id == "observer:atif:real-nemo-relay-session-redacted"
     assert len(payload["steps"]) == 6
     llm_events = [event for event in session.session_events if event.event_type == "hermes_llm_request_span"]
-    assert len(llm_events) == 5
-    assert all(event.payload["message_char_len"] == len("<redacted>") for event in llm_events)
+    assert len(llm_events) == 6
+    message_events = [event for event in llm_events if "message_char_len" in event.payload]
+    assert len(message_events) == 5
+    assert all(event.payload["message_char_len"] == len("<redacted>") for event in message_events)
+    [tool_step] = [event for event in llm_events if event.payload.get("shape") == "tool_calls"]
+    assert "llm_response_usage" in tool_step.payload
 
     # Step 6 (real evidence: 4 parallel tool_calls plus observation.results,
     # drawn from a separate live trajectory -- see fixtures/hermes/atif/README.md)
@@ -922,7 +926,10 @@ def test_malformed_steps_and_tool_calls_are_skipped_and_counted_not_crashing() -
         for event in session.session_events
         if event.event_type not in {"hermes_observer_span", "hermes_observer_trace_correlation"}
     ]
-    assert real_events == []
+    [accounting] = real_events
+    assert accounting.event_type == "hermes_atif_parse_accounting"
+    assert accounting.payload == {"malformed_steps": 1, "malformed_tool_calls": 2, "malformed_subagents": 0}
+    assert hermes_spans.import_fidelity_declaration(session).capabilities["malformed_parts"].status == "degraded"
 
     # A non-object step is genuinely skipped-and-counted, not silently
     # coerced into a generic ``hermes_observer_span`` event (review-adjacent

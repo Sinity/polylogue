@@ -1495,7 +1495,12 @@ def test_prepared_gemini_sidecars_preserve_stderr_and_independent_display(tmp_pa
             ],
         }
     ]
-    header = {"sessionId": "sidecar-streams", "kind": "main", "startTime": "2026-01-01T00:00:00Z"}
+    header = {
+        "sessionId": "sidecar-streams",
+        "projectHash": "neutral",
+        "kind": "main",
+        "startTime": "2026-01-01T00:00:00Z",
+    }
     payload = [header, *messages] if checkpoint else {**header, "messages": messages}
     source = tmp_path / ("checkpoint.jsonl" if checkpoint else "session.json")
     source.write_text(
