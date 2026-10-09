@@ -393,7 +393,7 @@ async def _query_sessions(
     # ``total`` -- while the CLI clamped the same input and answered.
     bounded_limit = hooks.clamp_limit(limit if limit is not None else DEFAULT_SESSION_LIST_LIMIT)
 
-    cls = SessionList
+    cls: type[SessionList] | type[SessionSearch] = SessionList
     if continuation is None:
         probe = (
             build_session_query_request(
