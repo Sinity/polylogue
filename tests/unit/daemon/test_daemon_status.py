@@ -50,6 +50,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.embedding_config import embedding_config
 from tests.infra.fts import completed_fts_readiness
 from tests.infra.session_profiles import write_session_profile
 
@@ -1175,6 +1176,7 @@ def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
 
     with (
+        patch("polylogue.config.load_polylogue_config", return_value=embedding_config()),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status.index_db_path", return_value=db),
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
@@ -1971,6 +1973,18 @@ def test_build_daemon_status_claim_guard_keeps_operation_debt_separate(
         initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
 
     with (
+        patch("polylogue.daemon.status._configured_source_status_fingerprint", return_value="neutral-ready"),
+        patch(
+            "polylogue.config.load_polylogue_config",
+            return_value=embedding_config(embedding_enabled=False, archive_root=tmp_path),
+        ),
+        patch(
+            "polylogue.daemon.status._configured_source_readiness_info",
+            return_value={
+                name: {"component": name, "state": "ready", "summary": "ready"}
+                for name in ("configured_sources", "attachments")
+            },
+        ),
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
         patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status._archive_storage_info", return_value=storage),
@@ -2030,6 +2044,11 @@ def test_build_daemon_status_claim_guard_keeps_registry_debt_health_separate(
     )
     raw_readiness = _complete_raw_materialization_readiness()
     frontier = status_module.RawFrontierIntegrity(available=True, overall_status="healthy")
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda **_: embedding_config(embedding_enabled=False, archive_root=tmp_path),
+    )
+    monkeypatch.setattr(status_module, "_configured_source_status_fingerprint", lambda: "neutral-ready")
 
     def convergence_collector(*_args: object, **_kwargs: object) -> status_module.ConvergenceDebtSummary:
         if collector_state == "timeout":
@@ -2038,6 +2057,14 @@ def test_build_daemon_status_claim_guard_keeps_registry_debt_health_separate(
             raise RuntimeError("simulated convergence collector failure")
         return status_module.ConvergenceDebtSummary()
 
+    monkeypatch.setattr(
+        status_module,
+        "_configured_source_readiness_info",
+        lambda: {
+            name: {"component": name, "state": "ready", "summary": "ready"}
+            for name in ("configured_sources", "attachments")
+        },
+    )
     monkeypatch.setattr(status_module, "_db_size_info", lambda: {})
     monkeypatch.setattr(status_module, "_blob_size_info", lambda: 0)
     monkeypatch.setattr(status_module, "_archive_storage_info", lambda: storage)

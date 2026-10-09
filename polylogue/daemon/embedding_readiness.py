@@ -11,15 +11,23 @@ from polylogue.operations.embedding_readiness import EmbeddingReadinessUnavailab
 from polylogue.storage.embeddings.status_payload import EmbeddingCatchupRunPayload
 
 
-def _defaults(
-    *, enabled: bool, config_enabled: bool, has_key: bool, model: str, dimension: int, unreadable: bool = False
-) -> dict[str, object]:
+def embedding_readiness_settings() -> dict[str, object]:
+    """Read current embedding policy without collecting archive measurements."""
+    cfg = polylogue_config.load_polylogue_config()
+    config_enabled = bool(cfg.embedding_enabled)
+    has_key = cfg.voyage_api_key is not None
     return {
-        "embedding_enabled": enabled,
+        "embedding_enabled": config_enabled and has_key,
         "embedding_config_enabled": config_enabled,
         "embedding_has_voyage_key": has_key,
-        "embedding_model": model,
-        "embedding_dimension": dimension,
+        "embedding_model": cfg.embedding_model,
+        "embedding_dimension": cfg.embedding_dimension,
+    }
+
+
+def _defaults(settings: dict[str, object], *, unreadable: bool = False) -> dict[str, object]:
+    return {
+        **settings,
         "embedding_status": "unknown" if unreadable else "empty",
         "embedding_freshness_status": "unknown" if unreadable else "empty",
         "embedding_unmeasurable_reason": "readiness_unreadable" if unreadable else None,
@@ -49,23 +57,12 @@ def _private_run(run: EmbeddingCatchupRunPayload | None) -> EmbeddingCatchupRunP
 def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str, object]:
     """Query embedding tables for bounded daemon status visibility."""
 
-    cfg = polylogue_config.load_polylogue_config()
+    settings = embedding_readiness_settings()
     from polylogue.storage.archive_identity import ArchiveLocation
 
-    config_enabled = bool(cfg.embedding_enabled)
-    has_key = cfg.voyage_api_key is not None
-    enabled = config_enabled and has_key
-    model = cfg.embedding_model
-    dimension = cfg.embedding_dimension
     index_db = ArchiveLocation.resolve(db_file.parent).active_index_path
     if not db_file.exists() and not index_db.exists():
-        return _defaults(
-            enabled=enabled,
-            config_enabled=config_enabled,
-            has_key=has_key,
-            model=model,
-            dimension=dimension,
-        )
+        return _defaults(settings)
 
     try:
         payload = read_embedding_readiness(db_file, detail=detail)
@@ -79,21 +76,10 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
             error_type=type(exc.__cause__).__name__,
             error_detail=str(exc.__cause__),
         )
-        return _defaults(
-            enabled=enabled,
-            config_enabled=config_enabled,
-            has_key=has_key,
-            model=model,
-            dimension=dimension,
-            unreadable=True,
-        )
+        return _defaults(settings, unreadable=True)
 
     return {
-        "embedding_enabled": enabled,
-        "embedding_config_enabled": config_enabled,
-        "embedding_has_voyage_key": has_key,
-        "embedding_model": model,
-        "embedding_dimension": dimension,
+        **settings,
         "embedding_status": payload["status"],
         "embedding_freshness_status": payload["freshness_status"],
         "embedding_unmeasurable_reason": payload["coverage_unmeasurable_reason"],
@@ -116,4 +102,4 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
     }
 
 
-__all__ = ["embedding_readiness_info"]
+__all__ = ["embedding_readiness_info", "embedding_readiness_settings"]
