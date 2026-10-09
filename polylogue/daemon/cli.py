@@ -2803,12 +2803,12 @@ async def _run_daemon_services_under_active_writer_lease(
                 api_auth_token=api_auth_token,
                 api_allow_no_auth=api_allow_no_auth,
             )
-            configure_browser_capture_status(server.config)
             server_task = supervisor.start(
                 "browser_capture_server",
                 lambda: _serve_until_complete(server, label="browser-capture"),
             )
-            if lifecycle_events_enabled:
+            configure_browser_capture_status(server.config if server_task is not None else None)
+            if lifecycle_events_enabled and server_task is not None:
                 await _emit_daemon_lifecycle_event(
                     "component_started",
                     archive_root_path=archive_root_path,

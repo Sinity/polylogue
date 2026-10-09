@@ -11,7 +11,9 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.logging import capture
+from polylogue.paths import browser_capture_spool_root
 from polylogue.sources.live import WatchSource
 
 
@@ -41,6 +43,10 @@ def test_stale_index_identity_keeps_daemon_up_schema_blocked(tmp_path: Path) -> 
             withheld.set()
 
     class FakeServer:
+        @property
+        def config(self) -> BrowserCaptureReceiverConfig:
+            return BrowserCaptureReceiverConfig(spool_path=browser_capture_spool_root())
+
         def serve_forever(self, poll_interval: float = 0.5) -> None:
             # The listener stays up until startup has passed the cold-build
             # decision, then stops the daemon the ordinary way.

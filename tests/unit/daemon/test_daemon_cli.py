@@ -25,6 +25,7 @@ from unittest.mock import Mock, patch
 import pytest
 from click.testing import CliRunner
 
+from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.config import Config
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.json import JSONDocument, loads
@@ -38,6 +39,7 @@ from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.logging import capture
 from polylogue.operations.drive_readiness import DriveCatchupReport, DriveCatchupState
+from polylogue.paths import browser_capture_spool_root
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import RetainedReplayOutcome
@@ -756,6 +758,11 @@ class TestBrowserCaptureReceiverTokenAutoMint:
         from polylogue.daemon.services import ServiceProfile
 
         class FakeServer:
+            def __init__(self, auth_token: str | None) -> None:
+                self.config = BrowserCaptureReceiverConfig(
+                    spool_path=browser_capture_spool_root(), auth_token=auth_token
+                )
+
             def serve_forever(self, poll_interval: float = 0.5) -> None:
                 raise RuntimeError("server stopped")
 
@@ -769,7 +776,7 @@ class TestBrowserCaptureReceiverTokenAutoMint:
 
         def _fake_make_server(*_args: object, **kwargs: object) -> FakeServer:
             captured.update(kwargs)
-            return FakeServer()
+            return FakeServer(cast(str | None, kwargs.get("auth_token")))
 
         with (
             patch.object(daemon_cli, "make_server", side_effect=_fake_make_server),
@@ -2896,6 +2903,10 @@ def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
         return None
 
     class FakeServer:
+        @property
+        def config(self) -> BrowserCaptureReceiverConfig:
+            return BrowserCaptureReceiverConfig(spool_path=browser_capture_spool_root())
+
         shutdown_called = False
         close_called = False
 
@@ -2943,9 +2954,16 @@ def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> No
         async def __aexit__(self, *exc: object) -> None:
             return None
 
+    class EmptyCursor:
+        def has_pending_retries(self, roots: Iterable[Path] | None = None) -> bool:
+            return False
+
+        def release_deferred_convergence_debt(self) -> int:
+            return 0
+
     class FakeWatcher(_NoIntakeHints):
         def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
+            self._cursor = EmptyCursor()
 
         async def run(self) -> None:
             raise RuntimeError("watch stopped")
@@ -2954,6 +2972,10 @@ def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> No
             return None
 
     class BlockingServer:
+        @property
+        def config(self) -> BrowserCaptureReceiverConfig:
+            return BrowserCaptureReceiverConfig(spool_path=browser_capture_spool_root())
+
         shutdown_called = False
         close_called = False
 
@@ -3070,6 +3092,10 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
 
     class BlockingServer:
+        @property
+        def config(self) -> BrowserCaptureReceiverConfig:
+            return BrowserCaptureReceiverConfig(spool_path=browser_capture_spool_root())
+
         shutdown_called = False
         close_called = False
 
@@ -3241,6 +3267,10 @@ def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() 
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
     class FakeServer:
+        @property
+        def config(self) -> BrowserCaptureReceiverConfig:
+            return BrowserCaptureReceiverConfig(spool_path=browser_capture_spool_root())
+
         shutdown_called = False
         close_called = False
 

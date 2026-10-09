@@ -52,14 +52,16 @@ def browser_capture_command() -> None:
     """Run and inspect the browser-capture receiver."""
 
 
-def _observed_receiver_status() -> dict[str, object]:
+def _observed_receiver_status(host: str | None, port: int | None, allow_no_auth: bool | None) -> dict[str, object]:
     """Read the configured standalone or daemon receiver without minting credentials."""
     from polylogue.browser_capture.native_host import _authenticate_receiver
     from polylogue.config import resolve_runtime_config
     from polylogue.paths import browser_capture_receiver_identity_path, browser_capture_receiver_token_path
 
     config = resolve_runtime_config().settings
-    host, port = config.browser_capture_host, config.browser_capture_port
+    host = config.browser_capture_host if host is None else host
+    port = config.browser_capture_port if port is None else port
+    allow_no_auth = config.browser_capture_allow_no_auth if allow_no_auth is None else allow_no_auth
 
     def request(headers: dict[str, str]) -> tuple[int, bytes]:
         connection = http.client.HTTPConnection(host, port, timeout=None)
@@ -72,32 +74,48 @@ def _observed_receiver_status() -> dict[str, object]:
         finally:
             connection.close()
 
-    status, body = request({})
-    if status == 401:
-        token = config.browser_capture_auth_token
+    identity_path = browser_capture_receiver_identity_path()
+    if not _is_trusted_token_file(identity_path):
+        raise click.ClickException("receiver_identity_unavailable")
+    expected_identity = identity_path.read_text().strip()
+    if not expected_identity:
+        raise click.ClickException("receiver_identity_unavailable")
+    headers: dict[str, str] = {}
+    if not allow_no_auth:
         token_path = browser_capture_receiver_token_path()
-        if token is None and _is_trusted_token_file(token_path):
-            token = token_path.read_text().strip() or None
+        token = token_path.read_text().strip() or None if _is_trusted_token_file(token_path) else None
         if token is None:
             raise click.ClickException("receiver_credential_unavailable")
-        identity_path = browser_capture_receiver_identity_path()
-        if not identity_path.is_file():
-            raise click.ClickException("receiver_identity_unavailable")
         endpoint = urlparse(f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}")
-        refusal = _authenticate_receiver(endpoint, identity_path.read_text().strip(), token)
+        refusal = _authenticate_receiver(endpoint, expected_identity, token)
         if refusal is not None:
             raise click.ClickException(refusal)
-        status, body = request({"Authorization": "Bearer " + token})
+        headers["Authorization"] = "Bearer " + token
+    status, body = request(headers)
     if status != 200:
         raise click.ClickException(f"receiver_status_refused_{status}")
-    return BrowserCaptureReceiverStatusPayload.model_validate_json(body).model_dump(mode="json")
+    payload = BrowserCaptureReceiverStatusPayload.model_validate_json(body)
+    if payload.receiver_id != expected_identity:
+        raise click.ClickException("receiver_identity_mismatch")
+    if payload.auth_required is allow_no_auth:
+        raise click.ClickException("receiver_authentication_policy_mismatch")
+    return payload.model_dump(mode="json")
 
 
 @browser_capture_command.command("status")
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
-def status_command(output_format: str | None) -> None:
+@click.option("--host", default=None, help="Receiver host; defaults to resolved settings.")
+@click.option("--port", default=None, type=int, help="Receiver port; defaults to resolved settings.")
+@click.option(
+    "--allow-no-auth",
+    is_flag=True,
+    default=None,
+    envvar=BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
+    help="Observe an explicitly unauthenticated receiver without sending credentials.",
+)
+def status_command(output_format: str | None, host: str | None, port: int | None, allow_no_auth: bool | None) -> None:
     """Show the bound standalone or daemon receiver's observed policy."""
-    payload = _observed_receiver_status()
+    payload = _observed_receiver_status(host, port, allow_no_auth)
     if output_format == "json":
         click.echo(dumps(payload))
         return

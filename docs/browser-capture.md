@@ -96,7 +96,8 @@ without raw/index/message evidence is considered broken, not merely stale.
 Inspect the running receiver's observed policy through the daemon with
 `polylogued status` or `polylogue ops doctor --daemon`.
 `polylogued browser-capture status` reads the configured receiver directly, including
-standalone `browser-capture serve`, using existing credentials without minting or rotation. These routes report the bound server's resolved authentication,
+standalone `browser-capture serve`, using existing credentials without minting or rotation.
+For a standalone listener override, pass the matching `status --host HOST --port PORT`; omitted values use resolved settings. Credentialed observations attest the receiver before sending a token and compare its persisted identity. For an explicitly unauthenticated listener, use `status --allow-no-auth` (or the matching configured/environment opt-out); this sends no credential and checks identity and disabled authentication. These routes report the bound server's resolved authentication,
 allowed origins and remote policy. Before bind or after shutdown, policy remains
 unknown rather than being inferred from defaults. Status never includes bearer
 token values.

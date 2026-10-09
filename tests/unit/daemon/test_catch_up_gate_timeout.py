@@ -23,7 +23,9 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.logging import capture
+from polylogue.paths import browser_capture_spool_root
 from polylogue.sources.live import WatchSource
 
 
@@ -96,6 +98,10 @@ def test_run_daemon_services_schema_block_logs_parked_loops_and_emits_event() ->
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
     class FakeServer:
+        @property
+        def config(self) -> BrowserCaptureReceiverConfig:
+            return BrowserCaptureReceiverConfig(spool_path=browser_capture_spool_root())
+
         shutdown_called = False
         close_called = False
 

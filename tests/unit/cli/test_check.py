@@ -166,7 +166,7 @@ def test_check_daemon_json_uses_shared_daemon_status(cli_runner: CliRunner) -> N
         "browser_capture": {"spool_ready": True},
     }
 
-    with patch("polylogue.cli.shared.check_workflow.daemon_status_payload", return_value=daemon_report):
+    with patch("polylogue.cli.shared.check_workflow._live_daemon_status_payload", return_value=daemon_report):
         result = cli_runner.invoke(cli, ["--plain", "ops", "doctor", "--daemon", "--format", "json"])
 
     assert result.exit_code == 0
@@ -190,7 +190,7 @@ def test_check_daemon_plain_renders_component_status(cli_runner: CliRunner) -> N
         "browser_capture": {"spool_ready": True},
     }
 
-    with patch("polylogue.cli.shared.check_workflow.daemon_status_payload", return_value=daemon_report):
+    with patch("polylogue.cli.shared.check_workflow._live_daemon_status_payload", return_value=daemon_report):
         result = cli_runner.invoke(cli, ["--plain", "ops", "doctor", "--daemon"])
 
     assert result.exit_code == 0

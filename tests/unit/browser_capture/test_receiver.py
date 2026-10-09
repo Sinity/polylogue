@@ -14,7 +14,6 @@ from http import HTTPStatus
 from http.client import HTTPConnection, HTTPResponse
 from pathlib import Path
 from threading import Lock, Thread
-from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
@@ -565,13 +564,12 @@ def test_receiver_status_route_exposes_pairing_contract(tmp_path: Path) -> None:
 def test_browser_capture_status_daemon_cli_json(
     cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.config import resolve_runtime_config
-
+    receiver_identity(BrowserCaptureReceiverConfig(spool_path=cli_workspace["archive_root"] / "browser-capture"))
     with _running_receiver(cli_workspace["archive_root"] / "browser-capture") as (host, port):
-        runtime = resolve_runtime_config(cli_overrides={"browser_capture_host": host, "browser_capture_port": port})
-        monkeypatch.setattr("polylogue.config.resolve_runtime_config", lambda: runtime)
         result = CliRunner().invoke(
-            daemon_cli, ["browser-capture", "status", "--format", "json"], catch_exceptions=False
+            daemon_cli,
+            ["browser-capture", "status", "--format", "json", "--host", host, "--port", str(port), "--allow-no-auth"],
+            catch_exceptions=False,
         )
 
     assert result.exit_code == 0
@@ -623,8 +621,8 @@ def test_browser_capture_token_show_rotate_changes_the_token(cli_workspace: dict
 
 
 class _StubServer:
-    def __init__(self, spool_path: Path) -> None:
-        self.config = SimpleNamespace(spool_path=spool_path)
+    def __init__(self, spool_path: Path, auth_token: str | None) -> None:
+        self.config = BrowserCaptureReceiverConfig(spool_path=spool_path, auth_token=auth_token)
 
     def serve_forever(self) -> None:
         return None
@@ -645,7 +643,9 @@ def test_browser_capture_serve_allow_no_auth_env_var_matches_the_flag(cli_worksp
 
         def _fake_make_server(*_args: object, **kwargs: object) -> _StubServer:
             captured.update(kwargs)
-            return _StubServer(cli_workspace["archive_root"] / "browser-capture")
+            return _StubServer(
+                cli_workspace["archive_root"] / "browser-capture", cast(str | None, kwargs.get("auth_token"))
+            )
 
         with patch("polylogue.daemon.browser_capture.make_server", side_effect=_fake_make_server):
             result = runner.invoke(
