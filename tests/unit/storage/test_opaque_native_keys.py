@@ -13,7 +13,7 @@ from polylogue.core.message_native_identity import (
     source_native_id_from_json,
     source_native_id_json,
 )
-from polylogue.pipeline.ids import disk_message_owner_resolution, session_content_hash
+from polylogue.pipeline.ids import disk_message_owner_resolution, message_owner_resolution, session_content_hash
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -22,6 +22,7 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.sources.prepared_message_sink import ScratchSessionSpill, SqliteMessageStore
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
 from tests.infra.index_writer import write_fixture_index_session
 from tests.unit.sinex.test_material_adapter import _decoded_publication
 from tests.unit.storage.test_archive_tiers_write import _connect
@@ -132,3 +133,27 @@ def test_prepared_reference_and_chatgpt_owner_collections_keep_exact_names(tmp_p
     assert [message.provider_message_id for message in entries.ordered()] == list(_NAMES)
     assert entries.last_emitted_among(frozenset(_NAMES)) == _NAMES[-1]
     store.close()
+
+
+@pytest.mark.parametrize("duplicates", [False, True])
+def test_shard_owner_lookup_preserves_exact_native_keys_and_ambiguities(tmp_path: Path, duplicates: bool) -> None:
+    # JSON alone encodes a scalar and its UTF-16 surrogate pair identically.
+    # Both Source names must remain separate in the sealed lookup and set.
+    names = (*_NAMES, *_NAMES[1:3]) if duplicates else _NAMES
+    messages = [
+        ParsedMessage(provider_message_id=native, position=i, role=Role.USER, text=f"body {i}")
+        for i, native in enumerate(names)
+    ]
+    expected = message_owner_resolution(messages)
+    session = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="native-owner-law", messages=messages)
+    shard = prepare_session_shard(tmp_path / "shards", [session])
+    restored = shard.sessions[0].owner_resolution
+    assert dict(restored.unique_provider_keys) == dict(expected.unique_provider_keys)
+    assert set(restored.ambiguous_provider_ids) == set(expected.ambiguous_provider_ids)
+    for native in _NAMES:
+        assert (native in restored.ambiguous_provider_ids) is (duplicates and native in _NAMES[1:3])
+        if native in expected.unique_provider_keys:
+            assert restored.unique_provider_keys[native] == expected.unique_provider_keys[native]
+    assert "unknown" not in restored.ambiguous_provider_ids
+    assert "" not in restored.ambiguous_provider_ids
+    assert restored.unique_provider_keys.get("") is None
