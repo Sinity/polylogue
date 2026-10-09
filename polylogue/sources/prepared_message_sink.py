@@ -336,6 +336,11 @@ def discard_decoded_sessions_under(directory: Path) -> None:
 
 def _message_json(value: ParsedMessage) -> str:
     payload = value.model_dump(mode="json")
+    # Pydantic excludes the derived carrier from Source content dumps. The
+    # preparation sink must retain it across outcome association and replay.
+    for block, block_payload in zip(value.blocks, payload["blocks"], strict=True):
+        if block.source_content_identity is not None:
+            block_payload["source_content_identity"] = block.source_content_identity
     payload["parent_message_position"] = value.parent_message_position
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     if value.active_leaf_fallback:

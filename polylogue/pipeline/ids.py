@@ -257,6 +257,7 @@ def _iter_typed_streamed_json(value: object) -> Iterator[str]:
 
 _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
     "ParsedContentBlock": {
+        "source_content_identity": "immutable Source-block identity captured before derived outcome association",
         "signature": "provider cryptographic signatures are re-issued on replay",
     },
     "ParsedMessage": {
@@ -1062,6 +1063,8 @@ def block_content_identity(block: ParsedContentBlock) -> str:
     mapping keys remain exact; null and empty remain distinct. A provider
     signature is independently owned attestation, never a native block ID.
     """
+    if block.source_content_identity is not None:
+        return block.source_content_identity
     payload = {
         field: _typed_identity_value(
             getattr(block, field),

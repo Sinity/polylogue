@@ -417,6 +417,9 @@ class ParsedContentBlock(BaseModel):
     """
 
     type: BlockType
+    # Immutable semantic identity captured before cross-block outcome
+    # association. This lowering carrier is not part of Source content.
+    source_content_identity: str | None = Field(default=None, exclude=True, repr=False, pattern=r"^[0-9a-f]{64}$")
     text: str | None = None
     tool_name: str | None = None
     tool_id: str | None = None

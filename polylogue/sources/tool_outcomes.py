@@ -11,6 +11,7 @@ from typing import cast
 
 from polylogue.core.enums import BlockType, Origin, ToolOutcome, ToolResultUnknownReason
 from polylogue.core.tool_association import tool_association_ctes_sql
+from polylogue.pipeline.ids import block_content_identity
 from polylogue.sources.origin_specs import tool_outcome_unknown_reasons_for_origin
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSessionEvent
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
@@ -336,6 +337,10 @@ def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, o
 def _normalize_message(index: _OutcomeIndex, message: ParsedMessage, *, ordinal: int, origin: Origin) -> ParsedMessage:
     blocks: list[ParsedContentBlock] = []
     for block_ordinal, block in enumerate(message.blocks):
+        # Association enriches a read model. Bind the original Source semantics
+        # first so later results cannot rename an existing tool-use block.
+        if block.source_content_identity is None:
+            block = block.model_copy(update={"source_content_identity": block_content_identity(block)})
         if block.type is BlockType.TOOL_RESULT:
             unknown_reason = (
                 None
