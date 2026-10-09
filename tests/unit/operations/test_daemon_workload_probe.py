@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.session_profiles import write_session_profile
 
 
@@ -77,11 +78,8 @@ def _seed_minimal_archive(db: Path, source: Path) -> str:
             (b"m" * 32,),
         )
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, text
-            ) VALUES ('codex-session:provider-1:m1', 'codex-session:provider-1', 0, 'text', 'hello')
-            """
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, text , content_identity, content_occurrence) VALUES ('codex-session:provider-1:m1', 'codex-session:provider-1', 0, 'text', 'hello', ?, 0)",
+            (fixture_block_content_identity("text", "hello"),),
         )
         conn.commit()
     finally:
@@ -564,11 +562,8 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
             (b"m" * 32,),
         )
         conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, text
-            ) VALUES ('codex-session:native-1:m1', 'codex-session:native-1', 0, 'text', 'hello')
-            """
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, text , content_identity, content_occurrence) VALUES ('codex-session:native-1:m1', 'codex-session:native-1', 0, 'text', 'hello', ?, 0)",
+            (fixture_block_content_identity("text", "hello"),),
         )
         write_session_profile(conn, "codex-session:native-1")
     initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)

@@ -82,7 +82,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from tests.infra.archive_templates import run_off_event_loop
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 from tests.infra.live_ingest import write_index_session
 from tests.infra.session_profiles import write_session_profile
 from tests.infra.storage_records import db_setup
@@ -617,11 +617,7 @@ def _seed_import_explain_archive_on_writer(tmp_path: Path, *, source_path: str |
             ("codex-session:native-1", "msg-1", 0, "assistant", "message", _HASH),
         )
         index_conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, text, tool_id
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
             (
                 archive_message_id("codex-session:native-1", "msg-1"),
                 "codex-session:native-1",
@@ -629,6 +625,7 @@ def _seed_import_explain_archive_on_writer(tmp_path: Path, *, source_path: str |
                 "tool_use",
                 "pytest",
                 "tool-1",
+                fixture_block_content_identity("tool_use", "pytest", "tool-1"),
             ),
         )
         source_conn.commit()
@@ -1626,9 +1623,16 @@ async def test_correlate_claude_agent_dispatches_resolves_via_the_facade(tmp_pat
             (session_id, "msg-1", 0, "assistant", _HASH),
         )
         index_conn.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (f"{session_id}:n:msg-1", session_id, 0, "tool_use", "Bash", "toolu_facade_1"),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+            (
+                f"{session_id}:n:msg-1",
+                session_id,
+                0,
+                "tool_use",
+                "Bash",
+                "toolu_facade_1",
+                fixture_block_content_identity("tool_use", "Bash", "toolu_facade_1"),
+            ),
         )
         index_conn.commit()
 

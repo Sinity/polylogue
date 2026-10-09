@@ -23,6 +23,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent, write_source_hook_event
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.identity import fixture_block_content_identity
 
 _HASH = b"x" * 32
 
@@ -100,11 +101,19 @@ def _seed_tool_use_block(index_conn: sqlite3.Connection, *, native_id: str, tool
     )
     message_id = f"{session_id}:n:msg-{tool_id}"
     index_conn.execute(
-        "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id) VALUES (?, ?, ?, ?, ?, ?)",
-        (message_id, session_id, 0, "tool_use", "Bash", tool_id),
+        "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            0,
+            "tool_use",
+            "Bash",
+            tool_id,
+            fixture_block_content_identity("tool_use", "Bash", tool_id),
+        ),
     )
     index_conn.commit()
-    return f"{message_id}:0"
+    return str(index_conn.execute("SELECT block_id FROM blocks WHERE message_id = ?", (message_id,)).fetchone()[0])
 
 
 def test_agent_id_resolves_to_the_tool_call_it_names(tmp_path: Path) -> None:

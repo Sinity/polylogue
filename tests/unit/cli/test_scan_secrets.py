@@ -23,6 +23,7 @@ from polylogue.core.enums import AssertionKind
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.daemon_operations import cli_daemon_archive
+from tests.infra.identity import fixture_block_content_identity
 
 
 def _seed_session_with_block_text(archive_root: Path, *, native_id: str, text: str) -> str:
@@ -45,8 +46,13 @@ def _seed_session_with_block_text(archive_root: Path, *, native_id: str, text: s
         )
         message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
         conn.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
-            (message_id, session_id, text),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                text,
+                fixture_block_content_identity("text", text),
+            ),
         )
         conn.commit()
     finally:

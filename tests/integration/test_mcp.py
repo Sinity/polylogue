@@ -11,6 +11,7 @@ import pytest
 from polylogue.mcp.server_support import _set_runtime_services
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.mcp import invoke_surface, invoke_surface_async
 
 
@@ -44,8 +45,15 @@ def _seed_session_on_writer(
             (session_id, "m1", 0, "user", _content_hash(f"message:{message_id}")),
         )
         conn.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, ?, ?, ?)",
-            (message_id, session_id, 0, "text", text),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                0,
+                "text",
+                text,
+                fixture_block_content_identity("text", text),
+            ),
         )
         conn.commit()
 

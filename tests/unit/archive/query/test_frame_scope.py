@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.query_unit_frame import (
     ALL_FRAME_RELATIONS,
     INDEX_FRAME_RELATIONS,
 )
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.session_profiles import write_session_profile
 
 _UNSCOPED_EXPRESSION = "messages where role:user"
@@ -90,9 +91,12 @@ def _seed(root: Path) -> None:
                 (session_id, f"m{index}"),
             )
             conn.execute(
-                "INSERT INTO blocks(message_id, session_id, position, block_type, text) "
-                "VALUES (?, ?, 0, 'text', 'body')",
-                (f"{session_id}:n:m{index}", session_id),
+                "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', 'body', ?, 0)",
+                (
+                    f"{session_id}:n:m{index}",
+                    session_id,
+                    fixture_block_content_identity("text", "body"),
+                ),
             )
             conn.execute(
                 "INSERT INTO session_tags(session_id, tag, tag_source) VALUES (?, 'pinned', 'user')",
@@ -126,9 +130,13 @@ def _seed_filter_relations(root: Path) -> None:
                 (session_id, f"tool{index}"),
             )
             conn.execute(
-                "INSERT INTO blocks(message_id, session_id, position, block_type, tool_name, tool_id, semantic_type) "
-                "VALUES (?, ?, 0, 'tool_use', 'Bash', ?, 'shell')",
-                (message_id, session_id, f"tool-id-{index}"),
+                "INSERT INTO blocks(message_id, session_id, position, block_type, tool_name, tool_id, semantic_type, content_identity, content_occurrence) VALUES (?, ?, 0, 'tool_use', 'Bash', ?, 'shell', ?, 0)",
+                (
+                    message_id,
+                    session_id,
+                    f"tool-id-{index}",
+                    fixture_block_content_identity("tool_use", "Bash", f"tool-id-{index}", "shell"),
+                ),
             )
 
 

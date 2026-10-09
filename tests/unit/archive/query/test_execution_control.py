@@ -32,7 +32,7 @@ from polylogue.archive.query.execution_control import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import run_off_event_loop
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 
 pytestmark = pytest.mark.uses_real_clock(
     "polylogue-z9gh.1 execution-control tests measure real elapsed wall-clock by contract: cancellation/deadline abort SLOs against a genuinely running SQLite statement, event-loop heartbeat gaps during worker-thread offload, and cross-thread admission queue waits. frozen_clock cannot substitute for real thread scheduling and SQLite progress-handler cadence."
@@ -1022,7 +1022,7 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     target_session_id = "codex-session:target"
     session_rows: list[tuple[str, str, bytes]] = []
     message_rows: list[tuple[str, str, int, str, str, bytes]] = []
-    block_rows: list[tuple[str, str, int, str, str | None, str, str | None, str | None]] = []
+    block_rows: list[tuple[str, str, int, str, str | None, str, str | None, str | None, str, int]] = []
     for index in range(512):
         native_id = "target" if index == 0 else f"irrelevant-{index:04d}"
         session_id = f"codex-session:{native_id}"
@@ -1034,8 +1034,30 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
         )
         block_rows.extend(
             (
-                (message_id, session_id, 0, BlockType.TOOL_USE.value, "Bash", tool_id, "{}", "shell"),
-                (message_id, session_id, 1, BlockType.TOOL_RESULT.value, None, tool_id, None, None),
+                (
+                    message_id,
+                    session_id,
+                    0,
+                    BlockType.TOOL_USE.value,
+                    "Bash",
+                    tool_id,
+                    "{}",
+                    "shell",
+                    fixture_block_content_identity(BlockType.TOOL_USE.value, "Bash", tool_id, "{}", "shell"),
+                    0,
+                ),
+                (
+                    message_id,
+                    session_id,
+                    1,
+                    BlockType.TOOL_RESULT.value,
+                    None,
+                    tool_id,
+                    None,
+                    None,
+                    fixture_block_content_identity(BlockType.TOOL_RESULT.value, None, tool_id, None, None),
+                    0,
+                ),
             )
         )
 
@@ -1052,11 +1074,7 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
             message_rows,
         )
         facade._conn.executemany(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type, content_identity, content_occurrence ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             block_rows,
         )
         facade._conn.commit()

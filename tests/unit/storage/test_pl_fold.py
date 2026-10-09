@@ -25,7 +25,7 @@ from polylogue.storage.fts.sql import FTS_MESSAGES_TABLE_SQL, FTS_UNICODE_TOKENI
 from polylogue.storage.search.query_support import escape_fts5_query, normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import rebuild_archive_messages_fts
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 
 
 @pytest.fixture
@@ -166,11 +166,13 @@ def _seed_text_block(conn: sqlite3.Connection, *, native_session_id: str, native
         (session_id, native_message_id, content_hash),
     )
     conn.execute(
-        """
-        INSERT INTO blocks (message_id, session_id, position, block_type, text)
-        VALUES (?, ?, 0, 'text', ?)
-        """,
-        (message_id, session_id, text),
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            text,
+            fixture_block_content_identity("text", text),
+        ),
     )
     return message_id
 

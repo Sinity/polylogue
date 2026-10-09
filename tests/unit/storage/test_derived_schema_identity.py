@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema import _ensure_schema, ensure_schema_async
 from polylogue.storage.sqlite.schema_bootstrap import SchemaSkew, stamp_derived_schema_identity
 from polylogue.storage.sqlite.schema_manifest import SchemaManifest, assert_schema_manifest
+from tests.infra.identity import fixture_block_content_identity
 
 
 def _row_and_public_identities() -> tuple[str, str, tuple[str, ...]]:
@@ -211,10 +212,16 @@ def test_semantic_recipe_input_edit_moves_combined_identity_without_row_id_drift
         )
         message_id = str(conn.execute("SELECT message_id FROM messages").fetchone()[0])
         conn.execute(
-            """INSERT INTO blocks (
-                session_id, message_id, position, block_type, text, content_hash
-            ) VALUES (?, ?, ?, ?, ?, ?)""",
-            (session_id, message_id, 0, "text", "seed content", b"b" * 32),
+            "INSERT INTO blocks ( session_id, message_id, position, block_type, text, content_hash , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+            (
+                session_id,
+                message_id,
+                0,
+                "text",
+                "seed content",
+                b"b" * 32,
+                fixture_block_content_identity("text", "seed content"),
+            ),
         )
         stamp_derived_schema_identity(conn, "index")
         conn.commit()

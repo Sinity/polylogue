@@ -20,7 +20,7 @@ from pathlib import Path
 
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 
 _TIMELESS_ORIGIN = "codex-session"
 
@@ -123,11 +123,12 @@ def test_query_files_first_last_seen_ms_is_none_not_epoch_for_timeless_action(tm
         _insert_message(conn, session_id=timeless, position=0)
         message_id = archive_message_id(timeless, None, content_identity=f"{0:032d}")
         conn.execute(
-            """
-            INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, tool_input)
-            VALUES (?, ?, 0, 'tool_use', 'Edit', 'tool-1', '{"file_path": "src/example.py"}')
-            """,
-            (message_id, timeless),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, tool_input, content_identity, content_occurrence) VALUES (?, ?, 0, 'tool_use', 'Edit', 'tool-1', '{\"file_path\": \"src/example.py\"}', ?, 0)",
+            (
+                message_id,
+                timeless,
+                fixture_block_content_identity("tool_use", "Edit", "tool-1", '{"file_path": "src/example.py"}'),
+            ),
         )
         conn.commit()
 

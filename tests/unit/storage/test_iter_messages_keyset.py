@@ -29,6 +29,7 @@ from polylogue.archive.message.roles import MessageRoleFilter, Role, message_rol
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.queries.message_query_reads import get_messages, iter_messages
+from tests.infra.identity import fixture_block_content_identity
 
 CONV = "codex-session:keyset"
 
@@ -120,13 +121,11 @@ def _seed(conn: sqlite3.Connection, rows: list[Row]) -> None:
         ],
     )
     conn.executemany(
-        """
-        INSERT INTO blocks (message_id, session_id, position, block_type, text)
-        SELECT message_id, session_id, 0, 'text', native_id
-        FROM messages
-        WHERE session_id = ? AND native_id = ?
-        """,
-        [(CONV, mid) for mid, _sort_key, _role, _position, _variant_index in rows],
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) SELECT message_id, session_id, 0, 'text', native_id, ?, 0 FROM messages WHERE session_id = ? AND native_id = ?",
+        [
+            (fixture_block_content_identity("text", mid), CONV, mid)
+            for mid, _sort_key, _role, _position, _variant_index in rows
+        ],
     )
     conn.commit()
 

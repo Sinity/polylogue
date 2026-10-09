@@ -431,6 +431,7 @@ from polylogue.core.identity_law import message_id as _archive_message_id
 from polylogue.core.identity_law import session_id as _archive_session_id
 from polylogue.surfaces.outcome import decide_outcome
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.identity import fixture_block_content_identity
 
 _SEED_SPECS = [
     ("claude-code", "c1", "m-c1", "Claude Code session about authentication"),
@@ -805,11 +806,7 @@ def _seed_import_explain_archive(workspace: dict[str, Path]) -> tuple[str, str]:
             ("codex-session:route-native", "m1", 0, "assistant", "message", digest),
         )
         index_conn.execute(
-            """
-            INSERT OR REPLACE INTO blocks (
-                message_id, session_id, position, block_type, text, tool_id
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT OR REPLACE INTO blocks (\n                message_id, session_id, position, block_type, text, tool_id\n            , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
             (
                 _archive_message_id("codex-session:route-native", "m1"),
                 "codex-session:route-native",
@@ -817,6 +814,7 @@ def _seed_import_explain_archive(workspace: dict[str, Path]) -> tuple[str, str]:
                 "tool_use",
                 "pytest",
                 "tool-1",
+                fixture_block_content_identity("tool_use", "pytest", "tool-1"),
             ),
         )
         source_conn.commit()

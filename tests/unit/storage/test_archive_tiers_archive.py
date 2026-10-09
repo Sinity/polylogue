@@ -50,7 +50,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 from polylogue.storage.sqlite.write_lease import authorized_session_removal, write_lease
 from polylogue.surfaces.payloads import ActionQueryRowPayload
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 from tests.infra.live_ingest import write_index_session
 from tests.infra.prepared_replay import write_fixture_precedence_raw_session
 from tests.infra.session_profiles import write_session_profile
@@ -434,11 +434,14 @@ def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_pat
         session_id = write_index_session(facade, session)
         envelope = facade.read_session(session_id)
         matching_blocks = facade.search_blocks("needle")
+        [stored_block] = facade._conn.execute(
+            "SELECT block_id FROM blocks WHERE session_id = ?", (session_id,)
+        ).fetchall()
 
     assert session_id == "codex-session:codex-archive-1"
     assert envelope.session_id == "codex-session:codex-archive-1"
     assert len(envelope.messages) == 1
-    assert matching_blocks == [archive_message_id("codex-session:codex-archive-1", "m1") + ":0"]
+    assert matching_blocks == [stored_block["block_id"]]
 
 
 def test_open_existing_read_timeout_updates_busy_timeout(tmp_path: Path) -> None:
@@ -894,7 +897,7 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
     target_session_id = "codex-session:target"
     session_rows: list[tuple[str, str, bytes]] = []
     message_rows: list[tuple[str, str, int, str, str, bytes]] = []
-    block_rows: list[tuple[str, str, int, str, str | None, str, str | None, str | None]] = []
+    block_rows: list[tuple[str, str, int, str, str | None, str, str | None, str | None, str, int]] = []
     for index in range(512):
         native_id = "target" if index == 0 else f"irrelevant-{index:04d}"
         session_id = f"codex-session:{native_id}"
@@ -906,8 +909,30 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
         )
         block_rows.extend(
             (
-                (message_id, session_id, 0, BlockType.TOOL_USE.value, "Bash", tool_id, "{}", "shell"),
-                (message_id, session_id, 1, BlockType.TOOL_RESULT.value, None, tool_id, None, None),
+                (
+                    message_id,
+                    session_id,
+                    0,
+                    BlockType.TOOL_USE.value,
+                    "Bash",
+                    tool_id,
+                    "{}",
+                    "shell",
+                    fixture_block_content_identity(BlockType.TOOL_USE.value, "Bash", tool_id, "{}", "shell"),
+                    0,
+                ),
+                (
+                    message_id,
+                    session_id,
+                    1,
+                    BlockType.TOOL_RESULT.value,
+                    None,
+                    tool_id,
+                    None,
+                    None,
+                    fixture_block_content_identity(BlockType.TOOL_RESULT.value, None, tool_id, None, None),
+                    0,
+                ),
             )
         )
 
@@ -924,11 +949,7 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
             message_rows,
         )
         facade._conn.executemany(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO blocks ( message_id, session_id, position, block_type, tool_name, tool_id, tool_input, semantic_type, content_identity, content_occurrence ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             block_rows,
         )
         source = parse_unit_source_expression(f"actions where session.id:{target_session_id}")
@@ -2148,6 +2169,10 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
 
     with ArchiveStore.open_existing(root) as facade:
         assert facade.count_sessions() == 2
+        [first_block] = facade._conn.execute(
+            "SELECT block_id FROM blocks WHERE message_id = ? AND block_type = 'text'",
+            (archive_message_id("codex-session:codex-read-1", "m1"),),
+        ).fetchall()
         assert facade.count_sessions(origin="codex-session") == 1
         assert facade.count_sessions(origins=("codex-session", "chatgpt-export")) == 2
         assert facade.count_sessions(excluded_origins=("chatgpt-export",)) == 1
@@ -2300,7 +2325,7 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
     assert repo_miss_hits == []
     assert titled_hits[0].session_id == first_id
     assert dated_hits[0].session_id == first_id
-    assert hits[0].block_id == archive_message_id("codex-session:codex-read-1", "m1") + ":0"
+    assert hits[0].block_id == first_block["block_id"]
     assert hits[0].origin == Origin.CODEX_SESSION.value
     assert "[alpha]" in hits[0].snippet
 

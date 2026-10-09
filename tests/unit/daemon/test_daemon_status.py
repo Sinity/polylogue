@@ -74,6 +74,7 @@ from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.identity import fixture_block_content_identity
 
 
 def _complete_healthy_frontier() -> JSONDocument:
@@ -2550,11 +2551,15 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
             ("codex-session:native-1", "message-1", 0, "user", "message", bytes(32)),
         )
         conn.execute(
-            """
-            INSERT INTO blocks (message_id, session_id, position, block_type, text)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            ("codex-session:native-1:n:message-1", "codex-session:native-1", 0, "text", "needle"),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (
+                "codex-session:native-1:n:message-1",
+                "codex-session:native-1",
+                0,
+                "text",
+                "needle",
+                fixture_block_content_identity("text", "needle"),
+            ),
         )
         conn.commit()
 
@@ -2617,11 +2622,15 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
             ("codex-session:native-1", "message-1", 0, "user", "message", bytes(32)),
         )
         conn.execute(
-            """
-            INSERT INTO blocks (message_id, session_id, position, block_type, text)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            ("codex-session:native-1:message-1", "codex-session:native-1", 0, "text", "needle stale index"),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (
+                "codex-session:native-1:message-1",
+                "codex-session:native-1",
+                0,
+                "text",
+                "needle stale index",
+                fixture_block_content_identity("text", "needle stale index"),
+            ),
         )
         rowid = conn.execute(
             "SELECT rowid FROM blocks WHERE block_id = ?",
@@ -2683,11 +2692,15 @@ def test_fts_readiness_exact_detects_archive_missing_messages_fts_row(tmp_path: 
             ("codex-session:native-1", "message-1", 0, "user", "message", bytes(32)),
         )
         conn.execute(
-            """
-            INSERT INTO blocks (message_id, session_id, position, block_type, text)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            ("codex-session:native-1:message-1", "codex-session:native-1", 0, "text", "needle"),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, 0)",
+            (
+                "codex-session:native-1:message-1",
+                "codex-session:native-1",
+                0,
+                "text",
+                "needle",
+                fixture_block_content_identity("text", "needle"),
+            ),
         )
         rowid = conn.execute(
             "SELECT rowid FROM blocks WHERE block_id = ?",

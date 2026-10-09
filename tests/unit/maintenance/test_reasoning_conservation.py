@@ -356,8 +356,8 @@ def test_offsetting_losses_do_not_pass_as_an_aggregate(tmp_path: Path) -> None:
     _index(
         tmp_path,
         """
-        INSERT INTO blocks(message_id, session_id, position, block_type, text)
-        SELECT message_id, session_id, position + 100, 'thinking', text
+        INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence)
+        SELECT message_id, session_id, position + 100, 'thinking', text, content_identity, content_occurrence + 1
         FROM blocks WHERE block_type = 'thinking' AND session_id LIKE ?
         ORDER BY message_id LIMIT 2
         """,

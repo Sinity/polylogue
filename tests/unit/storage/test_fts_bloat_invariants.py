@@ -21,6 +21,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.identity import fixture_block_content_identity
 from tests.infra.index_writer import write_fixture_index_session
 
 
@@ -49,11 +50,13 @@ def _seed_message(
     )
     message_id = f"{session_id}:{native_id}"
     conn.execute(
-        """
-        INSERT INTO blocks(message_id, session_id, position, block_type, text)
-        VALUES (?, ?, 0, 'text', ?)
-        """,
-        (message_id, session_id, text),
+        "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            text,
+            fixture_block_content_identity("text", text),
+        ),
     )
     return message_id
 

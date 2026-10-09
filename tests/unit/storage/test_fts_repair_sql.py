@@ -33,7 +33,7 @@ from polylogue.storage.fts.sql import (
     insert_session_rows_sql,
 )
 from polylogue.storage.io_phase_metrics import close_connection_cursor, live_connection_cursors
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_message_id, fixture_block_content_identity
 from tests.infra.sqlite_cursor_settlement import ControlledCursor
 
 
@@ -68,11 +68,13 @@ def _seed_text_block(conn: sqlite3.Connection, *, native_session_id: str, native
         (session_id, native_message_id, content_hash),
     )
     conn.execute(
-        """
-        INSERT INTO blocks (message_id, session_id, position, block_type, text)
-        VALUES (?, ?, 0, 'text', ?)
-        """,
-        (message_id, session_id, text),
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            text,
+            fixture_block_content_identity("text", text),
+        ),
     )
     return message_id
 
@@ -617,8 +619,18 @@ def test_partition_deletes_page_canonical_and_residue_rows_under_actual_bind_lim
     )
     session_id = "unknown-export:paged"
     test_conn.executemany(
-        "INSERT INTO blocks(message_id, session_id, position, block_type, text) VALUES (?, ?, ?, 'text', ?)",
-        ((message_id, session_id, position, "paged canonical needle") for position in range(1, 17)),
+        "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, ?)",
+        (
+            (
+                message_id,
+                session_id,
+                position,
+                "paged canonical needle",
+                fixture_block_content_identity("text", "paged canonical needle"),
+                content_occurrence,
+            )
+            for content_occurrence, position in enumerate(range(1, 17), start=1)
+        ),
     )
     test_conn.execute("UPDATE blocks SET rowid = ? WHERE message_id = ? AND position = 0", (-(2**63), message_id))
     for position in range(13):

@@ -58,6 +58,7 @@ from polylogue.storage.blob_integrity import BlobIntegrityFinding, BlobIntegrity
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.identity import fixture_block_content_identity
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,11 +83,14 @@ def _init_blocks_db(path: Path, *, fts_rows: int = 0, block_rows: int = 0) -> No
         conn.execute("DELETE FROM blocks")
         for i in range(block_rows):
             conn.execute(
-                """
-                INSERT INTO blocks(message_id, session_id, position, block_type, text)
-                VALUES (?, ?, ?, 'text', ?)
-                """,
-                (f"m{i}", f"s{i}", 0, f"body {i}"),
+                "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, 'text', ?, ?, 0)",
+                (
+                    f"m{i}",
+                    f"s{i}",
+                    0,
+                    f"body {i}",
+                    fixture_block_content_identity("text", f"body {i}"),
+                ),
             )
         for row in conn.execute(
             "SELECT rowid, text FROM blocks ORDER BY rowid LIMIT ?",

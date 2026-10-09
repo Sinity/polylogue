@@ -26,7 +26,7 @@ from polylogue.storage.search.runtime import search_messages_impl
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.queries.attachment_records import search_attachment_identity_evidence_hits
 from polylogue.storage.sqlite.schema import SCHEMA_DDL
-from tests.infra.identity import archive_message_id, fixture_content_identity
+from tests.infra.identity import archive_message_id, fixture_block_content_identity, fixture_content_identity
 
 
 def _insert_timeless_session_with_text_block(
@@ -45,8 +45,13 @@ def _insert_timeless_session_with_text_block(
     )
     message_id = archive_message_id(session_id, None, content_identity=content_identity)
     conn.execute(
-        "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
-        (message_id, session_id, text),
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            text,
+            fixture_block_content_identity("text", text),
+        ),
     )
     return session_id
 
@@ -107,9 +112,12 @@ def test_ranked_action_search_since_filter_includes_timeless_session(tmp_path: P
         )
         message_id = archive_message_id(session_id, None, content_identity=content_identity)
         conn.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, text) "
-            "VALUES (?, ?, 0, 'tool_use', 'Bash', 'tool-1', 'run pytest suite')",
-            (message_id, session_id),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'tool_use', 'Bash', 'tool-1', 'run pytest suite', ?, 0)",
+            (
+                message_id,
+                session_id,
+                fixture_block_content_identity("tool_use", "Bash", "tool-1", "run pytest suite"),
+            ),
         )
         conn.commit()
 
@@ -137,8 +145,13 @@ def test_ranked_session_search_since_filter_still_excludes_out_of_range_timestam
         )
         message_id = archive_message_id(session_id, None, content_identity=content_identity)
         conn.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
-            (message_id, session_id, "the quick fox jumps"),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                "the quick fox jumps",
+                fixture_block_content_identity("text", "the quick fox jumps"),
+            ),
         )
         conn.commit()
 

@@ -17,6 +17,7 @@ import pytest
 
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection_profile import open_connection
+from tests.infra.identity import fixture_block_content_identity
 
 
 def _content_hash(value: str) -> bytes:
@@ -39,8 +40,15 @@ def _insert_session_with_message(conn: sqlite3.Connection, native_id: str, posit
         (session_id, message_native_id, position, "user", _content_hash(f"message:{message_id}")),
     )
     conn.execute(
-        "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, ?, ?, ?)",
-        (message_id, session_id, 0, "text", text),
+        "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, 0)",
+        (
+            message_id,
+            session_id,
+            0,
+            "text",
+            text,
+            fixture_block_content_identity("text", text),
+        ),
     )
     return message_id
 

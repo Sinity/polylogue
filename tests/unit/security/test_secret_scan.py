@@ -37,6 +37,7 @@ from polylogue.security.secret_scan import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
+from tests.infra.identity import fixture_block_content_identity
 
 
 class TestScanTextForSecretCandidates:
@@ -308,8 +309,13 @@ class TestScanSessionForSecretCandidates:
                 0
             ]
             conn.execute(
-                "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
-                (message_id, session_id, text),
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+                (
+                    message_id,
+                    session_id,
+                    text,
+                    fixture_block_content_identity("text", text),
+                ),
             )
             conn.commit()
         finally:
@@ -390,9 +396,12 @@ class TestScanSessionForSecretCandidates:
                 0
             ]
             conn.execute(
-                "INSERT INTO blocks (message_id, session_id, position, block_type, text) "
-                "VALUES (?, ?, 0, 'text', 'ordinary block prose')",
-                (message_id, session_id),
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', 'ordinary block prose', ?, 0)",
+                (
+                    message_id,
+                    session_id,
+                    fixture_block_content_identity("text", "ordinary block prose"),
+                ),
             )
             conn.commit()
         finally:
@@ -490,8 +499,13 @@ def _seed_archive_session(archive_root: Path, *, native_id: str, text: str) -> s
         )
         message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
         conn.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
-            (message_id, session_id, text),
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, content_identity, content_occurrence) VALUES (?, ?, 0, 'text', ?, ?, 0)",
+            (
+                message_id,
+                session_id,
+                text,
+                fixture_block_content_identity("text", text),
+            ),
         )
         conn.commit()
     finally:
