@@ -45,3 +45,11 @@ def apply_empty_index_transition(root: Path) -> str | None:
 def mutate_fixture_database(path: Path, sql: str, parameters: tuple[object, ...] = ()) -> None:
     with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(sql, parameters)
+
+
+def make_empty_anchored_bootstrap_index(root: Path) -> Path:
+    initialize_active_archive_root(root)
+    IndexGenerationStore.for_archive_root(root)
+    path = root / "index.db"
+    mutate_fixture_database(path, "UPDATE schema_identity SET identity='synthetic-parent-runtime' WHERE tier='index'")
+    return path

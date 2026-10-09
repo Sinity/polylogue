@@ -17,6 +17,7 @@ from polylogue.storage.index_generation import (
     canonical_active_index_path,
     rebuild_source_evidence_snapshot,
 )
+from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, read_schema_identity
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.audit_leaf import VerifiedAuditLeaf
 from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported, open_readonly_connection
@@ -121,8 +122,14 @@ def replace_empty_managed_index_on_startup(
         return None
     location = ArchiveLocation.resolve(root)
     index = location.active_index_path.resolve(strict=True)
-    generations_root = canonical_active_index_path(location).parent / ".index-generations"
-    if index.parent.parent != generations_root.resolve() or index.name != "index.db":
+    canonical_index = canonical_active_index_path(location)
+    generations_root = canonical_index.parent / ".index-generations"
+    bootstrap = (
+        not canonical_index.is_symlink()
+        and canonical_index.resolve(strict=True) == index
+        and location.configured_tier("index").resolved_path == index
+    )
+    if not bootstrap and (index.parent.parent != generations_root.resolve() or index.name != "index.db"):
         raise EmptyIndexTransitionRefusedError("managed_index_escapes_archive")
     with VerifiedAuditLeaf(index.parent, filename=index.name) as leaf:
         with closing(open_readonly_connection(leaf.anchored_path, validate_schema=False)) as conn:
@@ -132,6 +139,8 @@ def replace_empty_managed_index_on_startup(
                 pass
             else:
                 return None
+            if read_schema_identity(conn, DerivedTier.INDEX) is None:
+                raise EmptyIndexTransitionRefusedError("missing_index_identity")
             _require_matching_shape(conn, ArchiveTier.INDEX)
         leaf.assert_unchanged()
 
@@ -185,9 +194,10 @@ def replace_empty_managed_index_on_startup(
             original.validate_observers_current()
             require_embedding_current()
             store = IndexGenerationStore(location, repair_anchor=False)
-            parent = store.load(index.parent.name)
-            if parent.state != "active" or Path(parent.index_path).resolve() != index:
-                raise EmptyIndexTransitionRefusedError("unprovable_active_generation")
+            if not bootstrap:
+                parent = store.load(index.parent.name)
+                if parent.state != "active" or Path(parent.index_path).resolve() != index:
+                    raise EmptyIndexTransitionRefusedError("unprovable_active_generation")
             generation = store.create(owner_id="daemon:empty-index-startup", source_snapshot=source_snapshot)
         with store.prepare_promotion(generation) as prepared:
             if prepared.missing_session_count:

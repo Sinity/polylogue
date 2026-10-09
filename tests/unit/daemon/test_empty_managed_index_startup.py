@@ -15,18 +15,21 @@ from polylogue.storage.archive_identity import ArchiveLocation, ArchiveLocationE
 from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported, open_readonly_connection
 from tests.infra.empty_managed_index import (
     apply_empty_index_transition,
+    make_empty_anchored_bootstrap_index,
     make_empty_managed_index,
     mutate_fixture_database,
     promote_empty_managed_index,
 )
 
 
+@pytest.mark.parametrize("bootstrap", [False, True])
 def test_actual_startup_promotes_current_empty_index_and_preserves_parent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bootstrap: bool
 ) -> None:
     """Without the transition, real startup reaches preflight with the old identity."""
     root = tmp_path / "archive"
-    old = make_empty_managed_index(root)
+    old = make_empty_anchored_bootstrap_index(root) if bootstrap else make_empty_managed_index(root)
+    old_inode = old.stat().st_ino
     original = old.read_bytes()
     durable = {name: (root / name).stat().st_ino for name in ("source.db", "user.db", "audit.db", "embeddings.db")}
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
@@ -39,7 +42,13 @@ def test_actual_startup_promotes_current_empty_index_and_preserves_parent(
         with closing(open_readonly_connection(active)) as conn:
             assert_tier_schema_supported(conn, active)
         assert active != old
-        assert old.read_bytes() == original
+        if bootstrap:
+            retired = tuple((root / ".index-generations").glob("retired-*/index.db"))
+            assert len(retired) == 1
+            assert retired[0].stat().st_ino == old_inode
+            assert retired[0].read_bytes() == original
+        else:
+            assert old.read_bytes() == original
         assert {name: (root / name).stat().st_ino for name in durable} == durable
         raise StartupReachedError
 
@@ -251,3 +260,37 @@ def test_embedding_symlink_retarget_or_replacement_refuses_publication(
         apply_empty_index_transition(root)
     assert raised.value.reason == "changed_embeddings_binding"
     assert ArchiveLocation.resolve(root).active_index_path.resolve(strict=True) == old
+
+
+@pytest.mark.parametrize("missing_identity", [False, True])
+def test_regular_bootstrap_nonempty_or_unstamped_index_refuses(tmp_path: Path, missing_identity: bool) -> None:
+    root = tmp_path / "archive"
+    old = make_empty_anchored_bootstrap_index(root)
+    mutate_fixture_database(
+        old,
+        "DELETE FROM schema_identity"
+        if missing_identity
+        else "INSERT INTO sessions(native_id,origin,content_hash) VALUES ('one','unknown-export',zeroblob(32))",
+    )
+    before = old.read_bytes()
+    with pytest.raises(EmptyIndexTransitionRefusedError) as raised:
+        apply_empty_index_transition(root)
+    assert raised.value.reason == ("missing_index_identity" if missing_identity else "nonempty_index_population")
+    assert not old.is_symlink()
+    assert old.read_bytes() == before
+    assert not tuple((root / ".index-generations").glob("gen-*/generation.json"))
+
+
+def test_regular_anchor_cannot_select_a_different_bootstrap_index(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    old = make_empty_anchored_bootstrap_index(root)
+    wrong = root / "other" / "index.db"
+    wrong.parent.mkdir()
+    wrong.write_bytes(old.read_bytes())
+    (root / ".index-active-pointer").write_text(str(wrong))
+    before = wrong.read_bytes()
+    with pytest.raises(EmptyIndexTransitionRefusedError) as raised:
+        apply_empty_index_transition(root)
+    assert raised.value.reason == "managed_index_escapes_archive"
+    assert wrong.read_bytes() == before
+    assert not old.is_symlink()

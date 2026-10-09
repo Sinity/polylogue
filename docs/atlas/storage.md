@@ -419,7 +419,9 @@ manifest validation, following its writable sync and async policy; read-only
 opens still refuse a missing manifest index without writing. At daemon
 startup, exclusive archive ownership and a write lease allow replacement of a
 stale disposable ops file before persistent tier handles open. A stale managed
-Index with canonical physical DDL may instead be replaced at startup only after proving all Source custody and parsed/material Index tables
+Index, including its anchored regular bootstrap before the first promotion,
+with canonical physical DDL may instead be replaced at startup only after
+proving all Source custody and parsed/material Index tables
 empty, physical blob custody empty, and durable User/Audit reference preservation.
 The existing generation owner creates and atomically promotes fresh empty DDL
 before tier handles open; the predecessor remains recoverable under normal
