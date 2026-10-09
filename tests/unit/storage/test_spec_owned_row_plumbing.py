@@ -280,13 +280,15 @@ def test_every_block_read_model_shares_one_projection_and_hydrator() -> None:
     # it must never be projected.
     assert "metadata" not in ARCHIVE_BLOCK_ROW_COLUMNS
 
+    content_identity = fixture_block_content_identity("tool_result", "ok", "Bash", "ok")
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
     try:
         connection.execute(f"CREATE TABLE blocks (\n    {BLOCKS_SPEC.ddl_body}\n)")
         connection.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type, text, tool_name, tool_outcome) "
-            "VALUES ('s:m', 's', 0, 'tool_result', 'ok', 'Bash', 'ok')"
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text, tool_name, tool_outcome, content_identity, content_occurrence) "
+            "VALUES ('s:m', 's', 0, 'tool_result', 'ok', 'Bash', 'ok', ?, 0)",
+            (content_identity,),
         )
         row = connection.execute(
             f"SELECT {', '.join(ARCHIVE_BLOCK_ROW_COLUMNS)} FROM blocks",
@@ -296,7 +298,7 @@ def test_every_block_read_model_shares_one_projection_and_hydrator() -> None:
 
     hydrated = archive_block_row(row)
     assert isinstance(hydrated, ArchiveBlockRow)
-    assert hydrated.block_id == "s:m:0"
+    assert hydrated.block_id == archive_block_id("s:m", content_identity=content_identity)
     assert hydrated.block_type == "tool_result"
     # The one semantic conversion the shared hydrator owns.
     assert hydrated.tool_outcome is not None
@@ -469,9 +471,10 @@ def test_a_relaxed_nullability_changes_the_schema_both_routes_open() -> None:
     connection = sqlite3.connect(":memory:")
     try:
         connection.execute(f"CREATE TABLE blocks (\n    {BLOCKS_SPEC.ddl_body}\n)")
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(sqlite3.IntegrityError, match="blocks.block_type"):
             connection.execute(
-                "INSERT INTO blocks (message_id, session_id, position, block_type) VALUES ('s:m', 's', 0, NULL)"
+                "INSERT INTO blocks (message_id, session_id, position, block_type, content_identity, content_occurrence) VALUES ('s:m', 's', 0, NULL, ?, 0)",
+                (fixture_block_content_identity(None),),
             )
     finally:
         connection.close()
@@ -487,7 +490,8 @@ def test_a_relaxed_nullability_changes_the_schema_both_routes_open() -> None:
     try:
         connection.execute(f"CREATE TABLE blocks (\n    {relaxed.ddl_body}\n)")
         connection.execute(
-            "INSERT INTO blocks (message_id, session_id, position, block_type) VALUES ('s:m', 's', 0, NULL)"
+            "INSERT INTO blocks (message_id, session_id, position, block_type, content_identity, content_occurrence) VALUES ('s:m', 's', 0, NULL, ?, 0)",
+            (fixture_block_content_identity(None),),
         )
     finally:
         connection.close()

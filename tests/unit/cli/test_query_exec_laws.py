@@ -53,7 +53,7 @@ from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 from tests.infra.archive_store_double import ArchiveStoreDouble, install_archive_store_double
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.daemon_operations import running_daemon_operations
-from tests.infra.identity import archive_message_id
+from tests.infra.identity import archive_block_id, archive_message_id, fixture_block_content_identity
 
 
 def test_explicit_file_destination_preserves_reserved_and_comma_paths(tmp_path: Path) -> None:
@@ -2042,7 +2042,12 @@ def test_async_execute_query_archive_streams_session_messages(
                         is_active_leaf=False,
                         blocks=(
                             ArchiveBlockRow(
-                                block_id="codex-session:native-1:m1:0",
+                                block_id=archive_block_id(
+                                    "codex-session:native-1:m1",
+                                    content_identity=fixture_block_content_identity("text", "stream user"),
+                                ),
+                                content_identity=fixture_block_content_identity("text", "stream user"),
+                                content_occurrence=0,
                                 message_id="codex-session:native-1:m1",
                                 block_type="text",
                                 text="stream user",
@@ -2059,7 +2064,12 @@ def test_async_execute_query_archive_streams_session_messages(
                         is_active_leaf=True,
                         blocks=(
                             ArchiveBlockRow(
-                                block_id="codex-session:native-1:m2:0",
+                                block_id=archive_block_id(
+                                    "codex-session:native-1:m2",
+                                    content_identity=fixture_block_content_identity("text", "stream assistant"),
+                                ),
+                                content_identity=fixture_block_content_identity("text", "stream assistant"),
+                                content_occurrence=0,
                                 message_id="codex-session:native-1:m2",
                                 block_type="text",
                                 text="stream assistant",
@@ -3245,7 +3255,12 @@ def test_async_execute_query_archive_reads_session_by_id(
                         is_active_leaf=True,
                         blocks=(
                             ArchiveBlockRow(
-                                block_id="codex-session:native-1:m1:0",
+                                block_id=archive_block_id(
+                                    "codex-session:native-1:m1",
+                                    content_identity=fixture_block_content_identity("text", "hello from v1"),
+                                ),
+                                content_identity=fixture_block_content_identity("text", "hello from v1"),
+                                content_occurrence=0,
                                 message_id="codex-session:native-1:m1",
                                 block_type="text",
                                 text="hello from v1",
@@ -3309,7 +3324,12 @@ def test_async_execute_query_archive_reads_session_messages_without_projection(
                         is_active_leaf=False,
                         blocks=(
                             ArchiveBlockRow(
-                                block_id="codex-session:native-1:m1:0",
+                                block_id=archive_block_id(
+                                    "codex-session:native-1:m1",
+                                    content_identity=fixture_block_content_identity("text", "keep user prose"),
+                                ),
+                                content_identity=fixture_block_content_identity("text", "keep user prose"),
+                                content_occurrence=0,
                                 message_id="codex-session:native-1:m1",
                                 block_type="text",
                                 text="keep user prose",
@@ -3326,13 +3346,27 @@ def test_async_execute_query_archive_reads_session_messages_without_projection(
                         is_active_leaf=True,
                         blocks=(
                             ArchiveBlockRow(
-                                block_id="codex-session:native-1:m2:0",
+                                block_id=archive_block_id(
+                                    "codex-session:native-1:m2",
+                                    content_identity=fixture_block_content_identity("thinking", "drop reasoning"),
+                                ),
+                                content_identity=fixture_block_content_identity("thinking", "drop reasoning"),
+                                content_occurrence=0,
                                 message_id="codex-session:native-1:m2",
                                 block_type="thinking",
                                 text="drop reasoning",
                             ),
                             ArchiveBlockRow(
-                                block_id="codex-session:native-1:m2:1",
+                                block_id=archive_block_id(
+                                    "codex-session:native-1:m2",
+                                    content_identity=fixture_block_content_identity(
+                                        "tool_use", None, "Read", "tool-1", "file_read"
+                                    ),
+                                ),
+                                content_identity=fixture_block_content_identity(
+                                    "tool_use", None, "Read", "tool-1", "file_read"
+                                ),
+                                content_occurrence=0,
                                 message_id="codex-session:native-1:m2",
                                 block_type="tool_use",
                                 text=None,
@@ -3341,14 +3375,28 @@ def test_async_execute_query_archive_reads_session_messages_without_projection(
                                 semantic_type="file_read",
                             ),
                             ArchiveBlockRow(
-                                block_id="codex-session:native-1:m2:2",
+                                block_id=archive_block_id(
+                                    "codex-session:native-1:m2",
+                                    content_identity=fixture_block_content_identity(
+                                        "tool_result", "drop file contents", "tool-1"
+                                    ),
+                                ),
+                                content_identity=fixture_block_content_identity(
+                                    "tool_result", "drop file contents", "tool-1"
+                                ),
+                                content_occurrence=0,
                                 message_id="codex-session:native-1:m2",
                                 block_type="tool_result",
                                 text="drop file contents",
                                 tool_id="tool-1",
                             ),
                             ArchiveBlockRow(
-                                block_id="codex-session:native-1:m2:3",
+                                block_id=archive_block_id(
+                                    "codex-session:native-1:m2",
+                                    content_identity=fixture_block_content_identity("text", "keep assistant prose"),
+                                ),
+                                content_identity=fixture_block_content_identity("text", "keep assistant prose"),
+                                content_occurrence=0,
                                 message_id="codex-session:native-1:m2",
                                 block_type="text",
                                 text="keep assistant prose",
@@ -3375,7 +3423,9 @@ def test_async_execute_query_archive_reads_session_messages_without_projection(
     assert [message["role"] for message in payload["messages"]] == ["user", "assistant"]
     assert payload["messages"][0]["blocks"] == [
         {
-            "block_id": "codex-session:native-1:m1:0",
+            "block_id": archive_block_id(
+                "codex-session:native-1:m1", content_identity=fixture_block_content_identity("text", "keep user prose")
+            ),
             "block_type": "text",
             "message_id": "codex-session:native-1:m1",
             "semantic_type": None,
@@ -4362,7 +4412,11 @@ def test_a_bounded_stream_reads_every_window_its_limit_covers(
             is_active_leaf=position == total_messages - 1,
             blocks=(
                 ArchiveBlockRow(
-                    block_id=f"{message_id}:0",
+                    block_id=archive_block_id(
+                        message_id, content_identity=fixture_block_content_identity("text", f"line {position}")
+                    ),
+                    content_identity=fixture_block_content_identity("text", f"line {position}"),
+                    content_occurrence=0,
                     message_id=message_id,
                     block_type="text",
                     text=f"line {position}",

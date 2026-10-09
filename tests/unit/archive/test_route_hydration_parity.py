@@ -61,6 +61,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 )
 from polylogue.surfaces.payloads import _MESSAGE_MASK, _SESSION_SUMMARY_MASK, MessageRenderEnvelope
 from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.identity import archive_block_id, fixture_block_content_identity
 from tests.infra.live_ingest import write_session_sync
 from tests.infra.storage_records import db_setup
 
@@ -166,9 +167,30 @@ def test_one_display_text_policy_serves_every_archive_row_route() -> None:
         assert default is hydration.archive_display_text
 
     blocks = (
-        ArchiveBlockRow(block_id="m:0", message_id="m", block_type="text", text="first"),
-        ArchiveBlockRow(block_id="m:1", message_id="m", block_type="thinking", text="second"),
-        ArchiveBlockRow(block_id="m:2", message_id="m", block_type="text", text=None),
+        ArchiveBlockRow(
+            block_id=archive_block_id("m", content_identity=fixture_block_content_identity("text", "first")),
+            content_identity=fixture_block_content_identity("text", "first"),
+            content_occurrence=0,
+            message_id="m",
+            block_type="text",
+            text="first",
+        ),
+        ArchiveBlockRow(
+            block_id=archive_block_id("m", content_identity=fixture_block_content_identity("thinking", "second")),
+            content_identity=fixture_block_content_identity("thinking", "second"),
+            content_occurrence=0,
+            message_id="m",
+            block_type="thinking",
+            text="second",
+        ),
+        ArchiveBlockRow(
+            block_id=archive_block_id("m", content_identity=fixture_block_content_identity("text", None)),
+            content_identity=fixture_block_content_identity("text", None),
+            content_occurrence=0,
+            message_id="m",
+            block_type="text",
+            text=None,
+        ),
     )
     assert hydration.archive_display_text(blocks) == "first\n\nsecond"
 

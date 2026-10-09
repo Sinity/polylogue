@@ -38,6 +38,7 @@ from polylogue.surfaces.payloads import (
     message_render_envelope_from_domain,
     message_topology_from_domain,
 )
+from tests.infra.identity import archive_block_id, fixture_block_content_identity
 from tests.infra.storage_records import make_content_block
 
 
@@ -254,7 +255,16 @@ def test_from_archive_row_preserves_stop_reason_and_block_outcomes() -> None:
         stop_reason="max_tokens",
         blocks=(
             ArchiveBlockRow(
-                block_id="m1:0",
+                block_id=archive_block_id(
+                    "m1",
+                    content_identity=fixture_block_content_identity(
+                        "tool_result", "total 0", "t1", ToolOutcome.UNKNOWN.value, "no_structural_outcome"
+                    ),
+                ),
+                content_identity=fixture_block_content_identity(
+                    "tool_result", "total 0", "t1", ToolOutcome.UNKNOWN.value, "no_structural_outcome"
+                ),
+                content_occurrence=0,
                 message_id="m1",
                 block_type="tool_result",
                 text="total 0",
@@ -291,7 +301,11 @@ def test_from_archive_row_propagates_paste_boundary_state() -> None:
     row = _archive_row(
         blocks=(
             ArchiveBlockRow(
-                block_id="m1:0",
+                block_id=archive_block_id(
+                    "m1", content_identity=fixture_block_content_identity("text", "See [Pasted text #1]")
+                ),
+                content_identity=fixture_block_content_identity("text", "See [Pasted text #1]"),
+                content_occurrence=0,
                 message_id="m1",
                 block_type="text",
                 text="See [Pasted text #1]",

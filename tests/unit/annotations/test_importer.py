@@ -21,6 +21,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import AssertionKind, BlockType, BranchType, Provider
 from polylogue.core.json import require_json_document
+from polylogue.core.refs import EvidenceRef
 from polylogue.daemon.socket_path import daemon_socket_path
 from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_transaction import OperationExecutor
@@ -459,16 +460,21 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
                     branch_type=BranchType.SUBAGENT,
                 ),
             )
-            return (parent_session_id,)
+            instruction_block = archive._conn.execute(
+                "SELECT b.block_id, b.message_id FROM blocks b JOIN messages m ON m.message_id = b.message_id "
+                "WHERE b.session_id = ? AND m.native_id = 'dispatch' AND b.block_type = 'tool_use'",
+                (parent_session_id,),
+            ).fetchone()
+            return parent_session_id, str(instruction_block[0]), str(instruction_block[1])
 
-    (parent_session_id,) = run_off_event_loop(_seed_archive_2)
-    instruction_block_id = f"{parent_session_id}:n:dispatch:0"
+    parent_session_id, instruction_block_id, instruction_message_id = run_off_event_loop(_seed_archive_2)
     target_ref = f"delegation:{instruction_block_id}"
     evidence_ref = f"block:{instruction_block_id}"
-    # Mirrors instruction_block_id above: the message id carries the `n:`
-    # native-id discriminator, so a span built without it resolves to nothing
-    # and every row is rejected as unresolvable evidence.
-    evidence_span = f"{parent_session_id}::{parent_session_id}:n:dispatch::0"
+    evidence_span = EvidenceRef(
+        session_id=parent_session_id,
+        message_id=instruction_message_id,
+        block_id=instruction_block_id,
+    ).format()
     valid_rows = [
         {
             "row_key": f"delegation-{index}",
@@ -481,7 +487,13 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
         {
             "row_key": "wrong-lineage",
             "value": _delegation_value(),
-            "evidence_refs": [f"claude-code-session:wrong::{parent_session_id}:dispatch::0"],
+            "evidence_refs": [
+                EvidenceRef(
+                    session_id="claude-code-session:wrong",
+                    message_id=instruction_message_id,
+                    block_id=instruction_block_id,
+                ).format()
+            ],
         },
         {
             "row_key": "delegation-0",
