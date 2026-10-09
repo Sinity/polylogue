@@ -22,7 +22,7 @@ Installed console entry points can inject dependency paths only in memory;
 child imports do not depend on ambient `PYTHONPATH` or a checkout cwd. Module
 children retain their module entry point and argument semantics.
 
-HTTP mutations first acquire the existing writer bridge admission. Their bodies
+HTTP mutations with inline write bodies first acquire the existing writer bridge admission. Their bodies
 run on the coordinator's writer worker under explicit child-task delegation;
 they do not enter the read compute pool or acquire another writer gate. A client
 wait deadline reports an indeterminate result and leaves accepted work owned.
@@ -35,6 +35,10 @@ checks cancellation, while rollback, close and failed-close retry remain
 available to the original owner. A supervised service constructs its coroutine
 inside the owned task, so cancellation before startup leaves no unawaited
 watcher coroutine.
+
+The session-reset adapter submits its caller-owned delete preview through the
+facade to the resident daemon without holding an outer writer admission. The
+canonical delete operation acquires that same coordinator.
 
 Before a new mutation begins, recovery discovery reads orphaned operations and
 unrouted file-replacement plans through the settled Audit continuity view. It

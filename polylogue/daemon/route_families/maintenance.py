@@ -98,8 +98,7 @@ ROUTES: tuple[RouteSpec, ...] = (
             "Reset one selected session under its delete preview",
             (("scope", "session"), ("session_id", "session-a"), ("preview_ref", "preview-a")),
         ),
-        migration_reason="This compatibility route still calls the safe session-delete API directly; maintenance.reset owns archive-file reset.",
-        write_gate=True,
+        migration_reason="This route submits the safe session-delete facade to the resident daemon; maintenance.reset owns archive-file reset.",
     ),
     _maintenance_route(
         declaration_id="daemon.maintenance.ingest",
