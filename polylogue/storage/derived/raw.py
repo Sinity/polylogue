@@ -106,8 +106,7 @@ def _record_retained_schema_drift(
         return
     observations = []
     for retained in prepared_inputs.values():
-        artifact = retained.prepared_artifact
-        verdict = None if artifact is None else artifact.validation_verdict
+        verdict = retained.validation_verdict
         if verdict is None or verdict.drift_observation is None:
             continue
         if strict_refusals_only and not verdict.strict_refusal:
@@ -2652,6 +2651,9 @@ class RawObservationDerivation(RawObservationInspection):
                                 native_id = retained_read.raw_native_id(raw_id) if kind.value == "append" else None
                                 fallback_timestamp = retained_read.raw_revision_file_mtime(raw_id)
                                 profile_identity = retained_read.raw_profile_identity(raw_id)
+                                append_logical_key = (
+                                    retained_read.raw_append_logical_key(raw_id) if kind.value == "append" else None
+                                )
                                 carry.zip_coordinates[raw_id] = retained_read.raw_captured_zip_coordinate(raw_id)
                                 sidecar_signature = None
                                 if provider is Provider.CLAUDE_CODE:
@@ -2674,9 +2676,35 @@ class RawObservationDerivation(RawObservationInspection):
                             )
                             if provider is Provider.CLAUDE_CODE:
                                 artifact_key = (*artifact_key, sidecar_signature)
+                            # Ordinary JSON carriers can share equivalent parser
+                            # inputs. Codex state owns a per-raw mutable projection,
+                            # and UNKNOWN can resolve to that route only after decode.
+                            share_json = (
+                                (is_jsonl_source_path(path) or Path(path).suffix.lower() == ".json")
+                                and not looks_like_logical_source_path(blob_path)
+                                and provider not in {Provider.CODEX, Provider.UNKNOWN}
+                            )
+                            if share_json:
+                                from polylogue.sources.fallback_identity import fallback_session_id
+
+                                operand = _NeutralParserOperand(
+                                    descriptor=descriptors[raw_id],
+                                    profile_identity=profile_identity,
+                                    fallback_timestamp=fallback_timestamp,
+                                    native_id=native_id,
+                                    zip_coordinate=carry.zip_coordinates[raw_id],
+                                    append_logical_key=append_logical_key,
+                                    sidecar_signature=sidecar_signature,
+                                )
+                                artifact_key = (
+                                    ("fallback-source-id", fallback_session_id(path, raw_id)),
+                                    *_neutral_parser_cache_identity(raw_id, operand)[1:],
+                                    ("validation-mode", self._validation_mode.value),
+                                )
                             if raw_id in neutral_artifact_keys:
                                 artifact_key = neutral_artifact_keys[raw_id]
                             artifact = prepared_artifacts.get(artifact_key)
+                            reused_artifact = artifact is not None
                             if artifact is None:
                                 try:
                                     is_json = (
@@ -2712,6 +2740,9 @@ class RawObservationDerivation(RawObservationInspection):
                                             schema_registry=self._schema_registry,
                                         )
                                         provider_parse_seconds += time.perf_counter() - parse_started
+                                    # Own the returned files before cancellation or
+                                    # seal verification can refuse their publication.
+                                    prepared_artifacts[artifact_key] = artifact
                                     check_compute_cancelled()
                                 except DaemonOperationCancelled:
                                     raise
@@ -2740,14 +2771,38 @@ class RawObservationDerivation(RawObservationInspection):
                                 )
                             if artifact.error is None:
                                 try:
-                                    artifact.verify_files(
-                                        full=artifact_key not in prepared_artifacts, stop=compute_cancel_requested
-                                    )
+                                    artifact.verify_files(full=not reused_artifact, stop=compute_cancel_requested)
                                 except (OSError, ValueError) as exc:
                                     raise RetainedPreparationRetryableError(
                                         f"retained preparation seal changed for raw {raw_id}"
                                     ) from exc
-                            prepared_artifacts[artifact_key] = artifact
+                            # One cache entry owns the physical carrier. Each raw
+                            # still owes current schema evidence at its own coordinate.
+                            verdict = artifact.validation_verdict
+                            if reused_artifact and artifact.validation_verdict is not None and share_json:
+                                from polylogue.schemas import validate_retained_document
+                                from polylogue.sources.revision_backfill import _retained_validation_input
+
+                                prefix = (
+                                    artifact.parsed_prefix_size
+                                    if is_jsonl_source_path(path) and self._validation_mode is not ValidationMode.OFF
+                                    else None
+                                )
+                                with _retained_validation_input(blob_path, prefix, scratch) as validation_path:
+                                    verdict = validate_retained_document(
+                                        artifact.resolved_provider or provider,
+                                        validation_path,
+                                        mode=self._validation_mode,
+                                        raw_id=raw_id,
+                                        revision_sha256=blob_hash,
+                                        evidence_id=raw_id,
+                                        source_path=path,
+                                        jsonl=is_jsonl_source_path(path),
+                                        captured_zip_coordinate=carry.zip_coordinates[raw_id],
+                                        registry=self._schema_registry,
+                                    )
+                            else:
+                                prepared_artifacts[artifact_key] = artifact
                             prepared[raw_id] = PreparedRetainedInput(
                                 raw_id,
                                 provider,
@@ -2759,6 +2814,7 @@ class RawObservationDerivation(RawObservationInspection):
                                 raw_authority_parser_fingerprint(),
                                 fallback_timestamp,
                                 verified_blob_stat=after,
+                                validation_verdict=verdict,
                                 parser_error=artifact.error,
                                 parser_decode_failure=artifact.decode_failure,
                                 missing_profile_identity=artifact.missing_profile_identity,
@@ -2859,8 +2915,8 @@ class RawObservationDerivation(RawObservationInspection):
                                     for raw_id in accepted_raw_ids
                                     if (item := prepared.get(raw_id)) is not None
                                     and item.prepared_artifact is not None
-                                    and item.prepared_artifact.validation_verdict is not None
-                                    and item.prepared_artifact.validation_verdict.strict_refusal
+                                    and item.validation_verdict is not None
+                                    and item.validation_verdict.strict_refusal
                                 ),
                                 None,
                             )
@@ -2868,7 +2924,7 @@ class RawObservationDerivation(RawObservationInspection):
                                 refused_input = prepared.get(refused_raw_id)
                                 if refused_input is None or refused_input.prepared_artifact is None:
                                     raise AssertionError("strictly refused raw lost its prepared artifact")
-                                verdict = refused_input.prepared_artifact.validation_verdict
+                                verdict = refused_input.validation_verdict
                                 if verdict is None:
                                     raise AssertionError("strictly refused raw lost its validation verdict")
                                 detail = (
@@ -3240,8 +3296,8 @@ class RawObservationDerivation(RawObservationInspection):
                                             for raw_id in accepted_members
                                             if (item := prepared.get(raw_id)) is not None
                                             and item.prepared_artifact is not None
-                                            and item.prepared_artifact.validation_verdict is not None
-                                            and item.prepared_artifact.validation_verdict.strict_refusal
+                                            and item.validation_verdict is not None
+                                            and item.validation_verdict.strict_refusal
                                         ),
                                         None,
                                     )
@@ -3249,7 +3305,7 @@ class RawObservationDerivation(RawObservationInspection):
                                         refused_input = prepared.get(refused_member)
                                         if refused_input is None or refused_input.prepared_artifact is None:
                                             raise AssertionError("strictly refused member lost its prepared artifact")
-                                        verdict = refused_input.prepared_artifact.validation_verdict
+                                        verdict = refused_input.validation_verdict
                                         if verdict is None:
                                             raise AssertionError("strictly refused member lost its validation verdict")
                                         detail = (
@@ -3399,13 +3455,27 @@ class RawObservationDerivation(RawObservationInspection):
                             else primary
                         )
 
+                        from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+                        preserve_neutral = isinstance(
+                            primary, (_CarryInvalidatedError, ReferenceSealStaleError)
+                        ) and bool(carry.neutral_artifacts)
+                        failed_artifacts = (
+                            *prepared_artifacts.values(),
+                            *(() if preserve_neutral else carry.neutral_artifacts.values()),
+                            *(item.artifact for item in aggregates.values()),
+                        )
+                        # The original seal retains failed native drains. Transfer
+                        # these physical owners before the outer carry can close them.
+                        prepared_artifacts.clear()
+                        if not preserve_neutral:
+                            carry.neutral_artifacts.clear()
+                            carry.scratch_owner = None
+
                         def close_failed_payload() -> None:
-                            _close_prepared_carriers(
-                                prepared_writes,
-                                membership_plans,
-                                chain(prepared_artifacts.values(), (item.artifact for item in aggregates.values())),
-                            )
-                            _cleanup_scratch(scratch_owner)
+                            _close_prepared_carriers(prepared_writes, membership_plans, failed_artifacts)
+                            if not preserve_neutral:
+                                _cleanup_scratch(scratch_owner)
 
                         # The original seal releases settled SQL dependencies
                         # before invoking this payload, and retains it on any

@@ -600,6 +600,219 @@ def test_duplicate_raws_share_preparation_but_keep_distinct_census(
     _run_raw_law(tmp_path, run_phase)
 
 
+def test_unequal_retained_bytes_do_not_share_preparation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
+        """Equal decoded values do not permit sharing unequal source bytes."""
+
+        worker_calls: list[str] = []
+        from polylogue.sources import revision_backfill
+
+        original_prepare = revision_backfill.prepare_retained_jsonl_artifact
+
+        from polylogue.schemas.runtime_registry import SchemaRegistry
+        from polylogue.sources.prepared_jsonl import PreparedJsonl
+        from polylogue.sources.revision_backfill import RetainedSessionRead
+
+        def counted_prepare(
+            reader: RetainedSessionRead,
+            raw_id: str,
+            *,
+            directory: Path,
+            validation_mode: ValidationMode,
+            schema_registry: SchemaRegistry,
+        ) -> PreparedJsonl:
+            worker_calls.append(raw_id)
+            return original_prepare(
+                reader,
+                raw_id,
+                directory=directory,
+                validation_mode=validation_mode,
+                schema_registry=schema_registry,
+            )
+
+        monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted_prepare)
+
+        bootstrap_archive_root(tmp_path)
+        with _fixture_archive(tmp_path) as archive:
+            raw_ids = tuple(
+                archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=b"[]" if index == 0 else b"[ ]",
+                    source_path="duplicate-component.json",
+                    canonical_source_path="duplicate-component.json",
+                    source_index=index,
+                    acquired_at_ms=1,
+                )
+                for index in range(2)
+            )
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
+        frame = raw_observation_frame(tmp_path)
+        replacement = adapter.compute(frame, raw_ids[0])
+        # The census commits in place during preparation: the shared worker
+        # parse settles both raws, each with its own census row.
+        assert [phase for phase, _receipt in replacement.committed_phase_receipts] == ["census"]
+        assert len(worker_calls) == 2 and set(worker_calls) == set(raw_ids)
+        assert _publish(adapter, frame, replacement)
+        assert adapter.inspect(frame, raw_ids) == dict.fromkeys(raw_ids, "valid")
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            censused = {
+                str(row[0]): str(row[1])
+                for row in conn.execute("SELECT raw_id, status FROM raw_authority_parser_census")
+            }
+        assert censused == dict.fromkeys(raw_ids, "complete")
+
+    _run_raw_law(tmp_path, run_phase)
+
+
+def test_shared_session_carrier_keeps_each_raw_validation_coordinate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
+        """Identical bytes need one worker parse while both raw IDs reach authority."""
+
+        worker_calls: list[str] = []
+        from polylogue.sources import revision_backfill
+
+        original_prepare = revision_backfill.prepare_retained_jsonl_artifact
+
+        from polylogue.schemas.runtime_registry import SchemaRegistry
+        from polylogue.sources.prepared_jsonl import PreparedJsonl
+        from polylogue.sources.revision_backfill import RetainedSessionRead
+
+        def counted_prepare(
+            reader: RetainedSessionRead,
+            raw_id: str,
+            *,
+            directory: Path,
+            validation_mode: ValidationMode,
+            schema_registry: SchemaRegistry,
+        ) -> PreparedJsonl:
+            worker_calls.append(raw_id)
+            return original_prepare(
+                reader,
+                raw_id,
+                directory=directory,
+                validation_mode=validation_mode,
+                schema_registry=schema_registry,
+            )
+
+        monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted_prepare)
+
+        bootstrap_archive_root(tmp_path)
+        with _fixture_archive(tmp_path) as archive:
+            raw_ids = tuple(
+                archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=_chatgpt_payload(("duplicate-session",)),
+                    source_path="duplicate-component.json",
+                    canonical_source_path="duplicate-component.json",
+                    source_index=index,
+                    acquired_at_ms=1,
+                )
+                for index in range(2)
+            )
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
+        frame = raw_observation_frame(tmp_path)
+        replacement = adapter.compute(frame, raw_ids[0])
+        # The census commits in place during preparation: the shared worker
+        # parse settles both raws, each with its own census row.
+        assert replacement.committed_phase_receipts[0][0] == "census"
+        assert len(worker_calls) == 1 and worker_calls[0] in raw_ids
+        assert replacement.prepared_inputs is not None
+        inputs = replacement.prepared_inputs
+        assert set(inputs) == set(raw_ids)
+        assert len({id(item.prepared_artifact) for item in inputs.values()}) == 1
+        for raw_id, item in inputs.items():
+            assert item.validation_verdict is not None
+            assert item.validation_verdict.raw_id == raw_id
+            assert item.validation_verdict.evidence_id == raw_id
+        assert _publish(adapter, frame, replacement)
+        assert adapter.inspect(frame, raw_ids) == dict.fromkeys(raw_ids, "valid")
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            censused = {
+                str(row[0]): str(row[1])
+                for row in conn.execute("SELECT raw_id, status FROM raw_authority_parser_census")
+            }
+        assert censused == dict.fromkeys(raw_ids, "complete")
+
+    _run_raw_law(tmp_path, run_phase)
+
+
+@pytest.mark.parametrize("cancel_at", ["duplicate_validation", "worker_return"])
+def test_cancelled_duplicate_validation_discards_the_shared_carrier_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_at: str
+) -> None:
+    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
+        from polylogue import schemas
+        from polylogue.core.compute import DaemonOperationCancelled
+        from polylogue.sources import revision_backfill
+        from polylogue.sources.prepared_jsonl import PreparedJsonl
+        from polylogue.storage.derived import raw as raw_derivation
+
+        bootstrap_archive_root(tmp_path)
+        with _fixture_archive(tmp_path) as archive:
+            raw_ids = tuple(
+                archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=_chatgpt_payload(("cancel-shared-session",)),
+                    source_path="cancel-shared.json",
+                    canonical_source_path="cancel-shared.json",
+                    source_index=index,
+                    acquired_at_ms=1,
+                )
+                for index in range(2)
+            )
+        prepared: list[PreparedJsonl] = []
+        discarded: list[int] = []
+        validations: list[str] = []
+        original_prepare = revision_backfill.prepare_retained_jsonl_artifact
+        original_validate = schemas.validate_retained_document
+        original_discard = PreparedJsonl.discard
+        original_check = raw_derivation.check_compute_cancelled
+
+        def check() -> None:
+            if cancel_at == "worker_return" and prepared:
+                raise DaemonOperationCancelled("cancel shared validation")
+            original_check()
+
+        def discard(artifact: PreparedJsonl) -> None:
+            discarded.append(id(artifact))
+            original_discard(artifact)
+
+        def validate(*args: Any, **kwargs: Any) -> Any:
+            validations.append(kwargs["raw_id"])
+            if cancel_at == "duplicate_validation" and len(validations) == 2:
+                raise DaemonOperationCancelled("cancel shared validation")
+            return original_validate(*args, **kwargs)
+
+        def prepare(*args: Any, **kwargs: Any) -> PreparedJsonl:
+            artifact = original_prepare(*args, **kwargs)
+            prepared.append(artifact)
+            return artifact
+
+        with monkeypatch.context() as patch:
+            patch.setattr(PreparedJsonl, "discard", discard)
+            patch.setattr(raw_derivation, "check_compute_cancelled", check)
+            patch.setattr(schemas, "validate_retained_document", validate)
+            patch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", prepare)
+            adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
+            with pytest.raises(DaemonOperationCancelled, match="cancel shared validation"):
+                adapter.compute(raw_observation_frame(tmp_path), raw_ids[0])
+        assert len(prepared) == 1
+        assert len(validations) == (2 if cancel_at == "duplicate_validation" else 1)
+        assert set(validations) <= set(raw_ids)
+        assert discarded.count(id(prepared[0])) == 1
+        assert prepared[0].sessions_path is not None and not prepared[0].sessions_path.exists()
+        assert prepared[0].shard_path is not None and not prepared[0].shard_path.exists()
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert (
+                conn.execute("SELECT count(*) FROM raw_authority_parser_census WHERE status='complete'").fetchone()[0]
+                == 0
+            )
+
+    _run_raw_law(tmp_path, run_phase)
+
+
 def test_current_parser_census_still_records_missing_validation_policy(tmp_path: Path) -> None:
     def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
         """A current parser receipt cannot stand in for a raw's validation receipt."""

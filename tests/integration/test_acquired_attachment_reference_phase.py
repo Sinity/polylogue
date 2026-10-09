@@ -88,6 +88,7 @@ async def test_one_original_attachment_claim_retains_two_acquired_raw_references
                         raw_authority_parser_fingerprint(),
                         None,
                         binding,
+                        validation_verdict=artifact.validation_verdict,
                         prepared_artifact=artifact,
                     )
                     for raw_id in raw_ids

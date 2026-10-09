@@ -472,6 +472,7 @@ class PreparedRetainedInput:
     parser_fingerprint: str
     fallback_timestamp: str | None
     verified_blob_stat: tuple[int, int, int, int, int]
+    validation_verdict: RetainedValidationVerdict | None
     parser_error: str | None = None
     #: Which decode boundary refused the bytes when ``parser_error`` is a
     #: decode refusal; the census turns that into a terminal outcome.
@@ -3889,7 +3890,8 @@ def prepare_revision_source_census(
             and stream.classification.parse_as_session
             and not stream.classification.schema_eligible
             and artifact is not None
-            and artifact.validation_verdict is None
+            and prepared is not None
+            and prepared.validation_verdict is None
             and schema_validation_required
         ):
             # An old parser receipt omitted the native grammar's captured
@@ -3959,7 +3961,7 @@ def prepare_revision_source_census(
             state.transient_non_session_raw_ids.add(raw_id)
             return True
 
-        verdict = artifact.validation_verdict
+        verdict = prepared.validation_verdict if prepared is not None else None
         if verdict is None:
             if schema_validation_required:
                 raise RetainedPreparationRetryableError(
@@ -4088,7 +4090,7 @@ def prepare_revision_source_census(
         sessions, _payload_bytes, _parsed_kind = outcome
         prepared = prepared_inputs.get(raw_id)
         artifact = prepared.prepared_artifact if prepared is not None else None
-        verdict = artifact.validation_verdict if artifact is not None else None
+        verdict = prepared.validation_verdict if prepared is not None else None
         stream = artifact.stream_classification() if artifact is not None else None
         if verdict is not None and artifact is not None:
             if (
@@ -4684,8 +4686,7 @@ def prepare_retained_replay_source(
             marker_sessions_by_raw.setdefault(raw_id, set()).add(session_id)
 
         def stage_accepted_marker_history(raw_id: str, selected_session_ids: set[str]) -> None:
-            artifact = prepared_inputs[raw_id].prepared_artifact
-            verdict = artifact.validation_verdict if artifact is not None else None
+            verdict = prepared_inputs[raw_id].validation_verdict
             if verdict is not None and verdict.strict_refusal:
                 return
             request_sessions = request_sessions_for(raw_id)
@@ -5242,6 +5243,7 @@ class SourceRawOutcomeProducer(SourceArtifactProducer, SourceRawStateProducer, P
 
 
 if TYPE_CHECKING:
+    from polylogue.schemas.retained_validation import RetainedValidationVerdict
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead

@@ -49,6 +49,13 @@ and historical package selection stay on one coherent snapshot, and cancellation
 is checked before and after the snapshot reads. Explicit cache clearing remains
 available to ordinary registry callers.
 
+Ordinary retained JSON preparations share one physical carrier only when their
+bytes, source path and fallback identity, profile, timestamp, append identity,
+ZIP coordinate, sidecar inputs, and validation mode agree. Each raw retains its
+own validation verdict and complete census/publication coordinates; reuse still
+validates that raw against current schema declarations. Codex state and UNKNOWN
+inputs keep per-raw preparation because they can own mutable state projections.
+
 Retained schema validation owns reducer tables once per spill connection and
 reuses each selected-schema validator across its complete record scan. Lazy
 normalized objects and arrays consume the original ordered cursors, checking
