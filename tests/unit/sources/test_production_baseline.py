@@ -136,7 +136,7 @@ def test_descriptor_exhaustion_baseline_fault_retries_and_preserves_prior_revisi
 
     original_revision = production_baseline._revision
 
-    def exhaust_descriptors(path: Path, **kwargs: object) -> tuple[str, int]:
+    def exhaust_descriptors(path: Path, **kwargs: Any) -> tuple[str, int]:
         if path == second:
             raise OSError(fault_errno, "descriptor table exhausted")
         return original_revision(path, **kwargs)
