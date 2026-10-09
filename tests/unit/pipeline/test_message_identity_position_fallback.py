@@ -117,7 +117,7 @@ def test_timestamped_idless_sibling_edit_is_not_a_membership_conflict() -> None:
     assert _relation(older_projection, edited_projection) == "equal"
 
 
-def test_whitespace_native_id_uses_the_same_revision_axis_as_missing_id() -> None:
+def test_whitespace_native_id_uses_a_distinct_revision_axis_from_missing_id() -> None:
     whitespace = _session(
         [ParsedMessage(provider_message_id="  ", role=Role.ASSISTANT, text="same", timestamp="2024-01-01")]
     )
@@ -125,7 +125,7 @@ def test_whitespace_native_id_uses_the_same_revision_axis_as_missing_id() -> Non
 
     assert (
         session_revision_projection(whitespace).message_contents
-        == session_revision_projection(missing).message_contents
+        != session_revision_projection(missing).message_contents
     )
 
 
