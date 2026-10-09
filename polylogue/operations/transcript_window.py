@@ -84,6 +84,7 @@ class TranscriptWindow(Generic[RowT]):
     lineage_complete: bool
     lineage_truncation_reason: str | None
     transaction: QueryTransactionRequest
+    session_id: str | None = None
 
     @property
     def complete(self) -> bool:
@@ -102,7 +103,7 @@ class TranscriptWindow(Generic[RowT]):
 #: session total plus the lineage-completeness signal out. Two production
 #: readers exist and they answer with different row types on purpose (see the
 #: module docstring); neither decides the window.
-Reader = Callable[[int, int], Awaitable[tuple[list[Any], int, Any]]]
+Reader = Callable[[str, int, int], Awaitable[tuple[list[Any], int, Any]]]
 SyncReader = Callable[[int, int], tuple[list[Any], int, Any]]
 
 
@@ -237,6 +238,7 @@ async def read_transcript_window(
     request: SessionRead,
     *,
     read: Reader,
+    index_path: Path | None = None,
 ) -> TranscriptWindow[Any]:
     """Answer one transcript window through the single bound execution route.
 
@@ -248,19 +250,26 @@ async def read_transcript_window(
 
     request, transaction = frame_request(request)
 
-    async def bind(current: QueryTransactionRequest) -> QueryTransactionRequest:
-        return await QueryTransaction(archive_root, current).run(lambda archive: bind_snapshot(archive, current))
+    def initial_frame(archive: Any) -> tuple[QueryTransactionRequest, str]:
+        from polylogue.core.errors import SessionNotFoundError
 
-    framed = await bind(transaction)
-    rows, total, completeness = await read(framed.page_size, framed.offset)
-    await bind(framed)
+        framed = bind_snapshot(archive, transaction)
+        ref = request.ref.removeprefix("session:")
+        try:
+            session_id = archive.resolve_session_id(ref)
+        except KeyError as exc:
+            raise SessionNotFoundError(ref) from exc
+        return framed, session_id
+
+    framed, session_id = await QueryTransaction(archive_root, transaction).run(initial_frame, index_path=index_path)
+    rows, total, completeness = await read(session_id, framed.page_size, framed.offset)
+    await QueryTransaction(archive_root, framed).run(
+        lambda archive: bind_snapshot(archive, framed), index_path=index_path
+    )
     complete, reason = _completeness(completeness)
-    return window_result(
-        list(rows),
-        total,
-        framed,
-        lineage_complete=complete,
-        lineage_truncation_reason=reason,
+    return replace(
+        window_result(list(rows), total, framed, lineage_complete=complete, lineage_truncation_reason=reason),
+        session_id=session_id,
     )
 
 
@@ -367,13 +376,12 @@ async def message_transcript_window(
                     ),
                 )
 
-            return read_transcript_window_sync(archive, anchored, read=read_page)
+            return replace(read_transcript_window_sync(archive, anchored, read=read_page), session_id=session_id)
 
         return await QueryTransaction(active_root, transaction).run(anchored_window, index_path=active_db)
 
     submitted = request
     request, _transaction = frame_request(submitted)
-    session_id = request.ref.removeprefix("session:")
 
     async def storage_page(resolved_session_id: str, limit: int, offset: int) -> tuple[list[Any], int, Any]:
         # The one bounded storage read of the transcript window; every branch
@@ -387,8 +395,7 @@ async def message_transcript_window(
         )
         return list(messages), total, completeness
 
-    async def read(limit: int, offset: int) -> tuple[list[Any], int, Any]:
-        resolved_session_id = await api.repository.resolve_id(session_id) or session_id
+    async def read(resolved_session_id: str, limit: int, offset: int) -> tuple[list[Any], int, Any]:
         projecting = content_projection is not None and content_projection.filters_content()
         if projecting or request.material_origin:
             # Filters the SQL page cannot apply (a content projection, a
@@ -405,10 +412,6 @@ async def message_transcript_window(
             completeness = None
             while True:
                 raw, raw_total, completeness = await storage_page(resolved_session_id, page_size, raw_offset)
-                if raw_offset == 0 and raw_total == 0 and await api.repository.resolve_id(session_id) is None:
-                    from polylogue.core.errors import SessionNotFoundError
-
-                    raise SessionNotFoundError(session_id)
                 for message in stream.project_page(raw) if stream is not None else raw:
                     if request.material_origin and message.material_origin not in request.material_origin:
                         continue
@@ -426,13 +429,9 @@ async def message_transcript_window(
                     break
             return window, total, completeness
         messages, total, completeness = await storage_page(resolved_session_id, limit, offset)
-        if total == 0 and resolved_session_id == session_id and await api.repository.resolve_id(session_id) is None:
-            from polylogue.core.errors import SessionNotFoundError
-
-            raise SessionNotFoundError(session_id)
         return messages, total, completeness
 
-    return await read_transcript_window(active_root, submitted, read=read)
+    return await read_transcript_window(active_root, submitted, read=read, index_path=active_db)
 
 
 def window_request(

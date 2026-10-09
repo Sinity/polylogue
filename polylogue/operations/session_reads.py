@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +19,9 @@ from polylogue.archive.query.transaction import (
     archive_snapshot_epoch,
     validate_continuation_epoch,
 )
+from polylogue.core.errors import SessionNotFoundError
 from polylogue.core.tool_identity import sql_coalesced_json_extract
+from polylogue.operations.query_scope import resolved_scope_spec
 from polylogue.operations.session_contracts import (
     Coverage,
     RawContent,
@@ -160,7 +163,6 @@ async def session_query(archive_root: Path, request: SessionList | SessionSearch
                 },
             },
         )
-    filters = plan_filter_kwargs(plan)
     text = " ".join((*spec.query_terms, *spec.contains_terms)).strip()
 
     if isinstance(request, SessionSearch) and not text:
@@ -168,6 +170,10 @@ async def session_query(archive_root: Path, request: SessionList | SessionSearch
 
     def read(archive: Any) -> SessionPage[Any]:
         framed = _frame(archive, tx)
+        resolved_spec = spec
+        with suppress(SessionNotFoundError):
+            resolved_spec = resolved_scope_spec(spec, archive=archive)
+        filters = plan_filter_kwargs(replace(plan, session_id=resolved_spec.session_id))
         if text:
             from polylogue.surfaces.payloads import (
                 SessionSearchHitPayload,
@@ -177,12 +183,18 @@ async def session_query(archive_root: Path, request: SessionList | SessionSearch
                 reader_message_actions,
             )
 
-            total = archive.count_search_sessions(text, **filters)
+            total = archive.count_search_sessions(text, actions_only=spec.retrieval_lane == "actions", **filters)
             distinct: dict[str, Any] = {}
             raw_offset = 0
             while len(distinct) < min(total, request.offset + request.limit):
                 hits = archive.search_summaries(
-                    text, limit=250, offset=raw_offset, sort=spec.sort, reverse=spec.reverse, **filters
+                    text,
+                    limit=250,
+                    offset=raw_offset,
+                    sort=spec.sort,
+                    reverse=spec.reverse,
+                    actions_only=spec.retrieval_lane == "actions",
+                    **filters,
                 )
                 if not hits:
                     break
@@ -200,7 +212,7 @@ async def session_query(archive_root: Path, request: SessionList | SessionSearch
                         ),
                         match=SessionSearchMatchPayload(
                             rank=hit.rank,
-                            retrieval_lane="dialogue",
+                            retrieval_lane="actions" if spec.retrieval_lane == "actions" else "dialogue",
                             match_surface="message",
                             target_ref=TargetRefPayload.message(session_id=hit.session_id, message_id=hit.message_id),
                             anchor=reader_anchor("message", hit.message_id),
@@ -572,8 +584,9 @@ async def execute_session_operation(api: Any, request: SessionOperation, *, raw_
         # (polylogue-ijbwq): this operation owns the *projection* onto the
         # session-owner page, not the window arithmetic, snapshot binding or
         # continuation token, which every public surface now shares.
-        session_id = request.ref.removeprefix("session:")
         window = await message_transcript_window(api, request)
+        session_id = window.session_id
+        assert session_id is not None
         return _page(
             [message_row_envelope_from_domain(message, session_id=session_id) for message in window.rows],
             window.total,

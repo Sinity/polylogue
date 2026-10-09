@@ -49,7 +49,7 @@ def test_session_list_defaults_to_the_shared_surface_page_size() -> None:
     assert SessionList().limit == DEFAULT_SESSION_LIST_LIMIT
 
 
-def _seed(root: Path, count: int = 5) -> list[str]:
+def _seed(root: Path, count: int = 5, *, native_suffix: str = "") -> list[str]:
     """Seed sessions that differ in date and message count, so order and filters bite."""
 
     ids: list[str] = []
@@ -60,7 +60,7 @@ def _seed(root: Path, count: int = 5) -> list[str]:
                     archive,
                     ParsedSession(
                         source_name=Provider.CODEX,
-                        provider_session_id=f"equivalence-{index}",
+                        provider_session_id=f"equivalence-{index}{native_suffix}",
                         title=f"Session {index}",
                         messages=[
                             ParsedMessage(
@@ -403,3 +403,116 @@ async def test_transcript_windows_agree_across_the_generic_and_owner_read_routes
     assert [len(ids) for ids, *_ in owner_pages] == [2, 2, 1]
     walked = [message_id for ids, *_ in owner_pages for message_id in ids]
     assert len(walked) == len(set(walked)) == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference", ["equivalence-4", "codex-session:equivalence-4", "session:codex-session:equivalence-4"]
+)
+async def test_explicit_session_scope_resolves_on_both_routes(tmp_path: Path, reference: str) -> None:
+    """Removing the shared resolver from typed query sends a literal outer namespace to SQL."""
+    root = tmp_path / "archive"
+    seeded = run_off_event_loop(lambda: _seed(root, native_suffix="-full"))
+    owner = await _owner_list(root, expression=f"id:{reference}")
+    generic = _generic_list(root, query=f"id:{reference}")
+    assert owner == generic
+    assert owner[0] == [seeded[4]]
+
+
+@pytest.mark.asyncio
+async def test_unique_prefix_read_preserves_full_identity_on_resume(tmp_path: Path) -> None:
+    """Projection must use the resolved window identity on every page."""
+    root = tmp_path / "archive"
+    seeded = run_off_event_loop(lambda: _seed(root, native_suffix="-full"))
+    reference = "session:codex-session:equivalence-4"
+    async with Polylogue(archive_root=root) as api:
+        first = await execute_session_operation(api, SessionRead(ref=reference, limit=1))
+        assert first.continuation
+        second = await execute_session_operation(api, SessionRead(ref=reference, continuation=first.continuation))
+    assert first.items[0].session_id == second.items[0].session_id == seeded[4]
+    assert second.offset == 1
+    assert first.items[0].id != second.items[0].id
+
+
+@pytest.mark.asyncio
+async def test_action_lane_excludes_dialogue_and_reports_its_lane(tmp_path: Path) -> None:
+    """Dropping actions_only admits the dialogue control and inflates total."""
+    root = tmp_path / "archive"
+
+    def seed_actions() -> str:
+        ids: dict[str, str] = {}
+        with ArchiveStore(root) as archive:
+            for name, block in (
+                ("dialogue", ParsedContentBlock(type=BlockType.TEXT, text="needle")),
+                (
+                    "action",
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE, tool_id="call-1", tool_name="run", tool_input={"command": "needle"}
+                    ),
+                ),
+            ):
+                ids[name] = write_index_session(
+                    archive,
+                    ParsedSession(
+                        source_name=Provider.CODEX,
+                        provider_session_id=name,
+                        messages=[
+                            ParsedMessage(
+                                provider_message_id="m1",
+                                role=Role.ASSISTANT,
+                                timestamp="2026-02-01T12:00:00Z",
+                                blocks=[block],
+                            )
+                        ],
+                    ),
+                )
+            return ids["action"]
+
+    action = run_off_event_loop(seed_actions)
+    async with Polylogue(archive_root=root) as api:
+        page = await execute_session_operation(api, SessionSearch(expression="needle lane:actions"))
+        listed = await execute_session_operation(api, SessionList(expression="needle lane:actions"))
+    with open_operation_read(root) as pinned:
+        generic = execute_read_operation(
+            "cli.query", {"params": {"query": "needle lane:actions"}}, archive=pinned.archive, serving_identity="direct"
+        )
+    assert [hit.session.id for hit in page.items] == [action]
+    hits = generic["hits"]
+    assert isinstance(hits, list)
+    assert [hit["session"]["id"] for hit in hits] == [action]
+    assert [item.id for item in listed.items] == [action]
+    assert page.total == listed.total == 1
+    assert generic["total"] is None  # Ranked action envelopes do not declare an exact total.
+    assert page.items[0].match.retrieval_lane == "actions"
+
+
+@pytest.mark.asyncio
+async def test_transcript_epoch_uses_the_explicit_index_path(tmp_path: Path) -> None:
+    """Opening the default root Index for epoch binding refuses a valid explicit Index."""
+    root = tmp_path / "archive"
+    seeded = run_off_event_loop(lambda: _seed(root))
+    selected = root / ".index-generations" / "selected" / "index.db"
+    selected.parent.mkdir(parents=True)
+    (root / "index.db").rename(selected)
+    async with Polylogue(archive_root=root, db_path=selected) as api:
+        first = await execute_session_operation(api, SessionRead(ref=seeded[4], limit=1))
+        assert first.continuation
+        second = await execute_session_operation(api, SessionRead(ref=seeded[4], continuation=first.continuation))
+    assert first.total == second.total == 5
+    assert second.offset == 1
+    assert first.items[0].session_id == second.items[0].session_id == seeded[4]
+    assert not (root / "index.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_missing_and_ambiguous_scopes_keep_the_generic_outcome(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    run_off_event_loop(lambda: _seed(root))
+    assert await _owner_list(root, expression="id:session:missing") == _generic_list(root, query="id:session:missing")
+    with pytest.raises(ValueError, match="ambiguous"):
+        await _owner_list(root, expression="id:session:codex-session:equivalence-")
+    with pytest.raises(ValueError, match="ambiguous"):
+        _generic_list(root, query="id:session:codex-session:equivalence-")
+    async with Polylogue(archive_root=root) as api:
+        with pytest.raises(ValueError, match="ambiguous"):
+            await execute_session_operation(api, SessionRead(ref="session:codex-session:equivalence-"))
