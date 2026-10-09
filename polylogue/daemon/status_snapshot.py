@@ -260,7 +260,9 @@ def browser_capture_runtime_status() -> JSONDocument:
     with _RUNTIME_COMPONENT_LOCK:
         payload = _RUNTIME_COMPONENT_STATE.browser_capture_status
         if payload is not None:
-            return deepcopy(payload)
+            observed = deepcopy(payload)
+            observed["checked_at"] = datetime.now(UTC).isoformat()
+            return observed
     return {
         "active": False,
         "auth_required": None,

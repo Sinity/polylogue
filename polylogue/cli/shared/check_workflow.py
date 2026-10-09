@@ -12,7 +12,7 @@ from polylogue.cli.shared.helpers import load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.daemon.status import daemon_status_payload
+from polylogue.daemon.commands import _live_daemon_status_payload
 from polylogue.readiness import get_readiness, run_runtime_readiness
 from polylogue.schemas.operator.workflow import (
     list_artifact_cohorts,
@@ -144,7 +144,7 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
         result.runtime_report = run_runtime_readiness(config)
 
     if options.check_daemon:
-        result.daemon_report = daemon_status_payload()
+        result.daemon_report = _live_daemon_status_payload(config)
 
     if options.check_blob:
         result.blob_report = _run_blob_store_check(config, full=options.blob_integrity_full)

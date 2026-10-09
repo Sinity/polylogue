@@ -562,10 +562,17 @@ def test_receiver_status_route_exposes_pairing_contract(tmp_path: Path) -> None:
     assert typed.receiver_id.startswith("rx-")
 
 
-def test_browser_capture_status_daemon_cli_json(cli_workspace: dict[str, Path]) -> None:
-    runner = CliRunner()
+def test_browser_capture_status_daemon_cli_json(
+    cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.config import resolve_runtime_config
 
-    result = runner.invoke(daemon_cli, ["browser-capture", "status", "--format", "json"], catch_exceptions=False)
+    with _running_receiver(cli_workspace["archive_root"] / "browser-capture") as (host, port):
+        runtime = resolve_runtime_config(cli_overrides={"browser_capture_host": host, "browser_capture_port": port})
+        monkeypatch.setattr("polylogue.config.resolve_runtime_config", lambda: runtime)
+        result = CliRunner().invoke(
+            daemon_cli, ["browser-capture", "status", "--format", "json"], catch_exceptions=False
+        )
 
     assert result.exit_code == 0
     payload = json.loads(result.output)

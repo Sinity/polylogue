@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.config import load_polylogue_config
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon import commands as daemon_commands
 from polylogue.daemon.services import ServiceCapability, ServiceState
@@ -34,7 +35,7 @@ def test_live_probe_reads_the_running_daemon_over_its_socket(
     socket. Anti-vacuity: the previous HTTP probe sent no bearer, every
     running daemon refused it, and the probe returned ``None``."""
     with cli_daemon_archive(tmp_path / "archive", monkeypatch, home=tmp_path / "home"):
-        payload = daemon_commands._live_daemon_status_payload()
+        payload = daemon_commands._live_daemon_status_payload(load_polylogue_config())
     assert payload is not None
     assert "total_sessions" in payload
 
@@ -44,7 +45,7 @@ def test_live_probe_without_a_daemon_reports_typed_absence(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """An absent resident has no in-process substitute view."""
-    payload = daemon_commands._live_daemon_status_payload()
+    payload = daemon_commands._live_daemon_status_payload(load_polylogue_config())
     assert payload["ok"] is False
     assert payload["daemon_liveness"] is False
     snapshot = payload["status_snapshot"]
@@ -64,7 +65,7 @@ def test_live_probe_reports_a_daemon_that_fails_the_request(
         "polylogue.cli.operation_kernel.dispatch",
         side_effect=OperationFailedError("unauthorized", "machine authentication required"),
     ):
-        payload = daemon_commands._live_daemon_status_payload()
+        payload = daemon_commands._live_daemon_status_payload(load_polylogue_config())
     assert payload["ok"] is False
     snapshot = payload["status_snapshot"]
     assert isinstance(snapshot, dict)

@@ -94,8 +94,9 @@ uses this endpoint as an invariant check: a receiver that says `captured: true`
 without raw/index/message evidence is considered broken, not merely stale.
 
 Inspect the running receiver's observed policy through the daemon with
-`polylogued browser-capture status`, `polylogued status`, or `polylogue ops
-doctor --daemon`. These routes report the bound server's resolved authentication,
+`polylogued status` or `polylogue ops doctor --daemon`.
+`polylogued browser-capture status` reads the configured receiver directly, including
+standalone `browser-capture serve`, using existing credentials without minting or rotation. These routes report the bound server's resolved authentication,
 allowed origins and remote policy. Before bind or after shutdown, policy remains
 unknown rather than being inferred from defaults. Status never includes bearer
 token values.

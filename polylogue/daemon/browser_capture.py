@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import mimetypes
 import os
 import shutil
@@ -10,6 +11,7 @@ import tempfile
 from contextlib import nullcontext
 from pathlib import Path
 from typing import get_args
+from urllib.parse import urlparse
 
 import click
 from pydantic import ValidationError
@@ -26,6 +28,7 @@ from polylogue.browser_capture.models import (
     BrowserActionProvider,
     BrowserActionRequest,
     BrowserActionTarget,
+    BrowserCaptureReceiverStatusPayload,
 )
 from polylogue.browser_capture.native_host import install_native_host
 from polylogue.browser_capture.pairing import (
@@ -35,6 +38,7 @@ from polylogue.browser_capture.pairing import (
 from polylogue.browser_capture.receiver import (
     BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV,
     BrowserCaptureReceiverConfig,
+    _is_trusted_token_file,
     load_or_mint_receiver_token,
     receiver_identity,
     resolve_receiver_auth_token,
@@ -48,19 +52,52 @@ def browser_capture_command() -> None:
     """Run and inspect the browser-capture receiver."""
 
 
+def _observed_receiver_status() -> dict[str, object]:
+    """Read the configured standalone or daemon receiver without minting credentials."""
+    from polylogue.browser_capture.native_host import _authenticate_receiver
+    from polylogue.config import resolve_runtime_config
+    from polylogue.paths import browser_capture_receiver_identity_path, browser_capture_receiver_token_path
+
+    config = resolve_runtime_config().settings
+    host, port = config.browser_capture_host, config.browser_capture_port
+
+    def request(headers: dict[str, str]) -> tuple[int, bytes]:
+        connection = http.client.HTTPConnection(host, port, timeout=None)
+        try:
+            connection.request("GET", "/v1/status", headers=headers)
+            response = connection.getresponse()
+            return response.status, response.read()
+        except (OSError, http.client.HTTPException) as exc:
+            raise click.ClickException("receiver_unreachable") from exc
+        finally:
+            connection.close()
+
+    status, body = request({})
+    if status == 401:
+        token = config.browser_capture_auth_token
+        token_path = browser_capture_receiver_token_path()
+        if token is None and _is_trusted_token_file(token_path):
+            token = token_path.read_text().strip() or None
+        if token is None:
+            raise click.ClickException("receiver_credential_unavailable")
+        identity_path = browser_capture_receiver_identity_path()
+        if not identity_path.is_file():
+            raise click.ClickException("receiver_identity_unavailable")
+        endpoint = urlparse(f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}")
+        refusal = _authenticate_receiver(endpoint, identity_path.read_text().strip(), token)
+        if refusal is not None:
+            raise click.ClickException(refusal)
+        status, body = request({"Authorization": "Bearer " + token})
+    if status != 200:
+        raise click.ClickException(f"receiver_status_refused_{status}")
+    return BrowserCaptureReceiverStatusPayload.model_validate_json(body).model_dump(mode="json")
+
+
 @browser_capture_command.command("status")
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
 def status_command(output_format: str | None) -> None:
-    """Show the running receiver's observed policy through the daemon."""
-    from polylogue.daemon.commands import _live_daemon_status_payload
-
-    status = _live_daemon_status_payload()
-    observed = status.get("browser_capture")
-    payload = (
-        observed
-        if isinstance(observed, dict)
-        else {"active": False, "state": "unavailable", "reason": "receiver_not_observed"}
-    )
+    """Show the bound standalone or daemon receiver's observed policy."""
+    payload = _observed_receiver_status()
     if output_format == "json":
         click.echo(dumps(payload))
         return
@@ -69,6 +106,11 @@ def status_command(output_format: str | None) -> None:
     origins = payload.get("allowed_origins", [])
     origin_text = ", ".join(str(item) for item in origins) if isinstance(origins, list) else str(origins)
     click.echo(f"Allowed origins: {origin_text}")
+    from polylogue.core.json import json_document
+    from polylogue.daemon.status import format_browser_capture_policy_lines
+
+    for line in format_browser_capture_policy_lines(json_document(payload)):
+        click.echo(line)
 
 
 @browser_capture_command.command("serve")

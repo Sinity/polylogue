@@ -3424,6 +3424,15 @@ def _failing_periodic_loops(loops: object) -> list[dict[str, object]]:
     return [loop for loop in loops if isinstance(loop, dict) and loop.get("last_run_failed") is True]
 
 
+def format_browser_capture_policy_lines(payload: JSONDocument) -> list[str]:
+    """Render observed receiver policy with explicit unknown values."""
+    auth = payload.get("auth_required")
+    remote = payload.get("allow_remote")
+    auth_state = "required" if auth is True else "disabled" if auth is False else "unknown"
+    remote_state = "allowed" if remote is True else "disabled" if remote is False else "unknown"
+    return [f"Browser capture authentication: {auth_state}", f"Browser capture remote access: {remote_state}"]
+
+
 def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     """Render daemon component status as plain text lines."""
     lines = ["Polylogue daemon"]
@@ -3564,6 +3573,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         origins = browser_capture.get("allowed_origins", [])
         origin_text = ", ".join(str(item) for item in origins) if isinstance(origins, list) else str(origins)
         lines.append(f"Browser capture origins: {origin_text}")
+        lines.extend(format_browser_capture_policy_lines(json_document(browser_capture)))
     failing_files = payload.get("failing_files")
     live_cursor = payload.get("live_cursor")
     if isinstance(live_cursor, dict) and live_cursor.get("available") is False:
