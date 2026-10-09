@@ -199,3 +199,36 @@ def test_a_scalar_sidecar_root_carries_no_dispatch_identity(
     finally:
         conn.close()
     assert tool_ids == set()
+
+
+def test_retained_sidecar_exact_long_identity_ignores_large_integer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: object
+) -> None:
+    del frozen_clock
+    from polylogue.schemas import observation_spill
+    from polylogue.schemas.observation_spill import _ScalarTokenStore
+
+    identity = "toolu_" + "x" * 9000
+    payload = b'{"toolUseId":"' + identity.encode() + b'","ignored":' + b"9" * 65537 + b"}"
+    digest = "ef" * 32
+    conn = _source_conn(tmp_path)
+    original_read = _ScalarTokenStore.read
+
+    def selected_read(self: _ScalarTokenStore, kind: str, ordinal: int) -> object:
+        row = self.connection.execute(
+            "SELECT decoded_bytes FROM json_scalar_tokens WHERE kind=? AND token=?", (kind, ordinal)
+        ).fetchone()
+        assert row[0] < 65537, "ignored integer materialized"
+        return original_read(self, kind, ordinal)
+
+    monkeypatch.setattr(observation_spill._ScalarTokenStore, "read", selected_read)
+    try:
+        path = "/export/parent-1/subagents/agent-exact.meta.json"
+        _insert_sidecar(conn, raw_id="raw-exact", source_path=path, digest=digest, size=len(payload))
+        monkeypatch.setattr(write_mod, "blob_store_for_connection", lambda _conn: _FakeBlobStore({digest: payload}))
+        tool_ids = _sidecar_paths_dispatch_tool_ids(
+            ConnectionSessionSourceRead(conn), origin=_ORIGIN, sidecar_paths={path}, parent_values={"parent-1"}
+        )
+    finally:
+        conn.close()
+    assert tool_ids == {identity}

@@ -1821,114 +1821,6 @@ def test_hermes_jsonl_probe_reads_a_long_record_instead_of_skipping_it(tmp_path:
     assert refused.source_class == "unsupported"
 
 
-def test_top_level_envelopes_keep_root_fields_and_placeholders() -> None:
-    import io
-
-    from polylogue.core.json_envelope import top_level_envelopes
-    from polylogue.sources.origin_specs import _jsonl_signature_envelopes
-
-    fields = frozenset({"session_id", "messages", "meta", "n", "a", "b", "d"})
-    document = b'{"session_id": "s", "messages": [{"role": "user"}], "meta": {"a": 1}, "n": 18446744073709551616}'
-    assert list(top_level_envelopes(io.BytesIO(document), expand_arrays=True, fields=fields)) == [
-        {"session_id": "s", "messages": [], "meta": {}, "n": 18446744073709551616}
-    ]
-    array = b'[{"a": 1, "b": [1, 2]}, 3, [4]]'
-    assert list(top_level_envelopes(io.BytesIO(array), expand_arrays=True, fields=fields)) == [
-        {"a": 1, "b": []},
-        3,
-        [],
-    ]
-    lines = b'{"a": 1}\n\n[1, 2]\n{"b": 2} {"c": 3}\nnot json\n{"d": 4}'
-    assert list(_jsonl_signature_envelopes(io.BytesIO(lines), fields=fields)) == [{"a": 1}, [], {"d": 4}]
-
-
-def test_envelope_keeps_only_declared_root_fields() -> None:
-    """Anti-vacuity: keep every root key again and the undeclared keys appear."""
-    import io
-
-    from polylogue.core.json_envelope import UNDECLARED_FIELDS, top_level_envelopes
-
-    body = ", ".join(f'"k{index}": {index}' for index in range(5000))
-    document = ('{"session_id": "s", ' + body + "}").encode()
-    (envelope,) = top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=frozenset({"session_id"}))
-    assert envelope == {"session_id": "s", UNDECLARED_FIELDS: True}
-    (declared_only,) = top_level_envelopes(
-        io.BytesIO(b'{"session_id": "s"}'), expand_arrays=False, fields=frozenset({"session_id"})
-    )
-    assert declared_only == {"session_id": "s"}
-
-
-def test_skipped_suffix_utf8_and_long_numbers_match_the_decoder() -> None:
-    """Anti-vacuity: drop the suffix UTF-8 check and the invalid byte is admitted;
-    drop the integer guard and the over-long float is refused with the integers."""
-    import io
-
-    import ijson
-    import pytest
-
-    from polylogue.core.json_envelope import UNDECLARED_FIELDS, top_level_envelopes
-    from polylogue.sources.origin_specs import _jsonl_signature_envelopes
-
-    fields = frozenset({"atof_version"})
-    invalid_utf8 = b'{"atof_version": "0.1", "padding": "' + b"x" * (200 * 1024) + b'\xff"}'
-    with pytest.raises((ijson.JSONError, UnicodeDecodeError)):
-        list(top_level_envelopes(io.BytesIO(invalid_utf8), expand_arrays=False, fields=fields))
-    long_float = b'{"atof_version": "0.1", "n": ' + b"9" * 4301 + b".0}"
-    assert list(_jsonl_signature_envelopes(io.BytesIO(long_float), fields=fields)) == [
-        {"atof_version": "0.1", UNDECLARED_FIELDS: True}
-    ]
-    huge_fraction = b'{"atof_version": "0.1", "n": 0.' + b"1" * (1024 * 1024) + b"}"
-    (envelope,) = top_level_envelopes(io.BytesIO(huge_fraction), expand_arrays=False, fields=fields)
-    assert envelope == {"atof_version": "0.1", UNDECLARED_FIELDS: True}
-
-
-def test_a_malformed_long_number_stays_malformed() -> None:
-    """A long token replaced by a placeholder must still be a valid JSON number.
-
-    Anti-vacuity: drop the grammar check in ``_end_number`` and ``1.1.1...``
-    beyond the exact-view bound becomes ``0.0``, so the envelope is admitted
-    while the decoder rejects the document.
-    """
-    import io
-
-    import ijson
-    import pytest
-
-    from polylogue.core.json_envelope import top_level_envelopes
-
-    fields = frozenset({"atof_version"})
-    malformed = b'{"atof_version": "0.1", "padding": ' + b"1.1" * 4000 + b"}"
-    with pytest.raises((ijson.JSONError, ValueError)):
-        list(top_level_envelopes(io.BytesIO(malformed), expand_arrays=False, fields=fields))
-    valid = b'{"atof_version": "0.1", "padding": -0.' + b"1" * 10_000 + b"e+12}"
-    (envelope,) = top_level_envelopes(io.BytesIO(valid), expand_arrays=False, fields=fields)
-    assert isinstance(envelope, dict) and envelope["atof_version"] == "0.1"
-
-
-def test_decoder_valid_exponent_beyond_decimal_range_keeps_the_document_readable() -> None:
-    """The JSON decoder reads ``1e99999999999999999999`` as an overflowing
-    float; ``Decimal`` refuses that exponent.
-
-    Anti-vacuity: pass the token exactly and ijson raises
-    ``decimal.InvalidOperation``, so no envelope is produced.
-    """
-    import io
-
-    import ijson
-    import pytest
-
-    from polylogue.core.json_envelope import top_level_envelopes
-
-    fields = frozenset({"atof_version"})
-    for token in (b"1e99999999999999999999", b"-2.5E-000123456789012345678901"):
-        document = b'{"atof_version": "0.1", "n": ' + token + b"}"
-        json.loads(document)
-        (envelope,) = top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=fields)
-        assert isinstance(envelope, dict) and envelope["atof_version"] == "0.1"
-    with pytest.raises(ijson.JSONError):
-        list(top_level_envelopes(io.BytesIO(b'{"n": 1e+99999999999999999999.}'), expand_arrays=False, fields=fields))
-
-
 def test_hermes_jsonl_first_line_byte_order_mark_is_stripped_as_the_decoder_strips_it(tmp_path: Path) -> None:
     """The JSONL decoder strips a BOM from the first line and keeps that record.
 
@@ -1947,46 +1839,6 @@ def test_hermes_jsonl_first_line_byte_order_mark_is_stripped_as_the_decoder_stri
     pure_recognition = recognize_source_class(Provider.HERMES, pure)
     assert mixed_recognition is not None and mixed_recognition.source_class == "unsupported"
     assert pure_recognition is not None and pure_recognition.source_class == "session"
-
-
-def test_directly_encoded_surrogates_are_read_as_the_decoder_reads_them(tmp_path: Path) -> None:
-    """The decoder keeps a surrogate code unit encoded as three UTF-8 bytes
-    (``surrogatepass``); other malformed UTF-8 is still refused.
-
-    Anti-vacuity: validate the skipped suffix strictly, or pass the bytes to
-    the tokenizer unchanged, and the ATOF records are dropped, so the file is
-    ``unsupported``. An identity field holding one is refused, never altered.
-    """
-    import io
-
-    import pytest
-
-    from polylogue.core.json_envelope import (
-        EnvelopeValueUnrepresentableError,
-        top_level_envelopes,
-    )
-    from polylogue.sources.origin_specs import recognize_source_class
-
-    surrogate = b"\xed\xa0\x80"
-    suffix = b'{"atof_version": "0.1", "kind": "mark", "uuid": "u", "timestamp": "t", "name": "n", "padding": "'
-    long_record = suffix + b"x" * (200 * 1024) + surrogate + b'"}'
-    short_record = suffix + surrogate + b'"}'
-    path = tmp_path / "surrogates.jsonl"
-    path.write_bytes(long_record + b"\n" + short_record + b"\n")
-    recognition = recognize_source_class(Provider.HERMES, path)
-    assert recognition is not None and recognition.source_class == "session"
-
-    fields = frozenset({"atof_version"})
-    from polylogue.sources.origin_specs import _jsonl_signature_envelopes
-
-    broken = suffix + b"x" * (200 * 1024) + b"\xed\xa0" + b'"}'
-    assert list(_jsonl_signature_envelopes(io.BytesIO(broken), fields=fields)) == []
-
-    identity = frozenset({"toolUseId"})
-    for value in (b"t" + surrogate, b"t" + b"a" * (60 * 1024) + surrogate):
-        document = b'{"toolUseId": "' + value + b'"}'
-        with pytest.raises(EnvelopeValueUnrepresentableError):
-            list(top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=identity, whole_fields=identity))
 
 
 def test_array_document_recognition_samples_the_head_and_validates_the_tail(
@@ -2056,96 +1908,11 @@ def test_hermes_jsonl_recognition_requires_every_record_to_be_atof(tmp_path: Pat
     assert pure_recognition is not None and pure_recognition.source_class == "session"
 
 
-def test_invalid_escape_in_a_skipped_string_suffix_rejects_the_record() -> None:
-    """Anti-vacuity: stop validating the skipped suffix and the record is admitted."""
-    import io
-
-    import ijson
-    import pytest
-
-    from polylogue.core.json_envelope import UNDECLARED_FIELDS, top_level_envelopes
-    from polylogue.sources.origin_specs import _jsonl_signature_envelopes
-
-    long_text = "x" * (200 * 1024) + "\\q" + "y" * 16
-    bad = ('{"atof_version": "0.1", "padding": "' + long_text + '"}').encode()
-    good = b'{"atof_version": "0.2"}'
-    fields = frozenset({"atof_version"})
-    with pytest.raises(ijson.JSONError):
-        list(top_level_envelopes(io.BytesIO(bad), expand_arrays=False, fields=fields))
-    assert list(_jsonl_signature_envelopes(io.BytesIO(bad + b"\n" + good), fields=fields)) == [{"atof_version": "0.2"}]
-    control = ('{"atof_version": "0.1", "padding": "' + "x" * (200 * 1024) + "\x01" + '"}').encode()
-    with pytest.raises(ijson.JSONError):
-        list(top_level_envelopes(io.BytesIO(control), expand_arrays=False, fields=fields))
-    valid = ('{"atof_version": "0.1", "padding": "' + "x" * (200 * 1024) + '\\n\\u00e9\\\\q"}').encode()
-    (envelope,) = top_level_envelopes(io.BytesIO(valid), expand_arrays=False, fields=fields)
-    assert envelope == {"atof_version": "0.1", UNDECLARED_FIELDS: True}
-
-
-def test_declared_identity_field_is_read_whole_or_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity: drop ``whole_fields`` and the long id comes back cut to the prefix."""
-    import io
-
-    import pytest
-
-    import polylogue.core.json_envelope as json_envelope
-
-    tool_id = "toolu_" + "a" * (60 * 1024)
-    document = ('{"toolUseId": "' + tool_id + '", "padding": "' + "p" * (80 * 1024) + '"}').encode()
-    fields = frozenset({"toolUseId"})
-    (envelope,) = json_envelope.top_level_envelopes(
-        io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
-    )
-    assert envelope == {"toolUseId": tool_id, json_envelope.UNDECLARED_FIELDS: True}
-
-    monkeypatch.setattr(json_envelope, "sqlite_value_limit", lambda: 1024)
-    with pytest.raises(json_envelope.EnvelopeValueTooLargeError):
-        list(
-            json_envelope.top_level_envelopes(
-                io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
-            )
-        )
-
-
-def test_identity_size_limit_applies_to_the_decoded_value(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The SQLite limit bounds the stored value, not its escaped wire form.
-
-    Anti-vacuity: compare the raw token length and the escaped identifier,
-    whose decoded value fits, is refused.
-    """
-    import io
-
-    import pytest
-
-    import polylogue.core.json_envelope as json_envelope
-
-    fields = frozenset({"toolUseId"})
-    escaped = "toolu_" + "\\u0061" * 20_000 + "\\ud83d\\ude00" + "\\u00e9\\n"
-    decoded = "toolu_" + "a" * 20_000 + "\U0001f600" + "\u00e9\n"
-    document = ('{"toolUseId": "' + escaped + '"}').encode()
-    size = len(decoded.encode())
-    monkeypatch.setattr(json_envelope, "sqlite_value_limit", lambda: size)
-    (envelope,) = json_envelope.top_level_envelopes(
-        io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
-    )
-    assert envelope == {"toolUseId": decoded}
-    monkeypatch.setattr(json_envelope, "sqlite_value_limit", lambda: size - 1)
-    with pytest.raises(json_envelope.EnvelopeValueTooLargeError):
-        list(
-            json_envelope.top_level_envelopes(
-                io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
-            )
-        )
-
-
 def test_jsonl_integer_observation_has_no_interpreter_digit_cap() -> None:
     """Valid JSONL integers retain their exact value beyond Python's string cap."""
     import io
     from decimal import Decimal
 
-    import ijson
-    import pytest
-
-    from polylogue.core.json_envelope import top_level_envelopes
     from polylogue.sources.origin_specs import _jsonl_signature_envelopes
 
     fields = frozenset({"n", "atof_version"})
@@ -2154,37 +1921,6 @@ def test_jsonl_integer_observation_has_no_interpreter_digit_cap() -> None:
         {"n": int(Decimal("9" * 4301))},
         {"atof_version": "0.1"},
     ]
-    # The independent whole-document envelope tokenizer is still checked at
-    # its current interpreter boundary; JSONL no longer uses that reader.
-    at_limit = b'{"n": ' + b"9" * 4300 + b"}"
-    (envelope,) = top_level_envelopes(io.BytesIO(at_limit), expand_arrays=False, fields=fields)
-    assert isinstance(envelope, dict) and len(str(envelope["n"])) == 4300
-    with pytest.raises(ijson.JSONError):
-        list(top_level_envelopes(io.BytesIO(b"9" * 5000), expand_arrays=False, fields=fields))
-
-
-def test_envelope_keeps_a_prefix_of_a_huge_string_without_holding_it() -> None:
-    """Anti-vacuity: let the tokenizer build the whole string and the traced
-    peak exceeds the string's own size."""
-    import io
-    import tracemalloc
-
-    from polylogue.core.json_envelope import ENVELOPE_TEXT_PREFIX_CHARS, top_level_envelopes
-
-    size = 32 * 1024 * 1024
-    document = b'{"padding": "' + b"\\u00e9" * (size // 6) + b'", "tool_use_id": "toolu_x"}'
-    handle = io.BytesIO(document)
-    tracemalloc.start()
-    try:
-        tracemalloc.reset_peak()
-        (envelope,) = top_level_envelopes(handle, expand_arrays=False, fields=frozenset({"padding", "tool_use_id"}))
-        peak = tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
-    assert isinstance(envelope, dict)
-    assert envelope["tool_use_id"] == "toolu_x"
-    assert envelope["padding"] == "\u00e9" * ENVELOPE_TEXT_PREFIX_CHARS
-    assert peak < size // 4
 
 
 def _reset_closure_caches(module: object) -> None:
@@ -2339,124 +2075,6 @@ def test_jsonl_byte_order_mark_is_stripped_from_the_first_decodable_line(tmp_pat
     assert recognition is not None and recognition.source_class == "unsupported"
 
 
-def test_exact_field_refusal_reads_the_final_duplicate_key(tmp_path: Path) -> None:
-    """Last key wins, as the full decoder reads a duplicated identity field.
-
-    Anti-vacuity: refuse while visiting the discarded first value and the
-    valid final identifier is lost; ignore the final value's substitution and
-    an altered identifier is returned.
-    """
-    import io
-
-    from polylogue.core.json_envelope import EnvelopeValueUnrepresentableError, top_level_envelopes
-
-    fields = frozenset({"toolUseId"})
-    surrogate = b"\xed\xa0\x80"
-    settled = b'{"toolUseId": "t' + surrogate + b'", "toolUseId": "toolu_valid"}'
-    (envelope,) = top_level_envelopes(io.BytesIO(settled), expand_arrays=False, fields=fields, whole_fields=fields)
-    assert envelope == {"toolUseId": "toolu_valid"}
-    unsettled = b'{"toolUseId": "toolu_valid", "toolUseId": "t' + surrogate + b'"}'
-    with pytest.raises(EnvelopeValueUnrepresentableError):
-        list(top_level_envelopes(io.BytesIO(unsettled), expand_arrays=False, fields=fields, whole_fields=fields))
-
-
-def test_non_finite_constants_are_read_as_the_decoder_reads_them(tmp_path: Path) -> None:
-    """``NaN`` and the infinities pass; glued or signed variants stay malformed.
-
-    Anti-vacuity: pass the constants to the tokenizer unchanged and the ATOF
-    record is skipped (``unsupported``); drop the chunk-end carry and the
-    constant split across two reads is rejected.
-    """
-    import io
-    import json as stdlib_json
-
-    from polylogue.core import json_envelope
-    from polylogue.sources.origin_specs import recognize_source_class
-
-    record = _ATOF_RECORD[:-1] + b', "padding": NaN, "low": -Infinity, "high": Infinity}'
-    assert stdlib_json.loads(record)["low"] == float("-inf")
-    path = tmp_path / "events.jsonl"
-    path.write_bytes(record + b"\n")
-    recognition = recognize_source_class(Provider.HERMES, path)
-    assert recognition is not None and recognition.source_class == "session"
-
-    from polylogue.sources.origin_specs import _jsonl_signature_envelopes
-
-    fields = frozenset({"value"})
-    for malformed in (b'{"value": -NaN}', b'{"value": 1NaN}', b'{"value": NaN1}', b'{"value": --Infinity}'):
-        try:
-            stdlib_json.loads(malformed)
-        except ValueError:
-            pass
-        else:  # pragma: no cover - the premise of this case
-            raise AssertionError(malformed)
-        assert list(_jsonl_signature_envelopes(io.BytesIO(malformed), fields=fields)) == []
-
-    head = b'{"pad": "'
-    split = json_envelope._READ_BYTES - 4
-    document = head + b"x" * (split - len(head) - len(b'", "value": ')) + b'", "value": -Infinity}'
-    assert document.index(b"-Infinity") == split
-    (envelope,) = json_envelope.top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=fields)
-    assert envelope["value"] == 0  # type: ignore[index]
-
-
-def test_consumed_tokens_leave_no_per_token_reader_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Substitution and truncation markers are dropped once their token is read.
-
-    Anti-vacuity: keep every ordinal and the reader retains one entry per
-    discarded surrogate-bearing string, growing with the document.
-    """
-    import io
-
-    from polylogue.core import json_envelope
-
-    readers: list[json_envelope._PrefixStringReader] = []
-    real = json_envelope._PrefixStringReader
-
-    def tracked(*args: object, **kwargs: object) -> json_envelope._PrefixStringReader:
-        reader = real(*args, **kwargs)  # type: ignore[arg-type]
-        readers.append(reader)
-        return reader
-
-    monkeypatch.setattr(json_envelope, "_PrefixStringReader", tracked)
-    padding = b",".join([b'"\xed\xa0\x80"'] * 20_000)
-    document = b'{"toolUseId": "toolu_valid", "padding": [' + padding + b"]}"
-    fields = frozenset({"toolUseId"})
-    (envelope,) = json_envelope.top_level_envelopes(
-        io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
-    )
-    assert envelope["toolUseId"] == "toolu_valid"  # type: ignore[index]
-    assert readers and all(len(reader.substituted) <= 1 for reader in readers)
-
-
-def test_exact_fields_settle_on_a_container_duplicate_and_skip_array_roots() -> None:
-    """A container that replaces an exact field clears its refusal; a scalar or
-    array root is answered at its first byte.
-
-    Anti-vacuity: keep the stand-in marker when ``{}`` replaces the field and
-    the valid snake-case fallback is refused with the document; scan an array
-    root to its end and the malformed tail below raises instead of returning
-    the empty placeholder.
-    """
-    import io
-
-    from polylogue.core.json_envelope import top_level_envelopes
-
-    fields = frozenset({"toolUseId", "tool_use_id"})
-    document = b'{"toolUseId": "t\xed\xa0\x80", "toolUseId": {}, "tool_use_id": "toolu_valid"}'
-    (envelope,) = top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields)
-    assert envelope == {"toolUseId": {}, "tool_use_id": "toolu_valid"}
-
-    string_root = b'"' + b"x" * 1024
-    assert list(
-        top_level_envelopes(io.BytesIO(string_root), expand_arrays=False, fields=fields, whole_fields=fields)
-    ) == [None]
-    array_root = b"[1, " + b"x" * 1024
-    assert list(
-        top_level_envelopes(io.BytesIO(array_root), expand_arrays=False, fields=fields, whole_fields=fields)
-    ) == [[]]
-
-
 def test_json_document_recognition_matches_the_record_parser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Recognition drains the complete record stream without a document-size cap.
 
@@ -2520,38 +2138,6 @@ def test_orchestration_identity_with_a_surrogate_is_refused() -> None:
     with pytest.raises(ValueError, match="surrogate"):
         parse_claude_orchestration_artifact(
             "/home/u/.claude/projects/p/s/subagents/workflows/run-1/journal.jsonl", payload
-        )
-
-
-def test_identity_aliases_are_checked_as_the_parser_selects_them() -> None:
-    """Only the alias the parser reads is exact; every identity it reads is.
-
-    Anti-vacuity: refuse any substituted alias and a valid preferred
-    ``toolUseId`` is lost to an ignored ``tool_use_id``; keep only the
-    dispatch aliases exact and a long ``agentId`` with a surrogate past its
-    prefix is accepted here while the full parser refuses it.
-    """
-    import io
-
-    from polylogue.core.json_envelope import EnvelopeValueUnrepresentableError, top_level_envelopes
-    from polylogue.sources.parsers.claude.orchestration import DOCUMENT_READ_FIELDS, IDENTITY_FIELD_GROUPS
-
-    surrogate = b"\xed\xa0\x80"
-    preferred = b'{"toolUseId": "toolu_valid", "tool_use_id": "t' + surrogate + b'"}'
-    (envelope,) = top_level_envelopes(
-        io.BytesIO(preferred), expand_arrays=False, fields=DOCUMENT_READ_FIELDS, identity_groups=IDENTITY_FIELD_GROUPS
-    )
-    assert isinstance(envelope, dict) and envelope["toolUseId"] == "toolu_valid"
-
-    long_agent = b'{"toolUseId": "toolu_valid", "agentId": "' + b"a" * 5000 + surrogate + b'"}'
-    with pytest.raises(EnvelopeValueUnrepresentableError):
-        list(
-            top_level_envelopes(
-                io.BytesIO(long_agent),
-                expand_arrays=False,
-                fields=DOCUMENT_READ_FIELDS,
-                identity_groups=IDENTITY_FIELD_GROUPS,
-            )
         )
 
 

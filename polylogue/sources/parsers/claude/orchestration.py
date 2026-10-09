@@ -90,22 +90,6 @@ _DOCUMENT_FIELDS = frozenset(
 )
 _JOURNAL_FIELDS = _DOCUMENT_FIELDS | frozenset({"type", "event", "key", "ordinal", "retryOf", "retry_of"})
 
-#: Every root field :func:`_document_fact` reads from a document artifact.
-DOCUMENT_READ_FIELDS = _DOCUMENT_FIELDS | frozenset(
-    {
-        "id",
-        "agentId",
-        "agent_id",
-        "sessionId",
-        "session_id",
-        "contentKey",
-        "content_key",
-        "callKey",
-        "call_key",
-        "key",
-    }
-)
-
 
 def _string(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
@@ -238,6 +222,21 @@ def _decode(payload: bytes | str | object, *, jsonl: bool) -> object:
     return json.loads(payload)
 
 
+def _retained_fields(payload: Mapping[str, object], fields: frozenset[str]) -> dict[str, object]:
+    from polylogue.core.json import detach_borrowed_json
+    from polylogue.schemas.observation_spill import SpilledObject
+
+    if isinstance(payload, SpilledObject):
+        retained: dict[str, object] = {}
+        for key, _child in payload.key_entries():
+            name = key.small_name
+            if name in fields:
+                assert name is not None
+                retained[name] = detach_borrowed_json(payload.value_for_key(key))
+        return retained
+    return {key: detach_borrowed_json(payload[key]) for key in payload if key in fields}
+
+
 def _document_fact(kind: str, source_path: str, payload: Mapping[str, object]) -> ClaudeOrchestrationFact:
     fallback_run_id = Path(source_path).stem if kind == "workflow_run_snapshot" else None
     run_id = (
@@ -255,7 +254,7 @@ def _document_fact(kind: str, source_path: str, payload: Mapping[str, object]) -
     if kind == "agent_sidecar_meta":
         agent_id = agent_id or _agent_id_from_path(source_path)
     content_key = _first_string(payload, "contentKey", "content_key", "callKey", "call_key", "key")
-    retained = {key: value for key, value in payload.items() if key in _DOCUMENT_FIELDS}
+    retained = _retained_fields(payload, _DOCUMENT_FIELDS)
     return ClaudeOrchestrationFact(kind, source_path, None, run_id, agent_id, content_key, retained)
 
 
@@ -272,7 +271,7 @@ def _journal_fact(source_path: str, line: int, payload: Mapping[str, object]) ->
     )
     agent_id = _first_string(payload, "agentId", "agent_id", "sessionId", "session_id")
     content_key = _first_string(payload, "contentKey", "content_key", "callKey", "call_key", "key")
-    retained = {key: value for key, value in payload.items() if key in _JOURNAL_FIELDS}
+    retained = _retained_fields(payload, _JOURNAL_FIELDS)
     return ClaudeOrchestrationFact(
         "workflow_journal_entry",
         source_path,
@@ -284,27 +283,7 @@ def _journal_fact(source_path: str, line: int, payload: Mapping[str, object]) ->
     )
 
 
-#: The dispatching tool_use id: the exact join key from a subagent sidecar to
-#: its parent block, so it must never be read as a prefix.
-DISPATCH_IDENTITY_FIELDS = frozenset({"toolUseId", "tool_use_id"})
-
-#: Identity fields the parser reads through aliases, each in the order its
-#: ``_first_string`` picks them. A reader of a document's envelope keeps the
-#: selected alias of each exact, so it accepts and refuses what this parser
-#: accepts and refuses (a surrogate in any of them is refused by name).
-IDENTITY_FIELD_GROUPS: tuple[tuple[str, ...], ...] = (
-    ("runId", "run_id", "workflowRunId", "workflow_run_id", "id"),
-    ("agentId", "agent_id", "sessionId", "session_id"),
-    ("contentKey", "content_key", "callKey", "call_key", "key"),
-    ("attemptId", "attempt_id", "attempt"),
-    ("toolUseId", "tool_use_id"),
-)
-
-
 __all__ = [
-    "DISPATCH_IDENTITY_FIELDS",
-    "IDENTITY_FIELD_GROUPS",
-    "DOCUMENT_READ_FIELDS",
     "ClaudeOrchestrationArtifact",
     "ClaudeOrchestrationFact",
     "parse_claude_orchestration_artifact",

@@ -1,23 +1,11 @@
-"""Root-field envelopes of JSON documents, read without holding the document.
-
-Structural signatures (source-class recognition, sidecar dispatch identity)
-decide from a document's root fields: their presence, type and short leading
-text. :func:`top_level_envelopes` streams a document and keeps exactly the
-root fields its caller declares, so a signature gives the same answer for a
-document of any size or width. No string is materialized beyond a bounded
-prefix, except a declared identity field, which is read whole or refused at
-SQLite's value limit.
-"""
+"""Bounded lexical JSON transport and physical-line grammar helpers."""
 
 from __future__ import annotations
 
 import codecs
 import re
-import sqlite3
-import sys
-from collections.abc import Callable, Iterator
-from functools import cache
-from typing import IO, Protocol, cast
+from collections.abc import Callable
+from typing import IO, Protocol
 
 #: Characters of a top-level string an envelope keeps. The source-class
 #: signatures read only the type and short leading text of root fields.
@@ -68,9 +56,8 @@ _NON_FINITE_PARTIAL = re.compile(rb"(?:-|-?I|-?In|-?Inf|-?Infi|-?Infin|-?Infini|
 #: Marks the end of a number token's integer part.
 _NUMBER_NON_INTEGER = re.compile(rb"[.eE]")
 
-#: Raw bytes of a number token the tokenizer sees exactly; longer tokens are
-#: passed as a placeholder of the same JSON type. It exceeds Python's default
-#: integer conversion limit, so every integer the decoder accepts is exact.
+#: Raw bytes kept by grammar-only transport before using a typed stand-in.
+#: Selected projection readers use exact owned scalar sinks instead.
 _NUMBER_VIEW_BYTES = 8192
 
 #: Significant exponent digits of a number token the tokenizer sees exactly.
@@ -117,44 +104,6 @@ def _number_step(state: int, byte: int) -> int:
     return -1
 
 
-class EnvelopeValueUnrepresentableError(ValueError):
-    """A declared identity field holds a surrogate code unit.
-
-    The tokenizer carries only a stand-in for it, so the exact identifier is
-    unavailable; it is refused by name rather than returned altered.
-    """
-
-    def __init__(self, field: str) -> None:
-        super().__init__(f"root field {field!r} holds a UTF-16 surrogate code unit the tokenizer cannot carry")
-        self.field = field
-
-
-class EnvelopeValueTooLargeError(ValueError):
-    """A declared identity field exceeds SQLite's maximum value length.
-
-    Such a value cannot be stored or joined, so it is refused by name rather
-    than shortened into a different identifier.
-    """
-
-    def __init__(self, field: str, size: int, limit: int) -> None:
-        super().__init__(f"root field {field!r} is {size} bytes, beyond the {limit}-byte SQLite value limit")
-        self.field = field
-        self.size = size
-        self.limit = limit
-
-
-class _TruncatedText(str):
-    """A string field kept as its leading prefix.
-
-    ``decoded_bytes`` is the UTF-8 length of the whole decoded value and
-    ``ordinal`` its position among the document's string tokens, so it can be
-    re-read whole.
-    """
-
-    decoded_bytes: int
-    ordinal: int
-
-
 class _EscapeSavings:
     """Raw bytes a string token's escapes save when decoded to UTF-8.
 
@@ -180,16 +129,6 @@ class _EscapeSavings:
             return
         self.saved += 6 - (1 if unit < 0x80 else 2 if unit < 0x800 else 3)
         self._high_surrogate = 0xD800 <= unit <= 0xDBFF
-
-
-@cache
-def sqlite_value_limit() -> int:
-    """SQLite's maximum value length: the physical bound on one stored value or record."""
-    connection = sqlite3.connect(":memory:")
-    try:
-        return connection.getlimit(sqlite3.SQLITE_LIMIT_LENGTH)
-    finally:
-        connection.close()
 
 
 class _Readable(Protocol):
@@ -240,7 +179,6 @@ class _PrefixStringReader:
         self,
         source: _Readable,
         *,
-        whole_ordinals: frozenset[int] = frozenset(),
         scalar_values: bool = False,
         syntax_only: bool = False,
         string_sink: Callable[[int, bytes, bool], None] | None = None,
@@ -254,7 +192,6 @@ class _PrefixStringReader:
         self._number_ordinal = 0
         self._scalar_values = scalar_values
         self._syntax_only = syntax_only
-        self._whole_ordinals = whole_ordinals
         self._in_string = False
         self._backslashes = 0
         self._string = bytearray()
@@ -281,7 +218,6 @@ class _PrefixStringReader:
         self._number_long = False
         self._number_is_integer = True
         self._number_in_integer_part = True
-        self._number_digits = 0
         self._skip_decoder: codecs.IncrementalDecoder | None = None
         #: Structure bytes held back at a chunk end (see ``_NON_FINITE_PARTIAL``).
         self._structure_carry = b""
@@ -380,7 +316,6 @@ class _PrefixStringReader:
         self._number_long = False
         self._number_is_integer = True
         self._number_in_integer_part = True
-        self._number_digits = 0
         self._number_exponent_digits = 0
         self._number_state = 0
 
@@ -398,8 +333,6 @@ class _PrefixStringReader:
             self._number_state = state
         if self._number_in_integer_part:
             mark = _NUMBER_NON_INTEGER.search(token)
-            integer_part = token if mark is None else token[: mark.start()]
-            self._number_digits += len(integer_part) - len(integer_part.translate(None, b"0123456789"))
             if mark is not None:
                 self._number_in_integer_part = False
                 self._number_is_integer = False
@@ -413,7 +346,6 @@ class _PrefixStringReader:
 
     def _end_number(self, out: bytearray) -> None:
         self._number_open = False
-        limit = sys.get_int_max_str_digits()
         oversized = self._number_long or self._number_exponent_digits > _NUMBER_EXPONENT_DIGITS
         if self._number_sink is not None:
             self._number_sink(self._number_ordinal, b"", True)
@@ -426,9 +358,7 @@ class _PrefixStringReader:
                 out += b"0" if self._number_is_integer else b"0.0"
             self._number_view = bytearray()
             return
-        if not self._syntax_only and self._number_is_integer and limit and self._number_digits > limit:
-            out += _INVALID_NUMBER_END
-        elif self._scalar_values:
+        if self._scalar_values:
             token = bytes(self._number_view)
             if not self._number_is_integer and self._number_state in _NUMBER_ACCEPTING:
                 # Decimal's exponent range is smaller than json.loads' float
@@ -443,6 +373,8 @@ class _PrefixStringReader:
                     else repr(number).encode("ascii")
                 )
             out += token
+        elif self._syntax_only:
+            out += b"0" if self._number_state in _NUMBER_ACCEPTING else _INVALID_NUMBER_END
         elif oversized and self._number_state not in _NUMBER_ACCEPTING:
             # A malformed long token stays malformed: the placeholder must not
             # turn a document the decoder rejects into one it would accept.
@@ -483,10 +415,8 @@ class _PrefixStringReader:
                 self._validate_skipped(piece, out)
             else:
                 self._string += piece
-                if (
-                    len(self._string) > _STRING_PREFIX_BYTES
-                    and self._ordinal not in self._whole_ordinals
-                    and (not self._scalar_values or self._string_sink is not None)
+                if len(self._string) > _STRING_PREFIX_BYTES and (
+                    not self._scalar_values or self._string_sink is not None
                 ):
                     cut = _prefix_cut(bytes(self._string[:_STRING_PREFIX_BYTES]))
                     self._emit_string(bytes(self._string[:cut]), out)
@@ -751,225 +681,6 @@ def jsonl_has_record_successor(handle: IO[bytes], *, check_stop: Callable[[], No
 UNDECLARED_FIELDS = "\x00undeclared"
 
 
-def _envelope_scalar(value: object, decoded_bytes: int | None, ordinal: int) -> object:
-    if isinstance(value, str) and (decoded_bytes is not None or len(value) > ENVELOPE_TEXT_PREFIX_CHARS):
-        text = _TruncatedText(value[:ENVELOPE_TEXT_PREFIX_CHARS])
-        text.decoded_bytes = decoded_bytes if decoded_bytes is not None else len(value.encode("utf-8", "surrogatepass"))
-        text.ordinal = ordinal
-        return text
-    return value
-
-
-def _envelopes(
-    events: Iterator[tuple[str, object]],
-    reader: _PrefixStringReader,
-    *,
-    expand_arrays: bool,
-    fields: frozenset[str],
-    exact_fields: frozenset[str] = frozenset(),
-    identity_groups: tuple[tuple[str, ...], ...] = (),
-) -> Iterator[object]:
-    depth = 0
-    root: object = None
-    element: object = None
-    key: str | None = None
-    element_key: str | None = None
-    expanding = False
-    ordinal = 0
-    #: Exact root fields whose current (last-key-wins) value carried a stand-in.
-    substituted_exact: set[str] = set()
-    for event, value in events:
-        if event in ("map_key", "string"):
-            # The previous token is consumed: drop its per-token reader state,
-            # so a document of any number of strings costs bounded memory.
-            reader.substituted.discard(ordinal)
-            reader.truncated.pop(ordinal, None)
-            ordinal += 1
-        if event in ("start_map", "start_array"):
-            placeholder: object = {} if event == "start_map" else []
-            if depth == 0:
-                if exact_fields and event == "start_array":
-                    # Exact identity fields live only on an object root: an
-                    # array root is answered at its first token, never scanned.
-                    yield placeholder
-                    return
-                root = placeholder
-                expanding = expand_arrays and event == "start_array"
-            elif depth == 1 and expanding:
-                element = placeholder
-            elif depth == 1 and isinstance(root, dict) and key in fields:
-                # A container replacing an exact field settles it too.
-                substituted_exact.discard(key)
-                root[key] = placeholder
-            elif depth == 2 and expanding and isinstance(element, dict) and element_key in fields:
-                element[element_key] = placeholder
-            depth += 1
-            continue
-        if event in ("end_map", "end_array"):
-            depth -= 1
-            if depth == 0 and not expanding:
-                refused = _selected_substituted(root, substituted_exact, identity_groups)
-                if refused is not None:
-                    # Refused only once duplicate keys have settled on their
-                    # final value, as the full decoder's last-key-wins reads it,
-                    # and only for the alias its reader selects.
-                    raise EnvelopeValueUnrepresentableError(refused)
-                yield root
-            elif depth == 1 and expanding:
-                yield element
-            continue
-        if event == "map_key":
-            if depth == 1:
-                key = str(value)
-                if key not in fields and isinstance(root, dict):
-                    root[UNDECLARED_FIELDS] = True
-            elif depth == 2 and expanding:
-                element_key = str(value)
-                if element_key not in fields and isinstance(element, dict):
-                    element[UNDECLARED_FIELDS] = True
-            continue
-        scalar = _envelope_scalar(value, reader.truncated.get(ordinal) if event == "string" else None, ordinal)
-        if depth == 0 or (depth == 1 and expanding):
-            yield scalar
-        elif depth == 1 and isinstance(root, dict) and key in fields:
-            if key in exact_fields:
-                if event == "string" and ordinal in reader.substituted:
-                    substituted_exact.add(key)
-                else:
-                    substituted_exact.discard(key)
-            root[key] = scalar
-        elif depth == 2 and expanding and isinstance(element, dict) and element_key in fields:
-            element[element_key] = scalar
-
-
-def _whole_string(handle: IO[bytes], ordinal: int, field: str) -> str:
-    """Re-read the string token at ``ordinal`` of a seekable document whole.
-
-    Every other string is still passed on as a prefix only, so the re-read
-    costs the memory of this one value, however large its neighbours are.
-    """
-    import ijson
-
-    handle.seek(0)
-    reader = _PrefixStringReader(handle, whole_ordinals=frozenset({ordinal}))
-    seen = 0
-    for event, value in ijson.basic_parse(reader, use_float=False):
-        if event in ("map_key", "string"):
-            seen += 1
-            if seen == ordinal and isinstance(value, str):
-                if ordinal in reader.substituted:
-                    raise EnvelopeValueUnrepresentableError(field)
-                return value
-    raise ValueError(f"string token {ordinal} vanished between two reads of the same document")
-
-
-def _first_significant(handle: IO[bytes]) -> bytes:
-    """The first byte after a UTF-8 byte-order mark and JSON whitespace, or ``b""``."""
-    start = True
-    while chunk := handle.read(4096):
-        if start:
-            start = False
-            if chunk.startswith(codecs.BOM_UTF8):
-                chunk = chunk[len(codecs.BOM_UTF8) :]
-        stripped = chunk.lstrip(b" \t\r\n")
-        if stripped:
-            return stripped[:1]
-    return b""
-
-
-def _selected_alias(root: dict[object, object], group: tuple[str, ...]) -> str | None:
-    """The first alias of ``group`` holding a non-empty string, as its reader picks it."""
-    for field in group:
-        value = root.get(field)
-        if isinstance(value, str) and value:
-            return field
-    return None
-
-
-def _selected_substituted(root: object, substituted: set[str], groups: tuple[tuple[str, ...], ...]) -> str | None:
-    if not substituted or not isinstance(root, dict):
-        return None
-    for group in groups:
-        selected = _selected_alias(root, group)
-        if selected is not None and selected in substituted:
-            return selected
-    return None
-
-
-def top_level_envelopes(
-    handle: IO[bytes],
-    *,
-    expand_arrays: bool,
-    fields: frozenset[str],
-    whole_fields: frozenset[str] = frozenset(),
-    identity_groups: tuple[tuple[str, ...], ...] = (),
-) -> Iterator[object]:
-    """Stream one JSON document's envelope, or one per element of an array document.
-
-    An object's envelope keeps only the root keys named in ``fields``, with
-    scalar values (strings as a leading prefix) and a typed empty placeholder
-    for container values, so a document of any width costs the same memory.
-    A string in ``whole_fields`` is an identity used as an exact join key: it
-    is re-read whole from ``handle`` (which must then be seekable), or refused
-    with :class:`EnvelopeValueTooLargeError` beyond SQLite's value limit, or
-    with :class:`EnvelopeValueUnrepresentableError` when it holds a surrogate
-    code unit -- never shortened or altered. Numbers are read exactly, so no
-    magnitude makes a document unreadable. A malformed document raises ``ijson.JSONError``.
-
-    ``identity_groups`` are identities read through aliases in precedence
-    order: only the alias its reader selects (the first holding a non-empty
-    string) is read whole and checked. ``whole_fields`` are single-alias
-    groups.
-    """
-    import ijson
-
-    identity_groups = (*identity_groups, *((field,) for field in sorted(whole_fields)))
-    whole_fields = frozenset(field for group in identity_groups for field in group)
-
-    if whole_fields and not expand_arrays:
-        # Exact identity fields live only on an object root. Any other root is
-        # answered from its first significant byte, never scanned: a scalar or
-        # array root of any size costs one read.
-        first = _first_significant(handle)
-        handle.seek(0)
-        if first != b"{":
-            yield None if first != b"[" else []
-            return
-    reader = _PrefixStringReader(handle)
-    events = ijson.basic_parse(reader, use_float=False)
-    if not whole_fields or expand_arrays:
-        # Streamed: an array document's elements are never held together.
-        yield from _envelopes(events, reader, expand_arrays=expand_arrays, fields=fields)
-        return
-    envelopes = list(
-        _envelopes(
-            events,
-            reader,
-            expand_arrays=False,
-            fields=fields,
-            exact_fields=whole_fields,
-            identity_groups=identity_groups,
-        )
-    )
-    if envelopes:
-        for envelope in envelopes:
-            if not isinstance(envelope, dict):
-                continue
-            selected = {_selected_alias(envelope, group) for group in identity_groups} - {None}
-            for field in sorted(cast(set[str], selected)):
-                value = envelope[field]
-                if not isinstance(value, _TruncatedText):
-                    continue
-                limit = sqlite_value_limit()
-                if value.decoded_bytes > limit:
-                    raise EnvelopeValueTooLargeError(field, value.decoded_bytes, limit)
-                envelope[field] = _whole_string(handle, value.ordinal, field)
-    yield from envelopes
-
-
-#: Bytes after which the python lexer has finished every lexeme of its
-#: buffer, outside any string: its unary structural lexemes and JSON
-#: whitespace. ``:`` is excluded: that lexer extends a buffer ending in it.
 _LEXEME_END_BYTES = b"[]{}, \t\r\n"
 
 
@@ -1081,9 +792,5 @@ _LEXEME_END_SINGLE_BYTES = tuple(bytes((byte,)) for byte in _LEXEME_END_BYTES)
 __all__ = [
     "ENVELOPE_TEXT_PREFIX_CHARS",
     "UNDECLARED_FIELDS",
-    "EnvelopeValueTooLargeError",
-    "EnvelopeValueUnrepresentableError",
     "LexemeAlignedReader",
-    "sqlite_value_limit",
-    "top_level_envelopes",
 ]

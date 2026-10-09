@@ -245,9 +245,7 @@ class ChatGPTAssetIndex:
         """
         import io
 
-        from ijson.backends import python as ijson_python
-
-        from polylogue.core.json_envelope import LexemeAlignedReader, _PrefixStringReader
+        from polylogue.schemas.observation_spill import SpilledKey, owned_scalar_events
         from polylogue.sources.detection_projection import DetectorProjection, _project
 
         encoding = json.detect_encoding(source.read(4))
@@ -268,60 +266,63 @@ class ChatGPTAssetIndex:
         conn = self._connection()
         conn.execute("SAVEPOINT sidecar_input")
         try:
-            events = iter(
-                ijson_python.basic_parse(LexemeAlignedReader(_PrefixStringReader(Utf8Input(), scalar_values=True)))
-            )
-            first = next(events, None)
-            if first is None:
-                raise ValueError("empty ChatGPT sidecar input")
-            event, value = first
-            claimed = event not in ("null",)
             with ExitStack() as stack:
-                if library and event == "start_array":
-                    rule = DetectorProjection(
-                        fields={field.name: DetectorProjection() for field in fields(LibraryFileRecord)}
-                    )
-                    for event, value in events:
-                        check_compute_cancelled()
-                        if event == "end_array":
-                            break
-                        projected = _project(events, event, value, rule, stack)
-                        for record in parse_library_files([projected]).values():
-                            self._insert_library(record)
-                elif not library and event == "start_map":
-                    conn.execute(
-                        "CREATE TEMP TABLE raw_names (key BLOB PRIMARY KEY, ordinal INTEGER NOT NULL, value TEXT) WITHOUT ROWID"
-                    )
-                    for ordinal, (event, value) in enumerate(events):
-                        check_compute_cancelled()
-                        if event == "end_map":
-                            break
-                        if event != "map_key" or not isinstance(value, str):
-                            raise ValueError("invalid sidecar name map")
-                        key = value
-                        event, value = next(events)
-                        projected = _project(events, event, value, DetectorProjection(), stack)
-                        accepted = json.dumps(projected) if isinstance(projected, str) and projected else None
-                        conn.execute(
-                            "INSERT INTO raw_names VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                            (self._key(key), ordinal, accepted),
+                events = stack.enter_context(owned_scalar_events(Utf8Input()))
+                first = next(events, None)
+                if first is None:
+                    raise ValueError("empty ChatGPT sidecar input")
+                event, value = first
+                claimed = event not in ("null",)
+                with ExitStack() as stack:
+                    if library and event == "start_array":
+                        rule = DetectorProjection(
+                            fields={field.name: DetectorProjection() for field in fields(LibraryFileRecord)}
                         )
-                    cursor = conn.execute("SELECT key, value FROM raw_names WHERE value IS NOT NULL ORDER BY ordinal")
-                    try:
-                        while page := cursor.fetchmany(256):
-                            for key, value in page:
-                                check_compute_cancelled()
-                                file_id = bytes(key).decode("utf-8", "surrogatepass")
-                                if file_id.endswith(_DAT_SUFFIX):
-                                    file_id = file_id[: -len(_DAT_SUFFIX)]
-                                self._insert_name(file_id, json.loads(value))
-                    finally:
-                        cursor.close()
-                    conn.execute("DROP TABLE raw_names")
-                else:
-                    _project(events, event, value, None, stack)
-                if next(events, None) is not None:
-                    raise ValueError("sidecar has trailing JSON data")
+                        for event, value in events:
+                            check_compute_cancelled()
+                            if event == "end_array":
+                                break
+                            projected = _project(events, event, value, rule, stack)
+                            for record in parse_library_files([projected]).values():
+                                self._insert_library(record)
+                    elif not library and event == "start_map":
+                        conn.execute(
+                            "CREATE TEMP TABLE raw_names (key BLOB PRIMARY KEY, ordinal INTEGER NOT NULL, value TEXT) WITHOUT ROWID"
+                        )
+                        for ordinal, (event, value) in enumerate(events):
+                            check_compute_cancelled()
+                            if event == "end_map":
+                                break
+                            if isinstance(value, SpilledKey):
+                                value = value.read()
+                            if event != "map_key" or not isinstance(value, str):
+                                raise ValueError("invalid sidecar name map")
+                            key = value
+                            event, value = next(events)
+                            projected = _project(events, event, value, DetectorProjection(), stack)
+                            accepted = json.dumps(projected) if isinstance(projected, str) and projected else None
+                            conn.execute(
+                                "INSERT INTO raw_names VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                (self._key(key), ordinal, accepted),
+                            )
+                        cursor = conn.execute(
+                            "SELECT key, value FROM raw_names WHERE value IS NOT NULL ORDER BY ordinal"
+                        )
+                        try:
+                            while page := cursor.fetchmany(256):
+                                for key, value in page:
+                                    check_compute_cancelled()
+                                    file_id = bytes(key).decode("utf-8", "surrogatepass")
+                                    if file_id.endswith(_DAT_SUFFIX):
+                                        file_id = file_id[: -len(_DAT_SUFFIX)]
+                                    self._insert_name(file_id, json.loads(value))
+                        finally:
+                            cursor.close()
+                        conn.execute("DROP TABLE raw_names")
+                    else:
+                        _project(events, event, value, None, stack)
+                    if next(events, None) is not None:
+                        raise ValueError("sidecar has trailing JSON data")
             # Settles a member's actual CRC even if the tokenizer buffered its
             # last structural token before the underlying stream reached EOF.
             while text.read(16384):

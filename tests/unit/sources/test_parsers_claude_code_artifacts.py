@@ -245,17 +245,15 @@ def test_sidecar_bytes_decode_directly_encoded_surrogates_as_the_envelope_reader
     while the dispatch writer's envelope binds its tool_use id.
     """
     import io
+    from contextlib import closing
 
-    from polylogue.core.json_envelope import top_level_envelopes
-    from polylogue.sources.parsers.claude.orchestration import DISPATCH_IDENTITY_FIELDS, DOCUMENT_READ_FIELDS
+    from polylogue.sources.decoder_json import DecodedRecordSequence
 
     path = "/tmp/.claude/projects/x/parent-1/subagents/agent-a.meta.json"
     payload = b'{"toolUseId": "toolu_1", "description": "x\xed\xa0\x80y"}'
     direct = parse_claude_orchestration_artifact(path, payload)
-    (envelope,) = top_level_envelopes(
-        io.BytesIO(payload), expand_arrays=False, fields=DOCUMENT_READ_FIELDS, whole_fields=DISPATCH_IDENTITY_FIELDS
-    )
-    streamed = parse_claude_orchestration_artifact(path, envelope)
+    with closing(DecodedRecordSequence.from_raw_document(io.BytesIO(payload))) as document:
+        streamed = parse_claude_orchestration_artifact(path, document[0])
 
     assert direct is not None and streamed is not None
     assert [fact.tool_use_id for fact in direct.facts] == ["toolu_1"]

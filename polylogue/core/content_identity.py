@@ -74,7 +74,7 @@ def _encode(value: object, sink: _Sink) -> None:
         _encode_decimal(value, sink)
         return
     if isinstance(value, int):
-        sink.update(b"i%d;" % value)
+        _encode_integer(value, sink)
         return
     if isinstance(value, float):
         _encode_float(value, sink)
@@ -137,11 +137,18 @@ def _encode_text(tag: bytes, value: str, sink: _Sink) -> None:
     sink.update(b";")
 
 
+def _encode_integer(value: int, sink: _Sink) -> None:
+    if value.bit_length() <= 64:
+        sink.update(b"i%d;" % value)
+    else:
+        sink.update(b"i" + format(Decimal(value), "f").encode("ascii") + b";")
+
+
 def _encode_decimal(value: Decimal, sink: _Sink) -> None:
     if not value.is_finite():
         raise ValueError("a non-finite number has no structural content identity")
     if value == value.to_integral_value():
-        sink.update(b"i%d;" % int(value))
+        _encode_integer(int(value), sink)
         return
     _encode_float(float(value), sink)
 
@@ -154,7 +161,7 @@ def _encode_float(value: float, sink: _Sink) -> None:
     # identity; a fractional value keeps the shortest round-trip form, which
     # is equal exactly when the two floats are equal.
     if value.is_integer():
-        sink.update(b"i%d;" % int(value))
+        _encode_integer(int(value), sink)
         return
     sink.update(b"f%s;" % repr(value).encode("ascii"))
 
@@ -368,8 +375,8 @@ class _LongNumber:
     significant digits, whether any later digit is nonzero, and its decimal
     exponent: every halfway point between two floats has at most 767
     significant digits. So those are kept, and the rest is only counted. An
-    integer token is exact; its digits go to a scratch file when the runtime
-    admits an integer that long, and are only counted otherwise.
+    integer token is exact; its digits continue through a scratch file when
+    the token crosses the parser's in-memory conversion strategy.
     """
 
     _SIGNIFICANT = 800
@@ -615,10 +622,13 @@ class _TokenReader:
         self._bare_len += len(piece)
         if self._bare_long is None:
             self._bare_held += piece
-            if len(self._bare_held) <= _HOLD_NUMBER_BYTES:
-                return
             digit_limit = sys.get_int_max_str_digits()
-            self._bare_long = _LongNumber(spool_integer=digit_limit == 0 or digit_limit > _HOLD_NUMBER_BYTES)
+            # The parser's integer conversion setting only selects transport.
+            # Longer exact integers continue through the existing digit spool.
+            hold_bytes = min(_HOLD_NUMBER_BYTES, digit_limit) if digit_limit else _HOLD_NUMBER_BYTES
+            if len(self._bare_held) <= hold_bytes:
+                return
+            self._bare_long = _LongNumber(spool_integer=True)
             piece, self._bare_held = bytes(self._bare_held), bytearray()
         if self._bare_state != _NUM_INVALID:
             self._bare_long.feed(piece)
@@ -630,19 +640,7 @@ class _TokenReader:
         if complete:
             self._spills.number_tokens += 1
         long = self._bare_long
-        digit_limit = sys.get_int_max_str_digits()
-        if (
-            complete
-            and digit_limit
-            and self._bare_state in (_NUM_ZERO, _NUM_INT)
-            and (long.integer_digits if long is not None else len(self._bare_held.lstrip(b"-"))) > digit_limit
-        ):
-            # An integer the decoder refuses to convert makes the member not
-            # JSON; that verdict precedes any refusal a duplicate could lift.
-            if long is not None:
-                long.close()
-            out += b"x"
-        elif complete and self._bare_len > physical_value_limit():
+        if complete and self._bare_len > physical_value_limit():
             # Refused where it stands; raised only if the document parses
             # and no later duplicate key replaces it.
             if long is not None:
@@ -668,7 +666,7 @@ class _TokenReader:
         if not long.is_integer:
             long.close()
             return long.float_token()
-        # Within the runtime's digit limit (checked by the caller): exact.
+        # Integer digits remain exact independently of runtime conversion limits.
         self._spills.long_integers[self._spills.number_tokens] = long.take_digits()
         return b"0"
 

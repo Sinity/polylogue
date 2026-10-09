@@ -172,8 +172,16 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
         return tape
 
     @classmethod
-    def from_raw_document(cls, path: Path) -> DecodedRecordSequence:
+    def from_raw_document(cls, path: Path | JsonlReadable) -> DecodedRecordSequence:
         """Own a completed raw JSON root with the facade's exact attempt order."""
+        if not isinstance(path, Path):
+            with tempfile.TemporaryDirectory(prefix="polylogue-json-document-") as directory:
+                captured = Path(directory) / "document.json"
+                with captured.open("wb") as output:
+                    while chunk := path.read(64 * 1024):
+                        check_compute_cancelled()
+                        output.write(chunk)
+                return cls.from_raw_document(captured)
         tape = cls(())
         failure: Exception | None = None
         try:

@@ -72,7 +72,6 @@ from polylogue.core.identity_law import block_id as archive_block_id
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
-from polylogue.core.json_envelope import top_level_envelopes
 from polylogue.core.message_native_identity import (
     message_native_key,
     native_id_from_storage,
@@ -118,8 +117,6 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.sources.parsers.claude.orchestration import (
-    DOCUMENT_READ_FIELDS,
-    IDENTITY_FIELD_GROUPS,
     parse_claude_orchestration_artifact,
 )
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
@@ -16548,20 +16545,18 @@ def _sidecar_paths_dispatch_tool_ids(
                 # never read whole; the tool_use id itself is kept complete, since
                 # it is the exact join key to the parent block.
                 try:
-                    with source_read.open_sidecar_payload(raw_id, blob_hash) as handle:
-                        (envelope,) = top_level_envelopes(
-                            handle,
-                            expand_arrays=False,
-                            fields=DOCUMENT_READ_FIELDS,
-                            identity_groups=IDENTITY_FIELD_GROUPS,
+                    from polylogue.sources.decoder_json import DecodedRecordSequence
+
+                    with (
+                        source_read.open_sidecar_payload(raw_id, blob_hash) as handle,
+                        closing(DecodedRecordSequence.from_raw_document(handle)) as document,
+                    ):
+                        payload = document[0]
+                        artifact = (
+                            parse_claude_orchestration_artifact(str(source_path), payload)
+                            if isinstance(payload, dict)
+                            else None
                         )
-                    # Only an object root carries dispatch identity; a scalar root
-                    # must not be decoded a second time into a document.
-                    artifact = (
-                        parse_claude_orchestration_artifact(str(source_path), envelope)
-                        if isinstance(envelope, dict)
-                        else None
-                    )
                 # RecursionError is a RuntimeError, not a ValueError: a deeply
                 # nested sidecar would otherwise escape this handler and abort the
                 # whole session write, and because the raw row persists it would

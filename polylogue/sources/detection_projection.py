@@ -410,12 +410,10 @@ def _document_projection(
     rule: DetectorProjection,
     stream_predicate: Callable[[object], bool] | None,
 ) -> object:
-    from ijson.backends import python as exact_backend
-
-    from polylogue.core.json_envelope import LexemeAlignedReader, _PrefixStringReader
+    from polylogue.schemas.observation_spill import owned_scalar_events
 
     with ExitStack() as stack:
-        events = iter(exact_backend.basic_parse(LexemeAlignedReader(_PrefixStringReader(handle, scalar_values=True))))
+        events = stack.enter_context(owned_scalar_events(handle))
         event, value = next(events)
         root_rule = (
             DetectorProjection(
@@ -733,13 +731,11 @@ def iter_projected_document_records(
     Yielded records are provisional until normal exhaustion validates the
     closing delimiter and EOF. The caller owns the original input handle.
     """
-    from ijson.backends import python as exact_backend
-
-    from polylogue.core.json_envelope import LexemeAlignedReader, _PrefixStringReader
+    from polylogue.schemas.observation_spill import owned_scalar_events
 
     source = _DetectionText(handle, encoding, check_stop)
     with io.BufferedReader(source) as reader, ExitStack() as stack:
-        events = iter(exact_backend.basic_parse(LexemeAlignedReader(_PrefixStringReader(reader, scalar_values=True))))
+        events = stack.enter_context(owned_scalar_events(reader))
         try:
             event, value = next(events)
             if on_root is not None:

@@ -16,7 +16,7 @@ import re
 import sqlite3
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, ItemsView, Iterable, Iterator, KeysView, Mapping, Sequence, ValuesView
-from contextlib import AbstractContextManager, ExitStack, closing, suppress
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -25,6 +25,7 @@ from typing import Any, Never, SupportsIndex, TypeVar, cast, overload
 
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.json import JSONDocument, JSONValue, _ValidatedJSONContainer
+from polylogue.core.json_envelope import _Readable
 from polylogue.core.work_progress import advance_work_progress
 from polylogue.sources.value_bounds import require_storable_string
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
@@ -1312,3 +1313,37 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
                 if root_id is None:
                     root_id = node_id
         return root_id
+
+
+@contextmanager
+def owned_scalar_events(handle: _Readable) -> Generator[Iterator[tuple[str, object]], None, None]:
+    """Borrow exact scalar tokens for a selected streaming projection."""
+    from ijson.backends import python as exact_backend
+
+    from polylogue.core.json_envelope import LexemeAlignedReader, _PrefixStringReader
+
+    owner = StreamedJSONDocument(None)
+    with owner:
+        tokens = _ScalarTokenStore(owner.connection)
+        reader = _PrefixStringReader(handle, scalar_values=True, string_sink=tokens.string, number_sink=tokens.number)
+        with closing(iter(exact_backend.basic_parse(LexemeAlignedReader(reader)))) as events:
+
+            def exact_events() -> Iterator[tuple[str, object]]:
+                strings = numbers = 0
+                for event, value in events:
+                    if event in {"map_key", "string"}:
+                        strings += 1
+                        value = (
+                            SpilledKey(owner.connection, strings, tokens)
+                            if event == "map_key"
+                            else _ScalarTokenReference(tokens, "string", strings)
+                        )
+                    elif event == "number":
+                        numbers += 1
+                        value = _ScalarTokenReference(tokens, "number", numbers)
+                    yield event, value
+                if tokens.failure is not None:
+                    raise tokens.failure
+
+            with closing(exact_events()) as exact:
+                yield exact

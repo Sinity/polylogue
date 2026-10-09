@@ -232,3 +232,24 @@ def test_completed_tree_mapping_folds_do_not_read_original_giant_key(
         assert getattr(actual[1], "metadata_values_scalarish", None) == getattr(
             expected[1], "metadata_values_scalarish", None
         )
+
+
+@pytest.mark.parametrize("digits", [4301, 65537])
+def test_stream_projection_accepts_and_conserves_exact_large_integer(digits: int) -> None:
+    from polylogue.sources.detection_projection import project_detection_input
+
+    integer = b"9" * digits
+    selected = int(Decimal(integer.decode()))
+    wire = b'{"selected":' + integer + b',"ignored":' + integer + b"}"
+    rule = DetectorProjection(fields={"selected": DetectorProjection()})
+    assert list(iter_projected_document_records(io.BytesIO(wire), rule)) == [{"selected": selected}]
+    mode, projected = project_detection_input(io.BytesIO(wire), rule)
+    assert mode == "record" and projected == {"selected": selected}
+
+
+def test_grammar_only_jsonl_successor_accepts_large_integer() -> None:
+    from polylogue.core.json_envelope import jsonl_has_record_successor
+
+    giant = b"9" * 65537
+    assert jsonl_has_record_successor(io.BytesIO(b'{"ignored":' + giant + b"}\n{}"))
+    assert not jsonl_has_record_successor(io.BytesIO(b'{"ignored":' + giant + b"x}\n{}"))
