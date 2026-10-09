@@ -179,6 +179,12 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
     key = (session_id, block_id)
     if key in snapshot.source_block_reads:
         return
+    owner = snapshot.archive._conn.execute("SELECT session_id FROM blocks WHERE block_id=?", (block_id,)).fetchone()
+    if owner is not None and str(owner[0]) != session_id:
+        from polylogue.operations.source_composition_read import bind_source_composed_block
+
+        bind_source_composed_block(snapshot, session_id=session_id, block_id=block_id)
+        return
     from polylogue.sources.revision_backfill import (
         enrichment_dependency_digest,
     )
@@ -301,6 +307,11 @@ def revalidate_source_block(
     if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(archive.archive_root)) != snapshot.identity:
         raise SourceTargetChangedError("archive changed after the block selector was pinned")
     supplier = snapshot.source_block_reads.get((session_id, block_id))
+    from polylogue.operations.source_composition_read import SourceCompositionRead
+
+    if isinstance(supplier, SourceCompositionRead):
+        supplier.revalidate(snapshot, archive)
+        return
     if not isinstance(supplier, _BlockSupplier):
         raise SourceTargetUnavailableError("block target was not bound to pinned Source")
     source = archive.source_connection

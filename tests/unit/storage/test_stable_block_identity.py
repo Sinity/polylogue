@@ -243,6 +243,7 @@ def test_source_binding_checks_older_union_supplier_and_settles_scratch(
         else:
             source_target_read.bind_source_block(snapshot, session_id=session_id, block_id=block_id)
             supplier = snapshot.source_block_reads[(session_id, block_id)]
+            assert isinstance(supplier, source_target_read._BlockSupplier)
             assert supplier.raw_id == raw_ids[0]
             assert len(prepared_paths) == (1 if supplier_state == "missing-latest" else 2)
     assert prepared_paths and all(not path.exists() for path in prepared_paths)
@@ -487,3 +488,128 @@ def test_retained_source_can_replay_into_an_operation_owned_standalone_index(tmp
         finally:
             artifact.discard()
         assert snapshot.archive._conn.execute("SELECT count(*) FROM blocks").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("source_change", [None, "parent-replace", "parent-delete", "child-replace", "child-delete"])
+def test_child_scoped_parent_block_annotation_has_source_composition_proof(
+    tmp_path: Path, source_change: str | None
+) -> None:
+    import json
+
+    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+    from polylogue.core.enums import Provider
+    from polylogue.operations.mutation_actuators import AnnotationSaveActuator, AnnotationSaveArgs
+    from polylogue.operations.operation_context import open_operation_read
+    from polylogue.operations.source_composition_read import SourceCompositionRead
+    from polylogue.operations.source_target_read import SourceTargetChangedError
+    from polylogue.operations.user_overlay_mutations import _source_guard, _target
+    from tests.infra.retained_replay import replay_retained_components
+
+    def record(session: str, native: str, role: str, text: str) -> dict[str, object]:
+        return {
+            "type": role,
+            "sessionId": session,
+            "uuid": native,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": role, "content": text if role == "user" else [{"type": "text", "text": text}]},
+        }
+
+    payloads: dict[str, list[dict[str, object]]] = {
+        "parent": [
+            record("zparent", "p-u", "user", "question"),
+            record("zparent", "p-a", "assistant", "parent answer"),
+        ],
+        "child": [
+            {
+                "type": "fork-context-ref",
+                "sessionId": "achild",
+                "parentSessionId": "zparent",
+                "parentLastUuid": "p-a",
+                "uuid": "c-ref",
+                "timestamp": "2026-01-01T00:00:01Z",
+            },
+            record("achild", "c-a", "assistant", "child answer"),
+        ],
+    }
+    raw_ids: dict[str, str] = {}
+    with write_lease("test.source-composed-block", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            for generation, (label, records) in enumerate(payloads.items(), start=1):
+                native_session = "zparent" if label == "parent" else "achild"
+                raw_ids[label] = archive.write_raw_payload(
+                    provider=Provider.CLAUDE_CODE,
+                    payload=b"".join(json.dumps(item).encode() + b"\n" for item in records),
+                    source_path=f"projects/composition/{native_session}.jsonl",
+                    canonical_source_path=f"projects/composition/{native_session}.jsonl",
+                    acquired_at_ms=generation,
+                    revision=RawRevisionEnvelope(
+                        logical_source_key=f"claude-code-session:{native_session}",
+                        kind=RawRevisionKind.FULL,
+                        source_revision=f"scope-{label}",
+                        acquisition_generation=generation,
+                        authority=RawRevisionAuthority.BYTE_PROVEN,
+                    ),
+                )
+            archive.commit()
+    replay_retained_components(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        block_id, message_id = archive._conn.execute(
+            "SELECT block_id,message_id FROM blocks WHERE text='parent answer'"
+        ).fetchone()
+        assert archive.locate_composed_message("claude-code-session:achild", message_id) is not None
+    with closing(sqlite3.connect(tmp_path / "user.db")) as user:
+        before_user = tuple(user.execute("SELECT * FROM assertions"))
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        before_source = tuple(source.execute("SELECT * FROM raw_sessions ORDER BY raw_id"))
+    before_audit = (tmp_path / "audit.db").read_bytes()
+    retained_paths: list[Path] = []
+    with open_operation_read(tmp_path) as snapshot:
+        target = _target(
+            snapshot,
+            tmp_path,
+            {"session_id": "claude-code-session:achild", "target_type": "block", "target_id": f"{message_id}:0"},
+        )
+        assert target == ("block", block_id, "claude-code-session:achild", message_id)
+        with write_lease("test.source-composed-apply", archive_root=tmp_path):
+            with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+                args = AnnotationSaveArgs(
+                    archive,
+                    "child-scope-note",
+                    "block",
+                    block_id,
+                    "Inherited source answer",
+                    "claude-code-session:achild",
+                    source_guard=_source_guard(snapshot, archive, target),
+                )
+                proof = snapshot.source_block_reads[("claude-code-session:achild", block_id)]
+                assert isinstance(proof, SourceCompositionRead)
+                retained_paths.append(Path(proof.witnesses.execute("PRAGMA database_list").fetchone()[2]).parent)
+                actuator = AnnotationSaveActuator()
+                plan = actuator.prepare(args)
+                with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+                    assert tuple(source.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == before_source
+                if source_change is not None:
+                    label, change = source_change.split("-")
+                    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+                        if change == "replace":
+                            source.execute(
+                                "UPDATE raw_sessions SET blob_hash=? WHERE raw_id=?", (bytes(32), raw_ids[label])
+                            )
+                        else:
+                            source.execute("DELETE FROM raw_sessions WHERE raw_id=?", (raw_ids[label],))
+                        source.commit()
+                    with pytest.raises(SourceTargetChangedError):
+                        actuator.apply(plan, args)
+                    assert archive.get_annotation("child-scope-note") is None
+                else:
+                    assert actuator.apply(plan, args).affected_count == 1
+                    archive.commit()
+                    note = archive.get_annotation("child-scope-note")
+                    assert note is not None and note["target_id"] == block_id
+    assert retained_paths and all(not path.exists() for path in retained_paths)
+    with closing(sqlite3.connect(tmp_path / "user.db")) as user:
+        after_user = tuple(user.execute("SELECT * FROM assertions"))
+    assert len(after_user) == len(before_user) + (1 if source_change is None else 0)
+    assert (tmp_path / "audit.db").read_bytes() == before_audit
+    assert all(row in after_user for row in before_user)

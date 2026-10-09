@@ -170,8 +170,8 @@ def _resolve_block_in_connection(
 ) -> tuple[str, str] | None:
     selector = ObjectRef.parse(f"block:{target_id}")
     if not selector.qualifiers:
-        sql = "SELECT block_id, message_id FROM blocks WHERE session_id=? AND block_id=?"
-        params: tuple[object, ...] = (session_id, selector.object_id)
+        sql = "SELECT block_id, message_id FROM blocks WHERE block_id=?"
+        params: tuple[object, ...] = (selector.object_id,)
         if message_id is not None:
             sql += " AND message_id=?"
             params += (message_id,)
@@ -186,10 +186,16 @@ def _resolve_block_in_connection(
             raise ValueError("block target_id must use a canonical non-negative block_index")
         if message_id is not None and message_id != selected_message:
             raise ValueError("block message_id must match the message_id in target_id")
-        sql = "SELECT block_id, message_id FROM blocks WHERE session_id=? AND message_id=? AND position=?"
-        params = (session_id, selected_message, block_index)
+        sql = "SELECT block_id, message_id FROM blocks WHERE message_id=? AND position=?"
+        params = (selected_message, block_index)
     row = conn.execute(sql, params).fetchone()
-    return None if row is None else (str(row[0]), str(row[1]))
+    if row is None:
+        return None
+    from polylogue.storage.sqlite.archive_tiers.write import locate_composed_message
+
+    if locate_composed_message(conn, session_id, str(row[1])) is None:
+        return None
+    return str(row[0]), str(row[1])
 
 
 async def _resolve_block(
