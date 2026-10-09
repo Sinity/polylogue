@@ -116,9 +116,9 @@ def test_lexical_ownership_does_not_resolve_unrelated_roots(tmp_path: Path, monk
     original = Path.resolve
     calls: list[Path] = []
 
-    def resolved(path: Path, *args: object, **kwargs: object) -> Path:
+    def resolved(path: Path, strict: bool = False) -> Path:
         calls.append(path)
-        return original(path, *args, **kwargs)
+        return original(path, strict=strict)
 
     monkeypatch.setattr(Path, "resolve", resolved)
     assert deepest_source_for_path(path, (unrelated, owner)) is owner

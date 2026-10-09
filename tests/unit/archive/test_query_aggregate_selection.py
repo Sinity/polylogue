@@ -44,14 +44,18 @@ def test_latest_aggregate_reduces_the_canonical_one_session_window(workspace_env
         )
     with ArchiveStore.open_existing(index.parent) as archive:
         result = _aggregate_payload({"mode": mode, "group_by": "origin", "params": {"latest": True}}, archive=archive)
-    assert result["outcome"]["state"] == "ok"
+    outcome = result["outcome"]
+    assert isinstance(outcome, dict)
+    assert outcome["state"] == "ok"
     if mode == "count":
         assert result["count"] == 1
     elif mode == "stats_by":
         assert result["groups"] == {"codex-session": 1}
     else:
-        assert result["stats"]["total_sessions"] == 1
-        assert result["stats"]["origins"] == {"codex-session": 1}
+        stats = result["stats"]
+        assert isinstance(stats, dict)
+        assert stats["total_sessions"] == 1
+        assert stats["origins"] == {"codex-session": 1}
 
 
 @pytest.mark.parametrize("group", ["role", "role, session.origin"])
@@ -74,7 +78,8 @@ def test_named_aggregate_sorts_keys_before_paging(workspace_env: dict[str, Path]
     assert isinstance(second, QueryUnitAggregateEnvelope)
     keys = [page.items[0].group_key for page in (first, second)]
     if "," in group:
-        assert [json.loads(key)["role"] for key in keys] == ["user", "assistant"]
+        assert all(key is not None for key in keys)
+        assert [json.loads(key)["role"] for key in keys if key is not None] == ["user", "assistant"]
     else:
         assert keys == ["user", "assistant"]
     assert first.items[0].metrics == {"count": 1, "sum_word_count": 3.0}
@@ -149,10 +154,12 @@ def test_group_null_is_distinct_from_a_literal_missing_label(
     assert isinstance(page, QueryUnitAggregateEnvelope)
     assert len(page.items) == 2
     if "," in group:
-        keys = [json.loads(row.group_key)["session.repo"] for row in page.items]
+        assert all(row.group_key is not None for row in page.items)
+        keys = [json.loads(row.group_key)["session.repo"] for row in page.items if row.group_key is not None]
     else:
         keys = [row.group_key for row in page.items]
     assert keys == [None, "[missing]"]
     assert [row.count for row in page.items] == [1, 1]
     if terminal.startswith("agg"):
-        assert [row.metrics["p50_word_count"] for row in page.items] == [2.0, 3.0]
+        assert all(row.metrics is not None for row in page.items)
+        assert [row.metrics["p50_word_count"] for row in page.items if row.metrics is not None] == [2.0, 3.0]
