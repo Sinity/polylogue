@@ -413,6 +413,11 @@ observation is treated as eligible; only that raw revision's exact provider
 path declaration or a recorded ineligible artifact observation can establish
 that no session validation verdict is required.
 
+When current parser authority confirms a typed raw-only input, canonical
+Source follow-up refreshes its independently stale non-session membership
+receipt before retained replay. The unchanged-input guard still refuses a
+census that makes no progress; an empty successor Index does not waive it.
+
 ## Gotchas
 
 Provider fixtures are not interchangeable with live captures: acquisition
