@@ -44,7 +44,7 @@ from polylogue.sources.live.batch_support import (
     foreign_origin_exclusion,
     retryable_read_fault,
 )
-from polylogue.sources.live.discovery import _source_path_steps
+from polylogue.sources.live.discovery import _source_path_steps, source_root_is_directory
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -898,7 +898,13 @@ def capture_production_source_baseline(
     observed: list[tuple[str, Path, str, str]] = []
     for source in sources:
         _check_observation_cancelled(cancelled)
-        if not source.root.is_dir():
+        try:
+            root_is_directory = source_root_is_directory(source.root)
+        except OSError as exc:
+            reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
+            decisions.append(SourceDecision(source.name, str(source.root), "fault", f"{reason}:{exc}"))
+            continue
+        if not root_is_directory:
             decisions.append(
                 SourceDecision(
                     source.name,

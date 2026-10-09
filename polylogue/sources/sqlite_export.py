@@ -1313,12 +1313,14 @@ def readable_table_info(conn: sqlite3.Connection, table: str) -> list[tuple[Any,
             raise
 
 
-def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[list[str], str, list[str], bool]:
+def _table_plan(conn: sqlite3.Connection, table: str) -> tuple[list[str], str, list[str], bool]:
     """Return the exported columns, the row order, the declared columns, and
     whether the first exported column is the synthetic ``rowid``."""
     columns = readable_table_info(conn, table)
     column_names = [_schema_text(row[1]) for row in columns]
-    is_without_rowid = "WITHOUT ROWID" in table_sql.upper()
+    quoted_table = '"' + table.replace('"', '""') + '"'
+    with closing(conn.execute(f"PRAGMA main.table_list({quoted_table})")) as cursor:
+        is_without_rowid = next(bool(row[4]) for row in cursor if _schema_text(row[1]) == table)
     # A user column literally named ``rowid`` shadows the alias, so the
     # synthetic column would be a duplicate rather than the row's identity.
     # Export the rowid for every rowid table, including one whose INTEGER
@@ -1327,7 +1329,7 @@ def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[l
     # else would restore the row identity a parser reads through ``rowid``. A
     # user column of that name shadows the alias, and then no rowid can be
     # restored at all.
-    shadowed = "rowid" in column_names
+    shadowed = any(name.lower() == "rowid" for name in column_names)
     synthetic_rowid = not is_without_rowid and not shadowed
     selected = (["rowid"] if synthetic_rowid else []) + column_names
     if not is_without_rowid and not shadowed:
@@ -1383,7 +1385,7 @@ def _write_export_connection(
     # Plan every table before the header so a reader can answer a shape
     # question -- "does this export carry these tables with these columns?"
     # -- from the first line, without materializing a single row.
-    plans = {table: _table_plan(conn, table, table_sql[table]) for table in exported_tables}
+    plans = {table: _table_plan(conn, table) for table in exported_tables}
     missing = () if tables is None else tuple(sorted(set(tables) - set(exported_tables)))
     with closing(
         conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'")

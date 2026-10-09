@@ -16,6 +16,14 @@ from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 
 
+def source_root_is_directory(root: Path) -> bool:
+    """Distinguish a genuinely absent root from an unavailable observation."""
+    try:
+        return stat.S_ISDIR(root.stat().st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
 def _walk_entry_key(path: Path, *, is_dir: bool) -> str:
     """The order key a walk entry occupies among its siblings.
 
@@ -301,7 +309,14 @@ def _source_path_steps(
     on_inspected: Callable[[], None] | None = None,
 ) -> Iterator[Path | None]:
     """Yield one step per entry so a caller can resume after rejected files."""
-    if not source.root.is_dir():
+    try:
+        root_is_directory = source_root_is_directory(source.root)
+    except OSError as exc:
+        raise WalkRefusedError(
+            "intake discovery could not inspect a source root",
+            [WalkFault(source.root, f"stat failed: {exc}")],
+        ) from exc
+    if not root_is_directory:
         # A missing or unmounted root is a refusal, not an empty backlog.
         # ``operations/raw_sessions/sessions.py`` already raises for exactly
         # this condition; returning ``[]`` reported a fully ingested source

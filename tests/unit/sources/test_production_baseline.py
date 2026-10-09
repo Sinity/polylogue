@@ -1160,3 +1160,39 @@ def test_the_default_codex_state_source_baselines_only_its_declared_jsonl_sideca
         ("codex-state", str(index)),
         ("codex-state", str(history)),
     }
+
+
+@pytest.mark.parametrize("error_number", [errno.EACCES, errno.EIO])
+def test_optional_unavailable_root_is_a_retryable_baseline_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_number: int
+) -> None:
+    from polylogue.sources.live.discovery import _source_path_steps
+    from polylogue.sources.walk_faults import WalkRefusedError
+
+    root = tmp_path / "unavailable"
+    root.mkdir()
+    source = WatchSource("codex", root)
+    original_stat = Path.stat
+
+    def unavailable(path: Path, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == root:
+            raise OSError(error_number, "neutral source read failure", str(root))
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", unavailable)
+    baseline = capture_production_source_baseline((source,), operation_id="unavailable-root")
+    assert len(baseline.decisions) == 1
+    assert baseline.decisions[0].disposition == "fault"
+    assert baseline.decisions[0].reason.startswith("revision_io_unavailable:")
+    with pytest.raises(ProductionBaselineReadUnavailableError):
+        baseline.verify(tmp_path / "unopened-source.db")
+    with pytest.raises(WalkRefusedError) as refused:
+        list(_source_path_steps(source, (source,), after=None))
+    assert isinstance(refused.value.__cause__, OSError)
+    assert refused.value.__cause__.errno == error_number
+
+
+def test_genuinely_absent_optional_root_remains_excluded(tmp_path: Path) -> None:
+    source = WatchSource("codex", tmp_path / "absent")
+    baseline = capture_production_source_baseline((source,), operation_id="absent-root")
+    assert [(row.disposition, row.reason) for row in baseline.decisions] == [("excluded", "absent_root")]

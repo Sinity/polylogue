@@ -159,6 +159,12 @@ and mutable SQLite inputs always reach acquisition. ZIP membership comes
 from the captured container, and committed WAL content participates in the
 SQLite logical revision even when the main file's stat tuple is unchanged.
 
+Cold-build root checks distinguish genuinely absent optional roots from unavailable
+stat observations. Permission and I/O failures remain typed baseline faults.
+Logical export plans read SQLite's catalog `wr` flag, preserving row identity
+independently of DDL whitespace or text containing `WITHOUT ROWID`. Declared
+`rowid` columns shadow the native alias case-insensitively.
+
 Cold-build baseline preparation maps contiguous ordinary-file runs through the
 shared bounded compute adapter from the source-observation coordinator.
 Workers classify and hash through the acquisition boundary and return only
