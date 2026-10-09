@@ -3762,32 +3762,9 @@ def _fetch_session_rows(
 ) -> list[ArchiveMessageRow]:
     """Every row one session contributes to a composed transcript, in order.
 
-    The unbounded materializer for one ``_TranscriptSegment``. It keeps the
-    per-message blocks read rather than the batched ``IN (...)`` form
-    ``_fetch_message_window`` uses, because a segment is an entire session and
-    a single ``IN`` list over its messages would run into SQLite's host
-    parameter ceiling on a large one.
+    The unbounded materializer for one ``_TranscriptSegment``. Related rows
+    are hydrated in bind-safe batches by ``_hydrate_archive_message_rows``.
     """
-    attachment_rows = conn.execute(
-        """
-        SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
-               a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
-               a.blob_hash AS blob_hash, a.acquisition_status AS acquisition_status,
-               r.upload_origin AS upload_origin, r.direction AS direction, r.producer_ref AS producer_ref,
-               r.source_url AS source_url, r.caption AS caption
-        FROM attachment_refs r
-        JOIN attachments a ON a.attachment_id = r.attachment_id
-        WHERE r.session_id = ? AND r.message_id IS NOT NULL
-        ORDER BY r.message_id, a.attachment_id
-        """,
-        (session_id,),
-    ).fetchall()
-    attachments_by_message: dict[str, list[ArchiveAttachmentRow]] = {}
-    for attachment in attachment_rows:
-        attachments_by_message.setdefault(attachment["message_id"], []).append(
-            _archive_attachment_row(attachment, message_id=attachment["message_id"], blob_store=blob_store)
-        )
-
     upto_clause = ""
     upto_params: tuple[int, int] | tuple[()] = ()
     if upto_position is not None and upto_variant_index is not None:
@@ -3802,24 +3779,76 @@ def _fetch_session_rows(
         """,
         (session_id, *upto_params),
     ).fetchall()
+    return _hydrate_archive_message_rows(conn, message_rows, session_id=session_id, blob_store=blob_store)
+
+
+def _hydrate_archive_message_rows(
+    conn: sqlite3.Connection,
+    message_rows: Sequence[sqlite3.Row],
+    *,
+    session_id: str,
+    blob_store: BlobStore | None,
+) -> list[ArchiveMessageRow]:
+    """Hydrate ordered message rows with blocks and attachments in safe batches.
+
+    Both whole-session composition and bounded transcript pages use this
+    relation reader. A modest batch ceiling keeps each ``IN`` query compact;
+    the connection's actual variable limit may reduce it further. Batching
+    limits statement size only and never limits how many rows are returned.
+    """
+    if not message_rows:
+        return []
+    variable_limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    if variable_limit < 1:
+        raise ValueError("SQLite connection cannot bind a message identifier")
+    batch_size = min(variable_limit, 500)
     rows: list[ArchiveMessageRow] = []
-    for message in message_rows:
+    for start in range(0, len(message_rows), batch_size):
+        batch = message_rows[start : start + batch_size]
+        message_ids = [str(row["message_id"]) for row in batch]
+        placeholders = ",".join("?" for _ in message_ids)
         block_rows = conn.execute(
             f"""
             SELECT {archive_block_row_select_sql()}
             FROM blocks
-            WHERE message_id = ?
-            ORDER BY position
+            WHERE message_id IN ({placeholders})
+            ORDER BY message_id, position
             """,
-            (message["message_id"],),
+            message_ids,
         ).fetchall()
-        rows.append(
+        blocks_by_message: dict[str, list[ArchiveBlockRow]] = {}
+        for block in block_rows:
+            blocks_by_message.setdefault(str(block["message_id"]), []).append(archive_block_row(block))
+
+        attachment_rows = conn.execute(
+            f"""
+            SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
+                   a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
+                   a.blob_hash AS blob_hash, a.acquisition_status AS acquisition_status,
+                   r.upload_origin AS upload_origin, r.direction AS direction, r.producer_ref AS producer_ref,
+                   r.source_url AS source_url, r.caption AS caption
+            FROM attachment_refs r
+            JOIN attachments a ON a.attachment_id = r.attachment_id
+            WHERE r.message_id IN ({placeholders})
+            ORDER BY r.message_id, a.attachment_id
+            """,
+            message_ids,
+        ).fetchall()
+        attachments_by_message: dict[str, list[ArchiveAttachmentRow]] = {}
+        for attachment in attachment_rows:
+            message_id = str(attachment["message_id"])
+            attachments_by_message.setdefault(message_id, []).append(
+                _archive_attachment_row(attachment, message_id=message_id, blob_store=blob_store)
+            )
+
+        rows.extend(
             _row_to_archive_message(
                 message,
                 session_id,
-                blocks=tuple(archive_block_row(block) for block in block_rows),
-                attachments=tuple(attachments_by_message.get(message["message_id"], ())),
+                blocks=tuple(blocks_by_message.get(str(message["message_id"]), ())),
+                attachments=tuple(attachments_by_message.get(str(message["message_id"]), ())),
             )
+            for message in batch
         )
     return rows
 
@@ -3872,10 +3901,8 @@ def _fetch_message_window(
 ) -> list[ArchiveMessageRow]:
     """Bounded ``[offset, offset + limit)`` window of a session's OWN rows.
 
-    Batches block/attachment reads for exactly the returned messages instead
-    of the full session's N+1-per-message pattern in ``_fetch_session_rows``,
-    since the window is small by construction (``read_archive_session_page``'s
-    whole point).
+    Batches block/attachment reads for exactly the returned messages through
+    the same bind-safe hydrator used by the full-session reader.
 
     It takes no branch-point bound: a ``_TranscriptSegment`` already counted
     the rows it contributes, and since a bounded segment is a prefix of this
@@ -3894,50 +3921,7 @@ def _fetch_message_window(
         """,
         (session_id, max(limit, 0), max(offset, 0)),
     ).fetchall()
-    if not message_rows:
-        return []
-    message_ids = [row["message_id"] for row in message_rows]
-    placeholders = ",".join("?" for _ in message_ids)
-    block_rows = conn.execute(
-        f"""
-        SELECT {archive_block_row_select_sql()}
-        FROM blocks
-        WHERE message_id IN ({placeholders})
-        ORDER BY message_id, position
-        """,
-        message_ids,
-    ).fetchall()
-    blocks_by_message: dict[str, list[ArchiveBlockRow]] = {}
-    for block in block_rows:
-        blocks_by_message.setdefault(block["message_id"], []).append(archive_block_row(block))
-    attachment_rows = conn.execute(
-        f"""
-        SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
-               a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
-               a.blob_hash AS blob_hash, a.acquisition_status AS acquisition_status,
-               r.upload_origin AS upload_origin, r.direction AS direction, r.producer_ref AS producer_ref,
-               r.source_url AS source_url, r.caption AS caption
-        FROM attachment_refs r
-        JOIN attachments a ON a.attachment_id = r.attachment_id
-        WHERE r.message_id IN ({placeholders})
-        ORDER BY r.message_id, a.attachment_id
-        """,
-        message_ids,
-    ).fetchall()
-    attachments_by_message: dict[str, list[ArchiveAttachmentRow]] = {}
-    for attachment in attachment_rows:
-        attachments_by_message.setdefault(attachment["message_id"], []).append(
-            _archive_attachment_row(attachment, message_id=attachment["message_id"], blob_store=blob_store)
-        )
-    return [
-        _row_to_archive_message(
-            row,
-            session_id,
-            blocks=tuple(blocks_by_message.get(row["message_id"], ())),
-            attachments=tuple(attachments_by_message.get(row["message_id"], ())),
-        )
-        for row in message_rows
-    ]
+    return _hydrate_archive_message_rows(conn, message_rows, session_id=session_id, blob_store=blob_store)
 
 
 def _fetch_planned_window(
@@ -8922,14 +8906,15 @@ class PreparedSessionSourceRead:
     def raw_schema_eligible(self, raw_id: str) -> bool:
         """Whether this typed artifact participates in schema validation.
 
-        Missing or mixed artifact evidence is treated as eligible. Only an
-        explicitly typed non-session artifact may omit a validation policy.
+        Missing or mixed artifact evidence is treated as eligible. Explicit
+        captured native grammar and non-session classifications may declare
+        that JSON schema validation does not apply.
         """
         self._load_matches("raw_artifacts", "SELECT rowid FROM raw_artifacts WHERE raw_id=?", (raw_id,))
         with self._seal.source_rows(
             "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=?) "
             "OR EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? "
-            "AND (parse_as_session IS NOT 0 OR schema_eligible IS NOT 0)) THEN 1 ELSE 0 END",
+            "AND schema_eligible IS NOT 0) THEN 1 ELSE 0 END",
             (raw_id, raw_id),
         ) as rows:
             row = rows.fetchone()

@@ -229,9 +229,12 @@ preserve the source's collation, affinity, views and rowid semantics. Retained
 logical exports retain ordinary and readable VIRTUAL/STORED generated column
 values, evaluated in the same acquisition snapshot with exact SQLite storage
 classes. Hidden virtual-table implementation columns remain excluded. Their
-private untyped reconstruction stores those acquired values; original DDL is
-evidence and generated expressions are never replayed. Reconstruction streams
-from the accepted export descriptor. SQLite preflight aggregates every
+private reconstruction preserves declared column affinity and stores those
+acquired values, while dropping constraints and generated expressions. Built-in
+BINARY, NOCASE, and RTRIM collations are retained; application-defined
+collation implementations are not part of the export. Reconstruction streams
+from the accepted export
+descriptor. SQLite preflight aggregates every
 trajectory through the production positive-conversational evidence gate;
 empty/degraded evidence remains a caveat, and a prefix cannot hide a later
 admitted session. Hermes verification reads every event/state row without a
@@ -491,3 +494,21 @@ identity and declared frame scope size in `raws`,
 without exception text or paths. Fatal storage, cancellation and settlement
 failures retain their existing propagation and do not emit this event. Neither
 isolation event proves Source progress or completed output.
+
+Retained replay publishes captured parser taxonomy with its original Source
+census. Native SQLite grammars can declare `schema_eligible=False` while
+producing sessions; JSON schema validation then does not apply. Completing
+missing native taxonomy additionally requires the retained SQLite format,
+so a coarse JSON classification cannot exempt a missing JSON verdict. Positive
+path-only session observations conservatively remain schema eligible. A
+current parser receipt with missing taxonomy is completed from its captured
+prepared outcome, including its sessions or its zero-session result. It cannot substitute for required
+JSON validation evidence. Raw-only inputs still require their independent
+current non-session membership receipt; native session inputs still require
+current parser authority and exact Index reachability.
+
+When preparation isolates a seed after a page failure, its explicit selection
+contains that seed rather than reoffering the page callback. Canonical
+membership and discovered dependency expansion remain owned by the original
+reader and preparation. Failed unrelated siblings cannot repeatedly turn
+healthy page seeds into failed subjects.

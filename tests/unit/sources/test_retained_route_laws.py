@@ -486,8 +486,9 @@ def _contains_fault(failure: BaseException, message: str) -> bool:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("identified", [False, True], ids=["identity-opaque", "native-identified"])
 @pytest.mark.parametrize("failure_kind", ["runtime", "prepared_file"])
+@pytest.mark.parametrize("fixed_page", [False, True])
 async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, identified: bool, failure_kind: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, identified: bool, failure_kind: str, fixed_page: bool
 ) -> None:
     """A retryable preparation failure in one raw leaves its page's other raws published.
 
@@ -555,7 +556,10 @@ async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblin
     monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", failing)
     with capture() as events:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            outcome = await owner.replay_retained_raw_ids(tuple(acquired.values()))
+            outcome = await owner.replay_retained_raw_ids(
+                tuple(acquired.values()),
+                select_retained_raw_ids=(lambda _read: tuple(acquired.values())) if fixed_page else None,
+            )
     retries = [e for e in events if e.get("event") == "storage.raw_observation.preparation_isolated"]
     assert retries
     assert {e["reason"] for e in retries} == {"page_scope_failed", "raw_preparation_failed"}

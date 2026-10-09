@@ -345,6 +345,7 @@ class RawObservationArchiveWork:
                         reselected: tuple[str, ...] | None = deferred_selection,
                         captured_inputs: list[tuple[object, ...]] = original_inputs,
                         captured_keys: dict[str, tuple[str, ...]] = original_keys,
+                        isolated_scope: bool = isolated,
                     ) -> Sequence[str]:
                         # A preparation that widens to a lineage parent selects
                         # again on its new reader; the final attempt's capture
@@ -363,8 +364,12 @@ class RawObservationArchiveWork:
                                 reselected
                                 if reselected is not None
                                 else (
-                                    selected_raw_id,
-                                    *(select_retained_raw_ids(reader) if select_retained_raw_ids else ()),
+                                    (selected_raw_id,)
+                                    if isolated_scope
+                                    else (
+                                        selected_raw_id,
+                                        *(select_retained_raw_ids(reader) if select_retained_raw_ids else ()),
+                                    )
                                 )
                             )
                             if item not in refused_ids and item not in dependency_blocked_ids and item not in failed_ids

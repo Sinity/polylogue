@@ -492,6 +492,58 @@ def test_an_export_round_trips_every_storage_class(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize("declared_type", ["INTEGER", "TEXT", "NUMERIC", "REAL", "BLOB", ""])
+def test_reconstruction_preserves_affinity_and_canonical_storage_classes(tmp_path: Path, declared_type: str) -> None:
+    """Source affinity keeps query behavior without changing captured cells.
+
+    Reapplying affinity to values already stored by SQLite must leave their
+    storage class and bytes intact. Constraints and generated expressions are
+    still absent from the reconstruction.
+    """
+    source = tmp_path / "affinity.db"
+    with closing(sqlite3.connect(source)) as conn, conn:
+        conn.execute(f"CREATE TABLE values_table (value {declared_type})")
+        conn.executemany(
+            "INSERT INTO values_table(value) VALUES (?)",
+            [(None,), (1,), (1.5,), ("1",), ("01",), ("1abc",), (b"\x00\xff",)],
+        )
+        conn.execute("INSERT INTO values_table(value) VALUES (CAST(x'ff00' AS TEXT))")
+        expected = conn.execute(
+            "SELECT typeof(value), CAST(quote(value) AS BLOB), CAST(value AS BLOB) FROM values_table ORDER BY rowid"
+        ).fetchall()
+
+    export = tmp_path / "affinity.export"
+    export.write_bytes(sqlite_export.logical_export_bytes(source))
+    with logical_source_context(export) as rebuilt:
+        actual = rebuilt.execute(
+            "SELECT typeof(value), CAST(quote(value) AS BLOB), CAST(value AS BLOB) FROM values_table ORDER BY rowid"
+        ).fetchall()
+        replayed_type = sqlite_export.readable_table_info(rebuilt, "values_table")[0][2]
+
+    assert actual == expected
+    assert replayed_type == declared_type
+
+
+def test_strict_any_replay_preserves_no_affinity_storage_classes(tmp_path: Path) -> None:
+    source = tmp_path / "strict-any.db"
+    with closing(sqlite3.connect(source)) as conn, conn:
+        conn.execute("CREATE TABLE values_table (value ANY) STRICT")
+        conn.executemany(
+            "INSERT INTO values_table(value) VALUES (?)", [("001",), (1,), (1.5,), (b"\x00\xff",), (None,)]
+        )
+        expected = conn.execute(
+            "SELECT typeof(value), CAST(quote(value) AS BLOB), CAST(value AS BLOB) FROM values_table ORDER BY rowid"
+        ).fetchall()
+
+    export = tmp_path / "strict-any.export"
+    export.write_bytes(sqlite_export.logical_export_bytes(source))
+    with logical_source_context(export) as rebuilt:
+        actual = rebuilt.execute(
+            "SELECT typeof(value), CAST(quote(value) AS BLOB), CAST(value AS BLOB) FROM values_table ORDER BY rowid"
+        ).fetchall()
+    assert actual == expected
+
+
 def test_non_sqlite_material_is_identified_by_its_bytes(tmp_path: Path) -> None:
     """Observer-stream acquisition must use captured bytes without a SQLite read."""
     from polylogue.core.provider_identity import captured_hermes_profile_key
@@ -1163,19 +1215,13 @@ def test_a_read_index_hint_naming_an_absent_table_or_column_is_ignored(tmp_path:
         assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 12
 
 
-def test_the_reconstruction_does_not_reproduce_source_collation(tmp_path: Path) -> None:
-    """The untyped reconstruction keeps values exactly and drops collation.
+def test_reconstruction_preserves_builtin_source_collation(tmp_path: Path) -> None:
+    """Builtin source collations keep their native comparison behavior.
 
     A parser that reads a ``COLLATE NOCASE`` column through a retained export
-    gets BINARY comparison, so an unqualified equality it inherited from the
-    source silently stops matching. This witnesses that boundary rather than
-    leaving it a docstring claim.
-
-    Anti-vacuity: change ``_create_statement`` to replay the source column
-    declarations and the reconstruction answers ``'ABC'`` with the stored
-    row, so the ``== []`` assertion goes red -- and that replay is exactly
-    what would forfeit the exact-value round trip the untyped table exists
-    to give.
+    gets NOCASE comparison, matching the source without parser-specific SQL.
+    Application-defined collations remain unavailable because their
+    comparator implementations are not part of the logical export.
     """
     source = tmp_path / "people.db"
     with closing(sqlite3.connect(source)) as conn, conn:
@@ -1190,15 +1236,37 @@ def test_the_reconstruction_does_not_reproduce_source_collation(tmp_path: Path) 
     export.write_bytes(sqlite_export.logical_export_bytes(source))
     with logical_source_context(export) as rebuilt:
         rebuilt_matches = [str(row[0]) for row in rebuilt.execute("SELECT note FROM people WHERE name = 'ABC'")]
-        stated = [
-            str(row[0])
-            for row in rebuilt.execute("SELECT note FROM people WHERE name = 'ABC' COLLATE NOCASE ORDER BY note")
-        ]
         values = sorted(str(row[0]) for row in rebuilt.execute("SELECT name FROM people"))
 
-    assert rebuilt_matches == ["upper"], "collation is not reproduced: only the byte-equal row matches"
-    assert stated == ["lower", "upper"], "a query that states its collation gets it back"
+    assert rebuilt_matches == ["lower", "upper"]
     assert values == ["ABC", "abc"], "the values themselves round-trip exactly"
+
+
+def test_schema_metadata_probe_does_not_execute_application_callbacks(tmp_path: Path) -> None:
+    source = tmp_path / "callbacks.db"
+    with closing(sqlite3.connect(source)) as conn, conn:
+        conn.create_collation(
+            "APPNOCASE", lambda left, right: (left.lower() > right.lower()) - (left.lower() < right.lower())
+        )
+        conn.create_function("is_ok", 1, lambda value: int(value == "ok"), deterministic=True)
+        conn.create_function("up_app", 1, lambda value: value.upper(), deterministic=True)
+        conn.executescript(
+            """
+            CREATE TABLE checked (value TEXT CHECK(is_ok(value)));
+            CREATE TABLE generated (value TEXT, upper_value TEXT GENERATED ALWAYS AS (up_app(value)) STORED);
+            CREATE TABLE custom (value TEXT COLLATE APPNOCASE);
+            INSERT INTO checked VALUES ('ok');
+            INSERT INTO generated(value) VALUES ('kept');
+            INSERT INTO custom VALUES ('value');
+            """
+        )
+    export = tmp_path / "callbacks.export"
+    export.write_bytes(sqlite_export.logical_export_bytes(source))
+
+    with logical_source_context(export) as rebuilt:
+        assert rebuilt.execute("SELECT value FROM checked").fetchall() == [("ok",)]
+        assert rebuilt.execute("SELECT value, upper_value FROM generated").fetchall() == [("kept", "KEPT")]
+        assert rebuilt.execute("SELECT value FROM custom").fetchall() == [("value",)]
 
 
 # ---------------------------------------------------------------------------

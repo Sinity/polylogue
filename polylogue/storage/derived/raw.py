@@ -728,23 +728,18 @@ class RawObservationInspection:
             return "stale"
         validation_mode = self.inspection_validation_mode
         if validation_mode is not None and raw["validation_mode"] != validation_mode.value:
-            # Typed non-session carriers are outside the schema-validation
-            # policy. Their current parser census is still required, so a
-            # NULL stamp is accepted only when both pieces of evidence agree.
-            typed_non_session = (
+            # Captured native grammar and non-session classifications can
+            # exclude JSON schema policy. Their current parser census and
+            # exact session reachability are still required below.
+            typed_schema_ineligible = (
                 conn.execute(
                     "SELECT 1 WHERE EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=?) "
                     "AND NOT EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? "
-                    "AND (parse_as_session IS NOT 0 OR schema_eligible IS NOT 0))",
-                    (key, key),
-                ).fetchone()
-                is not None
-            )
-            parser_non_session = (
-                conn.execute(
-                    "SELECT 1 FROM raw_membership_census WHERE raw_id=? AND status='non_session' "
-                    "AND parser_fingerprint=? LIMIT 1",
-                    (key, parser_fingerprint),
+                    "AND schema_eligible IS NOT 0) "
+                    "AND (EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? AND parse_as_session=1) "
+                    "OR EXISTS (SELECT 1 FROM raw_membership_census WHERE raw_id=? AND status='non_session' "
+                    "AND parser_fingerprint=?))",
+                    (key, key, key, key, parser_fingerprint),
                 ).fetchone()
                 is not None
             )
@@ -752,8 +747,7 @@ class RawObservationInspection:
                 raw["validation_mode"] is None
                 and census is not None
                 and census["status"] == "complete"
-                and typed_non_session
-                and parser_non_session
+                and typed_schema_ineligible
             ):
                 return "stale"
         if (
@@ -2335,9 +2329,9 @@ class RawObservationDerivation(RawObservationInspection):
                                 raw_id
                             )
                             declared_non_session = path_declaration_refuses_session(provider, source_path)
-                        if (
-                            not schema_eligible or declared_non_session
-                        ) and census_read.raw_parser_confirmed_non_session(raw_id):
+                        if not schema_eligible or (
+                            declared_non_session and census_read.raw_parser_confirmed_non_session(raw_id)
+                        ):
                             complete_census.add(raw_id)
                 # Every retained raw needs its actual parser authority before
                 # replay can select a session. A singleton can still refine an
