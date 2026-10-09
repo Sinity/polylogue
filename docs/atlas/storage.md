@@ -24,6 +24,12 @@ arrays. Ingest, hashing, prepared serialization and index writes replay the
 ordered item rows without collecting them. The table is part of the rebuildable
 index schema and cascades with its event.
 
+Provider-asserted branch points resolve against the parent's composed transcript,
+including prefix rows physically owned by ancestors. Resolution keeps the
+canonical owning message ID and respects the composed branch cut. Several rows
+with the asserted native name cause `AssertedBranchPointAmbiguousError`; the
+writer never selects one by session or ancestor precedence.
+
 Live page admission first proves that every active index raw reference exists
 in source. A process-local healthy certificate starts with a complete check,
 then consumes source/index transactional changed-key journals on each page;

@@ -66,6 +66,11 @@ Hydrated message classification reads textual markers only from declared `TEXT` 
 
 Ordinary block reads preserve the stored language and media type through typed records and domain hydration. Message streams plan inherited prefixes as bounded lineage segments and hydrate blocks and message-owned attachment references in batches on one read snapshot; closing a public stream closes its nested reader before releasing that connection.
 
+Read frames retain the identity of the selected physical leaf through native
+open, independently of subsequent active-pointer promotion. Resuming an idle
+continuation rebinds a stale live frame before proving the anchor against current
+rows; a predecessor's surviving anchor cannot authorize a successor page.
+
 ## Scoped ranked reads
 
 Semantic and hybrid session requests qualify the canonical SQL and residual scope before ranking. The held ArchiveStore connection supplies current prose and occurrence identity to the retained-vector TEMP projection. Exact L2 scoring covers every eligible stored output; near takes the minimum over all stored seed outputs. Session witness selection, complete hybrid lane ranks and n-ary RRF precede the final session window (`polylogue/archive/query/archive_execution.py`, `polylogue/storage/search_providers/sqlite_vec_queries.py`, `polylogue/storage/sqlite/archive_tiers/archive.py`). TEMP relations use FILE storage selected at connection acquisition. Successful full lane settlement is explicit in `completed_lanes`; unavailable or failed lanes remain named gaps.

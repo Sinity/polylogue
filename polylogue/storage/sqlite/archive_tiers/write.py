@@ -10413,12 +10413,18 @@ def _upsert_session_link(
 ASSERTED_BRANCH_POINT_EVIDENCE_KEY = "asserted_branch_point_native_id"
 
 
+class AssertedBranchPointAmbiguousError(RuntimeError):
+    """A provider branch-point name identifies several composed parent rows."""
+
+    code = "asserted_branch_point_ambiguous"
+
+
 def _bind_asserted_branch_point(
     conn: sqlite3.Connection,
     parent_session_id: str | None,
     native_id: str | None,
 ) -> str | None:
-    """Return the parent's ``message_id`` for an asserted branch point.
+    """Return the unique composed parent row named by an asserted branch point.
 
     ``None`` when the parent or that exact message is not in the archive yet:
     ``session_links.branch_point_message_id`` has no FK, so an unbacked id
@@ -10427,11 +10433,27 @@ def _bind_asserted_branch_point(
     """
     if not parent_session_id or not native_id or not native_id.strip():
         return None
-    # The same surrogate substitution ``messages.native_id`` stores, so a
-    # lone-surrogate provider id names the row it was stored as.
-    candidate = archive_message_id(parent_session_id, _sqlite_text(native_id.strip()))
-    row = conn.execute("SELECT 1 FROM messages WHERE message_id = ? LIMIT 1", (candidate,)).fetchone()
-    return candidate if row is not None else None
+    # Normalization can move a parent's prefix into its ancestors. The provider
+    # still names that original message, including when the child never replays
+    # the prefix. Resolve only inside the parent's actual composed segments.
+    normalized = _sqlite_text(native_id.strip())
+    bound: str | None = None
+    plan = _composed_transcript_plan(conn, parent_session_id)
+    for segment in plan.segments:
+        candidate = archive_message_id(segment.session_id, normalized)
+        row = conn.execute("SELECT position, variant_index FROM messages WHERE message_id = ?", (candidate,)).fetchone()
+        if row is None or (
+            segment.upto_position is not None
+            and segment.upto_variant_index is not None
+            and (int(row[0]), int(row[1])) > (segment.upto_position, segment.upto_variant_index)
+        ):
+            continue
+        if bound is not None and bound != candidate:
+            raise AssertedBranchPointAmbiguousError(
+                f"branch point {native_id!r} names several rows in parent {parent_session_id!r}"
+            )
+        bound = candidate
+    return bound
 
 
 def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_session_id: str) -> None:

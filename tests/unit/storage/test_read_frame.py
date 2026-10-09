@@ -307,6 +307,57 @@ def test_unmoved_generation_resumes_unchanged(index_db: Path) -> None:
         assert frame.resume(continuation) == continuation
 
 
+def test_idle_frame_resume_rebinds_after_active_pointer_swap(index_db: Path, tmp_path: Path) -> None:
+    """A removed successor anchor cannot be proved on the predecessor handle."""
+    pointer = tmp_path / "active.db"
+    pointer.symlink_to(index_db)
+    replacement = tmp_path / "replacement.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(replacement, ArchiveTier.INDEX)
+    _commit(replacement, "CREATE TABLE rows_ (position INTEGER PRIMARY KEY, body TEXT NOT NULL)")
+    with read_frame(pointer) as frame:
+        continuation = frame.bind(ReadContinuation(position=5, anchor_sql=_ANCHOR, anchor_params=(5,)))
+        successor = tmp_path / "successor"
+        successor.symlink_to(replacement)
+        successor.replace(pointer)
+        assert not frame.revalidate()
+        with pytest.raises(StaleContinuationError):
+            frame.resume(continuation)
+        assert frame.epoch == 1
+        assert frame.generation != continuation.generation
+
+
+def test_frame_open_binds_selected_leaf_before_pointer_swap(
+    index_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A swap after native open must not label the old handle with a new inode."""
+    from polylogue.storage.sqlite import connection_profile as profiles
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    replacement = tmp_path / "replacement.db"
+    initialize_archive_database(replacement, ArchiveTier.INDEX)
+    pointer = tmp_path / "active.db"
+    pointer.symlink_to(index_db)
+    original_open = profiles.open_readonly_connection
+
+    def swapping_open(*args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = original_open(*args, **kwargs)  # type: ignore[arg-type]
+        successor = tmp_path / "successor"
+        successor.symlink_to(replacement)
+        successor.replace(pointer)
+        return conn
+
+    monkeypatch.setattr(profiles, "open_readonly_connection", swapping_open)
+    with read_frame(pointer) as frame:
+        assert frame.generation == profiles._generation_token(index_db)
+        assert frame.generation != profiles._generation_token(pointer)
+        assert not frame.revalidate()
+        assert frame.connection.execute("SELECT COUNT(*) FROM rows_").fetchone()[0] == 10
+
+
 def test_rebound_frame_reproves_the_anchor_rather_than_trusting_identity(index_db: Path) -> None:
     """A rebind starts a new incarnation, so the fast path must not fire.
 
