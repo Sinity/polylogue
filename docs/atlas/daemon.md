@@ -334,7 +334,11 @@ paid state still requires the active source-snapshotted Index before deletion
 Drive intake returns `DriveCatchupReport`: `complete`, `pending`, `retryable`,
 `blocked`, or `unknown`. Completion requires a full paged listing and a separate
 post-acquisition listing, exact native file/revision bindings to retained Raw,
-and current materialization in the executing Index snapshot. A private disk
+and current materialization in the executing Index generation. The product Raw
+inspector reads one Source and selected Index snapshot and verifies the selected
+schema validation policy, parser and lowering currency, and exact replay
+application receipts. Missing policy authority stays unknown; stale Raw
+materialization stays pending and resumes retained convergence. A private disk
 relation holds the full listing and per-file bindings. Its digest, denominator,
 selection rule, resolved folder, and observation times travel in the report.
 A measured empty folder has zero members. An absent or unfinished witness has
@@ -351,7 +355,8 @@ withhold full readiness until configured Drive obligations are measured complete
 including when embeddings are disabled.
 Resident collection retains an in-flight scan across its response deadline.
 Its cache fingerprint binds both archive generations and the configured scope
-and listing custody, so replacing a witness invalidates prior readiness even
+and listing custody plus the selected validation policy, so replacing a witness or
+changing policy invalidates prior readiness even
 when no archive file changed. Deferred membership remains pending; conflicting
 membership is blocked debt, and typed terminal parser evidence blocks completion
 even when it has no free-text diagnostic. Shutdown releases listing scratch

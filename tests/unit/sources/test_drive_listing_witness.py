@@ -10,7 +10,8 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.core.compute import DaemonOperationCancelled
-from polylogue.operations.drive_readiness import DriveCatchupState, inspect_drive_readiness
+from polylogue.operations.drive_readiness import DriveCatchupState
+from polylogue.operations.drive_readiness import inspect_drive_readiness as _inspect_drive_readiness
 from polylogue.sources.drive.source_client import DriveSourceClient
 from polylogue.sources.drive.types import (
     GEMINI_PROMPT_MIME_TYPE,
@@ -23,6 +24,12 @@ from polylogue.sources.drive.types import (
 from polylogue.sources.drive.witness import DriveListingWitness
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+
+
+def inspect_drive_readiness(*args: Any, **kwargs: Any) -> Any:
+    # These acquisition laws supply settled Raw currency independently. The
+    # retained production route exercises the actual classifier in daemon tests.
+    return _inspect_drive_readiness(*args, inspect_raw=lambda key: "valid", **kwargs)
 
 
 @pytest.mark.parametrize("count", [0, 3])

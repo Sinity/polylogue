@@ -567,16 +567,30 @@ class RawObservationInspection:
 
     @property
     def inspection_validation_mode(self) -> ValidationMode | None:
-        """Return no schema policy for inspection-only use."""
-        return None
+        """Use the selected policy when the caller is certifying readiness."""
+        return self._inspection_validation_mode
 
-    def __init__(self, archive_root: Path, *, index_db_path: Path | None = None) -> None:
+    def __init__(
+        self, archive_root: Path, *, index_db_path: Path | None = None, validation_mode: ValidationMode | None = None
+    ) -> None:
         self.archive_root = archive_root
         self._index_db_path = index_db_path
+        self._inspection_validation_mode = validation_mode
 
     @property
     def recipe_version(self) -> str:
-        return raw_authority_parser_fingerprint()
+        mode = self.inspection_validation_mode
+        return raw_authority_parser_fingerprint() if mode is None else raw_observation_recipe_version(mode)
+
+    @contextmanager
+    def read_current(self) -> Iterator[sqlite3.Connection]:
+        """Borrow one coherent Source and selected Index snapshot for inspection."""
+        with self._read() as conn:
+            yield conn
+
+    def inspect_current(self, conn: sqlite3.Connection, key: str) -> str:
+        """Inspect a raw in the snapshot supplied by read_current."""
+        return self._inspect(conn, key)
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:

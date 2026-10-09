@@ -742,6 +742,7 @@ async def _run_drive_source_catchup_once(
                     observation.witnesses,
                     changed_count=len(session_ids),
                     raw_owner_available=raw_owner is not None,
+                    validation_mode=ValidationMode.from_string(config.schema_validation),
                 )
             )
             if report.state is DriveCatchupState.COMPLETE:

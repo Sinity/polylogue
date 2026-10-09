@@ -110,6 +110,7 @@ class Config:
     embedding_dimension: int = 1024
     judgment_automation_interval_s: int = 3600
     sinex_mode: str = "off"
+    schema_validation: str = "advisory"
     api_auth_token: str | None = None
     api_allow_no_auth: bool = False
 
@@ -127,6 +128,7 @@ class Config:
         sinex_mode: str = "off",
         api_auth_token: str | None = None,
         api_allow_no_auth: bool = False,
+        schema_validation: str = "advisory",
     ) -> None:
         self.archive_root = archive_root
         self.render_root = render_root
@@ -139,6 +141,7 @@ class Config:
         self.embedding_dimension = embedding_dimension
         self.judgment_automation_interval_s = judgment_automation_interval_s
         self.sinex_mode = sinex_mode
+        self.schema_validation = schema_validation
         self.api_auth_token = api_auth_token
         self.api_allow_no_auth = api_allow_no_auth
         if api_auth_token is not None and not isinstance(api_auth_token, str):
@@ -175,6 +178,7 @@ class Config:
             and self.embedding_dimension == other.embedding_dimension
             and self.judgment_automation_interval_s == other.judgment_automation_interval_s
             and self.sinex_mode == other.sinex_mode
+            and self.schema_validation == other.schema_validation
             and self.api_auth_token == other.api_auth_token
             and self.api_allow_no_auth == other.api_allow_no_auth
         )
@@ -1804,6 +1808,7 @@ class ResolvedRuntimeConfig:
             embedding_dimension=self.settings.embedding_dimension,
             judgment_automation_interval_s=self.settings.judgment_automation_interval_s,
             sinex_mode=self.settings.sinex_mode,
+            schema_validation=self.settings.schema_validation,
             api_auth_token=self.settings.api_auth_token,
             api_allow_no_auth=self.settings.api_allow_no_auth,
         )
