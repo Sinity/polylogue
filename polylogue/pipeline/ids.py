@@ -1047,6 +1047,43 @@ def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
     return _model_hash_payload(block, _HASHED_FIELDS["ParsedContentBlock"], _NFC_TEXT_FIELDS["ParsedContentBlock"])
 
 
+@dataclass(frozen=True, slots=True)
+class BlockContentIdentity:
+    """Source semantics and ordinal among identical blocks within one message."""
+
+    content_identity: str
+    content_occurrence: int
+
+
+def block_content_identity(block: ParsedContentBlock) -> str:
+    """Hash the exact declared typed Source semantics, never citation equivalence.
+
+    Only declared prose is NFC folded. Identifiers, operational values and
+    mapping keys remain exact; null and empty remain distinct. A provider
+    signature is independently owned attestation, never a native block ID.
+    """
+    payload = {
+        field: _typed_identity_value(
+            getattr(block, field),
+            prose=field in _NFC_TEXT_FIELDS["ParsedContentBlock"],
+        )
+        for field in _sorted_hash_fields(_HASHED_FIELDS["ParsedContentBlock"])
+    }
+    return hashlib.sha256(b"polylogue.source-block-identity.v1\0" + canonical_bytes(payload, QUERY)).hexdigest()
+
+
+def block_content_identities(blocks: Sequence[ParsedContentBlock]) -> tuple[BlockContentIdentity, ...]:
+    """Bind duplicates by exact semantic identity, independent of other blocks."""
+    occurrences: dict[str, int] = {}
+    identities: list[BlockContentIdentity] = []
+    for block in blocks:
+        identity = block_content_identity(block)
+        occurrence = occurrences.get(identity, 0)
+        occurrences[identity] = occurrence + 1
+        identities.append(BlockContentIdentity(identity, occurrence))
+    return tuple(identities)
+
+
 def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
     """True when ``message.blocks`` is a single TEXT block that just repeats ``message.text``.
 

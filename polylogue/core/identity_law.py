@@ -103,10 +103,13 @@ def split_message_local_id(stored_message_id: str) -> tuple[str | None, str | No
     raise ValueError(f"not a tagged archive message id: {stored_message_id!r}")
 
 
-def block_id(parent_message_id: str, *, position: int) -> str:
-    """Return archive ``block_id`` under a message."""
+def block_id(parent_message_id: str, *, content_identity: str, content_occurrence: int = 0) -> str:
+    """Return the immutable Source-content ID beneath its owning message."""
     message = _required_text("message_id", parent_message_id)
-    return f"{message}:{_required_non_negative('position', position)}"
+    if len(content_identity) != 64 or any(char not in "0123456789abcdef" for char in content_identity):
+        raise ValueError("block content_identity must be lowercase SHA-256 hexadecimal text")
+    occurrence = _required_non_negative("content_occurrence", content_occurrence)
+    return f"{message}:b:{content_identity}:{occurrence}"
 
 
 #: The coordinate a session's transcript order is stated in. Content position,
