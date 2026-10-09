@@ -92,11 +92,7 @@ class VerifiedAcceptedMarkerPayload:
         self.payload_file.close()
 
     def iter_items(self, prefix: str) -> Iterator[object]:
-        self.payload_file.seek(0)
-        try:
-            yield from _iter_json_items(self.payload_file, prefix)
-        except (ijson.JSONError, UnicodeError, ValueError) as exc:
-            raise AcceptedMarkerInputRefusedError("invalid accepted marker carrier") from exc
+        yield from _iter_json_items(self.payload_file, prefix)
 
     def iter_session_ids(self) -> Iterator[str]:
         """Yield complete request and selected session membership without arrays."""

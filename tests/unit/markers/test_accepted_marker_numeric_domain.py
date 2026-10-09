@@ -23,7 +23,7 @@ def test_generated_marker_carrier_keeps_arbitrary_integers_and_float_identity(in
     session = ParsedSession(
         source_name=Provider.DRIVE,
         provider_session_id="neutral",
-        messages=[ParsedMessage(role=Role.USER, text="neutral")],
+        messages=[ParsedMessage(provider_message_id="m", role=Role.USER, text="neutral")],
         pending_drafts=[{"text": "unsent", "token_count": integer}],
         reported_cost_usd=cost,
     )

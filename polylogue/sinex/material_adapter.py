@@ -415,7 +415,9 @@ def _session_metadata(parsed_session: ParsedSession) -> dict[str, JSONValue]:
     return metadata
 
 
-def _parsed_event_input(position: int, event: ParsedSessionEvent) -> SessionEventInput:
+def _parsed_event_input(
+    position: int, event: ParsedSessionEvent, duplicate_native_ids: frozenset[str]
+) -> SessionEventInput:
     payload = _json_object(event.payload)
     summary_value = payload.get("summary")
     summary = summary_value if isinstance(summary_value, str) else event.event_type
@@ -424,7 +426,7 @@ def _parsed_event_input(position: int, event: ParsedSessionEvent) -> SessionEven
         event_type=event.event_type,
         summary=summary,
         payload=payload,
-        source_message_native_id=event.source_message_provider_id,
+        source_message_native_id=stored_message_native_id(event.source_message_provider_id, duplicate_native_ids),
         occurred_at_ms=to_epoch_ms(event.timestamp, numeric_unit="seconds"),
     )
 
@@ -524,7 +526,11 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
         if attachment.message_provider_id is None:
             unanchored_attachments.append(attachment)
         else:
-            attachments_by_message[attachment.message_provider_id].append(attachment)
+            native = normalized_message_native_id(attachment.message_provider_id)
+            if native is None:
+                unanchored_attachments.append(attachment)
+            else:
+                attachments_by_message[native].append(attachment)
 
     fidelity_gaps: list[FidelityGapInput] = []
     messages: list[MessageInput] = []
@@ -547,7 +553,7 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
             gap = _parsed_block_fidelity_gap(session_id, index, block_index, block)
             if gap is not None:
                 fidelity_gaps.append(gap)
-        anchored = attachments_by_message.pop(message.provider_message_id, []) if native_message_id is not None else []
+        anchored = attachments_by_message.pop(native_message_id, []) if native_message_id is not None else []
         attachment_inputs: list[AttachmentInput] = []
         for attachment_position, attachment in enumerate(anchored):
             attachment_inputs.append(_parsed_attachment_input(attachment_position, attachment))
@@ -599,7 +605,7 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
                 scope="attachment",
                 record_id=f"{session_id}:attachment-anchor:native:{message_provider_id}",
                 gap_kind="unresolved_anchor",
-                detail="attachment referenced a message anchor absent from the accepted session",
+                detail="attachment referenced an absent or ambiguous message anchor in the accepted session",
             )
         )
     for index, attachment in enumerate(unanchored_attachments):
@@ -632,8 +638,24 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
             )
         )
 
-    events = [_parsed_event_input(index, event) for index, event in enumerate(parsed_session.session_events)]
+    events = [
+        _parsed_event_input(index, event, duplicate_native_ids)
+        for index, event in enumerate(parsed_session.session_events)
+    ]
+    emitted_natives = {message.native_id for message in messages if message.native_id is not None}
     for index, event in enumerate(parsed_session.session_events):
+        if (
+            event.source_message_provider_id is not None
+            and events[index].source_message_native_id not in emitted_natives
+        ):
+            fidelity_gaps.append(
+                FidelityGapInput(
+                    scope="session_event",
+                    record_id=f"{session_id}:{index}",
+                    gap_kind="unresolved_anchor",
+                    detail="session event referenced an absent or ambiguous message anchor in the accepted session",
+                )
+            )
         unsupported = _unsupported_fields(
             event, frozenset({"event_type", "timestamp", "payload", "source_message_provider_id"})
         )

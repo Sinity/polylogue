@@ -90,7 +90,7 @@ class SegmentDescriptor:
             self.index < HEAD_SEGMENT_INDEX
             or self.filename != expected_filename
             or self.size_bytes < 0
-            or self.record_count <= 0
+            or self.record_count < 0
             or self.first_seq < 0
             or self.last_seq != self.first_seq + self.record_count - 1
         ):

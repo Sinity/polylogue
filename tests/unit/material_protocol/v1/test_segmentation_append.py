@@ -240,6 +240,7 @@ def test_verifier_rejects_contradictory_session_message_count() -> None:
             polylogue_sha256=hash_bytes(joined),
             size_bytes=len(joined),
         ),
+        revision_id=hash_bytes(joined),
     )
     tampered_segments = dict(encoded.segments)
     tampered_segments[head_index] = tampered_head

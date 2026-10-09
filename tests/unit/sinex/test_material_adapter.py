@@ -102,6 +102,16 @@ def test_tool_result_association_does_not_rename_source_tool_use() -> None:
     assert first.content_occurrence == second.content_occurrence
 
 
+def test_attachment_and_event_owners_use_the_same_native_normalization_as_messages() -> None:
+    parsed = _parsed_session()
+    parsed.messages[1].provider_message_id = " m2 "
+    parsed.attachments[0].message_provider_id = "m2"
+    parsed.session_events[0].source_message_provider_id = " m2 "
+    _payload, decoded = _decoded_publication(parsed)
+    assert len(decoded.messages[1].attachments) == 1
+    assert len(decoded.messages[1].session_events) == 1
+
+
 def _parsed_session() -> ParsedSession:
     first = ParsedMessage(
         position=0,
