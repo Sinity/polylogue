@@ -77,6 +77,11 @@ open, independently of subsequent active-pointer promotion. Resuming an idle
 continuation rebinds a stale live frame before proving the anchor against current
 rows; a predecessor's surviving anchor cannot authorize a successor page.
 
+Cached facets bind to the complete pinned Index/User frame as well as the
+archive generation and invalidation epoch. A committed assertion can change
+that frame before its writer announces cache invalidation; the new reader
+must then compute fresh facets.
+
 ## Scoped ranked reads
 
 Semantic and hybrid session requests qualify the canonical SQL and residual scope before ranking. The held ArchiveStore connection supplies current prose and occurrence identity to the retained-vector TEMP projection. Exact L2 scoring covers every eligible stored output; near takes the minimum over all stored seed outputs. Session witness selection, complete hybrid lane ranks and n-ary RRF precede the final session window (`polylogue/archive/query/archive_execution.py`, `polylogue/storage/search_providers/sqlite_vec_queries.py`, `polylogue/storage/sqlite/archive_tiers/archive.py`). TEMP relations use FILE storage selected at connection acquisition. Successful full lane settlement is explicit in `completed_lanes`; unavailable or failed lanes remain named gaps.

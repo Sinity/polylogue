@@ -139,6 +139,53 @@ def test_pinned_read_names_a_view_and_serves_a_warm_repeat(tmp_path: Path, monke
     assert bodies == [{"total_sessions": 1}, {"total_sessions": 1}]
 
 
+def test_facets_cache_follows_user_commit_before_epoch_invalidation(tmp_path: Path, monkeypatch: Any) -> None:
+    """An unchanged frame hits; a committed assertion with the same epoch does not."""
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore(tmp_path) as writer:
+        writer._conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES ('one', 'unknown-export', ?)",
+            (bytes(32),),
+        )
+        writer._conn.commit()
+    cache.invalidate_search_cache()
+    params = {"include_deferred": False}
+
+    def read() -> dict[str, object]:
+        with open_operation_read(tmp_path) as pinned:
+            return execute_read_operation(
+                "facets",
+                {"params": params},
+                archive=pinned.archive,
+                serving_identity="daemon",
+                read_view=pinned.read_view,
+            )
+
+    first = read()
+    hits_before = cache.get_cache_stats()["result_cache_hits"]
+    assert read() == first
+    assert cache.get_cache_stats()["result_cache_hits"] == hits_before + 1
+    assert first["tags"] == {}
+    original_epoch = cache.current_cache_epoch()
+    invalidate = cache.invalidate_search_cache
+    interleaved: list[dict[str, object]] = []
+
+    def read_after_commit_then_invalidate() -> None:
+        assert cache.current_cache_epoch() == original_epoch
+        interleaved.append(read())
+        invalidate()
+
+    # The actual tag writer commits user.db before this callback advances the
+    # process counter. Schedule the fresh reader in that existing interval.
+    with ArchiveStore(tmp_path) as writer:
+        with monkeypatch.context() as patch:
+            patch.setattr(cache, "invalidate_search_cache", read_after_commit_then_invalidate)
+            assert writer.add_user_tags(("unknown-export:one",), ("review",)) == 1
+    assert len(interleaved) == 1
+    assert interleaved[0]["tags"] == {"review": 1}
+    assert read()["tags"] == {"review": 1}
+
+
 def test_a_read_completing_across_an_invalidation_is_not_served_to_the_next_read(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

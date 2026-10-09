@@ -213,6 +213,12 @@ def execute_read_operation(
         )
     if cacheable:
         assert read_view is not None
+        if name == "facets":
+            from polylogue.archive.query.transaction import archive_snapshot_epoch
+
+            # A committed User write can precede its cache invalidation. Bind
+            # facets to the rows this reader pinned, even while epochs agree.
+            cache_key_payload = {"params": cache_key_payload, "snapshot_epoch": archive_snapshot_epoch(archive)}
         from polylogue.storage.search.cache import get_cached_result
 
         cached = get_cached_result(name, cache_key_payload, view=read_view)

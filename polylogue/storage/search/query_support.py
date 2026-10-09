@@ -80,7 +80,9 @@ def escape_fts5_query(query: str) -> str:
     if not query or not query.strip():
         return '""'
 
-    query = re.sub(r"[\x00-\x1f\x7f]", "", query.strip())
+    # Legal FTS whitespace separates tokens; removing it joins distinct words.
+    query = re.sub(r"[\t\n\r\f\v]", " ", query.strip())
+    query = re.sub(r"[\x00-\x1f\x7f]", "", query)
     query = pl_fold(query) or ""
     if not query:
         return '""'
