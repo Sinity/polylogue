@@ -213,6 +213,55 @@ def plan_ref_resolution(
         object_ref = parsed
     normalized_ref = parsed.format()
 
+    # Positional block coordinates are accepted only at the Source-bound
+    # mutation boundary.  A public read of an old positional token cannot
+    # establish which occupant that token named when it was stored, so never
+    # look up the current position here.
+    if evidence_ref is not None and evidence_ref.block_index is not None:
+        return RefResolutionPlan(
+            ref=ref,
+            payload=cast(
+                "PublicRefResolutionPayload",
+                _unresolved_ref_payload(
+                    ref,
+                    "positional block evidence is not a durable reference",
+                    normalized_ref=normalized_ref,
+                    kind="block",
+                ),
+            ),
+        )
+    if object_ref.kind in {"block", "action"}:
+        if object_ref.qualifiers:
+            return RefResolutionPlan(
+                ref=ref,
+                payload=cast(
+                    "PublicRefResolutionPayload",
+                    _unresolved_ref_payload(
+                        ref,
+                        "positional block selectors are not durable references",
+                        normalized_ref=normalized_ref,
+                        kind="block",
+                    ),
+                ),
+            )
+        try:
+            from polylogue.core.refs import normalize_durable_object_ref_text
+
+            normalize_durable_object_ref_text(object_ref.format())
+        except ValueError:
+            return RefResolutionPlan(
+                ref=ref,
+                payload=cast(
+                    "PublicRefResolutionPayload",
+                    _unresolved_ref_payload(
+                        ref,
+                        "block reference does not carry a stable block identity",
+                        normalized_ref=normalized_ref,
+                        kind="block",
+                    ),
+                ),
+            )
+
     def read(archive: ArchiveStore) -> PublicRefResolutionPayload:
         if object_ref.kind == "session":
             return _resolve_session_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
@@ -539,20 +588,6 @@ def _resolve_block_object_ref(
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveBlockQueryRow
     from polylogue.surfaces.payloads import BlockQueryRowPayload, PublicRefResolutionPayload, model_json_document
 
-    block_index: int | None = None
-    if object_ref.qualifiers:
-        try:
-            block_index = int(object_ref.qualifiers[0])
-        except ValueError:
-            return cast(
-                PublicRefResolutionPayload,
-                _unresolved_ref_payload(
-                    ref,
-                    "block ref qualifier must be an integer",
-                    normalized_ref=normalized_ref,
-                    kind="block",
-                ),
-            )
     row = archive._conn.execute(
         """
         SELECT b.block_id, b.message_id, b.session_id, s.origin, s.title,
@@ -561,11 +596,10 @@ def _resolve_block_object_ref(
         FROM blocks b
         JOIN sessions s ON s.session_id = b.session_id
         WHERE b.block_id = ?
-           OR (b.message_id = ? AND (? IS NOT NULL AND b.position = ?))
            OR ('block:' || b.block_id) = ?
         LIMIT 1
         """,
-        (object_ref.object_id, object_ref.object_id, block_index, block_index, normalized_ref),
+        (object_ref.object_id, normalized_ref),
     ).fetchone()
     if row is None:
         return cast(

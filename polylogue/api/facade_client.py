@@ -48,6 +48,7 @@ def _wire_request(product: str, fields: dict[str, Any]) -> tuple[str, dict[str, 
             "session_id": fields["owner_session_id"],
             "target_type": fields["target_type"],
             "target_id": fields["target_id"],
+            "message_id": fields.get("message_id"),
             "mark_type": fields["mark_type"],
         }
     if product == "save_annotation":
@@ -57,6 +58,7 @@ def _wire_request(product: str, fields: dict[str, Any]) -> tuple[str, dict[str, 
             "note_text": fields["note_text"],
             "target_type": fields["target_type"],
             "target_id": fields["target_id"],
+            "message_id": fields.get("message_id"),
         }
     if product == "delete_annotation":
         return "user.annotation.delete", {"id": fields["annotation_id"]}

@@ -3668,6 +3668,8 @@ async def test_query_units_returns_context_snapshot_rows(tmp_path: Path) -> None
 
 async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_payloads(tmp_path: Path) -> None:
     """``resolve_ref()`` makes public refs actionable without broad search."""
+    from polylogue.core.refs import EvidenceRef
+
     archive = _archive(tmp_path)
     try:
 
@@ -3730,11 +3732,18 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
                         ],
                     ),
                 )
+                message_id = archive_message_id(session_id, "m1")
+                block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE message_id=? AND position=0", (message_id,)
+                    ).fetchone()[0]
+                )
             return (
                 archive_db,
                 child_session_id,
                 other_session_id,
                 session_id,
+                block_id,
             )
 
         (
@@ -3742,6 +3751,7 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
             child_session_id,
             other_session_id,
             session_id,
+            block_id,
         ) = run_off_event_loop(_off_loop_27)
 
         session_payload = await archive.resolve_ref(f"session:{session_id}")
@@ -3767,20 +3777,31 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
         inherited_message = await archive.resolve_ref(f"{child_session_id}::{message_id}")
         assert inherited_message.resolved is True
         assert inherited_message.payload_kind == "message"
-        inherited_block = await archive.resolve_ref(f"{child_session_id}::{message_id}::0")
-        assert inherited_block.resolved is True
+        inherited_block_ref = EvidenceRef(
+            session_id=child_session_id, message_id=message_id, block_id=block_id
+        ).format()
+        inherited_block = await archive.resolve_ref(inherited_block_ref)
+        assert inherited_block.resolved is True, inherited_block.model_dump()
         assert inherited_block.payload_kind == "block"
 
-        block_payload = await archive.resolve_ref(f"block:{message_id}:0")
+        block_payload = await archive.resolve_ref(f"block:{block_id}")
         assert block_payload.resolved is True
         assert block_payload.payload_kind == "block"
         assert block_payload.payload is not None
-        assert block_payload.payload["block_id"] == f"{message_id}:0"
+        assert block_payload.payload["block_id"] == block_id
 
-        evidence_block_payload = await archive.resolve_ref(f"{session_id}::{message_id}::0")
+        evidence_block_ref = EvidenceRef(session_id=session_id, message_id=message_id, block_id=block_id).format()
+        evidence_block_payload = await archive.resolve_ref(evidence_block_ref)
         assert evidence_block_payload.resolved is True
         assert evidence_block_payload.payload_kind == "block"
-        assert evidence_block_payload.evidence_refs == (f"{session_id}::{message_id}::0",)
+        assert evidence_block_payload.evidence_refs == (evidence_block_ref,)
+
+        positional_block_payload = await archive.resolve_ref(f"block:{message_id}:0")
+        positional_evidence_payload = await archive.resolve_ref(f"{session_id}::{message_id}::0")
+        positional_action_payload = await archive.resolve_ref(f"action:{message_id}:0")
+        assert positional_block_payload.resolved is False
+        assert positional_evidence_payload.resolved is False
+        assert positional_action_payload.resolved is False
 
         def _off_loop_28() -> Any:
             with ArchiveStore.open_existing(archive.config.archive_root) as archive_db:
@@ -6648,6 +6669,75 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(
         ]
     finally:
         await archive.close()
+
+
+async def test_user_state_mutations_forward_raw_selectors_to_daemon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Durable target resolution belongs to the daemon's pinned Source seal."""
+    from polylogue.api.facade_client import FacadeProductPlan, FacadeProductReceipt, _wire_request
+
+    archive = _archive(tmp_path)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def submit(_config: Any, product: str, **fields: Any) -> tuple[FacadeProductReceipt, FacadeProductPlan]:
+        calls.append((product, fields))
+        return FacadeProductReceipt("applied", 1, {"created": True}), FacadeProductPlan({})
+
+    async def forbid_independent_resolution(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("mutation target was resolved before the daemon Source seal")
+
+    monkeypatch.setattr(archive_module, "submit_facade_product", submit)
+    monkeypatch.setattr(Polylogue, "_resolve_user_state_target", forbid_independent_resolution)
+    try:
+        assert await archive.add_mark(
+            "session-alias",
+            "star",
+            target_type="block",
+            target_id="opaque-message:0",
+            message_id="opaque-message",
+        )
+        assert await archive.remove_mark(
+            "session-alias",
+            "star",
+            target_type="block",
+            target_id="opaque-message:0",
+            message_id="opaque-message",
+        )
+        vanished_block_id = f"opaque-message:b:{'a' * 64}:0"
+        assert await archive.remove_mark(
+            "session-alias",
+            "star",
+            target_type="block",
+            target_id=vanished_block_id,
+        )
+        assert await archive.save_annotation(
+            "annotation-raw-target",
+            "session-alias",
+            "keep source selector",
+            target_type="block",
+            target_id="opaque-message:0",
+            message_id="opaque-message",
+        )
+    finally:
+        await archive.close()
+
+    assert [product for product, _fields in calls] == ["add_mark", "remove_mark", "remove_mark", "save_annotation"]
+    for _product, fields in (*calls[:2], calls[3]):
+        assert fields["owner_session_id"] == "session-alias"
+        assert fields["target_type"] == "block"
+        assert fields["target_id"] == "opaque-message:0"
+        assert fields["message_id"] == "opaque-message"
+        operation, payload = _wire_request(_product, fields)
+        assert operation in {"user.mark.add", "user.mark.remove", "user.annotation.save"}
+        assert payload["session_id"] == "session-alias"
+        assert payload["target_id"] == "opaque-message:0"
+        assert payload["message_id"] == "opaque-message"
+    assert calls[2][1]["target_id"] == vanished_block_id
+    assert calls[2][1]["message_id"] is None
+    operation, payload = _wire_request(calls[2][0], calls[2][1])
+    assert operation == "user.mark.remove"
+    assert payload["target_id"] == vanished_block_id
 
 
 async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path, facade_daemon_writer: Any) -> None:

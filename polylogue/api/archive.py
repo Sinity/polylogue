@@ -5799,6 +5799,41 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     # Marks
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _user_state_mutation_input(
+        session_id: str,
+        *,
+        target_type: str,
+        target_id: str | None,
+        message_id: str | None,
+    ) -> dict[str, str | None]:
+        """Preserve target selectors for the daemon's pinned Source admission.
+
+        The daemon resolves positional input under its existing Source-bound
+        seal. Resolving it here would consult a separate Index snapshot and
+        could persist whichever block currently occupies the requested slot.
+        """
+        from polylogue.core.user_state_targets import validate_target_kind
+
+        if not session_id:
+            raise ValueError("session_id must not be empty")
+        validate_target_kind(target_type)
+        if target_type == TARGET_MESSAGE and target_id and message_id and target_id != message_id:
+            raise ValueError("message target_id must match message_id")
+        selected_id = target_id
+        if target_type == TARGET_SESSION:
+            selected_id = target_id or session_id
+        elif target_type == TARGET_MESSAGE:
+            selected_id = target_id or message_id
+        elif not selected_id:
+            raise ValueError(f"{target_type} target requires target_id")
+        return {
+            "target_type": target_type,
+            "target_id": selected_id,
+            "session_id": session_id,
+            "message_id": message_id,
+        }
+
     async def _resolve_user_state_target(
         self,
         session_id: str,
@@ -5927,15 +5962,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         Routed through ``OperationExecutor``/``MarkAddActuator`` (t46.9 phase
         2: the first MCP no-spec mutation family to gain executor routing).
-        Target resolution stays here (async, may consult insight-derived
-        indexes) and runs once before the actuator sees an already-resolved
-        ``target_type``/``target_id`` pair, mirroring
-        ``IdentityResetActuator``'s pattern.
+        Raw target selectors travel to the daemon, where positional inputs are
+        canonicalized under the pinned Source-bound seal before persistence.
         """
         from polylogue.core.user_state_targets import validate_mark_type
 
         mark_type = validate_mark_type(mark_type)
-        target = await self._resolve_user_state_target(
+        target = self._user_state_mutation_input(
             session_id,
             target_type=target_type,
             target_id=target_id,
@@ -5946,6 +5979,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             "add_mark",
             target_type=str(target["target_type"]),
             target_id=str(target["target_id"]),
+            message_id=target["message_id"],
             mark_type=mark_type,
             owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
         )
@@ -5968,7 +6002,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.core.user_state_targets import validate_mark_type
 
         mark_type = validate_mark_type(mark_type)
-        target = await self._resolve_user_state_target(
+        target = self._user_state_mutation_input(
             session_id,
             target_type=target_type,
             target_id=target_id,
@@ -5979,6 +6013,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             "remove_mark",
             target_type=str(target["target_type"]),
             target_id=str(target["target_id"]),
+            message_id=target["message_id"],
             mark_type=mark_type,
             owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
         )
@@ -6040,16 +6075,15 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         Routed through ``OperationExecutor``/``AnnotationSaveActuator``
         (t46.9 phase 3); see :meth:`add_mark` for the shared-contract
-        rationale. Target resolution stays here (async, may consult
-        insight-derived indexes) and runs once before the actuator sees an
-        already-resolved ``target_type``/``target_id`` pair.
+        rationale. Raw target selectors are resolved by the daemon under its
+        pinned Source-bound seal before persistence.
         """
         if not annotation_id.strip():
             raise ValueError("annotation_id must not be empty")
         if not note_text.strip():
             raise ValueError("note_text must not be empty")
 
-        target = await self._resolve_user_state_target(
+        target = self._user_state_mutation_input(
             session_id,
             target_type=target_type,
             target_id=target_id,
@@ -6061,6 +6095,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             annotation_id=annotation_id,
             target_type=str(target["target_type"]),
             target_id=str(target["target_id"]),
+            message_id=target["message_id"],
             note_text=note_text,
             owner_session_id=str(target["session_id"]) if target.get("session_id") else None,
         )
