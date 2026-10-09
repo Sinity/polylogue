@@ -45,7 +45,8 @@ selected path without inspecting every source row
 `polylogue/storage/sqlite/archive_tiers/source.py:525-531`;
 `polylogue/storage/sqlite/archive_tiers/ops.py:218-225`).
 
-Raw/index materialization readiness may settle an unmatched raw as a valid
+Raw/index materialization readiness and the archive-debt diagnostic share
+`current_typed_non_session_raw`. They may settle an unmatched raw as a valid
 non-session only from a complete typed, non-terminal artifact
 (`parse_as_session=0`, not schema-eligible, without decode errors or malformed
 JSONL), a current complete parser receipt, and a current zero-member

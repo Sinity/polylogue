@@ -1307,7 +1307,7 @@ def _raw_gap_category(
     # their bytes or path would otherwise look like a non-session artifact.
     if row["parse_error"] or row["validation_status"] == "failed":
         return "parse-failed"
-    if _raw_gap_current_typed_non_session(
+    if current_typed_non_session_raw(
         conn,
         row,
         source_schema=source_schema,
@@ -1328,7 +1328,7 @@ def _raw_gap_category(
     return None
 
 
-def _raw_gap_current_typed_non_session(
+def current_typed_non_session_raw(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
     *,

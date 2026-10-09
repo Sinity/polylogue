@@ -57,9 +57,8 @@ _HOOK_EVENT_KEYS = frozenset({"event_type", "session_id", "timestamp", "provider
 _BEADS_INTERACTION_KEYS = frozenset({"id", "kind", "created_at", "issue_id", "extra"})
 #: A Claude Code ``projects/<proj>/<session-uuid>.jsonl`` file whose only
 #: records carry these ``type`` values is a pure file-history checkpoint
-#: stream, never a conversation (polylogue-omsw). Mirrors the type set
-#: ``archive/raw_materialization.py``'s ``parsed_non_session_artifact_reason``
-#: already checks post-parse ("Claude Code file-history snapshot").
+#: stream, never a conversation (polylogue-omsw). This requires the complete
+#: stream; status consumers use the resulting artifact and current receipts.
 _FILE_HISTORY_SNAPSHOT_ONLY_TYPES = frozenset({"file-history-snapshot", "progress"})
 #: Top-level keys whose string value names the transcript a record's content
 #: was copied out of. A generated extract carries this reference because its

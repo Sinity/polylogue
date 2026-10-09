@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from itertools import islice
 from pathlib import Path
 from typing import BinaryIO, Protocol, overload
 
@@ -23,6 +24,7 @@ from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.compute import DaemonBackpressureError, DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider, ValidationMode
+from polylogue.core.iterator_lifetime import settled_iterator
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.pipeline.ids import session_content_hash
@@ -136,6 +138,13 @@ class _PrefixMessages(Sequence[ParsedMessage]):
         message = self._messages[ordinal]
         return message.model_copy(update={"is_active_leaf": ordinal == self._count - 1})
 
+    def __iter__(self) -> Iterator[ParsedMessage]:
+        # Borrow the backing carrier's sequential decode/spool walk. Point
+        # reads cannot use the sealed whale spool and reopen SQL per message.
+        with settled_iterator(self._messages) as messages:
+            for ordinal, message in enumerate(islice(messages, self._count)):
+                yield message.model_copy(update={"is_active_leaf": ordinal == self._count - 1})
+
 
 def _plain_text_header(record: object) -> str | None:
     if not isinstance(record, dict) or set(record) != {"type", "payload"} or record.get("type") != "session_meta":
@@ -230,36 +239,15 @@ def _read_head_and_prove(
     if any(profile_key != profile_keys[0] for profile_key in profile_keys):
         raise ValueError("checkpoint cohort profile identity changed")
 
-    hashes: list[str] = []
-    sizes: list[int] = []
-    for raw_id in raw_ids:
-        check_compute_cancelled()
-        digest = hashlib.sha256()
-        size = 0
-        with source_read.open_raw_revision_material(raw_id) as (provider, payload, _path, kind):
-            if provider is not Provider.CODEX or kind not in {RawRevisionKind.FULL, RawRevisionKind.UNKNOWN}:
-                raise ValueError("retained Codex revision changed kind")
-            while chunk := payload.read(1024 * 1024):
-                check_compute_cancelled()
-                digest.update(chunk)
-                size += len(chunk)
-                if raw_id == raw_ids[-1]:
-                    head_blob.write(chunk)
-        expected_hash = descriptors[len(hashes)][1]
-        expected_size = descriptors[len(sizes)][4]
-        if size != expected_size or digest.hexdigest() != expected_hash:
-            raise ValueError("retained Codex raw does not match its pinned hash and size")
-        if sizes and (size <= sizes[-1] or size > descriptors[-1][4]):
-            raise ValueError("Codex revisions are not strictly increasing byte prefixes")
-        hashes.append(expected_hash)
-        sizes.append(size)
+    hashes = [descriptor[1] for descriptor in descriptors]
+    sizes = [descriptor[4] for descriptor in descriptors]
+    if any(earlier >= later for earlier, later in zip(sizes, sizes[1:], strict=False)):
+        raise ValueError("Codex revisions are not strictly increasing byte prefixes")
 
-    for raw_index, (raw_id, size) in enumerate(zip(raw_ids, sizes, strict=True)):
-        observed_hash, observed_size = _hash_and_compare_prefix(source_read, raw_id, head_blob)
-        if observed_hash != descriptors[raw_index][1] or observed_size != size:
-            raise ValueError("retained Codex revision changed during exact prefix verification")
-
-    head_blob.seek(0)
+    # Check the actual captured head grammar before reading the older raws.
+    # Refusal here selects ordinary preparation only. Accepted checkpoints
+    # still require both independent witness passes over the entire cohort.
+    head_digest = hashlib.sha256()
     line_end = 0
     prefix_record_counts: list[int] = []
     prefix_verdicts: dict[str, RetainedValidationVerdict] = {}
@@ -281,9 +269,14 @@ def _read_head_and_prove(
             scratch_directory=validation_directory,
             registry=registry,
         ) as validation,
+        source_read.open_raw_revision_material(raw_ids[-1]) as (head_provider, payload, _path, head_kind),
     ):
-        for line_number, line in enumerate(head_blob, start=1):
+        if head_provider is not Provider.CODEX or head_kind not in {RawRevisionKind.FULL, RawRevisionKind.UNKNOWN}:
+            raise ValueError("retained Codex revision changed kind")
+        for line_number, line in enumerate(payload, start=1):
             check_compute_cancelled()
+            head_blob.write(line)
+            head_digest.update(line)
             line_end += len(line)
             try:
                 record = json.loads(line)
@@ -310,7 +303,27 @@ def _read_head_and_prove(
                         )
                     next_prefix += 1
                 elif line_end > sizes[next_prefix]:
-                    raise ValueError("a retained revision does not end on a complete record boundary")
+                    raise ValueError("retained Codex revision ends inside a JSONL record")
+    if line_end != sizes[-1] or head_digest.hexdigest() != hashes[-1]:
+        raise ValueError("retained Codex raw does not match its pinned hash and size")
+    for index, raw_id in enumerate(raw_ids[:-1]):
+        check_compute_cancelled()
+        digest = hashlib.sha256()
+        size = 0
+        with source_read.open_raw_revision_material(raw_id) as (provider, payload, _path, kind):
+            if provider is not Provider.CODEX or kind not in {RawRevisionKind.FULL, RawRevisionKind.UNKNOWN}:
+                raise ValueError("retained Codex revision changed kind")
+            while chunk := payload.read(1024 * 1024):
+                check_compute_cancelled()
+                digest.update(chunk)
+                size += len(chunk)
+        if size != sizes[index] or digest.hexdigest() != hashes[index]:
+            raise ValueError("retained Codex raw does not match its pinned hash and size")
+    for raw_index, (raw_id, size) in enumerate(zip(raw_ids, sizes, strict=True)):
+        observed_hash, observed_size = _hash_and_compare_prefix(source_read, raw_id, head_blob)
+        if observed_hash != hashes[raw_index] or observed_size != size:
+            raise ValueError("retained Codex revision changed during exact prefix verification")
+
     if next_prefix != len(sizes) or line_end != sizes[-1]:
         raise ValueError("head Codex JSONL stream ended inside a record")
     if header_id is None or line_number == 0:

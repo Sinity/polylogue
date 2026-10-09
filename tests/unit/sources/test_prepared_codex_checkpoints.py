@@ -26,6 +26,7 @@ from polylogue.sources.prepared_codex_checkpoints import (
     _plain_text_header,
     _plain_text_message,
     _prefix_accounting,
+    _PrefixMessages,
     _read_head_and_prove,
     prepare_codex_prefix_checkpoints,
 )
@@ -156,6 +157,7 @@ def test_checkpoint_grammar_falls_back_for_future_sensitive_codex_shapes() -> No
 class _SourceRead:
     def __init__(self, payloads: list[bytes]) -> None:
         self.payloads = {f"raw-{index}": payload for index, payload in enumerate(payloads)}
+        self.opened: list[str] = []
 
     def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
         payload = self.payloads[raw_id]
@@ -175,6 +177,7 @@ class _SourceRead:
 
     @contextmanager
     def open_raw_revision_material(self, raw_id: str) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
+        self.opened.append(raw_id)
         yield Provider.CODEX, BytesIO(self.payloads[raw_id]), "same/path.jsonl", RawRevisionKind.FULL
 
 
@@ -200,6 +203,7 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries(tmp
         assert message_count == 3
         assert hashes[-1] == hashlib.sha256(captures[-1]).hexdigest()
         assert set(verdicts) == set(tuple(source_read.payloads)[2:-1])
+        assert all(source_read.opened.count(raw_id) == 2 for raw_id in source_read.payloads)
     finally:
         head_blob.close()
 
@@ -394,3 +398,87 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path: Path, mon
         rejected.close()
     finally:
         normalized_head_artifact.discard()
+
+
+def test_prefix_iteration_reuses_the_sealed_message_spool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.sources import prepared_message_sink as sinks
+
+    head = codex.parse_stream(_records(5), "fallback")
+    head_dir = tmp_path / "head"
+    head_dir.mkdir()
+    artifact = PreparedJsonl.from_sessions(
+        (head,), blob_hash="ab" * 32, artifact_directory=head_dir, publication_publisher=None
+    )
+    try:
+        messages = artifact.session_sequence()[0].messages
+        assert isinstance(messages, sinks.SqliteMessageSink)
+        # Force the actual sealed sink's bounded spool tier with neutral rows.
+        monkeypatch.setattr(sinks._DECODED_SESSIONS, "budget_bytes", 1)
+        list(messages)
+        key = messages._decoded_key()
+        assert key is not None and sinks._DECODED_SPOOLS.get(key) is not None
+
+        def unexpected_point_read(*_args: object) -> object:
+            raise AssertionError("prefix iteration must use the backing sequential spool")
+
+        def unexpected_decode(*_args: object) -> object:
+            raise AssertionError("the populated spool must not decode stored JSON again")
+
+        monkeypatch.setattr(sinks.SqliteMessageSink, "__getitem__", unexpected_point_read)
+        monkeypatch.setattr(sinks, "_from_text_json", unexpected_decode)
+        for count in (0, 1, 3, 5):
+            prefix = list(_PrefixMessages(messages, count))
+            assert [message.provider_message_id for message in prefix] == [f"message-{i}" for i in range(count)]
+            assert [message.is_active_leaf for message in prefix] == [i == count - 1 for i in range(count)]
+        assert [message.is_active_leaf for message in messages] == [False, False, False, False, True]
+    finally:
+        artifact.discard()
+
+
+def test_checkpoint_fallback_checks_head_before_reading_older_revisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = _records(3)
+    records[0]["timestamp"] = "2026-06-01T00:00:00Z"
+    payloads = [("\n".join(json.dumps(row) for row in records[:count]) + "\n").encode() for count in range(1, 5)]
+    source = _SourceRead(payloads)
+    raw_ids = tuple(source.payloads)
+    head_dir = tmp_path / "head"
+    head_dir.mkdir()
+    artifact = PreparedJsonl.from_sessions(
+        (codex.parse_stream(records, "fallback"),),
+        blob_hash=hashlib.sha256(payloads[-1]).hexdigest(),
+        artifact_directory=head_dir,
+        publication_publisher=None,
+        resolved_provider=Provider.CODEX,
+        captured_profile_key="captured-profile",
+    )
+    opened: list[str] = []
+    original = source.open_raw_revision_material
+
+    @contextmanager
+    def open_head_only(raw_id: str) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
+        opened.append(raw_id)
+        assert raw_id == raw_ids[-1], "ineligible head must refuse before the older cohort proof"
+        with original(raw_id) as material:
+            yield material
+
+    monkeypatch.setattr(source, "open_raw_revision_material", open_head_only)
+    (tmp_path / "interior").mkdir()
+    try:
+        with prepare_codex_prefix_checkpoints(
+            source,
+            raw_ids,
+            head_artifact=artifact,
+            artifact_directory=tmp_path / "interior",
+            validation_mode=ValidationMode.OFF,
+            publication_publisher=None,
+            publication_source_read=None,
+            prepare_sessions=lambda _raw_id, sessions: sessions,
+            artifact_options=lambda _raw_id, _count: (_ for _ in ()).throw(AssertionError("no interior expected")),
+        ) as preparation:
+            assert preparation.disposition is CodexCheckpointDisposition.ORDINARY_FALLBACK
+            assert list(preparation.iter_artifacts()) == []
+        assert opened == [raw_ids[-1]]
+    finally:
+        artifact.discard()

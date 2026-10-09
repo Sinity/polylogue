@@ -508,6 +508,13 @@ is not proof of source-specific timing equivalence.
   bytes, so a carrier is never parsed as a conversation
   (`sources/live/batch.py`; `sources/live/append_ingest.py`).
 
+Checkpoint preparation checks the actual captured Codex head's conservative
+plain-message grammar before reading older revision witnesses. An unsupported
+head selects ordinary retained preparation; every accepted checkpoint still
+proves each raw's exact hash, size and head-prefix bytes independently. Prefix
+message views replay the backing sealed carrier sequentially, including its
+bounded decoded spool, and set the active leaf at that prefix's final message.
+
 ## Retained validation policy
 
 The daemon converts runtime configuration into `ValidationMode` and supplies
