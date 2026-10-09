@@ -132,7 +132,7 @@ def _reclaim_abandoned_cold_generations(store: IndexGenerationStore) -> None:
         if not generation.owner_id.startswith("cold-build:"):
             continue
         if generation.state == "promoting":
-            if store.discard_unpublished_cold_promotion(generation):
+            if store.discard_unpublished_promotion(generation):
                 emit(
                     "daemon.cold_build.abandoned_reclaimed",
                     outcome="ok",

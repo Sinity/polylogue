@@ -129,6 +129,7 @@ if TYPE_CHECKING:
     from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.session_profile_composition import ComposedSessionProfiles, SessionProfileCallback
     from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
+    from polylogue.operations.raw_observation_owner import RawObservationReplacement
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import EmbeddingConvergenceOwner
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
@@ -2451,7 +2452,7 @@ async def _run_daemon_services_under_active_writer_lease(
         archive_owner.release()
         raise
 
-    def prepare_empty_index_transition() -> None:
+    def prepare_empty_index_transition() -> str | None:
         from contextlib import contextmanager
 
         from polylogue.operations.empty_index_startup import (
@@ -2478,7 +2479,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 )
             except EmptyIndexTransitionRefusedError as exc:
                 emit("daemon.empty_index.transition", level=WARNING, outcome="refused", reason=exc.reason)
-                return
+                return None
         if generation_id is not None:
             emit(
                 "daemon.empty_index.transition",
@@ -2486,9 +2487,10 @@ async def _run_daemon_services_under_active_writer_lease(
                 reason="empty_managed_schema_replaced",
                 generation_id=generation_id,
             )
+        return generation_id
 
     try:
-        await write_coordinator.run_prepared_sync(
+        empty_generation_id = await write_coordinator.run_prepared_sync(
             "daemon.empty_index.startup",
             prepare_empty_index_transition,
             submit_worker=lambda worker: (
@@ -2497,6 +2499,62 @@ async def _run_daemon_services_under_active_writer_lease(
                 ).future
             ),
             settlement_owners=retained_native_settlement_owners_on_current_thread,
+        )
+    except BaseException:
+        archive_owner.release()
+        raise
+
+    retained_reconvergence: list[RawObservationReplacement] = []
+
+    def prepare_index_reconvergence() -> None:
+        if empty_generation_id is not None:
+            return
+        from contextlib import contextmanager
+
+        from polylogue.operations.index_reconvergence_startup import (
+            IndexReconvergenceRefusedError,
+            reconverge_managed_index_on_startup,
+        )
+        from polylogue.operations.reset_safety import archive_tiers_closed
+
+        startup_kernel.require_current_creator()
+
+        @contextmanager
+        def admit_writer(actor: str) -> Iterator[object]:
+            with (
+                startup_bridge.hold(actor) as delegation,
+                adopt_write_lease(delegation),
+                write_lease(actor, archive_root=archive_root_path),
+            ):
+                yield None
+
+        with archive_tiers_closed(archive_root_path):
+            try:
+                reconverge_managed_index_on_startup(
+                    archive_root_path,
+                    archive_owner=archive_owner,
+                    compute_adapter=startup_kernel,
+                    write_admission=admit_writer,
+                    retained=retained_reconvergence,
+                )
+            except IndexReconvergenceRefusedError as exc:
+                emit("daemon.index_reconvergence.startup", level=WARNING, outcome="refused", reason=exc.reason)
+
+    try:
+        from polylogue.operations.raw_observation_owner import retained_settlement_owners
+
+        await write_coordinator.run_prepared_sync(
+            "daemon.index_reconvergence.startup",
+            prepare_index_reconvergence,
+            submit_worker=lambda worker: (
+                startup_kernel.submit(
+                    propagate(worker), admission_class="control", estimated_bytes=0, exclusive_bytes=True
+                ).future
+            ),
+            settlement_owners=lambda: (
+                *retained_native_settlement_owners_on_current_thread(),
+                *retained_settlement_owners(retained_reconvergence),
+            ),
         )
     except BaseException:
         archive_owner.release()
