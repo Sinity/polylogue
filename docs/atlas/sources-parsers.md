@@ -2,6 +2,11 @@
 
 ## Area boundary
 
+Gemini CLI result blocks retain both model-facing output and error text when
+the provider reports both streams. Divergent terminal renderings remain
+separately marked. Hermes ATIF tool availability events retain each declared
+tool definition in full, including its type and strictness setting.
+
 Codex event-message mirrors consume one matching response occurrence only
 when exact text and role also carry a shared native identity, timestamp instant,
 or unambiguous turn ID. Contradictory time or turn evidence prevents matching;

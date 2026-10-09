@@ -387,7 +387,8 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
                     blocks.append(block)
                 else:
                     attached_hashes[match] = hash_text(text)
-                    blocks.append(block.model_copy(update={"text": text}))
+                    error = _string((block.metadata or {}).get("gemini_response_error"))
+                    blocks.append(block.model_copy(update={"text": _tool_result_stream_text(text, error)}))
             updated_messages.append(message.model_copy(update={"blocks": blocks}))
         messages = updated_messages
 
@@ -1204,6 +1205,13 @@ def _tool_use_block(record: JSONDocument, *, fallback_id: str) -> ParsedContentB
     )
 
 
+def _tool_result_stream_text(output: str | None, error: str | None) -> str | None:
+    """Keep the provider's output and error streams on one result carrier."""
+    if output and error and error != output:
+        return f"{output}\n{error}"
+    return output or error
+
+
 def _fullest_tool_result_text(output: str | None, error: str | None, result_display: object) -> str | None:
     """Return the tool result text that is not a truncation of the other field.
 
@@ -1274,10 +1282,17 @@ def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[Parse
         response = json_document(function_response.get("response"))
         output = _string(response.get("output"))
         error = _string(response.get("error"))
-        text = _fullest_tool_result_text(output, error, record.get("resultDisplay"))
+        primary_text = _fullest_tool_result_text(output, error, record.get("resultDisplay"))
+        # The provider emits both output and error on some failed calls.
+        # They are separate streams; choosing output must not erase stderr.
+        text = _tool_result_stream_text(primary_text, error) if output else primary_text
         if text is None and status is None:
             continue
         result_metadata = dict(metadata)
+        if output and error:
+            # Sidecar replacement replaces output alone. This carrier also
+            # reaches the durable block-metadata evidence event.
+            result_metadata["gemini_response_error"] = error
         function_name = _string(function_response.get("name"))
         if function_name:
             result_metadata["function_name"] = function_name
@@ -1293,7 +1308,7 @@ def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[Parse
                 outcome_unknown_reason=response_reason,
             )
         )
-        display_text = _divergent_display_text(text, output, record.get("resultDisplay"))
+        display_text = _divergent_display_text(primary_text, output, record.get("resultDisplay"))
         if display_text is not None:
             # Same tool_id and the same structural outcome: this renders the
             # same call's result, not a second verdict. ``action_pairs`` pairs

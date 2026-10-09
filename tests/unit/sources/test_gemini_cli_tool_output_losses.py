@@ -95,6 +95,24 @@ def _tool_result_texts(session: ParsedSession) -> list[str]:
 # polylogue-7yji2
 
 
+@pytest.mark.parametrize("display", ["PARTIAL_STDOUT", "TERMINAL_RENDERING"])
+def test_output_and_error_streams_both_survive_one_failed_call(display: str) -> None:
+    """The real census includes two responses carrying both output and error."""
+    call = _tool_call("run_shell_command_1_0", output="PARTIAL_STDOUT", result_display=display)
+    call["status"] = "error"
+    call["result"][0]["functionResponse"]["response"]["error"] = "DISTINCT_STDERR"
+    payload = _session([{"id": "a1", "type": "gemini", "timestamp": "2026-03-14T21:41:02.000Z", "toolCalls": [call]}])
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+    results = [block for message in session.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT]
+
+    assert results[0].text == "PARTIAL_STDOUT\nDISTINCT_STDERR"
+    assert results[0].is_error is True
+    assert results[0].tool_id == call["id"]
+    assert results[0].outcome_unknown_reason is None
+    assert [block.text for block in results[1:]] == ([] if display == "PARTIAL_STDOUT" else [display])
+
+
 def test_masked_output_yields_to_the_full_result_display_sibling() -> None:
     """A truncation notice never wins over the full text in the same record.
 
@@ -320,6 +338,25 @@ def test_sidecar_stem_join_recovers_the_full_tool_output(tmp_path: Path) -> None
     assert event.payload["acquisition_status"] == "matched"
     assert event.payload["content_replaced"] is True
     assert event.timestamp is not None
+
+
+def test_sidecar_replacement_preserves_the_response_error_stream(tmp_path: Path) -> None:
+    snapshot = _sidecar_corpus(tmp_path, filename="run_shell_command_1773524726450_0.txt")
+    payload = json.loads(snapshot.read_text(encoding="utf-8"))
+    call = payload["messages"][0]["toolCalls"][0]
+    call["status"] = "error"
+    call["result"][0]["functionResponse"]["response"]["error"] = "DISTINCT_STDERR"
+    outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
+    assert outputs is not None
+    full_output = (outputs / "run_shell_command_1773524726450_0.txt").read_text()
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+    joined = apply_gemini_tool_output_sidecars(session, join_gemini_tool_output_sidecars(payload, _dir_scope(outputs)))
+
+    assert _tool_result_texts(joined) == [f"{full_output}\nDISTINCT_STDERR"]
+    [result] = [block for message in joined.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT]
+    assert result.is_error is True
+    assert result.tool_id == call["id"]
 
 
 def test_sidecar_with_no_citing_tool_call_is_declared_debt(tmp_path: Path) -> None:
