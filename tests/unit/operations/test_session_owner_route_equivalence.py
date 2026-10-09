@@ -677,9 +677,13 @@ async def test_root_only_facade_follows_active_index_and_explicit_shadow_stays_s
     selected = root / ".index-generations" / "selected" / "index.db"
     selected.parent.mkdir(parents=True)
     shutil.copyfile(root / "index.db", selected)
+
     # Distinct populations prove the selected Index, independent of title rendering.
-    with ArchiveStore.open_existing(root, read_only=False) as shadow:
-        shadow.delete_sessions(tuple(seeded[1:]))
+    def prepare_shadow() -> None:
+        with ArchiveStore.open_existing(root, read_only=False) as shadow:
+            shadow.delete_sessions(tuple(seeded[1:]))
+
+    run_off_event_loop(prepare_shadow)
     (root / ".index-active-pointer").write_text(str(selected), encoding="utf-8")
     async with Polylogue(archive_root=root) as api:
         assert api.backend.db_path == selected
