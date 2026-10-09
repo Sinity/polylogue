@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+from functools import cmp_to_key
 from pathlib import Path
 
 from polylogue.core.enums import Provider
-from polylogue.schemas.observation_models import PROVIDERS, ProviderConfig, SchemaClusterPayload
+from polylogue.schemas.observation_models import PROVIDERS, ProfileToken, ProviderConfig, SchemaClusterPayload
 
 
 def resolve_provider_config(source_name: str | Provider) -> ProviderConfig:
@@ -55,9 +56,21 @@ def schema_cluster_id(cluster_payload: SchemaClusterPayload, artifact_kind: str)
     return digest.hexdigest()[:16]
 
 
-def profile_cluster_id(artifact_kind: str, profile_tokens: tuple[str, ...]) -> str:
-    """Compute a stable identifier for a profile-token cohort."""
-    return fingerprint_hash((artifact_kind, tuple(sorted(profile_tokens))))
+def profile_cluster_id(artifact_kind: str, profile_tokens: tuple[ProfileToken, ...]) -> str:
+    """Hash the exact shipped tuple repr while profile names remain chunked."""
+    from polylogue.schemas.observation_spill import compare_profile_tokens, profile_token_repr_chunks
+
+    digest = hashlib.sha256()
+    digest.update(("(" + repr(artifact_kind) + ", (").encode("utf-8"))
+    for index, token in enumerate(sorted(profile_tokens, key=cmp_to_key(compare_profile_tokens))):
+        if index:
+            digest.update(b", ")
+        for chunk in profile_token_repr_chunks(token):
+            digest.update(chunk)
+    if len(profile_tokens) == 1:
+        digest.update(b",")
+    digest.update(b"))")
+    return digest.hexdigest()[:16]
 
 
 def profile_similarity(left: set[str], right: set[str]) -> float:

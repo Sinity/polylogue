@@ -45,6 +45,7 @@ from polylogue.schemas.drift_sentinel import (
     DriftSignature,
     SchemaDriftObservation,
 )
+from polylogue.schemas.observation_models import ProfileToken
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaObservation, SchemaRegistry
 from polylogue.schemas.schema_parser_coverage import unread_field_names
@@ -365,7 +366,7 @@ class PrefixValidationState:
         self._header_witness: tuple[str, ...] = ()
         self._message_witness: tuple[str, ...] = ()
         self._message_fingerprint: str | None = None
-        self._message_profile: tuple[str, ...] | None = None
+        self._message_profile: tuple[ProfileToken, ...] | None = None
         self._record_count = 0
         self._closed = False
 

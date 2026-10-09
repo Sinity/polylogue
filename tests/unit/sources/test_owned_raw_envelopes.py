@@ -76,7 +76,7 @@ def test_raw_tape_is_read_only_and_core_serializer_uses_records() -> None:
         assert tape == [{"a": 1}, {"a": 2}]
         assert tape != [] and bool(tape) and {"a": 1} in tape
         assert dumps_bytes(tape) == b'[{"a":1},{"a":2}]'
-        for method, args in [
+        for array_method, array_arguments in [
             ("append", ({"a": 3},)),
             ("clear", ()),
             ("extend", ([],)),
@@ -91,7 +91,7 @@ def test_raw_tape_is_read_only_and_core_serializer_uses_records() -> None:
             ("__imul__", (2,)),
         ]:
             with pytest.raises(TypeError):
-                getattr(tape, method)(*args)
+                getattr(tape, array_method)(*array_arguments)
     with pytest.raises(RuntimeError):
         len(tape)
 
@@ -212,7 +212,7 @@ def test_owned_raw_document_returns_actual_readonly_tree(tmp_path: Path) -> None
     with build_raw_payload_envelope(path, source_path=str(path), fallback_provider="hermes") as envelope:
         assert envelope.wire_format == "json"
         assert isinstance(envelope.payload, dict)
-        for method, args in [
+        for method, arguments in [
             ("clear", ()),
             ("pop", ("a",)),
             ("popitem", ()),
@@ -223,10 +223,10 @@ def test_owned_raw_document_returns_actual_readonly_tree(tmp_path: Path) -> None
             ("__ior__", ({"b": 2},)),
         ]:
             with pytest.raises(TypeError):
-                getattr(envelope.payload, method)(*args)
+                getattr(envelope.payload, method)(*arguments)
         array = envelope.payload["a"]
         assert isinstance(array, list) and array == [1, 2]
-        for method, args in [
+        for array_method, array_arguments in [
             ("append", (3,)),
             ("clear", ()),
             ("extend", ([],)),
@@ -241,5 +241,5 @@ def test_owned_raw_document_returns_actual_readonly_tree(tmp_path: Path) -> None
             ("__imul__", (2,)),
         ]:
             with pytest.raises(TypeError):
-                getattr(array, method)(*args)
+                getattr(array, array_method)(*array_arguments)
         assert array.copy() == [1, 2]

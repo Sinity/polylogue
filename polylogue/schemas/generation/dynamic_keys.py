@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 
@@ -343,7 +343,7 @@ def observed_structure_schema(
 
     from polylogue.schemas.observation_spill import SpilledObject
 
-    def entries() -> Iterator[tuple[str | None, JSONValue]]:
+    def entries() -> Generator[tuple[str | None, JSONValue], None, None]:
         if isinstance(value, SpilledObject):
             with closing(value.structure_key_items()) as children:
                 for key, child in children:

@@ -35,9 +35,9 @@ from polylogue.schemas.generation.dynamic_keys import (
 from polylogue.schemas.observation import (
     derive_bundle_scope,
     extract_schema_units_from_payload,
-    profile_similarity,
     resolve_provider_config,
 )
+from polylogue.schemas.observation_models import ProfileToken
 from polylogue.schemas.package_publication import publish_provider_tree, read_provider_snapshot
 from polylogue.schemas.packages import (
     SchemaElementManifest,
@@ -214,7 +214,7 @@ class SchemaObservation:
     artifact_kind: str
     bundle_scope: str | None
     exact_structure_id: str | None
-    profile_tokens: tuple[str, ...]
+    profile_tokens: tuple[ProfileToken, ...]
     source_witnesses: tuple[tuple[str, ...], ...] = ()
 
 
@@ -1147,7 +1147,18 @@ class SchemaRegistry:
         observation_index: int,
     ) -> _ResolutionCandidate | None:
         candidates: list[_ResolutionCandidate] = []
-        observed_profile_tokens = set(observation.profile_tokens)
+        from polylogue.schemas.observation_spill import SpilledProfileToken, compare_profile_tokens
+
+        literal_profile_tokens = {token for token in observation.profile_tokens if isinstance(token, str)}
+        spilled_profile_tokens: list[SpilledProfileToken] = []
+        for token in observation.profile_tokens:
+            if isinstance(token, str):
+                continue
+            if not any(compare_profile_tokens(token, prior) == 0 for prior in literal_profile_tokens) and not any(
+                compare_profile_tokens(token, prior) == 0 for prior in spilled_profile_tokens
+            ):
+                spilled_profile_tokens.append(token)
+        observed_token_count = len(literal_profile_tokens) + len(spilled_profile_tokens)
         source_witnesses = observation.source_witnesses
         for package in packages:
             element = package.element(observation.artifact_kind)
@@ -1191,8 +1202,14 @@ class SchemaRegistry:
                         observation_index=observation_index,
                     )
                 )
-            if observed_profile_tokens and element.profile_tokens:
-                score = profile_similarity(set(element.profile_tokens), observed_profile_tokens)
+            if observed_token_count and element.profile_tokens:
+                declared_tokens = set(element.profile_tokens)
+                overlap = sum(
+                    declared in literal_profile_tokens
+                    or any(compare_profile_tokens(declared, observed) == 0 for observed in spilled_profile_tokens)
+                    for declared in declared_tokens
+                )
+                score = ((overlap / len(declared_tokens)) + (overlap / observed_token_count)) / 2.0
                 if score > 0.0:
                     candidates.append(
                         _ResolutionCandidate(

@@ -16,6 +16,7 @@ from polylogue.schemas.generation.replay import (
     metadata_memberships,
     select_artifact_memberships,
 )
+from polylogue.schemas.observation_spill import profile_token_text
 
 WORKLOAD_PROFILE_VERSION = 1
 _STRUCTURAL_VARIANT_CAP = 256
@@ -293,7 +294,7 @@ def _misra_gries_candidates(
     for membership in memberships:
         if membership.unit.artifact_kind != element_kind:
             continue
-        variant = tuple(membership.unit.profile_tokens)
+        variant = tuple(profile_token_text(token) for token in membership.unit.profile_tokens)
         if variant in candidates or len(candidates) < _STRUCTURAL_VARIANT_CAP:
             candidates[variant] += 1
             continue
@@ -318,7 +319,7 @@ def _structural_variants(
         if membership.unit.artifact_kind != element_kind:
             continue
         total += 1
-        variant = tuple(membership.unit.profile_tokens)
+        variant = tuple(profile_token_text(token) for token in membership.unit.profile_tokens)
         all_variants.observe("\x1f".join(variant))
         if variant in candidates:
             exact_counts[variant] += 1

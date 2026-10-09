@@ -393,3 +393,101 @@ def test_structural_consumers_keep_giant_original_key_order_without_reading_name
     with StreamedJSONDocument(path) as document:
         assert observed_structure_schema(document) == expected_schema
         assert "".join(fingerprint_parts(document)) == expected_fingerprint
+
+
+@pytest.mark.parametrize("ending", ["'", '"', "'\"", "\ud800\n\t\x00"])
+def test_selected_giant_profile_key_preserves_exact_tokens_identity_and_package_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    from polylogue.schemas.observation_identity import fingerprint_hash, profile_cluster_id
+    from polylogue.schemas.observation_spill import profile_token_chunks, profile_token_repr_chunks, profile_token_text
+    from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
+
+    _small_sqlite_cells(monkeypatch)
+    key = "b" * 70000 + ending
+    payload = {"uuid": "neutral", "chat_messages": [], key: True}
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(payload))
+    registry = SchemaRegistry(storage_root=tmp_path / "registry")
+    decoded = registry._observed_payloads("claude-ai", payload, source_path="neutral.json")
+    expected = tuple(profile_token_text(token) for token in decoded[0].profile_tokens)
+    element = SchemaElementManifest(
+        element_kind="session_document",
+        schema_file="session.schema.json.gz",
+        sample_count=1,
+        artifact_count=1,
+        profile_tokens=["field:" + key],
+    )
+    package = SchemaVersionPackage(
+        provider="claude-ai",
+        version="neutral",
+        anchor_kind="session_document",
+        default_element_kind="session_document",
+        first_seen="2026-01-01T00:00:00Z",
+        last_seen="2026-01-01T00:00:00Z",
+        bundle_scope_count=0,
+        sample_count=1,
+        elements=[element],
+    )
+    catalog = SchemaPackageCatalog(
+        provider="claude-ai",
+        packages=[package],
+        default_version="neutral",
+        latest_version="neutral",
+        recommended_version="neutral",
+    )
+    monkeypatch.setattr(registry, "load_package_catalog", lambda _provider: catalog)
+    original = observation_spill.SpilledKey.read
+
+    def selected_only(token: observation_spill.SpilledKey) -> str:
+        assert token.small_name is not None, "profile key was reconstructed"
+        return original(token)
+
+    monkeypatch.setattr(observation_spill.SpilledKey, "read", selected_only)
+    with registry.observe_stream("claude-ai", path, source_path="neutral.json") as (observations, _cohort):
+        tokens = observations[0].profile_tokens
+        assert (
+            tuple(b"".join(profile_token_chunks(token)).decode("utf-8", "surrogatepass") for token in tokens)
+            == expected
+        )
+        for token, literal in zip(tokens, expected, strict=True):
+            assert b"".join(profile_token_repr_chunks(token)) == repr(literal).encode("utf-8")
+        assert profile_cluster_id("session_document", tokens) == fingerprint_hash(
+            ("session_document", tuple(sorted(expected)))
+        )
+        result = registry.resolve_observation("claude-ai", observations, source_path="neutral.json")
+        assert result is not None and result.reason == "profile_family"
+        assert result == registry.resolve_observation("claude-ai", decoded, source_path="neutral.json")
+
+
+def test_record_profile_field_union_retains_selected_giant_names_on_existing_token_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.schemas.observation_identity import fingerprint_hash, profile_cluster_id
+    from polylogue.schemas.observation_runtime import _record_profile_tokens
+    from polylogue.schemas.observation_spill import profile_token_chunks, profile_token_text
+
+    _small_sqlite_cells(monkeypatch)
+    key = "b" * 70000
+    records = [{"type": "neutral", key: True}, {"type": "neutral", key: 1}]
+    expected = tuple(profile_token_text(token) for token in _record_profile_tokens(records, record_type_key="type"))
+    path = tmp_path / "records.json"
+    path.write_text(json.dumps(records))
+    original = observation_spill.SpilledKey.read
+
+    def selected_only(token: observation_spill.SpilledKey) -> str:
+        assert token.small_name is not None, "record profile key was reconstructed"
+        return original(token)
+
+    monkeypatch.setattr(observation_spill.SpilledKey, "read", selected_only)
+    with StreamedJSONDocument(path) as document:
+        assert isinstance(document, list)
+        samples = list(document)
+        tokens = _record_profile_tokens(samples, record_type_key="type")
+        assert (
+            tuple(b"".join(profile_token_chunks(token)).decode("utf-8", "surrogatepass") for token in tokens)
+            == expected
+        )
+        assert profile_cluster_id("session_record_stream", tokens) == fingerprint_hash(
+            ("session_record_stream", tuple(sorted(expected)))
+        )

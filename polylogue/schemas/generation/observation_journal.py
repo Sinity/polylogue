@@ -24,6 +24,7 @@ from polylogue.paths import cache_home
 from polylogue.schemas.generation.models import _ProfileSummary, _UnitMembership
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.observation_models import ObservationTerminalStatus
+from polylogue.schemas.observation_spill import profile_token_text
 from polylogue.storage.sqlite.connection_profile import OBSERVATION_JOURNAL_CACHE_SIZE_KIB
 
 logger = get_logger(__name__)
@@ -358,7 +359,7 @@ class ObservationJournal:
         is explicit and attributable, never a silent skip.
         """
         cluster_payload_json = _canonical_json(unit.cluster_payload if retain_cluster_payload else {})
-        profile_tokens_json = _canonical_json(list(unit.profile_tokens))
+        profile_tokens_json = _canonical_json([profile_token_text(token) for token in unit.profile_tokens])
         cursor = self._connection.execute(
             """
             INSERT INTO units(
@@ -489,7 +490,7 @@ class ObservationJournal:
         complete, independent rescan of the backing file on top of the one
         ``append_unit`` already performs.
         """
-        profile_tokens_json = _canonical_json(list(unit.profile_tokens))
+        profile_tokens_json = _canonical_json([profile_token_text(token) for token in unit.profile_tokens])
         self._connection.execute(
             """
             INSERT INTO profile_summaries(

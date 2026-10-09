@@ -129,7 +129,8 @@ def looks_like_record_stream(payload: list[JSONDocument]) -> bool:
 def looks_like_record_entry(payload: JSONDocument) -> bool:
     has_envelope_marker = any(key in payload for key in _TYPE_ENVELOPE_MARKERS)
     if (
-        _RELATIONSHIP_INDEX_KEYS.issubset(payload) or _RELATIONSHIP_INDEX_KEYS_CONVERSATION.issubset(payload)
+        all(key in payload for key in _RELATIONSHIP_INDEX_KEYS)
+        or all(key in payload for key in _RELATIONSHIP_INDEX_KEYS_CONVERSATION)
     ) and not has_envelope_marker:
         return False
     if any(key in payload for key in _RECORDISH_KEYS):
@@ -221,7 +222,7 @@ def looks_like_hook_event_stream(payload: list[JSONDocument]) -> bool:
 
 def looks_like_beads_interaction(payload: object) -> bool:
     """Return whether a record is one append-only Beads interaction."""
-    if not isinstance(payload, dict) or not _BEADS_INTERACTION_KEYS.issubset(payload):
+    if not isinstance(payload, dict) or not all(key in payload for key in _BEADS_INTERACTION_KEYS):
         return False
     return (
         isinstance(payload.get("id"), str)

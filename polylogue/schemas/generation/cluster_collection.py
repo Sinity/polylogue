@@ -28,6 +28,7 @@ from polylogue.schemas.generation.models import (
 )
 from polylogue.schemas.generation.observation_journal import ObservationJournal, RecordStreamDecodeError
 from polylogue.schemas.observation import SchemaUnit, profile_cluster_id
+from polylogue.schemas.observation_spill import profile_token_text
 from polylogue.storage.archive_identity import ArchiveLocation
 
 
@@ -87,12 +88,12 @@ def collect_cluster_analysis(
             artifact_counts[unit.artifact_kind] = artifact_counts.get(unit.artifact_kind, 0) + 1
             total_schema_samples += count
             return
-        summary_key = (unit.artifact_kind, unit.profile_tokens)
+        summary_key = (unit.artifact_kind, tuple(profile_token_text(token) for token in unit.profile_tokens))
         summary = profile_summaries.get(summary_key)
         if summary is None:
             summary = _ProfileSummary(
                 artifact_kind=unit.artifact_kind,
-                profile_tokens=unit.profile_tokens,
+                profile_tokens=tuple(profile_token_text(token) for token in unit.profile_tokens),
                 dominant_keys=dominant_keys,
             )
             profile_summaries[summary_key] = summary
@@ -256,16 +257,16 @@ def collect_cluster_analysis(
     for _unit_id, membership, unit_schema_sample_count in identified_units:
         unit = membership.unit
         cluster_id = (
-            summary_cluster_ids[(unit.artifact_kind, unit.profile_tokens)]
+            summary_cluster_ids[(unit.artifact_kind, tuple(profile_token_text(token) for token in unit.profile_tokens))]
             if journal is None
             else membership.profile_family_id
         )
         acc = clusters[cluster_id]
         acc.sample_count += 1
         acc.schema_sample_count += unit_schema_sample_count
-        acc.profile_token_counts.update(unit.profile_tokens)
+        acc.profile_token_counts.update(tuple(profile_token_text(token) for token in unit.profile_tokens))
         if journal is None:
-            acc.member_profiles.add(unit.profile_tokens)
+            acc.member_profiles.add(tuple(profile_token_text(token) for token in unit.profile_tokens))
         if journal is None:
             acc.exact_structure_ids.add(unit.exact_structure_id)
             if unit.bundle_scope:

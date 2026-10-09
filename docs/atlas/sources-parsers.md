@@ -579,6 +579,9 @@ schema observation, and all borrowed samples finish. Its archival BOM, Unicode
 whitespace, and provider-surrogate policy remains separate from source repair.
 Complete streamed schema observations are also an owned context: inspection
 retains their JSON tree until exact profile tokens and package resolution finish.
+Large observed field names remain exact token references during profile ordering,
+identity hashing, and package matching; literal catalog and journal output selects
+its complete names explicitly.
 
 Live intake and retained census share `terminal_decode_evidence`: a known-provider
 JSON document or complete JSONL record that cannot decode settles as

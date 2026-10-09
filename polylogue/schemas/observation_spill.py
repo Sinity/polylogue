@@ -74,7 +74,7 @@ class SpilledKey:
     connection: sqlite3.Connection
     token: int
 
-    def iter_utf8_chunks(self) -> Iterator[bytes]:
+    def iter_utf8_chunks(self) -> Generator[bytes, None, None]:
         with closing(
             _read_rows(
                 self.connection,
@@ -109,14 +109,82 @@ class SpilledKey:
         return _compare_key_chunks(self.iter_utf8_chunks(), other.iter_utf8_chunks())
 
     def matches(self, value: str) -> bool:
-        def chunks() -> Iterator[bytes]:
+        def chunks() -> Generator[bytes, None, None]:
             for offset in range(0, len(value), 1024):
                 yield value[offset : offset + 1024].encode("utf-8", "surrogatepass")
 
         return _compare_key_chunks(self.iter_utf8_chunks(), chunks()) == 0
 
 
-def _compare_key_chunks(left_chunks: Iterator[bytes], right_chunks: Iterator[bytes]) -> int:
+@dataclass(frozen=True, eq=False)
+class SpilledProfileToken:
+    """One exact profile name assembled from existing scalar-token references."""
+
+    parts: tuple[str | SpilledKey, ...]
+
+    def iter_utf8_chunks(self) -> Generator[bytes, None, None]:
+        for part in self.parts:
+            if isinstance(part, SpilledKey):
+                with closing(part.iter_utf8_chunks()) as chunks:
+                    yield from chunks
+            else:
+                for offset in range(0, len(part), 1024):
+                    yield part[offset : offset + 1024].encode("utf-8", "surrogatepass")
+
+    def read(self) -> str:
+        return "".join(chunk.decode("utf-8", "surrogatepass") for chunk in self.iter_utf8_chunks())
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str | SpilledProfileToken) and compare_profile_tokens(self, other) == 0
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+def profile_token_chunks(token: str | SpilledProfileToken) -> Generator[bytes, None, None]:
+    if isinstance(token, SpilledProfileToken):
+        with closing(token.iter_utf8_chunks()) as chunks:
+            yield from chunks
+    else:
+        for offset in range(0, len(token), 1024):
+            yield token[offset : offset + 1024].encode("utf-8", "surrogatepass")
+
+
+def compare_profile_tokens(left: str | SpilledProfileToken, right: str | SpilledProfileToken) -> int:
+    if isinstance(left, str) and isinstance(right, str):
+        return (left > right) - (left < right)
+    return _compare_key_chunks(profile_token_chunks(left), profile_token_chunks(right))
+
+
+def profile_token_text(token: str | SpilledProfileToken) -> str:
+    """Materialize a token only at an explicitly selected literal-output boundary."""
+    return token.read() if isinstance(token, SpilledProfileToken) else token
+
+
+def profile_token_repr_chunks(token: str | SpilledProfileToken) -> Generator[bytes, None, None]:
+    """Emit exactly Python's string repr, including its global quote choice."""
+    single = double = False
+    for chunk in profile_token_chunks(token):
+        single = single or b"'" in chunk
+        double = double or b'"' in chunk
+    quote = '"' if single and not double else "'"
+    yield quote.encode()
+    for chunk in profile_token_chunks(token):
+        text = chunk.decode("utf-8", "surrogatepass")
+        escaped = "".join("\\" + character if character == quote else repr(character)[1:-1] for character in text)
+        yield escaped.encode("utf-8")
+    yield quote.encode()
+
+
+def _profile_name(prefix: str, key: str | SpilledKey, suffix: str = "") -> str | SpilledProfileToken:
+    if isinstance(key, SpilledKey):
+        name = key.small_name
+        if name is None:
+            return SpilledProfileToken((prefix, key, suffix))
+        key = name
+    return prefix + key + suffix
+
+
+def _compare_key_chunks(left_chunks: Generator[bytes, None, None], right_chunks: Generator[bytes, None, None]) -> int:
     """Settle exact key identity/order even when chunk boundaries differ."""
     left = right = b""
     with closing(left_chunks), closing(right_chunks):
@@ -151,7 +219,7 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
         self._connection = connection
         self._node_id = node_id
 
-    def key_entries(self, *, sorted_keys: bool = False) -> Iterator[tuple[SpilledKey, int]]:
+    def key_entries(self, *, sorted_keys: bool = False) -> Generator[tuple[SpilledKey, int], None, None]:
         order = "CAST(key_token AS TEXT) COLLATE json_key_order" if sorted_keys else "ordinal"
         with closing(
             _read_rows(
@@ -220,7 +288,7 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
             raise KeyError(key)
         return _load_structure_node(self._connection, child)
 
-    def structure_key_items(self, *, sorted_keys: bool = False) -> Iterator[tuple[SpilledKey, JSONValue]]:
+    def structure_key_items(self, *, sorted_keys: bool = False) -> Generator[tuple[SpilledKey, JSONValue], None, None]:
         """Keep original key tokens while reading only each child's structural kind."""
         with closing(self.key_entries(sorted_keys=sorted_keys)) as entries:
             for key, child in entries:
@@ -288,7 +356,7 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
         finally:
             cursor.close()
 
-    def key_union(self, extra: set[str]) -> KeysView[str]:
+    def key_union(self, extra: set[str]) -> SpilledObject:
         """Join a bounded preceding key set without copying this object's keys."""
         connection = self._connection
         node = cast(int, connection.execute("INSERT INTO json_nodes(kind) VALUES ('object')").lastrowid)
@@ -309,52 +377,69 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
                     (node, token.token, token.digest, ordinal, null),
                 )
                 ordinal += 1
-        return KeysView(SpilledObject(connection, node))
+        return SpilledObject(connection, node)
 
     def record_profile_groups(
         self, samples: Iterable[JSONDocument], *, record_type_key: str | None, coarse_type: Callable[[object], str]
-    ) -> Iterator[tuple[str, Iterator[tuple[str, tuple[str, ...]]]]]:
-        """Spill sampled field unions, preserving the existing profile ordering."""
+    ) -> Iterator[tuple[str, Iterator[tuple[SpilledKey, tuple[str, ...]]]]]:
+        """Keep exact field unions and their original order in the scalar owner."""
         from polylogue.archive.raw_payload import record_bucket_key
 
         connection = self._connection
         connection.execute(
-            "CREATE TABLE IF NOT EXISTS profile_fields (bucket BLOB, field BLOB, kind TEXT, PRIMARY KEY (bucket, field, kind)) WITHOUT ROWID"
+            "CREATE TABLE IF NOT EXISTS profile_fields (bucket BLOB, key_token INTEGER, key_digest BLOB, kind TEXT, "
+            "PRIMARY KEY(bucket,key_token,kind)) WITHOUT ROWID"
         )
+        connection.execute("CREATE INDEX IF NOT EXISTS profile_field_digest ON profile_fields(bucket,key_digest)")
         connection.execute("DELETE FROM profile_fields")
         for sample in samples:
             bucket = record_bucket_key(sample, record_type_key).encode("utf-8", "surrogatepass")
-            items = sample.structure_items() if isinstance(sample, SpilledObject) else sample.items()
-            for key, value in items:
-                connection.execute(
-                    "INSERT OR IGNORE INTO profile_fields VALUES (?, ?, ?)",
-                    (bucket, key.encode("utf-8", "surrogatepass"), coarse_type(value)),
-                )
-
-        def fields(bucket: bytes) -> Iterator[tuple[str, tuple[str, ...]]]:
-            with closing(
-                _read_rows(
-                    connection,
-                    "SELECT DISTINCT field FROM profile_fields WHERE bucket = ? ORDER BY field LIMIT 24",
-                    (bucket,),
-                )
-            ) as _owned_rows:
-                for (key,) in _owned_rows:
+            if isinstance(sample, SpilledObject):
+                entries = sample.structure_key_items()
+            else:
+                entries = ((_literal_key(connection, key), value) for key, value in sample.items())
+            with closing(entries) as sample_fields:
+                for key, value in sample_fields:
+                    canonical = key.token
                     with closing(
                         _read_rows(
                             connection,
-                            "SELECT kind FROM profile_fields WHERE bucket = ? AND field = ? ORDER BY kind",
-                            (bucket, key),
+                            "SELECT DISTINCT key_token FROM profile_fields WHERE bucket=? AND key_digest=?",
+                            (bucket, key.digest),
                         )
-                    ) as _kind_rows:
-                        kinds = tuple(row[0] for row in _kind_rows)
-                    yield (bytes(key).decode("utf-8", "surrogatepass"), kinds)
+                    ) as candidates:
+                        for (token,) in candidates:
+                            if key.compare(SpilledKey(connection, int(token))) == 0:
+                                canonical = int(token)
+                                break
+                    connection.execute(
+                        "INSERT OR IGNORE INTO profile_fields VALUES (?,?,?,?)",
+                        (bucket, canonical, key.digest, coarse_type(value)),
+                    )
 
-        with closing(
-            _read_rows(connection, "SELECT DISTINCT bucket FROM profile_fields ORDER BY bucket")
-        ) as _owned_rows:
-            for (bucket,) in _owned_rows:
-                yield (bytes(bucket).decode("utf-8", "surrogatepass"), fields(bucket))
+        def fields(bucket: bytes) -> Iterator[tuple[SpilledKey, tuple[str, ...]]]:
+            with closing(
+                _read_rows(
+                    connection,
+                    "SELECT DISTINCT key_token FROM profile_fields WHERE bucket=? "
+                    "ORDER BY CAST(key_token AS TEXT) COLLATE json_key_order LIMIT 24",
+                    (bucket,),
+                )
+            ) as keys:
+                for (token,) in keys:
+                    with closing(
+                        _read_rows(
+                            connection,
+                            "SELECT kind FROM profile_fields WHERE bucket=? AND key_token=? ORDER BY kind",
+                            (bucket, token),
+                        )
+                    ) as kinds:
+                        value_kinds = tuple(row[0] for row in kinds)
+                    yield SpilledKey(connection, int(token)), value_kinds
+
+        with closing(_read_rows(connection, "SELECT DISTINCT bucket FROM profile_fields ORDER BY bucket")) as buckets:
+            for (bucket,) in buckets:
+                yield bytes(bucket).decode("utf-8", "surrogatepass"), fields(bucket)
 
     def __contains__(self, key: object) -> bool:
         return isinstance(key, str) and self._member(key) is not None
@@ -628,7 +713,7 @@ class _ScalarTokenStore:
             (kind, ordinal),
         )
 
-        def chunks() -> Iterator[bytes]:
+        def chunks() -> Generator[bytes, None, None]:
             for (content,) in rows:
                 check_compute_cancelled()
                 yield bytes(content)

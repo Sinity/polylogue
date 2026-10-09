@@ -22,6 +22,7 @@ from polylogue.core.enums import Provider
 from polylogue.schemas.generation.workflow import generate_provider_schema
 from polylogue.schemas.observation import PROVIDERS, ProviderConfig
 from polylogue.schemas.observation_runtime import _document_profile_tokens
+from polylogue.schemas.observation_spill import profile_token_text
 from polylogue.schemas.sampling import iter_schema_units, load_samples_from_db, load_samples_from_sessions
 from tests.infra.schema_access import schema_node
 
@@ -52,7 +53,7 @@ def test_document_profile_tokens_collapse_record_identity_keys() -> None:
 
     assert "child:mapping:*" in tokens
     assert "child:mapping:client-created-root" in tokens
-    assert not any("2f5a7f5d" in token for token in tokens)
+    assert not any("2f5a7f5d" in profile_token_text(token) for token in tokens)
 
 
 def _archive_index_db(tmp_path: Path) -> Path:
