@@ -2657,12 +2657,7 @@ def prepare_jsonl_blob(
         gemini_envelope: dict[str, JSONValue] | None = None
         gemini_sidecar_scope: RetainedSidecarScope | None = None
         grok_count: int | None = None
-        if (
-            input_admitted
-            and not is_stream
-            and provider is Provider.CHATGPT
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider is Provider.CHATGPT and not jsonl_wire:
             with source.open("rb") as handle:
                 read_result = read_chatgpt_mapping_object(handle, store.conn)
             if (
@@ -2677,12 +2672,7 @@ def prepare_jsonl_blob(
             else:
                 for table in _CHATGPT_PARSER_SCRATCH_TABLES:
                     store.conn.execute(f"DROP TABLE IF EXISTS {table}")
-        if (
-            input_admitted
-            and not is_stream
-            and provider is Provider.GEMINI_CLI
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider is Provider.GEMINI_CLI and not jsonl_wire:
             store.conn.execute(
                 "CREATE TABLE gemini_raw_message (ordinal INTEGER PRIMARY KEY, message_json TEXT NOT NULL)"
             )
@@ -2769,12 +2759,7 @@ def prepare_jsonl_blob(
                         gemini_sidecar_scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
-        if (
-            input_admitted
-            and not is_stream
-            and provider is Provider.HERMES
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider is Provider.HERMES and not jsonl_wire:
             with source.open("rb") as handle:
                 hermes_envelope = hermes_snapshot_envelope(handle)
             if hermes_envelope is not None and (
@@ -2783,12 +2768,7 @@ def prepare_jsonl_blob(
                 or hermes_spans.looks_like_atif_payload(hermes_envelope)
             ):
                 hermes_envelope = None
-        if (
-            input_admitted
-            and not is_stream
-            and provider is Provider.GROK
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider is Provider.GROK and not jsonl_wire:
             store.conn.execute(
                 "CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL, future_type TEXT)"
             )
@@ -2816,12 +2796,7 @@ def prepare_jsonl_blob(
                     bundle_count += 1
                     bundle_browser_captures = bundle_browser_captures and browser_capture.looks_like(record)
                     del record
-        if (
-            input_admitted
-            and not is_stream
-            and provider in BUNDLE_PROVIDERS
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider in BUNDLE_PROVIDERS and not jsonl_wire:
             with source.open("rb") as handle:
                 record_container = json_record_container(handle)
             if record_container is not None:
@@ -2851,7 +2826,7 @@ def prepare_jsonl_blob(
             input_admitted
             and not is_stream
             and provider is Provider.CLAUDE_DESIGN
-            and Path(source_path).name.lower().endswith(".json")
+            and not jsonl_wire
             and record_container is None
         ):
             with source.open("rb") as handle:
@@ -2860,7 +2835,7 @@ def prepare_jsonl_blob(
             input_admitted
             and not is_stream
             and provider is Provider.CLAUDE_AI
-            and Path(source_path).name.lower().endswith(".json")
+            and not jsonl_wire
             and record_container is None
         ):
             with source.open("rb") as handle:
@@ -2871,7 +2846,7 @@ def prepare_jsonl_blob(
             input_admitted
             and not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI}
-            and Path(source_path).name.lower().endswith(".json")
+            and not jsonl_wire
             and generic_envelope is None
         ):
             with source.open("rb") as handle:
@@ -2882,7 +2857,7 @@ def prepare_jsonl_blob(
             and provider in {Provider.DRIVE, Provider.GEMINI}
             and not jsonl_wire
             and parse_prefix_size is None
-            and Path(source_path).name.lower().endswith(".json")
+            and not jsonl_wire
         ):
             with source.open("rb") as handle:
                 drive_root_array = json_record_container(handle) == "item"
@@ -2927,7 +2902,7 @@ def prepare_jsonl_blob(
             input_admitted
             and not is_stream
             and provider is Provider.HERMES
-            and Path(source_path).name.lower().endswith(".json")
+            and not jsonl_wire
             and hermes_envelope is None
         ):
             with source.open("rb") as handle:
@@ -2936,12 +2911,7 @@ def prepare_jsonl_blob(
                 with source.open("rb") as handle:
                     if not _spill_atif_subagents(handle, store.conn):
                         atif = None
-        if (
-            input_admitted
-            and not is_stream
-            and provider is Provider.OTEL_GENAI
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider is Provider.OTEL_GENAI and not jsonl_wire:
             with source.open("rb") as handle:
                 otlp = _otlp_envelope(handle)
             if otlp is not None:

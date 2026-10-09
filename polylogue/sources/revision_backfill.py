@@ -842,7 +842,7 @@ def prepare_retained_jsonl_artifact(
     prepare_per_session = (
         not is_stream_record_provider(source_path, provider)
         and provider in BUNDLE_PROVIDERS
-        and Path(source_path).name.lower().endswith(".json")
+        and not is_jsonl_source_path(source_path)
     )
 
     def finalize(sessions: PreparedSessionSequence) -> Iterator[ParsedSession]:
@@ -1096,24 +1096,28 @@ def prepare_retained_non_json_artifact(
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 
     provider, blob_hash, source_path, _kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
-    # Some providers arrive under neutral or mislabeled filenames. A simple
-    # top-level message or Claude conversation envelope has an existing
-    # streamed-to-SQLite route; route by that complete shape before the collecting
-    # non-JSON replay below. The probe validates through EOF and leaves the
-    # retained blob untouched.
-    if provider in {Provider.DRIVE, Provider.GEMINI, Provider.CLAUDE_AI} and not (
+    # Complete export grammars retain their original source path while the
+    # streamed parser chooses the object or array shape from the bytes. A
+    # neutral extension cannot send these documents to the record collector.
+    if provider in BUNDLE_PROVIDERS and not is_jsonl_source_path(source_path):
+        return prepare_retained_jsonl_artifact(
+            evidence_reader,
+            raw_id,
+            directory=directory,
+            allow_generic_object_alias=True,
+            validation_mode=validation_mode,
+            schema_registry=schema_registry,
+            prepare_blob_publications=prepare_blob_publications,
+        )
+    if provider in {Provider.DRIVE, Provider.GEMINI} and not (
         is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"
     ):
-        from polylogue.sources.decoder_json import claude_ai_object_envelope, generic_message_object_envelope
+        from polylogue.sources.decoder_json import generic_message_object_envelope
 
         blob_path = evidence_reader.raw_revision_blob_path(raw_id)
         if blob_path is not None:
             with blob_path.open("rb") as handle:
-                generic_envelope = (
-                    claude_ai_object_envelope(handle)
-                    if provider is Provider.CLAUDE_AI
-                    else generic_message_object_envelope(handle)
-                )
+                generic_envelope = generic_message_object_envelope(handle)
             if generic_envelope is not None:
                 return prepare_retained_jsonl_artifact(
                     evidence_reader,
