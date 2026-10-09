@@ -8,7 +8,7 @@ from pathlib import Path
 
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.errors import ArchiveTierUnavailableError
-from polylogue.storage.sqlite.connection_profile import attach_database
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database
 
 
 def session_ids_for_source_path(
@@ -72,7 +72,10 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection, source_db: Path) -> s
     for row in conn.execute("PRAGMA database_list").fetchall():
         if str(row[1]) == "source_tier":
             return "source_tier"
-    attach_database(conn, source_db, alias="source_tier")
+    if conn.execute("PRAGMA query_only").fetchone()[0]:
+        attach_readonly_database(conn, source_db, alias="source_tier")
+    else:
+        conn.execute("ATTACH DATABASE ? AS source_tier", (str(source_db),))
     return "source_tier"
 
 

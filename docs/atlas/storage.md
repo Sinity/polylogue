@@ -745,5 +745,6 @@ Embedding watcher scopes resolve retained Source paths through the active Index
 relation. Interrupted or failed native SQL remains an exception, preserving the
 existing deferred embedding obligation; it cannot certify an empty scope. A
 missing required Source tier raises `ArchiveTierUnavailableError`. The shared
-lookup attaches Source read-only and returns empty only for a successful
+lookup retains the caller connection's attachment policy (profiled query-only
+readers attach Source read-only) and returns empty only for a successful
 zero-row join (`storage/source_sessions.py`; `operations/embedding_derivation.py`).
