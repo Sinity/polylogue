@@ -216,7 +216,9 @@ def _check_semantic_closure(
             if native_id:
                 local_id = message_local_id(native_id)
             else:
-                stored_native, identity, occurrence = split_message_local_id(message_id)
+                stored_native, identity, occurrence = split_message_local_id(
+                    message_id, parent_session_id=manifest.session_id
+                )
                 if stored_native is not None:
                     raise ValueError("idless message claims native identity")
                 local_id = message_local_id(None, content_identity=identity, content_occurrence=occurrence)

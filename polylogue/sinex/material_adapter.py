@@ -721,7 +721,9 @@ def session_material_from_session(session: Session) -> SessionMaterial:
                 blocks.append(block)
         # This path reads a hydrated archive tree, not a parsed one, so the
         # identity is restated from the stored id rather than re-derived.
-        stored_native_id, stored_content_identity, stored_content_occurrence = split_message_local_id(message.id)
+        stored_native_id, stored_content_identity, stored_content_occurrence = split_message_local_id(
+            message.id, parent_session_id=session.id
+        )
         messages.append(
             MessageInput(
                 native_id=stored_native_id,

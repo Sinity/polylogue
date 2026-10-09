@@ -7,7 +7,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polylogue.core.identity_law import block_id, message_id, message_local_id, session_id
+from polylogue.core.identity_law import block_id, message_id, message_local_id, session_id, split_message_local_id
 
 _TOKEN = st.text(
     alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_",
@@ -110,3 +110,12 @@ def test_message_native_identity_refuses_nontext(native_id: object) -> None:
 
 def test_block_identity_preserves_opaque_parent_message_id() -> None:
     assert block_id("session:n: a ", content_identity="a" * 64) == f"session:n: a :b:{'a' * 64}:0"
+
+
+@pytest.mark.parametrize("native_id", ["abc:n:tail", "abc:c:digest.0", " a ", "   "])
+def test_message_identity_inverse_uses_the_declared_parent_boundary(native_id: str) -> None:
+    sid = "origin:session:n:part:c:tail"
+    mid = message_id(sid, native_id)
+    assert split_message_local_id(mid, parent_session_id=sid) == (native_id, None, 0)
+    with pytest.raises(ValueError):
+        split_message_local_id(mid, parent_session_id="other-session")

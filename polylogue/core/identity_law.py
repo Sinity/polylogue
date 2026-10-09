@@ -83,24 +83,21 @@ def message_id(
     return f"{session}:{local}"
 
 
-def split_message_local_id(stored_message_id: str) -> tuple[str | None, str | None, int]:
-    """Invert ``message_local_id`` on a stored ``message_id``.
+def split_message_local_id(stored_message_id: str, *, parent_session_id: str) -> tuple[str | None, str | None, int]:
+    """Invert a stored message identity using its exact known session boundary.
 
-    Returns ``(native_id, content_identity, content_occurrence)`` with exactly
-    one of the first two set, so a surface holding a stored id can restate the
-    identity it was built from without re-deriving it from a position.
-    ``ValueError`` if the id carries neither tagged namespace.
+    Native message names may themselves contain either namespace marker.
+    Searching inside the identifier cannot identify the owning boundary.
     """
-    native_marker = ":n:"
-    content_marker = ":c:"
-    native_at = stored_message_id.rfind(native_marker)
-    content_at = stored_message_id.rfind(content_marker)
-    if native_at > content_at:
-        return stored_message_id[native_at + len(native_marker) :], None, 0
-    if content_at >= 0:
-        local = stored_message_id[content_at + len(content_marker) :]
-        identity, _, occurrence = local.rpartition(".")
-        if identity and occurrence.isdigit():
+    prefix = parent_session_id + ":"
+    if not stored_message_id.startswith(prefix):
+        raise ValueError("message id does not belong to its declared session")
+    local = stored_message_id[len(prefix) :]
+    if local.startswith("n:") and local[2:] != "":
+        return local[2:], None, 0
+    if local.startswith("c:"):
+        identity, separator, occurrence = local[2:].rpartition(".")
+        if separator and identity and occurrence.isdigit():
             return None, identity, int(occurrence)
     raise ValueError(f"not a tagged archive message id: {stored_message_id!r}")
 
