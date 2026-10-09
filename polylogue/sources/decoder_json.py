@@ -29,7 +29,7 @@ from polylogue.core.json import (
     normalize_json_decimal,
 )
 from polylogue.core.json import loads as json_loads
-from polylogue.core.json_envelope import JSONL_MEMORY_BUFFER_BYTES, OversizedRecord, bounded_lines
+from polylogue.core.json_envelope import JSONL_MEMORY_BUFFER_BYTES
 from polylogue.logging import get_logger
 from polylogue.sources import value_bounds
 from polylogue.sources.pickle_spool import PickleSpool
@@ -89,6 +89,7 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
         self._spool: PickleSpool[JsonValue | _TreeRecordRef] = PickleSpool(indexed=True)
         self._tree: StreamedJSONDocument | None = None
         self._closed = False
+        self._decode_error: JsonlDecodeError | None = None
         try:
             iterator = iter(records)
             try:
@@ -138,6 +139,14 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
         retain exact scalar chunks and lazy containers under this tape's owner.
         """
         tape = cls(())
+
+        def record_failure(error: Exception) -> None:
+            if fail_on_decode_error and tape._decode_error is None:
+                assert isinstance(error, JsonlDecodeError)
+                tape._decode_error = error
+            if on_decode_failure is not None:
+                on_decode_failure(error)
+
         try:
             with closing(
                 _retain_jsonl_records(
@@ -145,9 +154,9 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
                     logger_obj or logger,
                     handle,
                     path_name,
-                    fail_on_decode_error=fail_on_decode_error,
+                    fail_on_decode_error=False,
                     repair=repair,
-                    on_decode_failure=on_decode_failure,
+                    on_decode_failure=record_failure if fail_on_decode_error or on_decode_failure is not None else None,
                     expose_records=False,
                 )
             ) as retained:
@@ -331,6 +340,8 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
             self._require_open()
             check_compute_cancelled()
             yield self._value(value)
+        if self._decode_error is not None:
+            raise self._decode_error
 
     def structure_values(self) -> Iterator[JsonValue]:
         """Traverse root kinds while leaving unselected scalar tokens on disk."""
@@ -345,6 +356,8 @@ class DecodedRecordSequence(list[JsonValue], _ValidatedJSONContainer):
                 yield _load_structure_node(self._tree.connection, value.node_id)
             else:
                 yield value
+        if self._decode_error is not None:
+            raise self._decode_error
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -708,21 +721,39 @@ def _retain_jsonl_records(
         raw_path = Path(directory) / "line.json"
         converted = Path(directory) / "text.json"
         with closing(physical_lines()) as lines:
-            for line_number, chunks in enumerate(lines, start=1):
-                raw = _capture_jsonl_line(chunks, raw_path, whitespace=None if repair else b" \t\r\n")
-                if raw == b"":
-                    continue
+            physical_line_number = 0
+
+            def next_record(path: Path) -> tuple[bytes | None, int] | None:
+                nonlocal physical_line_number
+                for chunks in lines:
+                    physical_line_number += 1
+                    raw = _capture_jsonl_line(chunks, path, whitespace=None if repair else b" \t\r\n")
+                    if raw != b"":
+                        return raw, physical_line_number
+                return None
+
+            lookahead_path = Path(directory) / "next-line.json"
+            pending = next_record(raw_path)
+            while pending is not None:
+                raw, line_number = pending
+                # Each borrowed physical line is fully drained before the next
+                # is captured. Two reusable files retain nonblank lookahead;
+                # neither record is held beyond the same memory strategy.
+                following = next_record(lookahead_path)
+                is_last = following is None
                 previous_records = len(tape)
                 records: list[JsonValue] = []
                 if raw is not None:
                     if repair:
                         records, failed, _error_line = _yield_jsonl_pending(
-                            logger_obj, raw, is_last=False, path_name=path_name, line_number=line_number
+                            logger_obj, raw, is_last=is_last, path_name=path_name, line_number=line_number
                         )
                     else:
                         if raw.startswith(codecs.BOM_UTF8):
                             raw = raw[len(codecs.BOM_UTF8) :].lstrip(b" \t\r\n")
                         if not raw:
+                            pending = following
+                            raw_path, lookahead_path = lookahead_path, raw_path
                             continue
                         try:
                             records = [json_loads(raw)]
@@ -775,7 +806,10 @@ def _retain_jsonl_records(
                                 path_name, line_number=line_number, cause=ValueError("malformed JSONL record")
                             )
                         )
-                    if errors <= 3:
+                    if is_last:
+                        if raw is None or not repair:
+                            logger_obj.debug("Skipping invalid trailing JSON line in %s", path_name)
+                    elif errors <= 3:
                         logger_obj.warning("Skipping invalid JSON line in %s", path_name)
                     elif errors == 4:
                         logger_obj.warning("Skipping further invalid JSON lines in %s...", path_name)
@@ -786,87 +820,14 @@ def _retain_jsonl_records(
                 else:
                     for record_index in range(previous_records, len(tape)):
                         yield tape[record_index]
+                pending = following
+                raw_path, lookahead_path = lookahead_path, raw_path
     if fail_on_decode_error and errors:
         raise JsonlDecodeError(
             path_name, line_number=first_error or line_number, cause=ValueError("malformed JSONL record")
         )
     if errors > 3:
         logger_obj.warning("Skipped %d invalid JSON lines in %s", errors, path_name)
-
-
-def _iter_jsonl_stream(
-    logger_obj: LoggerLike,
-    handle: JsonReadable | Iterable[bytes],
-    path_name: str,
-    *,
-    fail_on_decode_error: bool = False,
-) -> Iterable[JsonValue]:
-    error_count = 0
-    pending: bytes | str | None = None
-    physical_line_number = 0
-    pending_line_number: int | None = None
-    first_decode_error_line: int | None = None
-
-    for line in bounded_lines(handle):
-        physical_line_number += 1
-        raw = None if isinstance(line, OversizedRecord) else line.strip()
-        if raw is not None and not raw:
-            continue
-        if pending is not None:
-            records, new_errors, error_line = _yield_jsonl_pending(
-                logger_obj,
-                pending,
-                is_last=False,
-                path_name=path_name,
-                line_number=pending_line_number or physical_line_number,
-            )
-            if first_decode_error_line is None and error_line is not None:
-                first_decode_error_line = error_line
-            error_count += new_errors
-            if new_errors:
-                if error_count <= 3:
-                    logger_obj.warning("Skipping invalid JSON line in %s", path_name)
-                elif error_count == 4:
-                    logger_obj.warning("Skipping further invalid JSON lines in %s...", path_name)
-            yield from records
-            pending = None
-        if isinstance(line, OversizedRecord):
-            # Refused by name at the record bound, never allocated.
-            error_count += 1
-            if first_decode_error_line is None:
-                first_decode_error_line = physical_line_number
-            logger_obj.warning(
-                "Skipping JSONL record of %d bytes at line %d in %s: beyond the record bound",
-                line.size,
-                physical_line_number,
-                path_name,
-            )
-            continue
-        pending = raw
-        pending_line_number = physical_line_number
-
-    if pending is not None:
-        records, new_errors, error_line = _yield_jsonl_pending(
-            logger_obj,
-            pending,
-            is_last=True,
-            path_name=path_name,
-            line_number=pending_line_number or physical_line_number,
-        )
-        if first_decode_error_line is None and error_line is not None:
-            first_decode_error_line = error_line
-        error_count += new_errors
-        yield from records
-
-    if fail_on_decode_error and error_count:
-        raise JsonlDecodeError(
-            path_name,
-            line_number=first_decode_error_line or physical_line_number,
-            cause=ValueError("malformed JSONL record"),
-        )
-
-    if error_count > 3:
-        logger_obj.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
 
 
 class _StdlibJsonRecordReader:
@@ -878,7 +839,7 @@ class _StdlibJsonRecordReader:
         self._text_decoder = codecs.getincrementaldecoder(json.detect_encoding(first))(errors="surrogatepass")
         self._buffer = self._text_decoder.decode(first)
         self._eof = False
-        self._decoder = json.JSONDecoder()
+        self._decoder = json.JSONDecoder(parse_int=_decode_integer)
 
     def _fill(self) -> bool:
         if self._eof:
@@ -1111,7 +1072,7 @@ def _json_error_offset(exc: BaseException) -> int | None:
     return None
 
 
-def iter_json_stream_with(
+def _iter_json_document_with(
     logger_obj: LoggerLike,
     ijson_module: IjsonModuleLike,
     handle: JsonReadable | Iterable[bytes],
@@ -1119,18 +1080,6 @@ def iter_json_stream_with(
     unpack_lists: bool = True,
     fail_on_decode_error: bool = False,
 ) -> Iterable[JsonValue]:
-    normalized_path = path_name.lower()
-    if normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson")) or any(
-        marker in normalized_path for marker in (".jsonl.", ".ndjson.")
-    ):
-        yield from _iter_jsonl_stream(
-            logger_obj,
-            handle,
-            path_name,
-            fail_on_decode_error=fail_on_decode_error,
-        )
-        return
-
     if not callable(getattr(handle, "read", None)):
         raise TypeError("JSON document strategies require a readable byte stream")
     # JSONL callers may supply physical lines; document strategies require IO.
@@ -1148,7 +1097,7 @@ def iter_json_stream_with(
                     break
                 spool.write(chunk)
             spool.seek(0)
-            yield from iter_json_stream_with(
+            yield from _iter_json_document_with(
                 logger_obj,
                 ijson_module,
                 spool,
@@ -1202,23 +1151,6 @@ def iter_json_stream_with(
             yield from data
         else:
             yield data
-
-
-def iter_json_stream(
-    handle: JsonReadable,
-    path_name: str,
-    unpack_lists: bool = True,
-    *,
-    fail_on_decode_error: bool = False,
-) -> Iterable[JsonValue]:
-    yield from iter_json_stream_with(
-        logger,
-        ijson,
-        handle,
-        path_name,
-        unpack_lists,
-        fail_on_decode_error=fail_on_decode_error,
-    )
 
 
 def json_record_container(handle: JsonReadable) -> str | None:
@@ -2444,8 +2376,6 @@ __all__ = [
     "PartialJsonStreamError",
     "decode_json_bytes",
     "decode_json_bytes_with",
-    "iter_json_stream",
-    "iter_json_stream_with",
     "grok_taxonomy_witness",
     "iter_container_member_files",
     "iter_json_container_records",

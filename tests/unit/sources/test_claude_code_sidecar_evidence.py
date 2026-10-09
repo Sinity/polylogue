@@ -1770,8 +1770,8 @@ def test_tool_use_result_preserves_complete_filename_evidence_on_eager_and_strea
     import json
 
     from polylogue.core.enums import Provider
-    from polylogue.sources.decoders import _iter_json_stream
     from polylogue.sources.dispatch import parse_payload, parse_stream_payload
+    from tests.infra.json_values import iter_owned_json_values
 
     record = {
         "type": "user",
@@ -1800,7 +1800,7 @@ def test_tool_use_result_preserves_complete_filename_evidence_on_eager_and_strea
     eager = eager_sessions[0]
     wire = ("\n".join(json.dumps(item) for item in records) + "\n").encode()
     streamed = parse_stream_payload(
-        Provider.CLAUDE_CODE, _iter_json_stream(io.BytesIO(wire), "filenames.jsonl"), "filename-session"
+        Provider.CLAUDE_CODE, iter_owned_json_values(io.BytesIO(wire), "filenames.jsonl"), "filename-session"
     )
     assert len(streamed) == 1
     for session in (eager, streamed[0]):

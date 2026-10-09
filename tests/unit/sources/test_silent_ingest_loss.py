@@ -16,7 +16,6 @@ import pytest
 from polylogue.sources.decoder_json import (
     JsonValue,
     PartialJsonStreamError,
-    iter_json_stream,
 )
 from polylogue.sources.parsers.antigravity import (
     AntigravityBinaryUnavailableError,
@@ -27,6 +26,7 @@ from polylogue.sources.parsers.antigravity import (
     iter_language_server_exports,
 )
 from polylogue.sources.parsers.codex import parse as parse_codex
+from tests.infra.json_values import iter_owned_json_values
 
 # ---------------------------------------------------------------------------
 # AC #? — dense 2025-era Codex rollout envelopes must not silently parse to
@@ -181,7 +181,7 @@ def test_mid_stream_corruption_raises_partial_decode_error() -> None:
     handle = io.BytesIO(truncated)
 
     with pytest.raises(PartialJsonStreamError) as excinfo:
-        list(iter_json_stream(handle, "sessions.json"))
+        list(iter_owned_json_values(handle, "sessions.json"))
 
     err = excinfo.value
     assert err.recovered >= 2
@@ -204,7 +204,7 @@ def test_mid_stream_non_json_failure_propagates_instead_of_returning_a_partial_s
     """
     import ijson
 
-    from polylogue.sources.decoder_json import iter_json_stream_with
+    from polylogue.sources.decoder_json import _iter_json_document_with
 
     class FailingIjson:
         common = ijson.common
@@ -223,7 +223,7 @@ def test_mid_stream_non_json_failure_propagates_instead_of_returning_a_partial_s
     delivered: list[object] = []
     with pytest.raises(OSError, match="backing store vanished") as excinfo:
         delivered.extend(
-            iter_json_stream_with(
+            _iter_json_document_with(
                 logging.getLogger(__name__),
                 cast(object, FailingIjson),  # type: ignore[arg-type]
                 io.BytesIO(b"[]"),
@@ -238,7 +238,7 @@ def test_mid_stream_non_json_failure_propagates_instead_of_returning_a_partial_s
 def test_clean_array_does_not_raise() -> None:
     """A well-formed array must still decode all records without raising."""
     handle = io.BytesIO(b'[{"id": 1}, {"id": 2}, {"id": 3}]')
-    records = list(iter_json_stream(handle, "sessions.json"))
+    records = list(iter_owned_json_values(handle, "sessions.json"))
     ids = [cast(dict[str, JsonValue], r)["id"] for r in records]
     assert ids == [1, 2, 3]
 
@@ -250,7 +250,7 @@ def test_wrong_prefix_with_zero_items_falls_through_not_raises() -> None:
     "try the next strategy" signal — it must be swallowed, not surfaced.
     """
     handle = io.BytesIO(b'{"sessions": [{"id": 1}]}')
-    records = list(iter_json_stream(handle, "single.json"))
+    records = list(iter_owned_json_values(handle, "single.json"))
     # The object is yielded as a single record (dict payload, no unpack match).
     assert records
 

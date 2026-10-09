@@ -39,6 +39,7 @@ from polylogue.core.enums import (
     ToolResultUnknownReason,
     WebConstructType,
 )
+from polylogue.core.json import detach_borrowed_json
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
@@ -62,7 +63,7 @@ def _require_string_mapping_keys(value: object, *, field: str) -> object:
         raise ValueError(f"{field} requires an object mapping")
     if any(not isinstance(key, str) for key in value):
         raise ValueError(f"{field} requires string mapping keys")
-    return value
+    return detach_borrowed_json(value)
 
 
 class AdmissionUnit(PolylogueStrEnum):
@@ -399,8 +400,7 @@ class ParsedFileEdit(BaseModel):
         if value is None:
             return value
         if isinstance(value, (list, tuple)):
-            for patch in value:
-                _require_string_mapping_keys(patch, field="structured_patch")
+            return [_require_string_mapping_keys(patch, field="structured_patch") for patch in value]
         return value
 
 
@@ -954,8 +954,7 @@ class ParsedSession(BaseModel):
     @classmethod
     def validate_pending_draft_keys(cls, value: object) -> object:
         if isinstance(value, (list, tuple)):
-            for draft in value:
-                _require_string_mapping_keys(draft, field="pending_drafts")
+            return [_require_string_mapping_keys(draft, field="pending_drafts") for draft in value]
         return value
 
     @field_validator("source_name", mode="before")

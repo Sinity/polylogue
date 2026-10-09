@@ -76,7 +76,7 @@ def test_payload_record_normalizes_streaming_decimals_for_chatgpt_parse() -> Non
 
 
 def test_parse_payload_unwraps_single_gemini_cli_record_list() -> None:
-    """Full-ingest passes ``list(_iter_json_stream(...))``; a one-record gemini-cli
+    """Full-ingest passes ``list(iter_owned_json_values(...))``; a one-record gemini-cli
     file therefore arrives as a single-element list. It must still parse rather
     than silently yielding no sessions (which marked the file a permanent parse
     failure and looped retries forever)."""
@@ -107,7 +107,7 @@ def test_parse_payload_unwraps_single_drive_chunked_session_list() -> None:
     lines below, which special-cases ``len(payloads) == 1`` to avoid
     suffixing a genuinely single-item wrapper. Any caller that decodes a
     lone chunkedPrompt document through a list-shaped stream reader (e.g.
-    ``revision_backfill._parse_one``'s ``list(_iter_json_stream(...))``)
+    ``revision_backfill._parse_one``'s ``list(iter_owned_json_values(...))``)
     therefore derives a DIFFERENT session identity (``...-0`` suffixed) than
     a caller that keeps the bare dict, purely from incidental list-wrapping
     with no session-count difference (polylogue-z1c6).

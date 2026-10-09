@@ -40,7 +40,6 @@ from polylogue.sources.cursor import (
 )
 from polylogue.sources.decoders import (
     _decode_json_bytes,
-    _iter_json_stream,
     _zip_entry_provider_hint,
     _ZipEntryValidator,
     owned_json_records,
@@ -90,6 +89,7 @@ from polylogue.sources.source_parsing import (
 from polylogue.sources.source_walk import layout_source_paths
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
+from tests.infra.json_values import iter_owned_json_values
 from tests.infra.source_builders import GenericSessionBuilder, acquired_payloads, make_claude_chat_message
 from tests.infra.strategies import (
     json_array_bytes_strategy,
@@ -328,43 +328,48 @@ def test_decode_json_bytes_round_trips_supported_encodings(document: dict[str, o
 
 @given(json_array_bytes_strategy())
 @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_iter_json_stream_root_list_round_trips_documents(case: tuple[list[dict[str, object]], bytes]) -> None:
+def test_owned_json_records_root_list_round_trips_documents(case: tuple[list[dict[str, object]], bytes]) -> None:
     """Streaming a root JSON array yields the original item sequence."""
     documents, raw = case
-    assert list(_iter_json_stream(BytesIO(raw), "test.json")) == documents
+    assert list(iter_owned_json_values(BytesIO(raw), "test.json")) == documents
 
 
 @given(sessions_wrapper_bytes_strategy())
 @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_iter_json_stream_sessions_wrapper_round_trips_documents(
+def test_owned_json_records_sessions_wrapper_round_trips_documents(
     case: tuple[list[dict[str, object]], bytes],
 ) -> None:
     """Streaming a `{\"sessions\": [...]}` object yields the wrapped items."""
     documents, raw = case
-    assert list(_iter_json_stream(BytesIO(raw), "test.json")) == documents
+    assert list(iter_owned_json_values(BytesIO(raw), "test.json")) == documents
 
 
 @given(json_array_bytes_strategy())
 @settings(max_examples=30, suppress_health_check=[HealthCheck.too_slow])
-def test_iter_json_stream_unpack_lists_false_preserves_single_list(case: tuple[list[dict[str, object]], bytes]) -> None:
+def test_owned_json_records_unpack_lists_false_preserves_single_list(
+    case: tuple[list[dict[str, object]], bytes],
+) -> None:
     """`unpack_lists=False` keeps the JSON root list intact as one item."""
     documents, raw = case
-    assert list(_iter_json_stream(BytesIO(raw), "test.json", unpack_lists=False)) == [documents]
+    assert list(iter_owned_json_values(BytesIO(raw), "test.json", unpack_lists=False)) == [documents]
 
 
 @given(jsonl_bytes_strategy())
 @settings(max_examples=35, suppress_health_check=[HealthCheck.too_slow])
-def test_iter_json_stream_jsonl_preserves_valid_records_with_blank_lines(
+def test_owned_json_records_jsonl_preserves_valid_records_with_blank_lines(
     case: tuple[list[dict[str, object]], bytes],
 ) -> None:
     """JSONL parsing ignores blank lines but preserves valid record order exactly."""
     documents, raw = case
-    assert list(_iter_json_stream(BytesIO(raw), "test.jsonl")) == documents
+    assert list(iter_owned_json_values(BytesIO(raw), "test.jsonl")) == documents
 
 
-def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("blank_tail", [b"", b"\n \t\n"])
+def test_owned_json_records_jsonl_invalid_line_logging_contract(
+    monkeypatch: pytest.MonkeyPatch, blank_tail: bytes
+) -> None:
     # 4 broken lines: first 3 (non-trailing) get warning, last gets debug (truncation tolerance)
-    raw = b'{"id": 1}\n{broken}\n{broken}\n{broken}\n{broken}\n'
+    raw = b'{"id": 1}\n{broken}\n{broken}\n{broken}\n{broken}\n' + blank_tail
     warnings: list[str] = []
     debugs: list[str] = []
 
@@ -379,7 +384,7 @@ def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytes
         lambda message, *args: debugs.append(message % args if args else message),
     )
 
-    items = list(_iter_json_stream(BytesIO(raw), "test.jsonl"))
+    items = list(iter_owned_json_values(BytesIO(raw), "test.jsonl"))
 
     assert items == [{"id": 1}]
     # The first 3 non-trailing broken lines get individual warnings, followed
@@ -391,7 +396,7 @@ def test_iter_json_stream_jsonl_invalid_line_logging_contract(monkeypatch: pytes
     assert any("Skipping truncated trailing line in test.jsonl" in d for d in debugs)
 
 
-def test_iter_json_stream_falls_back_to_full_json_load_when_streaming_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_owned_json_records_falls_back_to_full_json_load_when_streaming_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     def broken_items(handle: BytesIO, prefix: str) -> Iterable[object]:
@@ -402,7 +407,7 @@ def test_iter_json_stream_falls_back_to_full_json_load_when_streaming_fails(monk
     monkeypatch.setattr(ijson, "items", broken_items)
 
     raw = b'{"sessions":[{"id":"one"},{"id":"two"}]}'
-    items = list(_iter_json_stream(BytesIO(raw), "test.json"))
+    items = list(iter_owned_json_values(BytesIO(raw), "test.json"))
 
     assert calls == ["item", "sessions.item"]
     assert items == [{"sessions": [{"id": "one"}, {"id": "two"}]}]

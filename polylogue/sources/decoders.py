@@ -15,8 +15,8 @@ from polylogue.sources.decoder_json import (
     JsonlDecodeError,
     JsonlReadable,
     JsonValue,
+    _iter_json_document_with,
     decode_json_bytes_with,
-    iter_json_stream_with,
 )
 from polylogue.sources.decoder_zip import ZipEntryValidator as _ZipEntryValidator
 from polylogue.sources.decoder_zip import (
@@ -48,7 +48,7 @@ def owned_json_records(
             yield records
     else:
         with closing(
-            _iter_json_stream(
+            _iter_json_document(
                 cast(BinaryIO | Iterable[bytes], handle),
                 path_name,
                 unpack_lists,
@@ -62,14 +62,14 @@ def _decode_json_bytes(blob: bytes) -> str | None:
     return decode_json_bytes_with(logger, blob)
 
 
-def _iter_json_stream(
+def _iter_json_document(
     handle: BinaryIO | IO[bytes] | Iterable[bytes],
     path_name: str,
     unpack_lists: bool = True,
     *,
     fail_on_decode_error: bool = False,
 ) -> Generator[JsonValue, None, None]:
-    for value in iter_json_stream_with(
+    for value in _iter_json_document_with(
         logger,
         ijson,
         handle,
@@ -83,7 +83,6 @@ def _iter_json_stream(
 
 __all__ = [
     "_decode_json_bytes",
-    "_iter_json_stream",
     "JsonlDecodeError",
     "_ZipEntryValidator",
     "_zip_entry_provider_hint",

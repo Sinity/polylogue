@@ -808,10 +808,12 @@ def prepare_retained_jsonl_artifact(
                 decode_failure=exc.kind,
             )
         if provider is Provider.UNKNOWN:
-            refusal = UnsupportedRetainedJsonShapeError(
+            shape_refusal = UnsupportedRetainedJsonShapeError(
                 f"retained UNKNOWN provider has no recognized complete input shape: {source_path}"
             )
-            return PreparedJsonl(None, None, None, f"{type(refusal).__name__}: {refusal}", unsupported_shape=True)
+            return PreparedJsonl(
+                None, None, None, f"{type(shape_refusal).__name__}: {shape_refusal}", unsupported_shape=True
+            )
     fallback_id = fallback_session_id(source_path, raw_id)
     if kind is RawRevisionKind.APPEND:
         fallback_id = (

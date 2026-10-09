@@ -15,7 +15,7 @@ import codecs
 import re
 import sqlite3
 import sys
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from functools import cache
 from typing import IO, Protocol, cast
 
@@ -967,45 +967,6 @@ def top_level_envelopes(
     yield from envelopes
 
 
-class OversizedRecord:
-    """A physical line longer than the record bound, skipped without being held."""
-
-    __slots__ = ("size",)
-
-    def __init__(self, size: int) -> None:
-        self.size = size
-
-
-def bounded_lines(handle: IO[bytes] | IO[str] | Iterable[bytes | str]) -> Iterator[bytes | str | OversizedRecord]:
-    """Physical lines of ``handle``, each held whole only up to the record bound.
-
-    The bound is SQLite's value limit, the physical limit on what one record
-    can be stored as. A longer line is read past in bounded pieces and
-    reported as :class:`OversizedRecord` with its length, so a JSONL decoder
-    refuses it by name instead of allocating it. A plain iterable of lines
-    the caller already holds is refused by the same bound.
-    """
-    limit = sqlite_value_limit()
-    if not hasattr(handle, "readline"):
-        for held in handle:
-            ending = b"\n" if isinstance(held, bytes) else "\n"
-            content = len(held) - (1 if held.endswith(ending) else 0)  # type: ignore[arg-type]
-            yield held if content <= limit else OversizedRecord(content)
-        return
-    while line := handle.readline(limit + 1):
-        newline: bytes | str = b"\n" if isinstance(line, bytes) else "\n"
-        if len(line) <= limit or line.endswith(newline):
-            yield line
-            continue
-        size = len(line)
-        while rest := handle.readline(_READ_BYTES):
-            size += len(rest)
-            if rest.endswith(newline):
-                size -= 1
-                break
-        yield OversizedRecord(size)
-
-
 #: Bytes after which the python lexer has finished every lexeme of its
 #: buffer, outside any string: its unary structural lexemes and JSON
 #: whitespace. ``:`` is excluded: that lexer extends a buffer ending in it.
@@ -1123,8 +1084,6 @@ __all__ = [
     "EnvelopeValueTooLargeError",
     "EnvelopeValueUnrepresentableError",
     "LexemeAlignedReader",
-    "OversizedRecord",
-    "bounded_lines",
     "sqlite_value_limit",
     "top_level_envelopes",
 ]

@@ -49,7 +49,7 @@ from __future__ import annotations
 import codecs
 import json as _stdlib_json
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import suppress
 from decimal import Decimal
 from itertools import islice
@@ -84,6 +84,31 @@ class _ValidatedJSONContainer:
     Lazy decoded trees cannot recheck representation by loading all scalar
     content. Only a complete validating decoder may attach this proof.
     """
+
+
+def detach_borrowed_json(value: object) -> object:
+    """Make a selected JSON output independent of its decoder owner.
+
+    Ordinary mappings and lists retain their identity unless a nested borrowed
+    container needs replacement. This is an eager selected-output boundary;
+    callers must not apply it to an entire unselected input record.
+    """
+    if isinstance(value, Mapping):
+        detached: dict[object, object] = {}
+        changed = isinstance(value, _ValidatedJSONContainer)
+        for key, item in value.items():
+            detached_item = detach_borrowed_json(item)
+            detached[key] = detached_item
+            changed = changed or detached_item is not item
+        if changed:
+            return detached
+    elif isinstance(value, (list, tuple)):
+        detached_items = [detach_borrowed_json(item) for item in value]
+        if isinstance(value, _ValidatedJSONContainer) or any(
+            left is not right for left, right in zip(detached_items, value, strict=True)
+        ):
+            return tuple(detached_items) if isinstance(value, tuple) else detached_items
+    return value
 
 
 def is_json_value(value: object) -> TypeGuard[JSONValue]:

@@ -1588,7 +1588,7 @@ def stream_payload_content_identity(handle: IO[bytes], *, checkpoint: Callable[[
 
     start = handle.tell()
     try:
-        # The record parser (``decoder_json.iter_json_stream_with``) falls
+        # The record parser (``decoder_json._iter_json_document_with``) falls
         # back to ``json.load`` on the member's bytes, whose encoding comes
         # from ``json.detect_encoding`` and whose errors are passed through
         # as surrogates (``surrogatepass``), as ``json.loads`` decodes bytes;

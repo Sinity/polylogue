@@ -13,7 +13,7 @@ of the same wire bytes:
     Whole-file decode into a list, then :func:`parse_payload` -- the route a
     full raw replay/reindex takes.
 ``streaming``
-    ``_iter_json_stream`` over a real binary handle feeding
+    ``owned_json_records`` over a real binary handle feeding
     :func:`parse_stream_payload` as a one-pass iterator -- the memory-bounded
     route ``sources/live/batch.py`` takes for JSONL above the streaming
     threshold.
@@ -65,10 +65,10 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.core.enums import Provider
-from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import detect_provider, parse_payload, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
+from tests.infra.json_values import iter_owned_json_values
 
 _FIXTURE = Path(__file__).parents[2] / "fixtures" / "claude-code" / "claude-normalization-main.jsonl"
 _FALLBACK_ID = "claude-normalization-main"
@@ -121,7 +121,7 @@ def _normalized(sessions: list[ParsedSession]) -> str:
 
 
 def _eager_route(data: bytes) -> list[ParsedSession]:
-    records = list(_iter_json_stream(io.BytesIO(data), _FIXTURE.name))
+    records = list(iter_owned_json_values(io.BytesIO(data), _FIXTURE.name))
     return parse_payload(Provider.CLAUDE_CODE, records, _FALLBACK_ID, source_path=str(_FIXTURE))
 
 
@@ -129,7 +129,7 @@ def _streaming_route(data: bytes) -> list[ParsedSession]:
     with io.BytesIO(data) as handle:
         return parse_stream_payload(
             Provider.CLAUDE_CODE,
-            _iter_json_stream(handle, _FIXTURE.name),
+            iter_owned_json_values(handle, _FIXTURE.name),
             _FALLBACK_ID,
             source_path=str(_FIXTURE),
         )
@@ -140,7 +140,7 @@ def _chunked_route(data: bytes, limit: int) -> list[ParsedSession]:
     with handle:
         return parse_stream_payload(
             Provider.CLAUDE_CODE,
-            _iter_json_stream(handle, _FIXTURE.name),
+            iter_owned_json_values(handle, _FIXTURE.name),
             _FALLBACK_ID,
             source_path=str(_FIXTURE),
         )
@@ -182,7 +182,7 @@ def test_chunked_reader_actually_splits_records() -> None:
     for limit in _SPLIT_READ_SIZES:
         handle, raw = _capped_handle(data, limit)
         with handle:
-            consumed = list(_iter_json_stream(handle, _FIXTURE.name))
+            consumed = list(iter_owned_json_values(handle, _FIXTURE.name))
         assert consumed, f"limit {limit} decoded no records"
         assert raw.read_sizes, f"limit {limit} performed no reads"
         assert max(raw.read_sizes) <= limit

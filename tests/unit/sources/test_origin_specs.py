@@ -2290,42 +2290,33 @@ def test_hermes_skill_asset_templates_are_not_admitted_as_sessions() -> None:
 _ATOF_RECORD = b'{"atof_version": "0.1", "kind": "mark", "uuid": "u", "timestamp": "t", "name": "n"}'
 
 
-def test_a_jsonl_record_beyond_the_record_bound_is_refused_by_every_reader(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Recognition, the live decoder and replay all refuse an over-bound record unread.
+def test_jsonl_storage_strategy_keeps_every_valid_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Spilling changes storage only; a foreign mapping remains census evidence."""
+    from contextlib import closing
 
-    Anti-vacuity: drop ``bounded_lines`` from the live JSONL route and it
-    yields the long record (holding the whole line); drop the size check from
-    recognition and the long non-ATOF record makes the file ``unsupported``.
-    """
-    import io
-
-    import polylogue.core.json_envelope as json_envelope
     from polylogue.archive.raw_payload.decode import _decode_jsonl_payload
-    from polylogue.sources.decoder_json import JsonlDecodeError
-    from polylogue.sources.decoders import _iter_json_stream
-    from polylogue.sources.origin_specs import recognize_source_class
+    from polylogue.sources import decoder_json
+    from polylogue.sources.decoder_json import DecodedRecordSequence
 
-    monkeypatch.setattr(json_envelope, "sqlite_value_limit", lambda: 256)
+    monkeypatch.setattr(decoder_json, "_JSONL_MEMORY_BYTES", 256)
     long_record = b'{"other": "' + b"x" * 400 + b'"}'
     payload = long_record + b"\n" + _ATOF_RECORD + b"\n"
     path = tmp_path / "events.jsonl"
     path.write_bytes(payload)
-
-    (oversized, kept) = list(json_envelope.bounded_lines(io.BytesIO(payload)))
-    assert isinstance(oversized, json_envelope.OversizedRecord) and oversized.size == len(long_record)
-    assert kept == _ATOF_RECORD + b"\n"
-
     recognition = recognize_source_class(Provider.HERMES, path)
-    assert recognition is not None and recognition.source_class == "session"
-    assert [record["uuid"] for record in _iter_json_stream(io.BytesIO(payload), "events.jsonl")] == ["u"]  # type: ignore[index,call-overload]
-    with pytest.raises(JsonlDecodeError) as refused:
-        list(_iter_json_stream(io.BytesIO(payload), "events.jsonl", fail_on_decode_error=True))
-    assert refused.value.line_number == 1
+    assert recognition is not None and recognition.source_class == "unsupported"
+    with closing(
+        DecodedRecordSequence.from_jsonl(io.BytesIO(payload), "events.jsonl", fail_on_decode_error=True)
+    ) as records:
+        assert len(records) == 2
+        assert isinstance(records[0], dict) and records[0]["other"] == "x" * 400
+        assert isinstance(records[1], dict) and records[1]["uuid"] == "u"
     records, malformed, detail = _decode_jsonl_payload(payload)
-    assert [record["uuid"] for record in records] == ["u"]  # type: ignore[index,call-overload]
-    assert malformed == 1 and detail is not None and "record bound" in detail
+    with closing(records):
+        assert len(records) == 2
+        assert isinstance(records[0], dict) and records[0]["other"] == "x" * 400
+        assert isinstance(records[1], dict) and records[1]["uuid"] == "u"
+        assert malformed == 0 and detail is None
 
 
 def test_jsonl_byte_order_mark_is_stripped_from_the_first_decodable_line(tmp_path: Path) -> None:
@@ -2496,14 +2487,14 @@ def test_json_document_recognition_matches_the_record_parser(tmp_path: Path, mon
 
     import json
 
-    from polylogue.sources.decoders import _iter_json_stream
+    from tests.infra.json_values import iter_owned_json_values
 
     large = tmp_path / "large.json"
     large.write_text("[" + ",".join([record] * 1201) + "]", encoding="utf-8")
     recognition = recognize_source_class(Provider.HERMES, large)
     assert recognition is not None and recognition.source_class == "session"
     with large.open("rb") as handle:
-        records = _iter_json_stream(handle, str(large))
+        records = iter_owned_json_values(handle, str(large))
         assert sum(1 for value in records if value == json.loads(record)) == 1201
 
 
@@ -2512,11 +2503,11 @@ def test_array_decoder_reads_provider_surrogates_through_the_stdlib_fallback() -
     element's surrogate bytes and the whole valid document yields nothing."""
     import io
 
-    from polylogue.sources.decoders import _iter_json_stream
+    from tests.infra.json_values import iter_owned_json_values
 
     first = b'{"atof_version": "0.1", "kind": "mark", "uuid": "a", "timestamp": "t", "name": "n"}'
     second = b'{"atof_version": "0.1", "kind": "mark", "uuid": "b", "timestamp": "t", "name": "n\xed\xa0\x80"}'
-    records = list(_iter_json_stream(io.BytesIO(b"[" + first + b"," + second + b"]"), "spans.json"))
+    records = list(iter_owned_json_values(io.BytesIO(b"[" + first + b"," + second + b"]"), "spans.json"))
     assert [record["uuid"] for record in records] == ["a", "b"]  # type: ignore[index,call-overload]
 
 

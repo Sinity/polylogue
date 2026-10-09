@@ -9,8 +9,6 @@ from __future__ import annotations
 import io
 import json
 
-import pytest
-
 from polylogue.archive.raw_payload.decode import JSONValue
 
 # ---------------------------------------------------------------------------
@@ -39,23 +37,9 @@ class TestDecoderConvergence:
         so it cannot report per-line malformed counts the way the sample
         decoder does. Only record-level agreement is comparable.
         """
-        import logging
+        from tests.infra.json_values import iter_owned_json_values
 
-        from polylogue.sources.decoder_json import iter_json_stream_with
-
-        logger = logging.getLogger("test_differential")
-        handle = io.BytesIO(raw_bytes)
-
-        records = []
-        try:
-            import ijson
-        except ImportError:
-            pytest.skip("ijson is required for streaming decoder convergence tests")
-
-        for record in iter_json_stream_with(logger, ijson, handle, "test.jsonl"):
-            records.append(record)
-
-        return records
+        return list(iter_owned_json_values(io.BytesIO(raw_bytes), "test.jsonl"))
 
     def test_well_formed_jsonl_same_record_count(self) -> None:
         lines = [json.dumps({"id": i, "text": f"message {i}"}) for i in range(10)]

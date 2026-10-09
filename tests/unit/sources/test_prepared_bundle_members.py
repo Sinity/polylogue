@@ -22,7 +22,6 @@ from polylogue.sources.decoder_json import (
     iter_container_member_files,
     scan_container_members,
 )
-from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, bundle_member_sessions, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.claude import common as claude_common
@@ -31,6 +30,7 @@ from polylogue.sources.prepared_jsonl import PreparedJsonl, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import ClaudeChatEvidence
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+from tests.infra.json_values import iter_owned_json_values
 from tests.infra.retained_jsonl import retained_parser_fixture
 from tests.infra.source_builders import ChatGPTExportBuilder
 from tests.unit.sources.test_prepared_claude_ai_object import _conversation
@@ -71,7 +71,7 @@ def _chatgpt(conversation_id: str, turns: int = 3) -> dict[str, object]:
 
 def _expected(provider: Provider, source: Path) -> list[ParsedSession]:
     expected = admit_parsed_sessions_for_publication(
-        parse_payload(provider, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"),
+        parse_payload(provider, list(iter_owned_json_values(BytesIO(source.read_bytes()), source.name)), "fallback"),
         provider=provider,
         source_path=str(source),
     )
@@ -527,7 +527,7 @@ def test_grok_root_admission_preserves_hook_taxonomy_and_provider_streaming(
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("Grok root decoded as a whole document")
 
-    monkeypatch.setattr(prepared_jsonl, "_iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr(prepared_jsonl, "owned_json_records", refuse_whole_document)
     monkeypatch.setattr(prepared_jsonl, "iter_parsed_payload", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
@@ -569,7 +569,7 @@ def test_grok_replay_classifies_a_bounded_root_witness(tmp_path: Path, monkeypat
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained Grok root decoded as a whole document")
 
-    monkeypatch.setattr(prepared_jsonl, "_iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr(prepared_jsonl, "owned_json_records", refuse_whole_document)
     monkeypatch.setattr(prepared_jsonl, "iter_parsed_payload", refuse_whole_document)
     # The hook-shaped root is judged by taxonomy on the stream route, not by
     # a whole-document fallback, and stays a non-session artifact.

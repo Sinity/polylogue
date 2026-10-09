@@ -301,3 +301,53 @@ def test_selected_integer_codec_accepts_exact_large_values_without_global_settin
     assert isinstance(value, dict) and value["n"] == int(Decimal("9" * 5000))
     assert dumps_bytes(value) == b'{"n":' + b"9" * 5000 + b',"float":100.0}'
     assert sys.get_int_max_str_digits() == configured_limit
+
+
+def test_emitter_selected_nested_tool_input_outlives_record_tape(tmp_path: Path) -> None:
+    selected = {"nested": {"array": [1, {"exact": "selected"}]}}
+    record = {
+        "type": "assistant",
+        "sessionId": "neutral-session",
+        "uuid": "neutral-message",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "neutral-tool", "name": "Read", "input": selected}],
+        },
+        "ignored": "x" * (128 * 1024),
+    }
+    context = _ParseContext(
+        Provider.CLAUDE_CODE, True, "neutral.jsonl", "neutral", None, True, {}, raw_directory=tmp_path / "preparation"
+    )
+    emitted = list(_SessionEmitter(context).emit(io.BytesIO(json.dumps(record).encode() + b"\n"), "neutral.jsonl"))
+    assert len(emitted) == 1
+    raw, session = emitted[0]
+    assert raw is not None and raw.staged_payload is not None
+    try:
+        block = session.messages[0].blocks[0]
+        assert block.tool_input == selected
+        assert block.model_dump(mode="json")["tool_input"] == selected
+        assert session.messages[0].text == json.dumps(record["message"]["content"][0], sort_keys=True)
+    finally:
+        raw.staged_payload.discard()
+
+
+def test_selected_patch_and_draft_outputs_release_borrowed_nested_values() -> None:
+    from contextlib import closing
+
+    from polylogue.sources.decoder_json import DecodedRecordSequence
+    from polylogue.sources.parsers.base_models import ParsedFileEdit, ParsedSession
+
+    value = {"nested": {"array": [1, {"exact": "selected"}]}}
+    wire = json.dumps({"selected": value, "ignored": "x" * (128 * 1024)}).encode() + b"\n"
+    with closing(DecodedRecordSequence.from_jsonl(io.BytesIO(wire), "neutral.jsonl")) as tape:
+        record = tape[0]
+        assert isinstance(record, dict)
+        borrowed = record["selected"]
+        assert isinstance(borrowed, dict)
+        patch = ParsedFileEdit(structured_patch=[borrowed])
+        session = ParsedSession(
+            source_name=Provider.CLAUDE_CODE, provider_session_id="neutral", messages=[], pending_drafts=[borrowed]
+        )
+    assert patch.model_dump(mode="json")["structured_patch"] == [value]
+    assert session.pending_drafts == [value]

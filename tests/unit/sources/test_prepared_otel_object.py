@@ -178,7 +178,7 @@ def _refuse_whole_document(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("whole-document decode or parse was used")
 
-    monkeypatch.setattr(prepared_jsonl, "_iter_json_stream", refuse)
+    monkeypatch.setattr(prepared_jsonl, "owned_json_records", refuse)
     monkeypatch.setattr(prepared_jsonl, "iter_parsed_payload", refuse)
     monkeypatch.setattr(otel_genai, "parse", refuse)
 

@@ -7,7 +7,8 @@ import json
 import os
 import shutil
 import sqlite3
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable
+from contextlib import contextmanager
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -24,7 +25,6 @@ from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.decoder_json import claude_design_object_envelope, iter_grok_export_events
-from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 from polylogue.sources.parsers import chatgpt, local_agent
@@ -44,6 +44,7 @@ from polylogue.sources.prepared_message_sink import (
     read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope
+from tests.infra.json_values import iter_owned_json_values
 
 
 def test_prepared_jsonl_retry_progress_keeps_source_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -552,7 +553,7 @@ def test_bundle_worker_stream_preserves_parser_and_duplicate_identity_rows(tmp_p
     source.write_text(json.dumps(payload), encoding="utf-8")
 
     expected = parse_payload(
-        Provider.CLAUDE_AI, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"
+        Provider.CLAUDE_AI, list(iter_owned_json_values(BytesIO(source.read_bytes()), source.name)), "fallback"
     )
     assert [message.provider_message_id for message in expected[0].messages] == ["repeated", "repeated"]
     for session in expected:
@@ -596,7 +597,7 @@ def test_bundle_worker_does_not_construct_a_whole_document_record_list(
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("whole-document decode or parse was used")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
@@ -659,7 +660,7 @@ def test_claude_design_object_stream_matches_direct_parser_and_shard(
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("whole-document decode or parse was used")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     decoded = 0
     first_written_after: int | None = None
@@ -765,7 +766,7 @@ def test_generic_single_object_stream_matches_parser_with_duplicate_ids(
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("generic object decoded as a whole document")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.decoder_json.json.load", refuse_whole_document)
     decoded = 0
@@ -886,7 +887,7 @@ def test_hermes_snapshot_stream_matches_parser_and_spills_before_eof(
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("Hermes snapshot decoded as a whole document")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     decoded = 0
     first_written_after: int | None = None
@@ -990,7 +991,7 @@ def test_hermes_snapshot_retained_callbacks_keep_stream_route(tmp_path: Path, mo
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained Hermes snapshot decoded as a whole document")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
@@ -1179,7 +1180,7 @@ def test_gemini_cli_object_spills_and_matches_parser(tmp_path: Path, monkeypatch
     monkeypatch.setattr(ijson, "items", tracked_items)
     monkeypatch.setattr(prepared_jsonl, "_append_gemini_raw_message", tracked_append)
     monkeypatch.setattr(
-        "polylogue.sources.prepared_jsonl._iter_json_stream",
+        "polylogue.sources.prepared_jsonl.owned_json_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("whole-object fallback")),
     )
     artifact = prepare_jsonl_blob(
@@ -1382,10 +1383,10 @@ def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
     )
 
     class Resolver:
-        def claude_code_scope(self, *_args: object) -> RetainedSidecarScope:
+        def claude_code_scope(self, source_path: str | Path | None) -> RetainedSidecarScope:
             return scope
 
-        def gemini_cli_scope(self, *_args: object) -> RetainedSidecarScope:
+        def gemini_cli_scope(self, source_path: str | Path | None, session_id: str | None) -> RetainedSidecarScope:
             return scope
 
     resolver = Resolver()
@@ -1409,7 +1410,7 @@ def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
 
     monkeypatch.setattr(prepared_jsonl, "_append_gemini_raw_message", tracked_append)
     monkeypatch.setattr(ijson, "items", tracked_items)
-    monkeypatch.setattr(prepared_jsonl, "_iter_json_stream", lambda *_a, **_k: pytest.fail("whole-object fallback"))
+    monkeypatch.setattr(prepared_jsonl, "owned_json_records", lambda *_a, **_k: pytest.fail("whole-object fallback"))
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -1604,7 +1605,7 @@ def test_retained_gemini_sidecar_replay_uses_sealed_preparation(
     blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(record).encode())
     source_db = tmp_path / "source.db"
     monkeypatch.setattr(
-        "polylogue.sources.prepared_jsonl._iter_json_stream", lambda *_a, **_k: pytest.fail("whole-object replay")
+        "polylogue.sources.prepared_jsonl.owned_json_records", lambda *_a, **_k: pytest.fail("whole-object replay")
     )
     with retained_parser_fixture(
         root=Path(str(source_db)).parent,
@@ -1711,10 +1712,10 @@ def test_gemini_sidecar_source_mutation_discards_unsealed_scratch(tmp_path: Path
     )
 
     class Resolver:
-        def claude_code_scope(self, *_args: object) -> RetainedSidecarScope:
+        def claude_code_scope(self, source_path: str | Path | None) -> RetainedSidecarScope:
             return scope
 
-        def gemini_cli_scope(self, *_args: object) -> RetainedSidecarScope:
+        def gemini_cli_scope(self, source_path: str | Path | None, session_id: str | None) -> RetainedSidecarScope:
             return scope
 
     directory = tmp_path / "prepared"
@@ -1819,7 +1820,7 @@ def test_generic_retained_callbacks_keep_bounded_message_preparation(
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained generic object decoded as a whole document")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     first_written_after: int | None = None
     decoded = 0
@@ -1881,7 +1882,7 @@ def test_retained_generic_object_uses_streamed_replay_route(tmp_path: Path, monk
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained replay decoded the complete object")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     with retained_parser_fixture(
         root=Path(str(source_db)).parent,
@@ -1930,7 +1931,7 @@ def test_grok_single_object_streams_responses_with_parser_parity(
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("Grok object decoded as a whole document")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     decoded = 0
     first_append_after: int | None = None
@@ -2083,7 +2084,7 @@ def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path, monk
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("future-typed Grok export decoded as a whole document")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
@@ -2145,7 +2146,7 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained Grok object decoded as a whole document")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     decoded = 0
     first_append_after: int | None = None
@@ -2368,7 +2369,7 @@ def test_chatgpt_bundle_worker_keeps_original_positions_after_skipped_siblings(t
     source = tmp_path / "conversations-000.json"
     source.write_text(json.dumps(records), encoding="utf-8")
     expected = parse_payload(
-        Provider.CHATGPT, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"
+        Provider.CHATGPT, list(iter_owned_json_values(BytesIO(source.read_bytes()), source.name)), "fallback"
     )
     expected = admit_parsed_sessions_for_publication(expected, provider=Provider.CHATGPT, source_path=str(source))
     for session in expected:
@@ -2606,7 +2607,7 @@ def test_chatgpt_mapping_object_preparation_matches_parser_and_duplicate_keys(
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("ChatGPT object decoded as a whole document")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -3350,7 +3351,7 @@ def test_singleton_chatgpt_array_keeps_existing_parse_identity(tmp_path: Path) -
         encoding="utf-8",
     )
     expected = parse_payload(
-        Provider.CHATGPT, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"
+        Provider.CHATGPT, list(iter_owned_json_values(BytesIO(source.read_bytes()), source.name)), "fallback"
     )
     for session in expected:
         session.content_hash = session_content_hash(session)
@@ -3397,7 +3398,7 @@ def test_retained_claude_design_object_uses_streamed_replay_route(
     def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("retained Design object decoded as a whole document")
 
-    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.owned_json_records", refuse_whole_document)
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_payload", refuse_whole_document)
     with retained_parser_fixture(
         root=Path(str(source_db)).parent,
@@ -4123,7 +4124,7 @@ def test_gemini_checkpoint_preparation_spools_records_before_eof_without_retaini
     live = 0
     peak = 0
     first_append: int | None = None
-    original_records = _iter_json_stream
+    original_records = prepared.owned_json_records
     original_append = prepared._append_gemini_raw_message
 
     class TrackedRecord(dict[str, JSONValue]):
@@ -4133,19 +4134,27 @@ def test_gemini_checkpoint_preparation_spools_records_before_eof_without_retaini
         nonlocal live
         live -= 1
 
+    @contextmanager
     def observe_records(
         handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True, *, fail_on_decode_error: bool = False
-    ) -> Iterator[object]:
-        nonlocal decoded, live, peak
-        for record in original_records(handle, path_name, unpack_lists, fail_on_decode_error=fail_on_decode_error):
-            assert isinstance(record, dict)
-            gc.collect()
-            tracked = TrackedRecord(record)
-            live += 1
-            peak = max(peak, live)
-            weakref.finalize(tracked, retired)
-            decoded += 1
-            yield tracked
+    ) -> Generator[Iterable[object], None, None]:
+        with original_records(
+            handle, path_name, unpack_lists=unpack_lists, fail_on_decode_error=fail_on_decode_error
+        ) as records:
+
+            def tracked_records() -> Iterator[object]:
+                nonlocal decoded, live, peak
+                for record in records:
+                    assert isinstance(record, dict)
+                    gc.collect()
+                    tracked = TrackedRecord(record)
+                    live += 1
+                    peak = max(peak, live)
+                    weakref.finalize(tracked, retired)
+                    decoded += 1
+                    yield tracked
+
+            yield tracked_records()
 
     def observe_append(conn: sqlite3.Connection, ordinal: int, item: object) -> None:
         nonlocal first_append
@@ -4156,7 +4165,7 @@ def test_gemini_checkpoint_preparation_spools_records_before_eof_without_retaini
     def refuse_collected(*args: object, **kwargs: object) -> object:
         raise AssertionError("checkpoint fell back to whole-input parse")
 
-    monkeypatch.setattr(prepared, "_iter_json_stream", observe_records)
+    monkeypatch.setattr(prepared, "owned_json_records", observe_records)
     monkeypatch.setattr(prepared, "_append_gemini_raw_message", observe_append)
     monkeypatch.setattr(prepared, "iter_parsed_payload", refuse_collected)
     artifact = prepare_jsonl_blob(
@@ -4295,7 +4304,7 @@ def test_bare_drive_jsonl_preparation_reuses_chunk_stream_without_retaining_reco
     live = 0
     peak = 0
     decoded = 0
-    original_records = _iter_json_stream
+    original_records = prepared.owned_json_records
 
     class TrackedRecord(dict[str, JSONValue]):
         pass
@@ -4304,24 +4313,32 @@ def test_bare_drive_jsonl_preparation_reuses_chunk_stream_without_retaining_reco
         nonlocal live
         live -= 1
 
+    @contextmanager
     def observe_records(
         handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True, *, fail_on_decode_error: bool = False
-    ) -> Iterator[object]:
-        nonlocal live, peak, decoded
-        for record in original_records(handle, path_name, unpack_lists, fail_on_decode_error=fail_on_decode_error):
-            assert isinstance(record, dict)
-            gc.collect()
-            tracked = TrackedRecord(record)
-            live += 1
-            peak = max(peak, live)
-            decoded += 1
-            weakref.finalize(tracked, retired)
-            yield tracked
+    ) -> Generator[Iterable[object], None, None]:
+        with original_records(
+            handle, path_name, unpack_lists=unpack_lists, fail_on_decode_error=fail_on_decode_error
+        ) as records:
+
+            def tracked_records() -> Iterator[object]:
+                nonlocal live, peak, decoded
+                for record in records:
+                    assert isinstance(record, dict)
+                    gc.collect()
+                    tracked = TrackedRecord(record)
+                    live += 1
+                    peak = max(peak, live)
+                    decoded += 1
+                    weakref.finalize(tracked, retired)
+                    yield tracked
+
+            yield tracked_records()
 
     def refuse_collected(*args: object, **kwargs: object) -> object:
         raise AssertionError("bare chunks fell back to whole-input parse")
 
-    monkeypatch.setattr(prepared, "_iter_json_stream", observe_records)
+    monkeypatch.setattr(prepared, "owned_json_records", observe_records)
     monkeypatch.setattr(prepared, "iter_parsed_payload", refuse_collected)
     artifact = prepare_jsonl_blob(
         str(source),
@@ -4481,7 +4498,7 @@ def test_decoded_record_tape_preserves_complete_wrapper_scope_and_replay(wrapper
     expected = [{"identity": str(index), "text": "neutral", "empty": []} for index in range(1201)]
     document = {"ignored": [0, False], "sessions": expected} if wrapper else expected
     with closing(
-        DecodedRecordSequence(_iter_json_stream(BytesIO(json.dumps(document).encode()), "neutral-wrapper.json"))
+        DecodedRecordSequence(iter_owned_json_values(BytesIO(json.dumps(document).encode()), "neutral-wrapper.json"))
     ) as records:
         assert len(records) == 1201
         assert records[0] == expected[0]
@@ -4503,7 +4520,7 @@ def test_nonseekable_decoder_keeps_borrowed_stream_open_and_preserves_late_recor
 
     expected = [{"ordinal": index, "text": "neutral"} for index in range(1201)]
     borrowed = Nonseekable(json.dumps(expected).encode())
-    assert list(_iter_json_stream(borrowed, "neutral-array.json")) == expected
+    assert list(iter_owned_json_values(borrowed, "neutral-array.json")) == expected
     assert not borrowed.closed
     borrowed.close()
 
@@ -4515,7 +4532,7 @@ def test_record_recovery_preserves_stdlib_surrogates_nonfinite_and_last_wrapper(
     from polylogue.sources.decoder_json import DecodedRecordSequence
 
     document = b'{"sessions":[{"old":true}],"ignored":[1,2],"sessions":[{"id":"a"},{"id":"b","text":"\xed\xa0\x80","number":NaN}]}'
-    with closing(DecodedRecordSequence(_iter_json_stream(BytesIO(document), "neutral-wrapper.json"))) as records:
+    with closing(DecodedRecordSequence(iter_owned_json_values(BytesIO(document), "neutral-wrapper.json"))) as records:
         assert len(records) == 2
         assert records[0] == {"id": "a"}
         last = records[1]

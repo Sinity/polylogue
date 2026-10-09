@@ -16,14 +16,27 @@ from polylogue.core.json import JSONValue
 from polylogue.schemas import observation_spill
 from polylogue.schemas.observation_spill import _ScalarTokenStore
 from polylogue.sources import decoder_json
-from polylogue.sources.decoder_json import DecodedRecordSequence, JsonlDecodeError, _iter_jsonl_stream
-from polylogue.sources.decoders import logger
+from polylogue.sources.decoder_json import DecodedRecordSequence, JsonlDecodeError, _yield_jsonl_pending
+from polylogue.sources.decoders import logger, owned_json_records
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 
 def _record(value: object) -> dict[str, JSONValue]:
     assert isinstance(value, dict)
     return cast(dict[str, JSONValue], value)
+
+
+def test_strict_owned_reader_exposes_completed_records_before_terminal_decode_error() -> None:
+    delivered: list[JSONValue] = []
+    with pytest.raises(JsonlDecodeError) as failure:
+        with owned_json_records(
+            io.BytesIO(b'{"first":1}\n{"broken":\n{"last":2}\n'),
+            "neutral.jsonl",
+            fail_on_decode_error=True,
+        ) as records:
+            delivered.extend(records)
+    assert delivered == [{"first": 1}, {"last": 2}]
+    assert failure.value.line_number == 2
 
 
 @pytest.mark.parametrize(
@@ -44,8 +57,10 @@ def _record(value: object) -> dict[str, JSONValue]:
         b'{"x":"bad\xff"}',
     ],
 )
-def test_disk_and_memory_strategies_preserve_legacy_decode_values(monkeypatch: pytest.MonkeyPatch, raw: bytes) -> None:
-    expected = list(_iter_jsonl_stream(logger, io.BytesIO(raw), "neutral.jsonl"))
+def test_disk_and_memory_strategies_preserve_decoded_values(monkeypatch: pytest.MonkeyPatch, raw: bytes) -> None:
+    expected, _errors, _line = _yield_jsonl_pending(
+        logger, raw.strip(), is_last=True, path_name="neutral.jsonl", line_number=1
+    )
     for threshold in (1, 64 * 1024):
         monkeypatch.setattr(decoder_json, "_JSONL_MEMORY_BYTES", threshold)
         with contextlib.closing(DecodedRecordSequence.from_jsonl(io.BytesIO(raw), "neutral.jsonl")) as records:
@@ -103,7 +118,10 @@ def test_record_retry_failure_preserves_physical_error_line(monkeypatch: pytest.
     with contextlib.closing(DecodedRecordSequence.from_jsonl(io.BytesIO(raw), "neutral.jsonl")) as tape:
         assert [_record(record)["selected"] for record in tape] == [1, 2]
     with pytest.raises(JsonlDecodeError) as failure:
-        DecodedRecordSequence.from_jsonl(io.BytesIO(raw), "neutral.jsonl", fail_on_decode_error=True)
+        with contextlib.closing(
+            DecodedRecordSequence.from_jsonl(io.BytesIO(raw), "neutral.jsonl", fail_on_decode_error=True)
+        ) as tape:
+            list(tape)
     assert failure.value.line_number == 4
 
 

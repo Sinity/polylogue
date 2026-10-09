@@ -13,6 +13,7 @@ from polylogue.archive.message.artifacts import classify_block_message_type, cla
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MessageType, Provider, StopReason, WebConstructType
 from polylogue.core.hashing import hash_payload
+from polylogue.core.json import detach_borrowed_json
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.timestamps import parse_timestamp
 
@@ -346,7 +347,7 @@ def extract_text_from_segments(segments: list[object]) -> str | None:
             continue
         seg_type = segment.get("type")
         if seg_type in {"tool_use", "tool_result"}:
-            lines.append(json.dumps(segment, sort_keys=True))
+            lines.append(json.dumps(detach_borrowed_json(segment), sort_keys=True))
             continue
         if seg_type == "thinking":
             seg_thinking = segment.get("thinking")
