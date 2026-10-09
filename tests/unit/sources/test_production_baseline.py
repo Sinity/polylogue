@@ -109,6 +109,54 @@ def test_only_typed_io_revision_fault_is_retryable(tmp_path: Path, monkeypatch: 
     assert not isinstance(failure.value, ProductionBaselineReadUnavailableError)
 
 
+@pytest.mark.parametrize("fault_errno", [errno.EMFILE, errno.ENFILE])
+def test_descriptor_exhaustion_baseline_fault_retries_and_preserves_prior_revisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_errno: int
+) -> None:
+    from polylogue.sources.live import production_baseline
+
+    root = tmp_path / "account"
+    root.mkdir()
+    first = root / "one.json"
+    second = root / "two.json"
+    first_bytes = b'{"session":1}'
+    second_bytes = b'{"session":2}'
+    first.write_bytes(first_bytes)
+    second.write_bytes(second_bytes)
+    source = (WatchSource("account", root, layout=export_drop_layout((".json",)), required=True),)
+    previous = capture_production_source_baseline(source, operation_id="descriptor-retry")
+    source_db = _source_db(
+        tmp_path / "source.db",
+        (
+            (str(first), hashlib.sha256(first_bytes).hexdigest()),
+            (str(second), hashlib.sha256(second_bytes).hexdigest()),
+        ),
+    )
+    previous.verify(source_db)
+
+    original_revision = production_baseline._revision
+
+    def exhaust_descriptors(path: Path, **kwargs: object) -> tuple[str, int]:
+        if path == second:
+            raise OSError(fault_errno, "descriptor table exhausted")
+        return original_revision(path, **kwargs)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(production_baseline, "_revision", exhaust_descriptors)
+        unavailable = capture_production_source_baseline(source, operation_id="descriptor-retry")
+    [fault] = [row for row in unavailable.decisions if row.path == str(second)]
+    assert fault.disposition == "fault"
+    assert fault.reason.startswith("revision_io_unavailable:")
+    with pytest.raises(ProductionBaselineReadUnavailableError):
+        unavailable.verify(source_db)
+
+    recovered = capture_production_source_baseline(source, operation_id="descriptor-retry")
+    merged = merge_pending_production_baseline(recovered, unavailable)
+    assert {row.path for row in merged.accepted} == {str(first), str(second)}
+    assert not any(row.disposition == "fault" for row in merged.decisions)
+    merged.verify(source_db)
+
+
 @pytest.mark.parametrize("fault", [OSError(errno.EIO, "member read failed"), ValueError("invalid member")])
 def test_zip_member_fault_preserves_typed_retry_classification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: Exception

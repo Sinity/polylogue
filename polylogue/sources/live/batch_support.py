@@ -1269,6 +1269,10 @@ _RETRYABLE_READ_ERRNOS = frozenset(
         errno.ETIMEDOUT,
         errno.EAGAIN,
         errno.EBUSY,
+        # Process-local and system-wide descriptor exhaustion can clear when
+        # concurrent readers close their handles.
+        errno.EMFILE,
+        errno.ENFILE,
         errno.ENOSPC,
         errno.EDQUOT,
     }
