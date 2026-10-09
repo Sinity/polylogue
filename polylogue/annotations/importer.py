@@ -300,7 +300,17 @@ def _assertion_confidence(schema: AnnotationSchema, row: AnnotationImportRow, er
         and not isinstance(value_confidence, bool)
         and isinstance(value_confidence, (int, float))
     ):
-        derived = float(value_confidence)
+        # The existing extraction maps a schema's confidence number to the
+        # assertion probability. Validate that domain before narrowing an
+        # arbitrary JSON integer to float; other payload numbers stay exact.
+        if not 0 <= value_confidence <= 1:
+            errors.append("value.confidence must be a finite probability between 0 and 1")
+            return None
+        try:
+            derived = float(value_confidence)
+        except (OverflowError, ValueError):
+            errors.append("value.confidence cannot be represented as an assertion probability")
+            return None
         if row.confidence is not None and row.confidence != derived:
             errors.append("top-level confidence must equal value.confidence")
         return derived
@@ -328,7 +338,7 @@ def _parse_rows(input: BinaryIO) -> Iterator[tuple[int, AnnotationImportRow | An
             line = raw_line.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise AnnotationBatchImportError("annotation JSONL must be valid UTF-8") from exc
-        if not line.strip():
+        if not line.strip(" \t\r\n"):
             continue
         nonempty_count += 1
         try:
@@ -352,6 +362,10 @@ async def import_annotation_batch(
     before_durable_execution: Callable[[], None] | None = None,
 ) -> AnnotationBatchImportResult:
     """Validate live refs, persist provenance, and write candidates atomically.
+
+    Each exact reference is resolved once per import; results spill on disk
+    rather than reopening the same read for every row. The daemon supplies
+    its pinned operation reader as the resolver.
 
     ``before_durable_execution`` runs after validation and before the first
     audit or ``user.db`` write. A daemon caller fences its acceptance boundary
@@ -408,17 +422,20 @@ async def import_annotation_batch(
                 evidence_refs=row.evidence_refs,
             )
             for evidence_ref_text in row.evidence_refs:
-                if resolve_ref is not None:
-                    resolved = await resolver(evidence_ref_text)
-                else:
-                    try:
-                        parsed_ref = parse_public_ref(evidence_ref_text)
-                        resolution = await poly.resolve_ref(evidence_ref_text)
-                        resolved = resolution.resolved
-                        if resolved and isinstance(parsed_ref, EvidenceRef):
-                            resolved = f"session:{parsed_ref.session_id}" in resolution.object_refs
-                    except ValueError:
-                        resolved = False
+                resolved = batch.ref_resolution(evidence_ref_text)
+                if resolved is None:
+                    if resolve_ref is not None:
+                        resolved = await resolver(evidence_ref_text)
+                    else:
+                        try:
+                            parsed_ref = parse_public_ref(evidence_ref_text)
+                            resolution = await poly.resolve_ref(evidence_ref_text)
+                            resolved = resolution.resolved
+                            if resolved and isinstance(parsed_ref, EvidenceRef):
+                                resolved = f"session:{parsed_ref.session_id}" in resolution.object_refs
+                        except ValueError:
+                            resolved = False
+                    batch.record_ref_resolution(evidence_ref_text, resolved)
                 if not resolved:
                     errors.append(
                         f"evidence_ref {_ref_preview(evidence_ref_text)} does not resolve in the live archive"

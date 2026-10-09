@@ -20,6 +20,7 @@ from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import AssertionKind, BlockType, BranchType, Provider
+from polylogue.core.json import require_json_document
 from polylogue.daemon.socket_path import daemon_socket_path
 from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_transaction import OperationExecutor
@@ -237,6 +238,79 @@ async def test_import_cancelled_at_acceptance_keeps_validated_rows_and_schema_un
             connection.execute("SELECT count(*) FROM annotation_schemas WHERE schema_id='test.import'").fetchone()[0]
             == 0
         )
+
+
+@pytest.mark.asyncio
+async def test_import_classifies_unrepresentable_probability_without_losing_exact_payload_numbers(
+    workspace_env: dict[str, Path],
+) -> None:
+    archive_root = workspace_env["archive_root"]
+
+    def seed() -> None:
+        with ArchiveStore(archive_root) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-target",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+
+    run_off_event_loop(seed)
+    schema = AnnotationSchema(
+        schema_id="test.import",
+        version=1,
+        title="Probability extraction",
+        fields=(
+            AnnotationField(name="confidence", value_type="number", required=False),
+            AnnotationField(name="counter", value_type="integer"),
+        ),
+        target_ref_kinds=("session",),
+        evidence_policy="required",
+        status="active",
+    )
+    registry = AnnotationSchemaRegistry()
+    registry.register(schema)
+    exact = 10**1000
+    values = ({"confidence": 0, "counter": exact}, {"counter": exact}, {"confidence": exact, "counter": 1})
+    body = io.BytesIO(
+        "\n".join(
+            json.dumps(
+                {
+                    "row_key": f"row-{index}",
+                    "value": value,
+                    "evidence_refs": ["codex-session:annotation-target"],
+                }
+            )
+            for index, value in enumerate(values)
+        ).encode("utf-8")
+    )
+    resolved: list[str] = []
+    async with Polylogue(archive_root=archive_root) as poly:
+
+        async def resolve(ref: str) -> bool:
+            resolved.append(ref)
+            return (await poly.resolve_ref(ref)).resolved
+
+        result = await import_annotation_batch(
+            poly, _request("probabilities"), input=body, registry=registry, resolve_ref=resolve
+        )
+    assert (result.status, result.total_count, result.valid_count, result.invalid_count) == ("partial", 3, 2, 1)
+    assert resolved == ["session:codex-session:annotation-target", "codex-session:annotation-target"]
+    with connect_user_db(archive_root / "user.db") as connection:
+        rows = connection.execute("SELECT key, value_json, confidence FROM assertions ORDER BY key").fetchall()
+        assert [(row[0], json.loads(row[1])["counter"], row[2]) for row in rows] == [
+            ("row-0", exact, 0.0),
+            ("row-1", exact, None),
+        ]
+    with ArchiveStore.open_existing(archive_root) as archive:
+        page = archive.get_annotation_batch_page("probabilities", limit=10, offset=0)
+    assert page is not None
+    invalid = [item for item in page.items if item["kind"] == "validation-error"]
+    assert len(invalid) == 1
+    assert require_json_document(invalid[0]["failure"], context="validation failure")["row_key"] == "row-2"
+    assert invalid[0]["error"] == "value.confidence must be a finite probability between 0 and 1"
 
 
 @pytest.mark.asyncio

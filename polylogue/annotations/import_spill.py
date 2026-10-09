@@ -31,7 +31,9 @@ class AnnotationImportSpill:
                  row_json TEXT NOT NULL, assertion_ref TEXT NOT NULL,
                  confidence REAL, abstained INTEGER NOT NULL);
                CREATE TABLE annotation_import_failures (
-                 line INTEGER PRIMARY KEY, failure_json BLOB NOT NULL);"""
+                 line INTEGER PRIMARY KEY, failure_json BLOB NOT NULL);
+               CREATE TABLE annotation_import_refs (
+                 ref TEXT PRIMARY KEY, resolved INTEGER NOT NULL);"""
         )
 
     def has_row_key(self, key: str) -> bool:
@@ -39,6 +41,15 @@ class AnnotationImportSpill:
             self.connection.execute("SELECT 1 FROM annotation_import_rows WHERE row_key=?", (key,)).fetchone()
             is not None
         )
+
+    def ref_resolution(self, ref: str) -> bool | None:
+        row = self.connection.execute("SELECT resolved FROM annotation_import_refs WHERE ref=?", (ref,)).fetchone()
+        return bool(row[0]) if row is not None else None
+
+    def record_ref_resolution(self, ref: str, resolved: bool) -> None:
+        if self.sealed:
+            raise RuntimeError("annotation import was already sealed")
+        self.connection.execute("INSERT INTO annotation_import_refs VALUES (?, ?)", (ref, int(resolved)))
 
     def append_row(
         self,

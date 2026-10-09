@@ -7,6 +7,11 @@
 # says why no permitted member fits -- those are findings, not pending work.
 package: polylogue
 runtime_tables:
+  - file: "polylogue/annotations/import_spill.py"
+    function: "AnnotationImportSpill.__init__"
+    table: "annotation_import_refs"
+    disposition: disposable_scratch
+    reason: "Exact ref resolution results are disposable operands for this import's resolver (the daemon supplies its pinned operation reader), on the same request-owned scratch_connection_context native connection. False remains distinct from an unseen ref; no results cross imports or become archive authority."
   - file: "polylogue/storage/sqlite/archive_tiers/user_annotations.py"
     function: "persist_spilled_annotation_batch"
     table: "annotation_import_literals"

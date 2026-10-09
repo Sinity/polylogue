@@ -26,6 +26,11 @@ def test_spilled_batch_matches_original_canonical_provenance_and_binds_row_value
     header = AnnotationBatch(**fields, total_count=0, valid_count=0, invalid_count=0, abstained_count=0)
     with scratch_connection_context(prefix="annotation-spill-law-", filename="scratch.sqlite") as connection:
         batch = AnnotationImportSpill(connection, header)
+        assert batch.ref_resolution("session:missing") is None
+        batch.record_ref_resolution("session:missing", False)
+        assert batch.ref_resolution("session:missing") is False
+        batch.record_ref_resolution("session:present", True)
+        assert batch.ref_resolution("session:present") is True
         batch.append_row(1, "one", '{"value":"first"}', "assertion:nfd-e\u0301", None, False)
         batch.append_failure(2, failure)
         batch.seal()
