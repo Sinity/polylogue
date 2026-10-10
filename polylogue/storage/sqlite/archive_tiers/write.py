@@ -950,10 +950,16 @@ def _expand_position_runs(runs: Iterable[tuple[int, int]]) -> list[int]:
     return [first + offset for first, length in runs for offset in range(length)]
 
 
+def _identity_sequence_frame(identity: str) -> bytes:
+    """Frame each exact key so opaque native names cannot move a boundary."""
+    encoded = identity.encode("utf-8", "surrogatepass")
+    return len(encoded).to_bytes(8, "big") + encoded
+
+
 def _identity_sequence_digest(identities: Iterable[str]) -> str:
     digest = hashlib.sha256()
     for identity in identities:
-        digest.update(identity.encode("utf-8", "surrogatepass") + b"\n")
+        digest.update(_identity_sequence_frame(identity))
     return digest.hexdigest()
 
 
@@ -15172,8 +15178,7 @@ def _materialize_inherited_prefix(
         if key is None:
             keyed = False
         else:
-            encoded = key.encode("utf-8", "surrogatepass") + b"\n"
-            keys_digest.update(encoded)
+            keys_digest.update(_identity_sequence_frame(key))
             kinds.append("n" if source_native is not None else "c")
             first_key = first_key or key
         identity = None if content_identity is None else str(content_identity)
@@ -15229,7 +15234,7 @@ def _materialize_inherited_prefix(
     for (content_identity,) in conn.execute(
         "SELECT content_identity FROM messages WHERE session_id = ? ORDER BY position, variant_index", (child,)
     ):
-        tail_digest.update(str(content_identity or "").encode("ascii", "replace") + b"\n")
+        tail_digest.update(_identity_sequence_frame(str(content_identity or "")))
         tail_length += 1
     identity_scope = _IdentityScope(
         inherited_count,

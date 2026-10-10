@@ -4826,6 +4826,27 @@ def test_a_scoped_replay_refuses_a_prefix_that_no_longer_matches(tmp_path: Path)
         _replay_child(tmp_path, [parent[1], *tail])
 
 
+def test_a_scoped_replay_refuses_native_names_that_redivide_a_newline_sequence(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import InheritedPrefixMaterializationError
+
+    parent = [
+        _msg("m0", Role.USER, "hello", 0),
+        _msg("x\nn:y", Role.ASSISTANT, "answer", 1),
+        _msg("z", Role.USER, "another turn", 2),
+    ]
+    tail = _msg("tail", Role.USER, "child tail", 3)
+    _inheriting, materialized, _replayed = _materialize_then_replay(tmp_path, parent, [*parent, tail], parent[:1])
+    changed = [
+        parent[0],
+        parent[1].model_copy(update={"provider_message_id": "x"}),
+        parent[2].model_copy(update={"provider_message_id": "y\nn:z"}),
+        tail,
+    ]
+    with pytest.raises(InheritedPrefixMaterializationError, match="no longer appears"):
+        _replay_child(tmp_path, changed)
+    assert _replay_child(tmp_path, [*parent, tail]) == materialized
+
+
 def test_a_deep_chain_composes_in_linear_time(tmp_path: Path) -> None:
     """One list is cut and extended down the chain; no level's transcript is kept.
 
