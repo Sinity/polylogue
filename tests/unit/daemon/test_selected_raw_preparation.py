@@ -324,3 +324,23 @@ async def test_selected_preparation_rebinds_changed_selection_without_reparsing_
         await asyncio.gather(task, return_exceptions=True)
         kernel.shutdown(wait=True)
         await coordinator.shutdown(timeout=1)
+
+
+@pytest.mark.parametrize("state", ["publisher", "blob_retired", "blob_prepared", "thread_key"])
+def test_neutral_file_borrow_refuses_publication_or_projection_state(state: str) -> None:
+    """A closed-file borrow cannot silently carry a producer's mutable state."""
+    from dataclasses import replace
+
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    artifact = PreparedJsonl(None, None, None)
+    if state == "publisher":
+        artifact = replace(artifact, publication_publisher=object())
+    elif state == "blob_retired":
+        artifact._blob_publication.retired = True
+    elif state == "blob_prepared":
+        artifact._blob_publication.prepared = True
+    else:
+        artifact._thread_projection.raw_id = "prepared-owner"
+    with pytest.raises(ValueError):
+        artifact.borrow_sealed_files()

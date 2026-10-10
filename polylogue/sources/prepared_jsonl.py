@@ -985,11 +985,8 @@ class PreparedJsonl:
             raise ValueError("only closed neutral parser files can be borrowed")
         if (
             self.publication_publisher is not None
-            or self._blob_publication.seal is not None
-            or self._blob_publication.publisher is not None
-            or self._blob_publication.page
-            or self._blob_publication.material_page
-            or self._thread_projection.seal is not None
+            or self._blob_publication != _ArtifactBlobPublication()
+            or self._thread_projection != _ArtifactThreadProjection()
         ):
             raise ValueError("neutral parser borrow cannot carry publication work")
         return replace(
