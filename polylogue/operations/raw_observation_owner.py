@@ -9,6 +9,7 @@ workers. It never imports the daemon: the daemon passes its collaborators in.
 
 from __future__ import annotations
 
+import asyncio
 import pickle
 import sqlite3
 from builtins import BaseExceptionGroup
@@ -352,9 +353,15 @@ class RawObservationArchiveWork:
             for key, submitted in pending:
                 try:
                     artifact = await submitted.wait()
-                except DaemonOperationCancelled:
-                    pass
                 except BaseException as cleanup:
+                    cancelled_types = (asyncio.CancelledError, DaemonOperationCancelled)
+                    if isinstance(primary, cancelled_types):
+                        only_cancellation = isinstance(cleanup, cancelled_types)
+                        if isinstance(cleanup, BaseExceptionGroup):
+                            _cancelled, other = cleanup.split(cancelled_types)
+                            only_cancellation = other is None
+                        if only_cancellation:
+                            continue
                     if cleanup is not primary:
                         failures.append(cleanup)
                     if submitted.future.done() and submitted.future.exception() is None:

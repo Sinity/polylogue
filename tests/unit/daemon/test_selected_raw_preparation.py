@@ -109,7 +109,9 @@ async def test_selected_independent_preparations_overlap_with_real_admission(
 
 @pytest.mark.asyncio
 @pytest.mark.uses_real_clock
-@pytest.mark.parametrize("phase,cleanup_fault", [("capture", False), ("parse", False), ("capture", True)])
+@pytest.mark.parametrize(
+    "phase,cleanup_fault", [("capture", False), ("parse", False), ("capture", True), ("parse", True)]
+)
 async def test_selected_preparation_cancellation_joins_creators_before_scratch_retirement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -146,12 +148,17 @@ async def test_selected_preparation_cancellation_joins_creators_before_scratch_r
         artifact = original_parse(*args, **kwargs)
         started.set()
         assert release.wait(10)
+        if cleanup_fault and phase == "parse":
+            raise BaseExceptionGroup(
+                "native cancellation with failed cleanup",
+                [asyncio.CancelledError(), ValueError("declared parser cleanup failure")],
+            )
         return artifact
 
     def close(page: raw_module.NeutralRawPreparation) -> None:
         assert kernel.snapshot().used_units == 0, "scratch retired while creator still owns admission"
         assert release.is_set()
-        if cleanup_fault:
+        if cleanup_fault and phase == "capture":
             raise ValueError("declared page cleanup failure")
         original_close(page)
 
@@ -168,8 +175,8 @@ async def test_selected_preparation_cancellation_joins_creators_before_scratch_r
         if cleanup_fault:
             with pytest.raises(BaseExceptionGroup) as failure:
                 await task
-            assert any(isinstance(item, asyncio.CancelledError) for item in failure.value.exceptions)
-            assert any(isinstance(item, ValueError) for item in failure.value.exceptions)
+            assert failure.value.subgroup(asyncio.CancelledError) is not None
+            assert failure.value.subgroup(ValueError) is not None
         else:
             with pytest.raises(asyncio.CancelledError):
                 await task
