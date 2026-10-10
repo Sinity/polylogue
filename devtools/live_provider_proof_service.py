@@ -404,6 +404,7 @@ def _retain_proof_evidence(scratch: Path, spool: Path, evidence: Path) -> None:
     shutil.copytree(spool, evidence / "browser-capture")
     for name, source in (
         ("constructor-scope.json", scratch / "constructor-scope.json"),
+        ("owned-capture-diagnostic.json", scratch / "owned-capture-diagnostic.json"),
         ("proof-binding.json", scratch / "native-transport-proof/extension/proof-binding.json"),
         ("owned-scope.json", scratch / "native-transport-proof/extension/owned-scope.json"),
     ):
@@ -543,6 +544,7 @@ def _run_proof_locked(
             thread_started = True
             try:
                 environment["POLYLOGUE_LIVE_PROVIDER_EXTENSION_ROOT"] = host["extension_root"]
+                environment["POLYLOGUE_LIVE_PROVIDER_DIAGNOSTIC_PATH"] = str(scratch / "owned-capture-diagnostic.json")
                 process = subprocess.Popen(
                     ["node", "scripts/owned_provider_proof.mjs"],
                     cwd=root / "browser-extension",

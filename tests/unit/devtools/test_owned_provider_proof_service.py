@@ -82,6 +82,10 @@ def test_owned_provider_runtime_uses_private_native_authority_and_settles_custod
             manifest = json.loads((hosts / (constructor["host"] + ".json")).read_text())
             assert manifest["allowed_origins"] == ["chrome-extension://" + "a" * 32 + "/"]
             self.root = Path(env["TMPDIR"])
+            self.diagnostic = Path(env["POLYLOGUE_LIVE_PROVIDER_DIAGNOSTIC_PATH"])
+            assert self.diagnostic.parent == self.root
+            self.diagnostic.write_text(json.dumps({"injection_failure": "neutral selected-runtime exception"}))
+            self.diagnostic.chmod(0o600)
             self.extension = env["POLYLOGUE_LIVE_PROVIDER_EXTENSION_ROOT"]
             if fault == "custody":
                 (hosts / (constructor["host"] + ".json")).write_text("changed neutral manifest")
@@ -168,6 +172,11 @@ def test_owned_provider_runtime_uses_private_native_authority_and_settles_custod
         row = next(row for row in manifests if row["path"] == "browser-capture/artifact.json")
         assert hashlib.sha256(retained.read_bytes()).hexdigest() == row["sha256"]
         assert (tmp_path / "evidence/proof-binding.json").is_file()
+        diagnostic = tmp_path / "evidence/owned-capture-diagnostic.json"
+        assert json.loads(diagnostic.read_text()) == {"injection_failure": "neutral selected-runtime exception"}
+        assert diagnostic.stat().st_mode & 0o777 == 0o600
+        row = next(row for row in manifests if row["path"] == "owned-capture-diagnostic.json")
+        assert hashlib.sha256(diagnostic.read_bytes()).hexdigest() == row["sha256"]
     assert os.environ == before
     assert operator_manifest.read_text() == "operator untouched"
     if fault == "custody":
