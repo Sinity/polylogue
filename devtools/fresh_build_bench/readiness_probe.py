@@ -79,7 +79,8 @@ class CandidateReadinessProbe:
         self.environment = {
             key: value
             for key, value in environment.items()
-            if not key.startswith("POLYLOGUE_BENCH_") and key != "POLYLOGUE_TRACE_COMPUTE"
+            if not key.startswith("POLYLOGUE_BENCH_")
+            and key not in {"POLYLOGUE_TRACE_COMPUTE", "PYTHON_PERF_SUPPORT", "PYTHON_PERF_JIT_SUPPORT"}
         }
         self.censuses: list[dict[str, Any]] = []
 

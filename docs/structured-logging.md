@@ -133,6 +133,10 @@ required measurement fields or an invalid omission count. Surviving independent
 intervals remain measured; optional metadata trimming alone does not invalidate
 their coverage.
 
+This field describes explicit omission metadata in observed records. It does not
+prove producer delivery, complete stage instrumentation or full CPU attribution.
+Those remain separate coverage measurements.
+
 ### Cost
 
 `emit` compares one integer before doing anything else, so a suppressed event
@@ -360,7 +364,3 @@ Read the two together. `legacy-stdlib-logger` at 4 means no module acquires a
 stdlib logger directly. `legacy-prose-logging` at 374 is the honest size of
 what remains: prose that still discards its structured fields. Neither number
 alone answers "is the tree converted".
-
-This field describes explicit omission metadata in observed records. It does not
-prove producer delivery, complete stage instrumentation or full CPU attribution.
-Those remain separate coverage measurements.

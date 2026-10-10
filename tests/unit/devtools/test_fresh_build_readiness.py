@@ -26,6 +26,8 @@ def _candidate(root: Path, ready: bool) -> Path:
         "def archive_readiness_status(archive):\n"
         " assert 'POLYLOGUE_BENCH_STACKS' not in os.environ\n"
         " assert 'POLYLOGUE_TRACE_COMPUTE' not in os.environ\n"
+        " assert 'PYTHON_PERF_SUPPORT' not in os.environ\n"
+        " assert 'PYTHON_PERF_JIT_SUPPORT' not in os.environ\n"
         " assert os.environ['POLYLOGUE_CONFIG'] == 'isolated-config'\n"
         f" return {{'checked': True, 'surfaces': {{name: {{'ready': {ready!r}}} for name in {sorted(REQUIRED_READINESS_DOMAINS)!r}}}}}\n"
     )
@@ -43,6 +45,8 @@ def _probe(candidate: Path, work: Path) -> CandidateReadinessProbe:
             "POLYLOGUE_CONFIG": "isolated-config",
             "POLYLOGUE_BENCH_STACKS": "1",
             "POLYLOGUE_TRACE_COMPUTE": "1",
+            "PYTHON_PERF_SUPPORT": "1",
+            "PYTHON_PERF_JIT_SUPPORT": "1",
         },
     )
 
