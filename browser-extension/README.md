@@ -283,6 +283,8 @@ native-id uniqueness constraint.
 
 ## Development
 
+Development tools require Node 20 (20.19+), Node 22 (22.12+), or Node 24+. Release linting uses the locked Mozilla addons-linter directly; browser-launch tooling is not installed.
+
 ```bash
 npm ci
 npm test              # vitest
@@ -309,7 +311,7 @@ On `v*.*.*` tag push the workflow:
 2. Runs ESLint + Vitest (incl. build-script regression tests)
 3. Builds `polylogue-browser-capture-<version>-chrome.zip` and
    `polylogue-browser-capture-<version>-firefox.xpi`
-4. Runs `web-ext lint` against the unpacked Firefox bundle
+4. Runs `addons-linter` against the unpacked Firefox bundle
 5. Captures Playwright screenshots of the popup at Chrome Web Store and
    AMO submission aspect ratios, bundled as `store-screenshots-<tag>.tar.gz`
 6. Uploads all artifacts to the matching GitHub Release (`gh release upload --clobber`)

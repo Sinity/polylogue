@@ -48,15 +48,16 @@ describe("vitest.config.js worker concurrency cap", () => {
   });
 
   it("wires the cap into the active (forks) pool", () => {
-    expect(CONFIG_SOURCE).toMatch(/poolOptions\s*:\s*{[\s\S]*forks\s*:\s*{[\s\S]*maxForks\s*:\s*maxWorkers/);
+    expect(CONFIG_SOURCE).toMatch(/pool\s*:\s*"forks"/);
   });
 
   it("wires the cap into the pool-agnostic maxWorkers fallback", () => {
     expect(CONFIG_SOURCE).toMatch(/test\s*:\s*{[\s\S]*maxWorkers\s*,/);
   });
 
-  it("keeps the threads pool capped too, in case the default pool changes again", () => {
-    expect(CONFIG_SOURCE).toMatch(/poolOptions\s*:\s*{[\s\S]*threads\s*:\s*{[\s\S]*maxThreads\s*:\s*maxWorkers/);
+  it("uses the current pool-independent cap without ignored predecessor options", () => {
+    expect(CONFIG_SOURCE).toMatch(/test\s*:\s*{[\s\S]*maxWorkers\s*,/);
+    expect(CONFIG_SOURCE).not.toMatch(/poolOptions\s*:|minWorkers\s*:|maxForks\s*:|maxThreads\s*:/);
   });
 
   it("supports a bounded env override without unbounding the default", () => {

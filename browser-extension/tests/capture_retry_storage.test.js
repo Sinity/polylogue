@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { IDBFactory } from "fake-indexeddb";
+import { beforeEach, describe, expect, it } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { BACKFILL_DB_NAME } from "../src/backfill/models.js";
 import { IndexedDbBackfillStore } from "../src/backfill/storage.js";
 
 describe("retained automatic capture bodies", () => {
+  beforeEach(() => { globalThis.IDBKeyRange = IDBKeyRange; });
   it("adds retry stores without changing existing backfill jobs and queue inputs", async () => {
     const factory = new IDBFactory();
     await new Promise((resolve, reject) => {
@@ -21,8 +22,9 @@ describe("retained automatic capture bodies", () => {
       opening.onsuccess = () => { opening.result.close(); resolve(); };
     });
     const store = new IndexedDbBackfillStore(factory);
-    expect(await store.getJob("existing-job")).toEqual({ id: "existing-job", status: "paused" });
-    expect((await store.listQueue("existing-job"))[0]).toMatchObject({ state: "captured_waiting_receiver", envelope: { session: { turns: [] } } });
+    // Database admission adds the declared active-page index key to paused jobs.
+    expect(await store.getJob("existing-job")).toEqual({ id: "existing-job", status: "paused", active_page: 1 });
+    expect((await store.queuePage("existing-job")).items[0]).toMatchObject({ state: "captured_waiting_receiver", envelope: { session: { turns: [] } } });
     await store.putCaptureRetry({ id: "automatic-input" }, { session: { turns: [] } });
     expect((await store.listCaptureRetries()).map((entry) => entry.id)).toEqual(["automatic-input"]);
   });

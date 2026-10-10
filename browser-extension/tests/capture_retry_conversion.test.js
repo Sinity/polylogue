@@ -18,6 +18,9 @@ async function setup() {
   const area = {
     get: async (defaults) => ({ ...defaults, ...local }),
     set: async (values) => { local = { ...local, ...values }; },
+    remove: async (keys) => {
+      for (const key of (Array.isArray(keys) ? keys : [keys])) delete local[key];
+    },
   };
   const network = vi.fn(async () => { throw new Error("unexpected network"); });
   const adapters = {

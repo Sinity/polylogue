@@ -1,7 +1,7 @@
 name: Extension Release
 
 # Packages the browser-extension/ Manifest V3 source into Chrome (.zip) and
-# Firefox (.xpi) artifacts, runs web-ext lint and the in-tree manifest
+# Firefox (.xpi) artifacts, runs addons-linter and the in-tree manifest
 # validator, captures store-submission screenshots via headless Playwright,
 # and uploads the bundle to the corresponding GitHub Release.
 #
@@ -129,14 +129,14 @@ jobs:
         run: npm test
       - name: Build Chrome zip + Firefox xpi
         run: npm run build
-      - name: Web-ext lint Firefox xpi
+      - name: Lint Firefox xpi
         run: |
           set -euo pipefail
           xpi=$(find dist -maxdepth 1 -type f -name 'polylogue-browser-capture-*-firefox.xpi' | sort | head -n1)
-          # web-ext lint actually wants a directory; unpack the xpi.
+          # Validate the same unpacked Firefox bundle with the locked linter.
           mkdir -p dist/firefox-unpacked
           unzip -qo "$xpi" -d dist/firefox-unpacked
-          "${RELEASE_TOOLS}/node_modules/.bin/web-ext" lint --source-dir dist/firefox-unpacked
+          "${RELEASE_TOOLS}/node_modules/.bin/addons-linter" dist/firefox-unpacked
       - name: Install Playwright Chromium
         run: npm run --prefix "${RELEASE_TOOLS}" install:screenshot-browser
       - name: Capture submission screenshots

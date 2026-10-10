@@ -40,21 +40,9 @@ export default defineConfig({
     // workers, and a single focused test file only ever needs one worker
     // regardless of this cap, so interactive parallelism is unaffected.
     //
-    // `maxWorkers`/`minWorkers` is the pool-agnostic fallback Vitest resolves
-    // for whichever pool is active; `poolOptions.forks.*` additionally pins
-    // the cap for the current default `forks` pool explicitly, so the cap
-    // survives even if the default pool changes again upstream.
+    // Vitest 4 applies maxWorkers uniformly to forks and threads.
+    // Keep the physical pool explicit and avoid removed per-pool options.
+    pool: "forks",
     maxWorkers,
-    minWorkers: 1,
-    poolOptions: {
-      forks: {
-        maxForks: maxWorkers,
-        minForks: 1,
-      },
-      threads: {
-        maxThreads: maxWorkers,
-        minThreads: 1,
-      },
-    },
   },
 });

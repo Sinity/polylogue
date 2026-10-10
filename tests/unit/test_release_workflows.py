@@ -303,7 +303,7 @@ def test_extension_release_executes_only_lockfile_tools() -> None:
     """A mutable npx range or npm install fallback bypasses the committed executable lock."""
     package = json.loads((REPO_ROOT / "browser-extension/package.json").read_text())
     lock = json.loads((REPO_ROOT / "browser-extension/package-lock.json").read_text())
-    for name in ("playwright", "web-ext"):
+    for name in ("playwright", "addons-linter"):
         version = package["devDependencies"][name]
         assert re.fullmatch(r"\d+\.\d+\.\d+", version)
         assert lock["packages"][""]["devDependencies"][name] == version
@@ -317,8 +317,8 @@ def test_extension_release_executes_only_lockfile_tools() -> None:
         next(step for step in build_steps if step.get("name") == "Install Playwright Chromium")["run"]
         == 'npm run --prefix "${RELEASE_TOOLS}" install:screenshot-browser'
     )
-    lint = next(step for step in build_steps if step.get("name") == "Web-ext lint Firefox xpi")["run"]
-    assert '"${RELEASE_TOOLS}/node_modules/.bin/web-ext" lint' in lint
+    lint = next(step for step in build_steps if step.get("name") == "Lint Firefox xpi")["run"]
+    assert '"${RELEASE_TOOLS}/node_modules/.bin/addons-linter" dist/firefox-unpacked' in lint
     assert "npx" not in "\n".join(step.get("run", "") for step in build_steps)
     assert package["scripts"]["install:screenshot-browser"] == "playwright install --with-deps chromium"
 
