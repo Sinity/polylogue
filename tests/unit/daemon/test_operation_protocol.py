@@ -21,7 +21,7 @@ from click.testing import CliRunner
 from tests.infra.daemon_operations import cli_daemon_archive, running_daemon_operations
 
 
-def _write_codex_session(path: Path, session_id: str, texts: tuple[str, ...]) -> Path:
+def _write_codex_session(path: Path, session_id: str, texts: tuple[str, ...], *, usage: bool = False) -> Path:
     rows: list[dict[str, object]] = [
         {"type": "session_meta", "payload": {"id": session_id, "timestamp": "2026-01-01T00:00:00Z"}}
     ]
@@ -37,23 +37,40 @@ def _write_codex_session(path: Path, session_id: str, texts: tuple[str, ...]) ->
                 },
             }
         )
+    if usage:
+        rows.extend(
+            [
+                {"type": "turn_context", "payload": {"model": "gpt-4o"}},
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {
+                            "total_token_usage": {"input_tokens": 100, "output_tokens": 30, "cached_input_tokens": 20}
+                        },
+                    },
+                },
+            ]
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     return path
 
 
-def _two_sessions(directory: Path) -> tuple[Path, Path]:
+def _two_sessions(directory: Path, *, usage: bool = False) -> tuple[Path, Path]:
     return (
-        _write_codex_session(directory / "first.jsonl", "protocol-first", ("question one", "answer one")),
+        _write_codex_session(directory / "first.jsonl", "protocol-first", ("question one", "answer one"), usage=usage),
         _write_codex_session(
-            directory / "second.jsonl", "protocol-second", ("question two", "answer two", "follow-up")
+            directory / "second.jsonl", "protocol-second", ("question two", "answer two", "follow-up"), usage=usage
         ),
     )
 
 
 def _normalized_material(archive_root: Path) -> dict[str, list[tuple[object, ...]]]:
+    from polylogue.storage.usage import session_usage_costs_for_connection
+
     with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
-        return {
+        material = {
             "sessions": sorted(
                 conn.execute(
                     "SELECT session_id, origin, title, title_source, content_hash, message_count FROM sessions"
@@ -63,6 +80,39 @@ def _normalized_material(archive_root: Path) -> dict[str, list[tuple[object, ...
                 conn.execute("SELECT message_id, session_id, role, material_origin, content_hash FROM messages")
             ),
         }
+        material = {key: [tuple(row) for row in rows] for key, rows in material.items()}
+        material["provider_usage"] = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT session_id, provider_event_type, model_name, total_input_tokens, total_output_tokens, "
+                "total_cached_input_tokens, total_cache_write_tokens FROM session_provider_usage_events "
+                "ORDER BY session_id, position"
+            )
+        ]
+        session_ids = [str(row[0]) for row in material["sessions"]]
+        conn.row_factory = sqlite3.Row
+        costs = session_usage_costs_for_connection(conn, session_ids)
+        material["accounting"] = [
+            (
+                sid,
+                costs[sid].input_tokens,
+                costs[sid].output_tokens,
+                costs[sid].cache_read_tokens,
+                costs[sid].cache_write_tokens,
+                costs[sid].provider_lanes_complete,
+                costs[sid].provider_reported_usd,
+                costs[sid].catalog_api_equivalent_usd,
+            )
+            for sid in session_ids
+        ]
+        return material
+
+
+def _assert_nonzero_accounting(material: dict[str, list[tuple[object, ...]]]) -> None:
+    ids = ["codex-session:protocol-first", "codex-session:protocol-second"]
+    assert material["provider_usage"] == [(sid, "token_count", "gpt-4o", 100, 30, 20, None) for sid in ids]
+    assert [row[:7] for row in material["accounting"]] == [(sid, 80, 30, 20, 0, True, None) for sid in ids]
+    assert all(isinstance(row[7], float) and row[7] > 0 for row in material["accounting"])
 
 
 def _session_ids(archive_root: Path) -> list[str]:
@@ -82,7 +132,9 @@ def test_cli_import_daemon_ingest_and_from_empty_build_write_identical_material(
     ``ingest`` operation admits them through a frozen source generation; the
     CLI stages them and submits that same operation. All three must write the
     same normalized sessions and messages, and re-offering ingested files
-    changes nothing.
+    changes nothing. Nonzero cumulative provider counters and the canonical
+    cost projection agree too. Codex supplies no reported USD here; its absent
+    cache-write measurement remains NULL in the provider evidence.
 
     Anti-vacuity: let the ``ingest`` cohort parse retained raws without the
     provider's session assembly (``parse_retained_raw_sessions`` instead of
@@ -95,7 +147,7 @@ def test_cli_import_daemon_ingest_and_from_empty_build_write_identical_material(
     from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
     from polylogue.storage.blob_store import reset_blob_store
 
-    first, second = _two_sessions(tmp_path / "capture-files")
+    first, second = _two_sessions(tmp_path / "capture-files", usage=True)
 
     from_empty_root = one_shot_workspace_env["archive_root"]
     asyncio.run(
@@ -106,6 +158,7 @@ def test_cli_import_daemon_ingest_and_from_empty_build_write_identical_material(
     expected = _normalized_material(from_empty_root)
     assert len(expected["sessions"]) == 2
     assert len(expected["messages"]) == 5
+    _assert_nonzero_accounting(expected)
 
     daemon_root = tmp_path_factory.mktemp("daemon-incremental")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(daemon_root))
@@ -118,6 +171,7 @@ def test_cli_import_daemon_ingest_and_from_empty_build_write_identical_material(
             )
             assert envelope is not None and envelope["outcome"] == "completed", envelope
     daemon_material = _normalized_material(daemon_root)
+    _assert_nonzero_accounting(daemon_material)
     assert daemon_material == expected, (daemon_material, expected)
 
     cli_root = tmp_path_factory.mktemp("cli-import")
@@ -131,7 +185,34 @@ def test_cli_import_daemon_ingest_and_from_empty_build_write_identical_material(
             )
             assert result.exit_code == 0, result.output
     cli_material = _normalized_material(cli_root)
+    _assert_nonzero_accounting(cli_material)
     assert cli_material == expected, (cli_material, expected)
+
+
+def test_three_route_accounting_refuses_a_dropped_provider_usage_write(
+    tmp_path: Path,
+    one_shot_workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The positive parity law cannot pass by dropping usage on every route."""
+    import asyncio
+
+    from polylogue.config import Source
+    from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
+    from polylogue.storage.sqlite.archive_tiers import write
+
+    first, second = _two_sessions(tmp_path / "capture-files", usage=True)
+    monkeypatch.setattr(write, "_provider_usage_event_has_evidence", lambda event, row: False)
+    root = one_shot_workspace_env["archive_root"]
+    asyncio.run(
+        ingest_one_shot_archive(
+            root, [Source(name="codex", path=first), Source(name="codex", path=second)], parse_workers=1
+        )
+    )
+    material = _normalized_material(root)
+    assert len(material["sessions"]) == 2 and len(material["messages"]) == 5
+    with pytest.raises(AssertionError):
+        _assert_nonzero_accounting(material)
 
 
 def test_reimporting_an_excised_file_is_a_typed_permanent_refusal(tmp_path: Path) -> None:
