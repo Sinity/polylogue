@@ -727,7 +727,9 @@ the ordered session and block-membership indexes with one distinct session-key
 page, retaining empty sessions and blocks-only keys without collecting the
 remaining archive for every page (`storage/fts/derivation.py`, `required_page`).
 FTS inspection reads table and canonical-trigger compatibility once per pinned
-page snapshot. Partition membership and identity remain separate exact counts;
+page snapshot. Each compatible session partition counts expected and missing
+membership in one aggregate over its canonical blocks and FTS docsize relation.
+Identity remains a separate exact count;
 standalone partition probes and subsequent page snapshots read fresh schema facts.
 No schema facts survive the inspection transaction.
 

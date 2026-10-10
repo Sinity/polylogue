@@ -517,6 +517,33 @@ def test_required_page_merges_membership_keys_without_gathering_the_suffix(tmp_p
     assert "TEMP B-TREE" not in plan
 
 
+@pytest.mark.parametrize("block_count, missing_count", [(0, 0), (4, 0), (4, 2)])
+def test_partition_membership_counts_share_one_projection(
+    test_conn: sqlite3.Connection, test_db: Path, block_count: int, missing_count: int
+) -> None:
+    """Separate expected/missing scans add a third canonical-block count query."""
+    key = _seed_blocks(test_conn, "membership:żółć", block_count)
+    rowids = test_conn.execute("SELECT rowid FROM blocks WHERE session_id = ? ORDER BY rowid", (key,)).fetchall()
+    test_conn.executemany("DELETE FROM messages_fts WHERE rowid = ?", rowids[:missing_count])
+    if block_count:
+        test_conn.execute("UPDATE messages_fts_identity SET source_hash = NULL WHERE rowid = ?", rowids[-1])
+    test_conn.commit()
+    statements: list[str] = []
+    test_conn.set_trace_callback(statements.append)
+    try:
+        result = _adapter(test_db).inspect_partition(test_conn, key)
+    finally:
+        test_conn.set_trace_callback(None)
+    assert result.required_rows == block_count
+    assert result.missing_rows == missing_count
+    assert result.present_rows == block_count - missing_count
+    assert result.wrong_identity_rows == int(block_count > 0)
+    assert result.duplicate_rows == result.excess_rows == 0
+    assert result.status is (FtsKeyStatus.STALE if block_count else FtsKeyStatus.VALID)
+    block_counts = [sql for sql in statements if sql.lstrip().startswith("SELECT COUNT(*)") and "FROM blocks" in sql]
+    assert len(block_counts) == 2
+
+
 def test_inspection_reuses_schema_facts_only_within_its_snapshot(test_conn: sqlite3.Connection, test_db: Path) -> None:
     keys = tuple(_seed_session(test_conn, f"snapshot-{index}")[0] for index in range(4))
     statements: list[str] = []
