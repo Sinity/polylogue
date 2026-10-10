@@ -65,9 +65,12 @@ Every run samples the daemon's per-thread CPU in process (py-spy cannot attach
 to the free-threaded interpreter) and reports it as `thread_cpu_s`: each writer
 actor, the other threads, and the process total. Threads are sampled while
 alive, so per-thread figures are lower bounds and the remainder is reported
-as `unattributed`. `--profile` adds stack
-capture: wall samples and CPU ticks per stack; `profile stacks.json [--thread PREFIX] [--collapsed out]`
-summarises it or writes flame-graph input.
+as `unattributed`. On a GIL-enabled interpreter, `--profile` adds wall stack
+samples and CPU ticks per stack; `profile stacks.json [--thread PREFIX] [--collapsed out]`
+summarises them or writes flame-graph input. Free-threaded builds refuse
+cross-thread frame capture with `profile_refusal=free_threaded_frame_snapshot_unavailable`;
+per-thread CPU and process measurements remain available. A refused stack profile
+does not attribute a busy thread to a particular preparation function.
 
 ## Receipt
 

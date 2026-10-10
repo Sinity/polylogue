@@ -2090,6 +2090,112 @@ def test_neutral_unchanged_rebind_reuses_complete_validation(
     assert len(durations) == 1
 
 
+@pytest.mark.parametrize("schema_changed", [False, True])
+@pytest.mark.parametrize("with_sibling", [False, True])
+def test_neutral_census_enrichment_change_reuses_owned_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schema_changed: bool,
+    with_sibling: bool,
+    record_property: Callable[[str, object], None],
+) -> None:
+    """An enrichment-only invalidation keeps the page's immutable parser input."""
+    from polylogue.schemas import retained_validation
+    from polylogue.schemas.runtime_registry import SchemaRegistry
+    from polylogue.sources import prepared_jsonl
+
+    bootstrap_archive_root(tmp_path)
+    target = _admit(tmp_path, (), provider=Provider.CODEX, path="session.jsonl", payload=_codex_conversation_bytes())
+    selected: tuple[str, ...] = (target,)
+    if with_sibling:
+        sibling = _admit(
+            tmp_path,
+            (),
+            provider=Provider.CODEX,
+            path="session.jsonl",
+            payload=_codex_conversation_bytes(text="new hi"),
+            acquired_at_ms=2,
+        )
+        selected = (target, sibling)
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    original_init = RawObservationDerivation.__init__
+    original_digest = RawObservationDerivation._artifact_dependency_digests
+    original_validate = retained_validation.validate_retained_document
+    original_parse = prepared_jsonl.prepare_jsonl_blob
+    digest_reads = 0
+    validations = 0
+    parses = 0
+    moved_artifact: int | None = None
+
+    def initialize(self: RawObservationDerivation, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        self._schema_registry = registry
+
+    def digest(self: RawObservationDerivation, *args: Any, **kwargs: Any) -> dict[int, str]:
+        nonlocal digest_reads, moved_artifact
+        result = original_digest(self, *args, **kwargs)
+        digest_reads += 1
+        if moved_artifact is None and result:
+            moved_artifact = next(iter(result))
+        if digest_reads == 2 and schema_changed:
+            registry.write_schema_version("codex", "v999", {"type": "object"}, element_kind="event_record")
+        # Model late-arriving enrichment evidence at the real before/after
+        # census boundary. The parser operands and acquired bytes do not move.
+        return {
+            key: value + (":new-enrichment" if digest_reads >= 2 and key == moved_artifact else "")
+            for key, value in result.items()
+        }
+
+    def validate(*args: Any, **kwargs: Any) -> Any:
+        nonlocal validations
+        validations += 1
+        return original_validate(*args, **kwargs)
+
+    def parse(*args: Any, **kwargs: Any) -> Any:
+        nonlocal parses
+        parses += 1
+        return original_parse(*args, **kwargs)
+
+    monkeypatch.setattr(RawObservationDerivation, "_artifact_dependency_digests", digest)
+    monkeypatch.setattr(RawObservationDerivation, "__init__", initialize)
+    monkeypatch.setattr(retained_validation, "validate_retained_document", validate)
+    monkeypatch.setattr(prepared_jsonl, "prepare_jsonl_blob", parse)
+
+    async def replay() -> None:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            (await owner.replay_retained_raw_ids(selected)).require_complete()
+
+    with capture() as events:
+        asyncio.run(replay())
+    record_property("validation_body_calls", validations)
+    record_property("parser_body_calls", parses)
+    assert digest_reads >= 2
+    rebinds = [event for event in events if event.get("event") == "storage.raw_observation.neutral_rebind"]
+    assert any(
+        event["reason"] == "enrichment_changed" and event["bound"] and event["pending"] == 1 for event in rebinds
+    )
+    artifacts = [event for event in events if event.get("event") == "storage.raw_observation.neutral_artifact"]
+    assert artifacts[-1]["cached"] is True
+    assert artifacts[-1]["kind"] == "page"
+    elapsed_ms = artifacts[-1]["elapsed_ms"]
+    assert isinstance(elapsed_ms, float) and elapsed_ms >= 0
+    rejections = [
+        event
+        for event in events
+        if event.get("event") == "log.field_rejected"
+        and event.get("source_event")
+        in {"storage.raw_observation.neutral_rebind", "storage.raw_observation.neutral_artifact"}
+    ]
+    assert not rejections, rejections
+    with sqlite3.connect(tmp_path / "index.db") as connection:
+        assert connection.execute("SELECT message_id,role FROM messages").fetchall() == [
+            ("codex-session:session:n:m-session", "user")
+        ]
+        assert connection.execute("SELECT text FROM blocks").fetchall() == [("new hi" if with_sibling else "hi",)]
+    assert validations == len(selected) * (2 if schema_changed else 1), (validations, parses)
+    assert parses == len(selected)
+
+
 def test_neutral_page_census_restart_keeps_drift_until_page_retirement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
