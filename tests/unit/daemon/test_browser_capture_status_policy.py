@@ -724,7 +724,8 @@ def test_live_persisted_rotation_updates_bearer_pairing_and_status(tmp_path: Pat
             )
             response = connection.getresponse()
             assert response.status == 200
-            assert json.loads(response.read())["proof"] == receiver_attestation_proof(new, identity, challenge)
+            payload = json.loads(response.read())
+            assert payload["proof"] == receiver_attestation_proof(new, identity, challenge, payload["endpoint"])
         result = CliRunner().invoke(status_command, ["--port", str(server.server_port), "--format", "json"])
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["receiver_id"] == identity

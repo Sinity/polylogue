@@ -536,17 +536,22 @@ content adapter builds the envelope. Extra web origins require an explicit
 receiver auth token. This keeps a normal web page from writing local capture
 artifacts or reading receiver state merely because it is open in the browser.
 
-A fresh extension profile obtains the receiver bearer from the native-messaging
-host (`polylogue-browser-capture-native-host`). Loopback is not identity: any
-local process can hold the receiver port while the daemon is stopped. The host
-therefore sends a fresh 32-byte challenge to the endpoint's
-`POST /v1/receiver/attest` and releases the bearer only when the answer is the
-HMAC-SHA256, keyed by that bearer, over the receiver identity and the challenge.
-The bearer itself never crosses the socket during this check. This possession proof alone does not establish endpoint ownership against a forwarding relay; native bootstrap transport remains a separate follow-up (`polylogue-xgj34`). An endpoint that
-does not answer yields `receiver_unreachable`; one that answers with anything
-else yields `receiver_authentication_failed`. Local response staging or spill failures yield `receiver_observation_storage_failed` in the native-messaging error envelope; they are distinct from peer reachability or authentication. When a status probe is refused
-with `401`, the extension asks the host for the current bearer once per health
-check; a second refusal is reported as `unauthorized` rather than retried.
+The extension sends receiver operations through the browser-scoped native host
+(`polylogue-browser-capture-native-host`); it never receives or stores a bearer.
+The host stages request bytes, connects to the loopback receiver, and verifies
+an HMAC challenge bound to the receiver identity, actual connected IP/port and
+Linux network namespace. The receiver signs only while its listening socket
+still owns that endpoint. The host sends the authenticated operation on that
+same socket with automatic reconnect disabled. A forwarding relay or replaced
+listener therefore cannot obtain the reusable credential.
+
+Native requests and responses use paced byte chunks. Their total size has no
+transport ceiling; physical storage failure is explicit. Browser cancellation
+or native input EOF closes the owned socket even during a blocked response.
+This endpoint authority requires Linux network namespace metadata; unavailable
+metadata produces `receiver_transport_namespace_unavailable`. Identity,
+authentication, network and local custody failures remain distinct typed errors.
+Independent external HTTP clients retain the bearer and pairing-code routes.
 
 If the receiver is unavailable, the extension surfaces an offline state instead
 of dropping content silently.

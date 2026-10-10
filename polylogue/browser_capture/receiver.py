@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import hmac
 import io
+import ipaddress
 import os
 import re
 import secrets
@@ -1014,19 +1015,30 @@ def receiver_identity(config: BrowserCaptureReceiverConfig) -> str:
 
 #: Domain separator for a receiver attestation MAC, so a proof can never be
 #: confused with any other HMAC keyed by the same bearer.
-RECEIVER_ATTESTATION_DOMAIN = "polylogue-browser-capture-receiver-attestation/v1"
+RECEIVER_ATTESTATION_DOMAIN = "polylogue-browser-capture-receiver-attestation/v2"
 
 
-def receiver_attestation_proof(secret: str, receiver_id: str, challenge: str) -> str:
+def receiver_socket_authority(address: tuple[object, ...]) -> str:
+    """Bind a proof to a kernel-observed endpoint in this network namespace.
+
+    Linux namespaces can host the same loopback address and port independently.
+    A native host must share the receiver's namespace, rather than trusting a
+    matching address supplied by a caller or forwarding process.
+    """
+    namespace = os.stat("/proc/self/ns/net")
+    host = ipaddress.ip_address(str(address[0]))
+    return f"{namespace.st_dev}:{namespace.st_ino}|{host.compressed}|{int(str(address[1]))}"
+
+
+def receiver_attestation_proof(secret: str, receiver_id: str, challenge: str, endpoint: str) -> str:
     """Return the proof that the holder of ``secret`` answered ``challenge``.
 
     HMAC-SHA256 keyed by the receiver bearer over the domain, the receiver
-    identity, and the caller's fresh challenge. A process that does not hold
-    the bearer cannot produce it, and the proof reveals nothing about the
-    bearer, so a client can authenticate a loopback receiver before it
-    releases or presents the durable credential.
+    identity, caller's fresh challenge and kernel-observed socket authority.
+    This authenticates the current socket; it does not authorize credential
+    release to a later connection.
     """
-    message = f"{RECEIVER_ATTESTATION_DOMAIN}\n{receiver_id}\n{challenge}".encode()
+    message = f"{RECEIVER_ATTESTATION_DOMAIN}\n{receiver_id}\n{challenge}\n{endpoint}".encode()
     digest = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
@@ -1045,11 +1057,11 @@ def receiver_status_proof(secret: str, receiver_id: str, challenge: str, *, payl
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
-def attest_receiver(config: BrowserCaptureReceiverConfig, challenge: str) -> str | None:
+def attest_receiver(config: BrowserCaptureReceiverConfig, challenge: str, endpoint: str) -> str | None:
     """Answer an attestation challenge, or ``None`` when auth is disabled."""
     if config.auth_token is None:
         return None
-    return receiver_attestation_proof(config.auth_token, receiver_identity(config), challenge)
+    return receiver_attestation_proof(config.auth_token, receiver_identity(config), challenge, endpoint)
 
 
 def receiver_status_payload(config: BrowserCaptureReceiverConfig) -> dict[str, object]:

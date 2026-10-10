@@ -512,6 +512,7 @@ class BrowserCaptureReceiverAttestationPayload(BaseModel):
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
     api_schema: str
     receiver_id: str
+    endpoint: str
     proof: str
 
 
