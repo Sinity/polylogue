@@ -130,7 +130,7 @@ class HookEventsDerivation:
 
     def __init__(self, archive_root: Path) -> None:
         self.archive_root = archive_root
-        self._decoded: dict[str, tuple[tuple[CarrierLine, ...], int]] = {}
+        self._decoded: tuple[str, tuple[tuple[CarrierLine, ...], int]] | None = None
 
     # -- reading ----------------------------------------------------------
 
@@ -161,12 +161,17 @@ class HookEventsDerivation:
         is a pure function of the blob hash. Memoizing it is what keeps
         inspection cheap: the kernel inspects a key before computing it and
         again to certify publication, and a bare re-decode would triple the
-        parse cost of every pass over an already-materialized carrier.
+        parse cost of consecutive checks on an already-materialized carrier.
+        Only the last blob's decode is retained; a discovery page is not a
+        payload cache for its entire carrier cohort.
         """
 
-        cached = self._decoded.get(blob_hash)
-        if cached is not None:
-            return cached
+        if self._decoded is not None and self._decoded[0] == blob_hash:
+            return self._decoded[1]
+        # Inspection walks many carrier keys without keeping their payloads.
+        # Retire the previous decode before reading another immutable blob;
+        # a caller-held replacement owns its event records independently.
+        self._decoded = None
         payload = BlobStore(self.archive_root / "blob").read_all(blob_hash)
         lines, refusals = read_hook_carrier(payload)
         if refusals:
@@ -179,7 +184,7 @@ class HookEventsDerivation:
                 error_detail="; ".join(f"@{refusal.byte_offset}: {refusal.reason}" for refusal in refusals),
             )
         decoded = (lines, len(refusals))
-        self._decoded[blob_hash] = decoded
+        self._decoded = (blob_hash, decoded)
         return decoded
 
     def _descriptor(self, conn: sqlite3.Connection, key: str) -> tuple[str, str, int, int] | None:
