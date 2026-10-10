@@ -1,8 +1,4 @@
-"""Fresh bootstrap helpers for archive databases.
-
-Writer module: ops.
-Fresh Ops destinations receive their event lifetime inside bootstrap custody.
-"""
+"""Fresh bootstrap helpers for archive databases."""
 
 from __future__ import annotations
 
@@ -568,10 +564,9 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
                     # A prototype copies pages, including its seed row. This
                     # destination was proved empty above and owns a new event
                     # lifetime; existing admitted ledgers never take this path.
-                    conn.execute(
-                        "UPDATE daemon_event_retention SET lifetime=lower(hex(randomblob(16))) "
-                        "WHERE ledger='daemon_events'"
-                    )
+                    from polylogue.storage.sqlite.archive_tiers.ops_write import _initialize_cloned_event_lifetime
+
+                    _initialize_cloned_event_lifetime(conn)
                 if tier is ArchiveTier.INDEX:
                     from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 

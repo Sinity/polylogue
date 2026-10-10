@@ -27,6 +27,12 @@ from polylogue.core.types import (
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 from polylogue.storage.sqlite.archive_tiers.ops import McpCallSessionRelation
 
+
+def _initialize_cloned_event_lifetime(conn: sqlite3.Connection) -> None:
+    """Give a proved-empty prototype destination its own event lifetime."""
+    conn.execute("UPDATE daemon_event_retention SET lifetime=lower(hex(randomblob(16))) WHERE ledger='daemon_events'")
+
+
 MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
 # polylogue-1xc.12: a 30 day window
 # (long enough to see week-over-week drift trend) capped at 5,000 rows (one
