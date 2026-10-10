@@ -77,7 +77,7 @@ does not attribute a busy thread to a particular preparation function.
 | Section | Source | Contents |
 | --- | --- | --- |
 | `timing_s` | event log and observer | event preparation/chunks/promotion; observed readiness and derived observation delay |
-| `stages` | ops `ingestion_batch` rows | the daemon's own stage timers summed over batches, and a declared rollup (acquire, parse, materialize, index, fts, derived) |
+| `stages` | ops `ingestion_batch` rows | inclusive stage timers summed over batches, grouped by category; parent and child timers may overlap |
 | `writer` | `daemon.writer.released` events | busy share to promotion, queue depth, holds per actor |
 | `event_log` | complete event file scan | valid events and malformed JSON, non-object or invalid event records; missing files remain unavailable |
 | `progress` | driver observations | accepted material, reduced required work and readiness/publication changes, separately from retry activity and declared next retry times |
@@ -86,6 +86,12 @@ does not attribute a busy thread to a particular preparation function.
 | `process_tree` | driver samples | peak and p95 RSS, CPU seconds, mean cores, block I/O |
 | `checks`, `budgets`, `qualified` | archive, samples | terminal checks and asserted budgets |
 | `output_fingerprint` | promoted index | per-table digests over the differential harness's comparable relations, and a digest of every `messages_fts` posting by block |
+
+`stage_seconds` preserves every observed inclusive timer. Category totals in
+`stage_buckets_inclusive_seconds` may count overlapping parent and child time;
+they are not a partition of elapsed time. `stage_timing_coverage` reports each
+stage's observed and missing batches. Exclusive time and interval relationships
+are unavailable from batch timer names; use the causal trace for interval evidence.
 
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:

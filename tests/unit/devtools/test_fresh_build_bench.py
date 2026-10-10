@@ -75,32 +75,92 @@ def test_event_reduction_scopes_intake_and_writer_share_to_promotion(tmp_path: P
     assert summary["by_source"]["codex"] == {"groups": 1, "files": 2, "seconds": 5.0}
 
 
-def test_stage_rollup_counts_leaf_timers_once(tmp_path: Path) -> None:
-    """Anti-vacuity: rolling up the parent ``full.index.full_replace`` as well
-    as its children doubles the ``index`` bucket; matching the generic index
-    prefix first charges ``full.index.graph_resolve`` to ``index``."""
+@pytest.mark.parametrize(
+    "timings,expected_stages,expected_buckets,expected_coverage",
+    [
+        (
+            [{"parse": 10.0}, {"parse": 10.0, "parse.decode": 1.0}],
+            {"parse": 20.0, "parse.decode": 1.0},
+            {"other": 21.0},
+            {"parse": (2, 0), "parse.decode": (1, 1)},
+        ),
+        (
+            [
+                {
+                    "full.index.full_replace": 3.0,
+                    "full.index.full_replace.messages": 2.0,
+                    "full.index.full_replace.messages.decode": 1.0,
+                    "full.index.full_replace.blocks": 2.0,
+                    "full.index.prepare": 4.0,
+                    "full.index.graph_resolve": 5.0,
+                }
+            ],
+            {
+                "full.index.full_replace": 3.0,
+                "full.index.full_replace.messages": 2.0,
+                "full.index.full_replace.messages.decode": 1.0,
+                "full.index.full_replace.blocks": 2.0,
+                "full.index.prepare": 4.0,
+                "full.index.graph_resolve": 5.0,
+            },
+            {"index": 8.0, "materialize": 4.0, "derived_inline": 5.0},
+            {
+                "full.index.full_replace": (1, 0),
+                "full.index.full_replace.blocks": (1, 0),
+                "full.index.full_replace.messages": (1, 0),
+                "full.index.full_replace.messages.decode": (1, 0),
+                "full.index.prepare": (1, 0),
+                "full.index.graph_resolve": (1, 0),
+            },
+        ),
+        (
+            [{"parse": 20.0, "parse.decode": None}, {}],
+            {"parse": 20.0},
+            {"other": 20.0},
+            {"parse": (1, 1), "parse.decode": (0, 2)},
+        ),
+    ],
+    ids=["mixed-parent-only-and-child-batches", "nested-and-potentially-overlapping", "missing-finish"],
+)
+def test_stage_rollup_retains_inclusive_timers_without_inventing_exclusive_coverage(
+    tmp_path: Path,
+    timings: list[dict[str, float | None]],
+    expected_stages: dict[str, float],
+    expected_buckets: dict[str, float],
+    expected_coverage: dict[str, tuple[int, int]],
+) -> None:
+    """Names cannot establish child coverage, nesting or cross-thread overlap."""
     import sqlite3
 
     ops = tmp_path / "ops.db"
     with sqlite3.connect(ops) as conn:
         conn.execute("CREATE TABLE daemon_events (kind TEXT, payload_json TEXT)")
-        payload = {
-            "total_time_s": 10.0,
-            "stage_timings_s": {
-                "full.index.full_replace": 3.0,
-                "full.index.full_replace.messages": 2.0,
-                "full.index.full_replace.blocks": 1.0,
-                "full.index.prepare": 4.0,
-                "full.index.graph_resolve": 5.0,
-            },
-        }
-        conn.execute("INSERT INTO daemon_events VALUES ('ingestion_batch', ?)", (json.dumps(payload),))
+        for stage_timings in timings:
+            payload = {"total_time_s": 10.0, "stage_timings_s": stage_timings}
+            conn.execute("INSERT INTO daemon_events VALUES ('ingestion_batch', ?)", (json.dumps(payload),))
     batches = analyse_batches(ops)
-    buckets = dict(batches["stage_buckets_seconds"])
-    assert buckets["index"] == 3.0
-    assert buckets["materialize"] == 4.0
-    assert buckets["derived_inline"] == 5.0
-    assert batches["totals"]["total_time_s"] == 10.0
+    assert dict(batches["stage_seconds"]) == expected_stages
+    assert dict(batches["stage_buckets_inclusive_seconds"]) == expected_buckets
+    assert "stage_buckets_seconds" not in batches
+    coverage = batches["stage_timing_coverage"]
+    assert coverage["measurement"] == "inclusive_wall_sums_may_overlap"
+    assert coverage["exclusive_seconds"] is None
+    assert coverage["interval_relationships"] == "unavailable"
+    assert coverage["by_stage"] == {
+        key: {"observed_batches": observed, "missing_batches": missing}
+        for key, (observed, missing) in expected_coverage.items()
+    }
+    assert batches["totals"]["total_time_s"] == 10.0 * len(timings)
+    from devtools.fresh_build_bench.report import render
+
+    receipt = _receipt(stages=batches, budgets={})
+    receipt["candidate"]["dirty"] = False
+    receipt["corpus"]["kind"] = "synthetic"
+    assert "inclusive timer sums, may overlap" in render(receipt)
+    assert "exclusive attribution unavailable" in render(receipt)
+    _, comparison = compare(receipt, receipt)
+    for bucket in expected_buckets:
+        assert f"stage_inclusive.{bucket}" in comparison
 
 
 def test_projection_scales_origin_rates_to_the_population() -> None:

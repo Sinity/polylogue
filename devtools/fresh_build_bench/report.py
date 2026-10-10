@@ -269,6 +269,7 @@ def analyse_batches(ops_path: Path) -> dict[str, Any]:
     if not ops_path.exists():
         return {"batches": 0}
     stages: defaultdict[str, float] = defaultdict(float)
+    stage_observed: Counter[str] = Counter()
     totals: defaultdict[str, float] = defaultdict(float)
     measured: Counter[str] = Counter()
     missing: Counter[str] = Counter()
@@ -301,13 +302,15 @@ def analyse_batches(ops_path: Path) -> dict[str, Any]:
                     totals[key] += value
                     measured[key] += 1
             for stage, seconds in (data.get("stage_timings_s") or {}).items():
-                stages[stage] += float(seconds)
+                if seconds is not None:
+                    stages[stage] += float(seconds)
+                    stage_observed[stage] += 1
+                else:
+                    stage_observed[stage] += 0
     buckets: defaultdict[str, float] = defaultdict(float)
     for stage, seconds in stages.items():
-        # Parent timers include their children; roll up only leaf names so a
-        # bucket never double-counts a nested timer.
-        if any(other.startswith(stage + ".") for other in stages):
-            continue
+        # Names alone cannot prove nesting, overlap or exhaustive coverage.
+        # Preserve inclusive observations, including parents in other batches.
         buckets[_bucket(stage)] += seconds
     return {
         "batches": count,
@@ -319,9 +322,18 @@ def analyse_batches(ops_path: Path) -> dict[str, Any]:
             for key in sorted(measured.keys() | missing.keys())
         },
         "stage_seconds": [[key, round(value, 3)] for key, value in sorted(stages.items(), key=lambda item: -item[1])],
-        "stage_buckets_seconds": [
+        "stage_buckets_inclusive_seconds": [
             [key, round(value, 3)] for key, value in sorted(buckets.items(), key=lambda item: -item[1])
         ],
+        "stage_timing_coverage": {
+            "measurement": "inclusive_wall_sums_may_overlap",
+            "exclusive_seconds": None,
+            "interval_relationships": "unavailable",
+            "by_stage": {
+                key: {"observed_batches": stage_observed[key], "missing_batches": count - stage_observed[key]}
+                for key in sorted(stage_observed)
+            },
+        },
     }
 
 
@@ -1286,10 +1298,10 @@ def render(receipt: dict[str, Any]) -> str:
         f"  io_write={tree.get('io_write_bytes', 0) / 2**20:,.0f} MiB"
     )
     stages = receipt.get("stages") or {}
-    lines.append("stage buckets (sum over batches, s)")
-    for key, value in stages.get("stage_buckets_seconds") or []:
+    lines.append("stage buckets (inclusive timer sums, may overlap, s; exclusive attribution unavailable)")
+    for key, value in stages.get("stage_buckets_inclusive_seconds") or []:
         lines.append(f"    {value:9.2f}  {key}")
-    lines.append("top stages (s)")
+    lines.append("top stages (inclusive timer sums, s)")
     for key, value in (stages.get("stage_seconds") or [])[:15]:
         lines.append(f"    {value:9.2f}  {key}")
     lines.append("by source")
@@ -1446,10 +1458,10 @@ def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified:
     )
     for key in ("rss_peak_bytes", "cpu_seconds_to_promotion", "io_write_bytes"):
         row(f"process.{key}", (before.get("process_tree") or {}).get(key), (after.get("process_tree") or {}).get(key))
-    a_buckets = dict((before.get("stages") or {}).get("stage_buckets_seconds") or [])
-    b_buckets = dict((after.get("stages") or {}).get("stage_buckets_seconds") or [])
+    a_buckets = dict((before.get("stages") or {}).get("stage_buckets_inclusive_seconds") or [])
+    b_buckets = dict((after.get("stages") or {}).get("stage_buckets_inclusive_seconds") or [])
     for key in sorted(set(a_buckets) | set(b_buckets)):
-        row(f"stage.{key}", a_buckets.get(key), b_buckets.get(key))
+        row(f"stage_inclusive.{key}", a_buckets.get(key), b_buckets.get(key))
     a_fp, b_fp = before.get("output_fingerprint"), after.get("output_fingerprint")
     if blocking:
         lines.append("output: not compared (receipts are not comparable)")
