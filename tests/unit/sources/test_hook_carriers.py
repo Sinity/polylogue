@@ -278,6 +278,241 @@ def test_a_carrier_never_mints_a_session(tmp_path: Path, monkeypatch: pytest.Mon
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == carriers
 
 
+def test_hook_derivation_uses_literal_coordinate_range_across_revisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neighbour carriers cannot change a binding, even with LIKE metacharacters."""
+    import hashlib
+
+    from polylogue.operations.hook_event_derivation import discover_pending_hook_carriers
+    from polylogue.storage.derived.hook_events import HookEventsDerivation, carrier_identity
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    parent = carrier_path(spool_root, "codex").parent
+    parent.mkdir(parents=True, exist_ok=True)
+    selected = parent / "Case%_Ł.ndjson"
+    neighbours = [
+        parent / "case%_Ł.ndjson",
+        parent / "CaseXYŁ.ndjson",
+        parent / "Case%_Ł.ndjson-more.ndjson",
+        parent / "Case%_Ł.ndjso.ndjson",
+    ]
+
+    def append(path: Path, event_number: int) -> None:
+        append_carrier_line(
+            path,
+            validated_hook_record(
+                {
+                    "event_id": f"{event_number:032x}",
+                    "event_type": "PostToolUse",
+                    "session_id": "literal-coordinate-session",
+                    "timestamp": _TIMESTAMP,
+                    "provider": "codex",
+                    "payload": {"tool_name": "exec", "tool_output_preview": str(event_number)},
+                }
+            ),
+        )
+
+    append(selected, 1)
+    append(selected, 2)
+    assert materialize_hook_carriers(archive_root) == 2
+    derivation = HookEventsDerivation(archive_root)
+    frame = SimpleNamespace(
+        archive_root=archive_root,
+        recipe_version=lambda domain: derivation.recipe_version if domain == derivation.domain else None,
+    )
+    identity = carrier_identity(str(selected))
+
+    def binding_and_keys(expected_count: int) -> tuple[str, list[str]]:
+        with derivation._read() as conn:
+            # Independent expected selection uses literal Python prefix semantics.
+            rows = conn.execute(
+                "SELECT relative_path FROM hook_event_carriers WHERE source_id = ?",
+                (identity.source_id,),
+            ).fetchall()
+            expected = sorted(
+                str(row["relative_path"])
+                for row in rows
+                if str(row["relative_path"]).startswith(identity.relative_path + "#")
+            )
+            assert len(expected) == expected_count
+            raw_keys = [
+                str(row["raw_id"])
+                for row in conn.execute(
+                    "SELECT raw_id, hex(blob_hash) AS blob_hash FROM raw_sessions "
+                    "WHERE source_path = ? ORDER BY acquired_at_ms, rowid",
+                    (str(selected),),
+                )
+            ]
+            assert raw_keys
+            blob_hash = str(
+                conn.execute(
+                    "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?", (raw_keys[-1],)
+                ).fetchone()[0]
+            )
+            actual = derivation._binding(conn, identity, blob_hash)
+            assert (
+                actual
+                == hashlib.sha256(
+                    repr((blob_hash, identity.source_id, identity.relative_path, expected)).encode()
+                ).hexdigest()
+            )
+        assert set(derivation.inspect(frame, raw_keys).values()) == {"valid"}
+        return actual, raw_keys
+
+    original_binding, _ = binding_and_keys(2)
+    for number, neighbour in enumerate(neighbours, start=10):
+        append(neighbour, number)
+    assert materialize_hook_carriers(archive_root) == 6
+    assert binding_and_keys(2)[0] == original_binding
+
+    append(selected, 3)
+    assert acquire_hook_carriers(archive_root) == 1
+    assert discover_pending_hook_carriers(archive_root, 10)
+    assert materialize_acquired_hook_carriers(archive_root) == 7
+    new_binding, keys = binding_and_keys(3)
+    assert len(keys) == 2
+    assert new_binding != original_binding
+
+
+def test_acknowledged_spool_copy_is_fully_acquired_by_a_fresh_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fold acknowledgement belongs to its spool, never another archive's Raw."""
+    import shutil
+
+    first, spool = _scratch(tmp_path, monkeypatch)
+    pending = spool / "pending" / "2026-09-14"
+    pending.mkdir(parents=True)
+    for number in range(3):
+        (pending / f"{number:032x}.json").write_text(_envelope(number), encoding="utf-8")
+    compact_legacy_spool(spool)
+    assert len(list((spool / "acknowledged").rglob("*.json"))) == 3
+    assert materialize_hook_carriers(first) == 3
+    second = tmp_path / "second-archive"
+    shutil.copytree(spool, second / "hooks")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(second))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(second / "polylogue.toml"))
+    assert hook_event_count(second) == 0
+    assert acquire_hook_carriers(second) == len(_carriers(second / "hooks"))
+    assert hook_event_count(second) == 0
+    assert materialize_acquired_hook_carriers(second) == 3
+    with sqlite3.connect(f"file:{second / 'source.db'}?mode=ro", uri=True) as conn:
+        assert [row[0] for row in conn.execute("SELECT hook_event_id FROM raw_hook_events ORDER BY hook_event_id")] == [
+            f"hook:{number:032x}" for number in range(3)
+        ]
+        assert conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone()[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_maximum_campaign_hook_carrier_acquires_and_materializes_completely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_property: Callable[[str, object], None]
+) -> None:
+    """Generate the campaign's largest carrier size; retain every neutral event."""
+    import hashlib
+    import resource
+
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.daemon.convergence import _DerivationAdmission
+    from polylogue.daemon.derivation import DerivationReport
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent, DaemonWriteThreadBridge
+    from polylogue.operations.hook_event_derivation import (
+        converge_hook_carriers,
+        discover_pending_hook_carriers,
+        hook_events_frame,
+    )
+    from polylogue.sources.hook_producer import carrier_line
+    from polylogue.storage.derived.hook_events import HookEventsDerivation
+
+    total_bytes = 67_108_735
+    event_count = 2048
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    carrier = carrier_path(spool_root, "codex")
+    carrier.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    written = 0
+    with carrier.open("wb") as target:
+        for number in range(event_count):
+            record = validated_hook_record(
+                {
+                    "event_id": f"{number:032x}",
+                    "event_type": "PostToolUse",
+                    "session_id": "maximum-carrier-neutral-session",
+                    "timestamp": _TIMESTAMP,
+                    "provider": "codex",
+                    "payload": {"neutral_padding": ""},
+                }
+            )
+            desired = 32768 if number < event_count - 1 else total_bytes - written
+            padding = desired - len(carrier_line(record))
+            assert padding > 0
+            payload = record["payload"]
+            assert isinstance(payload, dict)
+            payload["neutral_padding"] = "x" * padding
+            line = carrier_line(record)
+            assert len(line) == desired
+            target.write(line)
+            digest.update(line)
+            written += len(line)
+    assert carrier.stat().st_size == written == total_bytes
+    started = time.perf_counter()
+    baseline_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+    assert acquire_hook_carriers(archive_root) == 1
+    assert hook_event_count(archive_root) == 0
+    pending = discover_pending_hook_carriers(archive_root, 1)
+    assert len(pending) == 1
+    assert pending[0][1] == total_bytes
+    events: list[DaemonWriteEvent] = []
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root, observer=events.append)
+    loop = asyncio.get_running_loop()
+    admission = _DerivationAdmission(DaemonWriteThreadBridge(coordinator, loop), loop_thread_id=threading.get_ident())
+
+    def publish() -> DerivationReport:
+        with stage_write_admission(admission.stage_write):
+            return converge_hook_carriers(archive_root, raw_ids=(pending[0][0],), limit=1)
+
+    report = await asyncio.to_thread(publish)
+    assert report.failed == 0
+    assert report.done == 1
+    assert report.work.published == 1
+    assert hook_event_count(archive_root) == event_count
+    adapter = HookEventsDerivation(archive_root)
+    assert adapter.inspect(hook_events_frame(archive_root), (pending[0][0],)) == {pending[0][0]: "valid"}
+    assert discover_pending_hook_carriers(archive_root, 1) == ()
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        assert conn.execute("SELECT lower(hex(blob_hash)) FROM raw_sessions").fetchone()[0] == digest.hexdigest()
+        assert conn.execute("SELECT COUNT(*), COUNT(DISTINCT hook_event_id) FROM hook_event_carriers").fetchone() == (
+            event_count,
+            event_count,
+        )
+        assert [row[0] for row in conn.execute("SELECT hook_event_id FROM raw_hook_events ORDER BY hook_event_id")] == [
+            f"hook:{number:032x}" for number in range(event_count)
+        ]
+    holds = [event.hold_seconds for event in events if event.phase == "released"]
+    assert len(holds) == 1
+    assert holds[0] is not None
+    measurement = {
+        "carrier_bytes": total_bytes,
+        "events": event_count,
+        "published": report.work.published,
+        "failed": report.failed,
+        "elapsed_s": time.perf_counter() - started,
+        "baseline_peak_rss_bytes": baseline_rss,
+        "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+        "writer_hold_s": holds[0],
+        "writer_actor": events[-1].actor,
+    }
+    for name, value in measurement.items():
+        record_property(name, value)
+    # The managed focused report omits user properties and retires tmp_path.
+    # Retain this synthetic measurement beside its verification receipts.
+    measurement_root = Path(".cache/verify/hook-carrier-measurements")
+    measurement_root.mkdir(parents=True, exist_ok=True)
+    measurement_key = hashlib.sha256(str(tmp_path).encode()).hexdigest()
+    with (measurement_root / f"{measurement_key}.json").open("x", encoding="utf-8") as receipt:
+        json.dump(measurement, receipt, sort_keys=True)
+
+
 def test_concurrent_producers_never_interleave_a_line(tmp_path: Path) -> None:
     """200 concurrent producers append 200 whole, parseable lines.
 

@@ -304,7 +304,7 @@ def _fields() -> dict[str, FieldKind]:
     )
 
     add("timings", "stage_timings_ms")
-    add("epoch", "mtime")
+    add("epoch", "mtime", "next_run_at")
 
     add(
         "flag",

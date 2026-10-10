@@ -3153,8 +3153,11 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     from polylogue.core.compute import reset_compute_adapter
 
     def make_api_server(*_args: object, **kwargs: object) -> APIBlockingServer:
+        from polylogue.core.compute import DEFAULT_COMPUTE_WORKERS
+
         kernel = kwargs["execution_kernel"]
         assert isinstance(kernel, BoundedComputeAdapter)
+        assert kernel.max_workers == DEFAULT_COMPUTE_WORKERS
         api_server.execution_kernel = kernel
         bridge = kwargs["write_bridge"]
         root = kwargs["archive_root"]

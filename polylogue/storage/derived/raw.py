@@ -24,6 +24,7 @@ from dataclasses import field as dataclasses_field
 from functools import partial
 from itertools import chain
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, BinaryIO, Literal, Protocol, TypeVar, cast
 
 from polylogue.archive.revision_authority import (
@@ -81,6 +82,7 @@ if TYPE_CHECKING:
         PreparedRevisionReplayResult,
         RevisionCensusResult,
     )
+    from polylogue.sources.sidecar_evidence import RetainedSidecarScope
     from polylogue.storage.index_generation import IndexGeneration
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead, PreparedSessionWrite
@@ -224,6 +226,7 @@ class _PreparationCarry:
     and sidecar evidence it was parsed against is unchanged.
     """
 
+    neutral_page: NeutralRawPreparation | None = None
     seal: PreparedIndexMutation | None = None
     raw_ids: tuple[str, ...] = ()
     scratch_owner: tempfile.TemporaryDirectory[str] | None = None
@@ -308,6 +311,110 @@ class _NeutralParserOperand:
     zip_coordinate: CapturedZipMemberCoordinate | None
     append_logical_key: str | None
     sidecar_signature: tuple[object, ...] | None = None
+
+
+@dataclass(slots=True)
+class NeutralRawPreparation:
+    """Closed capture files and exact parser operands for one admitted Raw page.
+
+    Only the ordered owner mutates ``artifacts``. Workers receive fixed captures
+    and resolver facts; none receives a Source reader, seal or publication right.
+    The page remains alive until every parser and canonical consumer settles.
+    """
+
+    scratch_owner: tempfile.TemporaryDirectory[str]
+    captures: Mapping[str, _CapturedNeutralRaw]
+    operands: Mapping[str, _NeutralParserOperand]
+    sidecar_scopes: Mapping[str, RetainedSidecarScope]
+    artifacts: dict[tuple[object, ...], PreparedJsonl] = dataclasses_field(default_factory=dict)
+
+    def parser_jobs(
+        self, validation_mode: ValidationMode
+    ) -> Iterator[tuple[tuple[object, ...], int, Callable[[], PreparedJsonl]]]:
+        # Keep the existing first/second/head economy for long Codex chains.
+        groups: dict[str, list[str]] = {}
+        selected = set(self.captures)
+        for raw_id, captured in self.captures.items():
+            provider, _hash, path, kind, _size = captured.descriptor
+            if provider is Provider.CODEX and kind.value in {"full", "unknown"}:
+                groups.setdefault(path, []).append(raw_id)
+        for ids in groups.values():
+            ids.sort(key=lambda item: self.captures[item].descriptor[4])
+            if len(ids) >= 4:
+                selected.difference_update(ids[2:-1])
+        # Sidecar/sibling inputs are conservatively charged to each parser.
+        sidecar_bytes = sum(
+            path.stat().st_size for path in Path(self.scratch_owner.name).glob("claude-sidecar-*/payload.bin")
+        )
+        for raw_id, captured in self.captures.items():
+            if raw_id in selected:
+                key = _neutral_artifact_key(raw_id, self.operands[raw_id], validation_mode)
+                yield (
+                    key,
+                    captured.descriptor[4] + sidecar_bytes,
+                    partial(
+                        _parse_captured_neutral,
+                        raw_id,
+                        captured,
+                        key,
+                        self.sidecar_scopes,
+                        Path(self.scratch_owner.name),
+                    ),
+                )
+
+    def close(self) -> None:
+        _close_prepared_carriers({}, {}, self.artifacts.values())
+        self.artifacts.clear()
+        _cleanup_scratch(self.scratch_owner)
+
+
+def _parse_captured_neutral(
+    raw_id: str,
+    captured: _CapturedNeutralRaw,
+    artifact_key: tuple[object, ...],
+    sidecar_scopes: Mapping[str, RetainedSidecarScope],
+    scratch: Path,
+) -> PreparedJsonl:
+    """Return sealed files after creator-owned SQLite and decoded state retire."""
+    from polylogue.sources.dispatch import is_stream_record_provider
+    from polylogue.sources.fallback_identity import fallback_session_id
+    from polylogue.sources.live.batch_support import jsonl_parse_prefix_size_of_handle
+    from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+    from polylogue.sources.prepared_message_sink import discard_decoded_sessions_under
+    from polylogue.sources.sidecar_evidence import CapturedSidecarResolver
+
+    provider, blob_hash, source_path, kind, _size = captured.descriptor
+    with captured.staged_blob.open("rb") as handle:
+        parse_prefix_size = jsonl_parse_prefix_size_of_handle(handle)
+    fallback_id = fallback_session_id(source_path, raw_id)
+    if kind.value == "append":
+        from polylogue.sources.revision_backfill import _append_session_native_id
+
+        fallback_id = (
+            _append_session_native_id(
+                captured.append_logical_key, provider=provider, captured_native_id=captured.native_id
+            )
+            or fallback_id
+        )
+    try:
+        return prepare_jsonl_blob(
+            str(captured.staged_blob),
+            source_path,
+            provider.value,
+            fallback_id,
+            is_stream=is_stream_record_provider(source_path, provider),
+            profile_identity=captured.profile_identity,
+            shard_directory=str(scratch),
+            attempt_directory=captured.staged_blob.parent,
+            source_sha256=blob_hash,
+            strict_jsonl_records=True,
+            parse_prefix_size=parse_prefix_size,
+            sidecar_resolver=CapturedSidecarResolver(sidecar_scopes),
+            progress_identity=_neutral_identity_digest(("neutral-parser-work-v1", artifact_key)),
+            captured_zip_coordinate=captured.zip_coordinate,
+        )
+    finally:
+        discard_decoded_sessions_under(captured.staged_blob.parent)
 
 
 def _neutral_artifact_key(
@@ -1386,6 +1493,7 @@ class RawObservationDerivation(RawObservationInspection):
         *,
         replay_current: bool = False,
         select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
+        neutral_page: NeutralRawPreparation | None = None,
     ) -> RawObservationReplacement:
         self._compute_adapter.require_current_creator()
         # Even an initially empty discovery holds exclusive byte admission
@@ -1399,7 +1507,7 @@ class RawObservationDerivation(RawObservationInspection):
         # unit widens to that parent and prepares again; in-unit deferral then
         # publishes the parent first. The selection only grows, so this ends.
         widened: tuple[str, ...] = ()
-        carry = _PreparationCarry()
+        carry = _PreparationCarry(neutral_page=neutral_page)
         census_first: list[str] = []
         first = True
         retry_attempts = 0
@@ -1435,6 +1543,7 @@ class RawObservationDerivation(RawObservationInspection):
                     attempts=retry_attempts,
                 )
                 carry = _PreparationCarry(
+                    neutral_page=carry.neutral_page,
                     scratch_owner=carry.scratch_owner,
                     neutral_artifacts=carry.neutral_artifacts,
                     committed=carry.committed,
@@ -1777,34 +1886,63 @@ class RawObservationDerivation(RawObservationInspection):
             key, self._selection_diagnostic(raw_ids), None, raw_ids, blob_restorations=restorations
         )
 
-    def _prepare_neutral_jsonl_then_rebind(
+    def capture_neutral_raws(
+        self,
+        raw_ids: Sequence[str],
+        *,
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
+    ) -> NeutralRawPreparation | None:
+        """Stage a bounded selected page; publish nothing and return no reader."""
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
+
+        self._compute_adapter.require_current_creator()
+        destination = (
+            None if self._owned_generation is None else IndexMutationDestination.owned_inactive(self._owned_generation)
+        )
+        seal = PreparedIndexMutation(
+            self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path,
+            archive_root=self.archive_root,
+            destination=destination,
+            input_demand=self._compute_adapter.amend_current_input_demand,
+        )
+        carry = _PreparationCarry()
+
+        def select(read: PreparedSessionSourceRead) -> Sequence[str]:
+            return (*raw_ids, *(selection(read) if selection is not None else ()))
+
+        try:
+            captured = self._capture_neutral_jsonl(raw_ids[0], selection=select, seal=seal, carry=carry)
+            seal.close()
+            return None if captured is None else captured[0]
+        except BaseException as primary:
+            failures: list[BaseException] = []
+            for close in (seal.close, carry.discard_payload):
+                try:
+                    close()
+                except BaseException as cleanup:
+                    failures.append(cleanup)
+            if failures:
+                raise BaseExceptionGroup(
+                    "neutral capture and physical retirement failed", [primary, *failures]
+                ) from primary
+            raise
+
+    def _capture_neutral_jsonl(
         self,
         key: str,
         *,
         selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
         seal: PreparedIndexMutation,
         carry: _PreparationCarry,
-    ) -> PreparedIndexMutation:
-        """Parse selected Codex or Claude Code JSONL raws, then bind afresh.
-
-        The private byte copies are made while the original Source witness is
-        current. Parsing and retained-schema validation use only those copies.
-        Claude Code's declared sidecars and sibling ownership transcripts are
-        staged from their retained CAS rows and supplied through a resolver
-        with no ambient filesystem fallback. A new witness proves the same
-        selected raws and parser operands before enrichment and publication.
-        """
-        from polylogue.sources.dispatch import is_stream_record_provider
+    ) -> tuple[NeutralRawPreparation, tuple[tuple[str, ...], tuple[str, ...]]] | None:
         from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
         from polylogue.sources.sidecar_evidence import (
-            CapturedSidecarResolver,
             RetainedSidecarFile,
             RetainedSidecarScope,
             SiblingTranscript,
             iter_jsonl_records,
         )
         from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
-        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
 
         blob_store = BlobStore(self.archive_root / "blob")
         captures: dict[str, _CapturedNeutralRaw] = {}
@@ -1816,7 +1954,7 @@ class RawObservationDerivation(RawObservationInspection):
             selected = (key,) if selection is None else tuple(selection(read))
             raw_ids, logical_keys = read.expand_raw_membership_selection(selected)
             if not raw_ids:
-                return seal
+                return None
             for raw_id in raw_ids:
                 refusal = read.raw_terminal_decode_refusal(raw_id)
                 if refusal is not None:
@@ -1826,7 +1964,7 @@ class RawObservationDerivation(RawObservationInspection):
                 raw_id for raw_id in raw_ids if _neutral_jsonl_candidate(descriptors[raw_id][0], descriptors[raw_id][2])
             )
             if not eligible_raw_ids:
-                return seal
+                return None
             operands: dict[str, _NeutralParserOperand] = {}
             for raw_id in eligible_raw_ids:
                 operands[raw_id] = _neutral_parser_operand(read, raw_id, descriptor=descriptors[raw_id])
@@ -1872,6 +2010,21 @@ class RawObservationDerivation(RawObservationInspection):
                     continue
                 scope = retained_sidecar_resolver.claude_code_scope(source_path)
                 sidecar_scope_by_raw[raw_id] = scope
+                page = carry.neutral_page
+                current_operand = dataclasses.replace(
+                    operands[raw_id], sidecar_signature=(scope.scope_key, scope.available, scope.witness)
+                )
+                if (
+                    page is not None
+                    and raw_id in page.operands
+                    and _neutral_parser_cache_identity(raw_id, page.operands[raw_id])
+                    == _neutral_parser_cache_identity(raw_id, current_operand)
+                    and page.captures[raw_id].staged_blob.is_file()
+                ):
+                    captured_sidecar_scopes[Path(source_path).as_posix()] = page.sidecar_scopes[
+                        Path(source_path).as_posix()
+                    ]
+                    continue
                 staged_files: list[RetainedSidecarFile] = []
                 staged_siblings: list[SiblingTranscript] = []
                 for retained_file in scope.files:
@@ -1948,6 +2101,16 @@ class RawObservationDerivation(RawObservationInspection):
                     raise RetainedPreparationRetryableError(
                         f"retained raw input identity changed before neutral preparation: {raw_id}"
                     )
+                page = carry.neutral_page
+                if (
+                    page is not None
+                    and raw_id in page.operands
+                    and _neutral_parser_cache_identity(raw_id, page.operands[raw_id])
+                    == _neutral_parser_cache_identity(raw_id, operand)
+                    and page.captures[raw_id].staged_blob.is_file()
+                ):
+                    captures[raw_id] = dataclasses.replace(page.captures[raw_id], descriptor=operand.descriptor)
+                    continue
                 blob_path = read.raw_revision_blob_path(raw_id)
                 if blob_path is None:
                     raise RetainedPreparationRetryableError(f"retained JSONL bytes are absent for raw {raw_id}")
@@ -1981,15 +2144,49 @@ class RawObservationDerivation(RawObservationInspection):
         # Parsing can be long. Close every capture observer before it begins so
         # unrelated Source commits cannot stale the later publication witness.
         seal.close()
-        from polylogue.schemas import validate_retained_document
-        from polylogue.sources.fallback_identity import fallback_session_id
-        from polylogue.sources.live.batch_support import jsonl_parse_prefix_size_of_handle
-        from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+        assert carry.scratch_owner is not None
+        return NeutralRawPreparation(
+            carry.scratch_owner,
+            MappingProxyType(captures),
+            MappingProxyType(operands),
+            MappingProxyType(captured_sidecar_scopes),
+        ), original_selection
 
+    def _prepare_neutral_jsonl_then_rebind(
+        self,
+        key: str,
+        *,
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+        seal: PreparedIndexMutation,
+        carry: _PreparationCarry,
+    ) -> PreparedIndexMutation:
+        """Parse selected Codex or Claude Code JSONL raws, then bind afresh.
+
+        The private byte copies are made while the original Source witness is
+        current. Parsing and retained-schema validation use only those copies.
+        Claude Code's declared sidecars and sibling ownership transcripts are
+        staged from their retained CAS rows and supplied through a resolver
+        with no ambient filesystem fallback. A new witness proves the same
+        selected raws and parser operands before enrichment and publication.
+        """
+        from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
+
+        captured = self._capture_neutral_jsonl(key, selection=selection, seal=seal, carry=carry)
+        if captured is None:
+            return seal
+        inputs, original_selection = captured
+        captures, operands = inputs.captures, inputs.operands
+        captured_sidecar_scopes = inputs.sidecar_scopes
+        raw_ids, logical_keys = original_selection
+        eligible_raw_ids = tuple(captures)
+        blob_store = BlobStore(self.archive_root / "blob")
+        from polylogue.schemas import validate_retained_document
+
+        assert carry.scratch_owner is not None
         scratch = Path(carry.scratch_owner.name)
         neutral_keys: dict[str, tuple[object, ...]] = {}
         neutral_by_raw: dict[str, PreparedJsonl] = {}
-        captured_sidecar_resolver = CapturedSidecarResolver(captured_sidecar_scopes)
 
         refreshed_neutral: dict[str, PreparedJsonl] = {}
 
@@ -1997,44 +2194,18 @@ class RawObservationDerivation(RawObservationInspection):
             if raw_id in refreshed_neutral:
                 return refreshed_neutral[raw_id]
             cached = carry.neutral_artifacts.get(neutral_keys[raw_id])
+            if cached is None and carry.neutral_page is not None:
+                cached = carry.neutral_page.artifacts.get(neutral_keys[raw_id])
+                if cached is not None:
+                    cached = cached.borrow_sealed_files()
+                    carry.neutral_artifacts[neutral_keys[raw_id]] = cached
             captured = captures[raw_id]
-            descriptor = captured.descriptor
-            profile = captured.profile_identity
-            native_id = captured.native_id
-            append_logical_key = captured.append_logical_key
+            provider, blob_hash, source_path, _kind, _raw_size = captured.descriptor
             staged_blob = captured.staged_blob
-            provider, blob_hash, source_path, kind, _raw_size = descriptor
             neutral_directory = staged_blob.parent
             if cached is None:
-                with staged_blob.open("rb") as staged_input:
-                    parse_prefix_size = jsonl_parse_prefix_size_of_handle(staged_input)
-                fallback_id = fallback_session_id(source_path, raw_id)
-                if kind.value == "append":
-                    from polylogue.sources.revision_backfill import _append_session_native_id
-
-                    fallback_id = (
-                        _append_session_native_id(
-                            append_logical_key,
-                            provider=provider,
-                            captured_native_id=native_id,
-                        )
-                        or fallback_id
-                    )
-                neutral = prepare_jsonl_blob(
-                    str(staged_blob),
-                    source_path,
-                    provider.value,
-                    fallback_id,
-                    is_stream=is_stream_record_provider(source_path, provider),
-                    profile_identity=profile,
-                    shard_directory=str(scratch),
-                    attempt_directory=neutral_directory,
-                    source_sha256=blob_hash,
-                    strict_jsonl_records=True,
-                    parse_prefix_size=parse_prefix_size,
-                    sidecar_resolver=captured_sidecar_resolver,
-                    progress_identity=_neutral_identity_digest(("neutral-parser-work-v1", neutral_keys[raw_id])),
-                    captured_zip_coordinate=captured.zip_coordinate,
+                neutral = _parse_captured_neutral(
+                    raw_id, captured, neutral_keys[raw_id], captured_sidecar_scopes, scratch
                 )
                 # Transfer ownership before validation or checkpoint work can fail.
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
@@ -2249,11 +2420,10 @@ class RawObservationDerivation(RawObservationInspection):
                 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
                 for raw_id in eligible_raw_ids:
-                    captured = captures[raw_id]
-                    descriptor = captured.descriptor
-                    profile = captured.profile_identity
-                    fallback_timestamp = captured.fallback_timestamp
-                    zip_coordinate = captured.zip_coordinate
+                    captured_raw = captures[raw_id]
+                    descriptor = captured_raw.descriptor
+                    fallback_timestamp = captured_raw.fallback_timestamp
+                    zip_coordinate = captured_raw.zip_coordinate
                     provider, _blob_hash, source_path, _kind, _raw_size = descriptor
                     neutral = carry.neutral_artifacts[neutral_keys[raw_id]]
                     if neutral.error is not None or neutral.deferred:
@@ -2315,7 +2485,7 @@ class RawObservationDerivation(RawObservationInspection):
         select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
         carry: _PreparationCarry | None = None,
     ) -> RawObservationReplacement:
-        carry = _PreparationCarry(reference_seal) if carry is None else carry
+        carry = _PreparationCarry(seal=reference_seal) if carry is None else carry
         from polylogue.core.prepared_file import VerificationCancelledError
         from polylogue.sources.dispatch import is_jsonl_source_path
         from polylogue.sources.revision_backfill import (

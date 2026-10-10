@@ -2695,3 +2695,59 @@ def test_shutdown_write_stamp_checks_writer_locations_without_walking_payloads(
     (blob / "unrelated.db").write_bytes(b"changed payload")
     (tmp_path / "index.db-shm").write_bytes(b"changed reader marks")
     assert _archive_write_stamp(tmp_path) == stable
+
+
+def test_due_frontier_retry_observes_its_actual_owner_cadence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backoff expiring before the next owner tick does not prematurely stop recovery."""
+    from datetime import UTC, datetime
+
+    waiting = {
+        "cursor_complete": 1,
+        "open_debt": 1,
+        "debt_by_stage": {"raw_frontier_inspection": 1},
+        "debt_waiting_by_stage": {"raw_frontier_inspection": 1},
+        "frontier_retry_at": datetime.fromtimestamp(3000, UTC).isoformat(),
+        "convergence_next_run_at": 3100.0,
+    }
+    due = {**waiting, "debt_waiting_by_stage": {}}
+    captured = _scripted_run(tmp_path, monkeypatch, [waiting] * 3 + [due, _terminal_frame()], stall_timeout_s=900.0)
+    assert captured["outcome"] == "terminal"
+    due_observation = captured["observations"][3]
+    assert due_observation.useful_progress_at_s is None
+    assert due_observation.activity_at_s is None
+
+
+def test_failed_frontier_retries_do_not_renew_cadence_opportunity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    waiting = {
+        "cursor_complete": 1,
+        "open_debt": 1,
+        "debt_by_stage": {"raw_frontier_inspection": 1},
+        "debt_waiting_by_stage": {"raw_frontier_inspection": 1},
+        "frontier_retry_at": datetime.fromtimestamp(3000, UTC).isoformat(),
+        "convergence_next_run_at": 3100.0,
+    }
+    due = {**waiting, "debt_waiting_by_stage": {}, "debt_attempts": 2, "convergence_next_run_at": 7200.0}
+    captured = _scripted_run(tmp_path, monkeypatch, [waiting] * 3 + [due] * 4, stall_timeout_s=900.0)
+    assert captured["outcome"] == "stalled"
+    assert len(captured["observations"]) == 6
+    assert captured["observations"][-1].useful_progress_at_s is None
+
+
+def test_work_progress_tail_reads_schedule_without_counting_progress(tmp_path: Path) -> None:
+    from devtools.fresh_build_bench.run import WorkProgressTail
+
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps({"event": "daemon.periodic.scheduled", "loop": "convergence_check", "next_run_at": 3100.0}) + "\n"
+    )
+    reader = WorkProgressTail(events, state_root=tmp_path)
+    try:
+        assert reader.poll() == 0
+        assert reader.convergence_next_run_at == 3100.0
+        assert reader.poll() == 0
+    finally:
+        reader.close()

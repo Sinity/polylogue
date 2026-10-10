@@ -127,6 +127,30 @@ detecting those call sites needs a second rule with its own baseline; see
 
 The live watcher passes acquired Raw IDs to the supplied resident Raw owner for retained publication. When derived schema authority blocks that owner, the watcher keeps Source acquisition active without opening a replacement parser or publication owner.
 
+The shared compute kernel reserves one foreground worker slot and queue unit
+for control and reads together, and one background worker slot and queue unit
+for incremental and bulk work together. Per-class status repeats the group's
+reservation and labels its `reservation_group`; those counts cannot be summed
+across member classes. Eligible control/read turns alternate; incremental/bulk
+turns retain their two-to-one schedule. Capacity one has no reservations and
+still runs admitted work. A reserve preserves capacity rather than preempting
+an already running operation. Ordinary byte pressure can still refuse admission.
+Exclusive background preparation retains its full byte charge and admits no
+other background work. One shared foreground operation may use an additional
+1 MiB accounting allowance, matching the HTTP read charge, in either arrival
+order. A larger foreground operation occupies that same queue position and
+waits for exclusive physical settlement before its normal charge and worker
+are acquired. Cancellation releases a queued position immediately, while a
+running operation keeps its reservation until native settlement. Status reports
+additional allowance use and deferred normal charge separately, and keeps the
+complete declared input demand visible. Deferred operands can already own
+memory: these quantities describe admission accounting, not a resident-memory
+bound. Capacity one queues foreground work until its worker is available.
+Startup and a standalone HTTP server use
+the same default of twelve workers; the API, watcher and convergence owners
+borrow the startup kernel when it is supplied. There is no second worker pool
+or independent HTTP width (`polylogue/core/compute.py`; `daemon/http.py`).
+
 The shared compute adapter settles each operation's future even when executor submission races shutdown or the executor cancels work before its worker starts. Cancelling shutdown stops scheduler dispatch. Graceful shutdown closes admission, drains already-admitted work, and closes the executor only after those reservations are released (`polylogue/core/compute.py`).
 
 The compute adapter's ordered map can observe its caller's cancellation while
@@ -153,6 +177,11 @@ call physically settles before cancellation or shutdown can retire the service.
 Recurring and selected convergence retain their owner lock through repeated cancellation until the physical compute future and native cleanup settle. The shared submitted-operation waiter cancels queued work promptly and preserves cancellation together with a cleanup failure. A worker that finishes with `asyncio.CancelledError` is terminal even when its future was not cancelled; the waiter propagates that result once. Parent cancellation still retains the original worker and SQL settlement until physical completion. Watcher source selection likewise retains its `to_thread` task through repeated caller cancellation until physical selection and writer admission cleanup settle; a cleanup failure is reported with the original cancellation (`polylogue/sources/live/watcher.py:518-565`).
 
 The typed kernel validates prerequisite names against the supplied ordered domain list. It pages required and excess keys, inspects authoritative output, computes outside the writer lease, and admits each replacement through the writer bridge. Publication adopts the coordinator's delegation on the existing compute worker, so preparation observers retain their creator. Its joined native cleanup boundary drains publication handles before the delegation and writer gate retire. Process-local continuation state is disposable. A partially consumed page retains only its bounded unconsumed key suffix and the next-page cursor; resumption reinspects those exact keys rather than offsetting a fresh query whose demand rows may have disappeared. Smaller resumed budgets split that suffix without losing its remaining keys. When a page inspection fails, individual retries check the pass bounds before each key and process that key before starting the next retry. A healthy prefix can publish before a later poison exhausts the error budget. Unvisited keys retain budget-pending continuation without a guessed missing status; the attempted page remains counted as inspection work. Reports distinguish pending policy work from failed attempts (`polylogue/daemon/derivation.py:375-428`; `polylogue/daemon/derivation.py:481-498`; `polylogue/daemon/convergence.py:110-123`).
+
+The ordinary retained Raw owner stages a selected window under exclusive byte admission, closes its Source observers and awaits the capture worker's physical completion. Its closed-file JSONL preparations then run independently through the same compute adapter outside a parent reservation. The background slot ceiling bounds offered independent inputs and pending parser jobs; canonical component and declared dependency expansion retains every required member. The default sidecar-owner selector starts from the offered window, rather than recapturing the entire input page. Oversized inputs retain the existing whole-envelope isolation.
+
+The page owns neutral artifact files until all parsers and ordered consumers settle. Each canonical consumer borrows sealed files, opens its own physical readers, refreshes schema validation and rechecks exact current selection and parser operands before enrichment and publication. Source phases and writer publication remain serialized. Equivalent full/unknown parser inputs reuse their exact existing cache key; changed sidecar, append or other parser operands prepare fresh work. Long Codex chains keep first/second/head checkpoint preparation. Cancellation joins every submitted creator before page scratch retires; a fresh owner resumes from durable acquired bytes, without a durable preparation queue (`polylogue/daemon/raw_observation_owner.py`; `polylogue/operations/raw_observation_owner.py`; `polylogue/storage/derived/raw.py`; `polylogue/sources/prepared_jsonl.py`).
+
 
 Raw observations use the same owner for admitted raw-to-logical membership. FTS retains canonical triggers, identity membership and the FTS refresh guard; per-session replacement joins exact canonical session membership. Its selected global orphan partition runs at low cadence and streams its binding, but still requires archive-wide scan and transaction work (`polylogue/daemon/raw_observation_owner.py:1`; `polylogue/storage/fts/derivation.py:660-690`; `polylogue/operations/fts_derivation.py:1`).
 
@@ -557,3 +586,10 @@ accepts `input: BinaryIO`. The daemon opens only its staged coordinate. Batch
 input and controls have no outcome size ceiling; filesystem exhaustion is a
 typed retryable pre-dispatch refusal. Product control values and individual
 JSONL rows still contribute their own memory allocations.
+
+The periodic runner emits `daemon.periodic.scheduled` with its actual jittered
+`next_run_at` epoch. The isolated fresh-build observer uses this producer-owned
+schedule to observe the first convergence-owner opportunity after a retained
+frontier retry becomes due. It reserves that inactivity origin once per useful
+progress epoch; later failed attempts and schedules cannot renew it. Scheduling
+evidence never counts as productive progress or archive completion.

@@ -33,6 +33,7 @@ from polylogue.archive.query.transaction import (
 )
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES
 from polylogue.core.compute import (
+    FOREGROUND_BYTE_ALLOWANCE,
     BoundedComputeAdapter,
     DaemonBackpressureError,
     DaemonOperationCancelled,
@@ -1771,7 +1772,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 submitted = kernel.submit(
                     propagate(lambda: asyncio.run(self._run_archive_query(handler))),
                     admission_class="interactive-read",
-                    estimated_bytes=1024 * 1024,
+                    estimated_bytes=FOREGROUND_BYTE_ALLOWANCE,
                     cancellation=cancellation,
                 )
                 try:
@@ -5305,7 +5306,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 # regardless of connection volume, and _ARCHIVE_QUERY_TIMEOUT_S bounds each
 # request's wait so a stalled query returns an honest error instead of
 # occupying a connection thread forever.
-_ARCHIVE_QUERY_MAX_WORKERS = 8
 _ARCHIVE_QUERY_TIMEOUT_S = 30.0
 #: Default bound on a mutating route's wait for its submitted writer future
 #: (polylogue-8r4zq). Longer than the read timeout because a control mutation
@@ -5364,7 +5364,6 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
             archive_root = Path(configured_archive_root)
         self.archive_root = archive_root.resolve()
         self.execution_kernel = execution_kernel or BoundedComputeAdapter(
-            max_workers=_ARCHIVE_QUERY_MAX_WORKERS,
             queue_units=_ARCHIVE_QUERY_MAX_QUEUED,
             thread_name_prefix="polylogue-compute",
         )

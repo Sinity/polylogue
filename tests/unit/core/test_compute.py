@@ -25,6 +25,20 @@ from polylogue.core.compute_cancel import check_compute_cancelled
 pytestmark = pytest.mark.uses_real_clock("compute worker synchronization uses OS waits")
 
 
+def test_shared_compute_factory_uses_the_declared_default_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.core.compute as module
+
+    monkeypatch.setattr(module, "_SHARED_COMPUTE_ADAPTER", None)
+    adapter = module.compute_adapter()
+    try:
+        assert adapter.max_workers == module.DEFAULT_COMPUTE_WORKERS
+        assert module.compute_adapter() is adapter
+        assert adapter.snapshot().by_class("incremental-background").ceiling_slots > 1
+        assert adapter.submit(lambda: "completed").future.result(timeout=5) == "completed"
+    finally:
+        adapter.shutdown(wait=True)
+
+
 @pytest.mark.parametrize("reject_submission", [True, False])
 def test_shutdown_during_queued_dispatch_settles_both_operation_futures(
     monkeypatch: pytest.MonkeyPatch, reject_submission: bool
@@ -389,7 +403,7 @@ def test_nested_map_failure_keeps_the_parent_reservation_for_cleanup() -> None:
 def test_ordered_map_waits_for_its_own_byte_reservation_without_dropping_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    adapter = BoundedComputeAdapter(max_workers=2, queue_units=4, queue_bytes=10)
+    adapter = BoundedComputeAdapter(max_workers=3, queue_units=4, queue_bytes=10)
     release_first = threading.Event()
     refusal_count = 0
     original_submit = adapter.submit
@@ -675,14 +689,14 @@ def test_ordered_map_retains_unknown_input_exclusivity_until_each_worker_settles
         assert snapshot.used_bytes == capacity_bytes
         failures: list[BaseException] = []
 
-        def unrelated_read() -> None:
+        def unrelated_background() -> None:
             try:
                 with pytest.raises(DaemonBackpressureError):
-                    adapter.submit(lambda: None, estimated_bytes=1)
+                    adapter.submit(lambda: None, admission_class="bulk-candidate", estimated_bytes=1)
             except BaseException as failure:
                 failures.append(failure)
 
-        reader = threading.Thread(target=unrelated_read)
+        reader = threading.Thread(target=unrelated_background)
         reader.start()
         reader.join(timeout=5)
         assert not reader.is_alive()

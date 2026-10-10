@@ -9,16 +9,23 @@ workers. It never imports the daemon: the daemon passes its collaborators in.
 
 from __future__ import annotations
 
+import asyncio
 import pickle
 import sqlite3
 from builtins import BaseExceptionGroup
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
-from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.compute import (
+    BoundedComputeAdapter,
+    DaemonBackpressureError,
+    DaemonOperationCancelled,
+    SubmittedOperation,
+)
 from polylogue.core.enums import ValidationMode
 from polylogue.core.raw_failure_evidence import (
     CohortMembershipRefusalError,
@@ -36,12 +43,13 @@ if TYPE_CHECKING:
     from polylogue.core.sql_settlement import SQLCustodyOwner
     from polylogue.sources.live.append_ingest import _AppendIngestOwner
     from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.sources.revision_backfill import (
         PreparedRevisionReplayResult,
         RetainedReplayOutcome,
         RevisionCensusResult,
     )
-    from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
+    from polylogue.storage.derived.raw import NeutralRawPreparation, RawObservationDerivation, RawObservationReplacement
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
     from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 
@@ -65,6 +73,7 @@ class RetainedMaterializationResult:
 
     outcome: RetainedReplayOutcome
     index_destination: IndexMutationDestination | None
+    considered_raw_ids: tuple[str, ...] = ()
 
 
 def retained_settlement_owners(retained: Sequence[RawObservationReplacement]) -> tuple[SQLCustodyOwner, ...]:
@@ -263,6 +272,122 @@ class RawObservationArchiveWork:
             dict.fromkeys((*acquired, *select_retained_claude_sidecar_owner_raw_ids(reader, acquired)))
         )
 
+    def neutral_capture_operation(
+        self,
+        raw_ids: Sequence[str],
+        *,
+        destination: DestinationAdapter,
+        require_authority: Callable[[str], None],
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+    ) -> Callable[[], NeutralRawPreparation | None]:
+        """Capture only; the admitted creator retires all Source observers."""
+
+        def capture() -> NeutralRawPreparation | None:
+            for raw_id in raw_ids:
+                require_authority(raw_id)
+            adapter, _path, _destination = destination()
+            try:
+                return adapter.capture_neutral_raws(raw_ids, selection=selection)
+            except Exception as failure:
+                # Failed optional neutral work is still owed to the canonical
+                # per-raw owner, which attributes its typed refusal/failure.
+                if isinstance(
+                    failure, (RetainedRawDecodeRefusalError, RetainedRawDependencyRefusalError)
+                ) or _isolates_as_raw_failure(failure):
+                    return None
+                raise
+
+        return capture
+
+    async def parse_neutral_page(self, page: NeutralRawPreparation) -> None:
+        """Submit closed-file parsers outside a parent reservation, then settle all.
+
+        The existing adapter owns slots, complements and the byte envelope.
+        Backpressure keeps the next job pending; completed artifacts remain
+        disk-backed until the ordered canonical consumer takes their exact key.
+        """
+        pending: deque[tuple[tuple[object, ...], SubmittedOperation[PreparedJsonl]]] = deque()
+        width = self._compute_adapter.snapshot().by_class("incremental-background").ceiling_slots
+        primary: BaseException | None = None
+
+        async def receive() -> None:
+            key, submitted = pending[0]
+            try:
+                artifact = await submitted.wait()
+            except Exception as failure:
+                if not _isolates_as_raw_failure(failure):
+                    raise
+                # Canonical preparation retries and attributes this raw.
+            else:
+                page.artifacts[key] = artifact
+            pending.popleft()
+
+        try:
+            for key, estimated_bytes, operation in page.parser_jobs(self._validation_mode):
+                while True:
+                    try:
+                        submitted = self._compute_adapter.submit(
+                            operation, admission_class="incremental-background", estimated_bytes=estimated_bytes
+                        )
+                    except DaemonBackpressureError:
+                        if not pending:
+                            raise
+                        await receive()
+                    else:
+                        pending.append((key, submitted))
+                        break
+                if len(pending) >= width:
+                    await receive()
+            while pending:
+                await receive()
+        except BaseException as failure:
+            primary = failure
+            raise
+        finally:
+            # Request every cancellation before joining any creator. A cancelled
+            # wait can still have produced files: retain those for page cleanup.
+            failures: list[BaseException] = []
+            for _key, submitted in pending:
+                submitted.cancellation.cancel()
+                submitted.retry_sql_settlement()
+            for key, submitted in pending:
+                try:
+                    artifact = await submitted.wait()
+                except BaseException as cleanup:
+                    cancelled_types = (asyncio.CancelledError, DaemonOperationCancelled)
+                    if isinstance(primary, cancelled_types):
+                        only_cancellation = isinstance(cleanup, cancelled_types)
+                        if isinstance(cleanup, BaseExceptionGroup):
+                            _cancelled, other = cleanup.split(cancelled_types)
+                            only_cancellation = other is None
+                        if only_cancellation:
+                            continue
+                    if cleanup is not primary:
+                        failures.append(cleanup)
+                    if submitted.future.done() and submitted.future.exception() is None:
+                        page.artifacts[key] = submitted.future.result()
+                else:
+                    page.artifacts[key] = artifact
+            if failures:
+                raise BaseExceptionGroup(
+                    "neutral parsing and creator settlement failed",
+                    [*(() if primary is None else (primary,)), *failures],
+                ) from primary
+
+    @staticmethod
+    def combine_retained_results(results: Sequence[RetainedMaterializationResult]) -> RetainedMaterializationResult:
+        from polylogue.sources.revision_backfill import RetainedReplayOutcome
+
+        destination = results[-1].index_destination if results else None
+        return RetainedMaterializationResult(
+            RetainedReplayOutcome(
+                tuple(receipt for result in results for receipt in result.outcome.receipts),
+                tuple(failure for result in results for failure in result.outcome.failures),
+            ),
+            destination,
+            tuple(raw_id for result in results for raw_id in result.considered_raw_ids),
+        )
+
     def retained_replay_operation(
         self,
         scope_operand: bytes,
@@ -275,6 +400,7 @@ class RawObservationArchiveWork:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None,
         before_publication: Callable[[], None] | None,
+        neutral_page: NeutralRawPreparation | None = None,
     ) -> Callable[[], RetainedMaterializationResult]:
         """Settle real selected replay receipts, including preparatory Source phases.
 
@@ -428,7 +554,11 @@ class RawObservationArchiveWork:
                     )
                     try:
                         replacement = adapter.compute(
-                            frame, raw_id, replay_current=True, select_retained_raw_ids=select_original
+                            frame,
+                            raw_id,
+                            replay_current=True,
+                            select_retained_raw_ids=select_original,
+                            neutral_page=neutral_page,
                         )
                     except RetainedRawDecodeRefusalError as refusal:
                         # The compute wrapper has settled the original parent.
@@ -583,7 +713,7 @@ class RawObservationArchiveWork:
                         )
                     previous_progress = progress_operand
             return RetainedMaterializationResult(
-                RetainedReplayOutcome(tuple(results), tuple(failures)), index_destination
+                RetainedReplayOutcome(tuple(results), tuple(failures)), index_destination, tuple(visited | failed_ids)
             )
 
         return replay

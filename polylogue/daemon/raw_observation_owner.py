@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import pickle
 import threading
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future
 from functools import partial
@@ -120,14 +121,21 @@ class RawObservationConvergenceOwner:
             cancelled.set()
             cancellation.cancel()
 
+        physical: compute.SubmittedOperation[None] | None = None
+
         def submit_worker(worker: Callable[[], None]) -> Future[None]:
-            return self._compute_adapter.submit(
+            nonlocal physical
+            # _run_writer_worker submits once and retains that original creator
+            # for cleanup retries; it never dispatches replacement creators.
+            submitted = self._compute_adapter.submit(
                 propagate(worker),
                 admission_class="incremental-background",
                 estimated_bytes=estimated_bytes,
                 exclusive_bytes=True,
                 cancellation=cancellation,
-            ).future
+            )
+            physical = submitted
+            return submitted.future
 
         cancellation_token = compute_cancel.set(cancelled)
         try:
@@ -139,9 +147,27 @@ class RawObservationConvergenceOwner:
             )
         finally:
             compute_cancel.reset(cancellation_token)
-        return await DriveCatchupExecution(self._write_coordinator, compute_adapter=self._compute_adapter).settle(
-            pending, label=actor, cancel_requested=request_cancel
-        )
+        primary: BaseException | None = None
+        try:
+            return await DriveCatchupExecution(self._write_coordinator, compute_adapter=self._compute_adapter).settle(
+                pending, label=actor, cancel_requested=request_cancel
+            )
+        except BaseException as failure:
+            primary = failure
+            raise
+        finally:
+            if physical is not None:
+                try:
+                    await physical.wait()
+                except compute.DaemonOperationCancelled:
+                    if primary is None:
+                        raise
+                except BaseException as cleanup:
+                    if primary is not None:
+                        raise BaseExceptionGroup(
+                            "prepared result and physical settlement failed", [primary, cleanup]
+                        ) from primary
+                    raise
 
     async def run_convergence_sync(
         self, actor: str, operation: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
@@ -164,7 +190,7 @@ class RawObservationConvergenceOwner:
             self._archive.append_plans_operation(
                 owner, plans, retained=retained, require_authority=self._require_source_frontier_authority
             ),
-            settlement_owners=lambda: retained_settlement_owners(retained),
+            settlement_owners=partial(retained_settlement_owners, retained),
             estimated_bytes=sum(len(plan.payload) for plan in plans),
         )
 
@@ -230,7 +256,6 @@ class RawObservationConvergenceOwner:
                 on_dependency_refusal=on_dependency_refusal,
                 on_membership_refusal=on_membership_refusal,
                 before_publication=before_publication,
-                select_retained_raw_ids=self._archive.sidecar_owner_selector(acquired),
             )
         ).outcome
 
@@ -250,11 +275,7 @@ class RawObservationConvergenceOwner:
         )
         return await self._materialize_retained_raw_ids(
             acquired,
-            select_retained_raw_ids=(
-                select_retained_raw_ids
-                if select_retained_raw_ids is not None
-                else self._archive.sidecar_owner_selector(acquired)
-            ),
+            select_retained_raw_ids=select_retained_raw_ids,
             on_terminal_refusal=on_terminal_refusal,
             on_dependency_refusal=on_dependency_refusal,
             on_membership_refusal=on_membership_refusal,
@@ -297,25 +318,83 @@ class RawObservationConvergenceOwner:
         if any(not raw_id for raw_id in selected):
             raise ValueError("retained observation IDs must be non-empty")
         await self._prepare_cold_destination(before_publication)
-        scope_operand = pickle.dumps(selected, protocol=pickle.HIGHEST_PROTOCOL)
+        width = self._compute_adapter.snapshot().by_class("incremental-background").ceiling_slots
+        results: list[RetainedMaterializationResult] = []
+        remaining = list(selected)
         del selected, raw_ids
-        retained: list[RawObservationReplacement] = []
-        replay = self._archive.retained_replay_operation(
-            scope_operand,
-            retained=retained,
-            # Late-bound so the destination is read when the worker runs.
-            destination=self._archive.destination_adapter,
-            require_authority=self._require_source_frontier_authority,
-            select_retained_raw_ids=select_retained_raw_ids,
-            on_terminal_refusal=on_terminal_refusal,
-            on_dependency_refusal=on_dependency_refusal,
-            on_membership_refusal=on_membership_refusal,
-            before_publication=before_publication,
-        )
         async with self._converge_lock:
-            return await self.run_prepared_sync(
-                "watcher.live_ingest.retained",
-                replay,
-                settlement_owners=lambda: retained_settlement_owners(retained),
-                estimated_bytes=len(scope_operand),
-            )
+            while remaining:
+                # This is an admission window, not an input cap. Component
+                # expansion can legitimately exceed it; every suffix is kept.
+                offered = tuple(remaining[:width])
+                scope_operand = pickle.dumps(offered, protocol=pickle.HIGHEST_PROTOCOL)
+                # Default sidecar ownership starts from this window. A caller's
+                # explicit dependency selection is preserved before expansion.
+                selection = select_retained_raw_ids or self._archive.sidecar_owner_selector(offered)
+                capture = self._archive.neutral_capture_operation(
+                    offered,
+                    destination=self._archive.destination_adapter,
+                    require_authority=self._require_source_frontier_authority,
+                    selection=selection,
+                )
+                # Capture has no publication. Await the compute future itself:
+                # coordinator receipt delivery precedes physical slot release.
+                captured = self._compute_adapter.submit(
+                    propagate(capture),
+                    admission_class="incremental-background",
+                    estimated_bytes=len(scope_operand),
+                    exclusive_bytes=True,
+                )
+                try:
+                    page = await captured.wait()
+                except BaseException as capture_failure:
+                    if captured.future.done() and captured.future.exception() is None:
+                        abandoned = captured.future.result()
+                        if abandoned is not None:
+                            try:
+                                abandoned.close()
+                            except BaseException as cleanup:
+                                raise BaseExceptionGroup(
+                                    "capture cancellation and cleanup failed", [capture_failure, cleanup]
+                                ) from capture_failure
+                    raise
+                primary: BaseException | None = None
+                try:
+                    if page is not None:
+                        await self._archive.parse_neutral_page(page)
+                    retained: list[RawObservationReplacement] = []
+                    replay = self._archive.retained_replay_operation(
+                        scope_operand,
+                        retained=retained,
+                        destination=self._archive.destination_adapter,
+                        require_authority=self._require_source_frontier_authority,
+                        select_retained_raw_ids=selection,
+                        on_terminal_refusal=on_terminal_refusal,
+                        on_dependency_refusal=on_dependency_refusal,
+                        on_membership_refusal=on_membership_refusal,
+                        before_publication=before_publication,
+                        neutral_page=page,
+                    )
+                    result = await self.run_prepared_sync(
+                        "watcher.live_ingest.retained",
+                        replay,
+                        settlement_owners=partial(retained_settlement_owners, retained),
+                        estimated_bytes=len(scope_operand),
+                    )
+                    results.append(result)
+                    considered = {*offered, *result.considered_raw_ids}
+                    remaining = [raw_id for raw_id in remaining if raw_id not in considered]
+                except BaseException as failure:
+                    primary = failure
+                    raise
+                finally:
+                    if page is not None:
+                        try:
+                            page.close()
+                        except BaseException as cleanup:
+                            if primary is not None:
+                                raise BaseExceptionGroup(
+                                    "retained page and cleanup failed", [primary, cleanup]
+                                ) from primary
+                            raise
+        return self._archive.combine_retained_results(results)

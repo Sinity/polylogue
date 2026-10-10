@@ -979,10 +979,10 @@ class TestBoundedArchiveQueryExecutor:
 
     def test_archive_query_executor_is_bounded(self) -> None:
         """The server caps concurrent archive-query workers, not one-per-connection."""
-        from polylogue.daemon.http import _ARCHIVE_QUERY_MAX_WORKERS
+        from polylogue.core.compute import DEFAULT_COMPUTE_WORKERS
 
-        assert _ARCHIVE_QUERY_MAX_WORKERS > 0
-        assert _ARCHIVE_QUERY_MAX_WORKERS < 100  # sanity: a bound, not effectively unbounded
+        assert DEFAULT_COMPUTE_WORKERS > 0
+        assert DEFAULT_COMPUTE_WORKERS < 100  # sanity: a bound, not effectively unbounded
 
     def test_saturated_admission_rejects_before_the_body_runs(self) -> None:
         """Admission is decided before submission, so a saturated queue never
@@ -1079,6 +1079,9 @@ class TestBoundedArchiveQueryExecutor:
             if thread.name in {"daemon-http-writer", "polylogue-compute"}
         }
         server = harness.api_server(tmp_path)
+        from polylogue.core.compute import DEFAULT_COMPUTE_WORKERS
+
+        assert server.execution_kernel.max_workers == DEFAULT_COMPUTE_WORKERS
         submitted = server.execution_kernel.submit(lambda: "completed")
         assert submitted.future.result(timeout=2) == "completed"
         shutdown = server.execution_kernel.shutdown

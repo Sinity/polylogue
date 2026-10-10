@@ -310,11 +310,13 @@ def test_clipped_source_tokens_partition_the_original_prose() -> None:
     assert pack.token_estimate == _wire_tokens(pack) <= 600
 
 
-@pytest.mark.parametrize("budget,stage", [(800, "collapse_runs_to_counts"), (620, "skeleton_only")])
+@pytest.mark.parametrize("budget,stage", [(800, "collapse_runs_to_counts"), (700, "skeleton_only")])
 def test_budget_ladder_retains_run_counts_and_source_references(budget: int, stage: str) -> None:
     from polylogue.surfaces.compaction import estimate_tokens
 
     text = "decision " * 1000
+    # The current typed skeleton and all 20 source refs cost 692 wire tokens;
+    # 700 holds them while requiring prose removal. 620 exercises index-only.
     pack = compact_sessions(_repeated_messages(20, text), spec=CompactProjectionSpec(max_tokens=budget))
     assert len(pack.items) == 1
     item = pack.items[0]
@@ -335,11 +337,12 @@ def test_budget_ladder_retains_run_counts_and_source_references(budget: int, sta
         assert item.text == "" and pack.manifest.included_tokens_by_session["s"] == 0
 
 
-def test_index_only_budget_pack_reports_source_loss_instead_of_empty_selection() -> None:
+@pytest.mark.parametrize("budget", [400, 620])
+def test_index_only_budget_pack_reports_source_loss_instead_of_empty_selection(budget: int) -> None:
     from polylogue.surfaces.compaction import estimate_tokens
 
     text = "decision " * 1000
-    pack = compact_sessions(_repeated_messages(20, text), spec=CompactProjectionSpec(max_tokens=400))
+    pack = compact_sessions(_repeated_messages(20, text), spec=CompactProjectionSpec(max_tokens=budget))
     assert pack.items == ()
     assert pack.manifest.dropped_tokens_by_session["s"] == 20 * estimate_tokens(text)
     assert pack.manifest.drop_counts["budget_skeleton"] == 1
@@ -349,7 +352,7 @@ def test_index_only_budget_pack_reports_source_loss_instead_of_empty_selection()
     gaps = pack.outcome.detail["gaps"]
     assert isinstance(gaps, list)
     assert "index_only_pack_failure" in gaps
-    assert pack.token_estimate == _wire_tokens(pack) <= 400
+    assert pack.token_estimate == _wire_tokens(pack) <= budget
     with pytest.raises(CompactionBudgetTooSmallError):
         compact_sessions(_repeated_messages(20, text), spec=CompactProjectionSpec(max_tokens=60))
 
