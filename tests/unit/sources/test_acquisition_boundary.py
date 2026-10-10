@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import json
+import sqlite3
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -592,3 +593,38 @@ def test_hermes_snapshot_uses_opened_profile_after_parent_alias_retargets(tmp_pa
         qualified_session_id("shared-session", profile_key(first))
     ]
     assert receipt.key != profile_key(second)
+
+
+@pytest.mark.parametrize("ending", ["finish", "foreign", "close"])
+def test_large_jsonl_records_share_schema_and_release_record_rows(monkeypatch: pytest.MonkeyPatch, ending: str) -> None:
+    from polylogue.core.json import JSONValue
+    from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+    opened: list[sqlite3.Connection] = []
+    original = StreamedJSONDocument.__enter__
+
+    def observed(owner: StreamedJSONDocument) -> JSONValue:
+        value = original(owner)
+        opened.append(owner.connection)
+        return value
+
+    monkeypatch.setattr(StreamedJSONDocument, "__enter__", observed)
+    validator = BoundRecordValidator("transcript.jsonl", Provider.CLAUDE_CODE)
+    try:
+        for _ in range(4):
+            validator.feed(_jsonl([_padded_claude(96 * 1024)]))
+            assert len(opened) == 1
+            connection = opened[0]
+            for table in ("json_scalar_tokens", "json_scalar_chunks", "json_key_meta", "json_object_members"):
+                assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM json_nodes").fetchone()[0] == 1
+        if ending == "foreign":
+            with pytest.raises(ForeignOriginContentError):
+                validator.feed(_jsonl([{"pad": "x" * (96 * 1024), **_CODEX[0]}]))
+        elif ending == "finish":
+            validator.finish()
+    finally:
+        validator.close()
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")

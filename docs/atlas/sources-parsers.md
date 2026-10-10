@@ -57,7 +57,10 @@ sharing identical declared projections only for that record. Projected mapping
 read views validate their JSON conversion once for their read-only predicates
 and resolvers. Actual root arrays keep each binding's own complete fold. Event
 projections still consume and validate the complete input; acquisition retains
-every origin check.
+every origin check. Large JSONL origin-validation records borrow one scratch
+schema owned by their byte stream. Each record's scalar and projection rows
+are rolled back after its evidence folds finish; ending or abandoning the
+stream closes the scratch store. Small records keep their decoded route.
 
 The artifact classifier proves a complete first physical JSONL value has a
 later nonblank line before trying the existing record fold first. The syntax
