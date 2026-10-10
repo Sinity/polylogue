@@ -309,6 +309,25 @@ def _candidate_sort_key(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderSchemaSnapshot:
+    """Exact ordered declarations for independent read-only validation jobs.
+
+    Bytes and search roots form the authority, so a fresh registry can prove
+    equality after workers settle. Decoded caches belong to each reader.
+    """
+
+    provider: str
+    storage_root: Path
+    roots: tuple[tuple[Path, tuple[tuple[str, bytes], ...]], ...]
+
+    def reader(self) -> SchemaRegistry:
+        registry = SchemaRegistry(storage_root=self.storage_root)
+        registry._fixed_snapshot = self
+        registry._snapshots = {root: dict(files) for root, files in self.roots}
+        return registry
+
+
 class SchemaRegistry:
     """Runtime package/catalog authority for schema resolution."""
 
@@ -319,18 +338,25 @@ class SchemaRegistry:
         self._workload_profile_cache: dict[WorkloadProfileCacheKey, PublicSchemaDocument | None] = {}
         self._snapshots: dict[Path, dict[str, bytes]] = {}
         self._current_snapshot_roots: dict[str, tuple[Path, ...]] = {}
-        self._snapshot_identities: dict[str, object] = {}
+        self._fixed_snapshot: ProviderSchemaSnapshot | None = None
         self._cache_lock = threading.RLock()
 
     @contextmanager
-    def current_provider_snapshot(self, provider: str | Provider) -> Iterator[object]:
-        """Reuse decoded declarations only after reading the exact current bytes.
+    def current_provider_snapshot(self, provider: str | Provider) -> Iterator[ProviderSchemaSnapshot]:
+        """Capture exact current declarations for a coherent fixed reader.
 
-        Keep resolution on that coherent snapshot through the caller's complete
-        validation. Local overrides can appear, disappear, or be replaced while
-        a preparation owner lives; directory metadata cannot certify their bytes.
+        A caller's snapshot reader owns its decoded caches through validation.
+        Local overrides can appear, disappear, or be replaced while a page
+        lives; fresh ordered bytes, not directory metadata, authorize reuse.
         """
         provider_token = _provider_token(str(provider))
+        if self._fixed_snapshot is not None:
+            if provider_token != self._fixed_snapshot.provider:
+                raise ValueError("schema snapshot cannot resolve another provider")
+            check_compute_cancelled()
+            yield self._fixed_snapshot
+            check_compute_cancelled()
+            return
         with self._cache_lock:
             roots = tuple(self._provider_search_roots(provider_token))
             current: dict[Path, dict[str, bytes]] = {}
@@ -350,14 +376,20 @@ class SchemaRegistry:
                 self.clear_cache()
             self._snapshots.update(current)
             self._current_snapshot_roots[provider_token] = roots
-            # This identity certifies only this freshly read ordered snapshot.
-            # It survives equality, never a declaration or filesystem-mtime guess.
-            identity = self._snapshot_identities.setdefault(provider_token, object())
-            yield identity
+            snapshot = ProviderSchemaSnapshot(
+                provider_token,
+                self.storage_root,
+                tuple((root, tuple(sorted(current[root].items()))) for root in roots),
+            )
+        # Resolution consumes fixed bytes, not this registry's mutable caches.
+        # The registry lock never encloses the full document validation body.
+        yield snapshot
 
     def _snapshot(self, provider_dir: Path) -> dict[str, bytes]:
         with self._cache_lock:
             if provider_dir not in self._snapshots:
+                if self._fixed_snapshot is not None:
+                    raise ValueError("schema path is outside the fixed provider snapshot")
                 self._snapshots[provider_dir] = read_provider_snapshot(provider_dir)
             return self._snapshots[provider_dir]
 
@@ -376,10 +408,11 @@ class SchemaRegistry:
         with self._cache_lock:
             self._snapshots.clear()
             self._current_snapshot_roots.clear()
-            self._snapshot_identities.clear()
             self._catalog_cache.clear()
             self._schema_cache.clear()
             self._workload_profile_cache.clear()
+            if self._fixed_snapshot is not None:
+                self._snapshots.update({root: dict(files) for root, files in self._fixed_snapshot.roots})
 
     @property
     def storage_root(self) -> Path:
@@ -401,6 +434,10 @@ class SchemaRegistry:
         return SCHEMA_DIR / _provider_token(provider)
 
     def _provider_search_roots(self, provider: str) -> list[Path]:
+        if self._fixed_snapshot is not None:
+            if _provider_token(provider) != self._fixed_snapshot.provider:
+                raise ValueError("schema snapshot cannot resolve another provider")
+            return [root for root, _files in self._fixed_snapshot.roots]
         roots: list[Path] = []
         seen: set[Path] = set()
         for candidate in (self._provider_dir(provider), self._bundled_provider_dir(provider)):
@@ -444,6 +481,8 @@ class SchemaRegistry:
         return SchemaPackageCatalog.from_dict(payload) if payload is not None else None
 
     def save_package_catalog(self, catalog: SchemaPackageCatalog) -> Path:
+        if self._fixed_snapshot is not None:
+            raise ValueError("fixed schema snapshot cannot publish declarations")
         provider_token = _provider_token(catalog.provider)
         provider_dir = self._provider_dir(provider_token)
         provider_dir.mkdir(parents=True, exist_ok=True)
@@ -606,6 +645,8 @@ class SchemaRegistry:
         element_schemas: ElementSchemaMap,
         workload_profile: Mapping[str, object] | None = None,
     ) -> Path:
+        if self._fixed_snapshot is not None:
+            raise ValueError("fixed schema snapshot cannot publish declarations")
         provider_token = _provider_token(package.provider)
         self._preflight_package_write(
             package,
@@ -1060,6 +1101,8 @@ class SchemaRegistry:
         *,
         element_kind: str = "session_document",
     ) -> Path:
+        if self._fixed_snapshot is not None:
+            raise ValueError("fixed schema snapshot cannot publish declarations")
         with self._cache_lock:
             provider_token = _provider_token(provider)
             package, schemas = self._single_element_package(

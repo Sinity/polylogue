@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import pickle
 import sqlite3
+import threading
+import time
 from builtins import BaseExceptionGroup
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -33,7 +35,7 @@ from polylogue.core.raw_failure_evidence import (
     RetainedRawDecodeRefusalError,
     RetainedRawDependencyRefusalError,
 )
-from polylogue.logging import WARNING, emit, propagate
+from polylogue.logging import WARNING, carry_context, emit, propagate
 from polylogue.operations.raw_observation_derivation import (
     make_raw_observation_derivation,
     publish_raw_observation_once,
@@ -44,13 +46,17 @@ if TYPE_CHECKING:
     from polylogue.core.sql_settlement import SQLCustodyOwner
     from polylogue.sources.live.append_ingest import _AppendIngestOwner
     from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.sources.revision_backfill import (
         PreparedRevisionReplayResult,
         RetainedReplayOutcome,
         RevisionCensusResult,
     )
-    from polylogue.storage.derived.raw import NeutralRawPreparation, RawObservationDerivation, RawObservationReplacement
+    from polylogue.storage.derived.raw import (
+        NeutralRawPreparation,
+        PreparedNeutralArtifact,
+        RawObservationDerivation,
+        RawObservationReplacement,
+    )
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
     from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 
@@ -384,8 +390,11 @@ class RawObservationArchiveWork:
             for raw_id in raw_ids:
                 require_authority(raw_id)
             adapter, _path, _destination = destination()
+            started, cpu_started = time.perf_counter(), time.thread_time()
+            page = None
             try:
-                return adapter.capture_neutral_raws(raw_ids, selection=selection)
+                page = adapter.capture_neutral_raws(raw_ids, selection=selection)
+                return page
             except Exception as failure:
                 # Failed optional neutral work is still owed to the canonical
                 # per-raw owner, which attributes its typed refusal/failure.
@@ -394,6 +403,16 @@ class RawObservationArchiveWork:
                 ) or _isolates_as_raw_failure(failure):
                     return None
                 raise
+            finally:
+                emit(
+                    "storage.raw_observation.neutral_capture",
+                    phase="source_preparation",
+                    raws=0 if page is None else len(page.captures),
+                    bytes=0 if page is None else sum(item.descriptor[4] for item in page.captures.values()),
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                    cpu_ms=(time.thread_time() - cpu_started) * 1000,
+                    thread=str(threading.get_native_id()),
+                )
 
         return capture
 
@@ -453,20 +472,27 @@ class RawObservationArchiveWork:
         Backpressure keeps the next job pending; completed artifacts remain
         disk-backed until the ordered canonical consumer takes their exact key.
         """
-        pending: deque[tuple[tuple[object, ...], SubmittedOperation[PreparedJsonl]]] = deque()
+        pending: deque[tuple[tuple[object, ...], SubmittedOperation[PreparedNeutralArtifact]]] = deque()
         width = self._compute_adapter.snapshot().by_class("incremental-background").ceiling_slots
         primary: BaseException | None = None
 
         async def receive() -> None:
             key, submitted = pending[0]
             try:
-                artifact = await submitted.wait()
+                prepared = await submitted.wait()
             except Exception as failure:
                 if not _isolates_as_raw_failure(failure):
                     raise
                 # Canonical preparation retries and attributes this raw.
             else:
-                page.artifacts[key] = artifact
+                page.artifacts[key] = prepared.artifact
+                page.validation_reuse[key] = prepared.validation_reuse
+                emit(
+                    "storage.raw_observation.neutral_admission",
+                    phase="source_preparation",
+                    productive_id=prepared.raw_id,
+                    wait_ms=submitted.queue_delay_s * 1000,
+                )
             pending.popleft()
 
         try:
@@ -474,7 +500,9 @@ class RawObservationArchiveWork:
                 while True:
                     try:
                         submitted = self._compute_adapter.submit(
-                            operation, admission_class="incremental-background", estimated_bytes=estimated_bytes
+                            carry_context(operation),
+                            admission_class="incremental-background",
+                            estimated_bytes=estimated_bytes,
                         )
                     except DaemonBackpressureError:
                         if not pending:
@@ -499,7 +527,7 @@ class RawObservationArchiveWork:
                 submitted.retry_sql_settlement()
             for key, submitted in pending:
                 try:
-                    artifact = await submitted.wait()
+                    prepared = await submitted.wait()
                 except BaseException as cleanup:
                     cancelled_types = (asyncio.CancelledError, DaemonOperationCancelled)
                     if isinstance(primary, cancelled_types):
@@ -512,9 +540,12 @@ class RawObservationArchiveWork:
                     if cleanup is not primary:
                         failures.append(cleanup)
                     if submitted.future.done() and submitted.future.exception() is None:
-                        page.artifacts[key] = submitted.future.result()
+                        prepared = submitted.future.result()
+                        page.artifacts[key] = prepared.artifact
+                        page.validation_reuse[key] = prepared.validation_reuse
                 else:
-                    page.artifacts[key] = artifact
+                    page.artifacts[key] = prepared.artifact
+                    page.validation_reuse[key] = prepared.validation_reuse
             if failures:
                 raise BaseExceptionGroup(
                     "neutral parsing and creator settlement failed",

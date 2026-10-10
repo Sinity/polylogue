@@ -14,6 +14,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import weakref
 from builtins import BaseExceptionGroup
@@ -73,6 +74,7 @@ from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
     from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
+    from polylogue.schemas.runtime_registry import ProviderSchemaSnapshot, SchemaRegistry
     from polylogue.schemas.validator import RetainedValidationReuse
     from polylogue.sources.parsers.base import ParsedSession
     from polylogue.sources.prepared_jsonl import PreparedJsonl
@@ -314,6 +316,15 @@ class _NeutralParserOperand:
     sidecar_signature: tuple[object, ...] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedNeutralArtifact:
+    """One settled parser and complete verdict returned to its page owner."""
+
+    raw_id: str
+    artifact: PreparedJsonl
+    validation_reuse: RetainedValidationReuse
+
+
 @dataclass(slots=True)
 class NeutralRawPreparation:
     """Closed capture files and exact parser operands for one admitted Raw page.
@@ -327,12 +338,14 @@ class NeutralRawPreparation:
     captures: Mapping[str, _CapturedNeutralRaw]
     operands: Mapping[str, _NeutralParserOperand]
     sidecar_scopes: Mapping[str, RetainedSidecarScope]
+    schema_snapshots: Mapping[Provider, ProviderSchemaSnapshot]
+    sidecar_input_bytes: Mapping[str, int]
     artifacts: dict[tuple[object, ...], PreparedJsonl] = dataclasses_field(default_factory=dict)
     validation_reuse: dict[tuple[object, ...], RetainedValidationReuse] = dataclasses_field(default_factory=dict)
 
     def parser_jobs(
         self, validation_mode: ValidationMode
-    ) -> Iterator[tuple[tuple[object, ...], int, Callable[[], PreparedJsonl]]]:
+    ) -> Iterator[tuple[tuple[object, ...], int, Callable[[], PreparedNeutralArtifact]]]:
         # Keep the existing first/second/head economy for long Codex chains.
         groups: dict[str, list[str]] = {}
         selected = set(self.captures)
@@ -344,23 +357,30 @@ class NeutralRawPreparation:
             ids.sort(key=lambda item: self.captures[item].descriptor[4])
             if len(ids) >= 4:
                 selected.difference_update(ids[2:-1])
-        # Sidecar/sibling inputs are conservatively charged to each parser.
-        sidecar_bytes = sum(
-            path.stat().st_size for path in Path(self.scratch_owner.name).glob("claude-sidecar-*/payload.bin")
-        )
         for raw_id, captured in self.captures.items():
             if raw_id in selected:
+                provider, _hash, source_path, _kind, raw_size = captured.descriptor
+                snapshot = self.schema_snapshots.get(provider)
+                schema_bytes = (
+                    0
+                    if snapshot is None
+                    else sum(len(payload) for _root, files in snapshot.roots for _name, payload in files)
+                )
                 key = _neutral_artifact_key(raw_id, self.operands[raw_id], validation_mode)
+                # Charge this worker's actual offered scope, including sibling
+                # streams. Input accounting is not a resident-memory bound.
                 yield (
                     key,
-                    captured.descriptor[4] + sidecar_bytes,
+                    raw_size + self.sidecar_input_bytes.get(Path(source_path).as_posix(), 0) + schema_bytes,
                     partial(
-                        _parse_captured_neutral,
+                        _prepare_captured_neutral,
                         raw_id,
                         captured,
                         key,
                         self.sidecar_scopes,
                         Path(self.scratch_owner.name),
+                        validation_mode,
+                        snapshot,
                     ),
                 )
 
@@ -420,6 +440,97 @@ def _parse_captured_neutral(
         )
     finally:
         discard_decoded_sessions_under(captured.staged_blob.parent)
+
+
+def _validate_captured_neutral(
+    raw_id: str,
+    captured: _CapturedNeutralRaw,
+    neutral: PreparedJsonl,
+    validation_mode: ValidationMode,
+    registry: SchemaRegistry,
+    signature_directory: Path,
+    reuse: RetainedValidationReuse | None,
+) -> PreparedJsonl:
+    from polylogue.schemas import validate_retained_document
+    from polylogue.sources.revision_backfill import _retained_validation_input
+
+    if neutral.error is not None or neutral.resolved_provider is None or neutral.parsed_prefix_size == 0:
+        return neutral
+    _provider, blob_hash, source_path, _kind, _size = captured.descriptor
+    prefix = neutral.parsed_prefix_size if validation_mode is not ValidationMode.OFF else None
+    try:
+        with _retained_validation_input(captured.staged_blob, prefix) as (validation_path, accepted_prefix_size):
+            verdict = validate_retained_document(
+                neutral.resolved_provider,
+                validation_path,
+                mode=validation_mode,
+                raw_id=raw_id,
+                revision_sha256=blob_hash,
+                evidence_id=raw_id,
+                source_path=source_path,
+                jsonl=True,
+                accepted_prefix_size=accepted_prefix_size,
+                captured_zip_coordinate=captured.zip_coordinate,
+                registry=registry,
+                signature_directory=signature_directory,
+                reuse=reuse,
+            )
+    except Exception as error:
+        from polylogue.sources.prepared_jsonl import classify_decode_failure
+
+        decode_failure = classify_decode_failure(error)
+        if decode_failure is None:
+            raise
+        return dataclasses.replace(neutral, error=f"{type(error).__name__}: {error}", decode_failure=decode_failure)
+    return dataclasses.replace(neutral, validation_verdict=verdict)
+
+
+def _prepare_captured_neutral(
+    raw_id: str,
+    captured: _CapturedNeutralRaw,
+    artifact_key: tuple[object, ...],
+    sidecar_scopes: Mapping[str, RetainedSidecarScope],
+    scratch: Path,
+    validation_mode: ValidationMode,
+    snapshot: ProviderSchemaSnapshot | None,
+) -> PreparedNeutralArtifact:
+    from polylogue.schemas.runtime_registry import SchemaRegistry
+    from polylogue.schemas.validator import RetainedValidationReuse
+
+    wall_started, cpu_started = time.perf_counter(), time.thread_time()
+    try:
+        neutral = _parse_captured_neutral(raw_id, captured, artifact_key, sidecar_scopes, scratch)
+    finally:
+        emit(
+            "storage.raw_observation.neutral_worker",
+            phase="source_preparation",
+            productive_id=raw_id,
+            operation="parse",
+            thread=str(threading.get_native_id()),
+            elapsed_ms=(time.perf_counter() - wall_started) * 1000,
+            cpu_ms=(time.thread_time() - cpu_started) * 1000,
+        )
+    reuse = RetainedValidationReuse()
+    wall_started, cpu_started = time.perf_counter(), time.thread_time()
+    try:
+        registry = SchemaRegistry() if snapshot is None else snapshot.reader()
+        neutral = _validate_captured_neutral(raw_id, captured, neutral, validation_mode, registry, scratch, reuse)
+        return PreparedNeutralArtifact(raw_id, neutral, reuse)
+    except BaseException:
+        reuse.clear()
+        _close_prepared_carriers({}, {}, (neutral,))
+        raise
+    finally:
+        emit(
+            "storage.raw_observation.neutral_worker",
+            phase="source_preparation",
+            productive_id=raw_id,
+            operation="validate",
+            thread=str(threading.get_native_id()),
+            reason=reuse.outcome,
+            elapsed_ms=(time.perf_counter() - wall_started) * 1000,
+            cpu_ms=(time.thread_time() - cpu_started) * 1000,
+        )
 
 
 def _neutral_artifact_key(
@@ -1834,12 +1945,23 @@ class RawObservationDerivation(RawObservationInspection):
                     pending=missing_neutral,
                     bound=carry.neutral_page is not None,
                 )
-                seal = self._prepare_neutral_jsonl_then_rebind(
-                    key,
-                    selection=selection,
-                    seal=seal,
-                    carry=carry,
-                )
+                rebind_started, rebind_cpu_started = time.perf_counter(), time.thread_time()
+                try:
+                    seal = self._prepare_neutral_jsonl_then_rebind(
+                        key,
+                        selection=selection,
+                        seal=seal,
+                        carry=carry,
+                    )
+                finally:
+                    emit(
+                        "storage.raw_observation.neutral_rebound",
+                        phase="source_preparation",
+                        productive_id=key,
+                        elapsed_ms=(time.perf_counter() - rebind_started) * 1000,
+                        cpu_ms=(time.thread_time() - rebind_cpu_started) * 1000,
+                        thread=str(threading.get_native_id()),
+                    )
             replacement = replace(
                 self._compute_prepared(
                     frame,
@@ -1967,6 +2089,7 @@ class RawObservationDerivation(RawObservationInspection):
         sidecar_scope_by_raw: dict[str, RetainedSidecarScope] = {}
         captured_sidecar_scopes: dict[str, RetainedSidecarScope] = {}
         staged_sidecars: dict[tuple[str, str], Path] = {}
+        sidecar_input_bytes: dict[str, int] = {}
         with seal.original_read_snapshot(), seal.source_producer():
             read = PreparedSessionSourceRead(seal, blob_store=blob_store)
             selected = (key,) if selection is None else tuple(selection(read))
@@ -2042,7 +2165,11 @@ class RawObservationDerivation(RawObservationInspection):
                     captured_sidecar_scopes[Path(source_path).as_posix()] = page.sidecar_scopes[
                         Path(source_path).as_posix()
                     ]
+                    sidecar_input_bytes[Path(source_path).as_posix()] = page.sidecar_input_bytes[
+                        Path(source_path).as_posix()
+                    ]
                     continue
+                scope_inputs: dict[tuple[str, str], int] = {}
                 staged_files: list[RetainedSidecarFile] = []
                 staged_siblings: list[SiblingTranscript] = []
                 for retained_file in scope.files:
@@ -2057,6 +2184,7 @@ class RawObservationDerivation(RawObservationInspection):
                     if file_hash != retained_file.blob_hash or file_path != retained_file.source_path:
                         raise RetainedPreparationRetryableError("retained Claude sidecar descriptor changed")
                     staged_path = capture_sidecar_payload(retained_file.raw_id, file_hash, file_size)
+                    scope_inputs[(retained_file.raw_id, file_hash)] = file_size
                     staged_files.append(
                         RetainedSidecarFile(
                             filename=retained_file.filename,
@@ -2077,6 +2205,7 @@ class RawObservationDerivation(RawObservationInspection):
                         if actual_hash != sibling_hash:
                             raise RetainedPreparationRetryableError("retained Claude sibling descriptor changed")
                         staged_records.append(capture_sidecar_payload(sibling_raw_id, actual_hash, sibling_size))
+                        scope_inputs[(sibling_raw_id, actual_hash)] = sibling_size
 
                     def open_records(paths: tuple[Path, ...] = tuple(staged_records)) -> Iterator[object]:
                         for record_path in paths:
@@ -2092,6 +2221,7 @@ class RawObservationDerivation(RawObservationInspection):
                             selection_witness=sibling.selection_witness,
                         )
                     )
+                sidecar_input_bytes[Path(source_path).as_posix()] = sum(scope_inputs.values())
                 captured_sidecar_scopes[Path(source_path).as_posix()] = RetainedSidecarScope(
                     scope_key=scope.scope_key,
                     files=tuple(staged_files),
@@ -2161,11 +2291,18 @@ class RawObservationDerivation(RawObservationInspection):
         # unrelated Source commits cannot stale the later publication witness.
         seal.close()
         assert carry.scratch_owner is not None
+        schema_snapshots = {}
+        if self._validation_mode is not ValidationMode.OFF:
+            for provider in dict.fromkeys(captured.descriptor[0] for captured in captures.values()):
+                with self._schema_registry.current_provider_snapshot(provider) as snapshot:
+                    schema_snapshots[provider] = snapshot
         return NeutralRawPreparation(
             carry.scratch_owner,
             MappingProxyType(captures),
             MappingProxyType(operands),
             MappingProxyType(captured_sidecar_scopes),
+            MappingProxyType(schema_snapshots),
+            MappingProxyType(sidecar_input_bytes),
         ), original_selection
 
     def _prepare_neutral_jsonl_then_rebind(
@@ -2197,7 +2334,7 @@ class RawObservationDerivation(RawObservationInspection):
         raw_ids, logical_keys = original_selection
         eligible_raw_ids = tuple(captures)
         blob_store = BlobStore(self.archive_root / "blob")
-        from polylogue.schemas import RetainedValidationReuse, validate_retained_document
+        from polylogue.schemas import RetainedValidationReuse
 
         assert carry.scratch_owner is not None
         scratch = Path(carry.scratch_owner.name)
@@ -2230,10 +2367,9 @@ class RawObservationDerivation(RawObservationInspection):
                 neutral = cached
             validation_owner = "skipped"
             validation_elapsed_ms = 0.0
+            validation_cpu_ms = 0.0
+            validation_outcome = "skipped"
             if neutral.error is None and neutral.resolved_provider is not None and neutral.parsed_prefix_size != 0:
-                from polylogue.sources.revision_backfill import _retained_validation_input
-
-                prefix = neutral.parsed_prefix_size if self._validation_mode is not ValidationMode.OFF else None
                 # Only the external page owns these files through all ordered
                 # consumers. Fresh captures in this carry have a shorter lifetime.
                 page = carry.neutral_page
@@ -2249,37 +2385,21 @@ class RawObservationDerivation(RawObservationInspection):
                     # Cached drift belongs to the page until every ordered
                     # consumer settles, independently of parser attempt directories.
                     neutral_directory = Path(page.scratch_owner.name)
-                validation_started = time.perf_counter()
+                validation_started, validation_cpu_started = time.perf_counter(), time.thread_time()
                 try:
-                    with _retained_validation_input(staged_blob, prefix) as (validation_path, accepted_prefix_size):
-                        verdict = validate_retained_document(
-                            neutral.resolved_provider,
-                            validation_path,
-                            mode=self._validation_mode,
-                            raw_id=raw_id,
-                            revision_sha256=blob_hash,
-                            evidence_id=raw_id,
-                            source_path=source_path,
-                            jsonl=True,
-                            accepted_prefix_size=accepted_prefix_size,
-                            captured_zip_coordinate=captured.zip_coordinate,
-                            registry=self._schema_registry,
-                            signature_directory=neutral_directory,
-                            reuse=reuse,
-                        )
-                except Exception as error:
-                    from polylogue.sources.prepared_jsonl import classify_decode_failure
-
-                    decode_failure = classify_decode_failure(error)
-                    if decode_failure is None:
-                        raise
-                    neutral = dataclasses.replace(
-                        neutral, error=f"{type(error).__name__}: {error}", decode_failure=decode_failure
+                    neutral = _validate_captured_neutral(
+                        raw_id,
+                        captured,
+                        neutral,
+                        self._validation_mode,
+                        self._schema_registry,
+                        neutral_directory,
+                        reuse,
                     )
-                else:
-                    neutral = dataclasses.replace(neutral, validation_verdict=verdict)
                 finally:
                     validation_elapsed_ms = (time.perf_counter() - validation_started) * 1000
+                    validation_cpu_ms = (time.thread_time() - validation_cpu_started) * 1000
+                    validation_outcome = "unowned" if reuse is None else reuse.outcome
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
             emit(
                 "storage.raw_observation.neutral_artifact",
@@ -2287,7 +2407,9 @@ class RawObservationDerivation(RawObservationInspection):
                 productive_id=raw_id,
                 cached=cached is not None,
                 kind=validation_owner,
+                reason=validation_outcome,
                 elapsed_ms=validation_elapsed_ms,
+                cpu_ms=validation_cpu_ms,
             )
             refreshed_neutral[raw_id] = neutral
             return neutral

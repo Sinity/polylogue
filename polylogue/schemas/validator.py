@@ -25,7 +25,7 @@ from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_doc
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.schemas.field_stats.detection import is_dynamic_key
 from polylogue.schemas.packages import SchemaResolution
-from polylogue.schemas.runtime_registry import SchemaRegistry
+from polylogue.schemas.runtime_registry import ProviderSchemaSnapshot, SchemaRegistry
 
 from .validator_resolution import (
     available_providers as _available_providers,
@@ -50,12 +50,25 @@ ValidationSample: TypeAlias = JSONDocument
 @dataclass(frozen=True, slots=True)
 class _RetainedValidationEntry:
     recipe: str
-    snapshot: object
+    snapshot: ProviderSchemaSnapshot
     path: Path
     input_identity: tuple[int, int, int, int, int]
     signature_directory: Path
     verdict: RetainedValidationVerdict
     backing_identity: tuple[Path, tuple[int, int, int, int, int]] | None
+
+
+_ReuseOutcome: TypeAlias = Literal[
+    "pending",
+    "cleared",
+    "disabled",
+    "missing",
+    "backing_changed",
+    "recipe_changed",
+    "schema_changed",
+    "input_changed",
+    "hit",
+]
 
 
 class RetainedValidationReuse:
@@ -68,9 +81,16 @@ class RetainedValidationReuse:
 
     def __init__(self) -> None:
         self._entry: _RetainedValidationEntry | None = None
+        self._outcome: _ReuseOutcome = "cleared"
+
+    @property
+    def outcome(self) -> _ReuseOutcome:
+        """The last call's actual reuse guard outcome, not parser eligibility."""
+        return self._outcome
 
     def clear(self) -> None:
         self._entry = None
+        self._outcome = "cleared"
 
 
 def _validation_input_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -908,8 +928,10 @@ def validate_retained_document(
 
     from polylogue.schemas.retained_validation import validate_retained_document as validate
 
+    if reuse is not None:
+        reuse._outcome = "pending"
     active_registry = registry
-    snapshot: AbstractContextManager[object | None] = nullcontext()
+    snapshot: AbstractContextManager[ProviderSchemaSnapshot | None] = nullcontext()
     if ValidationMode.from_string(mode) is not ValidationMode.OFF:
         active_registry = registry or SchemaRegistry()
         snapshot = active_registry.current_provider_snapshot(provider)
@@ -933,7 +955,11 @@ def validate_retained_document(
         )
 
     with snapshot as snapshot_identity:
+        if snapshot_identity is not None:
+            active_registry = snapshot_identity.reader()
         if reuse is None or ValidationMode.from_string(mode) is ValidationMode.OFF:
+            if reuse is not None:
+                reuse._outcome = "disabled"
             return perform()
         from polylogue.schemas.retained_validation import _retained_validation_productive_identity
 
@@ -961,19 +987,26 @@ def validate_retained_document(
                 )
             except OSError:
                 backing_current = False
-            if (
-                entry is not None
-                and backing_current
-                and (
-                    entry.recipe == recipe
-                    and entry.snapshot is snapshot_identity
-                    and entry.path == path
-                    and entry.input_identity == input_identity
-                    and entry.signature_directory == signature_directory
-                )
+            outcome: _ReuseOutcome
+            if entry is None:
+                outcome = "missing"
+            elif not backing_current:
+                outcome = "backing_changed"
+            elif entry.recipe != recipe:
+                outcome = "recipe_changed"
+            elif entry.snapshot != snapshot_identity:
+                outcome = "schema_changed"
+            elif (
+                entry.path != path
+                or entry.input_identity != input_identity
+                or entry.signature_directory != signature_directory
             ):
+                outcome = "input_changed"
+            else:
+                reuse._outcome = "hit"
                 return entry.verdict
             reuse.clear()
+            reuse._outcome = outcome
             verdict = perform()
         assert snapshot_identity is not None
         reuse._entry = _RetainedValidationEntry(

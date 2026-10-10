@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import gzip
 import json
+import threading
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import IO
 
 import pytest
 from ijson.common import JSONError
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.json import JSONValue
 from polylogue.schemas import observation_spill
@@ -257,3 +260,79 @@ def test_owned_reuse_zero_extent_and_cancellation_keep_physical_cleanup(
             _validate(path, registry, reuse, prefix=0)
     assert readers and all(reader.closed for reader in readers)
     assert _validate(path, registry, reuse, prefix=0) is first
+
+
+def test_shared_provider_snapshot_allows_independent_validation_bodies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish(tmp_path / "schemas", "integer")
+    paths = (tmp_path / "first.jsonl", tmp_path / "second.jsonl")
+    for path in paths:
+        path.write_text('{"type":"message","kind":1}\n')
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    original = observation_spill.StreamedJSONDocument.__enter__
+    lock = threading.Lock()
+    both_started = threading.Event()
+    active = 0
+    peak = 0
+
+    def body(document: observation_spill.StreamedJSONDocument) -> JSONValue:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == 2:
+                both_started.set()
+        # An observation window makes the serialization regression terminate.
+        # This is fixture synchronization, never a product input deadline.
+        both_started.wait(5)
+        try:
+            return original(document)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(observation_spill.StreamedJSONDocument, "__enter__", body)
+    adapter = BoundedComputeAdapter(max_workers=4)
+    try:
+        submitted = [
+            adapter.submit(
+                partial(_validate, path, registry, RetainedValidationReuse(), raw_id=f"raw-{ordinal}"),
+                admission_class="incremental-background",
+                estimated_bytes=path.stat().st_size,
+            )
+            for ordinal, path in enumerate(paths)
+        ]
+        results = [operation.future.result() for operation in submitted]
+        assert all(result.invalid_count == 0 for result in results)
+        assert peak == 2
+    finally:
+        assert adapter.close(join_timeout_s=10) == ()
+
+
+def test_completed_worker_snapshot_requires_fresh_schema_before_rebind(
+    tmp_path: Path, validation_bodies: list[int]
+) -> None:
+    root = tmp_path / "schemas"
+    _publish(root, "integer")
+    path = tmp_path / "records.jsonl"
+    path.write_text('{"type":"message","kind":1}\n')
+    registry = SchemaRegistry(storage_root=root)
+    with registry.current_provider_snapshot(Provider.CLAUDE_CODE) as snapshot:
+        reader = snapshot.reader()
+    reuse = RetainedValidationReuse()
+    worker = _validate(path, reader, reuse)
+    assert not worker.strict_refusal
+    _publish(root, "string")
+    reader.clear_cache()
+    with pytest.raises(ValueError, match="fixed schema snapshot"):
+        reader.write_schema_version("claude-code", "v2", {"type": "object"})
+    assert _validate(path, reader, reuse) is worker
+    worker_outcome = reuse.outcome
+    assert worker_outcome == "hit"
+    rebound = _validate(path, SchemaRegistry(storage_root=root), reuse)
+    assert rebound is not worker
+    assert reuse.outcome == "schema_changed"
+    fresh = _validate(path, SchemaRegistry(storage_root=root), RetainedValidationReuse())
+    _assert_complete_verdict_equal(rebound, fresh)
+    assert len(validation_bodies) == 3

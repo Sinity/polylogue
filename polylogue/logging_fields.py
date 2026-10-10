@@ -296,6 +296,8 @@ def _fields() -> dict[str, FieldKind]:
         "duration",
         "duration_ms",
         "elapsed_ms",
+        # CPU consumed by the emitting worker thread, separate from wall time.
+        "cpu_ms",
         "timeout_ms",
         "age_ms",
         "wait_ms",

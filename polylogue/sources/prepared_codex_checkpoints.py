@@ -261,13 +261,13 @@ def _read_head_and_prove(
         else nullcontext()
     )
     with (
-        snapshot,
+        snapshot as schema_snapshot,
         PrefixValidationState(
             provider=Provider.CODEX,
             source_path=first[2],
             mode=validation_mode,
             scratch_directory=validation_directory,
-            registry=registry,
+            registry=registry if schema_snapshot is None else schema_snapshot.reader(),
             signature_directory=validation_directory,
         ) as validation,
         source_read.open_raw_revision_material(raw_ids[-1]) as (head_provider, payload, _path, head_kind),
