@@ -4259,7 +4259,19 @@ def prepare_revision_source_census(
             if terminal_non_session and (artifact is None or artifact.codex_state_kind is None):
                 state.scanned += 1
                 state.censused.add(raw_id)
-                record_current_parser_source_census(seal, raw_id)
+                # Typed raw-only evidence owes both receipts on this same
+                # Source phase. Replace the complete membership set through
+                # its owner so an old parser cannot leave contradictory rows.
+                byte_proven = evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.BYTE_PROVEN.value
+                replace_raw_membership_census(
+                    seal,
+                    raw_id,
+                    [],
+                    parser_fingerprint=raw_authority_parser_fingerprint(),
+                    censused_at_ms=0,
+                    detail="current parser authority confirms typed non-session input",
+                    revision_authority=RawRevisionAuthority.BYTE_PROVEN if byte_proven else None,
+                )
             else:
                 apply_outcome(raw_id, source_index)
         expanded, _keys = evidence_reader.expand_raw_membership_selection(selection)

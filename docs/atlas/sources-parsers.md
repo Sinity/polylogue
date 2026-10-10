@@ -577,9 +577,11 @@ provider path declaration or an ineligible artifact establishes the raw-only
 exemption. Empty JSON documents and malformed complete records retain typed
 decode refusal.
 
-When current parser authority confirms a typed raw-only input, canonical
-Source follow-up refreshes its independently stale non-session membership
-receipt before retained replay. The unchanged-input guard still refuses a
+Canonical Source census publishes a typed raw-only input's current parser
+and zero-member non-session receipts together, replacing obsolete membership
+rows through the complete membership owner. Current-parser follow-up also
+refreshes an independently stale non-session receipt before retained replay.
+The unchanged-input guard still refuses a
 census that makes no progress; an empty successor Index does not waive it.
 
 ## Gotchas

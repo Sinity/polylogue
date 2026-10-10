@@ -2133,3 +2133,83 @@ def test_raw_publication_rejects_foreign_original_seal_before_binding_lifetime(t
             assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
     _run_raw_law(tmp_path / "selected", run_phase)
+
+
+@pytest.mark.parametrize("membership_state", ["stale", "missing", "populated"])
+def test_typed_raw_only_replay_refreshes_non_session_receipt_atomically(tmp_path: Path, membership_state: str) -> None:
+    def exercise(compute: BoundedComputeAdapter) -> None:
+        from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
+
+        bootstrap_archive_root(tmp_path)
+        path = "neutral/todos/task.json"
+        with _fixture_archive(tmp_path) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=b"[]",
+                source_path=path,
+                canonical_source_path=path,
+                acquired_at_ms=1,
+            )
+            archive.commit()
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute(
+                "INSERT INTO raw_artifacts(artifact_id,raw_id,origin,source_path,artifact_kind,"
+                "support_status,classification_reason,parse_as_session,schema_eligible,"
+                "first_observed_at_ms,last_observed_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "neutral-todo",
+                    raw_id,
+                    "claude-code-session",
+                    path,
+                    "todo_snapshot",
+                    "unknown",
+                    "neutral raw-only declaration",
+                    0,
+                    0,
+                    1,
+                    1,
+                ),
+            )
+            conn.execute(
+                "UPDATE raw_sessions SET validation_mode='advisory',validation_status='passed',"
+                "parsed_at_ms=1,validated_at_ms=1 WHERE raw_id=?",
+                (raw_id,),
+            )
+            conn.execute(
+                "INSERT INTO raw_authority_parser_census(raw_id,parser_fingerprint,status,logical_keys_json) "
+                "VALUES (?,?,'complete','[]')",
+                (raw_id, "previous-parser"),
+            )
+            if membership_state in {"stale", "populated"}:
+                conn.execute(
+                    "INSERT INTO raw_membership_census(raw_id,parser_fingerprint,status,member_count,censused_at_ms) "
+                    "VALUES (?,?,'non_session',0,0)",
+                    (raw_id, "previous-parser"),
+                )
+            if membership_state == "populated":
+                conn.execute(
+                    "INSERT INTO raw_session_memberships(raw_id,logical_source_key,provider_session_id,"
+                    "source_revision,normalized_content_hash,message_count) VALUES (?,?,?,?,?,?)",
+                    (raw_id, "claude-code:previous", "previous", "previous", bytes(32), 1),
+                )
+        adapter = make_raw_observation_derivation(tmp_path, compute_adapter=compute)
+        frame = raw_observation_frame(tmp_path)
+        assert adapter.inspect(frame, (raw_id,)) == {raw_id: "stale"}
+        replacement = adapter.compute(frame, raw_id)
+        _publish_to_valid(adapter, frame, replacement)
+        assert adapter.inspect(frame, (raw_id,)) == {raw_id: "valid"}
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert conn.execute(
+                "SELECT parser_fingerprint,status,member_count FROM raw_membership_census WHERE raw_id=?",
+                (raw_id,),
+            ).fetchone() == (raw_authority_parser_fingerprint(), "non_session", 0)
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_session_memberships WHERE raw_id=?", (raw_id,)
+            ).fetchone() == (0,)
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        settled = _snapshot(tmp_path)
+        assert _run(tmp_path, compute_adapter=compute).made_no_publication_attempts
+        assert _snapshot(tmp_path) == settled
+
+    _run_raw_law(tmp_path, exercise)
