@@ -59,8 +59,12 @@ export async function runSharedChromeControlWorkflow({ extensionRoot, transportI
   };
   try {
     const loaded = await control(["load-extension", "--path", extensionRoot]);
-    if (loaded.id !== binding.extension_id) throw new Error("proof_extension_identity_mismatch");
+    if (!/^[a-p]{32}$/.test(loaded.id || "") || typeof loaded.path !== "string"
+        || path.resolve(loaded.path) !== path.resolve(extensionRoot)) throw new Error("proof_extension_load_custody_invalid");
+    // The correlated load result binds this id to our exact owned path. Take
+    // cleanup custody before comparing the expected key-derived identity.
     loadedId = loaded.id;
+    if (loadedId !== binding.extension_id) throw new Error("proof_extension_identity_mismatch");
     const url = `chrome-extension://${binding.extension_id}/proof.html`;
     const target = await control(["agent-window", "--url", url]);
     if (typeof target?.id === "string" && /^[A-F0-9]{32}$/i.test(target.id)) createdTargetId = target.id;

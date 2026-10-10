@@ -433,7 +433,7 @@ const id = 'p'.repeat(32);
 const url = `chrome-extension://${id}/proof.html`;
 const control = async (args) => {
   calls.push(args);
-  if (args[0] === 'load-extension') return { id };
+  if (args[0] === 'load-extension') return { id, path: '.' };
   if (args[0] === 'agent-window') return { id: 'A'.repeat(32), url, parked: true, workspace: 'agentbrowser', show_with: 'F7' };
   if (args[0] === 'close' && args[1] !== 'A'.repeat(32)) throw new Error('attempted to close an unowned target');
   return {};
@@ -479,7 +479,7 @@ const calls = [];
 const id = 'p'.repeat(32);
 const control = async (args) => {
   calls.push(args);
-  if (args[0] === 'load-extension') return { id };
+  if (args[0] === 'load-extension') return { id, path: '.' };
   if (args[0] === 'agent-window') return { id: 'B'.repeat(32), url: `chrome-extension://${id}/proof.html`, parked: true, workspace: ['special', 'agentbrowser'].join(':'), show_with: 'F7' };
   if (args[0] === 'close' && args[1] !== 'B'.repeat(32)) throw new Error('attempted to close an unowned target');
   return {};

@@ -7,9 +7,29 @@ import { EventEmitter } from "node:events";
 import { createProofExtension, verifyProofExtension } from "../scripts/proof_extension.mjs";
 import { createOwnedTargetCleanup } from "../scripts/shared_chrome_proof_cleanup.mjs";
 import { execFileSync } from "node:child_process";
+import { firstControlJson } from "../scripts/shared_chrome_control.mjs";
+import { runSharedChromeControlWorkflow } from "../scripts/dev_loop_shared_chrome_proof.mjs";
 
 const owned = [];
 afterEach(() => { for (const directory of owned.splice(0)) rmSync(directory, { recursive: true, force: true }); });
+
+it("reads actual pretty control JSON while preserving diagnostic-prefixed single-line results", () => {
+  const loaded = { id: "p".repeat(32), path: "/neutral/extension" };
+  expect(firstControlJson(JSON.stringify(loaded, null, 2))).toEqual(loaded);
+  expect(firstControlJson(`diagnostic\n${JSON.stringify(loaded)}\n`)).toEqual(loaded);
+});
+
+it("uninstalls the returned owned artifact even when its key identity differs", async () => {
+  const calls = [];
+  const root = path.resolve(".");
+  await expect(runSharedChromeControlWorkflow({ extensionRoot: root,
+    verifyBinding: () => ({ extension_id: "p".repeat(32) }), browserVersion: async () => ({}),
+    control: async args => { calls.push(args); return args[0] === "load-extension" ? { id: "o".repeat(32), path: root } : {}; },
+    connect: async () => ({ call: async (method, args) => calls.push([method, args]), close: () => calls.push(["browser.close"]) }),
+  })).rejects.toThrow("proof_extension_identity_mismatch");
+  expect(calls).toEqual([["status"], ["load-extension", "--path", root],
+    ["Extensions.uninstall", { id: "o".repeat(32) }], ["browser.close"]]);
+});
 
 it("refuses the provider proof before any Chrome or native-manifest mutation", () => {
   let report;
