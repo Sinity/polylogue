@@ -701,3 +701,10 @@ Discovery prepares configured lexical roots once within its walk owner. Relative
 roots reanchor after a working-directory change; physical alias and exact-file
 claims remain current per-path observations. This avoids repeated root
 normalization without caching ownership decisions across paths or walks.
+
+The declared owned browser-capture root is prepared before daemon discovery.
+`browser_capture/source_checkpoint.py` reads acquired envelopes held only in
+`capture-jobs/registry.sqlite3` checkpoint cells under a read-only snapshot and
+publishes through ordinary capture spool authority. It never resumes retired
+job state. The source database remains unchanged; source-cell provenance is an
+additive envelope observation, excluded from logical capture deduplication.
