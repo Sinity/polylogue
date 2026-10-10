@@ -63,6 +63,9 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity
 
 _READ_CHUNK_BYTES = 1 << 20
+# UTF-8, lexical transport and the event tokenizer each hold transient copies.
+# Bound that work independently of the size requested by a stream consumer.
+_VALIDATION_CHUNK_BYTES = 64 << 10
 
 
 def refuse_declared_foreign(name: str, location: Provider | str | None) -> None:
@@ -348,18 +351,20 @@ class _DocumentValidator:
         self._strings = self._numbers = 0
 
     def feed(self, chunk: bytes) -> None:
-        if self._failed:
-            return
-        self._seen = self._seen or bool(chunk.strip())
-        try:
-            transported = self._transport.feed(self._utf8.decode(chunk).encode("utf-8"))
-            if transported:
-                self._parser.send(transported)
-        except (ijson.JSONError, json.JSONDecodeError, UnicodeError):
-            self._failed = True
-        self._drain()
-        if self._failed:
-            self._validate_partial()
+        for start in range(0, len(chunk), _VALIDATION_CHUNK_BYTES):
+            if self._failed:
+                return
+            piece = chunk[start : start + _VALIDATION_CHUNK_BYTES]
+            self._seen = self._seen or bool(piece.strip())
+            try:
+                transported = self._transport.feed(self._utf8.decode(piece).encode("utf-8"))
+                if transported:
+                    self._parser.send(transported)
+            except (ijson.JSONError, json.JSONDecodeError, UnicodeError):
+                self._failed = True
+            self._drain()
+            if self._failed:
+                self._validate_partial()
 
     def finish(self) -> None:
         if self._failed or not self._seen:
