@@ -869,6 +869,84 @@ def test_registered_domain_order_must_put_prerequisites_before_consumers() -> No
     assert [adapter.domain for adapter in DerivationRegistry([upstream, downstream]).ordered()] == ["up", "down"]
 
 
+def test_bulk_inspection_fallback_stops_at_the_error_limit_and_resumes_siblings() -> None:
+    """The first attributed failure stops retries; unread siblings stay owed."""
+    calls: list[tuple[str, ...]] = []
+
+    class PoisonedInspection(RecordingDerivation):
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            calls.append(tuple(keys))
+            if "poison" in keys:
+                raise ValueError("synthetic unreadable key")
+            return super().inspect(frame, keys)
+
+    adapter = PoisonedInspection("d", required=("poison", "good", "later"))
+    registry = DerivationRegistry([adapter])
+    report = converge(registry, FRAME, budget=Budget(max_errors=1, retained_outcomes=0))
+    assert calls == [("poison", "good", "later"), ("poison",)]
+    assert report.failed == 1 and report.pending == 2 and report.done == 0
+    assert report.work.inspected == 3
+    assert adapter.computed == adapter.published == []
+    assert report.cursor.position("d").pending_keys == ("good", "later")
+    assert report.cursor_unsettled_domains == frozenset({"d"})
+    assert report.outcomes == () and report.truncated
+
+    resumed = converge(registry, FRAME, budget=Budget(max_errors=1), cursor=report.cursor)
+    assert resumed.done == 2 and resumed.failed == resumed.pending == 0
+    assert resumed.cursor.position("d").swept
+    assert adapter.output == {"good": "b0", "later": "b0"}
+
+
+@pytest.mark.parametrize("deadline_phase", ["bulk", "individual"])
+@pytest.mark.parametrize("restart", [False, True])
+def test_bulk_inspection_fallback_deadline_retains_unvisited_keys(
+    monkeypatch: pytest.MonkeyPatch, deadline_phase: str, restart: bool
+) -> None:
+    """Expiry stops new reads, while continuation or restart reaches the suffix."""
+    clock = {"now": 0.0}
+    monkeypatch.setattr("polylogue.daemon.derivation._pass_clock", lambda: clock["now"])
+    calls: list[tuple[str, ...]] = []
+
+    class SlowInspection(RecordingDerivation):
+        expired = False
+
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            calls.append(tuple(keys))
+            if len(keys) > 1:
+                if deadline_phase == "bulk" and not self.expired:
+                    clock["now"] = 1.0
+                    self.expired = True
+                raise ValueError("synthetic page inspection fault")
+            result = super().inspect(frame, keys)
+            if deadline_phase == "individual" and not self.expired:
+                clock["now"] = 1.0
+                self.expired = True
+            return result
+
+    adapter = SlowInspection("d", required=("healthy", "later", "last"))
+    adapter.output["healthy"] = "b0"
+    registry = DerivationRegistry([adapter])
+    report = converge(registry, FRAME, budget=Budget(deadline_at=1.0))
+    expected_calls = [("healthy", "later", "last")]
+    pending_keys = ("healthy", "later", "last")
+    if deadline_phase == "individual":
+        expected_calls.append(("healthy",))
+        pending_keys = ("later", "last")
+    assert calls == expected_calls
+    assert report.failed == report.done == 0 and report.pending == len(pending_keys)
+    assert report.work.inspected == 3
+    assert adapter.computed == adapter.published == []
+    assert report.cursor.position("d").pending_keys == pending_keys
+    assert report.cursor_unsettled_domains == frozenset()
+    assert all(item.reason is PendingReason.BUDGET for item in report.by_outcome(Outcome.PENDING))
+
+    clock["now"] = 0.0
+    resumed = converge(registry, FRAME, budget=Budget(deadline_at=1.0), cursor=None if restart else report.cursor)
+    assert resumed.done == 2 and resumed.failed == resumed.pending == 0
+    assert resumed.cursor.position("d").swept
+    assert adapter.output == {"healthy": "b0", "later": "b0", "last": "b0"}
+
+
 def test_an_undeclared_prerequisite_is_refused() -> None:
     adapter = RecordingDerivation("a", required=("k",), prerequisites=("nope",))
     with pytest.raises(ValueError, match="not registered"):

@@ -1208,6 +1208,7 @@ class _Pass:
                 position = self.advance(position, page)
                 continue
 
+            unvisited_at: int | None = None
             if position.phase is DiscoveryPhase.REQUIRED:
                 try:
                     statuses = _coerce_statuses(dict(adapter.inspect(self.frame, keys)))
@@ -1224,11 +1225,14 @@ class _Pass:
                         error_detail=str(exc),
                     )
                     # A bulk inspection can fail because one key is poison.
-                    # Its page is already bounded, so retry each key to keep
-                    # that failure in its own dependency closure instead of
-                    # declaring the entire output relation unreadable.
+                    # Retry within the pass bounds so a poison key remains
+                    # isolated without spending the whole page after its
+                    # failure limit or deadline. Untouched keys have no status.
                     statuses = {}
-                    for key in keys:
+                    for index, key in enumerate(keys):
+                        if self.work_exhausted(inspected=True):
+                            unvisited_at = index
+                            break
                         try:
                             statuses[key] = _coerce_statuses(dict(adapter.inspect(self.frame, (key,)))).get(
                                 key, KeyStatus.MISSING
@@ -1267,7 +1271,7 @@ class _Pass:
                 adapter,
                 [
                     key
-                    for key in keys
+                    for key in keys[:unvisited_at]
                     if self.verdicts.get(DerivationKey(domain, key)) is not Outcome.FAILED
                     and statuses.get(key, KeyStatus.MISSING) is not KeyStatus.VALID
                 ],
@@ -1275,6 +1279,13 @@ class _Pass:
             )
             stopped_at: int | None = None
             for index, key in enumerate(keys):
+                if unvisited_at is not None and index >= unvisited_at:
+                    if stopped_at is None:
+                        stopped_at = index
+                    self.record(
+                        KeyOutcome(key=DerivationKey(domain, key), outcome=Outcome.PENDING, reason=PendingReason.BUDGET)
+                    )
+                    continue
                 if self.verdicts.get(DerivationKey(domain, key)) is Outcome.FAILED:
                     continue
                 if statuses.get(key, KeyStatus.MISSING) is KeyStatus.VALID:
