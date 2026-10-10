@@ -1,0 +1,5 @@
+# Total Lost Samples: 0
+# Samples: 3 of event 'cpu-clock:u'
+# Overhead|Samples|Period|Command|Pid:Command|Shared Object|Symbol
+66.67%|2|20000000|worker|42:worker|libsqlite3.so|[.] sqlite3VdbeExec
+33.33%|1|10000000|worker|43:worker|[unknown]|[.] 0xabcdef
