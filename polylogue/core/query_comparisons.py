@@ -1,4 +1,4 @@
-"""Path-component bounded matching for query cwd filters."""
+"""Shared literal path and Unicode prose comparisons for query filters."""
 
 from __future__ import annotations
 
@@ -26,13 +26,9 @@ def path_matches_prefix(path: object, prefix: object) -> bool:
     return normalized_path.startswith(f"{normalized_prefix}/")
 
 
-def escaped_sql_path_prefix_patterns(prefix: object) -> tuple[str, str]:
-    """Return exact and LIKE-prefix params for path-component bounded SQL."""
-    normalized = normalize_path_prefix(prefix)
-    escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    if escaped == "/":
-        return normalized, "/%"
-    return normalized, f"{escaped}/%"
+def prose_contains(value: object, term: object) -> bool:
+    """Compare prose with Python Unicode lower semantics and literal substrings."""
+    return bool(value) and str(term).lower() in str(value).lower()
 
 
-__all__ = ["escaped_sql_path_prefix_patterns", "normalize_path_prefix", "path_matches_prefix"]
+__all__ = ["normalize_path_prefix", "path_matches_prefix", "prose_contains"]

@@ -88,16 +88,12 @@ def _iter_sessions_from_source_path(archive: ArchiveStore, path: Path) -> Iterat
             guidance="restore or initialize the durable source tier, then retry the query; "
             "the reader will not open a replacement tier during an operation",
         )
-    from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
-
-    exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(path)
     rows = archive._conn.execute(
         """SELECT s.session_id FROM sessions s
            JOIN source_tier.raw_sessions r ON r.raw_id = s.raw_id
-           WHERE REPLACE(r.source_path, char(92), '/') = ?
-              OR REPLACE(r.source_path, char(92), '/') LIKE ? ESCAPE '\\'
+           WHERE pl_path_prefix(r.source_path, ?)
            ORDER BY s.session_id""",
-        (exact_prefix, child_prefix),
+        (str(path),),
     )
     from polylogue.core.compute_cancel import check_compute_cancelled
 

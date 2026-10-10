@@ -6,12 +6,12 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.models import Attachment, Message, Session
-from polylogue.archive.query.path_prefix import path_matches_prefix
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.runtime_filters import apply_common_filters, apply_full_filters
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Provider
+from polylogue.core.query_comparisons import path_matches_prefix
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionId
 from tests.infra.builders import make_conv, make_msg

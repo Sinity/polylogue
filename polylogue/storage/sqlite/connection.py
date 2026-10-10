@@ -34,6 +34,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection,
     write_connection_pragma_statements,
 )
+from polylogue.storage.sqlite.query_comparisons import register_query_comparisons
 from polylogue.storage.sqlite.schema import _ensure_schema, assert_readable_archive_layout
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from polylogue.storage.sqlite.write_lease import require_write_lease, write_lease
@@ -140,6 +141,7 @@ def _get_cached_connection(path: Path, *, archive_root: Path) -> sqlite3.Connect
         _load_sqlite_vec(conn)
         _attach_sibling_tiers(conn, archive_root=archive_root)
         register_pl_fold(conn)
+        register_query_comparisons(conn)
         with _schema_lock_for_path(path):
             if path.name == "index.db" and not _is_initialized_archive_index(path, archive_root=archive_root):
                 raise RuntimeError(f"Archive root was not initialized for {path}")
