@@ -219,8 +219,10 @@ class _SampleValidationReducer:
         *,
         source_path: str | None,
         signature_directory: Path,
+        validation_accepted: bool = False,
     ) -> None:
         self.signature_directory = signature_directory
+        self.validation_accepted = validation_accepted
         self.schema = schema
         self.provider = provider
         self.resolution = resolution
@@ -245,14 +247,15 @@ class _SampleValidationReducer:
     def _observe(self, sample: Mapping[str, object]) -> None:
         check_compute_cancelled()
         self.sample_count += 1
-        normalized = _normalized(sample, self.schema, self.schema, self.connection)
         sample_errors = 0
-        for error in self.validator.iter_errors(normalized):
-            check_compute_cancelled()
-            sample_errors += 1
-            self.error_count += 1
-            if self.first_diagnostic is None:
-                self.first_diagnostic = _diagnostic(error)
+        if not self.validation_accepted:
+            normalized = _normalized(sample, self.schema, self.schema, self.connection)
+            for error in self.validator.iter_errors(normalized):
+                check_compute_cancelled()
+                sample_errors += 1
+                self.error_count += 1
+                if self.first_diagnostic is None:
+                    self.first_diagnostic = _diagnostic(error)
         valid = sample_errors == 0
         if not valid:
             self.invalid_count += 1
@@ -490,8 +493,12 @@ class PrefixValidationState:
         return _PrefixSchemaReducer(version, schema, reducer)
 
     def _observe_validators(self, record: JSONDocument) -> None:
-        for candidate in self._reducers:
+        for index, candidate in enumerate(self._reducers):
             if candidate.reducer is None or candidate.schema is None:
+                continue
+            # Appending records cannot restore a rejected record-local candidate.
+            # The base still owns complete failure counts when every schema rejects.
+            if index != 0 and not candidate.reducer.accepts:
                 continue
             if any(_validation_samples(record, candidate.schema, self.provider)):
                 candidate.reducer.observe(record)
@@ -669,6 +676,15 @@ def validate_retained_document(
         canonical = canonical_provider(provider)
         selected_schema: Mapping[str, object] | None = None
         schema_key: tuple[str, str, str] | None = None
+        accepted_schema: Mapping[str, object] | None = None
+
+        def accepts(candidate: JSONDocument) -> bool:
+            nonlocal accepted_schema
+            accepted = _schema_accepts_document(payload, candidate, canonical, spill.connection)
+            if accepted:
+                accepted_schema = candidate
+            return accepted
+
         try:
             canonical, selected, schema_key, resolved = resolve_retained_schema(
                 provider,
@@ -678,12 +694,7 @@ def validate_retained_document(
                 schema_resolution_is_explicit=schema_resolution_is_explicit,
                 registry=active_registry,
                 schema_store=spill.store_schema,
-                schema_accepts=lambda candidate: _schema_accepts_document(
-                    payload,
-                    candidate,
-                    canonical,
-                    spill.connection,
-                ),
+                schema_accepts=accepts,
             )
             selected_schema = selected
         except (FileNotFoundError, ImportError):
@@ -704,6 +715,10 @@ def validate_retained_document(
             spill.connection,
             source_path=source_path,
             signature_directory=signature_directory,
+            # This proof belongs only to this completed immutable document and
+            # the exact schema returned by the acceptance pass. Drift is still
+            # reduced from every original sample below.
+            validation_accepted=accepted_schema is selected_schema,
         )
         for sample in _validation_samples(payload, selected_schema, canonical):
             reducer.observe(sample)
