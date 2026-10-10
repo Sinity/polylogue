@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import shutil
@@ -230,6 +231,8 @@ class Observation:
     #: Summed cursor failures, and cursors waiting on a scheduled retry.
     cursor_failures: int = 0
     cursor_retry_waiting: int = 0
+    frontier_retry_at: str | None = None
+    convergence_next_run_at: float | None = None
     debt_next_retry_at: str | None = None
     cursor_next_retry_at: str | None = None
     useful_progress_at_s: float | None = None
@@ -329,6 +332,9 @@ def observe(archive: Path, started: float, *, readiness_max_age_s: float | None 
                 observation.debt_attempts = int(
                     conn.execute("SELECT COALESCE(SUM(attempts), 0) FROM convergence_debt").fetchone()[0]
                 )
+                observation.frontier_retry_at = conn.execute(
+                    "SELECT MIN(next_retry_at) FROM convergence_debt WHERE stage='raw_frontier_inspection'"
+                ).fetchone()[0]
                 now_iso = datetime.now(UTC).isoformat()
                 observation.debt_next_retry_at = conn.execute(
                     "SELECT MIN(next_retry_at) FROM convergence_debt WHERE next_retry_at > ?", (now_iso,)
@@ -428,6 +434,7 @@ class WorkProgressTail:
                 PRIMARY KEY (phase, productive_id)
             ) WITHOUT ROWID"""
         )
+        self.convergence_next_run_at: float | None = None
         self.advancing = 0
         self._closed = False
 
@@ -440,11 +447,16 @@ class WorkProgressTail:
         self._state_directory.cleanup()
 
     def _consume_line(self, line: bytes) -> None:
-        if b"daemon.work.progress" not in line:
+        if b"daemon.work.progress" not in line and b"daemon.periodic.scheduled" not in line:
             return
         try:
             event = json.loads(line)
         except ValueError:
+            return
+        if event.get("event") == "daemon.periodic.scheduled" and event.get("loop") == "convergence_check":
+            value = event.get("next_run_at")
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                self.convergence_next_run_at = float(value)
             return
         if event.get("event") != "daemon.work.progress":
             return
@@ -958,6 +970,7 @@ def _measure_and_write_receipt(
     last_report = 0.0
     last_observation: Observation | None = None
     last_progress_at = 0.0
+    retry_opportunity_at: float | None = None
     last_useful_progress_at: float | None = None
     last_activity_at: float | None = None
     work_progress = WorkProgressTail(paths["events"])
@@ -980,6 +993,8 @@ def _measure_and_write_receipt(
                 paths["archive"], started, readiness_max_age_s=min(_READINESS_POLL_S, config.stall_timeout_s / 2)
             )
             observation.work_progress = work_progress.poll()
+            if work_progress.convergence_next_run_at is not None:
+                observation.convergence_next_run_at = work_progress.convergence_next_run_at
             observations.append(observation)
             clock_steps.append((time.time() - started_wall) - (time.monotonic() - started))
             if observation.error is not None and not observation.error_retryable:
@@ -996,6 +1011,7 @@ def _measure_and_write_receipt(
             useful_progress = _useful_progress(last_observation, observation)
             if last_observation is None or useful_progress:
                 last_progress_at = observation.t
+                retry_opportunity_at = None
             if useful_progress:
                 last_useful_progress_at = observation.t
             if (
@@ -1013,7 +1029,19 @@ def _measure_and_write_receipt(
             # Preserve declared recovery backoff without recording waiting or
             # failed attempts as new useful progress.
             waiting = bool(observation.debt_waiting_by_stage or observation.cursor_retry_waiting)
-            if not useful_progress and not waiting and observation.t - last_progress_at > config.stall_timeout_s:
+            if (
+                retry_opportunity_at is None
+                and observation.debt_by_stage.get("raw_frontier_inspection", 0)
+                and observation.frontier_retry_at is not None
+                and observation.convergence_next_run_at is not None
+            ):
+                due = datetime.fromisoformat(observation.frontier_retry_at).timestamp()
+                if observation.convergence_next_run_at >= due:
+                    # One actual owner cadence opportunity per useful-progress
+                    # epoch. Failed attempts and later schedules cannot renew it.
+                    retry_opportunity_at = observation.t + observation.convergence_next_run_at - time.time()
+            stall_origin = max(last_progress_at, retry_opportunity_at or last_progress_at)
+            if not useful_progress and not waiting and observation.t - stall_origin > config.stall_timeout_s:
                 # Nothing observable moved: a starved backlog or a refused
                 # promotion. Stop and report it rather than burning the
                 # whole timeout on a build that is not converging.

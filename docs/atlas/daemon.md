@@ -575,3 +575,10 @@ accepts `input: BinaryIO`. The daemon opens only its staged coordinate. Batch
 input and controls have no outcome size ceiling; filesystem exhaustion is a
 typed retryable pre-dispatch refusal. Product control values and individual
 JSONL rows still contribute their own memory allocations.
+
+The periodic runner emits `daemon.periodic.scheduled` with its actual jittered
+`next_run_at` epoch. The isolated fresh-build observer uses this producer-owned
+schedule to observe the first convergence-owner opportunity after a retained
+frontier retry becomes due. It reserves that inactivity origin once per useful
+progress epoch; later failed attempts and schedules cannot renew it. Scheduling
+evidence never counts as productive progress or archive completion.

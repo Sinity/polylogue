@@ -504,3 +504,24 @@ def test_periodic_error_serialization_conceals_complete_private_path() -> None:
     assert "private space" not in str(payload["last_error"])
     assert "例.json" not in str(payload["last_error"])
     assert "[redacted]" in str(payload["last_error"])
+
+
+@pytest.mark.asyncio
+async def test_schedule_event_reports_actual_jittered_owner_deadline() -> None:
+    from polylogue.logging import capture
+
+    clock = _StepClock()
+    runner = _runner(clock, jitter_ratio=0.1)
+
+    async def work() -> None:
+        # End at this first actual tick before the runner schedules another.
+        raise asyncio.CancelledError
+
+    with capture() as records:
+        await _drive(runner, "convergence_check", passes=1, work=work, interval_s=60.0)
+    scheduled = [record for record in records if record["event"] == "daemon.periodic.scheduled"]
+    assert len(scheduled) == 1
+    assert scheduled[0]["loop"] == "convergence_check"
+    assert scheduled[0]["next_run_at"] == clock.now
+    assert 1060.0 <= clock.now <= 1066.0
+    assert not any(record["event"] == "log.field_rejected" for record in records)

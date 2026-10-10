@@ -244,6 +244,7 @@ class PeriodicRunner:
             if not (first and run_first):
                 delay = interval + self._rng.uniform(0.0, interval * self._jitter_ratio)
                 state.next_run_at = self._clock() + delay
+                emit("daemon.periodic.scheduled", loop=name, next_run_at=state.next_run_at)
                 if wakeup is None:
                     await self._delay(delay)
                 else:
