@@ -632,6 +632,8 @@
         buildInputs = [
           python
           pkgs.uv
+          # CPU diagnostics run only in the development environment.
+          pkgs.perf
           devtoolsCli
           pkgs.git
           pkgs.bubblewrap

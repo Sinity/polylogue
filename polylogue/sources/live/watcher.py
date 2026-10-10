@@ -103,7 +103,9 @@ logger = get_logger(__name__)
 # fresh attempt.
 # v6: recursive reserved-value identity and complete branch witnesses change
 # parsed identities, including for sources whose observed bytes are unchanged.
-_PARSER_FINGERPRINT = "live-batched-v6"
+# v7: Boolean-bearing final JSONL records now retain their complete frontier;
+# retry old deferred observations through full acquisition and publication.
+_PARSER_FINGERPRINT = "live-batched-v7"
 # polylogue-11cg9: the dispatcher's byte budget bounds an admitted page's
 # *size* but not the *time* a single full-ingest pass can hold the sole
 # archive writer -- a handful of files, or one slow-to-parse file, can still

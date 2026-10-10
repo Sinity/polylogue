@@ -10,6 +10,7 @@ import asyncio
 import contextvars
 import io
 import json
+import os
 import threading
 import time
 from collections.abc import Iterator
@@ -668,6 +669,75 @@ def test_combined_context_and_event_fields_stay_within_record_limit() -> None:
     assert any(row["event"] == "log.field_rejected" and row["reason"] == "event_field_limit" for row in records)
 
 
+@pytest.mark.parametrize("value", ["x" * 240, "\U0001f642" * 240])
+def test_byte_overflow_preserves_terminal_measurements(value: str) -> None:
+    optional = dict.fromkeys(
+        (
+            "run_id",
+            "pass_id",
+            "operation_id",
+            "request_id",
+            "attempt_id",
+            "unit_id",
+            "productive_id",
+            "session_id",
+            "message_id",
+            "block_id",
+            "raw_id",
+            "artifact_id",
+            "blob_hash",
+            "content_hash",
+            "source_id",
+        ),
+        value,
+    )
+    with plog.capture() as records, plog.bind(**optional):
+        with plog.span("fixture") as span:
+            span.ok()
+    terminal = next(row for row in records if row["event"] == "fixture.ok")
+    assert plog._MEASUREMENT_FIELDS - {"parent_span_id", "task_id", "span_kind"} <= terminal.keys()
+    assert terminal["required_measurement_fields_omitted"] == 0
+    omitted = terminal["omitted_fields"]
+    assert isinstance(omitted, int)
+    assert omitted > 0
+    assert len(terminal) <= plog.EVENT_MAX_FIELDS
+    assert len(json.dumps(terminal).encode()) <= plog.EVENT_MAX_BYTES
+
+
+def test_mandatory_overflow_reports_loss_without_masking_work() -> None:
+    fields: dict[str, Any] = dict.fromkeys(("trace_id", "span_id", "parent_span_id", "task_id"), "\U0001f642" * 256)
+    fields.update(outcome="error", duration_ms=1.25, span_start_ns=1, span_end_ns=2)
+    original = ValueError("fixture failure")
+    with plog.capture() as records:
+        with pytest.raises(ValueError) as raised:
+            try:
+                raise original
+            finally:
+                plog.emit("fixture.error", **fields)
+    assert raised.value is original
+    assert len(records) == 1
+    record = records[0]
+    required_omitted = record["required_measurement_fields_omitted"]
+    assert isinstance(required_omitted, int)
+    assert required_omitted > 0
+    assert record["omitted_fields"] == len(fields.keys() - record.keys())
+    assert record.keys() >= plog._ENVELOPE_FIELDS
+    assert record["duration_ms"] == 1.25
+    assert record["span_start_ns"] == 1
+    assert record["span_end_ns"] == 2
+    assert record["outcome"] == "error"
+    assert len(record) <= plog.EVENT_MAX_FIELDS
+    assert len(json.dumps(record).encode()) <= plog.EVENT_MAX_BYTES
+
+
+def test_omission_counts_are_encoder_owned_and_absent_without_loss() -> None:
+    with plog.capture() as records:
+        plog.emit("fixture.ok", omitted_fields=999, required_measurement_fields_omitted=999)
+    record = next(row for row in records if row["event"] == "fixture.ok")
+    assert plog._OMISSION_FIELDS.isdisjoint(record)
+    assert {row["reason"] for row in records if row["event"] == "log.field_rejected"} == {"encoder_owned_field"}
+
+
 def test_span_terminal_collisions_preserve_original_exception() -> None:
     """A terminal field from a caller cannot cause a second TypeError."""
     original = ValueError("original failure")
@@ -978,3 +1048,45 @@ def test_idle_flush_cannot_acknowledge_later_records() -> None:
         if caller.ident is not None:
             caller.join(timeout=1)
         plog.reset_events()
+
+
+def test_emitter_owns_monotonic_pid_and_native_tid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(time, "monotonic_ns", lambda: 123456)
+    monkeypatch.setattr(threading, "get_native_id", lambda: 81)
+    monkeypatch.setattr(os, "getpid", lambda: 42)
+    with plog.capture() as records:
+        plog.emit("owned.stamp", monotonic_ns=1, native_thread_id=2, pid=3)
+    assert records[-1]["monotonic_ns"] == 123456
+    assert records[-1]["native_thread_id"] == 81
+    assert records[-1]["pid"] == 42
+
+
+def test_terminal_stamps_survive_filtered_start_and_caller_collisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = iter([100, 110, 200, 210])
+    cpu = iter([5, 55])
+    monkeypatch.setattr(time, "monotonic_ns", lambda: next(clock))
+    monkeypatch.setattr(time, "thread_time_ns", lambda: next(cpu))
+    plog.set_level("info")
+    with plog.capture() as records:
+        with plog.span("timed") as active:
+            active.ok(span_start_ns=999, span_end_ns=999, thread_cpu_end_ns=999)
+    assert len(records) == 1
+    assert records[0]["span_start_ns"] == 100
+    assert records[0]["span_end_ns"] == 110
+    assert records[0]["thread_cpu_start_ns"] == 5
+    assert records[0]["thread_cpu_end_ns"] == 55
+    assert records[0]["cpu_scope"] == "thread"
+
+
+def test_async_span_refuses_thread_cpu_that_includes_other_tasks() -> None:
+    async def scenario() -> None:
+        with plog.span("async.body") as active:
+            await asyncio.sleep(0)
+            active.ok()
+
+    with plog.capture() as records:
+        asyncio.run(scenario())
+    terminal = next(r for r in records if r["event"] == "async.body.ok")
+    assert terminal["cpu_scope"] == "unavailable"
+    assert terminal["thread_cpu_start_ns"] is None
+    assert terminal["thread_cpu_end_ns"] is None

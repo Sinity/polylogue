@@ -88,9 +88,54 @@ success. Three mechanisms push back:
   outcome vocabulary in `surfaces/outcome.py`, so "a probe timed out" and "a
   probe returned nothing" cannot collapse into the same reading.
 
-Reserved keys (`ts`, `level`, `event`) are assigned after caller fields, so a
+Reserved keys (`ts`, `level`, `event`, `monotonic_ns`, `native_thread_id`,
+`pid`) are assigned by the emitting thread after caller fields, so a
 call site cannot rename its own event or restate its own level. Terminal span
 facts also win over caller metadata without masking an operation exception.
+
+Span terminals carry `span_start_ns`, `span_end_ns`, the starting PID and native
+TID, and synchronous thread-clock CPU endpoints. The clocks use nanoseconds;
+`duration_ms` remains wall time. These facts survive a filtered DEBUG start.
+Async spans and spans that exit on another thread report CPU as unavailable,
+since a thread clock would include unrelated task execution. Timing and causal
+fields take priority over optional metadata at both the field and byte bounds.
+Only trimmed records carry encoder-owned `omitted_fields` and
+`required_measurement_fields_omitted` counts; a nonzero measurement count means
+the record cannot qualify as complete timing evidence.
+
+Set `POLYLOGUE_TRACE_COMPUTE=1` before starting the process to record coarse
+`compute.queue` and `compute.service` spans at INFO. The flag is read once at
+module import. Queue spans cover admission to worker start and share a `task_id`
+with service spans. Their wall time is a logical wait, not submitting-thread
+occupancy; scheduler admission-to-dispatch wait is separately in `wait_ms`.
+Service spans cover the submitted function; native SQL settlement remains outside
+that body. Nested compute units execute inside the existing service span.
+
+Reduce a JSONL capture with
+`python -m devtools.fresh_build_bench.trace_ledger LOG --out DIR`. `trace.json`
+opens in Perfetto, and `ledger.json` records span chronology and coverage.
+Exclusive wall subtracts the union of observed same-thread work children. CPU
+uses thread-clock endpoint unions only when every same-thread child has adequate
+endpoints. These residuals include uninstrumented work; neither is a full stage
+profile. Queue waits have separate logical lanes. Missing starts, unmatched
+terminals, rejected fields, loss counters when present, and unavailable legacy
+chronology remain visible. Duration-derived intervals are marked inferred.
+
+The ledger's `cpu_coverage.measured_thread_cpu_union_ns` unions measured CPU
+clock intervals per process and native thread. It counts nested or overlapping
+siblings once, even when their causal parent is async. Per-span exclusive CPU
+remains relative to direct children and must not be summed as global coverage.
+The thread rows report overlapping inclusive CPU and uninstrumented CPU between
+their first and last endpoints. CPU outside those endpoint ranges or on other
+threads is unavailable; the reducer cannot determine native TID reuse.
+`required_field_omissions_absent` is false when an emitter reports omitted
+required measurement fields or an invalid omission count. Surviving independent
+intervals remain measured; optional metadata trimming alone does not invalidate
+their coverage.
+
+This field describes explicit omission metadata in observed records. It does not
+prove producer delivery, complete stage instrumentation or full CPU attribution.
+Those remain separate coverage measurements.
 
 ### Cost
 

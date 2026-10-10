@@ -187,11 +187,30 @@ class StackSampler:
             "log_delivery": _log_delivery(),
             "stacks": stacks,
             "profile_refusal": self.profile_refusal,
+            "runtime_after_imports": runtime_identity(),
+            "coverage": {
+                "python": "sampled_frames" if self.stacks else "unavailable",
+                "native": "thread_cpu_accounting_only",
+                "off_cpu": "wall_stack_observations" if self.stacks else "unavailable",
+            },
         }
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.out_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(self.out_path)
+
+
+def runtime_identity() -> dict[str, object]:
+    """Capture effective GIL and trampoline state after current imports."""
+    return {
+        "executable": sys.executable,
+        "version": sys.version,
+        "gil_enabled": getattr(sys, "_is_gil_enabled", lambda: True)(),
+        "free_threaded_build": bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
+        "perf_trampoline_active": getattr(sys, "is_stack_trampoline_active", lambda: False)(),
+        "perf_trampoline_available": bool(sysconfig.get_config_var("PY_HAVE_PERF_TRAMPOLINE")),
+        "cflags": sysconfig.get_config_var("PY_CFLAGS"),
+    }
 
 
 def _process_cpu_ticks() -> int | None:

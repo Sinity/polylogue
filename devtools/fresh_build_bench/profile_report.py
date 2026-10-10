@@ -10,6 +10,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Final
 
+from devtools.fresh_build_bench.profiler_provider import FORMAT as PERF_FORMAT
+
 _SQLITE_CALL: Final = re.compile(
     r"\.(execute|executemany|executescript|commit|rollback|fetchall|fetchone|fetchmany|close|backup|connect)\("
     r"|sqlite3\.connect|__exit__|for .* in (conn|cursor|connection)\b"
@@ -27,6 +29,12 @@ class ProfileRefusedError(ValueError):
 
 def profile_refusal_reason(document: dict[str, Any]) -> str | None:
     """Decide whether a sampler document supplies stack measurements."""
+    if document.get("format") == PERF_FORMAT:
+        return (
+            str(document.get("reason") or "cpu_profile_samples_unavailable")
+            if document.get("outcome") == "unavailable" or not document.get("total_samples")
+            else None
+        )
     reason = document.get("profile_refusal") or (None if document.get("stacks") else "profile_samples_unavailable")
     return str(reason) if reason else None
 
@@ -69,6 +77,23 @@ def classify_leaf(frame: list[Any]) -> str:
 
 def summarise(document: dict[str, Any], *, top: int, thread_filter: str | None) -> dict[str, Any]:
     _require_profile(document)
+    if document.get("format") == PERF_FORMAT:
+        if thread_filter is None:
+            rows = document["leaf_samples"]
+        else:
+            rows = [row for row in document["leaf_samples"] if row["thread"].startswith(thread_filter)]
+        return {
+            "outcome": document["outcome"],
+            "coverage": document["coverage"],
+            "limitations": document["limitations"],
+            "total_samples": document["total_samples"],
+            "lost_samples": document["lost_samples"],
+            "unknown_leaf_samples": document["unknown_leaf_samples"],
+            "python_symbol_samples": document["python_symbol_samples"],
+            "native_leaf_samples": [
+                (f"{row['thread']}[{row['tid']}] {row['dso']}:{row['symbol']}", row["samples"]) for row in rows[:top]
+            ],
+        }
     ticks_per_s = float(document["clock_ticks_per_s"])
     interval = float(document["interval_s"])
     by_thread_wall: Counter[str] = Counter()
@@ -104,6 +129,9 @@ def summarise(document: dict[str, Any], *, top: int, thread_filter: str | None) 
             inclusive_cpu[label] += cpu
             inclusive_wall[label] += wall
     return {
+        "coverage": document.get(
+            "coverage", {"python": "sampled_frames", "native": "unavailable", "off_cpu": "wall_stack_observations"}
+        ),
         "elapsed_s": document["elapsed_s"],
         "sampler_overhead_s": document["sampler_seconds"],
         "threads_by_cpu_s": by_thread_cpu.most_common(top),
@@ -119,6 +147,8 @@ def summarise(document: dict[str, Any], *, top: int, thread_filter: str | None) 
 def collapsed(document: dict[str, Any], *, weight: str, thread_filter: str | None) -> list[str]:
     """Brendan Gregg collapsed-stack lines for a flame graph renderer."""
     _require_profile(document)
+    if document.get("format") == PERF_FORMAT:
+        raise ProfileRefusedError("cpu_profile_callchains_unavailable")
     ticks_per_s = float(document["clock_ticks_per_s"])
     interval = float(document["interval_s"])
     lines: Counter[str] = Counter()
@@ -145,17 +175,21 @@ def main(argv: list[str] | None = None) -> int:
     document = json.loads(args.samples.read_text(encoding="utf-8"))
     try:
         _require_profile(document)
+        if args.collapsed is not None and document.get("format") == PERF_FORMAT:
+            raise ProfileRefusedError("cpu_profile_callchains_unavailable")
     except ProfileRefusedError as exc:
         print(f"profile outcome=refused reason={exc.reason}")
         return 2
     summary = summarise(document, top=args.top, thread_filter=args.thread)
     for key, value in summary.items():
-        if isinstance(value, list):
+        if isinstance(value, list) and all(isinstance(row, (tuple, list)) and len(row) == 2 for row in value):
             print(f"\n== {key}")
             for name, amount in value:
                 print(f"{amount:9.2f}  {name}")
-        else:
+        elif isinstance(value, (int, float)):
             print(f"{key}: {value:.2f}")
+        else:
+            print(f"{key}: {json.dumps(value)}")
     if args.collapsed is not None:
         args.collapsed.write_text(
             "\n".join(collapsed(document, weight=args.weight, thread_filter=args.thread)) + "\n", encoding="utf-8"

@@ -243,6 +243,11 @@ class Observation:
     work_progress: int = 0
     promoted_index: str | None = None
     readiness: dict[str, bool] = field(default_factory=dict)
+    scan_finished_s: float | None = None
+    readiness_checked_s: list[float] | None = None
+    readiness_cached: bool = False
+    readiness_binding: dict[str, Any] | None = None
+    readiness_cache_max_age_s: float | None = None
     error: str | None = None
     #: Whether a failed read may succeed on a later poll (a busy or locked
     #: database, a file swapped by a generation promotion). A schema the
@@ -288,10 +293,20 @@ def _promoted_index(archive: Path) -> str | None:
     return str(target)
 
 
-def observe(archive: Path, started: float, *, readiness_max_age_s: float | None = None) -> Observation:
-    observation = Observation(t=round(time.monotonic() - started, 3))
+def observe(
+    archive: Path,
+    started: float,
+    *,
+    readiness_max_age_s: float | None = None,
+    readiness_probe: Callable[[Path], dict[str, Any]] | None = None,
+) -> Observation:
+    observation = Observation(
+        t=round(time.monotonic() - started, 3),
+        readiness_cache_max_age_s=_READINESS_POLL_S if readiness_max_age_s is None else readiness_max_age_s,
+    )
     ops_path, source_path = archive / "ops.db", archive / "source.db"
     if not ops_path.exists() or not source_path.exists():
+        observation.scan_finished_s = round(time.monotonic() - started, 3)
         return observation
     try:
         with closing(_ro(ops_path)) as conn:
@@ -363,28 +378,45 @@ def observe(archive: Path, started: float, *, readiness_max_age_s: float | None 
                     ).fetchone()[0]
                 )
         observation.promoted_index = _promoted_index(archive)
-        if observation.intake_complete and observation.promoted_index is not None and observation.open_debt == 0:
+        if observation.promoted_index is not None and observation.open_debt == 0:
+            if readiness_probe is None:
+                raise OSError("candidate-bound readiness probe required")
             now = time.monotonic()
             cached_at = _last_readiness.get("at")
             if (
                 isinstance(cached_at, float)
                 and now - cached_at < (_READINESS_POLL_S if readiness_max_age_s is None else readiness_max_age_s)
                 and _last_readiness.get("archive") == str(archive)
+                and _last_readiness.get("candidate_key") == getattr(readiness_probe, "cache_key", None)
             ):
-                observation.readiness = dict(_last_readiness["readiness"])  # type: ignore[call-overload]
+                observation.readiness = dict(_last_readiness["readiness"])
+                observation.readiness_cached = True
+                observation.readiness_checked_s = list(_last_readiness["checked_s"])
+                observation.readiness_binding = _last_readiness["binding"]
             else:
-                from polylogue.storage.archive_readiness import archive_readiness_status
-
-                readiness = archive_readiness_status(archive)
+                document = readiness_probe(archive)
+                readiness = document["readiness"]
+                observation.readiness_binding = document["binding"]
                 surfaces = readiness.get("surfaces", {}) if readiness.get("checked") is True else {}
                 observation.readiness = {
                     str(name): isinstance(surface, dict) and surface.get("ready") is True
                     for name, surface in surfaces.items()
                 }
-                _last_readiness.update(at=now, archive=str(archive), readiness=dict(observation.readiness))
+                observation.readiness_checked_s = [
+                    round(value - started, 3) for value in document["checked_monotonic_s"]
+                ]
+                _last_readiness.update(
+                    at=now,
+                    archive=str(archive),
+                    readiness=dict(observation.readiness),
+                    checked_s=observation.readiness_checked_s,
+                    binding=observation.readiness_binding,
+                    candidate_key=getattr(readiness_probe, "cache_key", None),
+                )
     except (OSError, sqlite3.Error) as exc:
         observation.error = f"{type(exc).__name__}: {exc}"
         observation.error_retryable = _retryable_observation_error(exc)
+    observation.scan_finished_s = round(time.monotonic() - started, 3)
     return observation
 
 
@@ -526,6 +558,10 @@ class WorkProgressTail:
 
 
 def _retryable_observation_error(exc: BaseException) -> bool:
+    from devtools.fresh_build_bench.readiness_probe import ReadinessProbeError
+
+    if isinstance(exc, ReadinessProbeError):
+        return False
     if isinstance(exc, sqlite3.OperationalError):
         message = str(exc).lower()
         # ``locking protocol`` is SQLITE_PROTOCOL: a WAL reader lost its race
@@ -539,7 +575,7 @@ def _retryable_observation_error(exc: BaseException) -> bool:
 #: Seconds between readiness reads once everything else has settled: the
 #: readiness census reads every raw row, so it is not taken every poll.
 _READINESS_POLL_S = 60.0
-_last_readiness: dict[str, object] = {}
+_last_readiness: dict[str, Any] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +661,13 @@ def environment(config: RunConfig) -> dict[str, Any]:
             cwd=config.candidate,
         ).stdout
     )
+    requested = Path(config.python)
+    if not requested.is_absolute():
+        requested = (
+            config.candidate / requested if "/" in config.python else Path(shutil.which(config.python) or config.python)
+        )
+    if requested.resolve() != Path(probe[3]).resolve():
+        raise ValueError("unbound Python launcher: pass the real interpreter executable instead of a wrapper")
     from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes
     from polylogue.runtime import available_cpus
 
@@ -647,6 +690,7 @@ def environment(config: RunConfig) -> dict[str, Any]:
         # builds of one version are different interpreters.
         "python_build": probe[2],
         "python_executable": probe[3],
+        "python_launcher_sha256": hashlib.sha256(requested.resolve().read_bytes()).hexdigest(),
         "work_filesystem": _filesystem(config.work),
         # Same filesystem type on another device (NVMe vs loop or network
         # ext4) is not the same storage.
@@ -730,10 +774,12 @@ def _daemon_command(config: RunConfig) -> list[str]:
     # candidate that predates this benchmark (master, an older head) runs with
     # the same instrumentation as the branch under test.
     bootstrap = (
-        "import os, runpy\n"
+        "import os, runpy, sys\n"
+        "sys.path.insert(0, os.environ['POLYLOGUE_BENCH_CANDIDATE'])\n"
         "sampler = os.environ.get('POLYLOGUE_BENCH_SAMPLER')\n"
         "if sampler: runpy.run_path(sampler)['start_from_environment']()\n"
         "from polylogue.daemon.commands import main\n"
+        "runpy.run_path(os.environ['POLYLOGUE_BENCH_POLICY_OBSERVER'])['start_from_environment']()\n"
         "main()"
     )
     return [
@@ -767,12 +813,15 @@ def _daemon_env(config: RunConfig, paths: dict[str, Path]) -> dict[str, str]:
         "POLYLOGUE_LOG_FORMAT": "json",
         "POLYLOGUE_LOG_FILE": str(paths["events"]),
         "PYTHONPATH": str(config.candidate),
+        "POLYLOGUE_BENCH_CANDIDATE": str(config.candidate.resolve()),
         # Bytecode goes to scratch, never into the candidate tree: the tree's
         # directory stamps (``candidate_stamp``) then move only when files
         # are added or removed there.
         "PYTHONPYCACHEPREFIX": str(paths["tmp"] / "pycache"),
     }
     # Per-thread CPU is always sampled (cheap); stacks only with --profile.
+    env["POLYLOGUE_BENCH_POLICY_OBSERVER"] = str(Path(__file__).with_name("policy_observer.py"))
+    env["POLYLOGUE_BENCH_POLICY"] = str(config.work.absolute() / "policy.json")
     env["POLYLOGUE_BENCH_SAMPLER"] = str(_SAMPLER_PATH)
     env["POLYLOGUE_BENCH_STACK_SAMPLES"] = str(paths["stacks"])
     if config.profile:
@@ -973,8 +1022,13 @@ def _measure_and_write_receipt(
     progress: Callable[[str], None],
     hook_preparation: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    from devtools.fresh_build_bench.report import build_receipt
+    from devtools.fresh_build_bench.readiness_probe import CandidateReadinessProbe
+    from devtools.fresh_build_bench.report import benchmark_implementation_sha256, build_receipt
 
+    readiness_probe = CandidateReadinessProbe(
+        candidate=config.candidate, python=config.python, environment=daemon_env, work=config.work.absolute()
+    )
+    driver_at_launch = benchmark_implementation_sha256()
     log_stream = paths["daemon_log"].open("wb")
     corpus_stamp = change_stamp(config.corpus)
     started_wall = time.time()
@@ -1020,7 +1074,10 @@ def _measure_and_write_receipt(
             # window: a domain turning ready right after one census must be
             # seen before the no-progress deadline can fire.
             observation = observe(
-                paths["archive"], started, readiness_max_age_s=min(_READINESS_POLL_S, config.stall_timeout_s / 2)
+                paths["archive"],
+                started,
+                readiness_max_age_s=min(_READINESS_POLL_S, config.stall_timeout_s / 2),
+                readiness_probe=readiness_probe,
             )
             observation.work_progress = work_progress.poll()
             if work_progress.convergence_next_run_at is not None:
@@ -1082,7 +1139,9 @@ def _measure_and_write_receipt(
             if observation.terminal and work_progress.current_daemon_observed:
                 stable += 1
                 if stable == 1:
-                    terminal_at = observation.t
+                    terminal_at = (
+                        observation.scan_finished_s if observation.scan_finished_s is not None else observation.t
+                    )
                 if stable >= config.stable_polls:
                     outcome = "terminal"
                     break
@@ -1127,7 +1186,9 @@ def _measure_and_write_receipt(
         outcome = "interrupted"
     finished = time.monotonic()
     finished_wall = time.time()
-    final = observe(paths["archive"], started)
+    # Recheck the physically drained archive with the same candidate imports;
+    # a cached pre-shutdown census cannot qualify its final state.
+    final = observe(paths["archive"], started, readiness_max_age_s=0.0, readiness_probe=readiness_probe)
     final.work_progress = final_work_progress
     final.useful_progress_at_s = last_useful_progress_at
     final.activity_at_s = last_activity_at
@@ -1170,6 +1231,7 @@ def _measure_and_write_receipt(
         corpus_unchanged=corpus_unchanged,
         clock_step_s=max([*clock_steps, (finished_wall - started_wall) - (finished - started)], key=abs),
         cancelled=lambda: bool(interrupted),
+        driver_at_launch=driver_at_launch,
     )
     if hook_preparation is not None:
         receipt["hook_preparation"] = hook_preparation

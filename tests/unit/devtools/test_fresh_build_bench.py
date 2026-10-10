@@ -75,32 +75,92 @@ def test_event_reduction_scopes_intake_and_writer_share_to_promotion(tmp_path: P
     assert summary["by_source"]["codex"] == {"groups": 1, "files": 2, "seconds": 5.0}
 
 
-def test_stage_rollup_counts_leaf_timers_once(tmp_path: Path) -> None:
-    """Anti-vacuity: rolling up the parent ``full.index.full_replace`` as well
-    as its children doubles the ``index`` bucket; matching the generic index
-    prefix first charges ``full.index.graph_resolve`` to ``index``."""
+@pytest.mark.parametrize(
+    "timings,expected_stages,expected_buckets,expected_coverage",
+    [
+        (
+            [{"parse": 10.0}, {"parse": 10.0, "parse.decode": 1.0}],
+            {"parse": 20.0, "parse.decode": 1.0},
+            {"other": 21.0},
+            {"parse": (2, 0), "parse.decode": (1, 1)},
+        ),
+        (
+            [
+                {
+                    "full.index.full_replace": 3.0,
+                    "full.index.full_replace.messages": 2.0,
+                    "full.index.full_replace.messages.decode": 1.0,
+                    "full.index.full_replace.blocks": 2.0,
+                    "full.index.prepare": 4.0,
+                    "full.index.graph_resolve": 5.0,
+                }
+            ],
+            {
+                "full.index.full_replace": 3.0,
+                "full.index.full_replace.messages": 2.0,
+                "full.index.full_replace.messages.decode": 1.0,
+                "full.index.full_replace.blocks": 2.0,
+                "full.index.prepare": 4.0,
+                "full.index.graph_resolve": 5.0,
+            },
+            {"index": 8.0, "materialize": 4.0, "derived_inline": 5.0},
+            {
+                "full.index.full_replace": (1, 0),
+                "full.index.full_replace.blocks": (1, 0),
+                "full.index.full_replace.messages": (1, 0),
+                "full.index.full_replace.messages.decode": (1, 0),
+                "full.index.prepare": (1, 0),
+                "full.index.graph_resolve": (1, 0),
+            },
+        ),
+        (
+            [{"parse": 20.0, "parse.decode": None}, {}],
+            {"parse": 20.0},
+            {"other": 20.0},
+            {"parse": (1, 1), "parse.decode": (0, 2)},
+        ),
+    ],
+    ids=["mixed-parent-only-and-child-batches", "nested-and-potentially-overlapping", "missing-finish"],
+)
+def test_stage_rollup_retains_inclusive_timers_without_inventing_exclusive_coverage(
+    tmp_path: Path,
+    timings: list[dict[str, float | None]],
+    expected_stages: dict[str, float],
+    expected_buckets: dict[str, float],
+    expected_coverage: dict[str, tuple[int, int]],
+) -> None:
+    """Names cannot establish child coverage, nesting or cross-thread overlap."""
     import sqlite3
 
     ops = tmp_path / "ops.db"
     with sqlite3.connect(ops) as conn:
         conn.execute("CREATE TABLE daemon_events (kind TEXT, payload_json TEXT)")
-        payload = {
-            "total_time_s": 10.0,
-            "stage_timings_s": {
-                "full.index.full_replace": 3.0,
-                "full.index.full_replace.messages": 2.0,
-                "full.index.full_replace.blocks": 1.0,
-                "full.index.prepare": 4.0,
-                "full.index.graph_resolve": 5.0,
-            },
-        }
-        conn.execute("INSERT INTO daemon_events VALUES ('ingestion_batch', ?)", (json.dumps(payload),))
+        for stage_timings in timings:
+            payload = {"total_time_s": 10.0, "stage_timings_s": stage_timings}
+            conn.execute("INSERT INTO daemon_events VALUES ('ingestion_batch', ?)", (json.dumps(payload),))
     batches = analyse_batches(ops)
-    buckets = dict(batches["stage_buckets_seconds"])
-    assert buckets["index"] == 3.0
-    assert buckets["materialize"] == 4.0
-    assert buckets["derived_inline"] == 5.0
-    assert batches["totals"]["total_time_s"] == 10.0
+    assert dict(batches["stage_seconds"]) == expected_stages
+    assert dict(batches["stage_buckets_inclusive_seconds"]) == expected_buckets
+    assert "stage_buckets_seconds" not in batches
+    coverage = batches["stage_timing_coverage"]
+    assert coverage["measurement"] == "inclusive_wall_sums_may_overlap"
+    assert coverage["exclusive_seconds"] is None
+    assert coverage["interval_relationships"] == "unavailable"
+    assert coverage["by_stage"] == {
+        key: {"observed_batches": observed, "missing_batches": missing}
+        for key, (observed, missing) in expected_coverage.items()
+    }
+    assert batches["totals"]["total_time_s"] == 10.0 * len(timings)
+    from devtools.fresh_build_bench.report import render
+
+    receipt = _receipt(stages=batches, budgets={})
+    receipt["candidate"]["dirty"] = False
+    receipt["corpus"]["kind"] = "synthetic"
+    assert "inclusive timer sums, may overlap" in render(receipt)
+    assert "exclusive attribution unavailable" in render(receipt)
+    _, comparison = compare(receipt, receipt)
+    for bucket in expected_buckets:
+        assert f"stage_inclusive.{bucket}" in comparison
 
 
 def test_projection_scales_origin_rates_to_the_population() -> None:
@@ -207,6 +267,12 @@ def _receipt(**overrides: object) -> dict[str, Any]:
         "corpus": {"digest": "c", "total_bytes": 10 << 20, "file_count": 10},
         "config": {"digest": "k"},
         "environment": {"python": "3.14.4", "gil_enabled": False},
+        "effective_compute_policy": {
+            "outcome": "bound",
+            "states": [{"capacity_slots": 12}],
+            "product_binding": {"outcome": "bound"},
+        },
+        "readiness_probe": {"outcome": "bound"},
         "timing_s": {"promotion": 10.0, "terminal": 20.0},
         "process_tree": {"rss_peak_bytes": 1 << 30},
         "checks": {"promoted": True},
@@ -608,11 +674,13 @@ def test_refresh_voids_cpu_to_promotion_when_promotion_moves(tmp_path: Path) -> 
     receipt["corpus"]["path"] = str(tmp_path / "absent-corpus")
     path = tmp_path / "receipt.json"
     path.write_text(json.dumps(receipt), encoding="utf-8")
+    original_bytes = path.read_bytes()
     refreshed = refresh(path)
     assert refreshed["timing_s"]["promotion"] == 20.0
     assert refreshed["process_tree"]["cpu_seconds_to_promotion"] is None
     assert refreshed["process_tree"]["mean_cores_to_promotion"] is None
-    assert json.loads(path.read_text(encoding="utf-8")) == refreshed
+    assert path.read_bytes() == original_bytes
+    assert json.loads(next(tmp_path.glob("receipt.view-*.json")).read_text()) == refreshed
 
 
 def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1430,11 +1498,18 @@ def test_a_candidate_edit_restored_before_the_end_is_a_change(tmp_path: Path) ->
 
 def test_readiness_is_rechecked_within_the_stall_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity (Codex P2, #5678): cache readiness for a fixed 60 s and a
-    30 s stall window declares a build stalled before its next census."""
+    30 s stall window declares a build stalled before its next census.
+    Omitting the final helper leaves an otherwise terminal run unqualified."""
     captured = _scripted_run(tmp_path, monkeypatch, [_terminal_frame()], stall_timeout_s=30.0)
 
-    ages = {kwargs.get("readiness_max_age_s") for kwargs in captured["observe_kwargs"] if kwargs}
+    loop_calls, final_call = captured["observe_kwargs"][:-1], captured["observe_kwargs"][-1]
+    ages = {kwargs.get("readiness_max_age_s") for kwargs in loop_calls}
     assert ages == {15.0}
+    probe = loop_calls[0]["readiness_probe"]
+    assert callable(probe) and all(kwargs["readiness_probe"] is probe for kwargs in loop_calls)
+    assert final_call["readiness_probe"] is probe
+    assert final_call["readiness_max_age_s"] == 0.0
+    assert captured["final"].readiness_complete
 
 
 def test_a_cancellation_after_the_loop_marks_the_receipt_interrupted(
@@ -2165,9 +2240,26 @@ def test_event_coverage_exposes_every_dropped_record(tmp_path: Path, origin: flo
         "malformed_json": 1,
         "non_object": 1,
         "invalid_event": 1,
+        "omitted_fields": 0,
+        "required_measurement_fields_omitted": 0,
+        "invalid_omission_metadata": 0,
         "complete": False,
     }
     assert not _events_lossless(result, {"dropped": 0, "failures": 0, "undrained": 0})
+
+
+@pytest.mark.parametrize("omissions,required", [(3, 0), (3, 1), (0, 1), (-1, 0), (True, 0)])
+def test_event_attribute_omissions_cannot_claim_lossless(tmp_path: Path, omissions: Any, required: int) -> None:
+    from devtools.fresh_build_bench.report import _events_lossless
+
+    path = tmp_path / "events.jsonl"
+    record = json.loads(_event("00.000", "fixture.completed"))
+    record.update(omitted_fields=omissions, required_measurement_fields_omitted=required)
+    path.write_text(json.dumps(record) + "\n")
+    events = analyse_events(path)
+    assert events["coverage"]["valid_events"] == 1
+    assert events["coverage"]["required_measurement_fields_omitted"] == required
+    assert not _events_lossless(events, {"dropped": 0, "failures": 0, "undrained": 0})
 
 
 @pytest.mark.parametrize(
@@ -2475,6 +2567,8 @@ def test_free_threaded_profile_refuses_frame_traversal_but_keeps_cpu_accounting(
 def test_requested_profile_controls_terminal_qualification_and_comparison(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, samples: str
 ) -> None:
+    import hashlib
+
     from devtools.fresh_build_bench import report
 
     document: dict[str, Any] = {
@@ -2501,6 +2595,30 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
         lambda *args, **kwargs: {"milestones_s": {"promoted_s": 0.5}, "coverage": {"complete": True}},
     )
     monkeypatch.setattr(report, "archive_census", lambda *args: {"messages_fts_rows": 0, "fts_indexable_rows": 0})
+    (tmp_path / "policy.json").write_text(
+        json.dumps({"outcome": "bound", "states": [{"capacity_slots": 12}], "product_binding": {"outcome": "bound"}})
+    )
+    helper_hash = hashlib.sha256(Path(report.__file__).with_name("readiness_probe.py").read_bytes()).hexdigest()
+    source = str(tmp_path / "polylogue/storage/archive_readiness.py")
+    (tmp_path / "readiness.json").write_text(
+        json.dumps(
+            {
+                "censuses": [
+                    {
+                        "outcome": "bound",
+                        "candidate": str(tmp_path),
+                        "python_executable": "/synthetic/python",
+                        "helper_sha256": helper_hash,
+                        "expected_source_sha256": "source",
+                        "binding": {"path": source, "module_path": source, "sha256": "source"},
+                        "readiness": {"checked": True, "surfaces": {}},
+                        "checked_monotonic_s": [0.0, 1.0],
+                        "helper_exit_code": 0,
+                    }
+                ]
+            }
+        )
+    )
     receipt = report.build_receipt(
         config=RunConfig(
             corpus=tmp_path,
@@ -2514,7 +2632,7 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
         manifest={"total_bytes": 0, "kind": "sample", "digest": "d", "file_count": 0, "by_origin": {}},
         paths={"events": tmp_path / "events.jsonl", "archive": tmp_path, "stacks": stacks, "work": tmp_path},
         identity={"unchanged_during_run": True, "git_sha": "0" * 40, "dirty": False},
-        environment={},
+        environment={"python_executable": "/synthetic/python"},
         command=[],
         started_wall=0.0,
         wall_s=1.0,
@@ -2531,8 +2649,11 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
             readiness=dict.fromkeys(REQUIRED_READINESS_DOMAINS, True),
         ),
         tree_samples=[],
+        driver_at_launch=report.benchmark_implementation_sha256(),
     )
     assert all(value for key, value in receipt["checks"].items() if key != "profile_collected")
+    assert receipt["checks"]["fts_row_count_equal"] is True
+    assert "fts_exact" not in receipt["checks"]
     assert receipt["checks"]["profile_collected"] is (samples == "collected")
     assert receipt["qualified"] is (samples == "collected")
     # Refresh uses this same owner; it must not resurrect qualification.

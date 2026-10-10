@@ -93,14 +93,44 @@ def _iter_events(path: Path, *, coverage: Counter[str] | None = None) -> Iterato
                 continue
             if coverage is not None:
                 coverage["valid_events"] += 1
+                for key in ("omitted_fields", "required_measurement_fields_omitted"):
+                    if key in event:
+                        value = event[key]
+                        if type(value) is int and value >= 0:
+                            coverage[key] += value
+                        else:
+                            coverage["invalid_omission_metadata"] += 1
             yield event
 
 
 def _event_coverage(path: Path, counts: Counter[str]) -> dict[str, Any]:
     return {
         "file_present": path.exists(),
-        **{key: counts[key] for key in ("lines", "valid_events", "malformed_json", "non_object", "invalid_event")},
-        "complete": path.exists() and not any(counts[key] for key in ("malformed_json", "non_object", "invalid_event")),
+        **{
+            key: counts[key]
+            for key in (
+                "lines",
+                "valid_events",
+                "malformed_json",
+                "non_object",
+                "invalid_event",
+                "omitted_fields",
+                "required_measurement_fields_omitted",
+                "invalid_omission_metadata",
+            )
+        },
+        "complete": path.exists()
+        and not any(
+            counts[key]
+            for key in (
+                "malformed_json",
+                "non_object",
+                "invalid_event",
+                "omitted_fields",
+                "required_measurement_fields_omitted",
+                "invalid_omission_metadata",
+            )
+        ),
     }
 
 
@@ -269,6 +299,7 @@ def analyse_batches(ops_path: Path) -> dict[str, Any]:
     if not ops_path.exists():
         return {"batches": 0}
     stages: defaultdict[str, float] = defaultdict(float)
+    stage_observed: Counter[str] = Counter()
     totals: defaultdict[str, float] = defaultdict(float)
     measured: Counter[str] = Counter()
     missing: Counter[str] = Counter()
@@ -301,13 +332,15 @@ def analyse_batches(ops_path: Path) -> dict[str, Any]:
                     totals[key] += value
                     measured[key] += 1
             for stage, seconds in (data.get("stage_timings_s") or {}).items():
-                stages[stage] += float(seconds)
+                if seconds is not None:
+                    stages[stage] += float(seconds)
+                    stage_observed[stage] += 1
+                else:
+                    stage_observed[stage] += 0
     buckets: defaultdict[str, float] = defaultdict(float)
     for stage, seconds in stages.items():
-        # Parent timers include their children; roll up only leaf names so a
-        # bucket never double-counts a nested timer.
-        if any(other.startswith(stage + ".") for other in stages):
-            continue
+        # Names alone cannot prove nesting, overlap or exhaustive coverage.
+        # Preserve inclusive observations, including parents in other batches.
         buckets[_bucket(stage)] += seconds
     return {
         "batches": count,
@@ -319,9 +352,18 @@ def analyse_batches(ops_path: Path) -> dict[str, Any]:
             for key in sorted(measured.keys() | missing.keys())
         },
         "stage_seconds": [[key, round(value, 3)] for key, value in sorted(stages.items(), key=lambda item: -item[1])],
-        "stage_buckets_seconds": [
+        "stage_buckets_inclusive_seconds": [
             [key, round(value, 3)] for key, value in sorted(buckets.items(), key=lambda item: -item[1])
         ],
+        "stage_timing_coverage": {
+            "measurement": "inclusive_wall_sums_may_overlap",
+            "exclusive_seconds": None,
+            "interval_relationships": "unavailable",
+            "by_stage": {
+                key: {"observed_batches": stage_observed[key], "missing_batches": count - stage_observed[key]}
+                for key in sorted(stage_observed)
+            },
+        },
     }
 
 
@@ -424,7 +466,12 @@ _CANCEL_CHECK_OPS: Final = 100_000
 
 
 def output_fingerprint(
-    archive: Path, promoted_index: str, scratch: Path, *, cancelled: Callable[[], bool] = lambda: False
+    archive: Path,
+    promoted_index: str,
+    scratch: Path,
+    *,
+    cancelled: Callable[[], bool] = lambda: False,
+    recipe_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Per-table digests over the comparable index relations (see :func:`_output_fingerprint`).
 
@@ -432,7 +479,7 @@ def output_fingerprint(
     :class:`FingerprintCancelledError`, like one seen between rows.
     """
     try:
-        return _output_fingerprint(archive, promoted_index, scratch, cancelled=cancelled)
+        return _output_fingerprint(archive, promoted_index, scratch, cancelled=cancelled, recipe_binding=recipe_binding)
     except sqlite3.OperationalError as exc:
         if cancelled():
             raise FingerprintCancelledError("cancelled during the output fingerprint") from exc
@@ -440,7 +487,14 @@ def output_fingerprint(
 
 
 def _output_fingerprint(
-    archive: Path, promoted_index: str, scratch: Path, *, cancelled: Callable[[], bool]
+    archive: Path,
+    promoted_index: str,
+    scratch: Path,
+    *,
+    cancelled: Callable[[], bool],
+    recipe_binding: dict[str, Any] | None = None,
+    _certified_recipe_pass: bool = False,
+    _strict_tables: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Per-table digests over the comparable index relations.
 
@@ -454,7 +508,7 @@ def _output_fingerprint(
     scratch.mkdir(parents=True, exist_ok=True)
     spool_path = scratch / "fingerprint.sqlite"
     spool_path.unlink(missing_ok=True)
-    tables: dict[str, dict[str, Any]] = {}
+    tables: dict[str, dict[str, Any]] = dict(_strict_tables) if _strict_tables is not None else {}
     with (
         closing(sqlite3.connect(f"file:{promoted_index}?mode=ro", uri=True)) as read,
         closing(sqlite3.connect(spool_path)) as spool,
@@ -467,7 +521,7 @@ def _output_fingerprint(
         # between rows; the progress handler interrupts them on cancellation.
         for connection in (read, spool):
             connection.set_progress_handler(lambda: 1 if cancelled() else 0, _CANCEL_CHECK_OPS)
-        for table in compared_table_census():
+        for table in ("sessions",) if _certified_recipe_pass else compared_table_census():
             volatile = _VOLATILE_COLUMNS[table]
             if not _has_table(read, table):
                 tables[table] = dict(_ABSENT_TABLE)
@@ -476,6 +530,11 @@ def _output_fingerprint(
                 str(row["name"])
                 for row in read.execute(f'PRAGMA table_xinfo("{table}")')
                 if row["name"] not in volatile
+                and not (
+                    _certified_recipe_pass
+                    and table == "sessions"
+                    and row["name"] in {"parser_fingerprint", "lowering_fingerprint"}
+                )
             ]
             spool.execute("DROP TABLE IF EXISTS facts")
             spool.execute("CREATE TABLE facts (payload TEXT NOT NULL)")
@@ -506,10 +565,33 @@ def _output_fingerprint(
                 digest.update(payload.encode())
                 digest.update(b"\n")
             tables[table] = {"rows": rows, "sha256": digest.hexdigest()}
-        tables["messages_fts:postings"] = _fts_postings(read, cancelled=cancelled)
+        if not _certified_recipe_pass:
+            tables["messages_fts:postings"] = _fts_postings(read, cancelled=cancelled)
     spool_path.unlink(missing_ok=True)
     overall = hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
-    return {"digest": overall, "tables": tables}
+    result: dict[str, Any] = {"digest": overall, "tables": tables}
+    if recipe_binding is not None and not _certified_recipe_pass:
+        from devtools.fresh_build_bench.recipe_qualification import RECIPE_COLUMNS, validate_recipe_rows
+
+        with closing(sqlite3.connect(f"file:{promoted_index}?mode=ro", uri=True)) as conn:
+            validated = validate_recipe_rows(conn, recipe_binding)
+        result["recipe_qualified"] = {
+            "validated": validated,
+            "columns": list(RECIPE_COLUMNS),
+            "binding": recipe_binding,
+        }
+        if validated:
+            result["recipe_qualified"].update(
+                _output_fingerprint(
+                    archive,
+                    promoted_index,
+                    scratch,
+                    cancelled=cancelled,
+                    _certified_recipe_pass=True,
+                    _strict_tables=tables,
+                )
+            )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +638,8 @@ def _tree_summary(samples: list[tuple[float, int, float, int, int, int]], build_
 #: Watch-source names whose batches carry each corpus origin.
 _SOURCE_ORIGIN = {
     "claude-code": "claude-code",
+    "claude-code-history": "claude-code",
+    "codex-state": "codex",
     "codex": "codex",
     "gemini-cli": "gemini-cli",
 }
@@ -586,12 +670,15 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
 
     export_origins = [origin for origin in sampled if origin in EXPORT_ORIGINS]
     inbox = {"inbox": export_origins[0]} if len(export_origins) == 1 else {}
+    seconds_by_origin: dict[str, float] = defaultdict(float)
     for source, stats in (by_source or {}).items():
         origin = _SOURCE_ORIGIN.get(source) or inbox.get(source)
-        if origin is None or origin not in sampled or not sampled[origin]["bytes"]:
+        if origin is not None:
+            seconds_by_origin[origin] += float(stats["seconds"])
+    for origin, seconds in seconds_by_origin.items():
+        if origin not in sampled or not sampled[origin]["bytes"]:
             continue
         sample_mib = sampled[origin]["bytes"] / 2**20
-        seconds = float(stats["seconds"])
         rate = seconds / sample_mib
         entry: dict[str, Any] = {
             "sample_mib": round(sample_mib, 1),
@@ -599,7 +686,7 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
             "s_per_mib": round(rate, 4),
         }
         pop = population.get(origin)
-        if pop:
+        if pop and manifest.get("kind") != "selected-real":
             pop_mib = pop["bytes"] / 2**20
             entry["population_mib"] = round(pop_mib, 1)
             entry["projected_s"] = round(rate * pop_mib, 1)
@@ -643,6 +730,41 @@ def evaluate_budgets(limits: dict[str, float], observed: dict[str, float | None]
         value = observed.get(name)
         rows[name] = {"limit": limit, "observed": value, "pass": value is not None and value <= limit}
     return rows
+
+
+def terminal_measurement(observations: list[Any], terminal_at: float | None, *, certified: bool) -> dict[str, Any]:
+    """Observer windows, never an invented product completion timestamp."""
+    first = next(
+        (
+            i
+            for i, row in enumerate(observations)
+            if row.terminal and (row.scan_finished_s if row.scan_finished_s is not None else row.t) == terminal_at
+        ),
+        None,
+    )
+    ready = observations[first] if first is not None else None
+    previous = observations[first - 1] if first else None
+    lower = previous.t if previous else 0.0
+    # A cached negative census does not prove readiness was still false at
+    # the later poll. Include the original scan in the observer window.
+    if previous and previous.readiness_checked_s and not previous.readiness_complete:
+        lower = min(lower, previous.readiness_checked_s[0])
+    if ready and ready.readiness_checked_s:
+        lower = min(lower, ready.readiness_checked_s[0])
+    return {
+        "kind": "readiness-observation",
+        "first_observed_s": terminal_at,
+        "observation_window_s": [lower, ready.scan_finished_s if ready else None],
+        "certified_s": observations[-1].scan_finished_s
+        if observations and terminal_at is not None and certified
+        else None,
+        "readiness_check_window_s": ready.readiness_checked_s if ready else None,
+        "readiness_cached": ready.readiness_cached if ready else None,
+        "readiness_binding": ready.readiness_binding if ready else None,
+        "readiness_cache_max_age_s": ready.readiness_cache_max_age_s if ready else None,
+        "semantics": "non-atomic scans; window describes observation resolution, not an exact completion event; "
+        "stable polls certify repeated observations and may reuse cached readiness",
+    }
 
 
 def _progress_timeline(observations: list[Any]) -> list[tuple[Any, ...]]:
@@ -818,6 +940,41 @@ def evidence_digests(work: Path) -> dict[str, str | None]:
         "events": digest(work / "events.jsonl"),
         "ops": digest(work / "archive" / "ops.db"),
         "ops_wal": digest(work / "archive" / "ops.db-wal"),
+        "policy": digest(work / "policy.json"),
+        **({"readiness": digest(work / "readiness.json")} if (work / "readiness.json").is_file() else {}),
+    }
+
+
+def readiness_evidence(
+    work: Path, *, candidate: str | None, python: str | None, helper_hash: str | None
+) -> dict[str, Any]:
+    """Validate only recorded candidate proof; never retrofit historical imports."""
+    from devtools.fresh_build_bench.readiness_probe import binding_valid
+
+    path = work / "readiness.json"
+    try:
+        document = json.loads(path.read_text()) if path.is_file() else {}
+        censuses = document.get("censuses", []) if isinstance(document, dict) else []
+    except (OSError, ValueError):
+        censuses = []
+    if not isinstance(censuses, list) or any(not isinstance(row, dict) for row in censuses):
+        censuses = []
+    bound = (
+        bool(candidate and python and helper_hash and censuses)
+        and any(row.get("outcome") == "bound" for row in censuses)
+        and all(
+            binding_valid(row)
+            and row.get("candidate") == candidate
+            and row.get("python_executable") == python
+            and row.get("helper_sha256") == helper_hash
+            for row in censuses
+        )
+    )
+    return {
+        "outcome": "bound" if bound else "unrecorded-or-refused",
+        "candidate": candidate,
+        "censuses": censuses,
+        "cost_scope": "observer helper CPU/wall outside daemon samples; interference is possible",
     }
 
 
@@ -860,7 +1017,8 @@ def _derive_dependents(receipt: dict[str, Any]) -> None:
     )
     receipt["throughput"] = {
         "mib_per_s_to_promotion": round(total_mib / promoted, 3) if promoted else None,
-        "mib_per_s_to_terminal": round(total_mib / terminal_at, 3) if terminal_at else None,
+        "mib_per_s_to_terminal": None,
+        "terminal_note": "readiness observation includes poll and scan delay; throughput is not measured",
         "files_per_s_to_promotion": round(receipt["corpus"]["file_count"] / promoted, 3) if promoted else None,
     }
     tree = receipt.get("process_tree") or {}
@@ -911,7 +1069,9 @@ def build_receipt(
     corpus_unchanged: bool = True,
     clock_step_s: float = 0.0,
     cancelled: Callable[[], bool] = lambda: False,
+    driver_at_launch: str | None = None,
 ) -> dict[str, Any]:
+    driver_now = benchmark_implementation_sha256()
     events = analyse_events(paths["events"], origin_unix=started_wall)
     batches = analyse_batches(paths["archive"] / "ops.db")
     milestones = events.get("milestones_s", {})
@@ -926,7 +1086,15 @@ def build_receipt(
     if config.fingerprint and final.promoted_index is not None and outcome != "interrupted":
         try:
             fingerprint = output_fingerprint(
-                paths["archive"], final.promoted_index, paths["work"] / "tmp", cancelled=cancelled
+                paths["archive"],
+                final.promoted_index,
+                paths["work"] / "tmp",
+                cancelled=cancelled,
+                recipe_binding=(
+                    json.loads((paths["work"] / "policy.json").read_text()).get("recipe_binding")
+                    if (paths["work"] / "policy.json").exists()
+                    else None
+                ),
             )
         except FingerprintCancelledError:
             fingerprint = None
@@ -946,9 +1114,11 @@ def build_receipt(
         "memberships_settled": final.memberships_pending == 0,
         "debt_zero": final.open_debt == 0,
         "readiness_complete": final.readiness_complete,
-        "fts_exact": census.get("messages_fts_rows") is not None
+        # Row-count coverage alone is not an FTS postings equality proof.
+        "fts_row_count_equal": census.get("messages_fts_rows") is not None
         and census.get("messages_fts_rows") == census.get("fts_indexable_rows"),
         "candidate_unchanged": identity["unchanged_during_run"],
+        "benchmark_unchanged": driver_at_launch is not None and driver_now == driver_at_launch,
         # A daemon that reached terminal but had to be killed on shutdown is
         # not a finished build.
         "clean_shutdown": exit_code == 0,
@@ -968,7 +1138,7 @@ def build_receipt(
         # sessions/messages materialized did no conversational work: an
         # accepted-but-empty export (e.g. a ChatGPT "[]" file) can settle its
         # cursor and promote an empty index, and "0 == 0" alone already
-        # passes the fts_exact check above. Require positive output whenever
+        # passes the fts_row_count_equal check above. Require positive output whenever
         # there was anything to materialize.
         "positive_output": total_bytes == 0
         or bool(census.get("rows", {}).get("sessions"))
@@ -979,17 +1149,47 @@ def build_receipt(
         # beside one that records it.
         "source_timing_recorded": _source_timing_recorded(manifest, events.get("by_source") or {}),
     }
+    policy_path = paths["work"] / "policy.json"
+    policy: dict[str, Any] = (
+        json.loads(policy_path.read_text())
+        if policy_path.is_file()
+        else {"outcome": "unavailable", "states": [], "errors": ["observer evidence missing"]}
+    )
+    checks["compute_policy_bound"] = policy.get("outcome") == "bound" and bool(policy.get("states"))
+    checks["candidate_import_bound"] = (policy.get("product_binding") or {}).get("outcome") == "bound"
+    helper_hash = hashlib.sha256(Path(__file__).with_name("readiness_probe.py").read_bytes()).hexdigest()
+    readiness = readiness_evidence(
+        paths["work"],
+        candidate=str(config.candidate.resolve()),
+        python=environment.get("python_executable"),
+        helper_hash=helper_hash,
+    )
+    checks["readiness_import_bound"] = readiness["outcome"] == "bound"
     receipt: dict[str, Any] = {
+        "effective_compute_policy": policy,
+        "readiness_probe": readiness,
+        "measurement_scope": "ordinary-daemon-terminal-route",
+        "launcher": {
+            "bootstrap_sha256": hashlib.sha256(command[2].encode()).hexdigest() if len(command) > 2 else None,
+            "policy_observer_sha256": hashlib.sha256(
+                Path(__file__).with_name("policy_observer.py").read_bytes()
+            ).hexdigest(),
+            "readiness_observer_sha256": helper_hash,
+            "overrides": dict(config.extra_env),
+            "external_injection": "none; launcher and child environment controlled by driver",
+        },
         "format": RECEIPT_FORMAT,
         "label": config.label,
         "outcome": outcome,
         "candidate": identity,
         "environment": environment,
-        "benchmark_implementation_sha256": benchmark_implementation_sha256(),
+        "benchmark_implementation_sha256": driver_now,
         "config": {
             "digest": config_digest(config),
             "argv": command[3:],
             "profile": config.profile,
+            "poll_s": config.poll_s,
+            "stable_polls": config.stable_polls,
             "overrides": sorted(key for key, _value in config.extra_env),
         },
         "corpus": {
@@ -999,9 +1199,12 @@ def build_receipt(
             "file_count": manifest["file_count"],
             "total_bytes": total_bytes,
             "by_origin": manifest["by_origin"],
-            "parameters": {k: v for k, v in manifest.get("parameters", {}).items() if k != "population"},
+            "parameters": {
+                k: v for k, v in manifest.get("parameters", {}).items() if k not in {"population", "provenance"}
+            },
             "population": manifest.get("parameters", {}).get("population"),
         },
+        "terminal_measurement": terminal_measurement(observations, terminal_at, certified=outcome == "terminal"),
         "timing_s": {
             "wall": round(wall_s, 3),
             "terminal": terminal_at,
@@ -1061,6 +1264,16 @@ def build_receipt(
         # the error that refused it, and retried failures stay visible.
         "observation_errors": _observation_errors(observations),
         "progress": _progress_timeline(observations),
+        "readiness_observations": [
+            {
+                "started_s": row.t,
+                "finished_s": row.scan_finished_s,
+                "terminal": row.terminal,
+                "checked_s": row.readiness_checked_s,
+                "cached": row.readiness_cached,
+            }
+            for row in observations
+        ],
         # Unrounded: ``refresh`` re-reduces the event log from this origin.
         "started_at_unix": started_wall,
         "clock_step_s": round(clock_step_s, 3),
@@ -1133,6 +1346,10 @@ def render(receipt: dict[str, Any]) -> str:
     profile = receipt.get("profile") or {}
     if profile.get("outcome") == "refused":
         lines.append(f"profile outcome=refused reason={profile.get('reason')}")
+    lines.append(
+        "terminal measurement  "
+        + json.dumps(receipt.get("terminal_measurement", {"kind": "historical-observer-timing"}), sort_keys=True)
+    )
     lines.append("timing  " + "  ".join(f"{key}={_fmt(value)}" for key, value in timing.items() if key != "shutdown"))
     lines.append("throughput  " + "  ".join(f"{k}={_fmt(v)}" for k, v in receipt["throughput"].items()))
     thread_cpu = receipt.get("thread_cpu_s") or {}
@@ -1157,10 +1374,10 @@ def render(receipt: dict[str, Any]) -> str:
         f"  io_write={tree.get('io_write_bytes', 0) / 2**20:,.0f} MiB"
     )
     stages = receipt.get("stages") or {}
-    lines.append("stage buckets (sum over batches, s)")
-    for key, value in stages.get("stage_buckets_seconds") or []:
+    lines.append("stage buckets (inclusive timer sums, may overlap, s; exclusive attribution unavailable)")
+    for key, value in stages.get("stage_buckets_inclusive_seconds") or []:
         lines.append(f"    {value:9.2f}  {key}")
-    lines.append("top stages (s)")
+    lines.append("top stages (inclusive timer sums, s)")
     for key, value in (stages.get("stage_seconds") or [])[:15]:
         lines.append(f"    {value:9.2f}  {key}")
     lines.append("by source")
@@ -1213,9 +1430,24 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
         problems.append("different run configurations (profile, overrides or budgets)")
     if before.get("benchmark_implementation_sha256") != after.get("benchmark_implementation_sha256"):
         problems.append("different benchmark implementation")
+    for side, receipt in (("before", before), ("after", after)):
+        policy = receipt.get("effective_compute_policy")
+        if not policy or policy.get("outcome") != "bound":
+            problems.append(f"{side} run has no bound effective compute policy")
+        if not policy or (policy.get("product_binding") or {}).get("outcome") != "bound":
+            problems.append(f"{side} run has no bound actual candidate imports")
+    for side, receipt in (("before", before), ("after", after)):
+        if (receipt.get("readiness_probe") or {}).get("outcome") != "bound":
+            problems.append(f"{side} run has no bound actual candidate readiness imports")
+    if (before.get("effective_compute_policy") or {}).get("states") != (
+        after.get("effective_compute_policy") or {}
+    ).get("states"):
+        problems.append("different effective compute policies")
+    if before.get("launcher") != after.get("launcher"):
+        problems.append("different benchmark launchers or injected settings")
     # Version and GIL mode alone equate two builds of one version (PGO or
     # not); the build string and the resolved executable tell them apart.
-    for key in ("python", "gil_enabled", "python_build", "python_executable"):
+    for key in ("python", "gil_enabled", "python_build", "python_executable", "python_launcher_sha256"):
         if before["environment"].get(key) != after["environment"].get(key):
             problems.append(f"different interpreter ({key})")
     # Host capacity and storage explain wall, CPU and throughput deltas on
@@ -1255,6 +1487,10 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
 #: ``--allow-unqualified`` never waives them.
 INTEGRITY_CHECKS: Final = (
     "candidate_unchanged",
+    "compute_policy_bound",
+    "candidate_import_bound",
+    "readiness_import_bound",
+    "benchmark_unchanged",
     "corpus_unchanged",
     "events_lossless",
     "evidence_unchanged",
@@ -1302,16 +1538,23 @@ def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified:
     )
     for key in ("rss_peak_bytes", "cpu_seconds_to_promotion", "io_write_bytes"):
         row(f"process.{key}", (before.get("process_tree") or {}).get(key), (after.get("process_tree") or {}).get(key))
-    a_buckets = dict((before.get("stages") or {}).get("stage_buckets_seconds") or [])
-    b_buckets = dict((after.get("stages") or {}).get("stage_buckets_seconds") or [])
+    a_buckets = dict((before.get("stages") or {}).get("stage_buckets_inclusive_seconds") or [])
+    b_buckets = dict((after.get("stages") or {}).get("stage_buckets_inclusive_seconds") or [])
     for key in sorted(set(a_buckets) | set(b_buckets)):
-        row(f"stage.{key}", a_buckets.get(key), b_buckets.get(key))
+        row(f"stage_inclusive.{key}", a_buckets.get(key), b_buckets.get(key))
     a_fp, b_fp = before.get("output_fingerprint"), after.get("output_fingerprint")
     if blocking:
         lines.append("output: not compared (receipts are not comparable)")
     elif a_fp and b_fp:
-        if a_fp["digest"] == b_fp["digest"]:
+        from devtools.fresh_build_bench.recipe_qualification import output_equivalence
+
+        equivalence = output_equivalence(a_fp, b_fp)
+        if equivalence == "exact":
             lines.append("output: IDENTICAL (per-table digests match)")
+        elif equivalence == "recipe-qualified-exact":
+            lines.append(
+                "output: RECIPE-QUALIFIED IDENTICAL (strict digests differ; certified parser/lowering columns only)"
+            )
         else:
             lines.append("output: DIFFERENT")
             for table in sorted(set(a_fp["tables"]) | set(b_fp["tables"])):
@@ -1320,20 +1563,23 @@ def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified:
                     lines.append(f"    {table}: {left} != {right}")
     else:
         lines.append("output: not compared (fingerprint missing)")
+    lines.append("Inspection: exit status reports comparability. Performance acceptance is not evaluated.")
     return not blocking, "\n".join(lines)
 
 
 def refresh(receipt_path: Path) -> dict[str, Any]:
     """Recompute a receipt's derived sections from its run directory.
 
-    The event log and ops ledger are the evidence; the receipt is a view of
-    them. Refreshing lets a finished run be read with a newer report without
+    The event log and ops ledger are the evidence. A new derived view keeps
+    the recording immutable. Refreshing lets a finished run be read with a newer report without
     rerunning the build. Identity, environment, the terminal time and the
     output fingerprint are kept as recorded; everything derived from the
     re-read milestones is recomputed.
     """
     receipt: dict[str, Any] = json.loads(receipt_path.read_text(encoding="utf-8"))
     work = receipt_path.parent
+    if "fts_exact" in receipt.get("checks", {}):
+        receipt["checks"]["fts_row_count_equal"] = receipt["checks"].pop("fts_exact")
     events = analyse_events(work / "events.jsonl", origin_unix=receipt["started_at_unix"])
     milestones = events.get("milestones_s", {})
     if milestones.get("promoted_s") != receipt["timing_s"].get("promotion"):
@@ -1352,6 +1598,13 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     sealed = receipt.get("evidence_sha256")
     receipt.setdefault("checks", {})["evidence_unchanged"] = sealed is not None and evidence_digests(work) == sealed
     receipt["checks"]["events_lossless"] = _events_lossless(events, _log_delivery(work / "stacks.json"))
+    receipt["readiness_probe"] = readiness_evidence(
+        work,
+        candidate=(receipt.get("readiness_probe") or {}).get("candidate"),
+        python=(receipt.get("environment") or {}).get("python_executable"),
+        helper_hash=(receipt.get("launcher") or {}).get("readiness_observer_sha256"),
+    )
+    receipt["checks"]["readiness_import_bound"] = receipt["readiness_probe"]["outcome"] == "bound"
     receipt["timing_s"].update(
         {
             "promotion": milestones.get("promoted_s"),
@@ -1360,11 +1613,27 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
             "preparation_done": milestones.get("preparation_done_s"),
         }
     )
+    if "terminal_measurement" not in receipt:
+        terminal = receipt["timing_s"].get("terminal")
+        previous = [row[0] for row in receipt.get("progress", []) if terminal is not None and row[0] < terminal]
+        receipt["terminal_measurement"] = {
+            "kind": "historical-readiness-observation",
+            "first_observed_s": terminal,
+            "observation_window_s": [max(previous, default=0.0), None],
+            "certified_s": None,
+            "readiness_check_window_s": None,
+            "readiness_cached": None,
+            "semantics": "poll start recorded; scan finish and cache/check times were not retained; completion unknown",
+        }
     _derive_dependents(receipt)
     # The projection's inputs are sealed into the receipt itself; the
     # corpus directory may be gone by the time a newer report refreshes it.
     corpus = receipt["corpus"]
-    manifest = {"by_origin": corpus.get("by_origin"), "parameters": {"population": corpus.get("population")}}
+    manifest = {
+        "kind": corpus.get("kind"),
+        "by_origin": corpus.get("by_origin"),
+        "parameters": {"population": corpus.get("population")},
+    }
     receipt["projection"] = projection(
         manifest,
         events.get("by_source") or {},
@@ -1378,8 +1647,21 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     receipt["benchmark_implementation_sha256"] = refreshed_identity(
         str(receipt.get("benchmark_implementation_sha256")), benchmark_implementation_sha256()
     )
-    # Atomic: the receipt is replaced only by a complete document.
-    staging = receipt_path.with_name(receipt_path.name + ".tmp")
-    staging.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-    staging.replace(receipt_path)
+    # A reducer view references the immutable recording; existing experiment
+    # links and their digests continue to name the original bytes.
+    source_digest = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    receipt["derived_from"] = {
+        "path": str(receipt_path.resolve()),
+        "sha256": source_digest,
+        "reducer_sha256": benchmark_implementation_sha256(),
+    }
+    payload = json.dumps(receipt, indent=1, sort_keys=True) + "\n"
+    view_digest = hashlib.sha256(payload.encode()).hexdigest()
+    view = receipt_path.with_name(f"{receipt_path.stem}.view-{view_digest}.json")
+    if view.exists():
+        if view.read_text(encoding="utf-8") != payload:
+            raise ValueError("existing reducer view has changed")
+    else:
+        with view.open("x", encoding="utf-8") as stream:
+            stream.write(payload)
     return receipt

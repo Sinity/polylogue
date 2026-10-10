@@ -641,3 +641,32 @@ def test_the_ownership_lock_lands_beside_the_resolved_durable_tiers(tmp_path: Pa
         assert not (generation / ".archive-ownership.lock").exists()
     finally:
         owned.release()
+
+
+def test_stale_lock_event_keeps_holder_pid_separate_from_emitter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import logging as plog
+
+    path = tmp_path / "owner.lock"
+    real_flock = fcntl.flock
+    attempts = 0
+
+    def transient_contention(fd: int, operation: int) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise BlockingIOError("synthetic contention")
+        real_flock(fd, operation)
+
+    monkeypatch.setattr(fcntl, "flock", transient_contention)
+    monkeypatch.setattr(archive_identity, "_lock_holder_pid", lambda *_args, **_kwargs: 987654)
+    monkeypatch.setattr(archive_identity, "_pid_is_alive", lambda _pid: False)
+    with plog.capture() as records:
+        fd = archive_identity._acquire_ownership_lock_fd(path, owner="synthetic")
+    try:
+        event = next(r for r in records if r["event"] == "storage.archive_identity.stale_lock_reclaimed")
+        assert event["holder_pid"] == 987654
+        assert event["pid"] == os.getpid()
+    finally:
+        os.close(fd)

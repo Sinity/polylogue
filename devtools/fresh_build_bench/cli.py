@@ -3,6 +3,8 @@
 Subcommands::
 
     corpus sample --out DIR --seed N --fraction F   private stratified sample
+    corpus select --out DIR [--max-bytes N --max-unit-bytes N --max-units N]
+    experiment --corpus DIR --work DIR --before CHECKOUT --after CHECKOUT
     corpus files --out DIR FILE...                  private corpus of named files (a whale)
     run --corpus DIR --work DIR [--profile]         one measured daemon build
         [--max-rss-mib N] [--max-promotion-s N]     asserted budgets; exit 1 unless qualified
@@ -11,7 +13,7 @@ Subcommands::
     compare BEFORE AFTER                            deltas and output equivalence
     profile SAMPLES [--thread PREFIX]               stack-sample tables
 
-``run`` is heavy: start it through the declared ``fresh_build_bench``
+``run`` and ``experiment`` are heavy: start it through the declared ``fresh_build_bench``
 AgentCTL operation, not in an interactive shell.
 """
 
@@ -40,6 +42,30 @@ def _refuse_repo_path(path: Path, what: str) -> None:
         raise SystemExit(str(exc)) from exc
 
 
+def _run_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--corpus", type=Path, required=True)
+    parser.add_argument("--work", type=Path, required=True, help="empty directory for the archive, logs and receipt")
+    parser.add_argument("--label", default="run")
+    parser.add_argument("--candidate", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--profile", action="store_true", help="run the in-daemon stack sampler")
+    parser.add_argument("--profile-interval", type=_positive_seconds, default=0.01)
+    parser.add_argument(
+        "--stall-timeout", type=_positive_seconds, default=900.0, help="stop when nothing observable moves"
+    )
+    parser.add_argument("--no-fingerprint", action="store_true")
+    parser.add_argument("--max-rss-mib", type=float, default=None, help="assert a whole-process-tree peak RSS budget")
+    parser.add_argument("--max-promotion-s", type=float, default=None, help="assert a time-to-promotion budget")
+    parser.add_argument("--max-terminal-s", type=float, default=None, help="assert a time-to-terminal budget")
+    parser.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="extra daemon environment (recorded in the receipt)",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="devtools bench fresh-build", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -53,6 +79,14 @@ def _parser() -> argparse.ArgumentParser:
     sample.add_argument("--seed", type=int, default=1)
     sample.add_argument("--fraction", type=float, required=True)
     sample.add_argument("--home", type=Path, default=Path.home())
+
+    selected = corpus_kinds.add_parser("select", help="budgeted whole units of real sources (private)")
+    selected.add_argument("--out", type=Path, required=True)
+    selected.add_argument("--home", type=Path, default=Path.home())
+    selected.add_argument("--seed", type=int, default=1)
+    selected.add_argument("--max-bytes", type=int, default=8 * 1024 * 1024)
+    selected.add_argument("--max-unit-bytes", type=int, default=1024 * 1024)
+    selected.add_argument("--max-units", type=int, default=12)
 
     explicit = corpus_kinds.add_parser("files", help="copy the named real files (e.g. one whale) into a corpus")
     explicit.add_argument("--out", type=Path, required=True)
@@ -79,34 +113,22 @@ def _parser() -> argparse.ArgumentParser:
     explicit.add_argument("files", nargs="*", type=Path)
 
     run = commands.add_parser("run", help="run one measured fresh build through polylogued run")
-    run.add_argument("--corpus", type=Path, required=True)
-    run.add_argument("--work", type=Path, required=True, help="empty directory for the archive, logs and receipt")
-    run.add_argument("--label", default="run")
-    run.add_argument("--candidate", type=Path, default=Path(__file__).resolve().parents[2])
-    run.add_argument("--python", default=sys.executable)
-    run.add_argument("--profile", action="store_true", help="run the in-daemon stack sampler")
-    run.add_argument("--profile-interval", type=_positive_seconds, default=0.01)
-    run.add_argument(
-        "--stall-timeout", type=_positive_seconds, default=900.0, help="stop when nothing observable moves"
-    )
-    run.add_argument("--no-fingerprint", action="store_true")
-    run.add_argument("--max-rss-mib", type=float, default=None, help="assert a whole-process-tree peak RSS budget")
-    run.add_argument("--max-promotion-s", type=float, default=None, help="assert a time-to-promotion budget")
-    run.add_argument("--max-terminal-s", type=float, default=None, help="assert a time-to-terminal budget")
-    run.add_argument(
-        "--env",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="extra daemon environment (recorded in the receipt)",
-    )
+    _run_arguments(run)
+    experiment = commands.add_parser("experiment", help="paired fresh-state ordinary-daemon builds")
+    _run_arguments(experiment)
+    experiment.add_argument("--before", type=Path, required=True)
+    experiment.add_argument("--after", type=Path, required=True)
+    experiment.add_argument("--order", default="ABBA", help="balanced sequence of A and B")
+    experiment.add_argument("--repetitions", type=int, default=1)
 
     report = commands.add_parser("report", help="render one receipt")
     report.add_argument("receipt", type=Path)
     report.add_argument("--json", action="store_true")
     report.add_argument("--refresh", action="store_true", help="recompute derived sections from the run directory")
 
-    compare = commands.add_parser("compare", help="compare two receipts")
+    compare = commands.add_parser(
+        "compare", help="inspect receipt comparability and output differences; no speed acceptance"
+    )
     compare.add_argument("before", type=Path)
     compare.add_argument("after", type=Path)
     compare.add_argument(
@@ -162,7 +184,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "corpus":
         _refuse_repo_path(args.out, "--out")
         _refuse_source_root_path(args.out, args.home)
-        if args.kind == "sample":
+        if args.kind == "select":
+            from devtools.fresh_build_bench.corpus import default_sample_sources, select_real
+
+            manifest = select_real(
+                args.out,
+                seed=args.seed,
+                max_bytes=args.max_bytes,
+                max_unit_bytes=args.max_unit_bytes,
+                max_units=args.max_units,
+                sources=default_sample_sources(args.home),
+            )
+        elif args.kind == "sample":
             from devtools.fresh_build_bench.corpus import default_sample_sources, sample_real
 
             manifest = sample_real(
@@ -188,9 +221,13 @@ def main(argv: list[str] | None = None) -> int:
                 hooks=args.hooks,
                 hooks_fraction=args.hooks_fraction,
             )
-        print(json.dumps({k: v for k, v in manifest.items() if k != "files"}, indent=1))
+        # Provenance has private source coordinates; keep it in the seal,
+        # not an AgentCTL log that may be shared.
+        summary = {k: v for k, v in manifest.items() if k not in {"files", "sidecar_mtimes_ns"}}
+        summary["parameters"] = {k: v for k, v in manifest["parameters"].items() if k != "provenance"}
+        print(json.dumps(summary, indent=1))
         return 0
-    if args.command == "run":
+    if args.command in {"run", "experiment"}:
         from devtools.fresh_build_bench.corpus import load_manifest, verify_manifest
         from devtools.fresh_build_bench.report import render
         from devtools.fresh_build_bench.run import RunConfig, run_build
@@ -249,6 +286,23 @@ def main(argv: list[str] | None = None) -> int:
                 if limit is not None
             ),
         )
+        if args.command == "experiment":
+            from devtools.fresh_build_bench.experiment import run_experiment
+
+            for candidate in (args.before.resolve(), args.after.resolve()):
+                for path in (args.work.resolve(), args.corpus.resolve()):
+                    if path == candidate or candidate in path.parents:
+                        raise SystemExit("experiment inputs and output must live outside both candidates")
+            document = run_experiment(
+                config,
+                before=args.before,
+                after=args.after,
+                order=args.order,
+                repetitions=args.repetitions,
+                progress=lambda line: print(line, flush=True),
+            )
+            print(json.dumps(document, indent=1))
+            return 0 if document["qualified"] else 1
         receipt = run_build(config, progress=lambda line: print(line, flush=True))
         print(render(receipt))
         return 0 if receipt["qualified"] else 1
@@ -258,10 +312,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.refresh:
             from devtools.fresh_build_bench.report import refresh
 
+            if json.loads(args.receipt.read_text()).get("format") == "polylogue.fresh-build-experiment.v1":
+                from devtools.fresh_build_bench.experiment import refresh_experiment
+
+                print(json.dumps(refresh_experiment(args.receipt), indent=1, sort_keys=True))
+                return 0
             receipt = refresh(args.receipt)
         else:
             receipt = json.loads(args.receipt.read_text(encoding="utf-8"))
-        print(json.dumps(receipt, indent=1) if args.json else render(receipt))
+        print(
+            json.dumps(receipt, indent=1)
+            if args.json or receipt.get("format") == "polylogue.fresh-build-experiment.v1"
+            else render(receipt)
+        )
         return 0
     if args.command == "compare":
         from devtools.fresh_build_bench.report import compare

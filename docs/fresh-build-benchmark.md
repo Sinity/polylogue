@@ -76,8 +76,8 @@ does not attribute a busy thread to a particular preparation function.
 
 | Section | Source | Contents |
 | --- | --- | --- |
-| `timing_s` | event log | preparation, first and last intake chunk, promotion, terminal, derived phase |
-| `stages` | ops `ingestion_batch` rows | the daemon's own stage timers summed over batches, and a declared rollup (acquire, parse, materialize, index, fts, derived) |
+| `timing_s` | event log and observer | event preparation/chunks/promotion; observed readiness and derived observation delay |
+| `stages` | ops `ingestion_batch` rows | inclusive stage timers summed over batches, grouped by category; parent and child timers may overlap |
 | `writer` | `daemon.writer.released` events | busy share to promotion, queue depth, holds per actor |
 | `event_log` | complete event file scan | valid events and malformed JSON, non-object or invalid event records; missing files remain unavailable |
 | `progress` | driver observations | accepted material, reduced required work and readiness/publication changes, separately from retry activity and declared next retry times |
@@ -87,9 +87,22 @@ does not attribute a busy thread to a particular preparation function.
 | `checks`, `budgets`, `qualified` | archive, samples | terminal checks and asserted budgets |
 | `output_fingerprint` | promoted index | per-table digests over the differential harness's comparable relations, and a digest of every `messages_fts` posting by block |
 
+`stage_seconds` preserves every observed inclusive timer. Category totals in
+`stage_buckets_inclusive_seconds` may count overlapping parent and child time;
+they are not a partition of elapsed time. `stage_timing_coverage` reports each
+stage's observed and missing batches. Exclusive time and interval relationships
+are unavailable from batch timer names; use the causal trace for interval evidence.
+
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:
 same corpus, same run configuration, same benchmark implementation (a digest of the driver and report code, since `--candidate` may name another checkout), interpreter (version, GIL mode, build string and resolved executable) and host (architecture, CPU model, CPU count, memory, the effective CPU and memory limits the daemon sizes itself from, work filesystem), and both qualified.
+
+This command is an inspection operation. Exit zero establishes comparability;
+outputs may still differ or have no fingerprint. Paired `experiment` qualification
+also requires the declared output equivalence, but its timing summaries remain
+descriptive and leave code improvement unestablished. Neither exit status is a
+performance acceptance policy. A speed claim needs a separately declared effect,
+confirmation and resource policy.
 `--allow-unqualified` admits a run that promoted but did not settle (never one
 that stalled before promotion), with a warning; it never admits a run whose candidate or corpus changed during the
 build or whose event log lost events. An optimisation claims equivalence only on identical digests from
@@ -124,3 +137,33 @@ moves with load; CPU seconds, writer holds and per-stage timers move less.
 The intake projection scales per-origin rates to the population and says so;
 every export shares the inbox watch source, so a corpus with exports of more
 than one origin leaves those origins unmeasured in the projection. Promotion and derived convergence are reported as measured, not scaled.
+
+## Small paired loop
+
+Select a small sealed corpus once, then reuse it while changing the product candidate:
+
+```bash
+devtools bench fresh-build corpus select --out /realm/tmp/work/fb/small \
+    --seed 1 --max-bytes 8388608 --max-unit-bytes 1048576 --max-units 12
+agentctl job start polylogue fresh_build_bench --workspace /realm/worktree/driver -- \
+    experiment --corpus /realm/tmp/work/fb/small --work /realm/tmp/work/fb/pair \
+    --before /realm/worktree/before --after /realm/worktree/after --order ABBA --repetitions 1
+```
+
+`select` copies real whole session units, including subagents and tool sidecars, plus existing static assembly dependencies at the production retained-assembly coordinates. Shared history and index files count once against `--max-bytes`; `--max-unit-bytes` limits each unit's own files. A dependency closure that exceeds the total budget is excluded whole. The manifest records private source provenance, each unit's private and shared bytes, sampled and missing providers, and covered and missing provider/size strata. Its byte budgets select an experiment workload; they do not limit valid product work. Gemini units are complete projects. The separate mutable Codex database source, exports, hooks, embeddings and browser capture are excluded from this initial selected-root route. Synthetic corpora must use `kind="synthetic"`; their timings are repeatability controls. Budgeted selections do not project whole-archive time.
+
+`experiment` runs the existing ordinary-daemon terminal route with a new archive, XDG tree and bytecode directory for every sample. Both arms share the driver, sealed corpus, interpreter and configuration. The host filesystem cache is uncontrolled. Balanced `--order AB` is a single sample per arm; default `ABBA` supplies two per arm. Repetitions repeat that sequence. `experiment.json` references immutable constituent receipts by path and SHA-256, exposes raw timings, medians, median absolute deviations and ranges, and requires qualified runs with exact or narrowly recipe-qualified output equivalence. Overlapping observed ranges are labelled `within-observed-noise`; separated ranges are `observed-arm-difference`. Neither observed range separation nor two samples proves speed improvement. All metrics are descriptive, with sample insufficiency stated. Identical recorded candidate identity and actual imported module hashes label the experiment `A/A-calibration`, with no code-improvement claim. An unqualified run stops the sequence and preserves its receipt.
+
+Each new run binds a read-only diagnostic policy observer by hash in its launcher. The observer reads the existing published compute owner's capacities, per-class reserves and ceilings, and actual GIL mode after product and profiling imports. It records observed policy changes in `policy.json`, sealed by the run receipt. Sampling is periodic at 50 ms and at normal process exit, so transient changes between samples can be missed. The observer never constructs or changes an adapter. Missing binding prevents qualification and comparison. Different effective policies or launcher settings cannot silently compare as one configuration. Python launcher wrappers are refused because their injected behavior cannot be bound by the interpreter identity; pass the real interpreter executable.
+
+`report RECEIPT --refresh` (also accepting an `experiment.json`) writes a new content-addressed `receipt.view-<digest>.json` beside the original. The view binds the source receipt digest and reducer version, rechecks the evidence seal, and recomputes derived fields. It leaves the original receipt unchanged, so prior experiment references remain valid. Old receipts without effective policy or actual candidate readiness proof remain readable, but do not qualify a controlled comparison. Refresh validates recorded proof and never reconstructs historical imports.
+
+The selected population is a timed, non-atomic census. Unselected live sessions may grow while selection copies a stable complete chosen closure; new dependencies or edits in that chosen closure are refused. The launcher inserts the protected candidate path before any sampler or product import, and the observer records actual imported product module paths and content hashes. Candidate import mismatch prevents qualification. The driver hash must also remain unchanged during the measured run.
+
+This first paired loop holds compute policy fixed. Policy sweeps need an explicit treatment contract before their receipts can compare. The strict fingerprint includes parser/lowering identities. A second, explicitly recipe-qualified digest excludes only `sessions.parser_fingerprint` and `sessions.lowering_fingerprint`, after every session row matches its own daemon's actually imported `parser_fingerprint_for_origin` and `lowering_fingerprint` results. The function paths and source hashes bind them to that candidate. All other columns, recipe fields, rows and FTS postings remain exact. The secondary digest rehashes only sessions and reuses every other strict relation and FTS digest. Missing or mismatched proof refuses recipe equivalence. Historical runs lack that observed function proof and cannot acquire it retrospectively.
+
+Promotion is a product event milestone. Terminal timing is the end of the first successful readiness observation, followed by stable-poll certification. Receipts record each poll's start and scan finish, readiness-check window and cache reuse (the readiness cache lasts up to 60 seconds), plus the observation window and later certification. Scans combine multiple non-atomic reads; cached readiness widens their uncertainty. These times do not identify the exact ready transition. Terminal throughput is left unknown; promotion throughput retains its event basis. Historical views retain the original poll-start time and explicitly mark missing scan/cache/certification times unknown.
+
+Readiness is checked by a read-only subprocess using the measured arm's interpreter, isolated environment and explicit candidate import path. Its imported function path and source hash, interpreter, GIL state after imports, check window and helper CPU/wall cost are recorded in sealed `readiness.json`; the receipt binds the helper's hash. The helper starts no daemon, compute owner or profiler. Its cost is outside daemon resource samples and promotion timing, and it may interfere with product work. The readiness cache includes candidate path, source hash, interpreter, environment and helper hash. Checks start after promotion with zero debt and can expose ready domains while intake cursors remain incomplete. Invalid imports, process failures or an invalid census produce an observation refusal, never readiness. Known transient SQLite read failures retain retryable observation errors and are never cached as ready; binding requires an eventual successful census. Terminal success still requires complete cursors and every required domain.
+
+The receipt's `fts_row_count_equal` check compares indexable row counts. Exact output comparison separately hashes all FTS postings and relation contents. Derived refresh views rename the older count-only `fts_exact` field; historical receipt bytes remain unchanged.
