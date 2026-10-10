@@ -103,8 +103,9 @@ so every prefix keeps complete failure evidence when no candidate accepts.
 Ordinary retained JSON preparations share one physical carrier only when their
 bytes, source path and fallback identity, profile, timestamp, append identity,
 ZIP coordinate, sidecar inputs, and validation mode agree. Each raw retains its
-own validation verdict and complete census/publication coordinates; reuse still
-validates that raw against current schema declarations. Codex state and UNKNOWN
+own validation verdict and complete census/publication coordinates. The public
+validator projects these coordinates from complete body evidence only after
+fresh schema and input-currentness checks. Codex state and UNKNOWN
 inputs keep per-raw preparation because they can own mutable state projections.
 
 Detached Codex and Claude Code JSONL retries reuse each parser artifact by its
@@ -189,12 +190,16 @@ stale during enrichment, a new Source witness repeats the comparison and
 reuses detached parser artifacts only when the eligible raws and their parser
 operands still match exactly; changed inputs are reparsed. Each retry reads the
 ordered local and bundled schema bytes afresh. The public validator can reuse
-one complete verdict for the same still-owned page input, accepted prefix,
-validation mode and exact resolution/coordinate operands when that snapshot is
-unchanged. Physical input and drift backing currency are checked before reuse;
-changed schema bytes or override roots require fresh validation. File-backed
-drift borrows the page scratch root through all ordered consumers and retires
-with the page. Fresh captures and later pages validate independently. Historical
+one complete body result for a still-owned carrier, accepted prefix, validation
+mode and exact schema-selection operands when that snapshot is unchanged. Source
+path, ZIP coordinates and explicit resolution remain body operands. Raw revision
+and evidence identifiers are freshly projected for every consumer. A new physical
+CAS alias requires a pinned full-byte SHA256 and length match, with input currency
+checked before and after certification. The original input and drift backing
+must remain current;
+changed schema bytes or override roots require fresh validation. The artifact owns its validation witness; finalized borrowers
+retain that same witness without retirement authority. File-backed drift borrows
+the creator scratch root through all ordered consumers and retires with its owner. Fresh captures and later pages validate independently. Historical
 captured validation receipts keep their original evidence. If in-place census
 publication changes enrichment evidence, missing enriched carriers return
 through this neutral preparation and fresh Source bind. Unchanged page parser

@@ -981,8 +981,9 @@ def _attach_retained_validation_verdict(
         and not path_declaration_refuses_session(provider, source_path)
         and not (jsonl and artifact.parsed_prefix_size == 0)
     ):
-        from polylogue.schemas import validate_retained_document
+        from polylogue.schemas import RetainedValidationReuse, validate_retained_document
 
+        reuse = artifact.validation_reuse or RetainedValidationReuse()
         validation_prefix = artifact.parsed_prefix_size if jsonl and validation_mode is not ValidationMode.OFF else None
         try:
             with _retained_validation_input(blob_path, validation_prefix) as (validation_path, accepted_prefix_size):
@@ -999,8 +1000,11 @@ def _attach_retained_validation_verdict(
                     captured_zip_coordinate=captured_zip_coordinate,
                     registry=schema_registry,
                     signature_directory=directory,
+                    reuse=reuse,
                 )
-            return dataclasses.replace(artifact, validation_verdict=verdict)
+            return dataclasses.replace(
+                artifact, validation_verdict=verdict, validation_reuse=reuse, _owns_validation=True
+            )
         except BaseException as primary:
             try:
                 artifact.discard()

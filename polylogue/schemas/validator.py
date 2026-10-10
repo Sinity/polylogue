@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 from collections.abc import Generator, Iterable, Mapping
@@ -9,7 +10,7 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from re import compile as compile_pattern
-from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
+from typing import TYPE_CHECKING, BinaryIO, Literal, Protocol, TypeAlias
 
 try:
     import jsonschema
@@ -41,20 +42,21 @@ from .validator_resolution import (
 if TYPE_CHECKING:
     from polylogue.schemas.observation_spill import SpilledKey
     from polylogue.schemas.packages import SchemaResolution
-    from polylogue.schemas.retained_validation import RetainedValidationVerdict
+    from polylogue.schemas.retained_validation import RetainedValidationBody, RetainedValidationVerdict
 
 ValidationSchema: TypeAlias = Mapping[str, object]
 ValidationSample: TypeAlias = JSONDocument
 
 
 @dataclass(frozen=True, slots=True)
-class _RetainedValidationEntry:
+class _RetainedValidationEvidence:
     recipe: str
     snapshot: ProviderSchemaSnapshot
     path: Path
     input_identity: tuple[int, int, int, int, int]
     signature_directory: Path
-    verdict: RetainedValidationVerdict
+    body: RetainedValidationBody
+    content_digest: str
     backing_identity: tuple[Path, tuple[int, int, int, int, int]] | None
 
 
@@ -72,15 +74,16 @@ _ReuseOutcome: TypeAlias = Literal[
 
 
 class RetainedValidationReuse:
-    """One complete verdict borrowed for an owned captured input's lifetime.
+    """One complete body witness borrowed for an owned input's lifetime.
 
     The capture owner keeps the input and drift-signature directory alive and
-    clears this result before retiring them. Only the validator establishes a
-    reuse entry, after fresh schema and physical-input checks complete.
+    clears this result before retiring them. The validator certifies physical
+    aliases by exact bytes and projects fresh acquired-evidence coordinates;
+    current schema and original-input/backing checks still precede every hit.
     """
 
     def __init__(self) -> None:
-        self._entry: _RetainedValidationEntry | None = None
+        self._entry: _RetainedValidationEvidence | None = None
         self._outcome: _ReuseOutcome = "cleared"
 
     @property
@@ -98,7 +101,7 @@ def _validation_input_identity(stat: os.stat_result) -> tuple[int, int, int, int
 
 
 def _validation_backing_identity(
-    verdict: RetainedValidationVerdict,
+    verdict: RetainedValidationVerdict | RetainedValidationBody,
 ) -> tuple[Path, tuple[int, int, int, int, int]] | None:
     observation = verdict.drift_observation
     path = None if observation is None else observation.unseen_key_signature._path
@@ -106,7 +109,9 @@ def _validation_backing_identity(
 
 
 @contextmanager
-def _owned_validation_input(path: Path, prefix: int | None) -> Generator[tuple[int, int, int, int, int]]:
+def _owned_validation_input(
+    path: Path, prefix: int | None
+) -> Generator[tuple[tuple[int, int, int, int, int], BinaryIO]]:
     from polylogue.schemas.observation_spill import AcceptedPrefixReadError
 
     check_compute_cancelled()
@@ -115,7 +120,7 @@ def _owned_validation_input(path: Path, prefix: int | None) -> Generator[tuple[i
         if prefix is not None and (prefix < 0 or before[2] < prefix):
             raise AcceptedPrefixReadError("retained JSONL parser prefix exceeds source bytes")
         try:
-            yield before
+            yield before, source
         except BaseException as error:
             raise_if_operation_cancelled(error)
             raise
@@ -132,6 +137,26 @@ def _owned_validation_input(path: Path, prefix: int | None) -> Generator[tuple[i
                 raise AcceptedPrefixReadError("retained JSONL validation input changed") from error
             if not unchanged:
                 raise AcceptedPrefixReadError("retained JSONL validation input changed")
+
+
+def _validation_input_digest(source: BinaryIO, byte_length: int) -> str:
+    """Certify a physical alias using its pinned exact bytes, never its name."""
+    from polylogue.schemas.observation_spill import AcceptedPrefixReadError
+
+    digest = hashlib.sha256()
+    copied = 0
+    try:
+        source.seek(0)
+        while chunk := source.read(1024 * 1024):
+            check_compute_cancelled()
+            copied += len(chunk)
+            digest.update(chunk)
+    except OSError as error:
+        raise AcceptedPrefixReadError("retained validation input could not be read") from error
+    if copied != byte_length:
+        raise AcceptedPrefixReadError("retained validation input has a physical short read")
+    check_compute_cancelled()
+    return digest.hexdigest()
 
 
 class ValidationErrorLike(Protocol):
@@ -960,16 +985,20 @@ def validate_retained_document(
         if reuse is None or ValidationMode.from_string(mode) is ValidationMode.OFF:
             if reuse is not None:
                 reuse._outcome = "disabled"
-            return perform()
+            from polylogue.schemas.retained_validation import RetainedValidationBody
+
+            return RetainedValidationBody.from_verdict(perform()).bind(
+                raw_id=raw_id, revision_sha256=revision_sha256, evidence_id=evidence_id, source_path=source_path
+            )
         from polylogue.schemas.retained_validation import _retained_validation_productive_identity
 
         recipe = _retained_validation_productive_identity(
             provider,
             path,
             mode=mode,
-            raw_id=raw_id,
-            revision_sha256=revision_sha256,
-            evidence_id=evidence_id,
+            raw_id="",
+            revision_sha256="",
+            evidence_id="",
             source_path=source_path,
             jsonl=jsonl,
             accepted_prefix_size=accepted_prefix_size,
@@ -979,14 +1008,27 @@ def validate_retained_document(
             registry=active_registry,
             signature_directory=signature_directory,
         )
-        with _owned_validation_input(path, accepted_prefix_size) as input_identity:
+        from polylogue.schemas.retained_validation import RetainedValidationBody
+
+        with _owned_validation_input(path, accepted_prefix_size) as (input_identity, source):
             entry = reuse._entry
             try:
                 backing_current = entry is not None and entry.backing_identity == _validation_backing_identity(
-                    entry.verdict
+                    entry.body
                 )
             except OSError:
                 backing_current = False
+            try:
+                original_current = (
+                    entry is not None
+                    and entry.signature_directory.is_dir()
+                    and entry.input_identity == _validation_input_identity(entry.path.stat())
+                )
+            except OSError:
+                original_current = False
+            content_digest: str | None = None
+            hit = False
+            body: RetainedValidationBody | None = None
             outcome: _ReuseOutcome
             if entry is None:
                 outcome = "missing"
@@ -997,28 +1039,61 @@ def validate_retained_document(
             elif entry.snapshot != snapshot_identity:
                 outcome = "schema_changed"
             elif (
-                entry.path != path
-                or entry.input_identity != input_identity
-                or entry.signature_directory != signature_directory
+                not original_current
+                or (entry.path == path and entry.input_identity != input_identity)
+                or (
+                    entry.path != path
+                    and (
+                        input_identity[2] != entry.input_identity[2]
+                        or (content_digest := _validation_input_digest(source, input_identity[2]))
+                        != entry.content_digest
+                    )
+                )
             ):
                 outcome = "input_changed"
             else:
-                reuse._outcome = "hit"
-                return entry.verdict
-            reuse.clear()
-            reuse._outcome = outcome
-            verdict = perform()
-        assert snapshot_identity is not None
-        reuse._entry = _RetainedValidationEntry(
+                hit = True
+                body = entry.body
+            if not hit:
+                reuse.clear()
+                reuse._outcome = outcome
+                body = RetainedValidationBody.from_verdict(perform())
+                if content_digest is None:
+                    content_digest = _validation_input_digest(source, input_identity[2])
+        assert body is not None
+        if hit:
+            assert entry is not None
+            from polylogue.schemas.observation_spill import AcceptedPrefixReadError
+
+            try:
+                current = (
+                    reuse._entry is entry
+                    and entry.signature_directory.is_dir()
+                    and entry.input_identity == _validation_input_identity(entry.path.stat())
+                    and entry.backing_identity == _validation_backing_identity(entry.body)
+                )
+            except OSError:
+                current = False
+            if not current:
+                raise AcceptedPrefixReadError("retained validation evidence retired during binding")
+            reuse._outcome = "hit"
+            return body.bind(
+                raw_id=raw_id, revision_sha256=revision_sha256, evidence_id=evidence_id, source_path=source_path
+            )
+        assert snapshot_identity is not None and content_digest is not None
+        reuse._entry = _RetainedValidationEvidence(
             recipe,
             snapshot_identity,
             path,
             input_identity,
             signature_directory,
-            verdict,
-            _validation_backing_identity(verdict),
+            body,
+            content_digest,
+            _validation_backing_identity(body),
         )
-        return verdict
+        return body.bind(
+            raw_id=raw_id, revision_sha256=revision_sha256, evidence_id=evidence_id, source_path=source_path
+        )
 
 
 __all__ = [

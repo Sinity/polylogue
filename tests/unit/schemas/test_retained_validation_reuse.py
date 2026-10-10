@@ -8,7 +8,7 @@ import threading
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import IO
+from typing import IO, BinaryIO
 
 import pytest
 from ijson.common import JSONError
@@ -16,6 +16,7 @@ from ijson.common import JSONError
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.json import JSONValue
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.schemas import observation_spill
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
@@ -52,6 +53,11 @@ def _validate(
     prefix: int | None = None,
     mode: ValidationMode = ValidationMode.STRICT,
     raw_id: str = "raw",
+    source_path: str = "records.jsonl",
+    coordinate: CapturedZipMemberCoordinate | None = None,
+    resolution: SchemaResolution | None = None,
+    explicit: bool = True,
+    jsonl: bool = True,
 ) -> RetainedValidationVerdict:
     return validate_retained_document(
         Provider.CLAUDE_CODE,
@@ -60,10 +66,12 @@ def _validate(
         raw_id=raw_id,
         revision_sha256="a" * 64,
         evidence_id=raw_id,
-        source_path="records.jsonl",
-        jsonl=True,
+        source_path=source_path,
+        jsonl=jsonl,
         accepted_prefix_size=prefix,
-        schema_resolution=SchemaResolution(
+        captured_zip_coordinate=coordinate,
+        schema_resolution=resolution
+        or SchemaResolution(
             provider="claude-code",
             package_version="v1",
             element_kind="session_record_stream",
@@ -71,7 +79,7 @@ def _validate(
             bundle_scope=None,
             reason="package_default",
         ),
-        schema_resolution_is_explicit=True,
+        schema_resolution_is_explicit=explicit,
         registry=registry,
         signature_directory=path.parent,
         reuse=reuse,
@@ -111,7 +119,7 @@ def test_owned_reuse_preserves_complete_refusal_and_file_backed_drift(
     registry = SchemaRegistry(storage_root=tmp_path / "schemas")
     first = _validate(path, registry, reuse, mode=mode)
     second = _validate(path, registry, reuse, mode=mode)
-    assert second is first
+    _assert_complete_verdict_equal(second, first)
     assert first.invalid_count == 1 and first.error_count > 0
     assert first.strict_refusal is (mode is ValidationMode.STRICT)
     assert first.drift_observation is not None
@@ -156,11 +164,11 @@ def test_owned_reuse_refreshes_same_version_bytes_and_local_override(
     def checked() -> RetainedValidationVerdict:
         result = _validate(path, registry, reuse)
         _assert_complete_verdict_equal(result, _validate(path, registry, RetainedValidationReuse()))
-        assert _validate(path, registry, reuse) is result
+        _assert_complete_verdict_equal(_validate(path, registry, reuse), result)
         return result
 
     first = checked()
-    assert _validate(path, registry, reuse) is first
+    _assert_complete_verdict_equal(_validate(path, registry, reuse), first)
     _publish(local, "string")
     assert checked().invalid_count == 1
     (local / "claude-code").rename(tmp_path / "retired-local")
@@ -220,7 +228,9 @@ def test_owned_reuse_checks_prefix_physical_input_and_coordinate(
     second = _validate(path, registry, reuse, prefix=prefix, raw_id="other" if change == "coordinate" else "raw")
     assert second is not first
     assert second.sample_count == (2 if change == "prefix" else 1)
-    assert len(validation_bodies) == 2
+    assert len(validation_bodies) == (1 if change == "coordinate" else 2)
+    assert second.raw_id == ("other" if change == "coordinate" else "raw")
+    assert second.evidence_id == second.raw_id
 
 
 def test_owned_reuse_zero_extent_and_cancellation_keep_physical_cleanup(
@@ -232,7 +242,7 @@ def test_owned_reuse_zero_extent_and_cancellation_keep_physical_cleanup(
     registry = SchemaRegistry(storage_root=tmp_path / "schemas")
     reuse = RetainedValidationReuse()
     first = _validate(path, registry, reuse, prefix=0)
-    assert _validate(path, registry, reuse, prefix=0) is first
+    _assert_complete_verdict_equal(_validate(path, registry, reuse, prefix=0), first)
     assert first.sample_count == 0 and not first.strict_refusal
     assert len(validation_bodies) == 1
     original_open = Path.open
@@ -259,7 +269,7 @@ def test_owned_reuse_zero_extent_and_cancellation_keep_physical_cleanup(
         with pytest.raises(RuntimeError, match="neutral owned cancellation"):
             _validate(path, registry, reuse, prefix=0)
     assert readers and all(reader.closed for reader in readers)
-    assert _validate(path, registry, reuse, prefix=0) is first
+    _assert_complete_verdict_equal(_validate(path, registry, reuse, prefix=0), first)
 
 
 def test_shared_provider_snapshot_allows_independent_validation_bodies(
@@ -327,7 +337,7 @@ def test_completed_worker_snapshot_requires_fresh_schema_before_rebind(
     reader.clear_cache()
     with pytest.raises(ValueError, match="fixed schema snapshot"):
         reader.write_schema_version("claude-code", "v2", {"type": "object"})
-    assert _validate(path, reader, reuse) is worker
+    _assert_complete_verdict_equal(_validate(path, reader, reuse), worker)
     worker_outcome = reuse.outcome
     assert worker_outcome == "hit"
     rebound = _validate(path, SchemaRegistry(storage_root=root), reuse)
@@ -336,3 +346,173 @@ def test_completed_worker_snapshot_requires_fresh_schema_before_rebind(
     fresh = _validate(path, SchemaRegistry(storage_root=root), RetainedValidationReuse())
     _assert_complete_verdict_equal(rebound, fresh)
     assert len(validation_bodies) == 3
+
+
+@pytest.mark.parametrize("change", ["none", "alias_bytes", "retired_input"])
+def test_body_evidence_certifies_alias_and_projects_complete_coordinates(
+    tmp_path: Path, validation_bodies: list[int], change: str
+) -> None:
+    _publish(tmp_path / "schemas", "integer")
+    original = tmp_path / "original.jsonl"
+    alias_directory = tmp_path / "canonical"
+    alias_directory.mkdir()
+    alias = alias_directory / "retained.jsonl"
+    payload = (
+        json.dumps(
+            {
+                "type": "message",
+                "kind": "invalid",
+                **{f"neutral_unused_field_{ordinal}": True for ordinal in range(400)},
+            }
+        )
+        + "\n"
+    ).encode()
+    original.write_bytes(payload)
+    alias.write_bytes(payload)
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    reuse = RetainedValidationReuse()
+    first = _validate(original, registry, reuse, raw_id="first")
+    assert first.drift_observation is not None
+    signature = first.drift_observation.unseen_key_signature
+    assert signature._path is not None and signature._path.parent == tmp_path
+    if change == "alias_bytes":
+        alias.write_bytes(payload.replace(b'"invalid"', b"123456789"))
+    elif change == "retired_input":
+        original.unlink()
+    second = _validate(alias, registry, reuse, raw_id="second")
+    assert second.raw_id == second.evidence_id == "second"
+    assert second.drift_observation is not None and second.drift_observation.raw_id == "second"
+    assert second.drift_observation.native_id_example == "records.jsonl"
+    assert len(validation_bodies) == (1 if change == "none" else 2)
+    assert reuse.outcome == ("hit" if change == "none" else "input_changed")
+    if change == "none":
+        assert second.drift_observation.unseen_key_signature is signature
+    fresh = _validate(alias, registry, RetainedValidationReuse(), raw_id="second")
+    _assert_complete_verdict_equal(second, fresh)
+    assert len(b"".join(signature.iter_utf8_chunks())) == signature.byte_count
+    reuse.clear()
+    assert reuse._entry is None
+
+
+@pytest.mark.parametrize("change", ["mode", "source", "zip", "resolution", "explicitness", "format"])
+def test_body_selection_recipe_changes_match_complete_fresh_verdict(
+    tmp_path: Path, validation_bodies: list[int], change: str
+) -> None:
+    _publish(tmp_path / "schemas", "integer")
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    registry.write_schema_version(
+        "claude-code",
+        "v2",
+        {"type": "object", "properties": {"kind": {"type": "integer"}}},
+        element_kind="session_record_stream",
+    )
+    path = tmp_path / "records.jsonl"
+    path.write_text('{"type":"message","kind":"invalid"}\n')
+    reuse = RetainedValidationReuse()
+    _validate(path, registry, reuse)
+    resolution = (
+        SchemaResolution(
+            provider="claude-code",
+            package_version="v2",
+            element_kind="session_record_stream",
+            exact_structure_id=None,
+            bundle_scope=None,
+            reason="package_default",
+        )
+        if change == "resolution"
+        else None
+    )
+    coordinate = (
+        CapturedZipMemberCoordinate(
+            "/neutral.zip",
+            "/neutral.zip",
+            "records.jsonl",
+            0,
+            0,
+            MemberAddressingMode.WHOLE_MEMBER,
+            "b" * 64,
+            "c" * 64,
+        )
+        if change == "zip"
+        else None
+    )
+
+    def changed(owner: RetainedValidationReuse) -> RetainedValidationVerdict:
+        return _validate(
+            path,
+            registry,
+            owner,
+            mode=ValidationMode.ADVISORY if change == "mode" else ValidationMode.STRICT,
+            source_path="other.jsonl" if change == "source" else "records.jsonl",
+            coordinate=coordinate,
+            resolution=resolution,
+            explicit=change != "explicitness",
+            jsonl=change != "format",
+        )
+
+    second = changed(reuse)
+    assert reuse.outcome == "recipe_changed"
+    assert len(validation_bodies) == 2
+    _assert_complete_verdict_equal(second, changed(RetainedValidationReuse()))
+    assert len(validation_bodies) == 3
+
+
+@pytest.mark.parametrize("change", ["alias", "original", "backing", "cancel"])
+def test_alias_certification_settles_readers_and_refuses_changed_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, validation_bodies: list[int], change: str
+) -> None:
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.schemas import validator
+
+    _publish(tmp_path / "schemas", "integer")
+    original = tmp_path / "original.jsonl"
+    alias = tmp_path / "alias.jsonl"
+    payload = (
+        json.dumps(
+            {
+                "type": "message",
+                "kind": "invalid",
+                **{f"neutral_unused_field_{ordinal}": True for ordinal in range(400)},
+            }
+        )
+        + "\n"
+    ).encode()
+    original.write_bytes(payload)
+    alias.write_bytes(payload)
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    reuse = RetainedValidationReuse()
+    first = _validate(original, registry, reuse)
+    assert first.drift_observation is not None
+    signature = first.drift_observation.unseen_key_signature._path
+    assert signature is not None
+    digest_original = validator._validation_input_digest
+    open_original = Path.open
+    readers: list[IO[bytes]] = []
+
+    def open_input(owner: Path, mode: str = "r", buffering: int = -1) -> IO[bytes]:
+        assert mode == "rb"
+        reader = open_original(owner, "rb", buffering=buffering)
+        if owner == alias:
+            readers.append(reader)
+        return reader
+
+    def certify(source: BinaryIO, byte_length: int) -> str:
+        result = digest_original(source, byte_length)
+        if change == "cancel":
+            raise DaemonOperationCancelled("neutral alias cancellation")
+        if change == "backing":
+            signature.unlink()
+        else:
+            with open_original(alias if change == "alias" else original, "wb") as writer:
+                writer.write(payload + b" ")
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", open_input)
+        patch.setattr(validator, "_validation_input_digest", certify)
+        expected = DaemonOperationCancelled if change == "cancel" else observation_spill.AcceptedPrefixReadError
+        with pytest.raises(expected):
+            _validate(alias, registry, reuse, raw_id="other")
+    assert readers and all(reader.closed for reader in readers)
+    assert reuse.outcome != "hit"
+    assert len(validation_bodies) == 1

@@ -486,7 +486,6 @@ class RawObservationArchiveWork:
                 # Canonical preparation retries and attributes this raw.
             else:
                 page.artifacts[key] = prepared.artifact
-                page.validation_reuse[key] = prepared.validation_reuse
                 emit(
                     "storage.raw_observation.neutral_admission",
                     phase="source_preparation",
@@ -542,10 +541,8 @@ class RawObservationArchiveWork:
                     if submitted.future.done() and submitted.future.exception() is None:
                         prepared = submitted.future.result()
                         page.artifacts[key] = prepared.artifact
-                        page.validation_reuse[key] = prepared.validation_reuse
                 else:
                     page.artifacts[key] = prepared.artifact
-                    page.validation_reuse[key] = prepared.validation_reuse
             if failures:
                 raise BaseExceptionGroup(
                     "neutral parsing and creator settlement failed",

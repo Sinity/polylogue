@@ -209,6 +209,62 @@ class RetainedValidationVerdict:
     strict_refusal: bool
 
 
+@dataclass(frozen=True, slots=True)
+class RetainedValidationBody:
+    """Complete schema evidence before binding its acquired Source coordinates."""
+
+    mode: ValidationMode
+    status: ValidationStatus
+    sample_count: int
+    invalid_count: int
+    error_count: int
+    drift_count: int
+    first_diagnostic: str | None
+    schema_resolution: SchemaResolution | None
+    drift_observation: SchemaDriftObservation | None
+    strict_refusal: bool
+
+    @classmethod
+    def from_verdict(cls, verdict: RetainedValidationVerdict) -> RetainedValidationBody:
+        drift = verdict.drift_observation
+        if drift is not None:
+            drift = replace(drift, raw_id="", native_id_example="")
+        return cls(
+            verdict.mode,
+            verdict.status,
+            verdict.sample_count,
+            verdict.invalid_count,
+            verdict.error_count,
+            verdict.drift_count,
+            verdict.first_diagnostic,
+            verdict.schema_resolution,
+            drift,
+            verdict.strict_refusal,
+        )
+
+    def bind(
+        self, *, raw_id: str, revision_sha256: str, evidence_id: str, source_path: str | None
+    ) -> RetainedValidationVerdict:
+        drift = self.drift_observation
+        if drift is not None:
+            drift = replace(drift, raw_id=raw_id, native_id_example=source_path or raw_id)
+        return RetainedValidationVerdict(
+            raw_id,
+            revision_sha256,
+            evidence_id,
+            self.mode,
+            self.status,
+            self.sample_count,
+            self.invalid_count,
+            self.error_count,
+            self.drift_count,
+            self.first_diagnostic,
+            self.schema_resolution,
+            drift,
+            self.strict_refusal,
+        )
+
+
 class _SampleValidationReducer:
     """Accumulate the exact per-sample validation and drift result."""
 
