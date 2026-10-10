@@ -72,6 +72,8 @@ inputs use `prepare_retained_jsonl_artifact` and
 The storage writer lowers their prepared sessions through
 `write_parsed_session_to_archive`.
 
+Accepted-marker selected-write preparation filters canonical session IDs before constructing complete content bindings. Its independent request iterator still binds the whole retained cohort, and selected duplicates must agree before one write is emitted. Missing selected sessions remain retryable refusals; the filter adds no binding cache (`sources/revision_backfill.py:_prepared_accepted_marker_sessions`).
+
 Canonical replay owns one schema registry for its preparation lifetime. Each
 retained validation boundary rereads the complete current local and packaged
 provider snapshots under the registry lock. Exact byte changes or changed search

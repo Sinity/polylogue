@@ -4487,6 +4487,8 @@ def _prepared_accepted_marker_sessions(
                 raise RetainedPreparationRetryableError(
                     f"accepted marker request has an invalid retained session for {raw_id}"
                 )
+            if str(make_session_id(session.source_name, session.provider_session_id)) not in selected_session_ids:
+                continue
             binding = _accepted_marker_request_session_binding(session)
             session_id = binding["session_id"]
             if not isinstance(session_id, str) or session_id not in selected_session_ids:
