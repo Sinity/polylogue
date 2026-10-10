@@ -135,6 +135,15 @@ not a substitute for keeping that candidate in custody.
 
 ## Domain derivations
 
+Completed cold candidate settlement wakes the existing global convergence-debt
+owner after releasing deferred rows and converging promoted session profiles.
+The wake coalesces through the periodic runner; due times, retry backoff and
+the ordinary periodic fallback still govern debt retries.
+
+Health notifications use the resident backend on the daemon's bounded compute
+adapter. Blocking delivery yields the event loop and its original admitted
+call physically settles before cancellation or shutdown can retire the service.
+
 Recurring and selected convergence retain their owner lock through repeated cancellation until the physical compute future and native cleanup settle. The shared submitted-operation waiter cancels queued work promptly and preserves cancellation together with a cleanup failure. Watcher source selection likewise retains its `to_thread` task through repeated caller cancellation until physical selection and writer admission cleanup settle; a cleanup failure is reported with the original cancellation (`polylogue/sources/live/watcher.py:518-565`).
 
 The typed kernel validates prerequisite names against the supplied ordered domain list. It pages required and excess keys, inspects authoritative output, computes outside the writer lease, and admits each replacement through the writer bridge. Publication adopts the coordinator's delegation on the existing compute worker, so preparation observers retain their creator. Its joined native cleanup boundary drains publication handles before the delegation and writer gate retire. Process-local continuation state is disposable. A partially consumed page retains only its bounded unconsumed key suffix and the next-page cursor; resumption reinspects those exact keys rather than offsetting a fresh query whose demand rows may have disappeared. Smaller resumed budgets split that suffix without losing its remaining keys. Reports distinguish pending policy work from failed attempts (`polylogue/daemon/derivation.py:375-428`; `polylogue/daemon/derivation.py:481-498`; `polylogue/daemon/convergence.py:110-123`).

@@ -16,7 +16,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from types import FrameType, SimpleNamespace
 from typing import Any, ParamSpec, TypeVar, cast
@@ -5699,3 +5699,141 @@ def test_convergence_debt_empty_stage_selection_preserves_visible_rows(tmp_path:
     assert cursor.list_convergence_debt(subject_types=()) == []
     assert len(cursor.list_convergence_debt()) == 1
     assert len(cursor.list_convergence_debt(include_stages=("owed",), subject_types=("session_id",))) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("neutral notification transport and worker completion barriers use OS waits")
+@pytest.mark.parametrize("cancel_delivery", [False, True])
+async def test_health_notification_yields_loop_and_retains_physical_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    cancel_delivery: bool,
+) -> None:
+    """Blocking transport yields the loop; cancellation joins its original call."""
+    from polylogue import config as config_module
+    from polylogue.core import compute
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import health as health_module
+
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    calls: list[object] = []
+    cfg = SimpleNamespace(raw={"notification": "neutral"}, health_check_tiers=())
+    status = SimpleNamespace(overall_status="degraded", alerts=[object()])
+
+    class RecordingBackend:
+        def notify(self, alerts: object, *, config: object = None) -> None:
+            heartbeat = threading.Event()
+            loop.call_soon_threadsafe(entered.set)
+            loop.call_soon_threadsafe(heartbeat.set)
+            assert heartbeat.wait(0.2), "ready loop callback could not run during delivery"
+            assert threading.get_ident() != loop_thread
+            if cancel_delivery:
+                assert release.wait(5), "test failed to release physical delivery"
+            assert alerts is status.alerts and config is cfg.raw
+            calls.append(self)
+            finished.set()
+
+    backend = RecordingBackend()
+
+    class TickRunner:
+        async def run(self, _name: str, callback: Callable[[], Awaitable[None]], **_kwargs: object) -> None:
+            for _ in range(1 if cancel_delivery else 2):
+                await callback()
+
+    monkeypatch.setattr(config_module, "load_polylogue_config", lambda: cfg)
+    monkeypatch.setattr(health_module, "check_health", lambda **_kwargs: status)
+    monkeypatch.setattr(daemon_cli, "resolve_health_tiers", lambda tiers: tiers)
+    monkeypatch.setattr(daemon_cli, "_daemon_stage_write_admission", lambda: None)
+    monkeypatch.setattr(daemon_cli, "_run_with_stage_admission", lambda _admission, action: action())
+    monkeypatch.setattr(daemon_cli, "daemon_periodic_runner", TickRunner)
+    monkeypatch.setattr(compute, "compute_adapter", lambda: bounded_compute_adapter)
+    task = asyncio.create_task(daemon_cli._periodic_health_check(backend=backend))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        if cancel_delivery:
+            assert not task.done()
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not task.done(), "cancellation abandoned the physical notifier"
+            assert not finished.is_set()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await task
+        assert finished.is_set()
+        assert calls == [backend] * (1 if cancel_delivery else 2)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_convergence_owner_coalesces_wake_and_keeps_periodic_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Promotion wake borrows the existing owner and never replaces its timer."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.periodic import PeriodicRunner
+
+    parked = asyncio.Event()
+    timer = asyncio.Event()
+    wakeup = asyncio.Event()
+    registered = asyncio.Event()
+    passes: asyncio.Queue[int] = asyncio.Queue()
+    calls = 0
+
+    async def sleep(_seconds: float) -> None:
+        parked.set()
+        await timer.wait()
+        timer.clear()
+
+    async def retry(_db: Path) -> None:
+        nonlocal calls
+        calls += 1
+        await passes.put(calls)
+
+    async def fts() -> None:
+        return None
+
+    runner = PeriodicRunner(jitter_ratio=0, sleep=sleep)
+    monkeypatch.setattr(daemon_cli, "daemon_periodic_runner", lambda: runner)
+    monkeypatch.setattr(daemon_cli, "_retry_convergence_debt_once", retry)
+    task = asyncio.create_task(
+        daemon_cli._periodic_convergence_check(
+            (),
+            fts_owner=cast(Any, SimpleNamespace(converge=fts)),
+            watcher_registered=registered,
+            wakeup=wakeup,
+        )
+    )
+    try:
+        await asyncio.sleep(0)
+        assert calls == 0
+        registered.set()
+        assert await asyncio.wait_for(passes.get(), timeout=2) == 1
+        await asyncio.wait_for(parked.wait(), timeout=2)
+        wakeup.set()
+        wakeup.set()
+        assert await asyncio.wait_for(passes.get(), timeout=2) == 2
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert calls == 2
+        timer.set()
+        assert await asyncio.wait_for(passes.get(), timeout=2) == 3
+        state = runner.state("convergence_check")
+        assert state is not None and state.wakeups == 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
