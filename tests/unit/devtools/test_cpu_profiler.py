@@ -22,19 +22,19 @@ _REPORT = (_FIXTURES / "native-leaves.txt").read_text()
 _SCRIPT = (_FIXTURES / "partial-stacks.txt").read_text()
 
 
-def _tool(tmp_path: Path, *, report: str = _REPORT, script: str = _SCRIPT) -> str:
+def _tool(tmp_path: Path, *, report: str = _REPORT, script: str = _SCRIPT, localize: bool = False) -> str:
     path = tmp_path / "perf"
     path.write_text(
         f"#!{sys.executable}\n"
         "import os, pathlib, subprocess, sys\n"
         "args=sys.argv[1:]\n"
-        "if args[0]=='version': print('perf version synthetic\\ndwarf-unwind: [ on ]')\n"
+        "if args[0]=='version': print('perf version synthetic\\ndwarf-unwind: [ on ]\\nlocale: '+os.environ.get('LC_ALL', ''))\n"
         "elif args[0]=='record':\n"
         "    pathlib.Path(args[args.index('-o')+1]).write_bytes(b'neutral capture')\n"
         "    raise SystemExit(subprocess.call(args[args.index('--')+1:]))\n"
         "elif args[0]=='inject': pathlib.Path(args[args.index('-o')+1]).write_bytes(b'neutral injected')\n"
         f"elif args[0]=='report': print({report!r})\n"
-        f"elif args[0]=='script': print({script!r})\n"
+        f"elif args[0]=='script': print({script!r} if not {localize!r} or os.environ.get('LC_ALL')=='C' else {script.replace('1.', '1,')!r})\n"
     )
     path.chmod(0o700)
     return str(path)
@@ -178,6 +178,37 @@ def test_sampler_runtime_receipt_observes_effective_gil_after_imports(monkeypatc
     assert runtime["gil_enabled"] is False
     assert runtime["perf_trampoline_active"] is True
     assert runtime["executable"] == sys.executable
+
+
+@pytest.mark.uses_real_clock("owned process wall time is observed by the diagnostic wrapper")
+def test_diagnostic_decoding_uses_c_locale_without_changing_owned_child_locale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LC_ALL", "pl_PL.UTF-8")
+    runtime = tmp_path / "runtime.json"
+    output = tmp_path / "capture"
+    code = f"import json, os; from pathlib import Path; assert os.environ['LC_ALL']=='pl_PL.UTF-8'; Path({str(runtime)!r}).write_text(json.dumps({{'gil_enabled':False}}))"
+    assert (
+        main(
+            [
+                "--output-dir",
+                str(output),
+                "--perf",
+                _tool(tmp_path, localize=True),
+                "--runtime-receipt",
+                str(runtime),
+                "--",
+                sys.executable,
+                "-c",
+                code,
+            ]
+        )
+        == 0
+    )
+    document = json.loads((output / "profile.json").read_text())
+    assert "locale: C" in document["tool"]["build_options"]
+    assert document["stack_samples"] == 3
+    assert document["empty_stack_samples"] == 1
 
 
 def test_permission_refusal_identifies_the_missing_kernel_access(tmp_path: Path) -> None:

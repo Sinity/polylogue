@@ -136,7 +136,13 @@ class PerfCpuProfiler:
         output_dir = output_dir.resolve()
         # Existing diagnostics are evidence, never an overwrite target.
         output_dir.mkdir(parents=True, exist_ok=False)
-        version = subprocess.run([tool, "version", "--build-options"], capture_output=True, text=True, check=False)
+        version = subprocess.run(
+            [tool, "version", "--build-options"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
         identity: dict[str, Any] = _identity(Path(tool))
         implementation = Path(tool).parent / ".perf-wrapped"
         if implementation.is_file():
@@ -222,7 +228,16 @@ class PerfCpuProfiler:
     def _run_stage(self, document: dict[str, Any], name: str, args: list[str]) -> subprocess.CompletedProcess[str]:
         if (self.output_dir / f"{name}.stdout").exists() or (self.output_dir / f"{name}.stderr").exists():
             raise FileExistsError(f"Profile stage already recorded: {name}")
-        result = subprocess.run([self.tool, *args], capture_output=True, text=True, cwd=self.output_dir, check=False)
+        # Perf localizes timestamps and numbers. Stabilize only decoding, so
+        # recording still inherits the wrapped product's requested locale.
+        result = subprocess.run(
+            [self.tool, *args],
+            capture_output=True,
+            text=True,
+            cwd=self.output_dir,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
         (self.output_dir / f"{name}.stdout").write_text(result.stdout, encoding="utf-8")
         (self.output_dir / f"{name}.stderr").write_text(result.stderr, encoding="utf-8")
         document["stages"][name] = {"command": [self.tool, *args], "exit_code": result.returncode}
