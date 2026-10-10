@@ -280,3 +280,21 @@ it("distinguishes absent automatic work from an invalid listener without request
   await expect(owner.startCapture()).rejects.toThrow("proof_capture_listener_invalid");
   expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
 });
+
+
+it("retains owned injection failures and existing worker state without requesting capture", async () => {
+  const { browser, declarations } = fixture();
+  browser.storage = { local: { get: vi.fn(async () => ({ polylogueDebugLog: [{ stage: "neutral_stage" }], polylogueState: { error: "neutral_error" } })) } };
+  const owner = await createOwnedProviderBrowser(browser, declarations);
+  browser.scripting.executeScript.mockImplementation(async details => {
+    if (details.files) throw new Error("neutral injection failure");
+    return [{ frameId: 0, documentId: "neutral-document", result: true }];
+  });
+  await expect(owner.browser.scripting.executeScript({ target: { tabId: 11 }, files: ["src/content/chatgpt.js"] }))
+    .rejects.toThrow("neutral injection failure");
+  const details = await owner.captureFailureDetails();
+  expect(details).toEqual({ boundary_failures: [{ stage: "script_injection", tabId: 11, error: "neutral injection failure", code: null }],
+    debug_log: [{ stage: "neutral_stage" }], state: { error: "neutral_error" } });
+  expect(browser.storage.local.get).toHaveBeenCalledWith({ polylogueDebugLog: [], polylogueState: null });
+  expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
+});

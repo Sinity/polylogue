@@ -8,6 +8,17 @@ export async function createOwnedProviderBrowser(browser, declarations) {
   const owned = new Map();
   const windowNativeIds = new Map();
   const automaticCaptures = new Map();
+  // Private proof evidence only. Keep the latest failure at each owned boundary,
+  // rather than copying provider data or changing the production operation.
+  const boundaryFailures = new Map();
+  async function observeBoundary(stage, tabId, operation) {
+    try { return await operation(); }
+    catch (error) {
+      boundaryFailures.set(`${stage}:${tabId}`, { stage, tabId,
+        error: String(error?.message || error), code: typeof error?.code === "string" ? error.code : null });
+      throw error;
+    }
+  }
   function revoke(tabId) { automaticCaptures.delete(tabId); return owned.delete(tabId); }
   for (const declaration of declarations) {
     if (!Number.isInteger(declaration.windowId) || declaration.windowId < 0 || windows.has(declaration.windowId)
@@ -28,21 +39,25 @@ export async function createOwnedProviderBrowser(browser, declarations) {
       && (!tab.pendingUrl || tab.pendingUrl === url) && tab.pinned !== true;
   }
   async function current(tabId) {
-    const declaration = owned.get(tabId);
-    if (!declaration) throw refused();
-    const tab = await browser.tabs.get(tabId);
-    if (!valid(tab, declaration.windowId, declaration.url)) { revoke(tabId); throw refused(); }
-    return tab;
+    return observeBoundary("tab_current", tabId, async () => {
+      const declaration = owned.get(tabId);
+      if (!declaration) throw refused();
+      const tab = await browser.tabs.get(tabId);
+      if (!valid(tab, declaration.windowId, declaration.url)) { revoke(tabId); throw refused(); }
+      return tab;
+    });
   }
   async function documentFor(tabId) {
-    const tab = await current(tabId);
-    const rows = await browser.scripting.executeScript({ target: { tabId }, world: "ISOLATED",
-      func: expectedUrl => globalThis.location.href === expectedUrl, args: [tab.url] });
-    if (rows.length !== 1 || rows[0].frameId !== 0 || rows[0].result !== true
-        || typeof rows[0].documentId !== "string" || !rows[0].documentId) { revoke(tabId); throw refused(); }
-    // The asynchronous document probe can overlap a tab move or SPA navigation.
-    await current(tabId);
-    return rows[0].documentId;
+    return observeBoundary("document_current", tabId, async () => {
+      const tab = await current(tabId);
+      const rows = await browser.scripting.executeScript({ target: { tabId }, world: "ISOLATED",
+        func: expectedUrl => globalThis.location.href === expectedUrl, args: [tab.url] });
+      if (rows.length !== 1 || rows[0].frameId !== 0 || rows[0].result !== true
+          || typeof rows[0].documentId !== "string" || !rows[0].documentId) { revoke(tabId); throw refused(); }
+      // The asynchronous document probe can overlap a tab move or SPA navigation.
+      await current(tabId);
+      return rows[0].documentId;
+    });
   }
   function event(source, listenerWrapper) {
     const wrappers = new Map();
@@ -154,7 +169,8 @@ export async function createOwnedProviderBrowser(browser, declarations) {
       const documentId = await documentFor(details.target.tabId);
       if (details.target.documentIds !== undefined
           && JSON.stringify(details.target.documentIds) !== JSON.stringify([documentId])) throw refused();
-      return browser.scripting.executeScript({ ...details, target: { tabId: details.target.tabId, documentIds: [documentId] } });
+      return observeBoundary("script_injection", details.target.tabId, () =>
+        browser.scripting.executeScript({ ...details, target: { tabId: details.target.tabId, documentIds: [documentId] } }));
     },
   });
   const action = Object.freeze(Object.fromEntries(["setBadgeText", "setBadgeBackgroundColor"].map(method => [method, async details => {
@@ -165,6 +181,11 @@ export async function createOwnedProviderBrowser(browser, declarations) {
     tabs, scripting, runtime, action });
   return Object.freeze({ browser: restricted,
     async ownedTabs() { return tabs.query({}); },
+    async captureFailureDetails() {
+      const stored = await browser.storage.local.get({ polylogueDebugLog: [], polylogueState: null });
+      return { boundary_failures: [...boundaryFailures.values()],
+        debug_log: stored.polylogueDebugLog, state: stored.polylogueState };
+    },
     async consumeCapture(tabId, nativeId) {
       const declaration = owned.get(tabId);
       if (!declaration || nativeId !== declaration.nativeId) throw refused();

@@ -119,3 +119,18 @@ it("retains fixed capture guard codes through CDP and the public phase boundary"
   expect(proofFailureReport("capture_membership", new Error("proof_owned_tab_refused")).error)
     .toEqual({ phase: "capture_membership", category: "provider_isolation_refused" });
 });
+
+
+it("retains missing-capture worker evidence before cleanup and preserves the closed refusal", async () => {
+  const { deps, trace } = fixture();
+  const evaluate = deps.evaluate;
+  const details = { boundary_failures: [{ stage: "script_injection", error: "private selected-runtime exception" }], debug_log: [], state: null };
+  deps.evaluate = async (client, expression) => expression.includes("captureFailureDetails") ? details : evaluate(client, expression);
+  deps.capture = async () => { throw new Error("proof_automatic_capture_missing"); };
+  deps.retainCaptureFailure = snapshot => { expect(snapshot).toBe(details); trace.push(["private.capture.diagnostic"]); };
+  let failure;
+  try { await runOwnedProviderProof(deps); } catch (error) { failure = error; }
+  expect(currentProofFailure(failure).error).toEqual({ phase: "capture_result", category: "automatic_capture_missing" });
+  expect(JSON.stringify(currentProofFailure(failure))).not.toContain("private selected-runtime exception");
+  expect(trace.findIndex(row => row[0] === "private.capture.diagnostic")).toBeLessThan(trace.findIndex(row => row[0] === "close.owned.windows"));
+});

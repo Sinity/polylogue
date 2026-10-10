@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { bindOwnedProviderTargets, verifyOwnedProviderProofExtension } from "./owned_provider_extension.mjs";
@@ -24,6 +24,7 @@ export async function runOwnedProviderProof({ extensionRoot, control = runChrome
   verifyInstalled = verifyInstalledExtension, openWindow = openProofWindow,
   ownBrowser = ownProofBrowser, settleCleanup = settleProofCleanup,
   installCleanup = installShutdownCleanup, requireHidden = requireHiddenProofWorkspace, capture = captureProvider,
+  retainCaptureFailure = null,
   browserVersion = async () => (await globalThis.fetch("http://127.0.0.1:9222/json/version")).json() }) {
   const initial = verifyOwnedProviderProofExtension(extensionRoot, { bound: false });
   const scope = JSON.parse(readFileSync(path.join(extensionRoot, "owned-scope.json"), "utf8"));
@@ -97,7 +98,17 @@ export async function runOwnedProviderProof({ extensionRoot, control = runChrome
     result = { ok: true, extension: installed, proof_binding: binding, providers, automatic_capture_enabled: true,
       isolation: { declared_window_count: targets.length, admitted_tab_count: admitted.length, static_content_scripts: false,
         current_window: "first_declared_owned_window", document_bound_effects: true } };
-  } catch (error) { failure = error; }
+  } catch (error) {
+    failure = error;
+    if (error?.message === "proof_automatic_capture_missing" && worker !== null && retainCaptureFailure !== null) {
+      try {
+        const details = await evaluate(worker, "globalThis.__polylogueOwnedProviderProof.captureFailureDetails()");
+        await retainCaptureFailure(details);
+      } catch (diagnosticError) {
+        failure = new AggregateError([error, diagnosticError], "proof_capture_diagnostic_failed", { cause: error });
+      }
+    }
+  }
   finally {
     try { await settleCleanup(unload, failure); } catch (error) { cleanupFailures.push(error); }
     for (const client of [page, worker, browser]) {
@@ -113,7 +124,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     requireExpectedServiceContext();
     const extensionRoot = process.env.POLYLOGUE_LIVE_PROVIDER_EXTENSION_ROOT;
     if (!extensionRoot) throw new Error("proof_owned_provider_binding_invalid");
-    return runOwnedProviderProof({ extensionRoot: path.resolve(extensionRoot) });
+    const diagnosticPath = process.env.POLYLOGUE_LIVE_PROVIDER_DIAGNOSTIC_PATH;
+    return runOwnedProviderProof({ extensionRoot: path.resolve(extensionRoot),
+      retainCaptureFailure: diagnosticPath ? details => writeFileSync(diagnosticPath, `${JSON.stringify(details)}\n`, { flag: "wx", mode: 0o600 }) : null });
   }).then(result => process.stdout.write(`${JSON.stringify(result)}\n`))
     .catch(error => { publishProofFailure(error); process.exitCode = 1; });
 }
