@@ -16,6 +16,115 @@ from polylogue.storage.sqlite.connection_profile import assert_tier_schema_suppo
 from tests.infra.populated_managed_index import logical_rows, make_populated_stale_index
 
 
+@pytest.mark.parametrize(
+    "control", ["owned-empty", "foreign-owner", "unknown-populated", "changed-control-shape", "unreadable-view"]
+)
+def test_startup_reconstructs_owned_empty_predecessor_with_changed_ddl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, control: str
+) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.retained_replay import publish_retained_payload
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    store = IndexGenerationStore.for_archive_root(root)
+    parent = store.create(
+        owner_id="foreign-owner" if control == "foreign-owner" else "daemon:empty-index-startup",
+        source_snapshot="neutral-empty-bootstrap",
+    )
+    store.promote(parent)
+    old = Path(parent.index_path)
+    source = tmp_path / "external.jsonl"
+    source.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"neutral-retained"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"neutral-message",'
+        b'"role":"user","content":[{"type":"input_text","text":"neutral retained prose"}]}}\n'
+    )
+    raw_id, session_ids = asyncio.run(
+        publish_retained_payload(
+            root, provider=Provider.CODEX, payload=source.read_bytes(), source_path=str(source), acquired_at_ms=0
+        )
+    )
+    assert raw_id and len(session_ids) == 1
+    source.unlink()
+    # An earlier empty bootstrap may have a different rebuildable schema.
+    # Retained Source is already positive, so the empty-archive route cannot replace it.
+    with closing(sqlite3.connect(old)) as conn, conn:
+        triggers = conn.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
+        for name, _sql in triggers:
+            conn.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+        controls = {
+            "schema_identity",
+            "query_unit_frame_state",
+            "raw_existence_journal_control",
+            "session_profile_demand_state",
+        }
+        for schema, name, kind, *_ in conn.execute("PRAGMA table_list").fetchall():
+            if (
+                schema == "main"
+                and kind in {"table", "virtual"}
+                and not name.startswith("sqlite_")
+                and name not in controls
+            ):
+                conn.execute('DELETE FROM "' + name.replace('"', '""') + '"')
+        for _name, sql in triggers:
+            conn.execute(sql)
+        conn.execute("DROP INDEX idx_messages_source_native")
+        conn.execute("ALTER TABLE messages RENAME COLUMN source_native_id_json TO predecessor_native")
+        conn.execute("ALTER TABLE messages ADD COLUMN predecessor_only TEXT")
+        conn.execute("CREATE TABLE retired_material(value TEXT)")
+        if control == "changed-control-shape":
+            conn.execute("ALTER TABLE query_unit_frame_state ADD COLUMN unknown_state TEXT")
+        if control == "unknown-populated":
+            conn.execute("INSERT INTO retired_material VALUES ('neutral')")
+        conn.execute("UPDATE schema_identity SET identity='neutral-predecessor-runtime' WHERE tier='index'")
+        nonempty = {}
+        for schema, name, kind, *_ in conn.execute("PRAGMA table_list").fetchall():
+            if schema == "main" and not name.startswith("sqlite_") and name not in controls and kind != "shadow":
+                quoted = '"' + name.replace('"', '""') + '"'
+                count = conn.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0]
+                if count:
+                    nonempty[name] = count
+        assert nonempty == ({"retired_material": 1} if control == "unknown-populated" else {}), nonempty
+        if control == "unreadable-view":
+            conn.execute("CREATE VIEW unreadable_material AS SELECT missing_column FROM messages")
+    before = {tier: logical_rows(root / f"{tier}.db") for tier in ("user", "audit", "embeddings")}
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+
+    class PreflightReachedError(Exception):
+        pass
+
+    def preflight() -> None:
+        active = ArchiveLocation.resolve(root).active_index_path.resolve(strict=True)
+        if control != "owned-empty":
+            assert active == old
+        else:
+            assert active != old and old.exists() and not source.exists()
+            with closing(open_readonly_connection(active)) as conn:
+                assert_tier_schema_supported(conn, active)
+                assert tuple(row[0] for row in conn.execute("SELECT session_id FROM sessions")) == session_ids
+                assert conn.execute("SELECT text FROM blocks").fetchone()[0] == "neutral retained prose"
+        assert {tier: logical_rows(root / f"{tier}.db") for tier in before} == before
+        raise PreflightReachedError
+
+    monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", preflight)
+    for _ in range(2 if control == "owned-empty" else 1):
+        source_before = logical_rows(root / "source.db")
+        with pytest.raises(PreflightReachedError):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                )
+            )
+        assert logical_rows(root / "source.db") == source_before
+
+
 def test_startup_defers_bulk_read_models_then_publishes_canonical_equivalents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

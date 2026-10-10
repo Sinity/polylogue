@@ -47,7 +47,9 @@ def _inference_provenance() -> ArchiveInferenceProvenance:
     )
 
 
-def _profile(session_id: str, *, message_count: int = 10, word_count: int = 100) -> SessionProfileInsight:
+def _profile(
+    session_id: str, *, message_count: int = 10, word_count: int = 100, wall_duration_ms: int = 0
+) -> SessionProfileInsight:
     return SessionProfileInsight(
         session_id=session_id,
         logical_session_id=session_id,
@@ -55,7 +57,9 @@ def _profile(session_id: str, *, message_count: int = 10, word_count: int = 100)
         title=session_id,
         provenance=_provenance(),
         semantic_tier="merged",
-        evidence=SessionEvidencePayload(message_count=message_count, word_count=word_count),
+        evidence=SessionEvidencePayload(
+            message_count=message_count, word_count=word_count, wall_duration_ms=wall_duration_ms
+        ),
         inference_provenance=_inference_provenance(),
         inference=SessionInferencePayload(workflow_shape="chat", terminal_state="resolved"),
     )
@@ -248,6 +252,26 @@ async def test_correlate_sessions_fetches_full_scope_not_a_page_limit(tmp_path: 
     assert result["sample_count"] == 1005
     assert fetch_mock.await_args is not None
     assert fetch_mock.await_args.args[0].limit is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [86_400_000, 100_000_000])
+async def test_correlate_sessions_preserves_duration_translation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offset: int
+) -> None:
+    poly = _archive(tmp_path)
+    profiles = [_profile(str(index), message_count=index, wall_duration_ms=offset + index) for index in (1, 2, 3)]
+    fetch = AsyncMock(return_value=profiles)
+    monkeypatch.setattr(poly, "list_session_profile_insights", fetch)
+
+    result = await poly.correlate_sessions(metric_x="wall_duration_ms", metric_y="message_count")
+
+    assert result["pearson_r"] == 1.0
+    assert result["sample_count"] == 3
+    assert result["interpretation"] == "strong positive correlation (r=1.000)"
+    assert fetch.await_count == 1
+    assert fetch.await_args is not None
+    assert fetch.await_args.args[0].limit is None
 
 
 @pytest.mark.asyncio

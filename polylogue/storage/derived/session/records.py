@@ -130,12 +130,12 @@ class SessionLatencyProfileRecord(BaseModel):
     first_message_at: str | None = None
     last_message_at: str | None = None
     canonical_session_date: str | None = None
-    median_tool_call_ms: int = 0
-    p90_tool_call_ms: int = 0
-    max_tool_call_ms: int = 0
+    median_tool_call_ms: int | None = None
+    p90_tool_call_ms: int | None = None
+    max_tool_call_ms: int | None = None
     stuck_tool_count: int = 0
-    median_agent_response_ms: int = 0
-    median_user_response_ms: int = 0
+    median_agent_response_ms: int | None = None
+    median_user_response_ms: int | None = None
     tool_call_count_by_category_json: str = "{}"
     evidence_payload_json: str = "{}"
     search_text: str = ""

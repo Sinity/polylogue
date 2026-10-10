@@ -5,7 +5,7 @@ Covers:
 - File overlap scoring
 - Confidence threshold filtering
 - Empty session (no files referenced) → no edges
-- Session with no repo → graceful handling
+- Unavailable local checkout → explicit typed refusal
 - Issue/PR reference extraction from message text
 - GitHubRef deduplication
 - Correlation result payload shape
@@ -27,6 +27,7 @@ import polylogue.analysis.session_commit as session_commit_module
 from polylogue.analysis.session_commit import (
     SOURCE_HEURISTIC,
     SOURCE_TYPED,
+    GitCorrelationUnavailableError,
     GitHubRef,
     SessionCommitEdge,
     SessionCorrelationResult,
@@ -153,7 +154,7 @@ class TestExtractReferencedFiles:
                     {
                         "type": "tool_use",
                         "name": "Edit",
-                        "input": {
+                        "tool_input": {
                             "file_path": "/absolute/path/to/file.py",
                         },
                     }
@@ -232,24 +233,13 @@ class TestExtractGithubRefs:
 
 class TestDetectSessionCommits:
     def test_empty_messages_no_git_available(self) -> None:
-        """When no git repo exists, detection returns empty list gracefully."""
-        edges = detect_session_commits(
-            session_id="test-session",
-            messages=[],
-            repo_path="/nonexistent/path/should/not/exist",
-            before_hours=2,
-            after_hours=2,
-        )
-        assert edges == []
+        with pytest.raises(GitCorrelationUnavailableError, match="git_lookup_failed"):
+            detect_session_commits("neutral", [], repo_path="/nonexistent/path")
 
-    def test_no_files_referenced(self) -> None:
-        """Session with no file references produces no edges in repos with no commits."""
-        edges = detect_session_commits(
-            session_id="test-session",
-            messages=[{"id": "m1", "text": "Hello", "content_blocks": []}],
-            repo_path="/nonexistent/path",
-        )
-        assert edges == []
+    def test_no_files_referenced(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        _commit(tmp_path, "neutral.py", "neutral")
+        assert detect_session_commits("neutral", [{"text": "Hello"}], repo_path=str(tmp_path)) == []
 
 
 class TestSessionCorrelationResult:
@@ -336,19 +326,23 @@ class TestCorrelationResultToPayload:
 
 
 class TestBuildCorrelationResult:
-    def test_builds_for_session_with_no_repo(self) -> None:
+    def test_builds_for_session_with_no_repo(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        _commit(tmp_path, "neutral.py", "neutral")
         """Session with no repo path still produces a valid result."""
         result = build_correlation_result(
             session_id="test",
             messages=[],
-            repo_path="/nonexistent/path",
+            repo_path=str(tmp_path),
         )
         assert result.session_id == "test"
         assert result.commits == []  # No git repo available
         assert result.issue_refs == []
         assert result.pr_refs == []
 
-    def test_extracts_refs_from_messages(self) -> None:
+    def test_extracts_refs_from_messages(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        _commit(tmp_path, "neutral.py", "neutral")
         """Issue and PR refs are extracted even without git access."""
         messages = [
             {
@@ -360,7 +354,7 @@ class TestBuildCorrelationResult:
         result = build_correlation_result(
             session_id="test",
             messages=messages,
-            repo_path="/nonexistent/path",
+            repo_path=str(tmp_path),
         )
         # Issue refs should be extracted from text
         assert len(result.issue_refs) >= 1
@@ -551,34 +545,40 @@ class TestTypedRefsPreferredOverRegex:
     """polylogue-l9su AC2/AC4: typed session_refs-derived GitHubRefs are
     authoritative; the regex scan runs only to detect disagreement."""
 
-    def test_typed_pr_ref_used_when_present(self) -> None:
+    def test_typed_pr_ref_used_when_present(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        _commit(tmp_path, "neutral.py", "neutral")
         messages = [{"id": "m1", "text": "see #999 for context", "content_blocks": []}]
         typed_pr = GitHubRef(owner="Sinity", repo="polylogue", number=3265, kind="pr", url="https://x/pull/3265")
 
         result = build_correlation_result(
             session_id="s",
             messages=messages,
-            repo_path="/nonexistent/path",
+            repo_path=str(tmp_path),
             typed_pr_refs=[typed_pr],
         )
 
         assert [r.number for r in result.pr_refs] == [3265]
         assert result.pr_refs[0].source == SOURCE_TYPED
 
-    def test_regex_result_tagged_heuristic_when_no_typed_evidence(self) -> None:
+    def test_regex_result_tagged_heuristic_when_no_typed_evidence(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        _commit(tmp_path, "neutral.py", "neutral")
         messages = [{"id": "m1", "text": "https://github.com/foo/bar/pull/42", "content_blocks": []}]
-        result = build_correlation_result(session_id="s", messages=messages, repo_path="/nonexistent/path")
+        result = build_correlation_result(session_id="s", messages=messages, repo_path=str(tmp_path))
         assert len(result.pr_refs) == 1
         assert result.pr_refs[0].source == SOURCE_HEURISTIC
 
-    def test_disagreement_recorded_when_regex_finds_untyped_pr(self) -> None:
+    def test_disagreement_recorded_when_regex_finds_untyped_pr(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        _commit(tmp_path, "neutral.py", "neutral")
         messages = [{"id": "m1", "text": "https://github.com/foo/bar/pull/42", "content_blocks": []}]
         typed_pr = GitHubRef(owner="Sinity", repo="polylogue", number=3265, kind="pr", url="https://x/pull/3265")
 
         result = build_correlation_result(
             session_id="s",
             messages=messages,
-            repo_path="/nonexistent/path",
+            repo_path=str(tmp_path),
             typed_pr_refs=[typed_pr],
         )
 
@@ -587,7 +587,9 @@ class TestTypedRefsPreferredOverRegex:
         pr_disagreement = next(d for d in result.disagreements if d.kind == "pr_ref")
         assert "42" in pr_disagreement.heuristic_values
 
-    def test_disagreement_recorded_for_same_number_different_repo(self) -> None:
+    def test_disagreement_recorded_for_same_number_different_repo(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        _commit(tmp_path, "neutral.py", "neutral")
         """polylogue-2vor finding 2: comparing PR/issue identity by bare
         number alone means acme/product#42 and other/repo#42 compare
         equal, silently swallowing a real disagreement across
@@ -600,7 +602,7 @@ class TestTypedRefsPreferredOverRegex:
         result = build_correlation_result(
             session_id="s",
             messages=messages,
-            repo_path="/nonexistent/path",
+            repo_path=str(tmp_path),
             typed_pr_refs=[typed_pr],
         )
 

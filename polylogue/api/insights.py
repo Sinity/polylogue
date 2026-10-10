@@ -599,7 +599,11 @@ class PolylogueInsightsMixin:
         tool_category: str | None = None,
         limit: int = 500,
     ) -> dict[str, object]:
-        """Distribution of materialized per-session tool-call latency."""
+        """Measured per-session tool latency, retaining zero and reporting coverage.
+
+        Durations are None when no selected session supplies a measurement.
+        total_sessions includes unmeasured rows; measured_sessions does not.
+        """
         from polylogue.analysis.archive_rollups import tool_call_latency_distribution_payload
 
         insights = await self.list_session_latency_profile_insights(

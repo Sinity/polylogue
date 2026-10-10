@@ -46,6 +46,7 @@ def _profile(
     tool_use_count: int = 5,
     engaged_duration_ms: int = 120_000,
     tool_active_duration_ms: int = 45_000,
+    wall_duration_ms: int = 0,
     canonical_session_date: str | None = "2026-05-01",
     tags: tuple[str, ...] = (),
     no_inference: bool = False,
@@ -62,6 +63,7 @@ def _profile(
             word_count=word_count,
             tool_use_count=tool_use_count,
             tool_active_duration_ms=tool_active_duration_ms,
+            wall_duration_ms=wall_duration_ms,
             canonical_session_date=canonical_session_date,
             tags=tags,
         ),
@@ -112,6 +114,49 @@ def test_pearson_correlation_perfect_negative() -> None:
     result = pearson_session_correlation(profiles, metric_x="message_count", metric_y="tool_active_duration_ms")
     assert result["pearson_r"] == pytest.approx(-1.0, abs=0.01)
     assert "strong negative" in str(result["interpretation"])
+
+
+@pytest.mark.parametrize("offset", [0, 3_600_000, 86_400_000, 100_000_000])
+@pytest.mark.parametrize("direction", [1, -1])
+def test_pearson_correlation_preserves_translated_linear_relation(offset: int, direction: int) -> None:
+    profiles = [
+        _profile(str(index), wall_duration_ms=offset + index, message_count=index if direction == 1 else 4 - index)
+        for index in (1, 2, 3)
+    ]
+    result = pearson_session_correlation(profiles, metric_x="wall_duration_ms", metric_y="message_count")
+    assert result["pearson_r"] == float(direction)
+    assert result["sample_count"] == 3
+    assert ("strong positive" if direction == 1 else "strong negative") in str(result["interpretation"])
+
+
+@pytest.mark.parametrize("scale", [1, 10**120, 10**200])
+@pytest.mark.parametrize("order", [(0, 1, 2, 3), (3, 2, 1, 0), (2, 0, 3, 1)])
+def test_pearson_correlation_preserves_scale_and_pair_order(scale: int, order: tuple[int, ...]) -> None:
+    pairs = [(1, 1), (2, 2), (3, 4), (4, 3)]
+    profiles = [
+        _profile(str(index), wall_duration_ms=(100_000_000 + pairs[index][0]) * scale, message_count=pairs[index][1])
+        for index in order
+    ]
+    result = pearson_session_correlation(profiles, metric_x="wall_duration_ms", metric_y="message_count")
+    assert result["pearson_r"] == pytest.approx(0.8, abs=0.00005)
+    assert result["sample_count"] == 4
+    assert "strong positive" in str(result["interpretation"])
+
+
+@pytest.mark.parametrize("constant_axis", ["x", "y"])
+def test_pearson_correlation_keeps_true_translated_constant_undefined(constant_axis: str) -> None:
+    profiles = [
+        _profile(
+            str(index),
+            wall_duration_ms=100_000_000 + (0 if constant_axis == "x" else index),
+            message_count=10 if constant_axis == "y" else index,
+        )
+        for index in (1, 2, 3)
+    ]
+    result = pearson_session_correlation(profiles, metric_x="wall_duration_ms", metric_y="message_count")
+    assert result["pearson_r"] is None
+    assert result["sample_count"] == 3
+    assert "constant metric" in str(result["interpretation"])
 
 
 def test_pearson_correlation_insufficient_data() -> None:

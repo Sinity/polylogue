@@ -5442,6 +5442,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             bridge_session_ids_from_events,
             build_correlation_result,
             correlation_result_to_payload,
+            select_local_checkout,
             typed_refs_from_session_refs,
         )
 
@@ -5451,14 +5452,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if session.created_at is None or session.updated_at is None:
             raise SessionNotFoundError("Session has no timestamp data.")
 
-        repo = repo_path
-        if not repo:
-            repo_url = getattr(session, "git_repository_url", None)
-            if isinstance(repo_url, str) and repo_url:
-                repo = repo_url
-            else:
-                directories = getattr(session, "working_directories", ()) or ()
-                repo = str(directories[0]) if directories else "."
+        repo = select_local_checkout(repo_path, session.working_directories)
 
         messages: list[dict[str, object]] = []
         for message in session.messages:

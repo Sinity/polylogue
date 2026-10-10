@@ -124,6 +124,12 @@ rows that can be queried directly.
 - `median_user_response_ms`
 - `tool_call_count_by_category`
 
+The five latency durations use `None` when no timestamped pair was measured
+and retain `0` for measured zero milliseconds. `tool_call_latency_distribution`
+counts selected sessions in `total_sessions` and sessions with measured tool
+latency in `measured_sessions`; its durations are `None` for an unmeasured
+population. Measured zeros participate in its percentiles.
+
 The latency payload includes a construct-boundary string because these are
 archive-observed timing aggregates. They do not measure correctness, human
 attention, or total wall-clock productivity.

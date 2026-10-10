@@ -36,6 +36,7 @@ attributed it to the current session, that is recorded as a disagreement
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections.abc import Sequence
@@ -43,8 +44,66 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
+from polylogue.core.errors import PolylogueError
 from polylogue.core.refs import ObjectRef
 from polylogue.core.types import SessionCommitDetectionType
+
+
+class GitCorrelationUnavailableError(PolylogueError):
+    """The local Git evidence could not be read or uniquely resolved."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+def _git_read(repo_path: str, *arguments: str) -> bytes:
+    try:
+        result = subprocess.run(["git", "-C", repo_path, *arguments], capture_output=True)
+    except OSError as exc:
+        raise GitCorrelationUnavailableError("git_lookup_unavailable") from exc
+    if result.returncode != 0:
+        raise GitCorrelationUnavailableError("git_lookup_failed")
+    return result.stdout
+
+
+def select_local_checkout(override: str | None, working_directories: Sequence[str]) -> str:
+    """Select a validated local checkout; remote identity is not a directory."""
+    candidates = (override,) if override is not None else tuple(working_directories)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            _git_read(str(candidate), "rev-parse", "--show-toplevel")
+            return os.path.abspath(candidate)
+        except GitCorrelationUnavailableError:
+            if override is not None:
+                raise
+    raise GitCorrelationUnavailableError("local_checkout_unavailable")
+
+
+def _repository_relative_files(paths: set[str], repo_path: str, working_directory: str) -> set[str]:
+    root = os.path.abspath(repo_path)
+    relative: set[str] = set()
+    for path in paths:
+        absolute = os.path.abspath(os.path.join(working_directory, path))
+        if os.path.commonpath((root, absolute)) == root:
+            relative.add(os.path.relpath(absolute, root))
+    return relative
+
+
+def _resolved_commit_refs(repo_path: str, references: set[str]) -> set[str]:
+    resolved: set[str] = set()
+    for reference in references:
+        candidates = _git_read(repo_path, "rev-parse", "--disambiguate=" + reference).splitlines()
+        if len(candidates) > 1:
+            raise GitCorrelationUnavailableError("commit_prefix_ambiguous")
+        if candidates:
+            identity = candidates[0].decode("ascii")
+            if _git_read(repo_path, "cat-file", "-t", identity).strip() == b"commit":
+                resolved.add(identity)
+    return resolved
+
 
 # ── GitHub Issue / PR reference extraction (#1690 phase 3) ──────────────
 
@@ -58,7 +117,7 @@ _SHORTHAND_REPO_REF_RE = re.compile(r"\b([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)#(\d+
 # Match bare #NNN (must be preceded by word boundary, not part of heading)
 _BARE_NUM_REF_RE = re.compile(r"(?<!\w)#(\d{1,6})\b")
 
-# Match commit SHA references (full 40-char or short 7-14 char)
+# Match admitted SHA-1 commit references, from seven through forty characters.
 _COMMIT_SHA_RE = re.compile(r"\b([0-9a-f]{7,40})\b", re.IGNORECASE)
 
 # Match this repo's (and sinnix/sinex/lynchpin's) commit-trailer convention:
@@ -219,15 +278,15 @@ def extract_referenced_files(messages: Sequence[dict[str, Any]]) -> set[str]:
                     affected = block.get("affected_paths")
                     if isinstance(affected, list):
                         for p in affected:
-                            if isinstance(p, str) and p.strip():
-                                paths.add(p.strip())
+                            if isinstance(p, str) and p:
+                                paths.add(p)
                     # Also check input dict for path-like fields
-                    inp = block.get("input")
+                    inp = block.get("tool_input")
                     if isinstance(inp, dict):
                         for key in ("file_path", "filePath", "path", "target_file"):
                             val = inp.get(key)
-                            if isinstance(val, str) and val.strip():
-                                paths.add(val.strip())
+                            if isinstance(val, str) and val:
+                                paths.add(val)
 
         # Also scan message text for file paths (common in tool calls)
         text = msg.get("text")
@@ -354,27 +413,19 @@ def _git_log_commit_bodies(
     reliably separable, so this pass uses ASCII field/record separators
     that cannot collide with commit text.
     """
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_path),
-                "log",
-                "--since",
-                window_start.isoformat(),
-                "--until",
-                window_end.isoformat(),
-                "--format=%H%x1f%B%x1e",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
+    output = os.fsdecode(
+        _git_read(
+            repo_path,
+            "log",
+            "--since",
+            window_start.isoformat(),
+            "--until",
+            window_end.isoformat(),
+            "--format=%H%x1f%B%x1e",
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return {}
+    )
     bodies: dict[str, str] = {}
-    for block in result.stdout.split("\x1e"):
+    for block in output.split("\x1e"):
         block = block.strip("\n")
         if not block:
             continue
@@ -440,8 +491,10 @@ def detect_session_commits(
         after_hours=after_hours,
     )
 
-    # Extract session files
-    session_files = extract_referenced_files(messages)
+    repo_path = select_local_checkout(repo_path, ())
+    # Preserve original path evidence; normalize only the overlap comparison.
+    repo_root = os.fsdecode(_git_read(repo_path, "rev-parse", "--show-toplevel").removesuffix(b"\n"))
+    session_files = _repository_relative_files(extract_referenced_files(messages), repo_root, repo_path)
 
     # Collect all message texts for explicit ref detection
     all_text = " ".join(msg.get("text", "") or "" for msg in messages if isinstance(msg.get("text"), str))
@@ -449,29 +502,19 @@ def detect_session_commits(
 
     own_trailer_tokens = {_strip_bridge_session_prefix(bsid) for bsid in (bridge_session_ids or ()) if bsid}
 
-    # Run git log
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_path),
-                "log",
-                "--since",
-                window_start.isoformat(),
-                "--until",
-                window_end.isoformat(),
-                "--format=%x1e%H%x1f%ai%x1f%s",
-                "--name-only",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return []
-
-    commits = _parse_git_log_blocks(result.stdout)
+    output = _git_read(
+        repo_path,
+        "log",
+        "--since",
+        window_start.isoformat(),
+        "--until",
+        window_end.isoformat(),
+        "--format=%x00%H%x00%ai%x00%s%x00",
+        "--name-only",
+        "-z",
+    )
+    commits = _parse_git_log_blocks(output)
+    resolved_refs = _resolved_commit_refs(repo_path, commit_sha_refs)
     if not commits:
         return []
 
@@ -515,7 +558,7 @@ def detect_session_commits(
         )
 
         # Check for explicit ref first (highest confidence)
-        if sha.lower() in commit_sha_refs or sha[:8].lower() in commit_sha_refs:
+        if sha.lower() in resolved_refs:
             edges.append(
                 _flag_foreign_trailer(
                     SessionCommitEdge(
@@ -579,41 +622,31 @@ def detect_session_commits(
     return edges
 
 
-def _parse_git_log_blocks(output: str) -> list[dict[str, Any]]:
-    """Parse git log output into commit dicts including changed files.
-
-    Expects ``--format=%x1e%H%x1f%ai%x1f%s --name-only``: each commit's
-    header fields are ASCII-unit-separator-delimited on one line, the
-    per-commit block is ASCII-record-separator-delimited, and the changed
-    files (if any) follow on their own lines. Using real field/record
-    separators (rather than a literal ``---`` token, which cannot be
-    distinguished from git's own blank-line entry separator once
-    ``--name-only`` appends a file list after the format text) is what
-    makes ``changed_files`` non-empty -- a bare ``\\n---\\n`` split
-    previously left every commit's file set empty because the file list
-    for commit N lived in the *next* split segment, past the point the
-    parser had already stopped consuming header lines for commit N.
-    """
+def _parse_git_log_blocks(output: bytes) -> list[dict[str, Any]]:
+    """Read NUL-framed headers and exact filenames without display quoting."""
+    fields = output.split(b"\0")
     commits: list[dict[str, Any]] = []
-    for block in output.split("\x1e"):
-        if not block:
+    index = 0
+    while index < len(fields):
+        if not fields[index]:
+            index += 1
             continue
-        header, _, rest = block.partition("\n")
-        parts = header.split("\x1f")
-        if len(parts) != 3:
-            continue
-        commit_hash, date, subject = parts
-        commit_hash = commit_hash.strip()
-        if not commit_hash:
-            continue
-        changed_files = {f.strip() for f in rest.split("\n") if f.strip()}
+        if index + 3 >= len(fields):
+            raise GitCorrelationUnavailableError("git_log_invalid")
+        sha, date, subject = fields[index : index + 3]
+        index += 4  # Git's -z header terminator follows the format terminator.
+        files: set[str] = set()
+        first = True
+        while index < len(fields) and fields[index]:
+            name = fields[index]
+            if first and name.startswith(b"\n"):
+                name = name[1:]  # exactly Git's header/file separator, not path whitespace
+            first = False
+            if name:
+                files.add(os.fsdecode(name))
+            index += 1
         commits.append(
-            {
-                "hash": commit_hash,
-                "date": date.strip(),
-                "subject": subject.strip(),
-                "files": changed_files,
-            }
+            {"hash": sha.decode("ascii"), "date": os.fsdecode(date), "subject": os.fsdecode(subject), "files": files}
         )
     return commits
 
@@ -955,6 +988,8 @@ def _github_ref_object_ref(ref: GitHubRef) -> ObjectRef:
 __all__ = [
     "CorrelationDisagreement",
     "GitHubRef",
+    "GitCorrelationUnavailableError",
+    "select_local_checkout",
     "SOURCE_HEURISTIC",
     "SOURCE_TYPED",
     "SessionCommitEdge",

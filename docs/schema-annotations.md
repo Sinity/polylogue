@@ -84,6 +84,11 @@ the broader session profile:
 - `tool_call_count_by_category_json` carries category counts from the same
   session-profile tool classifier.
 
+Latency columns are nullable: `NULL` means no timestamped pair supplied a
+measurement; `0` means a measured interval of zero milliseconds, including
+submillisecond intervals rounded down. Tool category counts and stuck starts
+do not establish latency coverage.
+
 These measures do not infer hidden provider work, correctness, human attention,
 or operator productivity. Missing provider timestamps lower coverage; they do
 not create synthetic latency rows.

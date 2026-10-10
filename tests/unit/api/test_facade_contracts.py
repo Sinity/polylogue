@@ -6373,7 +6373,7 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
         assert profile.provenance.materializer_version == SESSION_INSIGHT_MATERIALIZER_VERSION
         assert profile.latency.median_agent_response_ms == 90000
         assert profile.latency.median_user_response_ms == 120000
-        assert profile.latency.median_tool_call_ms == 0
+        assert profile.latency.median_tool_call_ms is None
         assert profile.latency.stuck_tool_count == 0
         assert profile.latency.tool_call_count_by_category == {"file_read": 1}
     finally:
