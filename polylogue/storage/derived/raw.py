@@ -3066,6 +3066,45 @@ class RawObservationDerivation(RawObservationInspection):
                             # One cache entry owns the physical carrier. Each raw
                             # still owes current schema evidence at its own coordinate.
                             verdict = artifact.validation_verdict
+                            stream = (
+                                artifact.stream_classification()
+                                if artifact.error is None and not share_json and artifact.codex_state_kind is None
+                                else None
+                            )
+                            native_schema_exempt = (
+                                artifact.error is None
+                                and not share_json
+                                and (
+                                    artifact.codex_state_kind is not None
+                                    or (
+                                        stream is not None
+                                        and stream.classification.parse_as_session
+                                        and not stream.classification.schema_eligible
+                                    )
+                                )
+                            )
+                            if verdict is None and native_schema_exempt:
+                                from polylogue.core.enums import ValidationStatus
+                                from polylogue.schemas import RetainedValidationVerdict
+
+                                # Taxonomy belongs to the winning source coordinate.
+                                # A historical Raw still owns the successful native
+                                # grammar's policy for its exact verified revision.
+                                verdict = RetainedValidationVerdict(
+                                    raw_id=raw_id,
+                                    revision_sha256=blob_hash,
+                                    evidence_id=raw_id,
+                                    mode=self._validation_mode,
+                                    status=ValidationStatus.SKIPPED,
+                                    sample_count=0,
+                                    invalid_count=0,
+                                    error_count=0,
+                                    drift_count=0,
+                                    first_diagnostic=None,
+                                    schema_resolution=None,
+                                    drift_observation=None,
+                                    strict_refusal=False,
+                                )
                             if reused_artifact and artifact.validation_verdict is not None and share_json:
                                 from polylogue.schemas import validate_retained_document
                                 from polylogue.sources.revision_backfill import _retained_validation_input

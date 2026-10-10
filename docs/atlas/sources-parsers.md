@@ -601,7 +601,12 @@ admitted for schema validation. A current non-session census alone does not
 waive schema validation for an eligible structured document that yields no
 sessions. Other missing artifact observations remain eligible; the exact
 provider path declaration or an ineligible artifact establishes the raw-only
-exemption. Empty JSON documents and malformed complete records retain typed
+exemption. Successfully prepared native SQLite grammars also publish their
+schema exemption as a `skipped` validation receipt for that exact Raw and
+configured mode. Artifact taxonomy names the latest observation at a source
+coordinate; replacing its winner does not erase a historical revision's own
+validation policy. Native preparation failure or cancellation cannot publish
+that exemption. Empty JSON documents and malformed complete records retain typed
 decode refusal.
 
 Canonical Source census publishes a typed raw-only input's current parser

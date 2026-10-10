@@ -332,6 +332,8 @@ documentation polish do not require an entry.
 
 ## [Unreleased]
 
+- Preserve each retained native SQLite revision's schema exemption when a newer artifact wins its source coordinate, preventing repeated census failures.
+
 ### Added
 
 - Maintenance replay failures now surface in `polylogue status` and the

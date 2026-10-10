@@ -461,6 +461,70 @@ async def test_trajectory_sqlite_wal_reaches_the_daemon_owned_public_read_route(
 
 
 @pytest.mark.asyncio
+async def test_historical_native_trajectory_keeps_its_own_validation_policy(workspace_env: dict[str, Path]) -> None:
+    from polylogue.sources.sqlite_export import logical_export_bytes
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.retained_replay import replay_retained_components_async
+
+    root = workspace_env["archive_root"]
+    source = workspace_env["data_root"] / "trajectory.sqlite"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    run_off_event_loop(lambda: bootstrap_archive_root(root))
+    writer = _write_trajectory_store(source)
+
+    def acquire(order: int) -> str:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.ANTIGRAVITY,
+                payload=logical_export_bytes(source),
+                source_path=str(source),
+                canonical_source_path=str(source),
+                acquired_at_ms=order,
+            )
+
+    try:
+        raw_id = await run_archive_fixture_write(root, lambda: acquire(1))
+        await replay_retained_components_async(root, selected_raw_ids=(raw_id,))
+        writer.execute("UPDATE conversation_summaries SET title='New trajectory title'")
+        writer.commit()
+        newer = await run_archive_fixture_write(root, lambda: acquire(2))
+        await replay_retained_components_async(root, selected_raw_ids=(newer,))
+        with sqlite3.connect(root / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone() == (0,)
+            winner = conn.execute("SELECT * FROM raw_artifacts WHERE raw_id=?", (newer,)).fetchall()
+            assert len(winner) == 1
+            assert conn.execute("SELECT schema_eligible FROM raw_artifacts WHERE raw_id=?", (newer,)).fetchone() == (0,)
+        projection_queries = (
+            "SELECT * FROM sessions ORDER BY session_id",
+            "SELECT * FROM messages ORDER BY message_id",
+            "SELECT * FROM blocks ORDER BY block_id",
+        )
+        with sqlite3.connect(root / "index.db") as index:
+            before = tuple(index.execute(query).fetchall() for query in projection_queries)
+            assert before[0] and before[1] and before[2]
+
+        def omit_historical_policy() -> None:
+            with sqlite3.connect(root / "source.db") as conn:
+                conn.execute(
+                    "UPDATE raw_sessions SET validation_status=NULL,validation_mode=NULL WHERE raw_id=?", (raw_id,)
+                )
+
+        await run_archive_fixture_write(root, omit_historical_policy)
+        await replay_retained_components_async(root, selected_raw_ids=(raw_id,))
+        await replay_retained_components_async(root, selected_raw_ids=(raw_id,))
+        with sqlite3.connect(root / "source.db") as conn:
+            assert conn.execute(
+                "SELECT validation_status,validation_mode FROM raw_sessions WHERE raw_id=?", (raw_id,)
+            ).fetchone() == ("skipped", "advisory")
+            assert conn.execute("SELECT * FROM raw_artifacts WHERE raw_id=?", (newer,)).fetchall() == winner
+        with sqlite3.connect(root / "index.db") as index:
+            assert tuple(index.execute(query).fetchall() for query in projection_queries) == before
+    finally:
+        writer.close()
+
+
+@pytest.mark.asyncio
 async def test_inbox_staged_trajectory_is_admitted_without_a_provider_label(
     workspace_env: dict[str, Path],
 ) -> None:

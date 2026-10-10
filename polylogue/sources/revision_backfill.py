@@ -60,7 +60,7 @@ from polylogue.archive.session_revision_membership import (
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
-from polylogue.core.enums import ArtifactSupportStatus, PolylogueStrEnum, Provider, ValidationMode
+from polylogue.core.enums import ArtifactSupportStatus, PolylogueStrEnum, Provider, ValidationMode, ValidationStatus
 from polylogue.core.json import JSONValue
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.raw_failure_evidence import (
@@ -3816,6 +3816,29 @@ def prepare_revision_source_census(
                     f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
                 )
             return staged
+        verdict = prepared.validation_verdict if prepared is not None else None
+        if verdict is None:
+            if schema_validation_required:
+                raise RetainedPreparationRetryableError(
+                    f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
+                )
+        else:
+            blob_hash = evidence_reader.raw_revision_descriptor(raw_id)[1]
+            if verdict.raw_id != raw_id or verdict.revision_sha256 != blob_hash:
+                raise RetainedPreparationRetryableError(f"retained validation evidence changed for {raw_id}")
+            if evidence_reader.raw_validation_mode(raw_id) != verdict.mode:
+                prepare_raw_state_update(
+                    seal,
+                    raw_id,
+                    state=RawSessionStateUpdate(
+                        validation_status=verdict.status,
+                        validation_error=verdict.first_diagnostic,
+                        validation_drift_count=verdict.drift_count,
+                        validation_provider=artifact.resolved_provider,
+                        validation_mode=verdict.mode,
+                    ),
+                )
+                staged = True
         if artifact.codex_state_kind is not None:
             # Append fragments have no stable artifact-observation coordinate.
             # Their parser receipt is byte-governed; never mint an artifact at -1.
@@ -3845,29 +3868,6 @@ def prepare_revision_source_census(
             state.transient_non_session_raw_ids.add(raw_id)
             return True
 
-        verdict = prepared.validation_verdict if prepared is not None else None
-        if verdict is None:
-            if schema_validation_required:
-                raise RetainedPreparationRetryableError(
-                    f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
-                )
-        else:
-            blob_hash = evidence_reader.raw_revision_descriptor(raw_id)[1]
-            if verdict.raw_id != raw_id or verdict.revision_sha256 != blob_hash:
-                raise RetainedPreparationRetryableError(f"retained validation evidence changed for {raw_id}")
-            if evidence_reader.raw_validation_mode(raw_id) != verdict.mode:
-                prepare_raw_state_update(
-                    seal,
-                    raw_id,
-                    state=RawSessionStateUpdate(
-                        validation_status=verdict.status,
-                        validation_error=verdict.first_diagnostic,
-                        validation_drift_count=verdict.drift_count,
-                        validation_provider=artifact.resolved_provider,
-                        validation_mode=verdict.mode,
-                    ),
-                )
-                staged = True
         return staged
 
     def apply_outcome(raw_id: str, source_index: int) -> None:
@@ -4051,7 +4051,7 @@ def prepare_revision_source_census(
                     manage_transaction=False,
                     captured_classification=(
                         dataclasses.replace(stream.classification, schema_eligible=True)
-                        if stream is not None and verdict is not None
+                        if stream is not None and verdict is not None and verdict.status is not ValidationStatus.SKIPPED
                         else stream.classification
                         if stream is not None
                         else None
