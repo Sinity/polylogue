@@ -120,7 +120,8 @@ class IngestRecovery:
         if not isinstance(generation_id, str):
             return RecoveryResolution("not-replayable", "the ingest plan names no accepted source generation")
         audit = AuditRepository.for_archive_root(handles.archive_root)
-        accepted, stop_reason = audit.accepted_ingest_stop_reason(generation_id)
+        with audit.settled_machine_read():
+            accepted, stop_reason = audit.accepted_ingest_stop_reason(generation_id)
         if not accepted:
             return RecoveryResolution("not-replayable", "no accepted ingest request binds this source generation")
         if stop_reason is None:

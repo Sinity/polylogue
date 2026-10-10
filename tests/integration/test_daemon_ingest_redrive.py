@@ -165,12 +165,26 @@ async def test_accepted_generation_materializes_after_restart_without_its_input(
     await _die_after_acceptance(archive_root, source, monkeypatch)
     assert _session_titles(archive_root) == []
     source.unlink()
+    original_operation_id, original_record = _only_request(archive_root)
 
-    await _restart_and_settle(archive_root)
+    from polylogue.core.write_lease import arm_write_lease_enforcement
 
-    assert _session_titles(archive_root) == ["Retained Redrive"]
+    # Standalone fixtures do not arm the daemon's process-wide write fence.
+    # Startup must keep every Audit write on its real coordinator while its
+    # accepted-generation decision reads through the settled reader.
+    with arm_write_lease_enforcement(process_wide=True):
+        await _restart_and_settle(archive_root)
+
     operation_id, record = _only_request(archive_root)
     audit = AuditRepository.for_archive_root(archive_root)
+    with audit.settled_machine_read():
+        recovered = audit.get_operation(operation_id)
+    assert recovered is not None and recovered["status"] == "completed", recovered
+    assert _session_titles(archive_root) == ["Retained Redrive"]
+    assert operation_id == original_operation_id
+    assert record["request_id"] == original_record["request_id"]
+    assert record["artifact_ref"] == original_record["artifact_ref"]
+    assert record["accepted_deadline_unix_ms"] == original_record["accepted_deadline_unix_ms"]
     with audit.settled_machine_read():
         state = machine_request_state(audit, record)
         history = audit.historical_machine_receipt(operation_id)
