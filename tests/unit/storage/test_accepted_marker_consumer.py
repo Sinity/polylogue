@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
+from typing import BinaryIO
 
 import aiosqlite
 import pytest
@@ -22,12 +25,14 @@ from polylogue.storage.accepted_marker_inputs import (
     prepare_accepted_marker_input,
 )
 from polylogue.storage.derived.session.marker_domain import SessionMarkerDerivation
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 
 
 def _candidate_record(text: str, *, message_id: str) -> dict[str, object]:
-    candidate = candidates_for_block(message_id, f"{message_id}:0", text)[0]
+    block_id = f"{message_id}:b:{hashlib.sha256(text.encode()).hexdigest()}:0"
+    candidate = candidates_for_block(message_id, block_id, text)[0]
     record = asdict(candidate)
     record["assertion_kind"] = candidate.assertion_kind.value if candidate.assertion_kind is not None else None
     return record
@@ -51,13 +56,62 @@ def _adapter(source_db: Path, user_db: Path) -> SessionMarkerDerivation:
     return SessionMarkerDerivation(
         lambda: sqlite3.connect(f"file:{source_db}?mode=ro", uri=True),
         lambda: sqlite3.connect(f"file:{user_db}?mode=ro", uri=True),
-        lambda: sqlite3.connect(user_db),
+        lambda: connect_measured(user_db),
     )
 
 
 def _new_user_tier(path: Path) -> None:
     with sqlite3.connect(path) as conn:
         conn.executescript(USER_DDL)
+
+
+@pytest.mark.parametrize("empty", [True, False])
+def test_consumer_reuses_validated_metadata_and_skips_verified_empty_arrays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, empty: bool
+) -> None:
+    source_db = tmp_path / "source.db"
+    user_db = tmp_path / "user.db"
+    _new_user_tier(user_db)
+    candidates = [] if empty else [_candidate_record("::note: retained", message_id="m-count")]
+    batch = prepare_accepted_marker_input(
+        "counted",
+        [{"session_id": "source:counted", "candidates": candidates, "retired_assertions": []}],
+        request_facts={"nested": {"number": 1.0, "values": [None, True, 2**128]}},
+    )
+
+    async def append() -> None:
+        async with aiosqlite.connect(source_db) as conn:
+            await conn.executescript(SOURCE_DDL)
+            await append_accepted_marker_input(conn, batch)
+            await conn.commit()
+
+    asyncio.run(append())
+    traversals: list[str] = []
+    original_items = marker_input_store._iter_json_items
+    original_events = marker_input_store._iter_json_events
+
+    def items(payload: BinaryIO, prefix: str) -> Iterator[object]:
+        traversals.append(prefix)
+        yield from original_items(payload, prefix)
+
+    def events(payload: BinaryIO) -> Iterator[tuple[str, str, object]]:
+        traversals.append("events")
+        yield from original_events(payload)
+
+    monkeypatch.setattr(marker_input_store, "_iter_json_items", items)
+    monkeypatch.setattr(marker_input_store, "_iter_json_events", events)
+    adapter = _adapter(source_db, user_db)
+    key = adapter.required_page(object(), cursor=None, limit=1)[0][0]
+    replacement = adapter.compute(object(), key)
+    assert replacement.empty is empty
+    assert adapter.publish(object(), replacement)
+    assert replacement.carrier is not None and replacement.carrier.payload_file.closed
+    with sqlite3.connect(user_db) as user:
+        assert user.execute("SELECT COUNT(*) FROM assertions").fetchone() == (0 if empty else 1,)
+        assert user.execute("SELECT applied_sequence FROM accepted_marker_delivery_cursor").fetchone() == (1,)
+    assert traversals == ["events", "request_sessions.item"] + (
+        [] if empty else ["sessions.item.candidates.item", "sessions.item.candidates.item"]
+    )
 
 
 def test_consumer_uses_retained_history_and_keeps_a_human_deletion(tmp_path: Path) -> None:

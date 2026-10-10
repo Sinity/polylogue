@@ -62,6 +62,8 @@ selected path without inspecting every source row
 
 Raw inspection projects the selected component’s Raw IDs, logical keys and membership pairs on its pinned Source/Index snapshot, then applies the same exact receipt validator as executable replay plans. It does not reconstruct or hash the execution-only census and precondition witnesses. A page shares one exact execution-component assessment among its requested siblings only within that pinned read, after every sibling’s own census, policy, refusal and output checks. The page retains only requested Raw IDs and verdicts; a later snapshot assesses the receipts again.
 
+Accepted marker carriers collect their identity metadata, candidate counts and validated retirement counts during the existing streaming shape check, then verify the unchanged request digest. Delivery skips candidate or retirement traversals only when those verified counts are zero. Nonempty candidates still pass the detailed decoder before publication and stream through lowering; the assertions and source-stream cursor commit together (`storage/accepted_marker_inputs.py`; `storage/derived/session/marker_domain.py`).
+
 Raw/index materialization readiness and the archive-debt diagnostic share
 `current_typed_non_session_raw`. They may settle an unmatched raw as a valid
 non-session only from a complete typed, non-terminal artifact

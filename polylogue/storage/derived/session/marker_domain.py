@@ -111,6 +111,8 @@ def marker_assertions_present(conn: sqlite3.Connection, assertion_ids: Sequence[
 
 def _retirements(carrier: VerifiedAcceptedMarkerPayload) -> Iterator[str]:
     """Yield sealed retirements one at a time without collecting the batch."""
+    if not carrier.retirement_count:
+        return
     for value in carrier.iter_items("sessions.item.retired_assertions.item"):
         if not isinstance(value, str) or not value:
             raise AcceptedMarkerInputRefusedError("accepted marker carrier has an invalid retirement payload")
@@ -174,6 +176,8 @@ def _candidate(raw_candidate: object) -> MarkerCandidate:
 
 def _candidates(carrier: VerifiedAcceptedMarkerPayload) -> Iterator[MarkerCandidate]:
     """Yield sealed prepared-write candidates without reparsing current text."""
+    if not carrier.candidate_count:
+        return
     for raw_candidate in carrier.iter_items("sessions.item.candidates.item"):
         yield _candidate(raw_candidate)
 
