@@ -144,3 +144,63 @@ def test_explicit_task_identity_links_queue_to_service_on_integer_logical_lane()
     wait = next(s for s in ledger["spans"] if s["kind"] == "wait")
     assert wait["logical_tid"] != wait["tid"]
     assert wait["exclusive_wall_ns"] is None
+
+
+def test_duration_event_inheriting_span_id_cannot_replace_real_causal_owner() -> None:
+    trace, ledger = reduce_events(
+        [
+            _terminal("root", 0, 100_000_000, cpu=(0, 80_000_000)),
+            _terminal("compute.service", 10_000_000, 90_000_000, parent="root", cpu=(5_000_000, 65_000_000)),
+            _terminal("child", 20_000_000, 40_000_000, parent="compute.service", cpu=(10_000_000, 20_000_000)),
+            {
+                "event": "foo.ok",
+                "span_id": "compute.service",
+                "trace_id": "trace",
+                "parent_span_id": "root",
+                "pid": 7,
+                "native_thread_id": 1,
+                "monotonic_ns": 80_000_000,
+                "duration_ms": 1,
+                "outcome": "ok",
+            },
+        ]
+    )
+    by_name = {s["name"]: s for s in ledger["spans"]}
+    assert by_name["root"]["exclusive_wall_ns"] == 20_000_000
+    assert by_name["root"]["exclusive_cpu_ns"] == 20_000_000
+    assert by_name["compute.service"]["exclusive_wall_ns"] == 60_000_000
+    assert by_name["compute.service"]["exclusive_cpu_ns"] == 50_000_000
+    assert by_name["compute.service"]["causal_owner"] is True
+    assert by_name["foo"]["causal_owner"] is False
+    assert by_name["foo"]["identity_source"] == "correlation_only"
+    assert by_name["foo"]["parent_span_id"] is None
+    assert by_name["foo"]["chronology"] == "inferred"
+    assert by_name["foo"]["exclusive_wall_ns"] is None
+    assert ledger["coverage"]["duplicate_span_ids"] == 1
+    assert ledger["coverage"]["correlation_id_collisions"] == 1
+    assert ledger["coverage"]["ambiguous_owner_ids"] == 0
+    assert sum(e["ph"] == "f" for e in trace["traceEvents"]) == 2
+    child_cause = next(e for e in trace["traceEvents"] if e["ph"] == "s" and e["id"].endswith(":child"))
+    assert child_cause["ts"] == 20_000
+
+
+def test_duplicate_explicit_owner_ids_refuse_causal_and_exclusive_claims() -> None:
+    trace, ledger = reduce_events(
+        [
+            _terminal("root", 0, 100, cpu=(0, 80)),
+            _terminal("first", 10, 50, parent="root", span_id="shared", cpu=(5, 30)),
+            _terminal("second", 20, 70, parent="root", span_id="shared", cpu=(10, 50)),
+            _terminal("child", 30, 40, parent="shared", cpu=(15, 20)),
+        ]
+    )
+    by_name = {s["name"]: s for s in ledger["spans"]}
+    assert by_name["first"]["causal_owner"] is False
+    assert by_name["second"]["causal_owner"] is False
+    assert by_name["root"]["exclusive_wall_ns"] is None
+    assert by_name["root"]["exclusive_cpu_ns"] is None
+    assert by_name["root"]["cpu_coverage"] == "ambiguous_child_identity"
+    assert by_name["first"]["cpu_coverage"] == "ambiguous_span_identity"
+    assert ledger["coverage"]["ambiguous_owner_ids"] == 1
+    assert ledger["coverage"]["duplicate_span_ids"] == 1
+    assert ledger["coverage"]["missing_parents"] == 1
+    assert not any(e["ph"] in {"s", "f"} for e in trace["traceEvents"])

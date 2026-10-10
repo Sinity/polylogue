@@ -6,6 +6,9 @@ lanes; they never count as the submitting thread's execution. Exclusive wall is
 relative to observed same-thread work children. CPU uses thread-clock endpoints,
 never process CPU or concurrent child wall. Uninstrumented work stays in the
 parent's residual. Legacy duration-only records have no precise chronology.
+An inherited span ID is correlation, not ownership: causal owners need explicit
+terminal endpoints or an exactly matched start. Duplicate genuine owners make
+causal and exclusive measurements unavailable.
 """
 
 from __future__ import annotations
@@ -65,6 +68,8 @@ class Slice:
     exclusive_cpu_ns: int | None = None
     cpu_coverage: str = "unavailable"
     logical_tid: int | None = None
+    identity_source: str = "correlation_only"
+    causal_owner: bool = False
 
     @property
     def lane(self) -> int:
@@ -126,7 +131,6 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
         if start is None or end is None or start < 0 or end < start:
             start = end = None
             chronology = "unavailable"
-        counts[f"{chronology}_spans"] += 1
         pid = _ns(terminal.get("span_start_pid", terminal.get("pid")))
         tid = _ns(terminal.get("span_start_native_thread_id"))
         if tid is None:
@@ -144,11 +148,28 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
             and cpu_end is not None
             and cpu_end >= cpu_start
         )
+        explicit_endpoints = (
+            _ns(terminal.get("span_start_ns")) is not None and _ns(terminal.get("span_end_ns")) is not None
+        )
+        identity_source = (
+            "terminal_endpoints"
+            if explicit_endpoints and chronology == "measured"
+            else "matched_start"
+            if start_event is not None and chronology == "measured"
+            else "correlation_only"
+        )
+        if identity_source == "correlation_only":
+            counts["detached_correlated_events"] += 1
+            valid_cpu = False
+            if chronology == "measured":
+                chronology = "inferred"
+        counts[f"{chronology}_spans"] += 1
         item = Slice(
             name=key[3],
+            identity_source=identity_source,
             span_id=str(terminal["span_id"]),
             trace_id=terminal.get("trace_id"),
-            parent_span_id=terminal.get("parent_span_id"),
+            parent_span_id=terminal.get("parent_span_id") if identity_source != "correlation_only" else None,
             task_id=terminal.get("task_id"),
             pid=pid,
             tid=tid,
@@ -168,9 +189,24 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
         slices.append(item)
     counts["unmatched_starts"] = len(starts)
     children: dict[tuple[int | None, str | None, str], list[Slice]] = defaultdict(list)
-    owners = {(s.pid, s.trace_id, s.span_id): s for s in slices}
+    identities: dict[tuple[int | None, str | None, str], list[Slice]] = defaultdict(list)
     for item in slices:
-        if item.parent_span_id:
+        identities[(item.pid, item.trace_id, item.span_id)].append(item)
+    owners: dict[tuple[int | None, str | None, str], Slice] = {}
+    for identity, occurrences in identities.items():
+        candidates = [s for s in occurrences if s.identity_source != "correlation_only"]
+        if len(occurrences) > 1:
+            counts["duplicate_span_ids"] += 1
+        if len(candidates) == 1:
+            candidates[0].causal_owner = True
+            owners[identity] = candidates[0]
+            if len(occurrences) > 1:
+                counts["correlation_id_collisions"] += 1
+        elif len(candidates) > 1:
+            counts["ambiguous_owner_ids"] += 1
+
+    for item in slices:
+        if item.identity_source != "correlation_only" and item.parent_span_id:
             parent_key = (item.pid, item.trace_id, item.parent_span_id)
             children[parent_key].append(item)
             if parent_key not in owners:
@@ -178,10 +214,13 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
     trace_events: list[dict[str, Any]] = []
     origin = min((s.start_ns for s in slices if s.start_ns is not None), default=0)
     queue_tasks: dict[tuple[int | None, str | None, str], Slice] = {}
+    next_logical_tid = 1 << 31
     for item in slices:
         if item.kind == "wait":
-            item.logical_tid = (1 << 31) + len(queue_tasks)
-            queue_tasks[(item.pid, item.trace_id, item.task_id or item.span_id)] = item
+            item.logical_tid = next_logical_tid
+            next_logical_tid += 1
+            if item.causal_owner:
+                queue_tasks[(item.pid, item.trace_id, item.task_id or item.span_id)] = item
             trace_events.append(
                 {
                     "name": "thread_name",
@@ -200,13 +239,14 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
             if c.chronology == "measured" and c.start_ns is not None and c.end_ns is not None
         ]
         if (
-            item.chronology == "measured"
+            item.causal_owner
+            and item.chronology == "measured"
             and item.start_ns is not None
             and item.end_ns is not None
             and item.tid is not None
             and item.tid == item.end_tid
             and item.kind == "work"
-            and all(c.chronology == "measured" for c in same_thread)
+            and all(c.causal_owner and c.chronology == "measured" for c in same_thread)
         ):
             item.exclusive_wall_ns = item.end_ns - item.start_ns - _covered(item.start_ns, item.end_ns, wall_children)
         if (
@@ -214,7 +254,11 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
             and item.thread_cpu_start_ns is not None
             and item.thread_cpu_end_ns is not None
         ):
-            if all(c.inclusive_cpu_ns is not None for c in same_thread):
+            if not item.causal_owner:
+                item.cpu_coverage = "ambiguous_span_identity"
+            elif not all(c.causal_owner for c in same_thread):
+                item.cpu_coverage = "ambiguous_child_identity"
+            elif all(c.inclusive_cpu_ns is not None for c in same_thread):
                 cpu_children = [
                     (c.thread_cpu_start_ns, c.thread_cpu_end_ns)
                     for c in same_thread
@@ -241,7 +285,7 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
                 "args": args,
             }
         )
-        parent = owners.get((item.pid, item.trace_id, item.parent_span_id or ""))
+        parent = owners.get((item.pid, item.trace_id, item.parent_span_id or "")) if item.causal_owner else None
         if parent is not None and parent.start_ns is not None and parent.end_ns is not None:
             point = max(parent.start_ns, min(parent.end_ns, item.start_ns))
             flow_id = f"{item.pid}:{item.trace_id}:{item.span_id}"
@@ -271,7 +315,8 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
     for item in slices:
         queued = queue_tasks.get((item.pid, item.trace_id, item.task_id or ""))
         if (
-            item.name == "compute.service"
+            item.causal_owner
+            and item.name == "compute.service"
             and queued is not None
             and queued.end_ns is not None
             and item.start_ns is not None
@@ -313,6 +358,10 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
         "missing_native_thread_ids",
         "rejected_fields",
         "missing_parents",
+        "duplicate_span_ids",
+        "correlation_id_collisions",
+        "ambiguous_owner_ids",
+        "detached_correlated_events",
     ):
         counts.setdefault(field, 0)
     ledger = {
