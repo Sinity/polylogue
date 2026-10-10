@@ -144,6 +144,7 @@ from polylogue.storage.sqlite.session_shard import (
 
 if TYPE_CHECKING:
     from polylogue.schemas.retained_validation import RetainedValidationVerdict
+    from polylogue.schemas.validator import RetainedValidationReuse
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
 
@@ -715,6 +716,8 @@ class PreparedJsonl:
     parsed_prefix_size: int | None = None
     resolved_provider: Provider | None = None
     validation_verdict: RetainedValidationVerdict | None = field(default=None, compare=False, repr=False)
+    validation_reuse: RetainedValidationReuse | None = field(default=None, compare=False, repr=False)
+    _owns_validation: bool = field(default=False, compare=False, repr=False)
     parser_stage_artifact: PreparedJsonl | None = field(default=None, compare=False, repr=False)
     positive_evidence_filtered: bool = False
     attempt_directory: Path | None = None
@@ -992,6 +995,7 @@ class PreparedJsonl:
         return replace(
             self,
             _owns_files=False,
+            _owns_validation=False,
             _blob_publication=_ArtifactBlobPublication(),
             _thread_projection=_ArtifactThreadProjection(),
         )
@@ -1042,6 +1046,8 @@ class PreparedJsonl:
                 )
         if self.sessions_path is not None:
             discard_decoded_sessions(self.sessions_path)
+        if self._owns_validation and self.validation_reuse is not None:
+            self.validation_reuse.clear()
         if not self._owns_files:
             return
         if self.attempt_directory is not None:
@@ -2491,6 +2497,12 @@ def _finalize_prepared_cohort(
     # Preserve the neutral parser-stage carrier for exact per-revision
     # checkpoints. The finalized carrier owns its shared attempt directory;
     # the child owns only its sealed file paths and is discarded with parent.
+    result = replace(
+        result,
+        validation_verdict=original.validation_verdict,
+        validation_reuse=original.validation_reuse,
+        _owns_validation=False,
+    )
     if not preserve_parser_stage:
         return result
     return replace(result, parser_stage_artifact=replace(original, attempt_directory=None))

@@ -129,7 +129,7 @@ def test_drive_download_runs_with_the_writer_free(tmp_path: Path) -> None:
 def test_unsplit_stage_is_bracketed_by_the_engine(tmp_path: Path) -> None:
     """A ``whole_execute`` stage still gets the writer -- that is the named residual.
 
-    Anti-vacuity: drop the ``whole_execute`` branch from ``_run_stage_execute``
+    Anti-vacuity: drop the ``whole_execute`` branch from ``execute_convergence_stage``
     and this stage's write section would run with no admission at all, leaving
     ``admitted_actors`` empty.
     """

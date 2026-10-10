@@ -75,7 +75,6 @@ from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 if TYPE_CHECKING:
     from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
     from polylogue.schemas.runtime_registry import ProviderSchemaSnapshot, SchemaRegistry
-    from polylogue.schemas.validator import RetainedValidationReuse
     from polylogue.sources.parsers.base import ParsedSession
     from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.sources.revision_backfill import (
@@ -322,7 +321,6 @@ class PreparedNeutralArtifact:
 
     raw_id: str
     artifact: PreparedJsonl
-    validation_reuse: RetainedValidationReuse
 
 
 @dataclass(slots=True)
@@ -341,7 +339,6 @@ class NeutralRawPreparation:
     schema_snapshots: Mapping[Provider, ProviderSchemaSnapshot]
     sidecar_input_bytes: Mapping[str, int]
     artifacts: dict[tuple[object, ...], PreparedJsonl] = dataclasses_field(default_factory=dict)
-    validation_reuse: dict[tuple[object, ...], RetainedValidationReuse] = dataclasses_field(default_factory=dict)
 
     def parser_jobs(
         self, validation_mode: ValidationMode
@@ -387,9 +384,6 @@ class NeutralRawPreparation:
     def close(self) -> None:
         _close_prepared_carriers({}, {}, self.artifacts.values())
         self.artifacts.clear()
-        for reuse in self.validation_reuse.values():
-            reuse.clear()
-        self.validation_reuse.clear()
         _cleanup_scratch(self.scratch_owner)
 
 
@@ -449,15 +443,16 @@ def _validate_captured_neutral(
     validation_mode: ValidationMode,
     registry: SchemaRegistry,
     signature_directory: Path,
-    reuse: RetainedValidationReuse | None,
 ) -> PreparedJsonl:
-    from polylogue.schemas import validate_retained_document
+    from polylogue.schemas import RetainedValidationReuse, validate_retained_document
     from polylogue.sources.revision_backfill import _retained_validation_input
 
     if neutral.error is not None or neutral.resolved_provider is None or neutral.parsed_prefix_size == 0:
         return neutral
     _provider, blob_hash, source_path, _kind, _size = captured.descriptor
     prefix = neutral.parsed_prefix_size if validation_mode is not ValidationMode.OFF else None
+    reuse = neutral.validation_reuse or RetainedValidationReuse()
+    owns_validation = neutral._owns_validation or neutral.validation_reuse is None
     try:
         with _retained_validation_input(captured.staged_blob, prefix) as (validation_path, accepted_prefix_size):
             verdict = validate_retained_document(
@@ -482,7 +477,9 @@ def _validate_captured_neutral(
         if decode_failure is None:
             raise
         return dataclasses.replace(neutral, error=f"{type(error).__name__}: {error}", decode_failure=decode_failure)
-    return dataclasses.replace(neutral, validation_verdict=verdict)
+    return dataclasses.replace(
+        neutral, validation_verdict=verdict, validation_reuse=reuse, _owns_validation=owns_validation
+    )
 
 
 def _prepare_captured_neutral(
@@ -495,7 +492,6 @@ def _prepare_captured_neutral(
     snapshot: ProviderSchemaSnapshot | None,
 ) -> PreparedNeutralArtifact:
     from polylogue.schemas.runtime_registry import SchemaRegistry
-    from polylogue.schemas.validator import RetainedValidationReuse
 
     wall_started, cpu_started = time.perf_counter(), time.thread_time()
     try:
@@ -510,14 +506,12 @@ def _prepare_captured_neutral(
             elapsed_ms=(time.perf_counter() - wall_started) * 1000,
             cpu_ms=(time.thread_time() - cpu_started) * 1000,
         )
-    reuse = RetainedValidationReuse()
     wall_started, cpu_started = time.perf_counter(), time.thread_time()
     try:
         registry = SchemaRegistry() if snapshot is None else snapshot.reader()
-        neutral = _validate_captured_neutral(raw_id, captured, neutral, validation_mode, registry, scratch, reuse)
-        return PreparedNeutralArtifact(raw_id, neutral, reuse)
+        neutral = _validate_captured_neutral(raw_id, captured, neutral, validation_mode, registry, scratch)
+        return PreparedNeutralArtifact(raw_id, neutral)
     except BaseException:
-        reuse.clear()
         _close_prepared_carriers({}, {}, (neutral,))
         raise
     finally:
@@ -527,7 +521,7 @@ def _prepare_captured_neutral(
             productive_id=raw_id,
             operation="validate",
             thread=str(threading.get_native_id()),
-            reason=reuse.outcome,
+            reason="skipped" if neutral.validation_reuse is None else neutral.validation_reuse.outcome,
             elapsed_ms=(time.perf_counter() - wall_started) * 1000,
             cpu_ms=(time.thread_time() - cpu_started) * 1000,
         )
@@ -2334,7 +2328,6 @@ class RawObservationDerivation(RawObservationInspection):
         raw_ids, logical_keys = original_selection
         eligible_raw_ids = tuple(captures)
         blob_store = BlobStore(self.archive_root / "blob")
-        from polylogue.schemas import RetainedValidationReuse
 
         assert carry.scratch_owner is not None
         scratch = Path(carry.scratch_owner.name)
@@ -2373,14 +2366,12 @@ class RawObservationDerivation(RawObservationInspection):
                 # Only the external page owns these files through all ordered
                 # consumers. Fresh captures in this carry have a shorter lifetime.
                 page = carry.neutral_page
-                reuse = None
                 validation_owner = "fresh_capture"
                 if (
                     page is not None
                     and neutral_keys[raw_id] in page.artifacts
                     and (page.captures[raw_id].staged_blob == staged_blob)
                 ):
-                    reuse = page.validation_reuse.setdefault(neutral_keys[raw_id], RetainedValidationReuse())
                     validation_owner = "page"
                     # Cached drift belongs to the page until every ordered
                     # consumer settles, independently of parser attempt directories.
@@ -2394,12 +2385,13 @@ class RawObservationDerivation(RawObservationInspection):
                         self._validation_mode,
                         self._schema_registry,
                         neutral_directory,
-                        reuse,
                     )
                 finally:
                     validation_elapsed_ms = (time.perf_counter() - validation_started) * 1000
                     validation_cpu_ms = (time.thread_time() - validation_cpu_started) * 1000
-                    validation_outcome = "unowned" if reuse is None else reuse.outcome
+                    validation_outcome = (
+                        "skipped" if neutral.validation_reuse is None else neutral.validation_reuse.outcome
+                    )
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
             emit(
                 "storage.raw_observation.neutral_artifact",
@@ -3289,6 +3281,7 @@ class RawObservationDerivation(RawObservationInspection):
                                         captured_zip_coordinate=carry.zip_coordinates[raw_id],
                                         registry=self._schema_registry,
                                         signature_directory=scratch,
+                                        reuse=artifact.validation_reuse,
                                     )
                             else:
                                 prepared_artifacts[artifact_key] = artifact

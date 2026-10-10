@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterable
 from contextlib import closing
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ParamSpec, TypeVar, cast
 
 import pytest
 
@@ -385,6 +385,10 @@ def test_canonical_retryable_frontier_error_replays_from_retained_bytes(tmp_path
         assert conn.execute(
             "SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
         ).fetchone() == (1, None)
+
+
+_ValidationP = ParamSpec("_ValidationP")
+_ValidationT = TypeVar("_ValidationT")
 
 
 @pytest.mark.parametrize(
@@ -2266,11 +2270,13 @@ def test_neutral_page_census_restart_keeps_drift_until_page_retirement(
     def close(page: NeutralRawPreparation) -> None:
         nonlocal closed_pages
         closed_pages += 1
-        memos = tuple(page.validation_reuse.values())
+        memos = tuple(
+            artifact.validation_reuse for artifact in page.artifacts.values() if artifact.validation_reuse is not None
+        )
         owned_signatures: list[Path] = []
         for memo in memos:
             assert memo._entry is not None
-            verdict = memo._entry.verdict
+            verdict = memo._entry.body
             if verdict.drift_observation is not None:
                 signature = verdict.drift_observation.unseen_key_signature
                 assert len(b"".join(signature.iter_utf8_chunks())) == signature.byte_count
@@ -2279,7 +2285,7 @@ def test_neutral_page_census_restart_keeps_drift_until_page_retirement(
                     owned_signatures.append(signature._path)
         signatures.extend(owned_signatures)
         original_close(page)
-        assert not page.validation_reuse
+        assert not page.artifacts
         assert all(memo._entry is None for memo in memos)
         assert all(not path.exists() for path in owned_signatures)
 
@@ -2380,6 +2386,54 @@ def test_admitted_neutral_page_runs_complete_validation_on_independent_workers(
             (f"codex-session:{name}:n:m-{name}", "user") for name in ("first", "second")
         ]
         assert connection.execute("SELECT text FROM blocks ORDER BY text").fetchall() == [("first",), ("second",)]
+
+
+def test_retained_claude_page_binds_one_complete_body_across_source_phases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_property: Callable[[str, object], None]
+) -> None:
+    from polylogue.schemas import retained_validation
+
+    bootstrap_archive_root(tmp_path)
+    payload = (
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "message-one",
+                "sessionId": "neutral-session",
+                "timestamp": "2026-07-20T10:00:00Z",
+                "message": {"role": "user", "content": "complete retained text"},
+            }
+        )
+        + "\n"
+    ).encode()
+    target = _admit(tmp_path, (), provider=Provider.CLAUDE_CODE, path="neutral.jsonl", payload=payload)
+    calls = 0
+
+    def counted(function: Callable[_ValidationP, _ValidationT]) -> Callable[_ValidationP, _ValidationT]:
+        def body(*args: _ValidationP.args, **kwargs: _ValidationP.kwargs) -> _ValidationT:
+            nonlocal calls
+            calls += 1
+            return function(*args, **kwargs)
+
+        return body
+
+    monkeypatch.setattr(
+        retained_validation, "validate_retained_document", counted(retained_validation.validate_retained_document)
+    )
+
+    async def replay() -> None:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            (await owner.replay_retained_raw_ids((target,))).require_complete()
+
+    asyncio.run(replay())
+    record_property("validation_body_calls", calls)
+    with sqlite3.connect(tmp_path / "index.db") as connection:
+        assert connection.execute("SELECT native_id FROM sessions").fetchall() == [("neutral-session",)]
+        assert connection.execute("SELECT native_id,role FROM messages").fetchall() == [("message-one", "user")]
+        assert connection.execute("SELECT text FROM blocks").fetchall() == [("complete retained text",)]
+    with sqlite3.connect(tmp_path / "source.db") as connection:
+        assert connection.execute("SELECT raw_id FROM raw_sessions").fetchall() == [(target,)]
+    assert calls == 1, calls
 
 
 def test_cancelled_neutral_page_settles_all_validation_workers_before_retirement(
