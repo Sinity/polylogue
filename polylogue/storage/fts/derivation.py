@@ -216,6 +216,19 @@ def _schema_compatible(conn: sqlite3.Connection) -> bool:
     return row is not None and int(row[0]) == len(expected)
 
 
+@dataclass(frozen=True)
+class _InspectionSchema:
+    """Schema facts owned by exactly one pinned inspection snapshot."""
+
+    compatible: bool
+    blocks_present: bool
+
+    @classmethod
+    def read(cls, conn: sqlite3.Connection) -> _InspectionSchema:
+        compatible = _schema_compatible(conn)
+        return cls(compatible, compatible or table_exists(conn, "blocks"))
+
+
 def _digest(rows: Iterable[Sequence[object]]) -> tuple[int, str]:
     """Hash the original JSON binding without retaining a partition's text."""
     digest = hashlib.sha256()
@@ -377,16 +390,18 @@ class FtsDerivationAdapter:
         snapshot here; inside one they already do.
         """
         if conn.in_transaction:
-            return self._inspect_partition(conn, key)
+            return self._inspect_partition(conn, key, _InspectionSchema.read(conn))
         conn.execute("BEGIN")
         try:
-            return self._inspect_partition(conn, key)
+            return self._inspect_partition(conn, key, _InspectionSchema.read(conn))
         finally:
             conn.rollback()
 
-    def _inspect_partition(self, conn: sqlite3.Connection, key: str) -> FtsPartitionInspection:
+    def _inspect_partition(
+        self, conn: sqlite3.Connection, key: str, schema: _InspectionSchema
+    ) -> FtsPartitionInspection:
         generation = _generation(conn)
-        compatible = _schema_compatible(conn)
+        compatible = schema.compatible
         # Inspection counts the two relations; it never materializes the input
         # projection.  ``input_for`` reads and hashes every block's
         # ``search_text``, which is what a *replacement* is bound to -- an
@@ -395,10 +410,8 @@ class FtsDerivationAdapter:
         # indexed join.  Canonical writers call this on every unchanged
         # re-ingest, where hashing the session's whole text would dominate the
         # write and buy no extra evidence.
-        if key == GLOBAL_PARTITION or not table_exists(conn, "blocks"):
-            expected_rows = (
-                _indexable_row_count(conn) if key == GLOBAL_PARTITION and table_exists(conn, "blocks") else 0
-            )
+        if key == GLOBAL_PARTITION or not schema.blocks_present:
+            expected_rows = _indexable_row_count(conn) if key == GLOBAL_PARTITION and schema.blocks_present else 0
         else:
             expected_rows = int(
                 conn.execute(
@@ -725,15 +738,16 @@ class FtsDerivationAdapter:
         try:
             conn.execute("BEGIN")
             statuses: dict[str, str] = {}
+            schema = _InspectionSchema.read(conn)
             for key in keys:
                 if key == GLOBAL_PARTITION:
                     # This key owns only orphan residue. A poisoned session's
                     # missing membership cannot make successful retirement fail.
-                    if not _schema_compatible(conn):
+                    if not schema.compatible:
                         raise RuntimeError("FTS schema or canonical trigger set is incompatible")
                     statuses[key] = "excess" if _has_orphan_rows(conn) else "missing"
                 else:
-                    statuses[key] = self.inspect_partition(conn, key).status.value
+                    statuses[key] = self._inspect_partition(conn, key, schema).status.value
             if not self._frame_current(frame):
                 raise RuntimeError("FTS index generation changed during inspection")
             return statuses

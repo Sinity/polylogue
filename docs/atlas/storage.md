@@ -717,6 +717,10 @@ a second run projection to obtain unused counters. Unscoped FTS discovery merges
 the ordered session and block-membership indexes with one distinct session-key
 page, retaining empty sessions and blocks-only keys without collecting the
 remaining archive for every page (`storage/fts/derivation.py`, `required_page`).
+FTS inspection reads table and canonical-trigger compatibility once per pinned
+page snapshot. Partition membership and identity remain separate exact counts;
+standalone partition probes and subsequent page snapshots read fresh schema facts.
+No schema facts survive the inspection transaction.
 
 Blackboard paging counts and selects active NOTE assertions in one User read
 snapshot, ordered by updated_at_ms descending then assertion_id. Structured

@@ -515,3 +515,30 @@ def test_required_page_merges_membership_keys_without_gathering_the_suffix(tmp_p
         plan = " ".join(str(row[3]) for row in conn.execute("EXPLAIN QUERY PLAN " + statements[0]))
     assert "MERGE (UNION)" in plan
     assert "TEMP B-TREE" not in plan
+
+
+def test_inspection_reuses_schema_facts_only_within_its_snapshot(test_conn: sqlite3.Connection, test_db: Path) -> None:
+    keys = tuple(_seed_session(test_conn, f"snapshot-{index}")[0] for index in range(4))
+    statements: list[str] = []
+
+    def read_connection() -> sqlite3.Connection:
+        conn = sqlite3.connect(f"file:{test_db}?mode=ro", uri=True)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    adapter = FtsDerivationAdapter(
+        read_connection, lambda: sqlite3.connect(test_db), generation_binding=lambda: str(test_db.resolve())
+    )
+    assert adapter.inspect(_frame(test_db), keys) == dict.fromkeys(keys, "valid")
+    schema_reads = [sql for sql in statements if "sqlite_master" in sql or "sqlite_schema" in sql]
+    assert len(schema_reads) == 5
+    assert sum("type='trigger'" in sql for sql in schema_reads) == 1
+    test_conn.execute("DROP TRIGGER messages_fts_ad")
+    test_conn.commit()
+    statements.clear()
+    assert adapter.inspect(_frame(test_db), keys) == dict.fromkeys(keys, "missing")
+    with pytest.raises(RuntimeError, match="incompatible"):
+        adapter.inspect(_frame(test_db), (GLOBAL_PARTITION,))
+    restore_fts_triggers_sync(test_conn)
+    test_conn.commit()
+    assert adapter.inspect(_frame(test_db), keys) == dict.fromkeys(keys, "valid")
