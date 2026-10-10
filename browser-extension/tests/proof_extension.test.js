@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -8,7 +8,8 @@ import { createProofExtension, verifyProofExtension } from "../scripts/proof_ext
 import { createOwnedTargetCleanup } from "../scripts/shared_chrome_proof_cleanup.mjs";
 import { execFileSync } from "node:child_process";
 import { firstControlJson } from "../scripts/shared_chrome_control.mjs";
-import { runSharedChromeControlWorkflow } from "../scripts/dev_loop_shared_chrome_proof.mjs";
+import { evaluateJson } from "../scripts/live_provider_proof.mjs";
+import { retainNeutralEvaluationDiagnostic, runSharedChromeControlWorkflow } from "../scripts/dev_loop_shared_chrome_proof.mjs";
 
 const owned = [];
 afterEach(() => { for (const directory of owned.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -85,4 +86,22 @@ it("settles the owned extension removal before propagating a signal, sharing nor
   expect(events).toEqual(["close", "uninstall"]);
   uninstall(); await finished; await new Promise(resolve => globalThis.setTimeout(resolve, 0));
   expect(events).toEqual(["close", "uninstall", "signal"]);
+});
+
+it("retains exact native and proof error codes without admitting exception text", async () => {
+  const client = description => ({ call: async () => ({ exceptionDetails: { exception: { description } } }) });
+  for (const code of ["native_messaging_unavailable", "receiver_identity_mismatch", "proof_native_upload_mismatch"]) {
+    await expect(evaluateJson(client(`Error: ${code}\n    at neutral proof`), "neutral")).rejects.toThrow(code);
+  }
+  const secretText = "Error: native_messaging_unavailable private neutral detail";
+  await expect(evaluateJson(client(secretText), "neutral")).rejects.toThrow("proof_evaluation_failed");
+  const root = mkdtempSync(path.join(tmpdir(), "polylogue-proof-diagnostic-")); owned.push(root);
+  const destination = path.join(root, "exception.json");
+  await expect(evaluateJson(client(secretText), "neutral", {
+    retainUnknownException: details => retainNeutralEvaluationDiagnostic(destination, details),
+  })).rejects.toThrow("proof_evaluation_failed");
+  expect(JSON.parse(readFileSync(destination, "utf8"))).toEqual({ exceptionDetails: { exception: { description: secretText } } });
+  expect(statSync(destination).mode & 0o777).toBe(0o600);
+  expect(() => retainNeutralEvaluationDiagnostic(destination, {})).toThrow("proof_evaluation_diagnostic_failed");
+  expect(JSON.parse(readFileSync(destination, "utf8"))).toEqual({ exceptionDetails: { exception: { description: secretText } } });
 });

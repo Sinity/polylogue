@@ -56,6 +56,29 @@ const ERROR_CATEGORIES = new Map([
   ["proof_host_permission_failed", "control_failed"],
   ["proof_capture_incomplete", "capture_incomplete"],
   ["proof_owned_provider_isolation_unavailable", "provider_isolation_refused"],
+  ["loopback_endpoint_required", "loopback_endpoint_required"],
+  ["receiver_identity_mismatch", "receiver_identity_mismatch"],
+  ["receiver_authentication_failed", "receiver_authentication_failed"],
+  ["receiver_unreachable", "receiver_unreachable"],
+  ["receiver_observation_storage_failed", "receiver_observation_storage_failed"],
+  ["receiver_transport_namespace_unavailable", "receiver_transport_namespace_unavailable"],
+  ["native_request_invalid", "native_request_invalid"],
+  ["native_input_incomplete", "native_input_incomplete"],
+  ["native_operation_cancelled", "native_operation_cancelled"],
+  ["native_request_body_invalid", "native_request_body_invalid"],
+  ["native_route_forbidden", "native_route_forbidden"],
+  ["native_request_header_forbidden", "native_request_header_forbidden"],
+  ["native_messaging_unavailable", "native_messaging_unavailable"],
+  ["native_transport_disconnected", "native_transport_disconnected"],
+  ["native_response_frame_invalid", "native_response_frame_invalid"],
+  ["native_response_cancelled", "native_response_cancelled"],
+  ["proof_native_inputs_invalid", "proof_native_inputs_invalid"],
+  ["proof_native_upload_mismatch", "proof_native_upload_mismatch"],
+  ["proof_native_refusal_missing", "proof_native_refusal_missing"],
+  ["proof_native_cancel_empty", "proof_native_cancel_empty"],
+  ["proof_native_cancel_missing", "proof_native_cancel_missing"],
+  ["proof_native_download_refused", "proof_native_download_refused"],
+  ["proof_native_download_mismatch", "proof_native_download_mismatch"],
 ]);
 let proofPhase = "service_context";
 let shutdownPhase = null;
@@ -512,7 +535,7 @@ async function waitJson(url, timeoutMs) {
   throw new Error(`timed out waiting for shared Chrome CDP: ${lastError}`);
 }
 
-export async function evaluateJson(client, expression, { userGesture = false } = {}) {
+export async function evaluateJson(client, expression, { userGesture = false, retainUnknownException = null } = {}) {
   const result = await client.call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture });
   if (result.exceptionDetails) {
     // CDP's text is usually generic. Only an exact known first line of the
@@ -520,6 +543,7 @@ export async function evaluateJson(client, expression, { userGesture = false } =
     const description = result.exceptionDetails.exception?.description;
     const firstLine = typeof description === "string" ? description.split("\n", 1)[0] : null;
     const known = [...ERROR_CATEGORIES.keys()].find(code => firstLine === `Error: ${code}`);
+    if (!known && retainUnknownException !== null) await retainUnknownException(result.exceptionDetails);
     throw new Error(known || "proof_evaluation_failed");
   }
   return result.result?.value;

@@ -2,7 +2,7 @@
 // Shared-Chrome control proof for the deterministic dev-loop operation. It
 // never launches a browser, allocates a debugging port, or creates a profile.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -32,13 +32,21 @@ function requireExpectedServiceContext() {
 
 export { assertAgentWindow } from "./shared_chrome_control.mjs";
 
+// Only the isolated neutral proof page may retain an unknown CDP description.
+// This private artifact never crosses the ordinary provider error boundary.
+export function retainNeutralEvaluationDiagnostic(destination, exceptionDetails) {
+  try {
+    writeFileSync(destination, `${JSON.stringify({ exceptionDetails })}\n`, { flag: "wx", mode: 0o600 });
+  } catch { throw new Error("proof_evaluation_diagnostic_failed"); }
+}
+
 export async function runChromeControl(args, timeoutMs, spawnCommand) {
   return firstControlJson(await runChromeControlBytes(args, timeoutMs, spawnCommand)) || {};
 }
 
 export async function runSharedChromeControlWorkflow({ extensionRoot, transportInputs, control = runChromeControl,
   verifyBinding = verifyProofExtension, connect = connectCdp, connectPage = pageClient,
-  verifyInstalled = verifyInstalledExtension, evaluate = evaluateJson,
+  verifyInstalled = verifyInstalledExtension, evaluate = evaluateJson, retainUnknownException = null,
   browserVersion = async () => (await globalThis.fetch("http://127.0.0.1:9222/json/version")).json() }) {
   const binding = verifyBinding(extensionRoot);
   const manifest = JSON.parse(readFileSync(path.join(extensionRoot, "manifest.json"), "utf8"));
@@ -75,7 +83,7 @@ export async function runSharedChromeControlWorkflow({ extensionRoot, transportI
     const transport = await evaluate(page, `(async () => {
       const { proveNativeTransport } = await import(chrome.runtime.getURL("proof_transport.mjs"));
       return proveNativeTransport(${JSON.stringify(transportInputs)});
-    })()`);
+    })()`, { retainUnknownException });
     return { ok: true, shared_chrome: { extension_loaded: true, target_closed: true, extension_unloaded: true },
       installed_extension: installed, proof_binding: binding, native_transport: transport };
   } finally {
@@ -90,6 +98,7 @@ export async function runSharedChromeControlWorkflow({ extensionRoot, transportI
 export async function runDevLoopSharedChromeProof() {
   requireExpectedServiceContext();
   return runSharedChromeControlWorkflow({ extensionRoot: path.resolve(requiredEnvironment("POLYLOGUE_DEV_LOOP_EXTENSION_ROOT")),
+    retainUnknownException: details => retainNeutralEvaluationDiagnostic(requiredEnvironment("POLYLOGUE_DEV_LOOP_DIAGNOSTIC_PATH"), details),
     transportInputs: { receiverUrl: requiredEnvironment("POLYLOGUE_DEV_LOOP_RECEIVER_URL"),
       receiverId: requiredEnvironment("POLYLOGUE_DEV_LOOP_RECEIVER_ID"),
       attachmentUrl: requiredEnvironment("POLYLOGUE_DEV_LOOP_ATTACHMENT_URL"),
