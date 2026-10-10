@@ -579,7 +579,9 @@ decode refusal.
 
 Canonical Source census publishes a typed raw-only input's current parser
 and zero-member non-session receipts together, replacing obsolete membership
-rows through the complete membership owner. Current-parser follow-up also
+rows through the complete membership owner. A raw-only carrier retains its
+physical revision identity in the parser receipt, independently of its empty
+session membership. Current-parser follow-up also
 refreshes an independently stale non-session receipt before retained replay.
 The unchanged-input guard still refuses a
 census that makes no progress; an empty successor Index does not waive it.

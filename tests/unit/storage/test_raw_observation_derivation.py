@@ -2135,7 +2135,9 @@ def test_raw_publication_rejects_foreign_original_seal_before_binding_lifetime(t
     _run_raw_law(tmp_path / "selected", run_phase)
 
 
-@pytest.mark.parametrize("membership_state", ["stale", "missing", "populated"])
+@pytest.mark.parametrize(
+    "membership_state", ["stale", "missing", "populated", "physical-asserted", "physical-byte-proven"]
+)
 def test_typed_raw_only_replay_refreshes_non_session_receipt_atomically(tmp_path: Path, membership_state: str) -> None:
     def exercise(compute: BoundedComputeAdapter) -> None:
         from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
@@ -2180,11 +2182,18 @@ def test_typed_raw_only_replay_refreshes_non_session_receipt_atomically(tmp_path
                 "VALUES (?,?,'complete','[]')",
                 (raw_id, "previous-parser"),
             )
-            if membership_state in {"stale", "populated"}:
+            if membership_state != "missing":
                 conn.execute(
                     "INSERT INTO raw_membership_census(raw_id,parser_fingerprint,status,member_count,censused_at_ms) "
                     "VALUES (?,?,'non_session',0,0)",
                     (raw_id, "previous-parser"),
+                )
+            if membership_state.startswith("physical-"):
+                authority = membership_state.removeprefix("physical-").replace("-", "_")
+                conn.execute(
+                    "UPDATE raw_sessions SET logical_source_key=?,revision_kind='full',revision_authority=?,"
+                    "baseline_raw_id=raw_id,acquisition_generation=0,source_revision=lower(hex(blob_hash)) WHERE raw_id=?",
+                    ("claude-code-session:neutral-physical-carrier", authority, raw_id),
                 )
             if membership_state == "populated":
                 conn.execute(
@@ -2206,6 +2215,18 @@ def test_typed_raw_only_replay_refreshes_non_session_receipt_atomically(tmp_path
             assert conn.execute(
                 "SELECT COUNT(*) FROM raw_session_memberships WHERE raw_id=?", (raw_id,)
             ).fetchone() == (0,)
+            if membership_state.startswith("physical-"):
+                assert conn.execute(
+                    "SELECT status,logical_keys_json FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+                ).fetchone() == ("complete", '["claude-code-session:neutral-physical-carrier"]')
+                assert conn.execute(
+                    "SELECT revision_kind,revision_authority,logical_source_key FROM raw_sessions WHERE raw_id=?",
+                    (raw_id,),
+                ).fetchone() == (
+                    "full",
+                    membership_state.removeprefix("physical-").replace("-", "_"),
+                    "claude-code-session:neutral-physical-carrier",
+                )
         with sqlite3.connect(tmp_path / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
         settled = _snapshot(tmp_path)

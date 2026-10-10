@@ -4272,6 +4272,10 @@ def prepare_revision_source_census(
                     detail="current parser authority confirms typed non-session input",
                     revision_authority=RawRevisionAuthority.BYTE_PROVEN if byte_proven else None,
                 )
+                # Empty session membership does not retire a carrier's
+                # physical revision identity. Its typed non-session census
+                # inherits that identity through the same original owner.
+                record_current_parser_source_census(seal, raw_id)
             else:
                 apply_outcome(raw_id, source_index)
         expanded, _keys = evidence_reader.expand_raw_membership_selection(selection)
