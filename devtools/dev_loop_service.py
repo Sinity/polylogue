@@ -434,7 +434,9 @@ def _redacted_convergence(convergence: dict[str, dict[str, object]]) -> dict[str
     }
 
 
-def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.0) -> dict[str, object]:
+def run_proof(
+    *, repo_root: Path | None = None, readiness_timeout_s: float = 45.0, diagnostic_path: Path | None = None
+) -> dict[str, object]:
     """Run the bounded Polylogue semantics inside the AgentCTL job boundary."""
     checkout = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     _require_agentctl_operation_context()
@@ -466,6 +468,8 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
             environment=environment,
             endpoint=receiver_url,
         ) as native_environment:
+            if diagnostic_path is not None:
+                native_environment["POLYLOGUE_DEV_LOOP_DIAGNOSTIC_PATH"] = str(diagnostic_path.absolute())
             chrome_proof = _run_shared_chrome_control(repo_root=checkout, proof_environment=native_environment)
         providers = _validated_provider_captures(
             _submit_deterministic_captures(capture_port=capture_port, session_id=session_id)
@@ -517,9 +521,14 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run Polylogue's fixed AgentCTL dev-loop proof.")
     parser.add_argument("--json", action="store_true", help="Emit the bounded AgentCTL result object.")
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--diagnostic-path",
+        type=Path,
+        help="Retain unknown neutral-page exception details privately at an exclusive path.",
+    )
+    arguments = parser.parse_args(argv)
     try:
-        payload: dict[str, Any] = run_proof()
+        payload: dict[str, Any] = run_proof(diagnostic_path=arguments.diagnostic_path)
     except Exception as error:
         payload = {
             "ok": False,
