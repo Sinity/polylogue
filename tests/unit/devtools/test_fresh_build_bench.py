@@ -272,6 +272,7 @@ def _receipt(**overrides: object) -> dict[str, Any]:
             "states": [{"capacity_slots": 12}],
             "product_binding": {"outcome": "bound"},
         },
+        "readiness_probe": {"outcome": "bound"},
         "timing_s": {"promotion": 10.0, "terminal": 20.0},
         "process_tree": {"rss_peak_bytes": 1 << 30},
         "checks": {"promoted": True},
@@ -2559,6 +2560,8 @@ def test_free_threaded_profile_refuses_frame_traversal_but_keeps_cpu_accounting(
 def test_requested_profile_controls_terminal_qualification_and_comparison(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, samples: str
 ) -> None:
+    import hashlib
+
     from devtools.fresh_build_bench import report
 
     document: dict[str, Any] = {
@@ -2588,6 +2591,27 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
     (tmp_path / "policy.json").write_text(
         json.dumps({"outcome": "bound", "states": [{"capacity_slots": 12}], "product_binding": {"outcome": "bound"}})
     )
+    helper_hash = hashlib.sha256(Path(report.__file__).with_name("readiness_probe.py").read_bytes()).hexdigest()
+    source = str(tmp_path / "polylogue/storage/archive_readiness.py")
+    (tmp_path / "readiness.json").write_text(
+        json.dumps(
+            {
+                "censuses": [
+                    {
+                        "outcome": "bound",
+                        "candidate": str(tmp_path),
+                        "python_executable": "/synthetic/python",
+                        "helper_sha256": helper_hash,
+                        "expected_source_sha256": "source",
+                        "binding": {"path": source, "module_path": source, "sha256": "source"},
+                        "readiness": {"checked": True, "surfaces": {}},
+                        "checked_monotonic_s": [0.0, 1.0],
+                        "helper_exit_code": 0,
+                    }
+                ]
+            }
+        )
+    )
     receipt = report.build_receipt(
         config=RunConfig(
             corpus=tmp_path,
@@ -2601,7 +2625,7 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
         manifest={"total_bytes": 0, "kind": "sample", "digest": "d", "file_count": 0, "by_origin": {}},
         paths={"events": tmp_path / "events.jsonl", "archive": tmp_path, "stacks": stacks, "work": tmp_path},
         identity={"unchanged_during_run": True, "git_sha": "0" * 40, "dirty": False},
-        environment={},
+        environment={"python_executable": "/synthetic/python"},
         command=[],
         started_wall=0.0,
         wall_s=1.0,
@@ -2621,6 +2645,8 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
         driver_at_launch=report.benchmark_implementation_sha256(),
     )
     assert all(value for key, value in receipt["checks"].items() if key != "profile_collected")
+    assert receipt["checks"]["fts_row_count_equal"] is True
+    assert "fts_exact" not in receipt["checks"]
     assert receipt["checks"]["profile_collected"] is (samples == "collected")
     assert receipt["qualified"] is (samples == "collected")
     # Refresh uses this same owner; it must not resurrect qualification.

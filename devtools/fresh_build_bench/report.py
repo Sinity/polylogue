@@ -760,6 +760,7 @@ def terminal_measurement(observations: list[Any], terminal_at: float | None, *, 
         else None,
         "readiness_check_window_s": ready.readiness_checked_s if ready else None,
         "readiness_cached": ready.readiness_cached if ready else None,
+        "readiness_binding": ready.readiness_binding if ready else None,
         "readiness_cache_max_age_s": ready.readiness_cache_max_age_s if ready else None,
         "semantics": "non-atomic scans; window describes observation resolution, not an exact completion event; "
         "stable polls certify repeated observations and may reuse cached readiness",
@@ -940,6 +941,40 @@ def evidence_digests(work: Path) -> dict[str, str | None]:
         "ops": digest(work / "archive" / "ops.db"),
         "ops_wal": digest(work / "archive" / "ops.db-wal"),
         "policy": digest(work / "policy.json"),
+        **({"readiness": digest(work / "readiness.json")} if (work / "readiness.json").is_file() else {}),
+    }
+
+
+def readiness_evidence(
+    work: Path, *, candidate: str | None, python: str | None, helper_hash: str | None
+) -> dict[str, Any]:
+    """Validate only recorded candidate proof; never retrofit historical imports."""
+    from devtools.fresh_build_bench.readiness_probe import binding_valid
+
+    path = work / "readiness.json"
+    try:
+        document = json.loads(path.read_text()) if path.is_file() else {}
+        censuses = document.get("censuses", []) if isinstance(document, dict) else []
+    except (OSError, ValueError):
+        censuses = []
+    if not isinstance(censuses, list) or any(not isinstance(row, dict) for row in censuses):
+        censuses = []
+    bound = (
+        bool(candidate and python and helper_hash and censuses)
+        and any(row.get("outcome") == "bound" for row in censuses)
+        and all(
+            binding_valid(row)
+            and row.get("candidate") == candidate
+            and row.get("python_executable") == python
+            and row.get("helper_sha256") == helper_hash
+            for row in censuses
+        )
+    )
+    return {
+        "outcome": "bound" if bound else "unrecorded-or-refused",
+        "candidate": candidate,
+        "censuses": censuses,
+        "cost_scope": "observer helper CPU/wall outside daemon samples; interference is possible",
     }
 
 
@@ -1079,7 +1114,8 @@ def build_receipt(
         "memberships_settled": final.memberships_pending == 0,
         "debt_zero": final.open_debt == 0,
         "readiness_complete": final.readiness_complete,
-        "fts_exact": census.get("messages_fts_rows") is not None
+        # Row-count coverage alone is not an FTS postings equality proof.
+        "fts_row_count_equal": census.get("messages_fts_rows") is not None
         and census.get("messages_fts_rows") == census.get("fts_indexable_rows"),
         "candidate_unchanged": identity["unchanged_during_run"],
         "benchmark_unchanged": driver_at_launch is not None and driver_now == driver_at_launch,
@@ -1102,7 +1138,7 @@ def build_receipt(
         # sessions/messages materialized did no conversational work: an
         # accepted-but-empty export (e.g. a ChatGPT "[]" file) can settle its
         # cursor and promote an empty index, and "0 == 0" alone already
-        # passes the fts_exact check above. Require positive output whenever
+        # passes the fts_row_count_equal check above. Require positive output whenever
         # there was anything to materialize.
         "positive_output": total_bytes == 0
         or bool(census.get("rows", {}).get("sessions"))
@@ -1121,14 +1157,24 @@ def build_receipt(
     )
     checks["compute_policy_bound"] = policy.get("outcome") == "bound" and bool(policy.get("states"))
     checks["candidate_import_bound"] = (policy.get("product_binding") or {}).get("outcome") == "bound"
+    helper_hash = hashlib.sha256(Path(__file__).with_name("readiness_probe.py").read_bytes()).hexdigest()
+    readiness = readiness_evidence(
+        paths["work"],
+        candidate=str(config.candidate.resolve()),
+        python=environment.get("python_executable"),
+        helper_hash=helper_hash,
+    )
+    checks["readiness_import_bound"] = readiness["outcome"] == "bound"
     receipt: dict[str, Any] = {
         "effective_compute_policy": policy,
+        "readiness_probe": readiness,
         "measurement_scope": "ordinary-daemon-terminal-route",
         "launcher": {
             "bootstrap_sha256": hashlib.sha256(command[2].encode()).hexdigest() if len(command) > 2 else None,
             "policy_observer_sha256": hashlib.sha256(
                 Path(__file__).with_name("policy_observer.py").read_bytes()
             ).hexdigest(),
+            "readiness_observer_sha256": helper_hash,
             "overrides": dict(config.extra_env),
             "external_injection": "none; launcher and child environment controlled by driver",
         },
@@ -1390,6 +1436,9 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
             problems.append(f"{side} run has no bound effective compute policy")
         if not policy or (policy.get("product_binding") or {}).get("outcome") != "bound":
             problems.append(f"{side} run has no bound actual candidate imports")
+    for side, receipt in (("before", before), ("after", after)):
+        if (receipt.get("readiness_probe") or {}).get("outcome") != "bound":
+            problems.append(f"{side} run has no bound actual candidate readiness imports")
     if (before.get("effective_compute_policy") or {}).get("states") != (
         after.get("effective_compute_policy") or {}
     ).get("states"):
@@ -1440,6 +1489,7 @@ INTEGRITY_CHECKS: Final = (
     "candidate_unchanged",
     "compute_policy_bound",
     "candidate_import_bound",
+    "readiness_import_bound",
     "benchmark_unchanged",
     "corpus_unchanged",
     "events_lossless",
@@ -1528,6 +1578,8 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     """
     receipt: dict[str, Any] = json.loads(receipt_path.read_text(encoding="utf-8"))
     work = receipt_path.parent
+    if "fts_exact" in receipt.get("checks", {}):
+        receipt["checks"]["fts_row_count_equal"] = receipt["checks"].pop("fts_exact")
     events = analyse_events(work / "events.jsonl", origin_unix=receipt["started_at_unix"])
     milestones = events.get("milestones_s", {})
     if milestones.get("promoted_s") != receipt["timing_s"].get("promotion"):
@@ -1546,6 +1598,13 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     sealed = receipt.get("evidence_sha256")
     receipt.setdefault("checks", {})["evidence_unchanged"] = sealed is not None and evidence_digests(work) == sealed
     receipt["checks"]["events_lossless"] = _events_lossless(events, _log_delivery(work / "stacks.json"))
+    receipt["readiness_probe"] = readiness_evidence(
+        work,
+        candidate=(receipt.get("readiness_probe") or {}).get("candidate"),
+        python=(receipt.get("environment") or {}).get("python_executable"),
+        helper_hash=(receipt.get("launcher") or {}).get("readiness_observer_sha256"),
+    )
+    receipt["checks"]["readiness_import_bound"] = receipt["readiness_probe"]["outcome"] == "bound"
     receipt["timing_s"].update(
         {
             "promotion": milestones.get("promoted_s"),

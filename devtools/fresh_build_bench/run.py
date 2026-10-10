@@ -246,6 +246,7 @@ class Observation:
     scan_finished_s: float | None = None
     readiness_checked_s: list[float] | None = None
     readiness_cached: bool = False
+    readiness_binding: dict[str, Any] | None = None
     readiness_cache_max_age_s: float | None = None
     error: str | None = None
     #: Whether a failed read may succeed on a later poll (a busy or locked
@@ -292,7 +293,13 @@ def _promoted_index(archive: Path) -> str | None:
     return str(target)
 
 
-def observe(archive: Path, started: float, *, readiness_max_age_s: float | None = None) -> Observation:
+def observe(
+    archive: Path,
+    started: float,
+    *,
+    readiness_max_age_s: float | None = None,
+    readiness_probe: Callable[[Path], dict[str, Any]] | None = None,
+) -> Observation:
     observation = Observation(
         t=round(time.monotonic() - started, 3),
         readiness_cache_max_age_s=_READINESS_POLL_S if readiness_max_age_s is None else readiness_max_age_s,
@@ -371,32 +378,40 @@ def observe(archive: Path, started: float, *, readiness_max_age_s: float | None 
                     ).fetchone()[0]
                 )
         observation.promoted_index = _promoted_index(archive)
-        if observation.intake_complete and observation.promoted_index is not None and observation.open_debt == 0:
+        if observation.promoted_index is not None and observation.open_debt == 0:
+            if readiness_probe is None:
+                raise OSError("candidate-bound readiness probe required")
             now = time.monotonic()
             cached_at = _last_readiness.get("at")
             if (
                 isinstance(cached_at, float)
                 and now - cached_at < (_READINESS_POLL_S if readiness_max_age_s is None else readiness_max_age_s)
                 and _last_readiness.get("archive") == str(archive)
+                and _last_readiness.get("candidate_key") == getattr(readiness_probe, "cache_key", None)
             ):
                 observation.readiness = dict(_last_readiness["readiness"])  # type: ignore[call-overload]
                 observation.readiness_cached = True
                 observation.readiness_checked_s = list(_last_readiness["checked_s"])
+                observation.readiness_binding = _last_readiness["binding"]
             else:
-                from polylogue.storage.archive_readiness import archive_readiness_status
-
-                readiness = archive_readiness_status(archive)
+                document = readiness_probe(archive)
+                readiness = document["readiness"]
+                observation.readiness_binding = document["binding"]
                 surfaces = readiness.get("surfaces", {}) if readiness.get("checked") is True else {}
                 observation.readiness = {
                     str(name): isinstance(surface, dict) and surface.get("ready") is True
                     for name, surface in surfaces.items()
                 }
-                observation.readiness_checked_s = [round(now - started, 3), round(time.monotonic() - started, 3)]
+                observation.readiness_checked_s = [
+                    round(value - started, 3) for value in document["checked_monotonic_s"]
+                ]
                 _last_readiness.update(
                     at=now,
                     archive=str(archive),
                     readiness=dict(observation.readiness),
                     checked_s=observation.readiness_checked_s,
+                    binding=observation.readiness_binding,
+                    candidate_key=getattr(readiness_probe, "cache_key", None),
                 )
     except (OSError, sqlite3.Error) as exc:
         observation.error = f"{type(exc).__name__}: {exc}"
@@ -543,6 +558,10 @@ class WorkProgressTail:
 
 
 def _retryable_observation_error(exc: BaseException) -> bool:
+    from devtools.fresh_build_bench.readiness_probe import ReadinessProbeError
+
+    if isinstance(exc, ReadinessProbeError):
+        return False
     if isinstance(exc, sqlite3.OperationalError):
         message = str(exc).lower()
         # ``locking protocol`` is SQLITE_PROTOCOL: a WAL reader lost its race
@@ -1003,8 +1022,12 @@ def _measure_and_write_receipt(
     progress: Callable[[str], None],
     hook_preparation: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    from devtools.fresh_build_bench.readiness_probe import CandidateReadinessProbe
     from devtools.fresh_build_bench.report import benchmark_implementation_sha256, build_receipt
 
+    readiness_probe = CandidateReadinessProbe(
+        candidate=config.candidate, python=config.python, environment=daemon_env, work=config.work.absolute()
+    )
     driver_at_launch = benchmark_implementation_sha256()
     log_stream = paths["daemon_log"].open("wb")
     corpus_stamp = change_stamp(config.corpus)
@@ -1051,7 +1074,10 @@ def _measure_and_write_receipt(
             # window: a domain turning ready right after one census must be
             # seen before the no-progress deadline can fire.
             observation = observe(
-                paths["archive"], started, readiness_max_age_s=min(_READINESS_POLL_S, config.stall_timeout_s / 2)
+                paths["archive"],
+                started,
+                readiness_max_age_s=min(_READINESS_POLL_S, config.stall_timeout_s / 2),
+                readiness_probe=readiness_probe,
             )
             observation.work_progress = work_progress.poll()
             if work_progress.convergence_next_run_at is not None:

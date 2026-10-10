@@ -60,6 +60,7 @@ def _sample(arm: str, seconds: float, **changes: Any) -> dict[str, Any]:
             "states": [{"capacity_slots": 2}],
             "product_binding": {"outcome": "bound"},
         },
+        "readiness_probe": {"outcome": "bound"},
         "timing_s": {"promotion": seconds, "terminal": seconds + 1},
         "output_fingerprint": {"digest": "same"},
     }
