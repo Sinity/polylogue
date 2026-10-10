@@ -71,6 +71,11 @@ unaccepted Source preparation before request admission. Live request recovery
 resolves dead attempts without touching those rows: an ingest can own its
 committed preparation header between its compute and writer phases.
 
+Startup decides an accepted ingest's stop reason through the settled Audit
+reader outside writer admission. An unstopped request remains with its ingest
+owner, which re-drives the original accepted generation and request identity;
+recovery's durable transitions use the existing writer bridge.
+
 Recovery resolution events name the resolver: authenticated request recovery uses
 the request principal, while automated startup uses `daemon:recovery`. The
 continuity command retains this identity for crash replay; the original
