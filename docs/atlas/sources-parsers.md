@@ -708,3 +708,5 @@ The declared owned browser-capture root is prepared before daemon discovery.
 publishes through ordinary capture spool authority. It never resumes retired
 job state. The source database remains unchanged; source-cell provenance is an
 additive envelope observation, excluded from logical capture deduplication.
+Accepted non-object provider metadata stays unchanged; intake reports these
+envelopes as `unbound_provenance` instead of replacing their original value.

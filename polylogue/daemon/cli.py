@@ -441,6 +441,7 @@ async def _prepare_owned_source_roots(sources: Sequence[WatchSource]) -> None:
                     published=result.published,
                     duplicates=result.duplicates,
                     superseded=result.superseded,
+                    unbound_provenance=result.unbound_provenance,
                 )
 
 

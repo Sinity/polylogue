@@ -37,9 +37,10 @@ class SourceCheckpointIntake:
     published: int = 0
     duplicates: int = 0
     superseded: int = 0
+    unbound_provenance: int = 0
 
 
-def _bound_envelope(envelope: JSONValue, binding: dict[str, JSONValue]) -> dict[str, JSONValue]:
+def _bound_envelope(envelope: JSONValue, binding: dict[str, JSONValue]) -> tuple[dict[str, JSONValue], bool]:
     if not isinstance(envelope, dict):
         raise SourceCheckpointError("source_checkpoint_envelope")
     provenance = envelope.get("provenance")
@@ -47,12 +48,14 @@ def _bound_envelope(envelope: JSONValue, binding: dict[str, JSONValue]) -> dict[
         raise SourceCheckpointError("source_checkpoint_provenance")
     metadata = provenance.get("provider_meta", {})
     if not isinstance(metadata, dict):
-        raise SourceCheckpointError("source_checkpoint_provenance")
+        # The ordinary capture contract accepts non-object metadata. Preserve
+        # its original value rather than replace it to attach an observation.
+        return envelope, False
     if _SOURCE_PROVENANCE in metadata and metadata[_SOURCE_PROVENANCE] != binding:
         raise SourceCheckpointError("source_checkpoint_provenance")
     # Copy only the modified object levels; the exact completed JSON owner
     # retains all other fields, containers and scalar values until staging.
-    return {**envelope, "provenance": {**provenance, "provider_meta": {**metadata, _SOURCE_PROVENANCE: binding}}}
+    return {**envelope, "provenance": {**provenance, "provider_meta": {**metadata, _SOURCE_PROVENANCE: binding}}}, True
 
 
 def _capture_chunks(envelope: dict[str, JSONValue]) -> Iterator[bytes]:
@@ -72,7 +75,7 @@ def extract_source_checkpoints(spool_root: Path) -> SourceCheckpointIntake:
     database = spool_root / _SOURCE_DATABASE
     if not database.exists():
         return SourceCheckpointIntake()
-    cells = published = duplicates = superseded = 0
+    cells = published = duplicates = superseded = unbound_provenance = 0
     try:
         with readonly_connection_context(database, validate_schema=False) as connection:
             connection.execute("BEGIN")
@@ -127,13 +130,15 @@ def extract_source_checkpoints(spool_root: Path) -> SourceCheckpointIntake:
                                     "queue_entry_id": entry.get("id"),
                                     "checkpoint_sha256": checkpoint.sha256,
                                 }
-                                envelope = _bound_envelope(entry["envelope"], binding)
+                                envelope, provenance_bound = _bound_envelope(entry["envelope"], binding)
                                 staged = stage_body_chunks(_capture_chunks(envelope), spool_root=spool_root)
                                 try:
                                     summary = summarize_capture_file(staged.path)
                                     result = admit_staged_capture(staged, summary, spool_path=spool_root)
                                 finally:
                                     staged.discard()
+                                if not provenance_bound:
+                                    unbound_provenance += 1
                                 if result.convergence is CaptureConvergence.SUPERSEDED:
                                     superseded += 1
                                 elif result.deduplicated:
@@ -144,4 +149,4 @@ def extract_source_checkpoints(spool_root: Path) -> SourceCheckpointIntake:
                         checkpoint.discard()
     except (sqlite3.Error, JSONDecodeError) as error:
         raise SourceCheckpointError("source_checkpoint_read_failed") from error
-    return SourceCheckpointIntake(cells, published, duplicates, superseded)
+    return SourceCheckpointIntake(cells, published, duplicates, superseded, unbound_provenance)

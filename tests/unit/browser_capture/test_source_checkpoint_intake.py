@@ -278,3 +278,51 @@ def test_original_cell_conflicting_bytes_obey_resident_capture_authority(tmp_pat
     result = extract_source_checkpoints(tmp_path)
     assert result.superseded == 1 and result.duplicates == 0 and result.published == 0
     assert published.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("metadata", [None, "original-source-metadata"])
+@pytest.mark.asyncio
+async def test_accepted_nonmap_provenance_is_preserved_and_delivered(
+    metadata: str | None, workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    from polylogue.api import Polylogue
+    from polylogue.browser_capture.source_checkpoint import extract_source_checkpoints
+    from polylogue.config import Source, get_config
+    from polylogue.daemon.cli import _prepare_owned_source_roots
+    from tests.infra.archive_scenarios import open_index_db
+    from tests.infra.daemon_operations import daemon_serving_archive
+
+    del workspace_env
+    root = tmp_path / "browser-capture"
+    original = _envelope()
+    provenance = original["provenance"]
+    assert isinstance(provenance, dict)
+    provenance["provider_meta"] = metadata
+    # The ordinary capture contract accepts this metadata as semantic {}.
+    BrowserCaptureEnvelope.model_validate(original)
+    database = _source_cell(root, original)
+    original_bytes = database.read_bytes()
+    await _prepare_owned_source_roots([WatchSource("browser-capture", root)])
+    artifacts = list((root / "chatgpt").glob("*.json"))
+    assert len(artifacts) == 1
+    acquired = json_document(loads(artifacts[0].read_bytes()))
+    assert acquired == original
+    assert parse_payload(Provider.CHATGPT, acquired, "original") == parse_payload(
+        Provider.CHATGPT, original, "original"
+    )
+    repeated = extract_source_checkpoints(root)
+    assert repeated.unbound_provenance == 1 and repeated.duplicates == 1 and repeated.published == 0
+    configuration = get_config()
+    configuration.sources = [Source(name="browser-capture", path=root)]
+    with daemon_serving_archive(configuration.archive_root, session_derivation=True):
+        async with Polylogue(archive_root=configuration.archive_root, db_path=configuration.db_path) as api:
+            await api.parse_sources(configuration.sources)
+            await api.parse_sources(configuration.sources)
+    expected = parse_payload(Provider.CHATGPT, original, "original")[0]
+    with open_index_db(configuration.archive_root / "index.db") as connection:
+        sessions = connection.execute("SELECT native_id FROM sessions").fetchall()
+        messages = connection.execute("SELECT native_id FROM messages ORDER BY position").fetchall()
+    assert [row[0] for row in sessions] == [expected.provider_session_id]
+    assert [row[0] for row in messages] == [row.provider_message_id for row in expected.messages]
+    assert database.read_bytes() == original_bytes
+    assert not list((root / ".staging").iterdir())
