@@ -89,6 +89,8 @@ def primary_blocking_object_ids(source_db_path: Path, object_ids: Sequence[str])
     newer confirmed revision.  ``rowid`` is a deterministic tie-breaker for
     multiple accepted revisions staged in the same millisecond.  This is only
     the read; whether primary mode is configured is the caller's decision.
+    The existing object/timestamp index seeks the latest timestamp; only its
+    ties need a rowid reduction, rather than ranking every retained revision.
     """
     ids = tuple(dict.fromkeys(str(value) for value in object_ids if value))
     if not ids:
@@ -101,22 +103,28 @@ def primary_blocking_object_ids(source_db_path: Path, object_ids: Sequence[str])
             chunk = ids[start : start + _BLOCKING_QUERY_CHUNK]
             rows = conn.execute(
                 f"""
-                WITH ranked AS (
-                    SELECT object_id, last_receipt_state,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY object_id
-                               ORDER BY created_at_ms DESC, rowid DESC
-                           ) AS revision_rank
-                    FROM sinex_publication_obligations
-                    WHERE object_id IN ({",".join("?" for _ in chunk)})
+                WITH requested(object_id) AS (
+                    VALUES {",".join("(?)" for _ in chunk)}
                 )
-                SELECT object_id
-                FROM ranked
-                WHERE revision_rank = 1
-                  AND (last_receipt_state IS NULL
-                       OR last_receipt_state NOT IN (
-                           'persisted_confirmed', 'durable_debt', 'spool_accepted_lossless'
-                       ))
+                SELECT newest.object_id
+                FROM requested
+                JOIN sinex_publication_obligations AS newest
+                  ON newest.rowid = (
+                      SELECT MAX(tied.rowid)
+                      FROM sinex_publication_obligations AS tied
+                      WHERE tied.object_id = requested.object_id
+                        AND tied.created_at_ms = (
+                            SELECT latest.created_at_ms
+                            FROM sinex_publication_obligations AS latest
+                            WHERE latest.object_id = requested.object_id
+                            ORDER BY latest.created_at_ms DESC
+                            LIMIT 1
+                        )
+                  )
+                WHERE newest.last_receipt_state IS NULL
+                   OR newest.last_receipt_state NOT IN (
+                       'persisted_confirmed', 'durable_debt', 'spool_accepted_lossless'
+                   )
                 """,
                 chunk,
             ).fetchall()

@@ -54,7 +54,8 @@ What this census cannot see, stated plainly
 -------------------------------------------
 
 Static analysis resolves a statement only when its text is reconstructible from
-the module. Three residues are therefore reported as *their own declared
+the module, including same-module single-return builders that format a literal
+SQL template. Three residues are therefore reported as *their own declared
 populations* rather than silently dropped, which is what turns a blind spot into
 a reviewed entry:
 
@@ -684,6 +685,8 @@ def _fragments(expression: ast.AST, values: Mapping[str, tuple[str, ...]]) -> tu
             return _fragments(expression.args[0], values)
         if isinstance(func, ast.Attribute) and func.attr == "dedent" and expression.args:
             return _fragments(expression.args[0], values)
+        if isinstance(func, ast.Name):
+            return values.get(f"(){func.id}", ())
         return ()
     if isinstance(expression, ast.IfExp):
         body = _fragments(expression.body, values)
@@ -781,6 +784,26 @@ def _string_values(
                 members = _literal_string_sequence(node.iter, values)
                 if members:
                     values[node.target.id] = members
+    # A same-module builder returning one literal-template format call keeps
+    # its verb and target even when value operands are dynamic. General
+    # control-flow/string builders remain outside this finite resolution.
+    # Keep a separate callable namespace from ordinary string bindings.
+    for builder in tree.body:
+        if not isinstance(builder, ast.FunctionDef):
+            continue
+        returns = [item for item in walk_module(builder) if isinstance(item, ast.Return)]
+        if len(returns) != 1 or returns[0].value is None:
+            continue
+        expression = returns[0].value
+        if not (
+            isinstance(expression, ast.Call)
+            and isinstance(expression.func, ast.Attribute)
+            and expression.func.attr == "format"
+        ):
+            continue
+        returned = _fragments(expression, values)
+        if returned:
+            values[f"(){builder.name}"] = returned
     return values
 
 

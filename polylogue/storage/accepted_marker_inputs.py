@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 import ijson
+from ijson.common import ObjectBuilder
 
 if TYPE_CHECKING:
     from polylogue.storage.accepted_marker_producer import PreparedAcceptedMarkerCarrier
@@ -255,14 +256,6 @@ def _marker_json_numbers(value: object) -> object:
     return value
 
 
-def _one_json_item(payload: BinaryIO, prefix: str) -> object:
-    items = _iter_json_items(payload, prefix)
-    first = next(items, _MISSING)
-    if first is _MISSING or next(items, _MISSING) is not _MISSING:
-        raise AcceptedMarkerInputRefusedError("accepted marker carrier has invalid top-level metadata")
-    return first
-
-
 _MISSING = object()
 
 
@@ -276,7 +269,26 @@ def _validate_marker_payload(payload: BinaryIO, reference: AcceptedMarkerInputRe
         selected_array = False
         request_session_id = False
         selected_session_id = False
+        raw_id: object = _MISSING
+        identity: object = _MISSING
+        facts_builder = ObjectBuilder()
+        candidate_count = 0
+        retirement_count = 0
         for prefix, event, value in _iter_json_events(payload):
+            # Keep only the metadata already materialized for the request
+            # digest. Session and candidate arrays remain streaming.
+            if prefix == "raw_id" and event == "string":
+                raw_id = value
+            elif prefix == "identity" and event == "string":
+                identity = value
+            if prefix == "request_facts" or prefix.startswith("request_facts."):
+                facts_builder.event(event, value)
+            if prefix == "sessions.item.candidates.item" and event not in {"map_key", "end_map", "end_array"}:
+                candidate_count += 1
+            if prefix == "sessions.item.retired_assertions.item" and event not in {"map_key", "end_map", "end_array"}:
+                if event != "string" or not value:
+                    raise ValueError("retired assertion id is invalid")
+                retirement_count += 1
             if prefix == "" and event == "start_map":
                 if root_open or root_closed:
                     raise ValueError("carrier has more than one root")
@@ -342,9 +354,7 @@ def _validate_marker_payload(payload: BinaryIO, reference: AcceptedMarkerInputRe
             raise ValueError("carrier root fields are incomplete")
         if not request_array or not selected_array:
             raise ValueError("carrier session arrays are absent")
-        raw_id = _one_json_item(payload, "raw_id")
-        identity = _one_json_item(payload, "identity")
-        facts = _one_json_item(payload, "request_facts")
+        facts = facts_builder.value
         if (
             not isinstance(raw_id, str)
             or raw_id != reference.raw_id
@@ -375,15 +385,6 @@ def _validate_marker_payload(payload: BinaryIO, reference: AcceptedMarkerInputRe
         if digest.hexdigest() != identity:
             raise ValueError("carrier identity digest disagrees with request facts")
 
-        # Traverse candidates and retirements independently so neither array
-        # is retained while the other is decoded. Their detailed lowering
-        # schema is checked by the marker-domain decoder at publication.
-        candidate_count = sum(1 for _ in _iter_json_items(payload, "sessions.item.candidates.item"))
-        retirement_count = 0
-        for retired in _iter_json_items(payload, "sessions.item.retired_assertions.item"):
-            if not isinstance(retired, str) or not retired:
-                raise ValueError("retired assertion id is invalid")
-            retirement_count += 1
     except (ijson.JSONError, UnicodeError, KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, AcceptedMarkerInputRefusedError):
             raise

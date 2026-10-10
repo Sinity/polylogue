@@ -15,7 +15,7 @@ claiming ordinary prose, and each is load-bearing rather than stylistic:
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from io import StringIO
 
 from polylogue.markers.models import MarkerMatch
@@ -48,125 +48,127 @@ def parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> t
 
 def iter_parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> Iterator[MarkerMatch]:
     """Yield markers with memory bounded by one physical line."""
-    offset = 0
-    fence: tuple[str, int] | None = None
-    for line in StringIO(text, newline=""):
-        fence_match = _FENCE.match(line.rstrip("\r\n"))
-        if fence_match:
-            delimiter = fence_match.group("delimiter")
-            if fence is None:
-                fence = (delimiter[0], len(delimiter))
-            elif (
-                delimiter[0] == fence[0]
-                and len(delimiter) >= fence[1]
-                and not line.rstrip("\r\n")[fence_match.end() :].strip()
-            ):
-                fence = None
-            offset += len(line)
-            continue
-        if fence is None and not line.lstrip().startswith(r"\::"):
-            line_match = _LINE.match(line.rstrip("\r\n"))
-            if line_match:
-                kind = line_match.group("kind")
-                registered = marker_spec(registry, kind) is not None
-                yield MarkerMatch(
-                    kind if registered else "malformed",
-                    line_match.group("body"),
-                    _args(line_match.group("args")) if registered else {"unregistered_kind": kind},
-                    line.rstrip("\r\n"),
-                    offset,
-                    offset + len(line.rstrip("\r\n")),
-                    malformed=not registered,
-                )
-            elif _MALFORMED.match(line):
-                yield MarkerMatch(
-                    "malformed",
-                    line.strip(),
-                    {},
-                    line.rstrip("\r\n"),
-                    offset,
-                    offset + len(line.rstrip("\r\n")),
-                    malformed=True,
-                )
-            for inline in _INLINE.finditer(line):
-                kind = inline.group("kind")
-                yield MarkerMatch(
-                    kind if kind in registry else "malformed",
-                    inline.group("body"),
-                    {} if kind in registry else {"unregistered_kind": kind},
-                    inline.group(0),
-                    offset + inline.start(),
-                    offset + inline.end(),
-                    inline=True,
-                    malformed=kind not in registry,
-                )
-            raw_line = line.rstrip("\r\n")
-            accepted_spans = iter((inline.start(), inline.end()) for inline in _INLINE.finditer(line))
-            accepted_span = next(accepted_spans, None)
-            for inline in _INLINE_OPEN.finditer(raw_line):
-                while accepted_span is not None and accepted_span[1] <= inline.start():
-                    accepted_span = next(accepted_spans, None)
-                if accepted_span is not None and accepted_span[0] <= inline.start() < accepted_span[1]:
-                    # Already covered by an accepted inline span; a second,
-                    # overlapping malformed marker would contradict it.
-                    continue
-                body_start = inline.end()
-                next_open = raw_line.find("[[", body_start)
-                close = raw_line.find("]]", body_start)
-                if close >= 0 and (next_open < 0 or close < next_open):
-                    continue
-                end = next_open if next_open >= 0 else len(raw_line)
-                yield MarkerMatch(
-                    "malformed",
-                    raw_line[body_start:end],
-                    {"unregistered_kind": inline.group("kind")},
-                    raw_line[inline.start() : end],
-                    offset + inline.start(),
-                    offset + end,
-                    inline=True,
-                    malformed=True,
-                )
-        offset += len(line)
+    yield from _MarkerLexicalState(registry).iter_lines(StringIO(text, newline=""))
+
+
+class _MarkerLexicalState:
+    """Shared physical-line grammar and source coordinates for both readers."""
+
+    def __init__(self, registry: MarkerRegistry) -> None:
+        self.registry = registry
+        self.offset = 0
+        self.fence: tuple[str, int] | None = None
+
+    def iter_lines(self, lines: Iterable[str]) -> Iterator[MarkerMatch]:
+        registry = self.registry
+        for line in lines:
+            fence_match = _FENCE.match(line.rstrip("\r\n"))
+            if fence_match:
+                delimiter = fence_match.group("delimiter")
+                if self.fence is None:
+                    self.fence = (delimiter[0], len(delimiter))
+                elif (
+                    delimiter[0] == self.fence[0]
+                    and len(delimiter) >= self.fence[1]
+                    and not line.rstrip("\r\n")[fence_match.end() :].strip()
+                ):
+                    self.fence = None
+                self.offset += len(line)
+                continue
+            if self.fence is None and not line.lstrip().startswith(r"\::"):
+                line_match = _LINE.match(line.rstrip("\r\n"))
+                if line_match:
+                    kind = line_match.group("kind")
+                    registered = marker_spec(registry, kind) is not None
+                    yield MarkerMatch(
+                        kind if registered else "malformed",
+                        line_match.group("body"),
+                        _args(line_match.group("args")) if registered else {"unregistered_kind": kind},
+                        line.rstrip("\r\n"),
+                        self.offset,
+                        self.offset + len(line.rstrip("\r\n")),
+                        malformed=not registered,
+                    )
+                elif _MALFORMED.match(line):
+                    yield MarkerMatch(
+                        "malformed",
+                        line.strip(),
+                        {},
+                        line.rstrip("\r\n"),
+                        self.offset,
+                        self.offset + len(line.rstrip("\r\n")),
+                        malformed=True,
+                    )
+                for inline in _INLINE.finditer(line):
+                    kind = inline.group("kind")
+                    yield MarkerMatch(
+                        kind if kind in registry else "malformed",
+                        inline.group("body"),
+                        {} if kind in registry else {"unregistered_kind": kind},
+                        inline.group(0),
+                        self.offset + inline.start(),
+                        self.offset + inline.end(),
+                        inline=True,
+                        malformed=kind not in registry,
+                    )
+                raw_line = line.rstrip("\r\n")
+                accepted_spans = iter((inline.start(), inline.end()) for inline in _INLINE.finditer(line))
+                accepted_span = next(accepted_spans, None)
+                for inline in _INLINE_OPEN.finditer(raw_line):
+                    while accepted_span is not None and accepted_span[1] <= inline.start():
+                        accepted_span = next(accepted_spans, None)
+                    if accepted_span is not None and accepted_span[0] <= inline.start() < accepted_span[1]:
+                        # Already covered by an accepted inline span; a second,
+                        # overlapping malformed marker would contradict it.
+                        continue
+                    body_start = inline.end()
+                    next_open = raw_line.find("[[", body_start)
+                    close = raw_line.find("]]", body_start)
+                    if close >= 0 and (next_open < 0 or close < next_open):
+                        continue
+                    end = next_open if next_open >= 0 else len(raw_line)
+                    yield MarkerMatch(
+                        "malformed",
+                        raw_line[body_start:end],
+                        {"unregistered_kind": inline.group("kind")},
+                        raw_line[inline.start() : end],
+                        self.offset + inline.start(),
+                        self.offset + end,
+                        inline=True,
+                        malformed=True,
+                    )
+            self.offset += len(line)
 
 
 class MarkerStreamParser:
-    """Buffer incomplete final lines so a split marker is parsed once."""
+    """Retain physical-line and fence state across arbitrary feed boundaries."""
 
     def __init__(self, *, registry: MarkerRegistry = MARKER_REGISTRY) -> None:
         self.registry = registry
         self._buffer = ""
-        self._consumed = 0
-
-    def _absolute(self, matches: tuple[MarkerMatch, ...], base: int) -> tuple[MarkerMatch, ...]:
-        return tuple(
-            MarkerMatch(
-                m.kind,
-                m.body,
-                m.arguments,
-                m.raw_text,
-                m.start + base,
-                m.end + base,
-                inline=m.inline,
-                malformed=m.malformed,
-            )
-            for m in matches
-        )
+        self._state = _MarkerLexicalState(registry)
 
     def feed(self, chunk: str) -> tuple[MarkerMatch, ...]:
         self._buffer += chunk
-        complete, sep, remainder = self._buffer.rpartition("\n")
-        if not sep:
-            return ()
-        self._buffer = remainder
-        emitted = parse_markers(complete + "\n", registry=self.registry)
-        result = self._absolute(emitted, self._consumed)
-        self._consumed += len(complete) + 1
+        complete = 0
+
+        def completed_lines() -> Iterator[str]:
+            nonlocal complete
+            for line in StringIO(self._buffer, newline=""):
+                end = complete + len(line)
+                if not line.endswith(("\r", "\n")):
+                    break
+                # A trailing CR may be the first half of CRLF in the next feed.
+                if line.endswith("\r") and end == len(self._buffer):
+                    break
+                complete = end
+                yield line
+
+        result = tuple(self._state.iter_lines(completed_lines()))
+        self._buffer = self._buffer[complete:]
         return result
 
     def finish(self) -> tuple[MarkerMatch, ...]:
-        result = (
-            self._absolute(parse_markers(self._buffer, registry=self.registry), self._consumed) if self._buffer else ()
-        )
-        self._consumed += len(self._buffer)
+        result = tuple(self._state.iter_lines(StringIO(self._buffer, newline="")))
         self._buffer = ""
         return result

@@ -10,9 +10,10 @@ from polylogue.core.enums import AssertionStatus, AssertionVisibility
 from polylogue.markers.models import MarkerCandidate, marker_provenance
 from polylogue.markers.registry import MARKER_REGISTRY, MarkerRegistry
 from polylogue.storage.sqlite.archive_tiers.user_write import (
+    AssertionWriteBatch,
+    assertion_write_batch,
     mark_assertion_status,
     record_retired_marker_assertion,
-    upsert_assertion,
 )
 
 
@@ -54,14 +55,16 @@ def lower_markers(
     license to replace a human's assertion or judgment at that id.  Existing
     non-agent rows and every terminal agent judgment are therefore preserved.
     """
-    return tuple(iter_lower_markers(conn, candidates, now_ms=now_ms))
+    with assertion_write_batch(conn) as writer:
+        return tuple(iter_lower_markers(writer, candidates, now_ms=now_ms))
 
 
 def iter_lower_markers(
-    conn: sqlite3.Connection, candidates: Iterable[MarkerCandidate], *, now_ms: int | None = None
+    writer: AssertionWriteBatch, candidates: Iterable[MarkerCandidate], *, now_ms: int | None = None
 ) -> Iterator[str]:
     """Lower candidates incrementally without retaining every assertion ID."""
     for candidate in candidates:
+        conn = writer.connection
         assertion_kind = candidate.assertion_kind
         if assertion_kind is None:
             continue
@@ -89,8 +92,7 @@ def iter_lower_markers(
             yield assertion_id
             continue
         match = candidate.match
-        upsert_assertion(
-            conn,
+        writer.upsert(
             assertion_id=assertion_id,
             target_ref=candidate.evidence_refs[0],
             kind=assertion_kind,

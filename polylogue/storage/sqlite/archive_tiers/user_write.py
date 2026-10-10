@@ -16,9 +16,11 @@ from builtins import BaseExceptionGroup
 from collections.abc import Collection, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import TYPE_CHECKING, Any, Final, cast
+from threading import get_ident
+from typing import TYPE_CHECKING, Any, Final, Required, TypedDict, Unpack, cast
 
 from polylogue.core.assertions import (
     AssertionContextPolicy,
@@ -1413,6 +1415,72 @@ def assertion_upsert_statement(value_expressions: tuple[str, ...]) -> str:
     return _ASSERTION_UPSERT_SQL.format(values=", ".join(value_expressions))
 
 
+class AssertionWriteFields(TypedDict, total=False):
+    assertion_id: Required[str]
+    target_ref: Required[str]
+    kind: Required[str | AssertionKind]
+    scope_ref: str | None
+    key: str | None
+    value: object | None
+    body_text: str | None
+    author_ref: str | None
+    author_kind: str | None
+    evidence_refs: Sequence[str] | None
+    status: str | AssertionStatus | None
+    visibility: str | AssertionVisibility | None
+    confidence: float | None
+    staleness: Mapping[str, object] | None
+    context_policy: Mapping[str, object] | AssertionContextPolicy | None
+    supersedes: Sequence[str] | None
+    now_ms: int | None
+    require_promotion: bool
+
+
+@dataclass(slots=True)
+class AssertionWriteBatch:
+    """Borrowed assertion writer, valid only inside its owning batch scope."""
+
+    _connection: sqlite3.Connection
+    _active: bool = dataclass_field(default=False, init=False)
+    _creator: int = dataclass_field(default_factory=get_ident, init=False)
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        if not self._active or self._creator != get_ident() or not self._connection.in_transaction:
+            raise RuntimeError("assertion writer is outside its owning batch transaction")
+        return self._connection
+
+    def upsert(self, **fields: Unpack[AssertionWriteFields]) -> str:
+        """Normalize and preserve judgments once, without reading an envelope."""
+        conn = self.connection
+        row = prepare_assertion_row(conn, **fields)
+        if not (
+            fields.get("require_promotion", True)
+            and row[8] != ASSERTION_DEFAULT_AUTHOR_KIND
+            and _normalize_assertion_status(str(row[10])) in _ASSERTION_TERMINAL_JUDGED_STATUSES
+        ):
+            with connection_cursor(conn, assertion_upsert_statement(("?",) * 19), (None, *row)):
+                pass
+        return fields["assertion_id"]
+
+
+@contextmanager
+def assertion_write_batch(conn: sqlite3.Connection) -> Iterator[AssertionWriteBatch]:
+    """Reserve once before reads and roll back the complete failed batch.
+
+    A caller-owned transaction gets one savepoint and lock upgrade, preserving
+    its earlier work. Successful batches leave commit to the caller.
+    """
+    _ensure_foreign_keys_pragma(conn)
+    with _immediate_user_write_transaction(conn):
+        writer = AssertionWriteBatch(conn)
+        writer._active = True
+        try:
+            yield writer
+        finally:
+            writer._active = False
+
+
 def upsert_assertion(
     conn: sqlite3.Connection,
     *,
@@ -1462,10 +1530,8 @@ def upsert_assertion(
     per-call-site deliberately; it is never inferred from ``kind``/
     ``author_kind`` inside this function.
     """
-    _ensure_foreign_keys_pragma(conn)
-    with _immediate_user_write_transaction(conn):
-        row = prepare_assertion_row(
-            conn,
+    with assertion_write_batch(conn) as writer:
+        writer.upsert(
             assertion_id=assertion_id,
             target_ref=target_ref,
             kind=kind,
@@ -1485,16 +1551,6 @@ def upsert_assertion(
             now_ms=now_ms,
             require_promotion=require_promotion,
         )
-        if (
-            require_promotion
-            and row[8] != ASSERTION_DEFAULT_AUTHOR_KIND
-            and _normalize_assertion_status(str(row[10])) in _ASSERTION_TERMINAL_JUDGED_STATUSES
-        ):
-            envelope = read_assertion_envelope(conn, assertion_id)
-            assert envelope is not None
-            return envelope
-        with connection_cursor(conn, _ASSERTION_UPSERT_SQL.format(values=", ".join(("?",) * 19)), (None, *row)):
-            pass
         envelope = read_assertion_envelope(conn, assertion_id)
         assert envelope is not None
         return envelope
@@ -3131,12 +3187,15 @@ __all__ = [
     "ArchiveRecallPackEnvelope",
     "ArchiveSavedViewEnvelope",
     "ArchiveWorkspaceEnvelope",
+    "AssertionWriteBatch",
+    "AssertionWriteFields",
     "FindingAssertion",
     "PublicClaimDeclaration",
     "AssertionKind",
     "AssertionStatus",
     "AssertionVisibility",
     "assertion_envelope_to_payload",
+    "assertion_write_batch",
     "assertion_id_for_annotation",
     "assertion_id_for_blackboard_note",
     "assertion_id_for_candidate_judgment",

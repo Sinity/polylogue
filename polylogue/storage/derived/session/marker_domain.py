@@ -111,6 +111,8 @@ def marker_assertions_present(conn: sqlite3.Connection, assertion_ids: Sequence[
 
 def _retirements(carrier: VerifiedAcceptedMarkerPayload) -> Iterator[str]:
     """Yield sealed retirements one at a time without collecting the batch."""
+    if not carrier.retirement_count:
+        return
     for value in carrier.iter_items("sessions.item.retired_assertions.item"):
         if not isinstance(value, str) or not value:
             raise AcceptedMarkerInputRefusedError("accepted marker carrier has an invalid retirement payload")
@@ -174,6 +176,8 @@ def _candidate(raw_candidate: object) -> MarkerCandidate:
 
 def _candidates(carrier: VerifiedAcceptedMarkerPayload) -> Iterator[MarkerCandidate]:
     """Yield sealed prepared-write candidates without reparsing current text."""
+    if not carrier.candidate_count:
+        return
     for raw_candidate in carrier.iter_items("sessions.item.candidates.item"):
         yield _candidate(raw_candidate)
 
@@ -359,39 +363,41 @@ class SessionMarkerDerivation:
         """Commit canonical assertion lowering and the matching cursor together."""
         del frame
         assert isinstance(replacement, SessionMarkerReplacement)
-        from polylogue.storage.sqlite.archive_tiers.user_write import _now_ms
+        from polylogue.storage.sqlite.archive_tiers.user_write import _now_ms, assertion_write_batch
 
         conn: sqlite3.Connection | None = None
         try:
             conn = self._marker_write_connection()
-            conn.execute("BEGIN IMMEDIATE")
-            applied = accepted_marker_delivery_cursor(conn)
-            if applied is not None and applied[0] == replacement.stream_id and applied[1] >= replacement.sequence:
-                conn.rollback()
-                return True
-            expected_prior = 0 if applied is None else applied[1]
-            if applied is not None and applied[0] != replacement.stream_id:
-                raise AcceptedMarkerInputRefusedError("accepted marker stream changed under durable user cursor")
-            if replacement.sequence != expected_prior + 1:
-                raise AcceptedMarkerInputRefusedError("accepted marker batch is not the next durable source sequence")
-            # Excision can run after derivation read the sealed payload. Its
-            # tombstone is authoritative under writer admission and prevents
-            # publishing content after the source carrier was erased.
-            if self._tombstone_at(replacement.sequence, stream_id=replacement.stream_id) is None:
-                from polylogue.markers.lowering import iter_lower_markers, iter_retire_marker_assertions
+            with assertion_write_batch(conn) as writer:
+                applied = accepted_marker_delivery_cursor(conn)
+                if applied is not None and applied[0] == replacement.stream_id and applied[1] >= replacement.sequence:
+                    conn.rollback()
+                    return True
+                expected_prior = 0 if applied is None else applied[1]
+                if applied is not None and applied[0] != replacement.stream_id:
+                    raise AcceptedMarkerInputRefusedError("accepted marker stream changed under durable user cursor")
+                if replacement.sequence != expected_prior + 1:
+                    raise AcceptedMarkerInputRefusedError(
+                        "accepted marker batch is not the next durable source sequence"
+                    )
+                # Excision can run after derivation read the sealed payload. Its
+                # tombstone is authoritative under writer admission and prevents
+                # publishing content after the source carrier was erased.
+                if self._tombstone_at(replacement.sequence, stream_id=replacement.stream_id) is None:
+                    from polylogue.markers.lowering import iter_lower_markers, iter_retire_marker_assertions
 
-                for _assertion_id in iter_lower_markers(conn, replacement.payload):
-                    pass
-                for _assertion_id in iter_retire_marker_assertions(conn, replacement.retired):
-                    pass
-            advance_accepted_marker_delivery_cursor(
-                conn,
-                stream_id=replacement.stream_id,
-                applied_sequence=replacement.sequence,
-                applied_at_ms=_now_ms(),
-                expected_prior_sequence=expected_prior,
-            )
-            conn.commit()
+                    for _assertion_id in iter_lower_markers(writer, replacement.payload):
+                        pass
+                    for _assertion_id in iter_retire_marker_assertions(conn, replacement.retired):
+                        pass
+                advance_accepted_marker_delivery_cursor(
+                    conn,
+                    stream_id=replacement.stream_id,
+                    applied_sequence=replacement.sequence,
+                    applied_at_ms=_now_ms(),
+                    expected_prior_sequence=expected_prior,
+                )
+                conn.commit()
         except BaseException:
             if conn is not None:
                 conn.rollback()

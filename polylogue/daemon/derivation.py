@@ -1208,6 +1208,7 @@ class _Pass:
                 position = self.advance(position, page)
                 continue
 
+            fallback = False
             if position.phase is DiscoveryPhase.REQUIRED:
                 try:
                     statuses = _coerce_statuses(dict(adapter.inspect(self.frame, keys)))
@@ -1223,42 +1224,11 @@ class _Pass:
                         error_type=type(exc).__name__,
                         error_detail=str(exc),
                     )
-                    # A bulk inspection can fail because one key is poison.
-                    # Its page is already bounded, so retry each key to keep
-                    # that failure in its own dependency closure instead of
-                    # declaring the entire output relation unreadable.
+                    # A poison key must not turn a whole page unreadable.
+                    # Inspect and process fallback keys in order: reaching an
+                    # error limit or deadline leaves later keys untouched.
                     statuses = {}
-                    for key in keys:
-                        try:
-                            statuses[key] = _coerce_statuses(dict(adapter.inspect(self.frame, (key,)))).get(
-                                key, KeyStatus.MISSING
-                            )
-                        except Exception as key_exc:
-                            emit(
-                                "daemon.derivation.key_failed",
-                                level=WARNING,
-                                outcome="error",
-                                phase="inspect",
-                                domain=domain,
-                                derivation_key=key,
-                                error_type=type(key_exc).__name__,
-                                error_detail=str(key_exc),
-                            )
-                            self.record(
-                                KeyOutcome(
-                                    key=DerivationKey(domain, key),
-                                    outcome=Outcome.FAILED,
-                                    error=f"inspect {type(key_exc).__name__}: {key_exc}",
-                                    transient=_is_transient_failure(key_exc),
-                                )
-                            )
-                            # A recorded FAILED verdict already stops the main
-                            # loop from computing a key whose authority could
-                            # not be inspected, and dependants observe FAILED.
-                            # Claiming VALID here would additionally assert the
-                            # output *is* up to date, which the failed inspect
-                            # is precisely the absence of evidence for
-                            # (polylogue-tjtua). Leave the status unrecorded.
+                    fallback = True
                 self.inspected += len(keys)
             else:
                 statuses = dict.fromkeys(keys, KeyStatus.EXCESS)
@@ -1267,7 +1237,7 @@ class _Pass:
                 adapter,
                 [
                     key
-                    for key in keys
+                    for key in (() if fallback else keys)
                     if self.verdicts.get(DerivationKey(domain, key)) is not Outcome.FAILED
                     and statuses.get(key, KeyStatus.MISSING) is not KeyStatus.VALID
                 ],
@@ -1275,10 +1245,46 @@ class _Pass:
             )
             stopped_at: int | None = None
             for index, key in enumerate(keys):
+                if fallback:
+                    if stopped_at is not None or self.work_exhausted(inspected=True):
+                        if stopped_at is None:
+                            stopped_at = index
+                        self.record(
+                            KeyOutcome(
+                                key=DerivationKey(domain, key), outcome=Outcome.PENDING, reason=PendingReason.BUDGET
+                            )
+                        )
+                        continue
+                    try:
+                        statuses[key] = _coerce_statuses(dict(adapter.inspect(self.frame, (key,)))).get(
+                            key, KeyStatus.MISSING
+                        )
+                    except Exception as key_exc:
+                        emit(
+                            "daemon.derivation.key_failed",
+                            level=WARNING,
+                            outcome="error",
+                            phase="inspect",
+                            domain=domain,
+                            derivation_key=key,
+                            error_type=type(key_exc).__name__,
+                            error_detail=str(key_exc),
+                        )
+                        self.record(
+                            KeyOutcome(
+                                key=DerivationKey(domain, key),
+                                outcome=Outcome.FAILED,
+                                error=f"inspect {type(key_exc).__name__}: {key_exc}",
+                                transient=_is_transient_failure(key_exc),
+                            )
+                        )
+                        continue
                 if self.verdicts.get(DerivationKey(domain, key)) is Outcome.FAILED:
                     continue
                 if statuses.get(key, KeyStatus.MISSING) is KeyStatus.VALID:
                     continue
+                if fallback and not self.work_exhausted(inspected=True):
+                    held.update(self.barrier_blocks(adapter, (key,), phase=position.phase))
                 if key in held:
                     self.record(
                         KeyOutcome(

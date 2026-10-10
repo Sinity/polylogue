@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -15,6 +14,8 @@ from polylogue.markers import (
     lower_markers,
     parse_markers,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
+from tests.infra.identity import archive_block_id, fixture_block_content_identity
 
 
 def test_line_inline_escape_markdown_and_malformed_are_observable() -> None:
@@ -129,15 +130,16 @@ def test_candidate_lowering_uses_existing_assertion_service_and_exact_refs(tmp_p
 
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db)
-    candidates = candidates_for_block("message-1", "block-2", "::finding: bad path\n")
+    conn = connect_measured(user_db)
+    block_id = archive_block_id("message-1", content_identity=fixture_block_content_identity("block-2"))
+    candidates = candidates_for_block("message-1", block_id, "::finding: bad path\n")
     ids = lower_markers(conn, candidates, now_ms=123)
     row = conn.execute("SELECT * FROM assertions WHERE assertion_id = ?", ids).fetchone()
     assert row is not None
     assert row[4] == AssertionKind.FINDING.value
     assert row[10] == AssertionStatus.CANDIDATE.value
     assert row[8] == "agent"
-    assert "message:message-1" in row[9] and "block:block-2" in row[9]
+    assert "message:message-1" in row[9] and f"block:{block_id}" in row[9]
     conn.close()
 
 
@@ -165,9 +167,10 @@ def test_objective_posture_assertion_kinds_are_all_agent_authorable(tmp_path: Pa
 
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db)
+    conn = connect_measured(user_db)
     try:
-        candidates = candidates_for_block("message-9", "block-9", "::blocker: waiting on a credential\n")
+        block_id = archive_block_id("message-9", content_identity=fixture_block_content_identity("block-9"))
+        candidates = candidates_for_block("message-9", block_id, "::blocker: waiting on a credential\n")
         assert [candidate.assertion_kind for candidate in candidates] == [AssertionKind.BLOCKER]
         ids = lower_markers(conn, candidates, now_ms=456)
         kinds = [
@@ -176,3 +179,42 @@ def test_objective_posture_assertion_kinds_are_all_agent_authorable(tmp_path: Pa
         assert kinds == [AssertionKind.BLOCKER.value]
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "::note: before\n```md\n::note: hidden\n[[finding: hidden]]\n```\n::note: after",
+        "````md\n~~~\n::note: mixed hidden\n```\n::note: short hidden\n```` trailing\n::note: still hidden\n`````\n[[note: visible]]",
+        "   ~~~~md\n::note: hidden\n~~~\n[[note: hidden]]\n~~~~\n::note: visible\n",
+        "λ before [[note: visible]]\n\\::note: escaped\n::future-kind: malformed\n[[note: unterminated",
+        "::note: before\n```\n::note: unclosed fence hides finish",
+    ],
+)
+def test_stream_matches_batch_at_every_cut_and_line_chunk(body: str, newline: str) -> None:
+    """Fence state and source offsets survive every split, including CRLF halves."""
+    text = body.replace("\n", newline)
+    expected = parse_markers(text)
+    for match in expected:
+        assert text[match.start : match.end] == match.raw_text
+    for cut in range(len(text) + 1):
+        stream = MarkerStreamParser()
+        found = stream.feed(text[:cut]) + stream.feed(text[cut:]) + stream.finish()
+        assert found == expected, cut
+        assert stream.finish() == ()
+    stream = MarkerStreamParser()
+    found = tuple(match for line in text.splitlines(keepends=True) for match in stream.feed(line)) + stream.finish()
+    assert found == expected
+    stream = MarkerStreamParser()
+    found = tuple(match for character in text for match in stream.feed(character)) + stream.finish()
+    assert found == expected
+
+
+def test_stream_fence_state_uses_declared_registry() -> None:
+    registry = MarkerRegistry((MarkerKindSpec("lesson", "text", AssertionKind.LESSON, "lesson"),))
+    text = "~~~\n::lesson: hidden\n~~~\n::lesson: visible\n::note: unknown"
+    stream = MarkerStreamParser(registry=registry)
+    found = tuple(match for line in text.splitlines(keepends=True) for match in stream.feed(line)) + stream.finish()
+    assert found == parse_markers(text, registry=registry)
+    assert [(match.kind, match.body) for match in found] == [("lesson", "visible"), ("malformed", "unknown")]

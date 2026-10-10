@@ -138,7 +138,16 @@ def _estimated_words(run: str) -> int:
 def estimate_tokens(text: str) -> int:
     """Stable prose proxy used by both context and compact renderers."""
 
-    words = sum(_estimated_words(run) for run in text.split())
+    return tokens_from_estimated_words(estimate_token_words(text))
+
+
+def estimate_token_words(text: str) -> int:
+    """Additive word charge for fragments separated by whitespace."""
+    return sum(_estimated_words(run) for run in text.split())
+
+
+def tokens_from_estimated_words(words: int) -> int:
+    """Apply the shared token conversion after adding fragment charges."""
     return max(1, int(words * 1.3)) if words else 0
 
 
@@ -581,6 +590,8 @@ __all__ = [
     "compact_sessions",
     "compile_corpus_compaction",
     "estimate_serialized_tokens",
+    "estimate_token_words",
     "estimate_tokens",
     "render_compaction_markdown",
+    "tokens_from_estimated_words",
 ]

@@ -214,6 +214,11 @@ reader resolve archive truth through an exported span rather than a row.
 **Status**: affirmed. The compiler is deliberately thin — it introduces no
 durable memory store and no new handoff ontology, composing refs, rows, and
 report transforms into one image (`polylogue/context/compiler.py:1-8`).
+Message profiles share anchor, message-count, and character windows. The
+`prose_with_refs` profile emits hydrated stable block IDs for actions; a missing
+identity is an explicit gap. Its token budget uses additive word charges and
+renders the final transcript once, preserving the shared estimator.
+
 Omissions are typed rather than silent, and admitted material carries a trust
 class derived from provenance, not from the bundle's own claim (see the
 injected-context trust stanza).

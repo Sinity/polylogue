@@ -22,9 +22,9 @@ from polylogue.archive.context_models import (
 )
 from polylogue.core.assertions import AssertionContextTrustClass, derive_assertion_context_trust
 from polylogue.core.evidence_integrity import EvidenceIntegrityVerdict
-from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.core.refs import EvidenceRef, ObjectRef, normalize_durable_object_ref_text
 from polylogue.surfaces.chronicle import ChronicleProjectionPayload, render_chronicle_markdown
-from polylogue.surfaces.compaction import estimate_tokens
+from polylogue.surfaces.compaction import estimate_token_words, estimate_tokens, tokens_from_estimated_words
 from polylogue.surfaces.temporal_evidence import TemporalEvidenceWindow
 
 
@@ -78,6 +78,9 @@ def compile_prose_with_refs_context_segment(
     max_tokens: int | None = None,
     keep_last_messages: int = 4,
     evidence_refs: Sequence[EvidenceRef] = (),
+    omitted_before: int = 0,
+    omitted_after: int = 0,
+    clipped_messages: int = 0,
 ) -> tuple[ContextSegment, bool]:
     """Render authored prose verbatim and tools as independently resolvable refs.
 
@@ -85,6 +88,7 @@ def compile_prose_with_refs_context_segment(
     markers are never expanded into command arguments or result bodies.
     """
     rows: list[tuple[str, str, bool, str | None]] = []
+    caveats: list[str] = []
     for message in messages:
         role = str(getattr(getattr(message, "role", None), "value", getattr(message, "role", "unknown")))
         blocks = list(getattr(message, "blocks", ()) or ())
@@ -93,14 +97,21 @@ def compile_prose_with_refs_context_segment(
             if text:
                 rows.append((role, str(text), True, None))
             continue
-        for index, raw_block in enumerate(blocks):
+        for raw_block in blocks:
             block = raw_block if isinstance(raw_block, dict) else {}
             block_type = str(block.get("type") or "text")
             if block_type in {"tool_use", "tool_result", "function_call", "function_call_output"}:
-                message_id = str(getattr(message, "id", ""))
                 tool_name = str(block.get("name") or block.get("tool_name") or block_type)
-                action_ref = f"action:{message_id}:{index}"
-                rows.append((role, f"<ref:{action_ref}> {tool_name}", False, action_ref))
+                block_id = block.get("id")
+                try:
+                    if not isinstance(block_id, str):
+                        raise ValueError("missing block identity")
+                    action_ref = normalize_durable_object_ref_text(f"action:{block_id}")
+                except ValueError:
+                    caveats.append("action_reference_missing_stable_block_identity")
+                    rows.append((role, f"[action unavailable: missing stable block identity] {tool_name}", False, None))
+                else:
+                    rows.append((role, f"<ref:{action_ref}> {tool_name}", False, action_ref))
             else:
                 text = block.get("text", block.get("content"))
                 if text is not None:
@@ -111,49 +122,79 @@ def compile_prose_with_refs_context_segment(
     protected.update(range(max(0, len(rows) - keep_last_messages), len(rows)))
     recapped = False
 
-    def render(current: Sequence[tuple[str, str, bool, str | None]]) -> str:
-        lines = [
-            f"# Messages: {title or session_id}",
-            "",
-            "Expand action markers with resolve_ref before relying on them.",
-            "",
-        ]
-        lines.extend(f"{role}: {text}" for role, text, _prose, _ref in current)
-        return "\n".join(lines).rstrip() + "\n"
+    header = [
+        f"# Messages: {title or session_id}",
+        "",
+        "Expand action markers with resolve_ref before relying on them.",
+        "",
+    ]
+    if omitted_before:
+        header.extend([f"... {omitted_before} earlier messages omitted from this window.", ""])
+    footer = []
+    if omitted_after:
+        footer.extend(["", f"... {omitted_after} later messages omitted from this window.", ""])
+    if omitted_before or omitted_after:
+        caveats.append(f"message window omitted {omitted_before} earlier and {omitted_after} later messages")
+    if clipped_messages:
+        caveats.append(f"{clipped_messages} messages were clipped by character budget")
 
-    rendered = render(rows)
+    mutable = list(rows)
+    start = 0
     prose_budget = None if max_tokens is None else max(1, int(max_tokens * 0.6))
-    if prose_budget is not None and _estimate_tokens(rendered) > prose_budget:
-        mutable = list(rows)
-        for index, (role, text, is_prose, ref) in enumerate(rows):
-            if index in protected or not is_prose:
-                continue
-            words = text.split()
-            mutable[index] = (role, "[recap] " + " ".join(words[: min(12, len(words))]), is_prose, ref)
-            recapped = True
-            rendered = render(mutable)
-            if _estimate_tokens(rendered) <= prose_budget:
-                break
-        # Protected rows are preferences; the declared budget is a hard cap.
-        # Recap/truncate the remaining rows, then omit rows if even markers do
-        # not fit (the fixed header itself is bounded).
-        for index in range(len(mutable)):
-            if _estimate_tokens(render(mutable)) <= prose_budget:
-                break
-            role, text, is_prose, ref = mutable[index]
-            if not text:
-                continue
-            mutable[index] = (role, "[omitted]" if ref is None else f"<ref:{ref}>", is_prose, ref)
-            recapped = True
-        while mutable and _estimate_tokens(render(mutable)) > prose_budget:
-            mutable.pop(0)
-            recapped = True
-        rendered = render(mutable)
-        if _estimate_tokens(rendered) > prose_budget:
-            # At tiny budgets even the heading/instructions cost more than
-            # the allowance. Keep a prefix whose estimate is within budget.
-            rendered = ""
-            recapped = True
+    if prose_budget is not None:
+        # Every boundary is whitespace, so word charges add exactly. Convert
+        # only their sum: summing rounded per-row token estimates would drift.
+        costs = [estimate_token_words(f"{role}: {text}") for role, text, _prose, _ref in rows]
+        words_total = estimate_token_words("\n".join((*header, *footer))) + sum(costs)
+
+        def over_budget() -> bool:
+            return tokens_from_estimated_words(words_total) > prose_budget
+
+        def replace_row(index: int, text: str) -> None:
+            nonlocal words_total
+            role, _text, is_prose, ref = mutable[index]
+            mutable[index] = (role, text, is_prose, ref)
+            cost = estimate_token_words(f"{role}: {text}")
+            words_total += cost - costs[index]
+            costs[index] = cost
+
+        if over_budget():
+            for index, (_role, text, is_prose, _ref) in enumerate(rows):
+                if index in protected or not is_prose:
+                    continue
+                words = text.split()
+                replace_row(index, "[recap] " + " ".join(words[: min(12, len(words))]))
+                recapped = True
+                if not over_budget():
+                    break
+            # Protected rows are preferences; the declared budget is a hard cap.
+            # Recap/truncate the remaining rows, then omit rows if even markers do
+            # not fit (the fixed header itself is bounded).
+            for index in range(len(mutable)):
+                if not over_budget():
+                    break
+                role, text, is_prose, ref = mutable[index]
+                if not text:
+                    continue
+                replace_row(index, "[omitted]" if ref is None else f"<ref:{ref}>")
+                recapped = True
+            while start < len(mutable) and over_budget():
+                words_total -= costs[start]
+                start += 1
+                recapped = True
+            if over_budget():
+                # At tiny budgets even the heading/instructions cost more than
+                # the allowance. Keep a prefix whose estimate is within budget.
+                header = []
+                footer = []
+                recapped = True
+
+    rendered = "\n".join(
+        (*header, *(f"{role}: {text}" for role, text, _prose, _ref in mutable[start:]), *footer)
+    ).rstrip()
+    rendered = rendered + "\n" if rendered else ""
+    if recapped:
+        caveats.append("oldest unprotected prose collapsed to one-line recaps")
 
     segment = ContextSegment(
         segment_id=f"read-view:{session_id}:prose-with-refs",
@@ -168,7 +209,7 @@ def compile_prose_with_refs_context_segment(
         evidence_refs=tuple(evidence_refs) or (EvidenceRef(session_id=session_id),),
         token_estimate=_estimate_tokens(rendered),
         lossiness="budget_recapped_prose" if recapped else "tool_content_as_refs",
-        caveats=("oldest unprotected prose collapsed to one-line recaps",) if recapped else (),
+        caveats=tuple(dict.fromkeys(caveats)),
     )
     return segment, recapped
 

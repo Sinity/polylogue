@@ -989,12 +989,12 @@ writes:
     classification: lifecycle_transition
     reason: "the assertion judgment state machine's only writer: it sets status alone (plus updated_at_ms), guarded by COALESCE(status, default) != the requested status so a no-op judgement does not touch the row, and it deliberately does not delete the evidence row"
   - file: "polylogue/storage/sqlite/archive_tiers/user_write.py"
-    function: "upsert_assertion"
+    function: "AssertionWriteBatch.upsert"
     table: "assertions"
     kind: "upsert_do_update"
     tier: "user"
     classification: row_supersession
-    reason: "the single write chokepoint for an authored assertion: the row IS the author's current statement of one logical claim under a stable assertion_id, and re-authoring replaces it wholesale. No producer judgement is corrected because the function preserves any existing terminal judgment outcome (accepted/rejected/deferred/superseded/deleted, written only by mark_assertion_status) and coerces any non-user author_kind to CANDIDATE with a non-injected context policy, so an automated writer can neither self-promote nor resurrect a judged row"
+    reason: "The shared AssertionWriteBatch.upsert executes assertion_upsert_statement against assertions under its active same-thread User transaction. Single-row upsert_assertion and bounded annotation batches borrow this same writer; native Excision preparation stages the same nineteen-cell SQL under its sealed original User authority. The row IS the author's current statement of one logical claim under a stable assertion_id, and re-authoring replaces it wholesale. No producer judgement is corrected because the function preserves any existing terminal judgment outcome (accepted/rejected/deferred/superseded/deleted, written only by mark_assertion_status) and coerces any non-user author_kind to CANDIDATE with a non-injected context policy, so an automated writer can neither self-promote nor resurrect a judged row"
   - file: "polylogue/storage/sqlite/reference_seal.py"
     function: "PreparedIndexMutation.stage_excision_source_completion"
     table: "audit_continuity_control"
