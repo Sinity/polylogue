@@ -90,6 +90,14 @@ and historical package selection stay on one coherent snapshot, and cancellation
 is checked before and after the snapshot reads. Explicit cache clearing remains
 available to ordinary registry callers.
 
+Retained inferred schema selection reuses a successful acceptance pass only for
+that completed immutable document and the exact selected schema. The final
+reducer still observes every original sample for counts and drift. Explicit
+selection validates normally, and all-rejected inference retains the base
+schema's complete errors and diagnostics. Append-only checkpoint validation
+stops reducing a rejected historical candidate; its base candidate continues
+so every prefix keeps complete failure evidence when no candidate accepts.
+
 Ordinary retained JSON preparations share one physical carrier only when their
 bytes, source path and fallback identity, profile, timestamp, append identity,
 ZIP coordinate, sidecar inputs, and validation mode agree. Each raw retains its
@@ -559,6 +567,11 @@ head selects ordinary retained preparation; every accepted checkpoint still
 proves each raw's exact hash, size and head-prefix bytes independently. Prefix
 message views replay the backing sealed carrier sequentially, including its
 bounded decoded spool, and set the active leaf at that prefix's final message.
+
+Uncached neutral Raw capture copies each retained input once while computing
+its SHA-256 and byte count. Before/after source identity, expected digest and
+expected length must all agree before the private capture is exposed. A
+matching captured page still reuses its existing private bytes.
 
 ## Retained validation policy
 

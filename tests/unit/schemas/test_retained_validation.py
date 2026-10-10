@@ -711,6 +711,10 @@ def test_prefix_validation_state_matches_each_current_and_historical_resolution(
                 assert streamed.schema_resolution is not None
                 assert (streamed.schema_resolution.package_version, streamed.invalid_count) == ("v3", 4)
                 assert streamed.status is ValidationStatus.FAILED
+        counts = {
+            candidate.version: candidate.reducer.sample_count for candidate in state._reducers if candidate.reducer
+        }
+        assert counts == {"v3": 5, "v2": 4, "v1": 5}
 
 
 def test_prefix_validation_state_preserves_sampler_witness_order_at_64_records(tmp_path: Path) -> None:
@@ -1246,3 +1250,86 @@ def test_retained_signature_spills_exact_bytes_past_sqlite_cell_bound(
     earlier = replace(observation, unseen_key_signature=DriftSignature.from_text("aaa", directory=tmp_path))
     assert _stronger_drift(observation, earlier) is earlier
     assert _stronger_drift(earlier, observation) is earlier
+
+
+@pytest.mark.parametrize("route", ["current", "historical", "all_reject", "explicit", "off"])
+def test_retained_winner_acceptance_reuses_validation_but_preserves_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    records = [{"type": "message", "kind": number, "extra": number} for number in range(7)]
+    path = tmp_path / "winner.jsonl"
+    _write_jsonl(path, records)
+    registry = _registry(
+        tmp_path,
+        {"type": "string"} if route in {"historical", "all_reject"} else {"type": "integer"},
+        {"type": "string"} if route == "all_reject" else {"type": "integer"},
+    )
+    calls = {"acceptance": 0, "reduction": 0}
+    original = retained_validation._bounded_validator
+
+    class CountedValidator:
+        def __init__(self, validator: Any) -> None:
+            self.validator = validator
+            self._scratch = validator._scratch
+
+        def is_valid(self, value: object) -> bool:
+            calls["acceptance"] += 1
+            return bool(self.validator.is_valid(value))
+
+        def iter_errors(self, value: object) -> Any:
+            calls["reduction"] += 1
+            return self.validator.iter_errors(value)
+
+    def counted(schema: Any, connection: sqlite3.Connection) -> Any:
+        return CountedValidator(original(schema, connection))
+
+    monkeypatch.setattr(retained_validation, "_bounded_validator", counted)
+    mode = ValidationMode.OFF if route == "off" else ValidationMode.STRICT
+    verdict = validate_retained_document(
+        Provider.CLAUDE_CODE,
+        path,
+        mode=mode,
+        raw_id="winner",
+        revision_sha256="d" * 64,
+        evidence_id="winner",
+        jsonl=True,
+        registry=registry,
+        schema_resolution=_resolution("v2"),
+        schema_resolution_is_explicit=route == "explicit",
+        signature_directory=tmp_path,
+    )
+    expected = {
+        "current": {"acceptance": 7, "reduction": 0},
+        "historical": {"acceptance": 8, "reduction": 0},
+        "all_reject": {"acceptance": 2, "reduction": 7},
+        "explicit": {"acceptance": 0, "reduction": 7},
+        "off": {"acceptance": 0, "reduction": 0},
+    }
+    assert calls == expected[route]
+    if route == "off":
+        assert verdict.status is ValidationStatus.SKIPPED
+        assert verdict.sample_count == 0
+        return
+    assert verdict.sample_count == 7
+    assert verdict.drift_count == 7
+    assert verdict.invalid_count == (7 if route == "all_reject" else 0)
+    if route != "all_reject":
+        assert verdict.error_count == 0
+        assert verdict.first_diagnostic is None
+    assert verdict.schema_resolution is not None
+    version = "v1" if route == "historical" else "v2"
+    assert verdict.schema_resolution.package_version == version
+    reference = validate_retained_document(
+        Provider.CLAUDE_CODE,
+        path,
+        mode=mode,
+        raw_id="winner",
+        revision_sha256="d" * 64,
+        evidence_id="winner",
+        jsonl=True,
+        registry=registry,
+        schema_resolution=_resolution(version),
+        schema_resolution_is_explicit=True,
+        signature_directory=tmp_path,
+    )
+    assert verdict == reference
