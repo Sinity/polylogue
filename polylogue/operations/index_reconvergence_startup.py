@@ -282,14 +282,18 @@ def reconverge_managed_index_on_startup(
         def rewind_frontier(candidate: IndexGeneration) -> str:
             # An interrupted page can refine an earlier shared Raw before its
             # Index publication. Keep the candidate, but replay that key. Loss
-            # of the journal requires a full idempotent scan into the same file.
+            # of the journal or lost Source WAL commits requires a full scan into
+            # the same file; an empty prefix owns no stale completion claim.
             with closing(open_readonly_connection(root / "source.db")) as source:
                 floor = int(
                     source.execute(
                         "SELECT retained_floor FROM raw_existence_journal_control WHERE singleton=1"
                     ).fetchone()[0]
                 )
-                if floor > candidate.reconstruction_source_sequence:
+                if (
+                    floor > candidate.reconstruction_source_sequence
+                    or source_sequence() < candidate.reconstruction_source_sequence
+                ):
                     return ""
                 changed = source.execute(
                     "SELECT MIN(raw_id) FROM raw_existence_changes WHERE sequence>? AND raw_id<=?",

@@ -15,7 +15,7 @@ with matching Index/Ops/parser identities, acquisition snapshot, predecessor,
 destination incarnation and durable reference custody. Its indexed `raw_id`
 cursor skips the completed prefix; an interrupted page replays idempotently.
 The existing Source change journal rewinds that cursor when a later interrupted
-page touched an earlier shared member. A pruned journal requires a full scan
+page touched an earlier shared member. A pruned or regressed journal requires a full scan
 into the same candidate. Changed acquired evidence or custody creates a fresh
 generation without re-acquiring originals. Other owners remain untouched.
 Normal services start only after successful preflight. A current successor is

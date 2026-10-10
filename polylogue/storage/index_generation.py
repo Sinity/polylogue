@@ -1168,6 +1168,7 @@ class IndexGenerationStore:
 
         Rewind never removes candidate rows. Their ordinary canonical replay
         owns idempotent replacement; the cursor certifies only the earlier prefix.
+        A lower observed Source watermark can reset only that empty prefix.
         """
         self._require_write_lease("checkpoint_reconstruction")
         with self._lifecycle_lock():
@@ -1181,7 +1182,7 @@ class IndexGenerationStore:
                 or (
                     raw_id >= generation.reconstruction_raw_id if rewind else raw_id <= generation.reconstruction_raw_id
                 )
-                or source_sequence < generation.reconstruction_source_sequence
+                or (source_sequence < generation.reconstruction_source_sequence and not (rewind and raw_id == ""))
             ):
                 raise RuntimeError("reconstruction checkpoint no longer owns its candidate or frontier")
             current = replace(generation, reconstruction_raw_id=raw_id, reconstruction_source_sequence=source_sequence)

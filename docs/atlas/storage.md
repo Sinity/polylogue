@@ -564,7 +564,7 @@ durable reference custody, indexed `raw_id` cursor and Source journal watermark.
 The cursor advances only after original publishers settle and SQLite commits;
 its atomic file and directory fsync follows those commits. A crash before that
 checkpoint repeats the page through canonical idempotent replay. A changed
-completed Source member rewinds the cursor; a pruned journal restarts its scan
+completed Source member rewinds the cursor; a pruned or regressed journal restarts its scan
 into the same candidate. Changed acquired evidence, recipe or custody replaces
 the incompatible candidate. Durable WAL adds I/O compared with disposable
 MEMORY builds, in exchange for preserving completed work across restarts.

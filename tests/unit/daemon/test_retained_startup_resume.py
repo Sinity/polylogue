@@ -127,7 +127,16 @@ def test_abrupt_next_page_exit_resumes_the_same_durable_generation(
 
 @pytest.mark.parametrize(
     "changed",
-    ["recipe", "acquisition", "new-earlier-raw", "interpretation", "pruned-journal", "assertions", "destination"],
+    [
+        "recipe",
+        "acquisition",
+        "new-earlier-raw",
+        "interpretation",
+        "pruned-journal",
+        "regressed-journal",
+        "assertions",
+        "destination",
+    ],
 )
 def test_completed_page_replays_or_restarts_when_its_binding_changes(
     tmp_path: Path,
@@ -188,14 +197,18 @@ def test_completed_page_replays_or_restarts_when_its_binding_changes(
                 )
 
         assert asyncio.run(run_archive_fixture_write(root, acquire)) < candidate.reconstruction_raw_id
-    elif changed in {"interpretation", "pruned-journal"}:
+    elif changed in {"interpretation", "pruned-journal", "regressed-journal"}:
         mutate_fixture_database(
             root / "source.db",
             "UPDATE raw_authority_parser_census SET parser_fingerprint='prior-parser' WHERE raw_id=?",
             (candidate.reconstruction_raw_id,),
         )
-        if changed == "pruned-journal":
+        if changed in {"pruned-journal", "regressed-journal"}:
             mutate_fixture_database(root / "source.db", "DELETE FROM raw_existence_changes")
+        if changed == "regressed-journal":
+            # Model lost NORMAL-synchronous Source WAL commits after the FULL
+            # candidate and its synchronized metadata have survived.
+            mutate_fixture_database(root / "source.db", "UPDATE raw_existence_journal_control SET retained_floor=0")
     elif changed == "assertions":
         mutate_fixture_database(root / "user.db", "UPDATE assertions SET body_text='changed reference custody'")
     else:
@@ -205,7 +218,7 @@ def test_completed_page_replays_or_restarts_when_its_binding_changes(
         shutil.copyfile(saved, path)
     offered = _finish(root, monkeypatch)
     assert any(candidate.reconstruction_raw_id in scope for scope in offered)
-    if changed in {"interpretation", "pruned-journal"}:
+    if changed in {"interpretation", "pruned-journal", "regressed-journal"}:
         assert ArchiveLocation.resolve(root).active_index_path.resolve() == Path(candidate.index_path)
     else:
         assert ArchiveLocation.resolve(root).active_index_path.resolve() != Path(candidate.index_path)
