@@ -71,6 +71,9 @@ MAX_BACKGROUND_STARVATION_S = 60.0
 #: The daemon startup and standalone HTTP owners use this same pool width.
 DEFAULT_COMPUTE_WORKERS = 12
 
+#: Declared input concurrency charge; parsed resident memory is measured separately.
+DEFAULT_COMPUTE_INPUT_BYTES = 256 * 1024 * 1024
+
 #: Additional accounting for one foreground operation beside exclusive background work.
 FOREGROUND_BYTE_ALLOWANCE = 1024 * 1024
 
@@ -555,7 +558,7 @@ class BoundedComputeAdapter:
         *,
         max_workers: int = DEFAULT_COMPUTE_WORKERS,
         queue_units: int = 16,
-        queue_bytes: int = 64 * 1024 * 1024,
+        queue_bytes: int = DEFAULT_COMPUTE_INPUT_BYTES,
         thread_name_prefix: str = "polylogue-compute",
     ) -> None:
         if max_workers < 1 or queue_units < 0 or queue_bytes < 0:
@@ -1446,6 +1449,7 @@ __all__ = [
     "MAX_BACKGROUND_STARVATION_S",
     "MIN_BACKGROUND_RESERVED_SLOTS",
     "DEFAULT_COMPUTE_WORKERS",
+    "DEFAULT_COMPUTE_INPUT_BYTES",
     "FOREGROUND_CLASSES",
     "FOREGROUND_BYTE_ALLOWANCE",
     "AdmissionClass",

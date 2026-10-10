@@ -177,6 +177,9 @@ additional allowance use and deferred normal charge separately, and keeps the
 complete declared input demand visible. Deferred operands can already own
 memory: these quantities describe admission accounting, not a resident-memory
 bound. Capacity one queues foreground work until its worker is available.
+The default input-admission envelope is 256 MiB. It charges declared concurrent
+input, including captured dependencies; it is not a process-memory limit. Work
+whose charge exceeds that envelope retains exclusive background admission.
 Startup and a standalone HTTP server use
 the same default of twelve workers; the API, watcher and convergence owners
 borrow the startup kernel when it is supplied. There is no second worker pool
