@@ -97,8 +97,9 @@ export async function runSharedChromeControlWorkflow({ extensionRoot, transportI
 
 export async function runDevLoopSharedChromeProof() {
   requireExpectedServiceContext();
+  const diagnosticPath = process.env.POLYLOGUE_DEV_LOOP_DIAGNOSTIC_PATH;
   return runSharedChromeControlWorkflow({ extensionRoot: path.resolve(requiredEnvironment("POLYLOGUE_DEV_LOOP_EXTENSION_ROOT")),
-    retainUnknownException: details => retainNeutralEvaluationDiagnostic(requiredEnvironment("POLYLOGUE_DEV_LOOP_DIAGNOSTIC_PATH"), details),
+    retainUnknownException: diagnosticPath ? details => retainNeutralEvaluationDiagnostic(diagnosticPath, details) : null,
     transportInputs: { receiverUrl: requiredEnvironment("POLYLOGUE_DEV_LOOP_RECEIVER_URL"),
       receiverId: requiredEnvironment("POLYLOGUE_DEV_LOOP_RECEIVER_ID"),
       attachmentUrl: requiredEnvironment("POLYLOGUE_DEV_LOOP_ATTACHMENT_URL"),
