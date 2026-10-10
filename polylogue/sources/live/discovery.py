@@ -11,7 +11,7 @@ from typing import Any
 from polylogue.logging import WARNING, emit
 from polylogue.sources.file_alias import contained_file_alias_coordinate
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
-from polylogue.sources.live.source_selection import deepest_source_for_path
+from polylogue.sources.live.source_selection import SourceSelection
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 
@@ -325,6 +325,7 @@ def _source_path_steps(
             "intake discovery could not read a source root",
             [WalkFault(source.root, "source root is unavailable")],
         )
+    ownership = SourceSelection(all_sources)
     visited_real_paths: set[str] = {_real_path(source.root)}
     stack: list[list[tuple[str, Path, bool]]] = [
         _ordered_children(
@@ -362,7 +363,7 @@ def _source_path_steps(
             yield None
             continue
         try:
-            if deepest_source_for_path(path, all_sources) is not source:
+            if ownership.owner_for_path(path) is not source:
                 if on_disposition is not None:
                     on_disposition(path, "excluded", "owned_by_other_source")
                 yield None

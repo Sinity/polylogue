@@ -694,3 +694,8 @@ publication, refusing foreign records even after an own-provider prefix.
 Cache copies use bounded reads of those exact staged bytes, and every
 cancelled or refused transfer discards its private stage. Raw identity and
 publication receipts describe the unmodified provider bytes.
+
+Discovery prepares configured lexical roots once within its walk owner. Relative
+roots reanchor after a working-directory change; physical alias and exact-file
+claims remain current per-path observations. This avoids repeated root
+normalization without caching ownership decisions across paths or walks.

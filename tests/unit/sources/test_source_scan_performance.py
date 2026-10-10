@@ -195,3 +195,61 @@ def test_zip_explain_keeps_its_independent_diagnostic_container_hint(tmp_path: P
         archive.writestr("conversations.json", json.dumps(session))
     payload = explain_import_path(bundle)
     assert payload.entries[0].detected_provider == Provider.CHATGPT.value
+
+
+def test_source_walk_prepares_roots_once_and_keeps_exact_path_priority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import sys
+
+    from polylogue.sources.live.discovery import _source_path_steps
+
+    root = tmp_path / "captures"
+    root.mkdir()
+    paths = [root / f"{n:03}.json" for n in range(20)]
+    for path in paths:
+        path.write_bytes(b"{}")
+    owner = WatchSource("inbox", root)
+    unrelated = tuple(WatchSource("inbox", tmp_path / f"other-{n}") for n in range(8))
+    exact = WatchSource("inbox", tmp_path / "explicit", exact_paths=frozenset((paths[0],)))
+    sources = (owner, *unrelated, exact)
+    calls: Counter[str] = Counter()
+    original = os.path.abspath
+
+    def observed(path: str | os.PathLike[str]) -> str:
+        if sys._getframe(1).f_code.co_filename.endswith("source_selection.py"):
+            calls[os.fspath(path)] += 1
+        return original(path)
+
+    monkeypatch.setattr(os.path, "abspath", observed)
+    selected = [path for path in _source_path_steps(owner, sources, after=None) if path is not None]
+    assert selected == paths[1:]
+    assert all(calls[str(source.root)] == 1 for source in sources)
+
+
+def test_walk_root_preparation_reanchors_and_rechecks_aliases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.sources.live.source_selection import SourceSelection
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    for parent in (first, second):
+        (parent / "captures").mkdir()
+        (parent / "captures" / "one.json").write_bytes(b"{}")
+    source = WatchSource("inbox", Path("captures"))
+    selection = SourceSelection((source,))
+    monkeypatch.chdir(first)
+    assert selection.owner_for_path(first / "captures" / "one.json") is source
+    monkeypatch.chdir(second)
+    assert selection.owner_for_path(first / "captures" / "one.json") is None
+    assert selection.owner_for_path(second / "captures" / "one.json") is source
+    alias = tmp_path / "alias"
+    alias.symlink_to(first / "captures", target_is_directory=True)
+    linked = WatchSource("inbox", alias)
+    selection = SourceSelection((linked,))
+    assert selection.owner_for_path(first / "captures" / "one.json") is linked
+    alias.unlink()
+    alias.symlink_to(second / "captures", target_is_directory=True)
+    assert selection.owner_for_path(first / "captures" / "one.json") is None
+    assert selection.owner_for_path(second / "captures" / "one.json") is linked

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar
 
 
 class RootedSource(Protocol):
@@ -32,7 +32,7 @@ def _accepts(source: SourceT, path: Path) -> bool:
         return False
 
 
-def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT | None:
+def _select_owner(path: Path, rooted: tuple[tuple[SourceT, Path], ...]) -> SourceT | None:
     """Return the most-specific configured source owning ``path``.
 
     Depth alone is the wrong ownership rule once roots overlap. A generic
@@ -46,7 +46,6 @@ def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT |
     """
 
     declared = Path(os.path.abspath(path.expanduser()))
-    rooted = [(source, Path(os.path.abspath(source.root.expanduser()))) for source in sources]
     lexical = [(False, len(root.parts), source, declared) for source, root in rooted if declared.is_relative_to(root)]
     explicit: list[tuple[bool, int, SourceT, Path]] = []
     physical: list[tuple[bool, int, SourceT, Path]] = []
@@ -86,4 +85,35 @@ def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT |
     return max(preferred, key=lambda match: (match[0], match[1]))[2]
 
 
-__all__ = ["deepest_source_for_path"]
+class SourceSelection(Generic[SourceT]):
+    """Reuse lexical root preparation within one configured source walk.
+
+    Physical aliases and exact-file claims remain live observations. Relative
+    roots are reanchored when the working directory changes, and changed
+    source roots invalidate this owner's lexical preparation.
+    """
+
+    def __init__(self, sources: Iterable[SourceT]) -> None:
+        self._sources = tuple(sources)
+        self._source_roots: tuple[Path, ...] | None = None
+        self._cwd: str | None = None
+        self._rooted: tuple[tuple[SourceT, Path], ...] = ()
+
+    def owner_for_path(self, path: Path) -> SourceT | None:
+        roots = tuple(source.root for source in self._sources)
+        cwd = os.getcwd() if any(not root.is_absolute() for root in roots) else None
+        if roots != self._source_roots or cwd != self._cwd:
+            self._rooted = tuple(
+                (source, Path(os.path.abspath(root.expanduser())))
+                for source, root in zip(self._sources, roots, strict=True)
+            )
+            self._source_roots, self._cwd = roots, cwd
+        return _select_owner(path, self._rooted)
+
+
+def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT | None:
+    """Resolve one path with the same ownership engine used by source walks."""
+    return SourceSelection(sources).owner_for_path(path)
+
+
+__all__ = ["SourceSelection", "deepest_source_for_path"]
