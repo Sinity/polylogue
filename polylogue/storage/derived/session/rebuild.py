@@ -1347,6 +1347,7 @@ def _large_session_profile_record(
     *,
     logical_session_id: str | None,
     materialized_at: str,
+    source_binding: str | None = None,
 ) -> SessionProfileRecord:
     row = _session_count_row(conn, session_id)
     model_usage = sync_model_usage_batch(conn, [session_id]).get(session_id, [])
@@ -1358,7 +1359,11 @@ def _large_session_profile_record(
         materialized_at=materialized_at,
         model_usage=model_usage,
         terminal_state_result=terminal_state_result,
-        input_binding=session_input_bindings(conn, (session_id,)).get(session_id),
+        input_binding=(
+            source_binding
+            if source_binding is not None and conn.in_transaction
+            else session_input_bindings(conn, (session_id,)).get(session_id)
+        ),
     )
 
 
@@ -1392,6 +1397,7 @@ def build_large_session_insight_record_bundle_sync(
     *,
     logical_session_id: str | None = None,
     materialized_at: str | None = None,
+    source_binding: str | None = None,
 ) -> SessionInsightRecordBundle:
     built_at = materialized_at or now_iso()
     profile = _large_session_profile_record(
@@ -1399,6 +1405,7 @@ def build_large_session_insight_record_bundle_sync(
         session_id,
         logical_session_id=logical_session_id,
         materialized_at=built_at,
+        source_binding=source_binding,
     )
     return SessionInsightRecordBundle(
         profile_record=profile,
@@ -1505,6 +1512,7 @@ def prepare_session_insight_partition(
             conn,
             session_id,
             logical_session_id=root_id,
+            source_binding=input_binding if conn.in_transaction else None,
         )
     else:
         batch = load_sync_batch(conn, (session_id,))
