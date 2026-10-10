@@ -42,7 +42,9 @@ Retained schema decoding stores exact string and number tokens as private
 SQLite chunks. Full syntax validation completes before lazy container views
 are exposed. Schema structure, fingerprint and profile consumers use stored
 kinds; boolean additional-property validation and drift checks traverse keys.
-Selected values are reconstructed exactly. Codex recognition does not copy
+Selected values are reconstructed exactly. Known-unread drift intersects the
+actual streamed record keys with the declared unread names in one metadata scan;
+long-key digest matches still require streamed exact equality. Codex recognition does not copy
 unconstrained payload members into its temporary type-validation model; the
 original mapping continues to supply lowering and schema observations.
 
@@ -202,11 +204,34 @@ carriers and Blob continuation claims are prepared afresh for the new seal;
 their prior physical owners retire before those new claims are used.
 `storage.raw_observation.neutral_rebind` distinguishes initial binding from
 enrichment invalidation, with `pending` for missing neutral carriers and `bound`
-for page ownership. `neutral_artifact` records parser reuse (`cached`), validation
-owner eligibility (`kind`: `page`, `fresh_capture` or `skipped`) and validator-call
-duration (`elapsed_ms`). Page ownership does not claim a
-verdict hit: fresh schema or input currency can still require the full validation
-body, whose existing `work.progress` events remain separate. The neutral
+for page ownership. `neutral_artifact` records parser reuse (`cached`) and validation
+ownership (`kind`: `page`, `fresh_capture` or `skipped`). Its `reason` reports the
+validator's actual reuse guard: `hit`, `missing`, `backing_changed`,
+`recipe_changed`, `schema_changed` or `input_changed`; `disabled`, `skipped` and
+`unowned` distinguish operations without that check. A miss names the first
+failed guard, not every changed operand. Page ownership alone is not a hit.
+
+The closed page captures one immutable ordered schema-byte snapshot per
+provider. Existing admitted jobs complete parsing and schema validation with
+independent decoded registry views of those same bytes. The registry lock only
+protects snapshot capture, never a validation body. Ordered canonical consumers
+recapture current declarations before accepting a complete verdict; a changed
+local override, version or root requires fresh validation. Workers receive no
+Source readers, seals or publication capability. Their results and drift backing
+remain page-owned until every creator and ordered consumer physically settles.
+Cancellation requests all pending creators before joining and retiring the page.
+
+Each worker's declared input demand includes its raw, its actual offered Claude
+file and sibling-record scope, and schema bytes. Unrelated page sidecars are not
+charged to that worker. Shared dependencies in an actual scope remain charged;
+this is input accounting, not a resident-memory bound. Existing slot and byte
+admission can therefore still serialize large scopes. `neutral_capture` measures
+capture and its primary-input count/bytes. `neutral_worker` measures parse and
+validation attempts with exact Raw identity and native worker thread;
+`neutral_admission` reports measured queue delay. `neutral_rebound` measures the
+fresh Source rebind. `elapsed_ms` is wall duration and `cpu_ms` is CPU consumed
+by the emitting thread, including failed attempts, never a success declaration.
+Existing `work.progress` body events and writer timing remain separate. The neutral
 retained enrichment also resolves any remaining persisted-output tool-result
 envelopes from matching `PostToolUse` rows in `raw_hook_events`. Those rows are
 selected by Claude origin, parent-or-session native ID, and tool-use ID through

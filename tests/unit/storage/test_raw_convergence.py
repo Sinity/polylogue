@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Iterable
 from contextlib import closing
@@ -37,6 +38,7 @@ from polylogue.daemon.status import raw_failure_info_for_root
 from polylogue.logging import capture
 from polylogue.operations.intake_adapters import RawMaterializationDiscovery
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -882,11 +884,12 @@ def test_mixed_default_retained_selection_neutralizes_only_eligible_codex_raw(
         assert {str(raw_id) for raw_id, parsed_at_ms in census if parsed_at_ms is not None} == {codex_raw, opaque_raw}
 
 
-@pytest.mark.parametrize("replace_sidecar", [False, True])
+@pytest.mark.parametrize(("replace_sidecar", "initial_sidecar"), [(False, True), (True, True), (True, False)])
 def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     replace_sidecar: bool,
+    initial_sidecar: bool,
 ) -> None:
     """Claude's detached parser consumes captured CAS sidecars, then binds current Source."""
     from polylogue.schemas import validate_retained_document as validate_original
@@ -900,12 +903,16 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     owner_path = project / f"{session_id}.jsonl"
     sidecar_path = project / session_id / "tool-results" / "toolu_capture.txt"
     sidecar_text = "retained-output-only: " + ("synthetic output " * 40)
-    sidecar = _admit(
-        tmp_path,
-        (),
-        provider=Provider.UNKNOWN,
-        path=sidecar_path.as_posix(),
-        payload=sidecar_text.encode(),
+    sidecar = (
+        _admit(
+            tmp_path,
+            (),
+            provider=Provider.UNKNOWN,
+            path=sidecar_path.as_posix(),
+            payload=sidecar_text.encode(),
+        )
+        if initial_sidecar
+        else None
     )
     sibling_sidecar_path = project / session_id / "tool-results" / "toolu_sibling.txt"
     sibling_sidecar = _admit(
@@ -1071,6 +1078,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
             "WHERE s.raw_id = ? AND b.block_type = 'tool_result'",
             (target,),
         ).fetchall()
+        assert conn.execute("SELECT native_id FROM sessions WHERE raw_id=?", (target,)).fetchall() == [(session_id,)]
         assert len(rows) == 1
         assert rows[0][0] == ("new retained output after rebind" if replace_sidecar else sidecar_text)
         assert conn.execute(
@@ -1079,7 +1087,8 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
             (target,),
         ).fetchone() == (1,), "the sibling-owned file is resolved from its retained tool_result record"
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sidecar,)).fetchone() == (1,)
+        if sidecar is not None:
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sidecar,)).fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_sidecar,)).fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_raw,)).fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
@@ -2290,3 +2299,144 @@ def test_neutral_page_census_restart_keeps_drift_until_page_retirement(
             ("m-first",),
             ("m-second",),
         ]
+
+
+def test_admitted_neutral_page_runs_complete_validation_on_independent_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_property: Callable[[str, object], None]
+) -> None:
+    from polylogue.core.json import JSONValue
+    from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+    bootstrap_archive_root(tmp_path)
+    targets = tuple(
+        _admit(
+            tmp_path, (), provider=Provider.CODEX, path=f"{name}.jsonl", payload=_codex_conversation_bytes(name, name)
+        )
+        for name in ("first", "second")
+    )
+    original = StreamedJSONDocument.__enter__
+    lock = threading.Lock()
+    both_started = threading.Event()
+    threads: set[int] = set()
+    active = 0
+    peak = 0
+    calls = 0
+
+    def validate(document: StreamedJSONDocument) -> JSONValue:
+        nonlocal active, peak, calls
+        with lock:
+            calls += 1
+            active += 1
+            peak = max(peak, active)
+            threads.add(threading.get_native_id())
+            if active == 2:
+                both_started.set()
+        # Bound only the observation fixture; slow product work is not refused.
+        both_started.wait(5)
+        try:
+            return original(document)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(StreamedJSONDocument, "__enter__", validate)
+    adapter = BoundedComputeAdapter(max_workers=4)
+
+    async def replay() -> None:
+        async with prepared_live_convergence_owner(tmp_path, compute_adapter=adapter) as owner:
+            (await owner.replay_retained_raw_ids(targets)).require_complete()
+
+    with capture() as events:
+        asyncio.run(replay())
+    worker_events = [event for event in events if event.get("event") == "storage.raw_observation.neutral_worker"]
+    assert len(worker_events) == 4
+    assert {event["productive_id"] for event in worker_events} == set(targets)
+    assert {event["operation"] for event in worker_events} == {"parse", "validate"}
+    for event in worker_events:
+        assert isinstance(event["elapsed_ms"], float) and event["elapsed_ms"] >= 0
+        assert isinstance(event["cpu_ms"], float) and event["cpu_ms"] >= 0
+        assert event["thread"] in {str(value) for value in threads}
+    validation_events = [event for event in worker_events if event["operation"] == "validate"]
+    assert {event["reason"] for event in validation_events} == {"missing"}
+    hits = [event for event in events if event.get("event") == "storage.raw_observation.neutral_artifact"]
+    assert hits and all(event["reason"] == "hit" for event in hits)
+    admissions = [event for event in events if event.get("event") == "storage.raw_observation.neutral_admission"]
+    assert {event["productive_id"] for event in admissions} == set(targets)
+    assert all(isinstance(event["wait_ms"], float) and event["wait_ms"] >= 0 for event in admissions)
+    assert not [
+        event
+        for event in events
+        if event.get("event") == "log.field_rejected"
+        and str(event.get("source_event", "")).startswith("storage.raw_observation.neutral_")
+    ]
+    record_property("validation_body_calls", calls)
+    record_property("validation_body_peak", peak)
+    record_property("validation_body_threads", sorted(threads))
+    assert peak == 2
+    assert len(threads) == 2
+    assert calls == 2
+    with sqlite3.connect(tmp_path / "index.db") as connection:
+        assert connection.execute("SELECT message_id,role FROM messages ORDER BY message_id").fetchall() == [
+            (f"codex-session:{name}:n:m-{name}", "user") for name in ("first", "second")
+        ]
+        assert connection.execute("SELECT text FROM blocks ORDER BY text").fetchall() == [("first",), ("second",)]
+
+
+def test_cancelled_neutral_page_settles_all_validation_workers_before_retirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.core.compute_cancel import check_compute_cancelled
+    from polylogue.core.json import JSONValue
+    from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+    bootstrap_archive_root(tmp_path)
+    targets = tuple(
+        _admit(
+            tmp_path, (), provider=Provider.CODEX, path=f"{name}.jsonl", payload=_codex_conversation_bytes(name, name)
+        )
+        for name in ("first", "second")
+    )
+    original = StreamedJSONDocument.__enter__
+    lock = threading.Lock()
+    both_started, release = threading.Event(), threading.Event()
+    entered = retired = 0
+
+    def body(document: StreamedJSONDocument) -> JSONValue:
+        nonlocal entered, retired
+        with lock:
+            entered += 1
+            if entered == 2:
+                both_started.set()
+        try:
+            while not release.wait(0.01):
+                check_compute_cancelled()
+            return original(document)
+        finally:
+            with lock:
+                retired += 1
+
+    monkeypatch.setattr(StreamedJSONDocument, "__enter__", body)
+    adapter = BoundedComputeAdapter(max_workers=4)
+
+    async def replay() -> None:
+        async with prepared_live_convergence_owner(tmp_path, compute_adapter=adapter) as owner:
+            operation = asyncio.create_task(owner.replay_retained_raw_ids(targets))
+            try:
+                assert await asyncio.to_thread(both_started.wait, 5)
+                operation.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await operation
+                assert retired == entered == 2
+            finally:
+                release.set()
+                if not operation.done():
+                    operation.cancel()
+                    try:
+                        await operation
+                    except asyncio.CancelledError:
+                        pass
+
+    asyncio.run(replay())
+    assert not list(BlobStore(tmp_path / "blob").staging_root.glob(".raw-prepared-*"))
+    with sqlite3.connect(tmp_path / "index.db") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM messages").fetchone() == (0,)

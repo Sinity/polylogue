@@ -1423,10 +1423,16 @@ def _reduce_sample_drift(
     if not path_count and is_valid:
         unread_names = unread_field_names(normalize_provider_token(str(provider)))
         connection.execute("DELETE FROM retained_unread WHERE sample=?", (sample_index,))
-        for key in unread_names:
+        from polylogue.schemas.observation_spill import SpilledObject
+
+        keys = (
+            sample.matching_field_names(unread_names)
+            if isinstance(sample, SpilledObject)
+            else (key for key in sample if key in unread_names)
+        )
+        for key in keys:
             check_compute_cancelled()
-            if key in sample:
-                connection.execute("INSERT OR IGNORE INTO retained_unread VALUES (?,?)", (sample_index, key))
+            connection.execute("INSERT OR IGNORE INTO retained_unread VALUES (?,?)", (sample_index, key))
         unread_count = int(
             connection.execute("SELECT COUNT(*) FROM retained_unread WHERE sample=?", (sample_index,)).fetchone()[0]
         )

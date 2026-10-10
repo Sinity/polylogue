@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 
 from polylogue.core.compute import BoundedComputeAdapter, DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode
 from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
 from polylogue.storage import blob_store as blob_module
 from polylogue.storage.blob_store import BlobStore
@@ -118,3 +119,53 @@ def test_uncached_neutral_capture_checks_one_copy_and_retires_faults(
         with pytest.raises(expected):
             run_on_convergence_owner(tmp_path, "test.neutral.checked_copy", capture)
     assert not list(store.staging_root.glob(".raw-prepared-*"))
+
+
+def test_neutral_worker_charges_only_its_declared_sidecar_scope(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    selected = []
+    expected: dict[str, int] = {}
+    for ordinal, size in enumerate((2000, 3000)):
+        session_id = f"10000000-0000-4000-8000-{ordinal:012d}"
+        owner_path = tmp_path / "projects" / "neutral" / f"{session_id}.jsonl"
+        sidecar_path = owner_path.parent / session_id / "tool-results" / "toolu_owned.txt"
+        _admit(tmp_path, (), provider=Provider.UNKNOWN, path=str(sidecar_path), payload=b"x" * size)
+        payload = (
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "message",
+                    "sessionId": session_id,
+                    "message": {"role": "user", "content": "neutral"},
+                }
+            )
+            + "\n"
+        ).encode()
+        selected.append(_admit(tmp_path, (), provider=Provider.CLAUDE_CODE, path=str(owner_path), payload=payload))
+        expected[str(owner_path)] = size
+    codex = _admit(tmp_path, (), provider=Provider.CODEX, path="codex.jsonl", payload=_codex_conversation_bytes())
+    selected.append(codex)
+
+    def capture(compute: BoundedComputeAdapter) -> None:
+        page = RawObservationDerivation(tmp_path, compute_adapter=compute).capture_neutral_raws(selected)
+        assert page is not None
+        try:
+            assert dict(page.sidecar_input_bytes) == expected
+            jobs = list(page.parser_jobs(ValidationMode.ADVISORY))
+            assert len(jobs) == 3
+            for key, charge, _operation in jobs:
+                parser_identity = key[0]
+                assert isinstance(parser_identity, tuple)
+                raw_identity = parser_identity[0]
+                assert isinstance(raw_identity, tuple) and raw_identity[0] == "raw-id"
+                raw_id = str(raw_identity[1])
+                provider, _hash, source_path, _kind, raw_size = page.captures[raw_id].descriptor
+                snapshot = page.schema_snapshots[provider]
+                schema_bytes = sum(len(payload) for _root, files in snapshot.roots for _name, payload in files)
+                assert charge == raw_size + schema_bytes + expected.get(source_path, 0)
+                if raw_id == codex:
+                    assert charge == raw_size + schema_bytes
+        finally:
+            page.close()
+
+    run_on_convergence_owner(tmp_path, "test.neutral.exact_scope_charge", capture)

@@ -260,6 +260,33 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
         )
         return int(row[0])
 
+    def matching_field_names(self, names: set[str] | frozenset[str]) -> Generator[str, None, None]:
+        """Intersect declared names with streamed keys without probing every declaration."""
+        long_names: dict[bytes, list[str]] = {}
+        for name in names:
+            check_compute_cancelled()
+            if len(name) > 128:
+                digest = hashlib.sha256(name.encode("utf-8", "surrogatepass")).digest()
+                long_names.setdefault(digest, []).append(name)
+        with closing(
+            _read_rows(
+                self._connection,
+                "SELECT m.key_token,k.small_bytes,k.digest FROM json_object_members m "
+                "JOIN json_key_meta k ON k.token=m.key_token WHERE m.parent_id=? ORDER BY m.ordinal",
+                (self._node_id,),
+            )
+        ) as rows:
+            for token, small_bytes, digest in rows:
+                check_compute_cancelled()
+                if small_bytes is not None:
+                    name = bytes(small_bytes).decode("utf-8", "surrogatepass")
+                    if name in names:
+                        yield name
+                else:
+                    for name in long_names.get(bytes(digest), ()):
+                        if SpilledKey(self._connection, int(token)).matches(name):
+                            yield name
+
     def _member(self, key: str) -> int | None:
         digest = hashlib.sha256()
         for offset in range(0, len(key), 1024):

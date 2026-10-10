@@ -869,6 +869,65 @@ def test_retained_drift_classifies_default_and_known_unread(tmp_path: Path, monk
     assert _signature_text(unread.drift_observation.unseen_key_signature) == "kind"
 
 
+def test_retained_unread_detection_does_not_probe_every_declared_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = _registry(tmp_path, {"type": "string"})
+    path = tmp_path / "record.json"
+    path.write_text(json.dumps({"type": "record", "kind": "value"}), encoding="utf-8")
+    names = {f"absent_{number}" for number in range(1000)} | {"kind"}
+    monkeypatch.setattr(retained_validation, "unread_field_names", lambda _provider: names)
+    probes = 0
+    original = observation_spill.SpilledObject._member
+
+    def member(self: observation_spill.SpilledObject, key: str) -> int | None:
+        nonlocal probes
+        if key in names:
+            probes += 1
+        return original(self, key)
+
+    monkeypatch.setattr(observation_spill.SpilledObject, "_member", member)
+    verdict = validate_retained_document(
+        Provider.CLAUDE_CODE,
+        path,
+        mode=ValidationMode.ADVISORY,
+        raw_id="raw-unread",
+        revision_sha256="a" * 64,
+        evidence_id="raw-unread",
+        schema_resolution=_resolution("v2", explicit_reason="exact_structure"),
+        schema_resolution_is_explicit=True,
+        registry=registry,
+        signature_directory=tmp_path,
+    )
+    assert verdict.drift_observation is not None
+    assert _signature_text(verdict.drift_observation.unseen_key_signature) == "kind"
+    assert probes < 20
+
+
+def test_spilled_unread_intersection_streams_long_names_and_checks_digest_collisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    present = "present_" + "x" * 160
+    absent = "absent_" + "y" * 160
+    oversized = "z" * 131072
+    path = tmp_path / "keys.json"
+    path.write_text(json.dumps({"kind": 1, present: 2, oversized: 3}), encoding="utf-8")
+    owner = observation_spill.StreamedJSONDocument(path)
+    with owner as sample:
+        assert isinstance(sample, observation_spill.SpilledObject)
+        # A digest match remains only an accelerator, never identity evidence.
+        owner.connection.execute(
+            "UPDATE json_key_meta SET digest=? WHERE short_chars=?",
+            (hashlib.sha256(absent.encode()).digest(), len(oversized)),
+        )
+
+        def forbid_read(_self: observation_spill.SpilledKey) -> str:
+            raise AssertionError("field intersection must not materialize an oversized key")
+
+        monkeypatch.setattr(observation_spill.SpilledKey, "read", forbid_read)
+        assert set(sample.matching_field_names({"kind", present, absent})) == {"kind", present}
+
+
 def test_public_validator_shares_spill_safe_extended_keywords() -> None:
     schema = {
         "type": "object",
