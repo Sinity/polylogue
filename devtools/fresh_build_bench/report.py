@@ -556,6 +556,8 @@ def _tree_summary(samples: list[tuple[float, int, float, int, int, int]], build_
 #: Watch-source names whose batches carry each corpus origin.
 _SOURCE_ORIGIN = {
     "claude-code": "claude-code",
+    "claude-code-history": "claude-code",
+    "codex-state": "codex",
     "codex": "codex",
     "gemini-cli": "gemini-cli",
 }
@@ -586,12 +588,15 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
 
     export_origins = [origin for origin in sampled if origin in EXPORT_ORIGINS]
     inbox = {"inbox": export_origins[0]} if len(export_origins) == 1 else {}
+    seconds_by_origin: dict[str, float] = defaultdict(float)
     for source, stats in (by_source or {}).items():
         origin = _SOURCE_ORIGIN.get(source) or inbox.get(source)
-        if origin is None or origin not in sampled or not sampled[origin]["bytes"]:
+        if origin is not None:
+            seconds_by_origin[origin] += float(stats["seconds"])
+    for origin, seconds in seconds_by_origin.items():
+        if origin not in sampled or not sampled[origin]["bytes"]:
             continue
         sample_mib = sampled[origin]["bytes"] / 2**20
-        seconds = float(stats["seconds"])
         rate = seconds / sample_mib
         entry: dict[str, Any] = {
             "sample_mib": round(sample_mib, 1),
@@ -599,7 +604,7 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
             "s_per_mib": round(rate, 4),
         }
         pop = population.get(origin)
-        if pop:
+        if pop and manifest.get("kind") != "selected-real":
             pop_mib = pop["bytes"] / 2**20
             entry["population_mib"] = round(pop_mib, 1)
             entry["projected_s"] = round(rate * pop_mib, 1)
@@ -818,6 +823,7 @@ def evidence_digests(work: Path) -> dict[str, str | None]:
         "events": digest(work / "events.jsonl"),
         "ops": digest(work / "archive" / "ops.db"),
         "ops_wal": digest(work / "archive" / "ops.db-wal"),
+        "policy": digest(work / "policy.json"),
     }
 
 
@@ -911,7 +917,9 @@ def build_receipt(
     corpus_unchanged: bool = True,
     clock_step_s: float = 0.0,
     cancelled: Callable[[], bool] = lambda: False,
+    driver_at_launch: str | None = None,
 ) -> dict[str, Any]:
+    driver_now = benchmark_implementation_sha256()
     events = analyse_events(paths["events"], origin_unix=started_wall)
     batches = analyse_batches(paths["archive"] / "ops.db")
     milestones = events.get("milestones_s", {})
@@ -949,6 +957,7 @@ def build_receipt(
         "fts_exact": census.get("messages_fts_rows") is not None
         and census.get("messages_fts_rows") == census.get("fts_indexable_rows"),
         "candidate_unchanged": identity["unchanged_during_run"],
+        "benchmark_unchanged": driver_at_launch is not None and driver_now == driver_at_launch,
         # A daemon that reached terminal but had to be killed on shutdown is
         # not a finished build.
         "clean_shutdown": exit_code == 0,
@@ -979,13 +988,31 @@ def build_receipt(
         # beside one that records it.
         "source_timing_recorded": _source_timing_recorded(manifest, events.get("by_source") or {}),
     }
+    policy_path = paths["work"] / "policy.json"
+    policy = (
+        json.loads(policy_path.read_text())
+        if policy_path.is_file()
+        else {"outcome": "unavailable", "states": [], "errors": ["observer evidence missing"]}
+    )
+    checks["compute_policy_bound"] = policy.get("outcome") == "bound" and bool(policy.get("states"))
+    checks["candidate_import_bound"] = (policy.get("product_binding") or {}).get("outcome") == "bound"
     receipt: dict[str, Any] = {
+        "effective_compute_policy": policy,
+        "measurement_scope": "ordinary-daemon-terminal-route",
+        "launcher": {
+            "bootstrap_sha256": hashlib.sha256(command[2].encode()).hexdigest() if len(command) > 2 else None,
+            "policy_observer_sha256": hashlib.sha256(
+                Path(__file__).with_name("policy_observer.py").read_bytes()
+            ).hexdigest(),
+            "overrides": dict(config.extra_env),
+            "external_injection": "none; launcher and child environment controlled by driver",
+        },
         "format": RECEIPT_FORMAT,
         "label": config.label,
         "outcome": outcome,
         "candidate": identity,
         "environment": environment,
-        "benchmark_implementation_sha256": benchmark_implementation_sha256(),
+        "benchmark_implementation_sha256": driver_now,
         "config": {
             "digest": config_digest(config),
             "argv": command[3:],
@@ -999,7 +1026,9 @@ def build_receipt(
             "file_count": manifest["file_count"],
             "total_bytes": total_bytes,
             "by_origin": manifest["by_origin"],
-            "parameters": {k: v for k, v in manifest.get("parameters", {}).items() if k != "population"},
+            "parameters": {
+                k: v for k, v in manifest.get("parameters", {}).items() if k not in {"population", "provenance"}
+            },
             "population": manifest.get("parameters", {}).get("population"),
         },
         "timing_s": {
@@ -1213,9 +1242,21 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
         problems.append("different run configurations (profile, overrides or budgets)")
     if before.get("benchmark_implementation_sha256") != after.get("benchmark_implementation_sha256"):
         problems.append("different benchmark implementation")
+    for side, receipt in (("before", before), ("after", after)):
+        policy = receipt.get("effective_compute_policy")
+        if not policy or policy.get("outcome") != "bound":
+            problems.append(f"{side} run has no bound effective compute policy")
+        if not policy or (policy.get("product_binding") or {}).get("outcome") != "bound":
+            problems.append(f"{side} run has no bound actual candidate imports")
+    if (before.get("effective_compute_policy") or {}).get("states") != (
+        after.get("effective_compute_policy") or {}
+    ).get("states"):
+        problems.append("different effective compute policies")
+    if before.get("launcher") != after.get("launcher"):
+        problems.append("different benchmark launchers or injected settings")
     # Version and GIL mode alone equate two builds of one version (PGO or
     # not); the build string and the resolved executable tell them apart.
-    for key in ("python", "gil_enabled", "python_build", "python_executable"):
+    for key in ("python", "gil_enabled", "python_build", "python_executable", "python_launcher_sha256"):
         if before["environment"].get(key) != after["environment"].get(key):
             problems.append(f"different interpreter ({key})")
     # Host capacity and storage explain wall, CPU and throughput deltas on
@@ -1255,6 +1296,9 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
 #: ``--allow-unqualified`` never waives them.
 INTEGRITY_CHECKS: Final = (
     "candidate_unchanged",
+    "compute_policy_bound",
+    "candidate_import_bound",
+    "benchmark_unchanged",
     "corpus_unchanged",
     "events_lossless",
     "evidence_unchanged",
@@ -1326,8 +1370,8 @@ def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified:
 def refresh(receipt_path: Path) -> dict[str, Any]:
     """Recompute a receipt's derived sections from its run directory.
 
-    The event log and ops ledger are the evidence; the receipt is a view of
-    them. Refreshing lets a finished run be read with a newer report without
+    The event log and ops ledger are the evidence. A new derived view keeps
+    the recording immutable. Refreshing lets a finished run be read with a newer report without
     rerunning the build. Identity, environment, the terminal time and the
     output fingerprint are kept as recorded; everything derived from the
     re-read milestones is recomputed.
@@ -1364,7 +1408,11 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     # The projection's inputs are sealed into the receipt itself; the
     # corpus directory may be gone by the time a newer report refreshes it.
     corpus = receipt["corpus"]
-    manifest = {"by_origin": corpus.get("by_origin"), "parameters": {"population": corpus.get("population")}}
+    manifest = {
+        "kind": corpus.get("kind"),
+        "by_origin": corpus.get("by_origin"),
+        "parameters": {"population": corpus.get("population")},
+    }
     receipt["projection"] = projection(
         manifest,
         events.get("by_source") or {},
@@ -1378,8 +1426,21 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     receipt["benchmark_implementation_sha256"] = refreshed_identity(
         str(receipt.get("benchmark_implementation_sha256")), benchmark_implementation_sha256()
     )
-    # Atomic: the receipt is replaced only by a complete document.
-    staging = receipt_path.with_name(receipt_path.name + ".tmp")
-    staging.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-    staging.replace(receipt_path)
+    # A reducer view references the immutable recording; existing experiment
+    # links and their digests continue to name the original bytes.
+    source_digest = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    receipt["derived_from"] = {
+        "path": str(receipt_path.resolve()),
+        "sha256": source_digest,
+        "reducer_sha256": benchmark_implementation_sha256(),
+    }
+    payload = json.dumps(receipt, indent=1, sort_keys=True) + "\n"
+    view_digest = hashlib.sha256(payload.encode()).hexdigest()
+    view = receipt_path.with_name(f"{receipt_path.stem}.view-{view_digest}.json")
+    if view.exists():
+        if view.read_text(encoding="utf-8") != payload:
+            raise ValueError("existing reducer view has changed")
+    else:
+        with view.open("x", encoding="utf-8") as stream:
+            stream.write(payload)
     return receipt

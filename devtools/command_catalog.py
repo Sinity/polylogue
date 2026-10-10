@@ -469,13 +469,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "Measure the ordinary cold build end to end (stage timings, writer share, RSS, per-origin cost, time "
             "to promotion and terminal convergence) or compare two candidates on one corpus. Corpora are "
-            "`corpus sample` (a private stratified sample of real sources) or `corpus files` (named files "
+            "`corpus select` (budgeted complete static source units), `corpus sample` (a private stratified "
+            "sample of real sources) or `corpus files` (named files "
             "and optional hook-spool fraction); `--max-rss-mib` and the other budgets make a run a qualification. "
-            "`components` times one production stage in seconds. Start `run` through the declared "
+            "`experiment` pairs fresh-state runs in balanced ABBA order; `components` times one production stage. "
+            "Start `run` and `experiment` through the declared "
             "fresh_build_bench AgentCTL operation."
         ),
         examples=(
-            "devtools bench fresh-build corpus sample --out /realm/tmp/work/fb/corpus --seed 1 --fraction 0.005",
+            "devtools bench fresh-build corpus select --out /realm/tmp/work/fb/corpus --max-bytes 8388608",
+            "devtools bench fresh-build experiment --corpus /realm/tmp/work/fb/corpus --work /realm/tmp/work/fb/pair "
+            "--before /realm/worktree/before --after /realm/worktree/after",
             "devtools bench fresh-build run --corpus /realm/tmp/work/fb/corpus --work /realm/tmp/work/fb/run-a",
             "devtools bench fresh-build compare /realm/tmp/work/fb/run-a/receipt.json "
             "/realm/tmp/work/fb/run-b/receipt.json",

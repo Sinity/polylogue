@@ -207,6 +207,11 @@ def _receipt(**overrides: object) -> dict[str, Any]:
         "corpus": {"digest": "c", "total_bytes": 10 << 20, "file_count": 10},
         "config": {"digest": "k"},
         "environment": {"python": "3.14.4", "gil_enabled": False},
+        "effective_compute_policy": {
+            "outcome": "bound",
+            "states": [{"capacity_slots": 12}],
+            "product_binding": {"outcome": "bound"},
+        },
         "timing_s": {"promotion": 10.0, "terminal": 20.0},
         "process_tree": {"rss_peak_bytes": 1 << 30},
         "checks": {"promoted": True},
@@ -608,11 +613,13 @@ def test_refresh_voids_cpu_to_promotion_when_promotion_moves(tmp_path: Path) -> 
     receipt["corpus"]["path"] = str(tmp_path / "absent-corpus")
     path = tmp_path / "receipt.json"
     path.write_text(json.dumps(receipt), encoding="utf-8")
+    original_bytes = path.read_bytes()
     refreshed = refresh(path)
     assert refreshed["timing_s"]["promotion"] == 20.0
     assert refreshed["process_tree"]["cpu_seconds_to_promotion"] is None
     assert refreshed["process_tree"]["mean_cores_to_promotion"] is None
-    assert json.loads(path.read_text(encoding="utf-8")) == refreshed
+    assert path.read_bytes() == original_bytes
+    assert json.loads(next(tmp_path.glob("receipt.view-*.json")).read_text()) == refreshed
 
 
 def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2501,6 +2508,9 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
         lambda *args, **kwargs: {"milestones_s": {"promoted_s": 0.5}, "coverage": {"complete": True}},
     )
     monkeypatch.setattr(report, "archive_census", lambda *args: {"messages_fts_rows": 0, "fts_indexable_rows": 0})
+    (tmp_path / "policy.json").write_text(
+        json.dumps({"outcome": "bound", "states": [{"capacity_slots": 12}], "product_binding": {"outcome": "bound"}})
+    )
     receipt = report.build_receipt(
         config=RunConfig(
             corpus=tmp_path,
@@ -2531,6 +2541,7 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
             readiness=dict.fromkeys(REQUIRED_READINESS_DOMAINS, True),
         ),
         tree_samples=[],
+        driver_at_launch=report.benchmark_implementation_sha256(),
     )
     assert all(value for key, value in receipt["checks"].items() if key != "profile_collected")
     assert receipt["checks"]["profile_collected"] is (samples == "collected")

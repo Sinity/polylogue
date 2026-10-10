@@ -124,3 +124,27 @@ moves with load; CPU seconds, writer holds and per-stage timers move less.
 The intake projection scales per-origin rates to the population and says so;
 every export shares the inbox watch source, so a corpus with exports of more
 than one origin leaves those origins unmeasured in the projection. Promotion and derived convergence are reported as measured, not scaled.
+
+## Small paired loop
+
+Select a small sealed corpus once, then reuse it while changing the product candidate:
+
+```bash
+devtools bench fresh-build corpus select --out /realm/tmp/work/fb/small \
+    --seed 1 --max-bytes 8388608 --max-unit-bytes 1048576 --max-units 12
+agentctl job start polylogue fresh_build_bench --workspace /realm/worktree/driver -- \
+    experiment --corpus /realm/tmp/work/fb/small --work /realm/tmp/work/fb/pair \
+    --before /realm/worktree/before --after /realm/worktree/after --order ABBA --repetitions 1
+```
+
+`select` copies real whole session units, including subagents and tool sidecars, plus existing static assembly dependencies at the production retained-assembly coordinates. Shared history and index files count once against `--max-bytes`; `--max-unit-bytes` limits each unit's own files. A dependency closure that exceeds the total budget is excluded whole. The manifest records private source provenance, each unit's private and shared bytes, sampled and missing providers, and covered and missing provider/size strata. Its byte budgets select an experiment workload; they do not limit valid product work. Gemini units are complete projects. The separate mutable Codex database source, exports, hooks, embeddings and browser capture are excluded from this initial selected-root route. Synthetic corpora must use `kind="synthetic"`; their timings are repeatability controls. Budgeted selections do not project whole-archive time.
+
+`experiment` runs the existing ordinary-daemon terminal route with a new archive, XDG tree and bytecode directory for every sample. Both arms share the driver, sealed corpus, interpreter and configuration. The host filesystem cache is uncontrolled. Balanced `--order AB` is a single sample per arm; default `ABBA` supplies two per arm. Repetitions repeat that sequence. `experiment.json` references immutable constituent receipts by path and SHA-256, exposes raw timings, medians, median absolute deviations and ranges, and requires qualified runs with identical exact output fingerprints. Overlapping observed ranges are labelled `within-observed-noise`; separated ranges describe this small experiment's observed spread without claiming statistical significance. An unqualified run stops the sequence and preserves its receipt.
+
+Each new run binds a read-only diagnostic policy observer by hash in its launcher. The observer reads the existing published compute owner's capacities, per-class reserves and ceilings, and actual GIL mode after product and profiling imports. It records observed policy changes in `policy.json`, sealed by the run receipt. Sampling is periodic at 50 ms and at normal process exit, so transient changes between samples can be missed. The observer never constructs or changes an adapter. Missing binding prevents qualification and comparison. Different effective policies or launcher settings cannot silently compare as one configuration. Python launcher wrappers are refused because their injected behavior cannot be bound by the interpreter identity; pass the real interpreter executable.
+
+`report RECEIPT --refresh` writes a new content-addressed `receipt.view-<digest>.json` beside the original. The view binds the source receipt digest and reducer version, rechecks the evidence seal, and recomputes derived fields. It leaves the original receipt unchanged, so prior experiment references remain valid. Old receipts without an effective policy remain readable, but do not qualify a controlled comparison.
+
+The selected population is a timed, non-atomic census. Unselected live sessions may grow while selection copies a stable complete chosen closure; new dependencies or edits in that chosen closure are refused. The launcher inserts the protected candidate path before any sampler or product import, and the observer records actual imported product module paths and content hashes. Candidate import mismatch prevents qualification. The driver hash must also remain unchanged during the measured run.
+
+This first paired loop holds compute policy fixed. Policy sweeps need an explicit treatment contract before their receipts can compare. The exact fingerprint includes legitimate parser and lowering recipe identity, so a candidate that changes that identity can produce a different fingerprint even when its conversational facts agree. Such runs are refused here; a recipe-qualified comparison is future connected work, and the current command does not drop identity columns automatically.

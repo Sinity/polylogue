@@ -24,6 +24,7 @@ import os
 import random
 import shutil
 import stat
+import time
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ ORIGIN_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
     ("home/.gemini/tmp/", "gemini-cli"),
     ("exports/chatgpt/", "chatgpt"),
     ("exports/claude-ai/", "claude-ai"),
+    ("home/.claude/history.jsonl", "claude-code"),
+    ("home/.codex/", "codex"),
 )
 
 
@@ -446,6 +449,198 @@ def sample_real(
             "seed": seed,
             "fraction": fraction,
             "population": population,
+        },
+    )
+
+
+def _selection_units(source: SampleSource) -> list[tuple[str, list[Path], list[Path]]]:
+    """Whole session units plus existing static assembly dependencies.
+
+    Coordinate resolvers are the production retained-assembly authority.
+    Mutable database sources are separate routes, never copied as page images.
+    """
+    from polylogue.sources.retained_assembly import claude_code_sidecar_coordinates, codex_sidecar_coordinates
+
+    result = []
+    for key, paths, _size in _units(source):
+        if source.origin in {"claude-code", "codex"} and not any(
+            path.suffix in {".jsonl", ".ndjson"} for path in paths
+        ):
+            continue
+        dependencies: set[Path] = set()
+        resolver = {"claude-code": claude_code_sidecar_coordinates, "codex": codex_sidecar_coordinates}.get(
+            source.origin
+        )
+        if resolver:
+            for path in paths:
+                coordinates = resolver(str(path.resolve()))
+                for coordinate in coordinates or ():
+                    dependency = Path(coordinate)
+                    if dependency.is_symlink():
+                        raise ValueError("selection dependency must be a regular unlinked file")
+                    if dependency.is_file():
+                        dependencies.add(dependency)
+        dependencies.difference_update(paths)
+        result.append((key, paths, sorted(dependencies)))
+    return result
+
+
+def select_real(
+    out: Path,
+    *,
+    seed: int,
+    max_bytes: int,
+    max_unit_bytes: int,
+    max_units: int,
+    sources: Sequence[SampleSource],
+) -> dict[str, Any]:
+    """Select complete session units under private-byte and total-closure budgets.
+
+    Shared dependencies count once in the corpus budget. No file is truncated.
+    Oversized units and uncovered strata remain visible in the sealed report.
+    """
+    if min(max_bytes, max_unit_bytes, max_units) <= 0:
+        raise ValueError("selection budgets must be positive")
+    if len({source.origin for source in sources}) != len(sources):
+        raise ValueError("selection source origins must be unique")
+    if out.exists() and any(out.iterdir()):
+        raise ValueError(f"corpus directory must be absent or empty: {out}")
+    rng = random.Random(seed)
+    census_started = time.time()
+    census = {source.origin: _selection_units(source) for source in sources}
+    stamps = {
+        path: _file_observation(path)
+        for units in census.values()
+        for _key, paths, dependencies in units
+        for path in [*paths, *dependencies]
+    }
+    census_finished = time.time()
+    queues: dict[tuple[str, int], list[tuple[str, list[Path], list[Path]]]] = defaultdict(list)
+    strata: dict[tuple[str, int], dict[str, int]] = {}
+    population = {}
+    for source in sources:
+        units = census[source.origin]
+        all_paths = {path for _key, paths, dependencies in units for path in [*paths, *dependencies]}
+        population[source.origin] = {"units": len(units), "bytes": sum(stamps[path][1] for path in all_paths)}
+        for unit in units:
+            private = sum(stamps[path][1] for path in unit[1])
+            closure = sum(stamps[path][1] for path in [*unit[1], *unit[2]])
+            key = (source.origin, _size_bucket(private))
+            row = strata.setdefault(
+                key,
+                {
+                    "population_units": 0,
+                    "private_bytes": 0,
+                    "oversized_units": 0,
+                    "selected_units": 0,
+                    "selected_bytes": 0,
+                },
+            )
+            row["population_units"] += 1
+            row["private_bytes"] += private
+            if private > max_unit_bytes or closure > max_bytes:
+                row["oversized_units"] += 1
+            else:
+                queues[key].append(unit)
+    for members in queues.values():
+        rng.shuffle(members)
+    source_by_origin = {source.origin: source for source in sources}
+    selected = []
+    selected_paths: set[Path] = set()
+    total = 0
+    while queues and len(selected) < max_units:
+        for key in sorted(queues):
+            members = queues[key]
+            unit = members.pop()
+            if not members:
+                del queues[key]
+            paths = {*unit[1], *unit[2]}
+            added = sum(stamps[path][1] for path in paths - selected_paths)
+            if total + added > max_bytes:
+                continue
+            selected.append((source_by_origin[key[0]], unit))
+            selected_paths.update(paths)
+            total += added
+            strata[key]["selected_units"] += 1
+            strata[key]["selected_bytes"] += added
+            if len(selected) == max_units:
+                break
+    _private_root(out)
+    observed = {}
+    provenance = []
+    for source, (key, paths, dependencies) in selected:
+        for path in [*paths, *dependencies]:
+            if path in observed:
+                continue
+            # Install-global coordinates can sit just above the watched root.
+            # Preserve their relative placement without permitting corpus escape.
+            relative = Path(os.path.relpath(path, source.root))
+            destination = (out / source.target / relative).resolve()
+            if out.resolve() not in destination.parents:
+                raise ValueError("selection dependency escapes the corpus")
+            _copy_private(path, destination)
+            observed[path] = _sha256(destination)
+        provenance.append(
+            {
+                "origin": source.origin,
+                "source_root": str(source.root.resolve()),
+                "unit": key,
+                "files": len(paths),
+                "dependency_files": len(dependencies),
+                "private_bytes": sum(stamps[path][1] for path in paths),
+                "shared_dependency_bytes": sum(stamps[path][1] for path in dependencies),
+                "closure": "whole layout session unit and static assembly dependencies",
+            }
+        )
+    # Unselected live sessions can keep growing. Only this corpus's selected
+    # dependency closure must be stable, including newly appearing sidecars.
+    for source in sources:
+        chosen = {unit[0]: unit for selected_source, unit in selected if selected_source == source}
+        if not chosen:
+            continue
+        current = {unit[0]: unit for unit in _selection_units(source) if unit[0] in chosen}
+        if current != chosen:
+            raise ValueError(f"{source.origin} selected dependency membership changed while copying")
+    if any(_file_observation(path) != stamps[path] for path in selected_paths):
+        raise ValueError("selected source closure changed while copying")
+    for path, digest in observed.items():
+        if _sha256(path) != digest:
+            raise ValueError("a selected source changed after its copy")
+    return seal(
+        out,
+        kind="selected-real",
+        parameters={
+            "seed": seed,
+            "max_bytes": max_bytes,
+            "max_unit_bytes": max_unit_bytes,
+            "max_units": max_units,
+            "population": population,
+            "selected_units": len(selected),
+            "provenance": provenance,
+            "population_observation": {
+                "started_at_unix": census_started,
+                "finished_at_unix": census_finished,
+                "coherence": "non-atomic timed census; unrelated source changes permitted",
+            },
+            "strata": [
+                {"origin": origin, "size_bucket": bucket, **row, "missing": row["selected_units"] == 0}
+                for (origin, bucket), row in sorted(strata.items())
+            ],
+            "sampled_providers": sorted({source.origin for source, _unit in selected}),
+            "missing_providers": sorted(
+                ({origin for _prefix, origin in ORIGIN_PREFIXES} | {"codex-state"})
+                - {source.origin for source, _unit in selected}
+            ),
+            "route": "ordinary-daemon-cold-build-selected-static-roots",
+            "finish_line": "terminal readiness and exact output fingerprint",
+            "exclusions": [
+                "oversized units",
+                "units beyond selection budget",
+                "mutable codex-state databases",
+                "export and hook routes",
+                "embeddings",
+                "browser capture",
+            ],
         },
     )
 

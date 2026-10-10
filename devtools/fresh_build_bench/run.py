@@ -625,6 +625,13 @@ def environment(config: RunConfig) -> dict[str, Any]:
             cwd=config.candidate,
         ).stdout
     )
+    requested = Path(config.python)
+    if not requested.is_absolute():
+        requested = (
+            config.candidate / requested if "/" in config.python else Path(shutil.which(config.python) or config.python)
+        )
+    if requested.resolve() != Path(probe[3]).resolve():
+        raise ValueError("unbound Python launcher: pass the real interpreter executable instead of a wrapper")
     from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes
     from polylogue.runtime import available_cpus
 
@@ -647,6 +654,7 @@ def environment(config: RunConfig) -> dict[str, Any]:
         # builds of one version are different interpreters.
         "python_build": probe[2],
         "python_executable": probe[3],
+        "python_launcher_sha256": hashlib.sha256(requested.resolve().read_bytes()).hexdigest(),
         "work_filesystem": _filesystem(config.work),
         # Same filesystem type on another device (NVMe vs loop or network
         # ext4) is not the same storage.
@@ -730,10 +738,12 @@ def _daemon_command(config: RunConfig) -> list[str]:
     # candidate that predates this benchmark (master, an older head) runs with
     # the same instrumentation as the branch under test.
     bootstrap = (
-        "import os, runpy\n"
+        "import os, runpy, sys\n"
+        "sys.path.insert(0, os.environ['POLYLOGUE_BENCH_CANDIDATE'])\n"
         "sampler = os.environ.get('POLYLOGUE_BENCH_SAMPLER')\n"
         "if sampler: runpy.run_path(sampler)['start_from_environment']()\n"
         "from polylogue.daemon.commands import main\n"
+        "runpy.run_path(os.environ['POLYLOGUE_BENCH_POLICY_OBSERVER'])['start_from_environment']()\n"
         "main()"
     )
     return [
@@ -767,12 +777,15 @@ def _daemon_env(config: RunConfig, paths: dict[str, Path]) -> dict[str, str]:
         "POLYLOGUE_LOG_FORMAT": "json",
         "POLYLOGUE_LOG_FILE": str(paths["events"]),
         "PYTHONPATH": str(config.candidate),
+        "POLYLOGUE_BENCH_CANDIDATE": str(config.candidate.resolve()),
         # Bytecode goes to scratch, never into the candidate tree: the tree's
         # directory stamps (``candidate_stamp``) then move only when files
         # are added or removed there.
         "PYTHONPYCACHEPREFIX": str(paths["tmp"] / "pycache"),
     }
     # Per-thread CPU is always sampled (cheap); stacks only with --profile.
+    env["POLYLOGUE_BENCH_POLICY_OBSERVER"] = str(Path(__file__).with_name("policy_observer.py"))
+    env["POLYLOGUE_BENCH_POLICY"] = str(config.work.absolute() / "policy.json")
     env["POLYLOGUE_BENCH_SAMPLER"] = str(_SAMPLER_PATH)
     env["POLYLOGUE_BENCH_STACK_SAMPLES"] = str(paths["stacks"])
     if config.profile:
@@ -973,8 +986,9 @@ def _measure_and_write_receipt(
     progress: Callable[[str], None],
     hook_preparation: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    from devtools.fresh_build_bench.report import build_receipt
+    from devtools.fresh_build_bench.report import benchmark_implementation_sha256, build_receipt
 
+    driver_at_launch = benchmark_implementation_sha256()
     log_stream = paths["daemon_log"].open("wb")
     corpus_stamp = change_stamp(config.corpus)
     started_wall = time.time()
@@ -1170,6 +1184,7 @@ def _measure_and_write_receipt(
         corpus_unchanged=corpus_unchanged,
         clock_step_s=max([*clock_steps, (finished_wall - started_wall) - (finished - started)], key=abs),
         cancelled=lambda: bool(interrupted),
+        driver_at_launch=driver_at_launch,
     )
     if hook_preparation is not None:
         receipt["hook_preparation"] = hook_preparation
