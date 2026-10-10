@@ -179,3 +179,42 @@ def test_objective_posture_assertion_kinds_are_all_agent_authorable(tmp_path: Pa
         assert kinds == [AssertionKind.BLOCKER.value]
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "::note: before\n```md\n::note: hidden\n[[finding: hidden]]\n```\n::note: after",
+        "````md\n~~~\n::note: mixed hidden\n```\n::note: short hidden\n```` trailing\n::note: still hidden\n`````\n[[note: visible]]",
+        "   ~~~~md\n::note: hidden\n~~~\n[[note: hidden]]\n~~~~\n::note: visible\n",
+        "λ before [[note: visible]]\n\\::note: escaped\n::future-kind: malformed\n[[note: unterminated",
+        "::note: before\n```\n::note: unclosed fence hides finish",
+    ],
+)
+def test_stream_matches_batch_at_every_cut_and_line_chunk(body: str, newline: str) -> None:
+    """Fence state and source offsets survive every split, including CRLF halves."""
+    text = body.replace("\n", newline)
+    expected = parse_markers(text)
+    for match in expected:
+        assert text[match.start : match.end] == match.raw_text
+    for cut in range(len(text) + 1):
+        stream = MarkerStreamParser()
+        found = stream.feed(text[:cut]) + stream.feed(text[cut:]) + stream.finish()
+        assert found == expected, cut
+        assert stream.finish() == ()
+    stream = MarkerStreamParser()
+    found = tuple(match for line in text.splitlines(keepends=True) for match in stream.feed(line)) + stream.finish()
+    assert found == expected
+    stream = MarkerStreamParser()
+    found = tuple(match for character in text for match in stream.feed(character)) + stream.finish()
+    assert found == expected
+
+
+def test_stream_fence_state_uses_declared_registry() -> None:
+    registry = MarkerRegistry((MarkerKindSpec("lesson", "text", AssertionKind.LESSON, "lesson"),))
+    text = "~~~\n::lesson: hidden\n~~~\n::lesson: visible\n::note: unknown"
+    stream = MarkerStreamParser(registry=registry)
+    found = tuple(match for line in text.splitlines(keepends=True) for match in stream.feed(line)) + stream.finish()
+    assert found == parse_markers(text, registry=registry)
+    assert [(match.kind, match.body) for match in found] == [("lesson", "visible"), ("malformed", "unknown")]
