@@ -569,7 +569,7 @@ def _output_fingerprint(
             tables["messages_fts:postings"] = _fts_postings(read, cancelled=cancelled)
     spool_path.unlink(missing_ok=True)
     overall = hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
-    result = {"digest": overall, "tables": tables}
+    result: dict[str, Any] = {"digest": overall, "tables": tables}
     if recipe_binding is not None and not _certified_recipe_pass:
         from devtools.fresh_build_bench.recipe_qualification import RECIPE_COLUMNS, validate_recipe_rows
 
@@ -1150,7 +1150,7 @@ def build_receipt(
         "source_timing_recorded": _source_timing_recorded(manifest, events.get("by_source") or {}),
     }
     policy_path = paths["work"] / "policy.json"
-    policy = (
+    policy: dict[str, Any] = (
         json.loads(policy_path.read_text())
         if policy_path.is_file()
         else {"outcome": "unavailable", "states": [], "errors": ["observer evidence missing"]}

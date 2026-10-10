@@ -106,7 +106,7 @@ def test_experiment_uses_new_state_and_binds_receipt_bytes(tmp_path: Path, monke
         assert not config.work.exists()
         config.work.mkdir()
         seen.append((config.label, config.candidate, config.work))
-        receipt = _sample(config.label, 2)["receipt"]
+        receipt: dict[str, Any] = _sample(config.label, 2)["receipt"]
         (config.work / "receipt.json").write_text(json.dumps(receipt))
         return receipt
 

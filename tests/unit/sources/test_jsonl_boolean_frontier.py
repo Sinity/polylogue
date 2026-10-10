@@ -105,6 +105,8 @@ def test_parser_upgrade_reinspects_old_boolean_deferred_cursor_through_raw_owner
     # Represent v6's false-malformed final line without changing its retained
     # raw or the already-complete canonical messages. Only fixture state is set.
     stat = path.stat()
+    authority = CursorPathAuthority.of_record(accepted)
+    assert authority is not None
     assert cursor.set(
         path,
         stat.st_size,
@@ -117,7 +119,7 @@ def test_parser_upgrade_reinspects_old_boolean_deferred_cursor_through_raw_owner
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
-        authority=CursorPathAuthority.of_record(accepted),
+        authority=authority,
         deferred_end_offset=stat.st_size,
         allow_backward=True,
     )

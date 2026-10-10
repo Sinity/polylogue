@@ -22,11 +22,20 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 FORMAT = "polylogue.cpu-profile.v1"
 _LOST = re.compile(r"^# Total Lost Samples:\s*(\d+)", re.MULTILINE)
 _SAMPLE_HEADER = re.compile(r"^\s*\S.*\s+\d+\s+[\d.]+:\s+\d+\s+cpu-clock:u:")
+
+
+class _NativeLeafSample(TypedDict):
+    thread: str
+    tid: int
+    dso: str
+    symbol: str
+    samples: int
+    period_ns: int
 
 
 class ProfilerUnavailableError(ValueError):
@@ -53,7 +62,7 @@ def _read_paranoid() -> str | None:
 
 def parse_perf_report(text: str) -> dict[str, Any]:
     """Reduce perf's delimited native leaf table without inventing callchains."""
-    rows = []
+    rows: list[_NativeLeafSample] = []
     for line in text.splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue

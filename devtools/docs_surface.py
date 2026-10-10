@@ -272,6 +272,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "operations",
     ),
     _entry(
+        "CPU Profiling",
+        "cpu-profiling.md",
+        "Owned-command Linux perf capture, runtime binding, coverage and profiler capability limits.",
+        "operations",
+    ),
+    _entry(
         "Artifact Publication",
         "artifact-publication.md",
         "Filesystem contract shared by the cache and reusable-fixture publication routes.",

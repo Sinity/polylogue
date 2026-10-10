@@ -659,7 +659,7 @@ def test_stale_lock_event_keeps_holder_pid_separate_from_emitter(
             raise BlockingIOError("synthetic contention")
         real_flock(fd, operation)
 
-    monkeypatch.setattr(archive_identity.fcntl, "flock", transient_contention)
+    monkeypatch.setattr(fcntl, "flock", transient_contention)
     monkeypatch.setattr(archive_identity, "_lock_holder_pid", lambda *_args, **_kwargs: 987654)
     monkeypatch.setattr(archive_identity, "_pid_is_alive", lambda _pid: False)
     with plog.capture() as records:

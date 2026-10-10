@@ -389,7 +389,7 @@ def observe(
                 and _last_readiness.get("archive") == str(archive)
                 and _last_readiness.get("candidate_key") == getattr(readiness_probe, "cache_key", None)
             ):
-                observation.readiness = dict(_last_readiness["readiness"])  # type: ignore[call-overload]
+                observation.readiness = dict(_last_readiness["readiness"])
                 observation.readiness_cached = True
                 observation.readiness_checked_s = list(_last_readiness["checked_s"])
                 observation.readiness_binding = _last_readiness["binding"]
@@ -575,7 +575,7 @@ def _retryable_observation_error(exc: BaseException) -> bool:
 #: Seconds between readiness reads once everything else has settled: the
 #: readiness census reads every raw row, so it is not taken every poll.
 _READINESS_POLL_S = 60.0
-_last_readiness: dict[str, object] = {}
+_last_readiness: dict[str, Any] = {}
 
 
 # ---------------------------------------------------------------------------

@@ -45,7 +45,7 @@ def policy_state() -> dict[str, Any] | None:
 def product_binding() -> dict[str, Any]:
     """Bind actual imported modules, even if a launcher discarded PYTHONPATH."""
     candidate = Path(os.environ["POLYLOGUE_BENCH_CANDIDATE"]).resolve()
-    modules = {}
+    modules: dict[str, dict[str, bool | str | None]] = {}
     for name in ("polylogue", "polylogue.core.compute", "polylogue.daemon.commands"):
         module = sys.modules.get(name)
         actual = getattr(module, "__file__", None)

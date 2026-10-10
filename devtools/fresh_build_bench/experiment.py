@@ -8,12 +8,19 @@ import statistics
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from devtools.fresh_build_bench.corpus import load_manifest, verify_manifest
 from devtools.fresh_build_bench.recipe_qualification import output_equivalence
 from devtools.fresh_build_bench.report import comparability_problems
 from devtools.fresh_build_bench.run import RunConfig, run_build
+
+
+class _ArmMetric(TypedDict):
+    raw_s: list[float | None]
+    median_s: float | None
+    mad_s: float | None
+    range_s: list[float] | None
 
 
 def reduce_experiment(samples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -63,19 +70,22 @@ def reduce_experiment(samples: list[dict[str, Any]]) -> dict[str, Any]:
     calibration = bool(actual) and all(value is not None and value == actual[0] for value in actual)
     metrics = {}
     for name in ("promotion", "terminal"):
-        arms = {}
+        arms: dict[str, _ArmMetric] = {}
         for arm in ("A", "B"):
-            raw = [sample["receipt"]["timing_s"].get(name) for sample in samples if sample["arm"] == arm]
+            raw: list[float | None] = [
+                sample["receipt"]["timing_s"].get(name) for sample in samples if sample["arm"] == arm
+            ]
             if any(value is None for value in raw):
                 problems.append(f"missing {name} measurement for {arm}")
                 arms[arm] = {"raw_s": raw, "median_s": None, "mad_s": None, "range_s": None}
                 continue
-            median = statistics.median(raw)
+            measured = cast(list[float], raw)
+            median = statistics.median(measured)
             arms[arm] = {
                 "raw_s": raw,
                 "median_s": median,
-                "mad_s": statistics.median(abs(value - median) for value in raw),
-                "range_s": [min(raw), max(raw)],
+                "mad_s": statistics.median(abs(value - median) for value in measured),
+                "range_s": [min(measured), max(measured)],
             }
         a, b = arms["A"], arms["B"]
         delta = None if a["median_s"] is None or b["median_s"] is None else b["median_s"] - a["median_s"]
@@ -190,7 +200,7 @@ def refresh_experiment(path: Path) -> dict[str, Any]:
     from devtools.fresh_build_bench.report import benchmark_implementation_sha256, refresh
 
     original = path.read_bytes()
-    document = json.loads(original)
+    document: dict[str, Any] = json.loads(original)
     samples = []
     for sample in document["samples"]:
         recording = Path(sample["path"])

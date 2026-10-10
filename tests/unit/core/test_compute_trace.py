@@ -32,7 +32,11 @@ def test_compute_trace_is_opt_in_and_wait_is_a_logical_lane(monkeypatch: pytest.
         assert queue["span_start_native_thread_id"] == submit_tid
         assert service["native_thread_id"] != submit_tid
         assert service["cpu_scope"] == "thread"
-        assert queue["span_start_ns"] <= queue["span_end_ns"] <= service["span_start_ns"]
+        queue_start = queue["span_start_ns"]
+        queue_end = queue["span_end_ns"]
+        service_start = service["span_start_ns"]
+        assert isinstance(queue_start, int) and isinstance(queue_end, int) and isinstance(service_start, int)
+        assert queue_start <= queue_end <= service_start
         monkeypatch.setattr(compute, "TRACE_COMPUTE", False)
         with plog.capture() as disabled:
             assert adapter.submit(lambda: 9).future.result() == 9
@@ -59,6 +63,9 @@ def test_compute_service_failure_retains_exception_and_terminal(monkeypatch: pyt
         terminal = next(r for r in records if r["event"] == "compute.service.error")
         assert terminal["outcome"] == "error"
         assert terminal["error_type"] == "ValueError"
-        assert terminal["span_start_ns"] <= terminal["span_end_ns"]
+        start = terminal["span_start_ns"]
+        end = terminal["span_end_ns"]
+        assert isinstance(start, int) and isinstance(end, int)
+        assert start <= end
     finally:
         adapter.shutdown(wait=True)

@@ -545,7 +545,7 @@ def select_real(
     for members in queues.values():
         rng.shuffle(members)
     source_by_origin = {source.origin: source for source in sources}
-    selected = []
+    selected: list[tuple[SampleSource, tuple[str, list[Path], list[Path]]]] = []
     selected_paths: set[Path] = set()
     total = 0
     while queues and len(selected) < max_units:
@@ -568,8 +568,8 @@ def select_real(
     _private_root(out)
     observed = {}
     provenance = []
-    for source, (key, paths, dependencies) in selected:
-        for path in [*paths, *dependencies]:
+    for source, (unit_key, unit_paths, dependencies) in selected:
+        for path in [*unit_paths, *dependencies]:
             if path in observed:
                 continue
             # Install-global coordinates can sit just above the watched root.
@@ -584,10 +584,10 @@ def select_real(
             {
                 "origin": source.origin,
                 "source_root": str(source.root.resolve()),
-                "unit": key,
-                "files": len(paths),
+                "unit": unit_key,
+                "files": len(unit_paths),
                 "dependency_files": len(dependencies),
-                "private_bytes": sum(stamps[path][1] for path in paths),
+                "private_bytes": sum(stamps[path][1] for path in unit_paths),
                 "shared_dependency_bytes": sum(stamps[path][1] for path in dependencies),
                 "closure": "whole layout session unit and static assembly dependencies",
             }

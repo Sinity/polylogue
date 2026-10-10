@@ -10,6 +10,7 @@ import asyncio
 import contextvars
 import io
 import json
+import os
 import threading
 import time
 from collections.abc import Iterator
@@ -696,13 +697,15 @@ def test_byte_overflow_preserves_terminal_measurements(value: str) -> None:
     terminal = next(row for row in records if row["event"] == "fixture.ok")
     assert plog._MEASUREMENT_FIELDS - {"parent_span_id", "task_id", "span_kind"} <= terminal.keys()
     assert terminal["required_measurement_fields_omitted"] == 0
-    assert terminal["omitted_fields"] > 0
+    omitted = terminal["omitted_fields"]
+    assert isinstance(omitted, int)
+    assert omitted > 0
     assert len(terminal) <= plog.EVENT_MAX_FIELDS
     assert len(json.dumps(terminal).encode()) <= plog.EVENT_MAX_BYTES
 
 
 def test_mandatory_overflow_reports_loss_without_masking_work() -> None:
-    fields = dict.fromkeys(("trace_id", "span_id", "parent_span_id", "task_id"), "\U0001f642" * 256)
+    fields: dict[str, Any] = dict.fromkeys(("trace_id", "span_id", "parent_span_id", "task_id"), "\U0001f642" * 256)
     fields.update(outcome="error", duration_ms=1.25, span_start_ns=1, span_end_ns=2)
     original = ValueError("fixture failure")
     with plog.capture() as records:
@@ -714,7 +717,9 @@ def test_mandatory_overflow_reports_loss_without_masking_work() -> None:
     assert raised.value is original
     assert len(records) == 1
     record = records[0]
-    assert record["required_measurement_fields_omitted"] > 0
+    required_omitted = record["required_measurement_fields_omitted"]
+    assert isinstance(required_omitted, int)
+    assert required_omitted > 0
     assert record["omitted_fields"] == len(fields.keys() - record.keys())
     assert record.keys() >= plog._ENVELOPE_FIELDS
     assert record["duration_ms"] == 1.25
@@ -1046,9 +1051,9 @@ def test_idle_flush_cannot_acknowledge_later_records() -> None:
 
 
 def test_emitter_owns_monotonic_pid_and_native_tid(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(plog.time, "monotonic_ns", lambda: 123456)
-    monkeypatch.setattr(plog.threading, "get_native_id", lambda: 81)
-    monkeypatch.setattr(plog.os, "getpid", lambda: 42)
+    monkeypatch.setattr(time, "monotonic_ns", lambda: 123456)
+    monkeypatch.setattr(threading, "get_native_id", lambda: 81)
+    monkeypatch.setattr(os, "getpid", lambda: 42)
     with plog.capture() as records:
         plog.emit("owned.stamp", monotonic_ns=1, native_thread_id=2, pid=3)
     assert records[-1]["monotonic_ns"] == 123456
@@ -1059,8 +1064,8 @@ def test_emitter_owns_monotonic_pid_and_native_tid(monkeypatch: pytest.MonkeyPat
 def test_terminal_stamps_survive_filtered_start_and_caller_collisions(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = iter([100, 110, 200, 210])
     cpu = iter([5, 55])
-    monkeypatch.setattr(plog.time, "monotonic_ns", lambda: next(clock))
-    monkeypatch.setattr(plog.time, "thread_time_ns", lambda: next(cpu))
+    monkeypatch.setattr(time, "monotonic_ns", lambda: next(clock))
+    monkeypatch.setattr(time, "thread_time_ns", lambda: next(cpu))
     plog.set_level("info")
     with plog.capture() as records:
         with plog.span("timed") as active:
