@@ -1227,6 +1227,66 @@ def _attachment_shared_prefix_limit(
     return limit
 
 
+def _file_edit_shared_prefix_limit(messages: Sequence[ParsedMessage], shared: int) -> int:
+    """Keep a divergent edit result and its exact invocation in the same owner.
+
+    File-edit rows are keyed by invocation block. A child cannot inherit that
+    block and publish a different edit result without replacing parent evidence.
+    """
+    if shared <= 0 or not any(
+        block.file_edit is not None and _block_type(block) is BlockType.TOOL_RESULT
+        for message in messages
+        for block in _message_blocks(message)
+    ):
+        return shared
+    from polylogue.sources.tool_outcomes import iter_tool_result_owners
+
+    limit = shared
+    with closing(iter_tool_result_owners(messages)) as associations:
+        for result_message, result_block, use_message, _use_block in associations:
+            if (
+                min(result_message, use_message) < limit <= max(result_message, use_message)
+                and _message_blocks(messages[result_message])[result_block].file_edit is not None
+            ):
+                limit = min(result_message, use_message)
+    return limit
+
+
+def _stored_file_edit_shared_prefix_limit(
+    conn: sqlite3.Connection, child_session_id: str, child_composed: Sequence[tuple[str, str]], shared: int
+) -> int:
+    """The same ownership boundary for a child stored before its parent."""
+    if (
+        shared <= 0
+        or conn.execute("SELECT 1 FROM file_edits WHERE session_id=? LIMIT 1", (child_session_id,)).fetchone() is None
+    ):
+        return shared
+    table = f"temp.{_GUARD_PREFIX}file_edit_prefix"
+    conn.execute(f"CREATE TEMP TABLE {table} (message_id TEXT PRIMARY KEY, ordinal INTEGER NOT NULL)")
+    try:
+        conn.executemany(
+            f"INSERT INTO {table} VALUES (?, ?)",
+            ((message_id, ordinal) for ordinal, (message_id, _digest) in enumerate(islice(child_composed, shared))),
+        )
+        row = conn.execute(
+            f"""WITH RECURSIVE intervals(lo,hi) AS (
+                SELECT MIN(COALESCE(invocation.ordinal,:shared),COALESCE(result.ordinal,:shared)),
+                       MAX(COALESCE(invocation.ordinal,:shared),COALESCE(result.ordinal,:shared))
+                FROM file_edits AS f JOIN blocks AS b ON b.block_id=f.tool_use_block_id
+                LEFT JOIN {table} AS invocation ON invocation.message_id=b.message_id
+                LEFT JOIN {table} AS result ON result.message_id=f.message_id
+                WHERE f.session_id=:child
+            ), boundary(ordinal) AS (
+                SELECT :shared UNION
+                SELECT i.lo FROM intervals AS i JOIN boundary AS b ON i.lo < b.ordinal AND i.hi >= b.ordinal
+            ) SELECT MIN(ordinal) FROM boundary""",
+            {"child": child_session_id, "shared": shared},
+        ).fetchone()
+        return shared if row[0] is None else min(shared, int(row[0]))
+    finally:
+        conn.execute(f"DROP TABLE {table}")
+
+
 def _stored_attachment_shared_prefix_limit(
     conn: sqlite3.Connection,
     child_composed: Sequence[tuple[str, str]],
@@ -1901,11 +1961,13 @@ def validate_prepared_session_lineage(
         raise PreparedSessionWriteRefusedError("prepared replay lineage parent disappeared")
     inherited_count = len(input_session.messages) - len(context.messages)
     source = input_session.messages
-    signatures = (
-        _disk_composed_db_signatures(conn, parent, source.path.parent)
-        if isinstance(source, SqliteMessageSink)
-        else _composed_db_signatures(conn, parent)
-    )
+    if isinstance(source, SqliteMessageSink):
+        signatures: Sequence[tuple[str, str]] = _disk_composed_db_signatures(
+            conn, parent, source.path.parent, prefix_length=inherited_count
+        )
+    else:
+        with closing(_iter_composed_rows(conn, parent)) as rows:
+            signatures = [(message_id, digest) for message_id, digest, _owner in islice(rows, inherited_count)]
     primary: BaseException | None = None
     try:
         if (
@@ -13773,8 +13835,13 @@ def _disk_composed_db_signatures(
     directory: Path,
     *,
     before_input: BeforeIndexInput | None = None,
+    prefix_length: int | None = None,
 ) -> _DiskSignatureSequence:
-    """Compose parent signatures through bounded segment queries."""
+    """Compose signatures, optionally only the declared inherited prefix.
+
+    The current composition plan and branch witnesses are still resolved in
+    full. Only signature consumption and scratch rows stop at the prefix.
+    """
     opened_snapshot = not conn.in_transaction
     if opened_snapshot:
         with connection_cursor(conn, "BEGIN DEFERRED") as _input_cursor:
@@ -13782,8 +13849,9 @@ def _disk_composed_db_signatures(
     result: _DiskSignatureSequence | None = None
     try:
         result = _DiskSignatureSequence(directory)
-        for message_id, digest, _owner in _iter_composed_rows(conn, session_id, before_input):
-            result.append(message_id, digest)
+        with closing(_iter_composed_rows(conn, session_id, before_input)) as rows:
+            for message_id, digest, _owner in islice(rows, prefix_length):
+                result.append(message_id, digest)
         result.finish()
         return result
     except BaseException as primary:
@@ -14264,6 +14332,7 @@ def _reextract_prefix_tail_db(
     while k < limit and parent_composed[k][1] == child_composed[k][1]:
         k += 1
     k = _stored_attachment_shared_prefix_limit(conn, child_composed, parent_composed, k)
+    k = _stored_file_edit_shared_prefix_limit(conn, child_session_id, child_composed, k)
     record_substage("signature_compare", t0)
 
     if k == 0:
@@ -15492,7 +15561,13 @@ _DEPENDENT_OVERRIDES: dict[str, dict[str, str]] = {
     "file_edits": {
         "session_id": ":child",
         "message_id": "p.new_id",
-        "tool_use_block_id": _moved_id("tool_use_block_id"),
+        "tool_use_block_id": (
+            f"(SELECT q.new_id || substr(s.tool_use_block_id, length(q.old_id) + 1) "
+            f"FROM temp.{_GUARD_PREFIX}plan AS q "
+            f"WHERE q.old_id = COALESCE((SELECT message_id FROM {_snapshot_table('blocks')} "
+            "WHERE block_id=s.tool_use_block_id), "
+            "(SELECT message_id FROM main.blocks WHERE block_id=s.tool_use_block_id)))"
+        ),
     },
 }
 
@@ -15987,6 +16062,7 @@ def _extract_prefix_tail(
         k,
         attachments,
     )
+    k = _file_edit_shared_prefix_limit(messages.messages if isinstance(messages, _MessageTail) else messages, k)
     if k == 0:
         if owns_parent and isinstance(parent_composed, _DiskSignatureSequence):
             parent_composed.close()

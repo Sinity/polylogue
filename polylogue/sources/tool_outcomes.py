@@ -191,12 +191,17 @@ def iter_tool_result_owners(messages: Sequence[ParsedMessage]) -> Generator[tupl
 
     The ordinals address this caller-owned sequence only. They are never
     archive identities. Ambiguous associations and multiple results for one
-    use have no unique file-edit evidence owner.
+    use have no unique file-edit evidence owner. Descending earliest endpoint
+    order lets prefix consumers close coupled invocation/result boundaries.
     """
     with _outcome_index(messages) as index:
         _index_results(index, messages, origin=None)
         with closing(
-            index.conn.execute("SELECT result_key,use_key FROM resolved_uses WHERE association_state='paired'")
+            index.conn.execute(
+                "SELECT result_key,use_key FROM resolved_uses WHERE association_state='paired' "
+                "ORDER BY MIN(CAST(substr(result_key,1,instr(result_key,':')-1) AS INTEGER), "
+                "CAST(substr(use_key,1,instr(use_key,':')-1) AS INTEGER)) DESC"
+            )
         ) as rows:
             for result_key, use_key in rows:
                 result_message, result_block = map(int, str(result_key).split(":"))

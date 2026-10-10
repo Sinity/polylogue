@@ -11,6 +11,7 @@ import pytest
 
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.enums import Provider
+from polylogue.pipeline import ids
 from polylogue.sources.parsers.base_models import ParsedSession
 from polylogue.sources.prepared_jsonl import PreparedJsonl
 from polylogue.sources.revision_backfill import (
@@ -75,6 +76,78 @@ def _carrier(
         request_sessions=lambda: iter(bindings),
         prepared_sessions=writes,
     )
+
+
+def test_selected_marker_binding_hashes_only_selected_sessions_and_preserves_carrier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = (_session("before"), _session("selected"), _session("after"))
+    selected_id = "codex-session:selected"
+    borrowed = cast(PreparedSessionWrite, _BorrowedWrite())
+    reference = _carrier(raw_id="raw", sessions=sessions, writes=((selected_id, borrowed, ()),))
+    try:
+        expected_bytes = b"".join(reference.verified_chunks())
+        expected_batch = reference.batch
+    finally:
+        reference.close()
+    original_hash = ids.session_content_hash
+    hashed_sessions: list[str | None] = []
+
+    def content_hash(session: ParsedSession) -> str:
+        hashed_sessions.append(session.provider_session_id)
+        return original_hash(session)
+
+    monkeypatch.setattr(ids, "session_content_hash", content_hash)
+    tracker = {"live": 0, "maximum": 0, "closed": 0}
+
+    def make_write(_raw_id: str, _session: ParsedSession) -> PreparedSessionWrite:
+        return cast(PreparedSessionWrite, _PreparedWrite(tracker))
+
+    with closing(
+        _prepared_accepted_marker_sessions(
+            raw_id="raw",
+            artifact=cast(PreparedJsonl, _PreparedArtifact(sessions)),
+            selected_session_ids={selected_id},
+            prepared_writes={},
+            marker_write_factory=make_write,
+        )
+    ) as writes:
+        carrier = _carrier(raw_id="raw", sessions=sessions, writes=writes)
+    try:
+        assert carrier.batch == expected_batch
+        assert b"".join(carrier.verified_chunks()) == expected_bytes
+        # The complete request still hashes every cohort member. Only the
+        # selected-write pass omits hashes for sessions it cannot emit.
+        assert hashed_sessions == ["before", "selected", "after", "selected"], hashed_sessions
+        assert tracker == {"live": 0, "maximum": 1, "closed": 1}
+    finally:
+        carrier.close()
+
+
+def test_selected_marker_binding_refuses_missing_selected_session() -> None:
+    tracker = {"live": 0, "maximum": 0, "closed": 0}
+
+    def make_write(_raw_id: str, _session: ParsedSession) -> PreparedSessionWrite:
+        return cast(PreparedSessionWrite, _PreparedWrite(tracker))
+
+    with closing(
+        _prepared_accepted_marker_sessions(
+            raw_id="raw",
+            artifact=cast(PreparedJsonl, _PreparedArtifact((_session("other"),))),
+            selected_session_ids={"codex-session:missing"},
+            prepared_writes={},
+            marker_write_factory=make_write,
+        )
+    ) as writes:
+        with pytest.raises(RuntimeError, match="lost selected parsed session"):
+            _carrier(raw_id="raw", sessions=(_session("other"),), writes=writes)
+    assert tracker == {"live": 0, "maximum": 0, "closed": 0}
+
+
+def test_unselected_marker_request_member_still_requires_current_content_hash() -> None:
+    sessions = (_session("selected"), _session("other").model_copy(update={"content_hash": "stale"}))
+    with pytest.raises(RuntimeError, match="session hash changed during preparation"):
+        _carrier(raw_id="raw", sessions=sessions, writes=())
 
 
 def test_multiple_marker_only_sessions_hold_one_temporary_write_at_a_time() -> None:

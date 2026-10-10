@@ -33,7 +33,10 @@ declared semantic hash inputs; NULL and zero remain distinct in complete and
 revision projections. Array event position continues to state order.
 
 File-edit evidence binds to the exact tool-use block occurrence admitted by
-the shared invocation association. Reusing a tool ID cannot transfer an earlier
+the shared invocation association. Prefix inheritance ends before an invocation
+whose divergent edit result remains child-owned, so publication cannot replace
+the parent's edit. Materialized prefix copies remap the invocation through its
+own message rather than the result message. Reusing a tool ID cannot transfer an earlier
 result's edit to a later call. An edit with no unique call owner refuses, and
 prepared indexing closes its scratch readers before transferring result pages.
 These Index schema and lowering changes move the derived identity and require
@@ -61,6 +64,11 @@ selected path without inspecting every source row
 `polylogue/storage/sqlite/archive_tiers/ops.py:218-225`).
 
 Raw inspection projects the selected component’s Raw IDs, logical keys and membership pairs on its pinned Source/Index snapshot, then applies the same exact receipt validator as executable replay plans. It does not reconstruct or hash the execution-only census and precondition witnesses. A page shares one exact execution-component assessment among its requested siblings only within that pinned read, after every sibling’s own census, policy, refusal and output checks. The page retains only requested Raw IDs and verdicts; a later snapshot assesses the receipts again.
+
+Membership selection expands only newly discovered Raw IDs, source paths and
+logical keys in each round of its pinned Source view. Its visited sets live
+inside that invocation; another expansion after staged census mutations starts
+fresh and retains the same sorted component and logical-key output.
 
 Accepted marker carriers collect their identity metadata, candidate counts and validated retirement counts during the existing streaming shape check, then verify the unchanged request digest. Delivery skips candidate or retirement traversals only when those verified counts are zero. Nonempty candidates still pass the detailed decoder before publication and stream through lowering; the assertions and source-stream cursor commit together (`storage/accepted_marker_inputs.py`; `storage/derived/session/marker_domain.py`).
 
@@ -493,6 +501,7 @@ pending.
 The exported synchronous topology adapter discovers both children and outbound links for every fetched node, including ancestors found after the initial target. Its visited queue terminates cycles and includes ancestor siblings and their descendants; the shared topology composition engine retains edge classification and deterministic breadth-first output.
 
 - A prefix-sharing child stores only its divergent tail. The writer resolves the parent, compares composed signatures, records the last inherited message as the branch point, and lowers only the remaining messages (`_prepared_message_context` in `polylogue/storage/sqlite/archive_tiers/write.py:1694-1753`).
+- Prepared publication rechecks the current parent binding and composition witnesses, then consumes and spools only the declared inherited prefix signatures. A shorter or changed prefix refuses, while changes beyond that prefix do not invalidate it. Inherited attachment ownership is rechecked against those same prefix rows. Composition planning still counts and resolves the full lineage (`validate_prepared_session_lineage` in `polylogue/storage/sqlite/archive_tiers/write.py`).
 - `session_links` stores destination identity, resolved parent, branch point and its content address, inheritance mode, status, parent tool-use block, method, confidence, and evidence (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:1263-1304`).
 - Reads plan the composition before materializing it: one iterative walk, bounded only by its visited set, resolves the ancestral prefix into per-session segment lengths, with explicit cycle and dangling-branch-point status instead of silently claiming completeness. No depth cap drops a valid ancestor (`_composed_transcript_plan` in `polylogue/storage/sqlite/archive_tiers/write.py:3399`).
 - A write never strands an inheriting child. Before a parent full replace, the writer records each direct prefix-sharing child's inherited rows. Afterwards, a child whose branch point no longer resolves gets that pre-write prefix materialized into its own rows and stops inheriting (`spawned-fresh`, still linked to its parent); descendants anchored in those rows follow them. A child whose branch point still resolves keeps inheriting the parent's current prefix (`_capture_inherited_prefixes` and `_settle_inherited_prefixes` in `polylogue/storage/sqlite/archive_tiers/write.py:11905` and `12038`). A full read materializes every segment; a bounded page fetches only the window the caller asked for, so a deep child's first paint costs the chain depth rather than the composed transcript (`read_archive_session_page` in `polylogue/storage/sqlite/archive_tiers/write.py:3881`).

@@ -4637,21 +4637,22 @@ def _expand_raw_membership_selection(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Keep one fixed point over the ordinary or actual selected Source view."""
     selected = set(raw_ids)
-    changed = True
-    while changed and selected:
+    frontier = selected.copy()
+    paths_seen: set[str] = set()
+    keys_seen: set[str] = set()
+    # These sets belong to this invocation's coherent Source view. A later
+    # expansion after staged census changes must start with fresh frontiers.
+    while frontier:
         check_compute_cancelled()
-        paths = _selection_values(reader, "paths", selected)
-        if paths:
-            selected.update(_selection_values(reader, "path_raws", paths))
-        keys = _selection_values(reader, "keys", selected)
-        before = len(selected)
-        if keys:
-            selected.update(_selection_values(reader, "key_raws", keys))
-        changed = len(selected) != before
-    if not selected:
-        return (), ()
-    logical_keys = tuple(sorted(_selection_values(reader, "keys", selected)))
-    return tuple(sorted(selected)), logical_keys
+        paths = _selection_values(reader, "paths", frontier) - paths_seen
+        keys = _selection_values(reader, "keys", frontier) - keys_seen
+        paths_seen.update(paths)
+        keys_seen.update(keys)
+        discovered = _selection_values(reader, "path_raws", paths)
+        discovered.update(_selection_values(reader, "key_raws", keys))
+        frontier = discovered - selected
+        selected.update(frontier)
+    return tuple(sorted(selected)), tuple(sorted(keys_seen))
 
 
 def _load_membership_selector_inputs(

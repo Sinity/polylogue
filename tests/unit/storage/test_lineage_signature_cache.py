@@ -9,6 +9,8 @@ already trusts for branch extraction.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Generator
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -129,6 +131,7 @@ def test_composed_cache_reuses_canonical_parent_identity_for_siblings(
     validation_calls = 0
     preparing = False
     original = write_module._own_db_signatures
+    original_rows = write_module._iter_composed_rows
     original_context = write_module._prepared_message_context
 
     def prepare_context(*args: Any, **kwargs: Any) -> write_module.PreparedMessageContext:
@@ -145,15 +148,24 @@ def test_composed_cache_reuses_canonical_parent_identity_for_siblings(
         session_id_arg: str,
         before_input: write_module.BeforeIndexInput | None = None,
     ) -> list[tuple[str, str]]:
-        nonlocal preparation_calls, validation_calls
-        if session_id_arg == parent_id:
-            if preparing:
-                preparation_calls += 1
-            else:
-                validation_calls += 1
+        nonlocal preparation_calls
+        if preparing and session_id_arg == parent_id:
+            preparation_calls += 1
         return original(conn_arg, session_id_arg, before_input)
 
+    def counted_validation(
+        conn_arg: sqlite3.Connection,
+        session_id_arg: str,
+        before_input: write_module.BeforeIndexInput | None = None,
+    ) -> Generator[tuple[str, str, str], None, None]:
+        nonlocal validation_calls
+        if not preparing and session_id_arg == parent_id:
+            validation_calls += 1
+        with closing(original_rows(conn_arg, session_id_arg, before_input)) as rows:
+            yield from rows
+
     monkeypatch.setattr(write_module, "_own_db_signatures", counted)
+    monkeypatch.setattr(write_module, "_iter_composed_rows", counted_validation)
     monkeypatch.setattr(write_module, "_prepared_message_context", prepare_context)
     child_a = _session(
         "child-a",

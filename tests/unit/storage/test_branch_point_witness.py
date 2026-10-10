@@ -21,9 +21,12 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, Provider, WebConstructType
+from polylogue.core.enums import BlockType, Origin, Provider, WebConstructType
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import (
     ParsedContentBlock,
@@ -32,6 +35,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedWebConstruct,
 )
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -105,40 +109,34 @@ def _witness_session(
         )
     else:
         raise AssertionError(extra_kind)
+    first_message = _message("m0", "m0", 0)
+    if extra_kind == "file_edit":
+        first_message.blocks.append(
+            ParsedContentBlock(type=BlockType.TOOL_USE, tool_id="edit-1", tool_name="Edit", tool_input={})
+        )
+    messages = [
+        first_message,
+        ParsedMessage(
+            provider_message_id="m1",
+            role=Role.ASSISTANT,
+            parent_message_provider_id="m0" if extra_kind == "file_edit" else None,
+            text="m1",
+            position=1,
+            variant_index=0,
+            is_active_path=True,
+            is_active_leaf=False,
+            blocks=[block],
+        ),
+    ]
+    if parent is not None:
+        messages.append(_message("x", "x", 2))
     return ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id=session_id,
         title=session_id,
         parent_session_provider_id=parent,
         branch_type=BranchType.FORK if parent is not None else None,
-        messages=[
-            _message("m0", "m0", 0),
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.ASSISTANT,
-                text="m1",
-                position=1,
-                variant_index=0,
-                is_active_path=True,
-                is_active_leaf=False,
-                blocks=[block],
-            ),
-            _message("x", "x", 2),
-        ]
-        if parent is not None
-        else [
-            _message("m0", "m0", 0),
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.ASSISTANT,
-                text="m1",
-                position=1,
-                variant_index=0,
-                is_active_path=True,
-                is_active_leaf=False,
-                blocks=[block],
-            ),
-        ],
+        messages=messages,
     )
 
 
@@ -197,6 +195,18 @@ class TestBranchPointWitness:
                     assert extras["metadata"] == {"revision": "before"}
                 elif extra_kind == "file_edit":
                     assert extras["file_edit"]["old_string"] == "before"
+                    assert conn.execute(
+                        "SELECT f.old_string,b.session_id FROM file_edits f "
+                        "JOIN blocks b ON b.block_id=f.tool_use_block_id WHERE f.session_id=?",
+                        (child_id,),
+                    ).fetchone()[:] == ("before", child_id)
+                    assert (
+                        conn.execute(
+                            "SELECT old_string FROM file_edits WHERE session_id='codex-session:parent'"
+                        ).fetchone()[0]
+                        == "after"
+                    )
+                    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
                 else:
                     assert extras["web_constructs"][0]["url"] == "before"
             finally:
@@ -291,7 +301,7 @@ def test_initial_child_semantic_difference_is_never_discarded_as_a_parent_prefix
             edge = connection.execute(
                 "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?", (child_id,)
             ).fetchone()
-            assert edge[0] == "codex-session:parent:n:m0"
+            assert edge[0] == (None if kind == "file_edit" else "codex-session:parent:n:m0")
             row = connection.execute(
                 "SELECT content_address FROM messages WHERE session_id = ? AND native_id = 'm1'", (child_id,)
             ).fetchone()
@@ -303,5 +313,95 @@ def test_initial_child_semantic_difference_is_never_discarded_as_a_parent_prefix
             assert bytes(row[0]) == message_semantic_content_address(stored_child[1])
             assert bytes(row[0]) != message_semantic_content_address(stored_parent[1])
             assert _composed(connection, child_id) == (["m0", "m1", "x"], True, None)
+            if kind == "file_edit":
+                assert [
+                    tuple(row)
+                    for row in connection.execute(
+                        "SELECT f.session_id, f.old_string, b.session_id FROM file_edits AS f "
+                        "JOIN blocks AS b ON b.block_id=f.tool_use_block_id ORDER BY f.session_id"
+                    )
+                ] == [(child_id, "child", child_id), ("codex-session:parent", "parent", "codex-session:parent")]
+                assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         finally:
             connection.close()
+
+
+@pytest.mark.parametrize("disk", (False, True))
+@pytest.mark.parametrize("child_first", (False, True))
+@pytest.mark.parametrize("reply_first", (False, True))
+def test_file_edit_dependency_boundary_preserves_parent_and_child_edits(
+    tmp_path: Path, disk: bool, child_first: bool, reply_first: bool
+) -> None:
+    def session(native_id: str, *, parent: str | None = None) -> ParsedSession:
+        uses = [
+            ParsedMessage(
+                provider_message_id=f"use-{name}",
+                role=Role.ASSISTANT,
+                blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_id=name, tool_name="Edit", tool_input={})],
+            )
+            for name in ("a", "b")
+        ]
+        replies = [
+            ParsedMessage(
+                provider_message_id=f"result-{name}",
+                parent_message_provider_id=f"use-{name}",
+                role=Role.TOOL,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id=name,
+                        is_error=False,
+                        file_edit=ParsedFileEdit(
+                            file_path=f"/fixture/{name}.py",
+                            old_string=native_id if name == "b" else "same-a",
+                            new_string="after",
+                        ),
+                    )
+                ],
+            )
+            for name in ("a", "b")
+        ]
+        messages = [*replies, *uses] if reply_first else [*uses, *replies]
+        if parent is not None:
+            messages.append(_message("tail", "child tail", len(messages)))
+        result = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=native_id,
+            parent_session_provider_id=parent,
+            branch_type=BranchType.FORK if parent is not None else None,
+            messages=messages,
+        )
+        if not disk:
+            return result
+        store = SqliteMessageStore(tmp_path / f"{native_id}-messages.db")
+        sink = store.new_sink()
+        sink.extend(result.messages)
+        sink.normalized_messages(result.session_events, origin=Origin.CODEX_SESSION)
+        store.conn.commit()
+        store.close()
+        sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
+        return result.model_copy(update={"messages": sealed, "content_hash": str(session_content_hash(result))})
+
+    conn = _connect(tmp_path / "index.db")
+    try:
+        parent, child = session("parent"), session("child", parent="parent")
+        for current in (child, parent) if child_first else (parent, child):
+            write_fixture_index_session(conn, current)
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT f.session_id, b.session_id, b.tool_id, f.old_string FROM file_edits f "
+                "JOIN blocks b ON b.block_id=f.tool_use_block_id ORDER BY f.session_id,b.tool_id"
+            )
+        ] == [
+            ("codex-session:child", "codex-session:child", "a", "same-a"),
+            ("codex-session:child", "codex-session:child", "b", "child"),
+            ("codex-session:parent", "codex-session:parent", "a", "same-a"),
+            ("codex-session:parent", "codex-session:parent", "b", "parent"),
+        ]
+        assert conn.execute(
+            "SELECT inheritance,branch_point_message_id FROM session_links WHERE src_session_id='codex-session:child'"
+        ).fetchone()[:] == ("spawned-fresh", None)
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        conn.close()
