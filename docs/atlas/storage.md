@@ -716,7 +716,11 @@ Session profile materialization publishes profile, latency and repository
 observations. Preparation and publication each reuse their own transaction’s
 already-observed source binding when computing the canonical usage binding.
 Publication still reads fresh source values and usage certification; no binding
-is shared across those transactions. Run, observed-event and context-snapshot
+is shared across those transactions. Input triggers clear a surviving profile
+binding once; later writes while it is NULL still advance every demand revision
+without rewriting the profile row. Input relation query frames continue to
+advance independently, and a prepared profile cannot acknowledge later demand.
+Run, observed-event and context-snapshot
 products are derived on read through `run_projection_relations.py`; profile preparation does not compile
 a second run projection to obtain unused counters. Unscoped FTS discovery merges
 the ordered session and block-membership indexes with one distinct session-key
