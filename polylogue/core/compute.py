@@ -309,7 +309,10 @@ class SubmittedOperation(Generic[T]):
             try:
                 result = await asyncio.shield(wrapped)
             except asyncio.CancelledError as failure:
-                if wrapped.cancelled():
+                # A worker may finish by raising CancelledError without the
+                # future itself being cancelled. That terminal result needs
+                # no further creator cleanup or shielded wait.
+                if wrapped.cancelled() or (wrapped.done() and isinstance(wrapped.exception(), asyncio.CancelledError)):
                     raise cancelled or failure from None
                 if cancelled is None:
                     cancelled = failure

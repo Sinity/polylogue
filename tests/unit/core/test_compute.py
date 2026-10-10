@@ -592,8 +592,8 @@ def test_joined_bridge_failed_native_close_retains_parent_until_creator_retry(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("worker_failure", [False, True])
-async def test_async_read_cancellation_keeps_original_worker_until_physical_result(worker_failure: bool) -> None:
+@pytest.mark.parametrize("worker_failure", ["success", "failure", "cancelled"])
+async def test_async_read_cancellation_keeps_original_worker_until_physical_result(worker_failure: str) -> None:
     import asyncio
 
     adapter = BoundedComputeAdapter(max_workers=1, queue_units=0)
@@ -605,8 +605,10 @@ async def test_async_read_cancellation_keeps_original_worker_until_physical_resu
         entered.set()
         try:
             assert release.wait(5)
-            if worker_failure:
+            if worker_failure == "failure":
                 raise ValueError("original read failure")
+            if worker_failure == "cancelled":
+                raise asyncio.CancelledError("native SQLite work was cancelled")
             return 1
         finally:
             settled.set()
@@ -616,21 +618,22 @@ async def test_async_read_cancellation_keeps_original_worker_until_physical_resu
     try:
         assert entered.wait(5)
         await asyncio.sleep(0)
-        waiter.cancel()
+        waiter.cancel("original parent cancellation")
         await asyncio.sleep(0)
-        waiter.cancel()
+        waiter.cancel("repeated parent cancellation")
         await asyncio.sleep(0)
         assert not waiter.done()
         assert adapter.snapshot().active_input_bytes == 7
         release.set()
-        if worker_failure:
+        if worker_failure == "failure":
             with pytest.raises(BaseExceptionGroup) as caught:
                 await waiter
             assert any(isinstance(item, asyncio.CancelledError) for item in caught.value.exceptions)
             assert any(isinstance(item, ValueError) for item in caught.value.exceptions)
         else:
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError) as caught_cancellation:
                 await waiter
+            assert caught_cancellation.value.args == ("original parent cancellation",)
         assert settled.is_set()
         assert submitted.future.done()
         assert adapter.snapshot().used_units == 0
@@ -724,3 +727,58 @@ async def test_complete_without_suspension_runs_on_a_thread_driving_a_loop() -> 
 
     with pytest.raises(RuntimeError, match="suspended"):
         complete_without_suspension(suspends())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("completion", ["worker_cancelled_error", "cancelled_future", "success"])
+async def test_wait_consumes_each_terminal_physical_result_once(
+    monkeypatch: pytest.MonkeyPatch, completion: str
+) -> None:
+    import asyncio
+
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0)
+    failure = asyncio.CancelledError("native SQLite work was cancelled")
+
+    def worker() -> int:
+        if completion == "worker_cancelled_error":
+            raise failure
+        return 7
+
+    if completion == "cancelled_future":
+        future: Future[int] = Future()
+        assert future.cancel()
+        operation = SubmittedOperation(future, CancellationHandle())
+    else:
+        operation = adapter.submit(worker)
+        if completion == "worker_cancelled_error":
+            with pytest.raises(asyncio.CancelledError) as caught:
+                operation.future.result(timeout=5)
+            assert caught.value is failure
+            assert operation.future.done() and not operation.future.cancelled()
+        else:
+            assert operation.future.result(timeout=5) == 7
+    original_shield = asyncio.shield
+    shield_calls = 0
+
+    def observe_terminal_wait(awaitable: asyncio.Future[int]) -> asyncio.Future[int]:
+        nonlocal shield_calls
+        shield_calls += 1
+        # Fail synchronously on re-entry instead of letting the defective
+        # waiter spin forever; the real shield still owns the first await.
+        assert shield_calls == 1, "terminal physical result was shielded again"
+        return original_shield(awaitable)
+
+    monkeypatch.setattr(asyncio, "shield", observe_terminal_wait)
+    try:
+        if completion == "success":
+            assert await operation.wait() == 7
+        else:
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await operation.wait()
+            if completion == "worker_cancelled_error":
+                assert caught.value is failure
+        assert not operation.cancellation.cancelled
+        assert shield_calls == 1
+        assert adapter.snapshot().used_units == 0
+    finally:
+        adapter.shutdown(wait=True)
