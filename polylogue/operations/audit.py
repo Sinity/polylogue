@@ -1775,6 +1775,7 @@ class AuditRepository:
                     "authorization": _authorization_payload(bound_authorization),
                     "authorization_token_sha256": token_sha256(authorization.token),
                     "ingest_operation_id": operation_id,
+                    "projection_protocol": 1,
                 }
             )
             return payload
@@ -1984,6 +1985,23 @@ class AuditRepository:
                 "unknown_reason": values.get("unknown_reason"),
                 "now_ms": int(time.time() * 1000),
             }
+        if kind == "record_ingest_publication_intent":
+            intent_operation_id, scope_digest, no_change = args
+            if (
+                not isinstance(intent_operation_id, str)
+                or not intent_operation_id
+                or not isinstance(scope_digest, str)
+                or len(scope_digest) != 64
+                or any(char not in "0123456789abcdef" for char in scope_digest)
+                or type(no_change) is not bool
+            ):
+                raise ValueError("ingest publication intent is malformed")
+            return {
+                "operation_id": intent_operation_id,
+                "scope_digest": scope_digest,
+                "no_change": no_change,
+                "now_ms": int(time.time() * 1000),
+            }
         if kind == "append_ingest_session_id_page":
             operation_id = cast(str, args[0])
             ordinal = cast(int, args[1])
@@ -2157,6 +2175,10 @@ class AuditRepository:
                     receipt=None if payload["receipt"] is None else _receipt_from_payload(payload["receipt"]),
                     error_summary=cast(str | None, payload.get("error_summary")),
                     unknown_reason=cast(str | None, payload.get("unknown_reason")),
+                )
+            if mutation.kind == "record_ingest_publication_intent":
+                return cast(Any, self.record_ingest_publication_intent).__wrapped__(
+                    self, payload["operation_id"], payload["scope_digest"], payload["no_change"]
                 )
             if mutation.kind == "append_ingest_session_id_page":
                 return cast(Any, self.append_ingest_session_id_page).__wrapped__(
@@ -2394,6 +2416,15 @@ class AuditRepository:
             digest, preview, principal, authorization, issued_at_ms=cast(int, payload["issued_at_ms"])
         )
         self._consume_authorization(digest, preview, authorization)
+        if payload.get("projection_protocol") == 1:
+            with self._connection() as conn:
+                self._append_event(
+                    conn,
+                    operation_id=cast(str, payload["operation_id"]),
+                    event_type="ingest_projection_protocol",
+                    occurred_at_ms=cast(int, payload["now_ms"]),
+                    detail={"version": 1},
+                )
 
     @_continuity_mutation("accept_execution_batch")
     def accept_execution_batch(self, refs: tuple[str, ...], principal: MutationPrincipal) -> list[str]:
@@ -3947,6 +3978,52 @@ class AuditRepository:
             if type(row[0]) is not int or row[0] < 0:
                 raise ValueError("audit event sequence is malformed")
             return row[0]
+
+    @_continuity_mutation("record_ingest_publication_intent")
+    def record_ingest_publication_intent(self, operation_id: str, scope_digest: str, no_change: bool) -> None:
+        """Record the sealed producer's intent before its possible Index effects."""
+        with self._connection() as conn:
+            run = conn.execute(
+                "SELECT operation_name,status FROM operation_runs WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            if run is None or run[0] != INGEST_OPERATION or run[1] != "running":
+                raise ValueError("publication intent requires this running ingest operation")
+            self._append_event(
+                conn,
+                operation_id=operation_id,
+                event_type="ingest_publication_intent",
+                occurred_at_ms=cast(int, self._command_value("now_ms", int(time.time() * 1000))),
+                detail={"scope_digest": scope_digest, "no_change": no_change},
+            )
+
+    def ingest_publication_intent_recorded(self, operation_id: str, scope_digest: str, no_change: bool) -> bool:
+        with self._connection() as conn:
+            expected_type = "true" if no_change else "false"
+            invalid, recorded = conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM operation_events WHERE operation_id=? "
+                "AND event_type='ingest_publication_intent' AND json_extract(detail_json,'$.scope_digest')=? "
+                "AND COALESCE(json_type(detail_json,'$.no_change'),'')<>?), "
+                "EXISTS(SELECT 1 FROM operation_events WHERE operation_id=? "
+                "AND event_type='ingest_publication_intent' AND json_extract(detail_json,'$.scope_digest')=? "
+                "AND json_type(detail_json,'$.no_change')=?)",
+                (operation_id, scope_digest, expected_type, operation_id, scope_digest, expected_type),
+            ).fetchone()
+            if invalid:
+                raise ValueError("publication scope has malformed or conflicting intent evidence")
+            return bool(recorded)
+
+    def ingest_prior_publications_proved_unchanged(self, operation_id: str) -> bool:
+        """Old/missing protocol and any potentially changed intent cannot prove a no-op."""
+        with self._connection() as conn:
+            return bool(
+                conn.execute(
+                    "SELECT EXISTS(SELECT 1 FROM operation_events WHERE operation_id=? AND event_type='ingest_projection_protocol' "
+                    "AND json_extract(detail_json,'$.version')=1) AND NOT EXISTS(SELECT 1 FROM operation_events "
+                    "WHERE operation_id=? AND event_type='ingest_publication_intent' AND "
+                    "(json_type(detail_json,'$.no_change') IS NOT 'true'))",
+                    (operation_id, operation_id),
+                ).fetchone()[0]
+            )
 
     @_continuity_mutation("append_ingest_session_id_page")
     def append_ingest_session_id_page(self, operation_id: str, ordinal: int, session_ids: tuple[str, ...]) -> None:

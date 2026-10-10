@@ -4446,6 +4446,7 @@ class PreparedRetainedReplaySource:
     membership_plans: Mapping[str, PreparedMembershipReplay]
     terminal_raw_ids: frozenset[str]
     original_index_outputs: Mapping[str, tuple[bytes | None, int] | None]
+    unchanged_publication_writes: frozenset[tuple[str, str]]
 
 
 def _accepted_marker_request_session_binding(session: object) -> dict[str, object]:
@@ -4725,7 +4726,8 @@ def prepare_retained_replay_source(
         output_ids = {session_id for _raw_id, session_id in prepared_writes} | produced_session_ids
         for plan in membership_plans.values():
             if plan.head_plan is not None and plan.head_plan.existing_head is not None:
-                output_ids.add(str(plan.head_plan.existing_head[0]))
+                # Membership head inputs put session_id after Raw/hash/frontier.
+                output_ids.add(str(plan.head_plan.existing_head[3]))
         for session_id in sorted(output_ids):
             seal.before_index_input(
                 "sessions",
@@ -4740,12 +4742,23 @@ def prepare_retained_replay_source(
             original_index_outputs[session_id] = (
                 None if row is None else (None if row[0] is None else bytes(row[0]), int(row[1]))
             )
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            prepared_authoritative_publication_is_unchanged,
+        )
+
+        unchanged_publication_writes = frozenset(
+            (raw_id, write.session_id)
+            for (raw_id, _session_id), write in prepared_writes.items()
+            if not _reader_suppresses(seal.observer("user"), write.session_id)
+            and prepared_authoritative_publication_is_unchanged(seal.observer("index"), write, raw_id)
+        )
     return PreparedRetainedReplaySource(
         seal.prepare_source_mutation(),
         attachment_artifacts,
         selected_membership,
         frozenset(terminal_raw_ids),
         original_index_outputs,
+        unchanged_publication_writes,
     )
 
 

@@ -402,6 +402,62 @@ def _work_events_already_stored(conn: sqlite3.Connection, session_id: str, sessi
     )
 
 
+def _session_aliases_match(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> bool:
+    aliases = {
+        str(value).strip()
+        for value in (session.provider_session_id, *session.provider_session_aliases)
+        if str(value).strip()
+    }
+    stored_aliases = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT provider_value FROM session_identity_claims "
+            "WHERE claimant_session_id=? AND identity_namespace='provider-session'",
+            (session_id,),
+        )
+    }
+    return aliases == stored_aliases
+
+
+def prepared_authoritative_publication_is_unchanged(
+    conn: sqlite3.Connection,
+    prepared_write: PreparedSessionWrite,
+    raw_id: str,
+    *,
+    existing_row: sqlite3.Row | None = None,
+    aliases_match: bool | None = None,
+) -> bool:
+    """The publisher's no-op classifier, also evaluated on sealed original reads."""
+    from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+    from polylogue.storage.sqlite.archive_tiers.write import prepared_session_storage_lineage_matches
+
+    session = prepared_write.context.effective_session
+    row = (
+        existing_row
+        if existing_row is not None
+        else conn.execute(
+            "SELECT content_hash,raw_id,updated_at_ms,parser_fingerprint,lowering_fingerprint "
+            "FROM sessions WHERE session_id=?",
+            (prepared_write.session_id,),
+        ).fetchone()
+    )
+    if row is None or row["content_hash"] != prepared_write.rows.session_content_hash:
+        return False
+    return (
+        (
+            aliases_match
+            if aliases_match is not None
+            else _session_aliases_match(conn, prepared_write.session_id, session)
+        )
+        and not is_work_event_raw_id(raw_id)
+        and tuple(row[name] for name in ("content_hash", "raw_id", "updated_at_ms")) == prepared_write.predecessor
+        and row["parser_fingerprint"] == parser_fingerprint_for_origin(origin_from_provider(session.source_name))
+        and row["lowering_fingerprint"] == lowering_fingerprint()
+        and prepared_write.cross_acquisition_union is None
+        and prepared_session_storage_lineage_matches(conn, prepared_write)
+    )
+
+
 def _write_parsed_precedence_result(
     store: RawRevisionGovernanceHost,
     session: ParsedSession,
@@ -460,23 +516,8 @@ def _write_parsed_precedence_result(
     existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
     content_unchanged = existing_row is not None and existing_hash_hex == content_hash
     if content_unchanged:
-        incoming_aliases = {
-            str(value).strip()
-            for value in (session.provider_session_id, *session.provider_session_aliases)
-            if str(value).strip()
-        }
-        stored_aliases = {
-            str(row[0])
-            for row in store._conn.execute(
-                "SELECT provider_value FROM session_identity_claims "
-                "WHERE claimant_session_id = ? AND identity_namespace = 'provider-session'",
-                (session_id,),
-            ).fetchall()
-        }
-        # Alias claims are excluded from content identity but still drive
-        # lineage resolution. Force the normal writer when their set changes
-        # so it refreshes claims and invalidates affected child links.
-        content_unchanged = incoming_aliases == stored_aliases
+        # Alias claims are separate from content identity and drive lineage.
+        content_unchanged = _session_aliases_match(store._conn, session_id, session)
     existing_is_dom_fallback = False
     incoming_is_dom_fallback = DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
     existing_has_native_browser_payload = False
@@ -592,21 +633,8 @@ def _write_parsed_precedence_result(
         # This applies to ordinary and authoritative publication alike.
         content_unchanged = not session_write_is_suppressed(store._conn, session_id)
     if revision_authoritative and content_unchanged:
-        from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
-        from polylogue.storage.sqlite.archive_tiers.write import prepared_session_storage_lineage_matches
-
-        # Executable identity, aliases and physical prefix representation are
-        # separate obligations from semantic content identity.
-        assert existing_row is not None
-        content_unchanged = (
-            not is_work_event_raw_id(raw_id)
-            and tuple(existing_row[name] for name in ("content_hash", "raw_id", "updated_at_ms"))
-            == prepared_write.predecessor
-            and existing_row["parser_fingerprint"]
-            == parser_fingerprint_for_origin(origin_from_provider(session.source_name))
-            and existing_row["lowering_fingerprint"] == lowering_fingerprint()
-            and prepared_write.cross_acquisition_union is None
-            and prepared_session_storage_lineage_matches(store._conn, prepared_write)
+        content_unchanged = prepared_authoritative_publication_is_unchanged(
+            store._conn, prepared_write, raw_id, existing_row=existing_row, aliases_match=True
         )
     if (
         revision_authoritative

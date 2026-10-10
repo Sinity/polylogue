@@ -85,9 +85,106 @@ def retained_settlement_owners(retained: Sequence[RawObservationReplacement]) ->
     )
 
 
-def _publish_after(before_publication: Callable[[], None] | None, publish: Callable[[], bool]) -> bool:
+class RetainedPublicationIntentCommittedError(RuntimeError):
+    """Intent continuity committed; the same owner must prepare a fresh seal."""
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedPublicationIntent:
+    """A conservative content-effect witness from the original sealed replay."""
+
+    scope_digest: str
+    no_change: bool
+
+
+def retained_publication_intent(replacement: RawObservationReplacement) -> RetainedPublicationIntent:
+    """Only the shared authoritative publisher classifier proves a transcript no-op.
+
+    Unrepresented, marker, lineage and event-only effects remain potentially
+    changed. The publisher still independently validates the reference seal.
+    """
+    import hashlib
+
+    from polylogue.archive.revision_authority import is_work_event_raw_id
+    from polylogue.core.digest import RECEIPT, canonical_bytes
+
+    digest = hashlib.sha256()
+    if replacement.reference_seal is not None:
+        digest.update(canonical_bytes(replacement.reference_seal.index_identity, RECEIPT))
+    for raw_id, prepared in sorted((replacement.prepared_inputs or {}).items()):
+        digest.update(canonical_bytes((raw_id, prepared.blob_hash, prepared.parser_fingerprint), RECEIPT))
+    outputs = (
+        None
+        if replacement.prepared_replay_source is None
+        else replacement.prepared_replay_source.original_index_outputs
+    )
+    writes = replacement.prepared_writes
+    no_change = (
+        bool(writes)
+        and replacement.reference_seal is not None
+        and outputs is not None
+        and not (
+            replacement.needs_source_census
+            or replacement.needs_source_classification
+            or replacement.prepared_lineage_deferrals
+            or replacement.prepared_key_refusals
+            or any(is_work_event_raw_id(raw_id) for raw_id in replacement.raw_ids)
+        )
+    )
+    represented: set[str] = set()
+    for key, write in sorted((writes or {}).items()):
+        before = None if outputs is None else outputs.get(write.session_id)
+        digest.update(
+            canonical_bytes(
+                (
+                    key,
+                    None if before is None or before[0] is None else before[0].hex(),
+                    write.rows.session_content_hash.hex(),
+                    None
+                    if write.predecessor is None
+                    else tuple(value.hex() if isinstance(value, bytes) else value for value in write.predecessor),
+                    key in replacement.prepared_replay_source.unchanged_publication_writes
+                    if replacement.prepared_replay_source is not None
+                    else False,
+                    write.context.lineage_inheritance,
+                    write.context.parent_session_id,
+                    write.context.branch_point_message_id,
+                    write.context.branch_point_content_address.hex()
+                    if isinstance(write.context.branch_point_content_address, bytes)
+                    else write.context.branch_point_content_address,
+                ),
+                RECEIPT,
+            )
+        )
+        represented.add(write.session_id)
+        no_change = no_change and (
+            replacement.prepared_replay_source is not None
+            and key in replacement.prepared_replay_source.unchanged_publication_writes
+            and not write.merge_append
+            and write.cross_acquisition_union is None
+            and not write.context.effective_session.session_events
+            and write.context.effective_session.parent_session_provider_id is None
+        )
+    no_change = no_change and outputs is not None and represented == set(outputs)
+    return RetainedPublicationIntent(digest.hexdigest(), no_change)
+
+
+def _publish_after(
+    before_publication: Callable[[], None] | None,
+    publication_intent: Callable[[RetainedPublicationIntent], None] | None,
+    replacement: RawObservationReplacement,
+    publish: Callable[[], bool],
+) -> bool:
     if before_publication is not None:
         before_publication()
+    if publication_intent is not None and not (
+        replacement.already_valid
+        or replacement.needs_source_census
+        or replacement.needs_source_classification
+        or replacement.blob_restorations is not None
+        or replacement.prepared_phase_failure is not None
+    ):
+        publication_intent(retained_publication_intent(replacement))
     return publish()
 
 
@@ -400,6 +497,7 @@ class RawObservationArchiveWork:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None,
         before_publication: Callable[[], None] | None,
+        publication_intent: Callable[[RetainedPublicationIntent], None] | None = None,
         neutral_page: NeutralRawPreparation | None = None,
     ) -> Callable[[], RetainedMaterializationResult]:
         """Settle real selected replay receipts, including preparatory Source phases.
@@ -641,6 +739,8 @@ class RawObservationArchiveWork:
                                 partial(
                                     _publish_after,
                                     before_publication,
+                                    publication_intent,
+                                    replacement,
                                     partial(
                                         adapter.publish,
                                         frame,
@@ -650,6 +750,12 @@ class RawObservationArchiveWork:
                                     ),
                                 ),
                             )
+                        except RetainedPublicationIntentCommittedError:
+                            # The intent's Audit/Source commit invalidates the
+                            # original observer. Retire it and prepare anew;
+                            # the next exact scope reads the existing intent.
+                            retire_original(replacement)
+                            continue
                         except BaseException as primary:
                             # Admission and caller validation can fail before
                             # the publisher receives its original carrier.
