@@ -886,6 +886,7 @@ def _stage_false_error(stage_name: str, *, scope: str) -> str:
 
 class StageState(Enum):
     PENDING = "pending"  # work needed
+    STALE = "stale"  # preparation refused changed authority; prepare again
     IN_PROGRESS = "in_progress"  # work running
     DONE = "done"  # converged
     SKIPPED = "skipped"  # not applicable to this subject at all
@@ -899,6 +900,7 @@ class StageExecutionResult:
 
     success: bool
     stage_timings_s: dict[str, float] = field(default_factory=dict)
+    stale_preparation: bool = False
 
     def __bool__(self) -> bool:
         return self.success
@@ -976,7 +978,7 @@ class FileState:
 
     @property
     def pending_stages(self) -> list[str]:
-        return [name for name, s in self.stages.items() if s == StageState.PENDING]
+        return [name for name, s in self.stages.items() if s in (StageState.PENDING, StageState.STALE)]
 
 
 @dataclass(slots=True)
@@ -1002,7 +1004,11 @@ def _record_execute_result(
     stage: ConvergenceStage,
     success: bool,
     scope: str,
+    execute_result: StageExecuteReturn,
 ) -> None:
+    if isinstance(execute_result, StageExecutionResult) and execute_result.stale_preparation:
+        state.stages[stage_name] = StageState.STALE
+        return
     if success:
         state.stages[stage_name] = StageState.DONE
         return
@@ -1351,6 +1357,7 @@ class DaemonConverger:
                                 stage=stage,
                                 success=success,
                                 scope="stage",
+                                execute_result=execute_result,
                             )
                             emit(
                                 "daemon.stage.executed",
@@ -1494,6 +1501,7 @@ class DaemonConverger:
                         stage=stage,
                         success=success,
                         scope="stage",
+                        execute_result=execute_result,
                     )
             else:
                 t_check = time.perf_counter()
@@ -1558,7 +1566,14 @@ class DaemonConverger:
                             elapsed = time.perf_counter() - t_stage
                             success, extra_stage_timings_s = _coerce_execute_result(execute_result)
                             remaining_needs_work: set[Path] | None = None
-                            if not success and stage.false_means_pending:
+                            if (
+                                not success
+                                and stage.false_means_pending
+                                and not (
+                                    isinstance(execute_result, StageExecutionResult)
+                                    and execute_result.stale_preparation
+                                )
+                            ):
                                 t_recheck = time.perf_counter()
                                 try:
                                     remaining_needs_work = set(stage.check_many(ordered_needs_work)).intersection(
@@ -1605,6 +1620,7 @@ class DaemonConverger:
                                     stage=stage,
                                     success=path_success,
                                     scope="batch",
+                                    execute_result=execute_result,
                                 )
 
             blocked_paths.update(self._path_barriers_blocked(stage_name, stage, active_paths))
@@ -1697,7 +1713,14 @@ class DaemonConverger:
                             elapsed = time.perf_counter() - t_stage
                             success, extra_stage_timings_s = _coerce_execute_result(execute_result)
                             remaining_needs_work: set[str] | None = None
-                            if not success and stage.false_means_pending:
+                            if (
+                                not success
+                                and stage.false_means_pending
+                                and not (
+                                    isinstance(execute_result, StageExecutionResult)
+                                    and execute_result.stale_preparation
+                                )
+                            ):
                                 try:
                                     remaining_needs_work = set(
                                         stage.check_sessions(tuple(batch_needs_work))
@@ -1736,6 +1759,7 @@ class DaemonConverger:
                                     stage=stage,
                                     success=session_success,
                                     scope="session",
+                                    execute_result=execute_result,
                                 )
 
             blocked_ids.update(self._session_barriers_blocked(stage_name, stage, active_ids))

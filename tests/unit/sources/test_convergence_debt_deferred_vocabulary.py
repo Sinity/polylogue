@@ -1,7 +1,8 @@
 """Unit coverage for deferred-vs-failed convergence debt.
 
 ``StageState.PENDING`` is the stage-independent signal for a retryable
-deferral. Check and execute exceptions produce ``StageState.FAILED``.
+deferral. Typed stale preparation is also deferred; ordinary check and
+execute exceptions produce ``StageState.FAILED``.
 """
 
 from __future__ import annotations
@@ -84,9 +85,12 @@ def test_convergence_debt_lookups_follow_the_active_index_generation(tmp_path: P
     assert session_debts == [(str(source_path),)]
 
 
-def test_is_deferred_stage_state_true_only_for_pending() -> None:
+def test_is_deferred_stage_state_true_only_for_pending_and_stale() -> None:
     assert is_deferred_stage_state(StageState.PENDING) is True
     assert is_deferred_stage_state("pending") is True
+    assert is_deferred_stage_state(StageState.STALE) is True
+    assert is_deferred_stage_state("stale") is True
+    assert is_deferred_stage_state(StageState.NOT_RUN) is True
     assert is_deferred_stage_state(StageState.FAILED) is False
     assert is_deferred_stage_state(StageState.IN_PROGRESS) is False
     assert is_deferred_stage_state(StageState.DONE) is False
@@ -486,3 +490,32 @@ def test_completed_session_stage_settles_only_its_evaluated_subject(tmp_path: Pa
         ("sibling", "failed"),
         ("sibling", "uninspected"),
     }
+
+
+def test_prompt_debt_reobservation_preserves_timezone_deadline(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta, timezone
+
+    cursor = CursorStore(tmp_path / "index.db")
+    subject_id = str(tmp_path / "neutral.jsonl")
+    error = "stage state: stale"
+    cursor.record_convergence_debt(
+        stage="raw_frontier_inspection",
+        subject_type="source_path",
+        subject_id=subject_id,
+        error=error,
+        deferred=True,
+        retry_promptly=True,
+    )
+    # An equivalent offset timestamp must compare as an instant, not a string.
+    deadline = (datetime.now(UTC) + timedelta(seconds=30)).astimezone(timezone(timedelta(hours=2))).isoformat()
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = ?", (deadline,))
+    cursor.record_convergence_debt(
+        stage="raw_frontier_inspection",
+        subject_type="source_path",
+        subject_id=subject_id,
+        error=error,
+        deferred=True,
+        retry_promptly=True,
+    )
+    assert cursor.list_convergence_debt()[0].next_retry_at == deadline

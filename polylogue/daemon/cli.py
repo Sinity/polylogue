@@ -135,6 +135,7 @@ if TYPE_CHECKING:
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
+
 #: Wall budget for back-to-back bounded session-derivation passes in one
 #: periodic convergence tick; the tick interval leaves the rest for the others.
 _SESSION_PROFILE_BACKLOG_SECONDS = 45.0
@@ -1201,7 +1202,7 @@ def _drain_convergence_debt_and_archive(db: Path, *, compute_adapter: BoundedCom
     and publish through their declared writer bridge.
     """
     from polylogue.core.compute import DaemonOperationCancelled
-    from polylogue.daemon.convergence import execute_convergence_stage
+    from polylogue.daemon.convergence import StageExecutionResult, execute_convergence_stage
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
     from polylogue.sources.live.cursor import CursorStore
 
@@ -1220,7 +1221,8 @@ def _drain_convergence_debt_and_archive(db: Path, *, compute_adapter: BoundedCom
         try:
             if not stage.check(db):
                 continue
-            healthy = bool(execute_convergence_stage(stage, partial(stage.execute, db)))
+            execute_result = execute_convergence_stage(stage, partial(stage.execute, db))
+            healthy = bool(execute_result)
         except DaemonOperationCancelled:
             raise
         except Exception as exc:
@@ -1245,8 +1247,12 @@ def _drain_convergence_debt_and_archive(db: Path, *, compute_adapter: BoundedCom
                     stage=stage.name,
                     subject_type="source_path",
                     subject_id=str(db),
-                    error="stage state: pending",
+                    error="stage state: stale"
+                    if isinstance(execute_result, StageExecutionResult) and execute_result.stale_preparation
+                    else "stage state: pending",
                     deferred=stage.false_means_pending,
+                    retry_promptly=isinstance(execute_result, StageExecutionResult)
+                    and execute_result.stale_preparation,
                 ),
             )
         retried += int(healthy)
@@ -1763,6 +1769,8 @@ def _record_convergence_debt_retries(
 
         last_error = getattr(state, "last_error", None)
         retry_error = last_error if isinstance(last_error, str) and last_error else "retry did not converge"
+        if stage_state_value(stages_map.get(debt.stage)) == "stale":
+            retry_error = "stage state: stale"
         if debt.stage != "convergence":
             cursor.record_convergence_debt(
                 stage=debt.stage,
@@ -1771,6 +1779,7 @@ def _record_convergence_debt_retries(
                 error=retry_error,
                 materializer_version=debt.materializer_version,
                 deferred=is_deferred_stage_state(stages_map.get(debt.stage)),
+                retry_promptly=stage_state_value(stages_map.get(debt.stage)) == "stale",
             )
             continue
 
@@ -1788,9 +1797,10 @@ def _record_convergence_debt_retries(
                 stage=stage,
                 subject_type=debt.subject_type,
                 subject_id=debt.subject_id,
-                error=retry_error,
+                error="stage state: stale" if stage_state_value(stages_map.get(stage)) == "stale" else retry_error,
                 materializer_version=debt.materializer_version,
                 deferred=is_deferred_stage_state(stages_map.get(stage)),
+                retry_promptly=stage_state_value(stages_map.get(stage)) == "stale",
             )
     return retried
 

@@ -552,7 +552,15 @@ Existing debt retains its due retry and backoff ownership, including a row
 cleared by the current pass; discovery never repeats that attempt. A pending
 or failed discovery records ordinary stage debt. Cancellation creates no failure
 debt, and an unpersisted retry handoff remains a visible error. Healthy stage
-checks avoid repeated publication.
+checks avoid repeated publication. Frontier preparation refused by a typed
+`ReferenceSealStaleError` publishes nothing and records a stage-scoped stale
+result. Its durable deferred debt becomes eligible after the non-escalating
+initial debt retry delay (60 seconds); the independently owned periodic daemon
+wake cadence checks due work. Blocked pending work and genuine failures retain
+their existing exponential backoff. The persisted retry timestamp survives
+restart.
+Historical failed debt keeps its recorded schedule until an actual retry can
+classify the current result. Cancellation creates no stale or failure debt.
 
 Resolved runtime Config projections and source clones retain the explicit API
 authentication token and allow-no-auth policy without reading ambient settings.

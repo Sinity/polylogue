@@ -15,10 +15,12 @@ from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection,
 )
 
+_INITIAL_CONVERGENCE_DEBT_RETRY_DELAY_SECONDS = 60
+
 
 def convergence_debt_retry_delay_s(failure_count: int, *, error: str | None) -> int:
     del error
-    return int(min(60 * (2 ** (failure_count - 1)), 3600))
+    return int(min(_INITIAL_CONVERGENCE_DEBT_RETRY_DELAY_SECONDS * (2 ** (failure_count - 1)), 3600))
 
 
 def convergence_debt_retry_at(
@@ -29,11 +31,16 @@ def convergence_debt_retry_at(
     subject_type: str,
     subject_id: str,
     archive_root: Path | None = None,
+    retry_promptly: bool = False,
 ) -> datetime:
     now = datetime.now(UTC)
     if subject_type == "fts_surface":
         return now
-    delay_s = convergence_debt_retry_delay_s(failure_count, error=error)
+    delay_s = (
+        _INITIAL_CONVERGENCE_DEBT_RETRY_DELAY_SECONDS
+        if retry_promptly
+        else convergence_debt_retry_delay_s(failure_count, error=error)
+    )
     fallback = datetime.fromtimestamp(now.timestamp() + delay_s, tz=UTC)
     del conn, subject_id, archive_root
     return fallback
