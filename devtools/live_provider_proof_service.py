@@ -27,7 +27,7 @@ from devtools.agentctl_service_context import require_declared_operation_context
 from devtools.isolated_environment import isolated_home_environment
 from devtools.native_transport_proof import NativeProofCustodyError, scoped_native_host
 from devtools.shared_chrome_lock import shared_chrome_extension_lock
-from polylogue.browser_capture.models import validate_capture_envelope
+from polylogue.browser_capture.models import _CanonicalNativeTurnWitness, validate_capture_envelope
 from polylogue.browser_capture.receiver import load_or_mint_receiver_identity, persist_receiver_token
 from polylogue.browser_capture.server import BrowserCaptureHandler, make_server
 from polylogue.core.enums import BlockType
@@ -327,10 +327,10 @@ def verify_captured_artifact(spool: Path, receipt: dict[str, Any]) -> dict[str, 
         payload = json.load(handle)
     # Selected live conversations exercise the existing parser. This proof
     # does not establish scalar-independent memory use for arbitrary sessions.
-    envelope = validate_capture_envelope(payload)
+    parsed = parse(payload, "live-provider-proof")
+    envelope = validate_capture_envelope(payload, native_witness=_CanonicalNativeTurnWitness(parsed.messages))
     if envelope.raw_provider_payload is None:
         raise ValueError("proof has no literal native evidence")
-    parsed = parse(payload, "live-provider-proof")
     if len(envelope.session.turns) != len(parsed.messages):
         raise ValueError("proof canonical messages were omitted")
     if (
@@ -404,6 +404,7 @@ def _retain_proof_evidence(scratch: Path, spool: Path, evidence: Path) -> None:
     shutil.copytree(spool, evidence / "browser-capture")
     for name, source in (
         ("constructor-scope.json", scratch / "constructor-scope.json"),
+        ("owned-capture-result.json", scratch / "owned-capture-result.json"),
         ("owned-capture-diagnostic.json", scratch / "owned-capture-diagnostic.json"),
         ("proof-binding.json", scratch / "native-transport-proof/extension/proof-binding.json"),
         ("owned-scope.json", scratch / "native-transport-proof/extension/owned-scope.json"),
@@ -566,6 +567,9 @@ def _run_proof_locked(
                     raise failed_child(stdout, receiver_requests) from error
                 if not isinstance(result, dict) or result.get("ok") is not True:
                     raise failed_child(stdout, receiver_requests)
+                descriptor = os.open(scratch / "owned-capture-result.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as retained_result:
+                    retained_result.write(stdout)
                 receipts = result.get("providers")
                 if not isinstance(receipts, dict) or set(receipts) != {
                     urlsplit(target["url"]).hostname for target in targets

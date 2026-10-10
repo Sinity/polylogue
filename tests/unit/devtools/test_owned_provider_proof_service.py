@@ -185,6 +185,16 @@ def test_owned_provider_runtime_uses_private_native_authority_and_settles_custod
         assert diagnostic.stat().st_mode & 0o777 == 0o600
         row = next(row for row in manifests if row["path"] == "owned-capture-diagnostic.json")
         assert hashlib.sha256(diagnostic.read_bytes()).hexdigest() == row["sha256"]
+        captured_result = tmp_path / "evidence/owned-capture-result.json"
+        if fault != "child":
+            assert (
+                json.loads(captured_result.read_text())["providers"]["chatgpt.com"]["artifact_ref"] == "artifact.json"
+            )
+            assert captured_result.stat().st_mode & 0o777 == 0o600
+            row = next(row for row in manifests if row["path"] == "owned-capture-result.json")
+            assert hashlib.sha256(captured_result.read_bytes()).hexdigest() == row["sha256"]
+        else:
+            assert not captured_result.exists()
     assert os.environ == before
     assert operator_manifest.read_text() == "operator untouched"
     if fault == "custody":

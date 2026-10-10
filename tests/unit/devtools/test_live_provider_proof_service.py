@@ -405,6 +405,25 @@ def test_live_proof_preserves_claude_tool_errors_and_signatures(tmp_path: Path) 
     )
 
 
+@pytest.mark.parametrize("forged_empty_identity", [False, True])
+def test_live_proof_retains_only_native_witnessed_empty_turns(tmp_path: Path, forged_empty_identity: bool) -> None:
+    from tests.infra.live_provider_proof import native_proof_artifact
+
+    envelope, turns, attachments = native_proof_artifact(tmp_path, "native-empty-messages-v1.json")
+    assert turns == 4
+    assert envelope["session"]["turns"][1]["text"] == ""
+    if forged_empty_identity:
+        envelope["session"]["turns"][1]["provider_turn_id"] = "not-the-native-message"
+    receipt = _artifact_receipt(tmp_path, envelope, turns, attachments)
+    if forged_empty_identity:
+        with pytest.raises(ValueError):
+            live_provider_proof_service.verify_captured_artifact(tmp_path, receipt)
+    else:
+        result = live_provider_proof_service.verify_captured_artifact(tmp_path, receipt)
+        assert result["message_count"] == 4
+        assert result["parent_message_count"] == 3
+
+
 @pytest.mark.parametrize("page", ["popup", "admin", "provider"])
 @pytest.mark.parametrize("response", ["verified", "placement_refused", "unknown"])
 def test_shutdown_awaits_original_owned_window_response_before_target_closure(page: str, response: str) -> None:
