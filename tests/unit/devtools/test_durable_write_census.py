@@ -355,3 +355,24 @@ def test_private_witness_hydration_requires_the_reviewed_same_key_shape(tmp_path
     assert _rules(tmp_path, declaration) == (
         set() if mutation == "none" else {"private_witness_hydration_site_invalid"}
     )
+
+
+def test_same_module_statement_builder_censuses_shared_execution(tmp_path: Path) -> None:
+    """A SQL builder preserves the rewrite target at its actual executor."""
+    _module(
+        tmp_path,
+        'SQL = "INSERT INTO assertions(assertion_id) VALUES ({values}) " '
+        '"ON CONFLICT(assertion_id) DO UPDATE SET assertion_id=excluded.assertion_id"\n'
+        "def statement(operands):\n"
+        "    if not operands:\n"
+        '        raise ValueError("missing operands")\n'
+        '    return SQL.format(values=", ".join(operands))\n'
+        "class Writer:\n"
+        "    def upsert(self, conn):\n"
+        '        conn.execute(statement(("?",)))\n',
+    )
+    observation = census_package(tmp_path / "polylogue", repo_root=tmp_path)
+    assert [(site.function, site.table, site.kind, site.tier) for site in observation.sites] == [
+        ("Writer.upsert", "assertions", "upsert_do_update", "user")
+    ]
+    assert _rules(tmp_path, _declaration(tmp_path)) == {"durable_write_undeclared"}
