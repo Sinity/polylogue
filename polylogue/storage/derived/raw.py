@@ -62,10 +62,8 @@ from polylogue.storage.blob_store import (
     blob_store_for_connection,
 )
 from polylogue.storage.raw_authority import (
-    build_raw_replay_plan,
+    assess_raw_replay_materialization,
     iter_parser_census_logical_keys,
-    raw_replay_application_receipt_from_connection,
-    validate_raw_replay_application_receipt,
 )
 from polylogue.storage.source_blob_restoration import stage_blob_from_recorded_source
 from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
@@ -982,13 +980,11 @@ class RawObservationInspection:
             ).fetchall()
             if not self._terminal_revision_refusal(conn, str(row["raw_id"]), row["parser_fingerprint"])
         )
-        plan = build_raw_replay_plan(conn, execution_component)
-        receipt = raw_replay_application_receipt_from_connection(
+        exact, _problems = assess_raw_replay_materialization(
             conn,
-            plan,
+            execution_component,
             index_db_path=self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path,
         )
-        exact, _problems = validate_raw_replay_application_receipt(plan, receipt)
         return "valid" if exact else "stale"
 
     def _enrichment_evidence_moved(self, conn: sqlite3.Connection, source_path: object, output: sqlite3.Row) -> bool:
