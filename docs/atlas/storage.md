@@ -33,7 +33,10 @@ declared semantic hash inputs; NULL and zero remain distinct in complete and
 revision projections. Array event position continues to state order.
 
 File-edit evidence binds to the exact tool-use block occurrence admitted by
-the shared invocation association. Reusing a tool ID cannot transfer an earlier
+the shared invocation association. Prefix inheritance ends before an invocation
+whose divergent edit result remains child-owned, so publication cannot replace
+the parent's edit. Materialized prefix copies remap the invocation through its
+own message rather than the result message. Reusing a tool ID cannot transfer an earlier
 result's edit to a later call. An edit with no unique call owner refuses, and
 prepared indexing closes its scratch readers before transferring result pages.
 These Index schema and lowering changes move the derived identity and require
