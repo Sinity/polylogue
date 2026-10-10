@@ -22,6 +22,62 @@ if TYPE_CHECKING:
 _BOUNDED_MESSAGES_FALLBACK_READ_VIEWS = frozenset({"raw", "context", "neighbors", "correlation", "chronicle"})
 
 
+def _select_context_messages(
+    messages: Sequence[Message],
+    *,
+    anchor_message_id: str | None,
+    max_messages: int | None,
+    max_chars_per_message: int | None,
+) -> tuple[tuple[Message, ...], int, int, int]:
+    """Shared identity-preserving message and character window for profiles."""
+    rows: list[Message] = []
+    clipped_messages = 0
+    tool_types = {"tool_use", "tool_result", "function_call", "function_call_output"}
+    for message in messages:
+        if not message.text and not message.blocks:
+            continue
+        text = message.text
+        prose_chars = sum(
+            len(str(block.get("text", block.get("content")) or ""))
+            for block in message.blocks
+            if block.get("type") not in tool_types
+        )
+        if max_chars_per_message is not None and max(len(text or ""), prose_chars) > max_chars_per_message:
+            clipped_messages += 1
+            if text is not None and len(text) > max_chars_per_message:
+                omitted_chars = len(text) - max_chars_per_message
+                text = (
+                    text[:max_chars_per_message].rstrip() + f"\n\n... {omitted_chars} chars omitted from this message."
+                )
+            remaining = max_chars_per_message
+            blocks: list[dict[str, object]] = []
+            for block in message.blocks:
+                projected = dict(block)
+                if block.get("type") not in tool_types:
+                    key = "text" if "text" in block else "content"
+                    value = block.get(key)
+                    if value is not None:
+                        prose = str(value)
+                        projected[key] = prose[:remaining]
+                        remaining = max(0, remaining - len(prose))
+                blocks.append(projected)
+            if prose_chars > max_chars_per_message:
+                blocks.append(
+                    {
+                        "type": "text",
+                        "text": f"\n\n... {prose_chars - max_chars_per_message} chars omitted from this message.",
+                    }
+                )
+            message = message.copy_with_projected_content(text=text, blocks=blocks, attachments=message.attachments)
+        rows.append(message)
+    if max_messages is None or len(rows) <= max_messages:
+        return tuple(rows), 0, 0, clipped_messages
+    anchor_index = next((index for index, message in enumerate(rows) if message.id == anchor_message_id), 0)
+    start = min(max(0, anchor_index - max_messages // 2), max(0, len(rows) - max_messages))
+    end = start + max_messages
+    return tuple(rows[start:end]), start, len(rows) - end, clipped_messages
+
+
 def _archive_context_message_window(
     messages: Sequence[Message],
     *,
@@ -30,63 +86,18 @@ def _archive_context_message_window(
     max_chars_per_message: int | None,
     max_tokens: int | None = None,
 ) -> tuple[tuple[tuple[str, str], ...], int, int, int]:
-    """Return normalized message rows plus omission/clipping counts for context."""
-
-    rows: list[tuple[str, str, str]] = []
-    clipped_messages = 0
-    for message in messages:
-        if not message.text:
-            continue
-        text = message.text
-        if max_chars_per_message is not None and len(text) > max_chars_per_message:
-            omitted_chars = len(text) - max_chars_per_message
-            text = text[:max_chars_per_message].rstrip() + f"\n\n... {omitted_chars} chars omitted from this message."
-            clipped_messages += 1
-        rows.append(
-            (
-                str(message.id),
-                str(getattr(message.role, "value", message.role)),
-                text,
-            )
-        )
-    if max_messages is None or len(rows) <= max_messages:
-        window = rows
-        omitted_before = 0
-        omitted_after = 0
-        if max_tokens is not None:
-            window, budget_omitted_before, budget_clipped = _budget_context_message_window(window, max_tokens)
-            omitted_before += budget_omitted_before
-            clipped_messages += budget_clipped
-        return (
-            tuple((role, text) for _message_id, role, text in window),
-            omitted_before,
-            omitted_after,
-            clipped_messages,
-        )
-
-    anchor_index = 0
-    if anchor_message_id is not None:
-        for index, (message_id, _role, _text) in enumerate(rows):
-            if message_id == anchor_message_id:
-                anchor_index = index
-                break
-    half_window = max_messages // 2
-    start = max(0, anchor_index - half_window)
-    start = min(start, max(0, len(rows) - max_messages))
-    end = start + max_messages
-    window = rows[start:end]
-    omitted_before = start
-    omitted_after = max(0, len(rows) - end)
-    if max_tokens is not None:
-        window, budget_omitted_before, budget_clipped = _budget_context_message_window(window, max_tokens)
-        omitted_before += budget_omitted_before
-        clipped_messages += budget_clipped
-    return (
-        tuple((role, text) for _message_id, role, text in window),
-        omitted_before,
-        omitted_after,
-        clipped_messages,
+    selected, omitted_before, omitted_after, clipped_messages = _select_context_messages(
+        messages,
+        anchor_message_id=anchor_message_id,
+        max_messages=max_messages,
+        max_chars_per_message=max_chars_per_message,
     )
+    rows = [(message.id, str(getattr(message.role, "value", message.role)), message.text or "") for message in selected]
+    if max_tokens is not None:
+        rows, budget_omitted, budget_clipped = _budget_context_message_window(rows, max_tokens)
+        omitted_before += budget_omitted
+        clipped_messages += budget_clipped
+    return tuple((role, text) for _id, role, text in rows), omitted_before, omitted_after, clipped_messages
 
 
 def _budget_context_message_window(
@@ -212,10 +223,19 @@ async def compile_context_image(source: Any, spec: ContextSpec) -> ContextImage:
         nonlocal token_total
         remaining_tokens = None if token_budget is None else max(1, token_budget - token_total)
         if spec.segment_profile == "prose_with_refs":
+            prose_messages, omitted_before, omitted_after, clipped_messages = _select_context_messages(
+                tuple(session.messages),
+                anchor_message_id=message_anchor_by_session.get(session_id),
+                max_messages=spec.max_messages_per_session,
+                max_chars_per_message=spec.max_chars_per_message,
+            )
             segment, recapped = compile_prose_with_refs_context_segment(
                 session_id=session_id,
                 title=session.title,
-                messages=tuple(session.messages),
+                messages=prose_messages,
+                omitted_before=omitted_before,
+                omitted_after=omitted_after,
+                clipped_messages=clipped_messages,
                 max_tokens=remaining_tokens,
                 evidence_refs=(EvidenceRef(session_id=session_id),),
             )

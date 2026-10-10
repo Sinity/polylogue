@@ -11,6 +11,7 @@ from polylogue.context.compiler import (
     compile_query_unit_context_segment,
     context_snapshot_record_from_image,
 )
+from polylogue.core.identity_law import block_id
 from polylogue.core.refs import EvidenceRef, ObjectRef
 
 
@@ -21,13 +22,23 @@ def test_prose_with_refs_collapses_tools_and_preserves_resolvable_markers() -> N
             id="session:m2",
             role="assistant",
             text=None,
-            blocks=[{"type": "text", "text": "authored prose"}, {"type": "tool_use", "name": "Bash"}],
+            blocks=[
+                {"type": "text", "text": "authored prose"},
+                {"id": block_id("session:m2", content_identity="a" * 64), "type": "tool_use", "name": "Bash"},
+            ],
         ),
         SimpleNamespace(
             id="session:m3",
             role="tool",
             text=None,
-            blocks=[{"type": "tool_result", "tool_use_id": "call-1", "text": "secret output"}],
+            blocks=[
+                {
+                    "id": block_id("session:m3", content_identity="b" * 64),
+                    "type": "tool_result",
+                    "tool_use_id": "call-1",
+                    "text": "secret output",
+                }
+            ],
         ),
     ]
 
@@ -38,12 +49,11 @@ def test_prose_with_refs_collapses_tools_and_preserves_resolvable_markers() -> N
     assert recapped is False
     assert "authored prose" in (segment.markdown or "")
     assert "secret output" not in (segment.markdown or "")
-    assert "<ref:action:session:m2:1> Bash" in (segment.markdown or "")
-    assert "<ref:action:session:m3:0> tool_result" in (segment.markdown or "")
-    assert ObjectRef.parse("action:session:m2:1").format() == "action:session:m2:1"
-    # An action ref carries its block index as a qualifier, exactly as
-    # ``ObjectRef.parse`` reads the marker back.
-    assert ObjectRef(kind="action", object_id="session:m2", qualifiers=("1",)) in segment.object_refs
+    use_id = block_id("session:m2", content_identity="a" * 64)
+    result_id = block_id("session:m3", content_identity="b" * 64)
+    assert f"<ref:action:{use_id}> Bash" in (segment.markdown or "")
+    assert f"<ref:action:{result_id}> tool_result" in (segment.markdown or "")
+    assert ObjectRef.parse(f"action:{use_id}") in segment.object_refs
 
 
 def test_prose_with_refs_records_budget_recaps_after_sixty_percent() -> None:
