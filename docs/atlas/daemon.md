@@ -127,6 +127,19 @@ detecting those call sites needs a second rule with its own baseline; see
 
 The live watcher passes acquired Raw IDs to the supplied resident Raw owner for retained publication. When derived schema authority blocks that owner, the watcher keeps Source acquisition active without opening a replacement parser or publication owner.
 
+The shared compute kernel reserves one foreground worker slot and queue unit
+for control and reads together, and one background worker slot and queue unit
+for incremental and bulk work together. Per-class status repeats the group's
+reservation and labels its `reservation_group`; those counts cannot be summed
+across member classes. Eligible control/read turns alternate; incremental/bulk
+turns retain their two-to-one schedule. Capacity one has no reservations and
+still runs admitted work. A reserve preserves capacity rather than preempting
+an already running operation. Byte-pressure and exclusive dependency capture
+can still refuse foreground admission. Startup and a standalone HTTP server use
+the same declared compute default; the API, watcher and convergence owners
+borrow the startup kernel when it is supplied. There is no second worker pool
+or independent HTTP width (`polylogue/core/compute.py`; `daemon/http.py`).
+
 The shared compute adapter settles each operation's future even when executor submission races shutdown or the executor cancels work before its worker starts. Cancelling shutdown stops scheduler dispatch. Graceful shutdown closes admission, drains already-admitted work, and closes the executor only after those reservations are released (`polylogue/core/compute.py`).
 
 The compute adapter's ordered map can observe its caller's cancellation while

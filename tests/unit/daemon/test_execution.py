@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import contextlib
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 from time import monotonic
 
@@ -15,7 +15,8 @@ from polylogue.core.compute import (
     ADMISSION_CLASSES,
     BACKGROUND_CLASSES,
     MAX_BACKGROUND_STARVATION_S,
-    MIN_BACKGROUND_THROUGHPUT_FRACTION,
+    MIN_BACKGROUND_RESERVED_SLOTS,
+    AdmissionClass,
     BoundedComputeAdapter,
     CancellationHandle,
     DaemonBackpressureError,
@@ -138,8 +139,8 @@ def test_cancellation_interrupts_registered_connection_and_releases_capacity() -
         adapter.shutdown(wait=True)
 
 
-def test_reserved_shares_meet_the_declared_fairness_bounds() -> None:
-    """The reserve table is the mechanism behind both declared fairness bounds.
+def test_reserves_keep_both_groups_runnable() -> None:
+    """The reserve table keeps both groups eligible under the other group's load.
 
     Anti-vacuity: a scheduler that reserves nothing for background work, or
     lets one class's ceiling reach total capacity, fails here.
@@ -150,7 +151,7 @@ def test_reserved_shares_meet_the_declared_fairness_bounds() -> None:
         background = [entry for entry in snapshot.classes if entry.admission_class in BACKGROUND_CLASSES]
         assert background
         reserved_units = background[0].reserved_units
-        assert reserved_units >= int(snapshot.capacity_units * MIN_BACKGROUND_THROUGHPUT_FRACTION)
+        assert reserved_units == MIN_BACKGROUND_RESERVED_SLOTS
         assert all(entry.reserved_slots >= 1 for entry in background)
         for entry in snapshot.classes:
             assert entry.ceiling_units < snapshot.capacity_units
@@ -158,10 +159,26 @@ def test_reserved_shares_meet_the_declared_fairness_bounds() -> None:
         assert {entry.admission_class for entry in snapshot.classes} == set(ADMISSION_CLASSES)
 
 
-def test_bulk_saturation_cannot_consume_interactive_or_control_capacity() -> None:
-    """Bulk work stops at its class ceiling, so interactive admission survives.
+@pytest.mark.parametrize("queue_units", [0, 1, 8])
+@pytest.mark.parametrize("workers", [1, 2, 8, 12, 24])
+def test_one_shared_foreground_and_background_reserve(workers: int, queue_units: int) -> None:
+    """Worker width increases useful capacity rather than idle percentage shares."""
+    with _adapter(max_workers=workers, queue_units=queue_units) as adapter:
+        snapshot = adapter.snapshot()
+        reserve = int(workers > 1)
+        for entry in snapshot.classes:
+            assert entry.reserved_slots == entry.reserved_units == reserve
+            assert entry.ceiling_slots == workers - reserve
+            assert entry.ceiling_units == workers + queue_units - reserve
+            group = "background" if entry.admission_class in BACKGROUND_CLASSES else "foreground"
+            assert entry.to_dict()["reservation_group"] == group
+        assert {entry.admission_class for entry in snapshot.classes} == set(ADMISSION_CLASSES)
 
-    Anti-vacuity: with the per-class ceiling removed, bulk fills all 24 units
+
+def test_bulk_saturation_cannot_consume_interactive_or_control_capacity() -> None:
+    """Bulk work stops at its ceiling, leaving one shared foreground unit.
+
+    Anti-vacuity: with the group ceiling removed, bulk fills all 24 units
     and the interactive submit below is rejected.
     """
 
@@ -178,15 +195,13 @@ def test_bulk_saturation_cannot_consume_interactive_or_control_capacity() -> Non
             assert rejection.value.evidence["class_used_units"] == bulk_ceiling
             assert rejection.value.evidence["capacity_units"] == adapter.capacity_units
 
-            adapter.submit(blocker, admission_class="interactive-read")
-            adapter.submit(blocker, admission_class="control")
+            read = adapter.submit(blocker, admission_class="interactive-read")
+            with pytest.raises(DaemonBackpressureError):
+                adapter.submit(blocker, admission_class="control")
             snapshot = adapter.snapshot()
             assert snapshot.by_class("interactive-read").dispatched == 1
-            assert snapshot.by_class("control").dispatched == 1
-            # Control never queues behind bulk work. The daemon holds its
-            # route-level writer lease across this submission, so a queue wait
-            # here would extend an exclusive hold.
-            assert snapshot.by_class("control").max_wait_s < 0.1
+            assert snapshot.by_class("control").dispatched == 0
+            assert read.queue_delay_s < 0.1
             assert snapshot.by_class("bulk-candidate").active_units <= snapshot.by_class("bulk-candidate").ceiling_slots
         finally:
             blocker.release.set()
@@ -319,7 +334,7 @@ def test_admission_rejects_slot_demand_over_class_ceiling() -> None:
     """Anti-vacuity: a task above its class ceiling otherwise never dispatches."""
     with _adapter(max_workers=8) as adapter:
         with pytest.raises(DaemonBackpressureError, match="slot ceiling"):
-            adapter.submit(lambda: None, admission_class="control", units=5)
+            adapter.submit(lambda: None, admission_class="control", units=8)
 
 
 def test_cancelled_queued_work_is_not_counted_as_completed_dispatch() -> None:
@@ -483,79 +498,64 @@ def test_uds_status_uses_reserved_capacity_under_background_saturation(tmp_path:
         assert kernel.snapshot().used_units == 0
 
 
-def test_combined_classes_cannot_take_the_interactive_reserve() -> None:
-    """Two saturated non-interactive groups may not occupy the whole pool.
-
-    ``control`` and ``incremental-background`` each have a four-slot ceiling on
-    an eight-worker pool, so four blocking tasks in each stay inside their own
-    bound while jointly holding every worker -- and the three slots the
-    snapshot reports as reserved for ``interactive-read`` stop existing.
-
-    Anti-vacuity: restore the per-group-only dispatch check
-    (``self._active_slots + task.slots > self.max_workers``) and the
-    interactive task below never starts. A uniform single-class fixture cannot
-    separate the two rules: each group alone is already capped at its ceiling
-    by the surviving check.
-    """
-
-    control_body = _Blocker()
-    background_body = _Blocker()
-    interactive_body = _Blocker()
+def test_combined_foreground_classes_retain_background_dispatch() -> None:
+    """Control and reads together cannot take the background reserve."""
+    foreground = _Blocker()
+    background = _Blocker()
     with _adapter(max_workers=8, queue_units=16) as adapter:
         try:
-            control_slots = adapter.snapshot().by_class("control").ceiling_slots
-            background_slots = adapter.snapshot().by_class("incremental-background").ceiling_slots
-            assert control_slots + background_slots >= adapter.max_workers, "otherwise nothing is being proved"
-
-            for _index in range(control_slots):
-                adapter.submit(control_body, admission_class="control")
-            for _index in range(background_slots):
-                adapter.submit(background_body, admission_class="incremental-background")
-            assert control_body.wait_started(control_slots)
-
-            reserved = adapter.snapshot().by_class("interactive-read").reserved_slots
-            assert reserved >= 1
-            adapter.submit(interactive_body, admission_class="interactive-read")
-            assert interactive_body.wait_started(1)
-            assert adapter.snapshot().by_class("interactive-read").dispatched == 1
+            for index in range(7):
+                name: AdmissionClass = "control" if index % 2 else "interactive-read"
+                adapter.submit(foreground, admission_class=name)
+            assert foreground.wait_started(7)
+            operation = adapter.submit(background, admission_class="incremental-background")
+            assert background.wait_started(1)
+            assert operation.queue_delay_s < 0.1
         finally:
-            control_body.release.set()
-            background_body.release.set()
-            interactive_body.release.set()
+            foreground.release.set()
+            background.release.set()
 
 
-def test_combined_classes_cannot_take_the_interactive_queue() -> None:
-    """The same complement bounds queue admission, not only dispatch.
-
-    Anti-vacuity: restore ``self._used_units + units > self.capacity_units``
-    and the two non-interactive groups fill the queue to capacity, so the
-    interactive submit below raises ``DaemonBackpressureError``.
-    """
-
+def test_combined_foreground_classes_retain_background_queue() -> None:
+    """The queue complement uses control and read occupancy together."""
     blocker = _Blocker()
     with _adapter(max_workers=8, queue_units=16) as adapter:
         try:
-            reserved_units = adapter.snapshot().by_class("interactive-read").reserved_units
-            assert reserved_units >= 1
-            for admission_class in ("control", "incremental-background", "bulk-candidate"):
-                with contextlib.suppress(DaemonBackpressureError):
-                    for _index in range(adapter.capacity_units):
-                        adapter.submit(blocker, admission_class=admission_class)
-
-            admitted = 0
-            with contextlib.suppress(DaemonBackpressureError):
-                for _index in range(adapter.capacity_units):
-                    adapter.submit(blocker, admission_class="interactive-read")
-                    admitted += 1
-            assert admitted >= reserved_units
+            for index in range(adapter.capacity_units - 1):
+                name: AdmissionClass = "control" if index % 2 else "interactive-read"
+                adapter.submit(blocker, admission_class=name)
+            with pytest.raises(DaemonBackpressureError):
+                adapter.submit(blocker, admission_class="interactive-read")
+            adapter.submit(blocker, admission_class="incremental-background")
+            assert adapter.snapshot().used_units == adapter.capacity_units
         finally:
             blocker.release.set()
 
 
-def test_multi_slot_background_head_is_not_overtaken_by_one_slot_bulk() -> None:
-    """A four-slot incremental head runs before later one-slot bulk work.
+def test_shared_foreground_dispatch_alternates_eligible_control_and_reads() -> None:
+    """A control queue cannot repeatedly overtake already admitted reads."""
+    holder = _Blocker()
+    observed: list[str] = []
+    with _adapter(max_workers=2, queue_units=8) as adapter:
+        try:
+            first = adapter.submit(holder, admission_class="control")
+            assert holder.wait_started(1)
+            operations = []
+            for name in ("control", "control", "interactive-read", "interactive-read"):
+                operations.append(adapter.submit(partial(observed.append, name), admission_class=name))
+            holder.release.set()
+            first.future.result(timeout=5)
+            for operation in operations:
+                operation.future.result(timeout=5)
+            assert observed == ["interactive-read", "control", "interactive-read", "control"]
+        finally:
+            holder.release.set()
 
-    With eight workers the control and interactive reserves leave four slots
+
+def test_multi_slot_background_head_is_not_overtaken_by_one_slot_bulk() -> None:
+    """A seven-slot incremental head runs before later one-slot bulk work.
+
+    With eight workers the shared foreground reserve leaves seven slots
     for background work. One bulk task holds a slot, so the incremental head
     needs every remaining one. Anti-vacuity: letting the complement check
     ``continue`` to later turns dispatches each new bulk task ahead of it, and
@@ -567,7 +567,7 @@ def test_multi_slot_background_head_is_not_overtaken_by_one_slot_bulk() -> None:
     try:
         running = adapter.submit(first_bulk, admission_class="bulk-candidate")
         assert first_bulk.wait_started(1)
-        queued_incremental = adapter.submit(incremental, admission_class="incremental-background", units=4)
+        queued_incremental = adapter.submit(incremental, admission_class="incremental-background", units=7)
         queued_bulk = adapter.submit(later_bulk, admission_class="bulk-candidate")
 
         assert not later_bulk.wait_started(1, timeout=0.3)
@@ -600,3 +600,35 @@ def test_a_unit_larger_than_the_byte_envelope_runs_alone_instead_of_being_refuse
         assert adapter.snapshot().used_bytes == 0
     finally:
         adapter.shutdown(wait=True)
+
+
+def test_waiting_multi_slot_foreground_head_drains_background_backfill() -> None:
+    """A three-slot read acquires capacity despite replenished background work."""
+    bodies = [_Blocker() for _ in range(3)]
+    later = _Blocker()
+    foreground = _Blocker()
+    with _adapter(max_workers=4, queue_units=8) as adapter:
+        initial: list[SubmittedOperation[bool]] = []
+        queued: list[SubmittedOperation[bool]] = []
+        try:
+            initial = [adapter.submit(body, admission_class="incremental-background") for body in bodies]
+            assert all(body.wait_started(1) for body in bodies)
+            read = adapter.submit(foreground, admission_class="interactive-read", units=3)
+            queued = [adapter.submit(later, admission_class="bulk-candidate") for _ in range(2)]
+            bodies[0].release.set()
+            initial[0].future.result(timeout=5)
+            assert not later.wait_started(1, timeout=0.05)
+            bodies[1].release.set()
+            initial[1].future.result(timeout=5)
+            assert foreground.wait_started(1)
+            assert adapter.snapshot().by_class("incremental-background").active_units == 1
+            foreground.release.set()
+            read.future.result(timeout=5)
+            assert later.wait_started(2)
+        finally:
+            foreground.release.set()
+            later.release.set()
+            for body in bodies:
+                body.release.set()
+            for operation in (*initial, *queued):
+                operation.future.result(timeout=5)
