@@ -30,7 +30,7 @@ def profile_demand_page(
     scoped = tuple(sorted(dict.fromkeys(str(key) for key in scope if cursor is None or str(key) > cursor)))
     if not scoped:
         return (), None
-    found: set[str] = set()
+    found: list[str] = []
     for start in range(0, len(scoped), 500):
         chunk = scoped[start : start + 500]
         rows = conn.execute(
@@ -38,9 +38,10 @@ def profile_demand_page(
                  JOIN sessions AS s ON s.session_id = d.session_id
                  WHERE d.session_id IN ({",".join("?" * len(chunk))})
                  ORDER BY d.session_id LIMIT ?""",
-            (*chunk, limit + 1),
+            (*chunk, limit + 1 - len(found)),
         ).fetchall()
-        found.update(str(row[0]) for row in rows)
-    ordered = tuple(sorted(found))
-    keys = ordered[:limit]
-    return keys, (keys[-1] if len(ordered) > limit else None)
+        found.extend(str(row[0]) for row in rows)
+        if len(found) > limit:
+            break
+    keys = tuple(found[:limit])
+    return keys, (keys[-1] if len(found) > limit else None)

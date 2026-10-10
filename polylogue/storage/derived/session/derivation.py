@@ -675,22 +675,24 @@ class SessionProfileDerivation:
             finally:
                 conn.close()
         scoped = tuple(sorted(dict.fromkeys(str(key) for key in scope)))
+        start = bisect.bisect(scoped, cursor) if cursor is not None else 0
+        found: list[str] = []
         conn = self._read_connection()
         try:
-            existing = {
-                str(row[0])
-                for chunk in _chunked(scoped, SESSION_PARTITION_INSPECT_CHUNK)
-                for row in conn.execute(
-                    f"SELECT session_id FROM sessions WHERE session_id IN ({','.join('?' * len(chunk))})",
-                    chunk,
+            # Disjoint sorted chunks preserve key order, including across sparse gaps.
+            for chunk in _chunked(scoped[start:], SESSION_PARTITION_INSPECT_CHUNK):
+                rows = conn.execute(
+                    f"SELECT session_id FROM sessions WHERE session_id IN ({','.join('?' * len(chunk))}) "
+                    "ORDER BY session_id LIMIT ?",
+                    (*chunk, limit + 1 - len(found)),
                 ).fetchall()
-            }
+                found.extend(str(row[0]) for row in rows)
+                if len(found) > limit:
+                    break
         finally:
             conn.close()
-        keys = tuple(key for key in scoped if key in existing)
-        start = bisect.bisect(keys, cursor) if cursor is not None else 0
-        page = keys[start : start + limit]
-        return page, (page[-1] if start + len(page) < len(keys) and page else None)
+        page = tuple(found[:limit])
+        return page, (page[-1] if len(found) > limit and page else None)
 
     def is_required_key(self, frame: object, session_id: str) -> bool:
         """Recheck requiredness after lease-free work before classifying failure."""

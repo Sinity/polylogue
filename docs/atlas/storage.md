@@ -727,6 +727,11 @@ Input triggers clear a surviving profile binding once; later writes while it
 is NULL still advance every demand revision without rewriting the profile row.
 Input relation query frames continue to advance independently, and a prepared
 profile cannot acknowledge later demand.
+Scoped profile and shared summary/usage/profile demand discovery query sorted key
+chunks only until the requested page and one continuation row are found. Sparse
+chunks continue scanning; absent keys remain available to ordinary summary and
+usage retirement. Profile frames copy their scope into a sorted unique tuple;
+arbitrary adapter callbacks are normalized afresh on each page.
 Run, observed-event and context-snapshot
 products are derived on read through `run_projection_relations.py`; profile preparation does not compile
 a second run projection to obtain unused counters. Unscoped FTS discovery merges

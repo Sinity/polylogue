@@ -243,7 +243,7 @@ def make_session_profile_frame(
             SESSION_PROFILE_DOMAIN: SESSION_PROFILE_RECIPE_VERSION,
             SESSION_MARKER_DOMAIN: SESSION_MARKER_RECIPE_VERSION,
         },
-        scope=None if scope is None else tuple(dict.fromkeys(str(session_id) for session_id in scope)),
+        scope=None if scope is None else tuple(sorted(dict.fromkeys(str(session_id) for session_id in scope))),
         profile_demand_only=profile_demand_only,
         profile_full_scan=profile_full_scan,
     )
