@@ -14,7 +14,8 @@ import pickle
 import sqlite3
 from builtins import BaseExceptionGroup
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -32,7 +33,7 @@ from polylogue.core.raw_failure_evidence import (
     RetainedRawDecodeRefusalError,
     RetainedRawDependencyRefusalError,
 )
-from polylogue.logging import WARNING, emit
+from polylogue.logging import WARNING, emit, propagate
 from polylogue.operations.raw_observation_derivation import (
     make_raw_observation_derivation,
     publish_raw_observation_once,
@@ -395,6 +396,55 @@ class RawObservationArchiveWork:
                 raise
 
         return capture
+
+    @asynccontextmanager
+    async def prepared_neutral_page(
+        self,
+        raw_ids: Sequence[str],
+        *,
+        destination: DestinationAdapter,
+        require_authority: Callable[[str], None],
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+    ) -> AsyncIterator[NeutralRawPreparation | None]:
+        """Own bounded capture, independent parsing and cleanup outside a parent slot."""
+        capture = self.neutral_capture_operation(
+            raw_ids, destination=destination, require_authority=require_authority, selection=selection
+        )
+        captured = self._compute_adapter.submit(
+            propagate(capture),
+            admission_class="incremental-background",
+            estimated_bytes=len(pickle.dumps(tuple(raw_ids), protocol=pickle.HIGHEST_PROTOCOL)),
+            exclusive_bytes=True,
+        )
+        try:
+            page = await captured.wait()
+        except BaseException as failure:
+            if captured.future.done() and captured.future.exception() is None:
+                abandoned = captured.future.result()
+                if abandoned is not None:
+                    try:
+                        abandoned.close()
+                    except BaseException as cleanup:
+                        raise BaseExceptionGroup(
+                            "capture cancellation and cleanup failed", [failure, cleanup]
+                        ) from failure
+            raise
+        primary: BaseException | None = None
+        try:
+            if page is not None:
+                await self.parse_neutral_page(page)
+            yield page
+        except BaseException as failure:
+            primary = failure
+            raise
+        finally:
+            if page is not None:
+                try:
+                    page.close()
+                except BaseException as cleanup:
+                    if primary is not None:
+                        raise BaseExceptionGroup("retained page and cleanup failed", [primary, cleanup]) from primary
+                    raise
 
     async def parse_neutral_page(self, page: NeutralRawPreparation) -> None:
         """Submit closed-file parsers outside a parent reservation, then settle all.

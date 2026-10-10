@@ -740,26 +740,57 @@ class DaemonWriteCoordinator:
         actor: str,
         operation: Callable[[], T],
         *,
-        submit_worker: Callable[[Callable[[], None]], ConcurrentFuture[None]],
+        submit_worker: Callable[[Callable[[], None]], ConcurrentFuture[None]] | None,
         settlement_owners: Callable[[], tuple[SQLCustodyOwner, ...]],
     ) -> T:
         """Own an off-gate preparation worker through its final SQL settlement.
 
         The callable acquires ordinary bridge admission after preparing on its
-        worker. Its result is delivered independently from the managed compute
-        slot, which remains occupied while that same thread settles failed SQL.
+        worker. A supplied dispatcher owns its compute slot through failed SQL
+        settlement. Without one, the existing physical worker retains controller
+        observers while its independently admitted children prepare payloads.
         """
         self._require_process()
         if current_write_lease() is not None:
             raise RuntimeError("prepared writer work must begin outside admission")
         if not self._accepting:
             raise RuntimeError("daemon writer is shutting down")
-        task = asyncio.create_task(
-            _run_writer_worker(self, _WorkerDispatch(submit_worker, settlement_owners), operation, actor),
-            name=f"polylogue-prepared-writer:{actor}",
-        )
+        from polylogue.core.compute_cancel import compute_cancel
+
+        # A creator-bound controller uses the existing physical worker without
+        # reserving a kernel slot. Its children still use the shared admission.
+        cancelled = threading.Event() if submit_worker is None else None
+        token = compute_cancel.set(cancelled) if cancelled is not None else None
+        try:
+            task = asyncio.create_task(
+                _run_writer_worker(self, _WorkerDispatch(submit_worker, settlement_owners), operation, actor),
+                name=f"polylogue-prepared-writer:{actor}",
+            )
+        finally:
+            if token is not None:
+                compute_cancel.reset(token)
         self._track_execution(task, actor=actor)
-        await asyncio.wait((task,))
+        try:
+            await asyncio.wait((task,))
+        except asyncio.CancelledError as failure:
+            if cancelled is None:
+                raise
+            cancelled.set()
+            while not task.done():
+                try:
+                    await asyncio.wait((task,))
+                except asyncio.CancelledError:
+                    continue
+            try:
+                task.result()
+            except BaseException as cleanup:
+                from polylogue.core.compute import DaemonOperationCancelled
+
+                if not isinstance(cleanup, DaemonOperationCancelled):
+                    raise BaseExceptionGroup(
+                        "preparation cancellation and settlement failed", [failure, cleanup]
+                    ) from failure
+            raise
         return task.result()
 
     async def run_sync_with_completion(
@@ -982,7 +1013,7 @@ class DaemonWriteCoordinator:
 
 @dataclass(frozen=True)
 class _WorkerDispatch:
-    submit: Callable[[Callable[[], None]], ConcurrentFuture[None]]
+    submit: Callable[[Callable[[], None]], ConcurrentFuture[None]] | None
     settlement_owners: Callable[[], tuple[SQLCustodyOwner, ...]]
 
 
@@ -999,6 +1030,11 @@ async def _run_writer_worker(
     loop = asyncio.get_running_loop()
     result: ConcurrentFuture[T] = ConcurrentFuture()
     context = contextvars.copy_context()
+    controller_exit: ConcurrentFuture[None] | None = (
+        ConcurrentFuture() if dispatch is not None and dispatch.submit is None else None
+    )
+    controller_thread: threading.Thread | None = None
+    parked = threading.Event()
     # Mint the thread grant here, on the owning side, before the worker
     # exists. On a free-threading build every spawned thread inherits the
     # lease, so a worker that bound *itself* would be self-authorizing rather
@@ -1100,6 +1136,7 @@ async def _run_writer_worker(
                         loop.call_soon_threadsafe(coordinator._terminal_worker_completed, terminal)
 
             terminal = _TerminalWriter(lambda: context.run(cleanup), pending, lambda: context.run(retire), settled)
+            parked.set()
             coordinator._retain_terminal_worker(terminal, loop)
             # On a compute creator thread the adapter owns retry and shutdown
             # for that thread; let them reach this parked terminal as well.
@@ -1134,9 +1171,20 @@ async def _run_writer_worker(
             )
 
     try:
-        if dispatch is None:
+        if controller_exit is not None:
+
+            def controller() -> None:
+                try:
+                    worker()
+                finally:
+                    controller_exit.set_result(None)
+
+            controller_thread = threading.Thread(target=controller, name=thread_name, daemon=True)
+            controller_thread.start()
+        elif dispatch is None:
             threading.Thread(target=worker, name=thread_name, daemon=True).start()
         else:
+            assert dispatch.submit is not None
             submission = dispatch.submit(worker)
 
             def submission_finished(done: ConcurrentFuture[None]) -> None:
@@ -1156,7 +1204,24 @@ async def _run_writer_worker(
             except BaseException as cleanup:
                 raise BaseExceptionGroup("Writer dispatch and grant cleanup failed", [primary, cleanup]) from primary
         raise
-    return await asyncio.wrap_future(result, loop=loop)
+    try:
+        return await asyncio.wrap_future(result, loop=loop)
+    finally:
+        if controller_thread is not None and controller_exit is not None and not parked.is_set():
+            # Result delivery alone is not physical retirement. Wait for the
+            # controller's final tail, then join that same creator without a
+            # second executor. Failed SQL parked above retains its explicit
+            # terminal owner and must not be reported as joined completion.
+            exited = asyncio.wrap_future(controller_exit, loop=loop)
+            cancellation: asyncio.CancelledError | None = None
+            while not exited.done():
+                try:
+                    await asyncio.shield(exited)
+                except asyncio.CancelledError as failure:
+                    cancellation = failure
+            controller_thread.join()
+            if cancellation is not None:
+                raise cancellation
 
 
 class StagedTask(Generic[T]):
