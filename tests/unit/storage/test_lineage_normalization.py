@@ -20,6 +20,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider, ToolOutcome
+from polylogue.core.identity_law import block_id as archive_block_id
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -3765,7 +3766,7 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
         "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
     ).fetchone()
     assert tuple(pointer) == (
-        _write_module.archive_block_id(
+        archive_block_id(
             archive_message_id(child_id, "m1"),
             content_identity=dispatch_block[1],
             content_occurrence=dispatch_block[2],
