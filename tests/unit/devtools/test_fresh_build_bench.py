@@ -2232,9 +2232,26 @@ def test_event_coverage_exposes_every_dropped_record(tmp_path: Path, origin: flo
         "malformed_json": 1,
         "non_object": 1,
         "invalid_event": 1,
+        "omitted_fields": 0,
+        "required_measurement_fields_omitted": 0,
+        "invalid_omission_metadata": 0,
         "complete": False,
     }
     assert not _events_lossless(result, {"dropped": 0, "failures": 0, "undrained": 0})
+
+
+@pytest.mark.parametrize("omissions,required", [(3, 0), (3, 1), (0, 1), (-1, 0), (True, 0)])
+def test_event_attribute_omissions_cannot_claim_lossless(tmp_path: Path, omissions: Any, required: int) -> None:
+    from devtools.fresh_build_bench.report import _events_lossless
+
+    path = tmp_path / "events.jsonl"
+    record = json.loads(_event("00.000", "fixture.completed"))
+    record.update(omitted_fields=omissions, required_measurement_fields_omitted=required)
+    path.write_text(json.dumps(record) + "\n")
+    events = analyse_events(path)
+    assert events["coverage"]["valid_events"] == 1
+    assert events["coverage"]["required_measurement_fields_omitted"] == required
+    assert not _events_lossless(events, {"dropped": 0, "failures": 0, "undrained": 0})
 
 
 @pytest.mark.parametrize(

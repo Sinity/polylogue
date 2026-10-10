@@ -93,14 +93,44 @@ def _iter_events(path: Path, *, coverage: Counter[str] | None = None) -> Iterato
                 continue
             if coverage is not None:
                 coverage["valid_events"] += 1
+                for key in ("omitted_fields", "required_measurement_fields_omitted"):
+                    if key in event:
+                        value = event[key]
+                        if type(value) is int and value >= 0:
+                            coverage[key] += value
+                        else:
+                            coverage["invalid_omission_metadata"] += 1
             yield event
 
 
 def _event_coverage(path: Path, counts: Counter[str]) -> dict[str, Any]:
     return {
         "file_present": path.exists(),
-        **{key: counts[key] for key in ("lines", "valid_events", "malformed_json", "non_object", "invalid_event")},
-        "complete": path.exists() and not any(counts[key] for key in ("malformed_json", "non_object", "invalid_event")),
+        **{
+            key: counts[key]
+            for key in (
+                "lines",
+                "valid_events",
+                "malformed_json",
+                "non_object",
+                "invalid_event",
+                "omitted_fields",
+                "required_measurement_fields_omitted",
+                "invalid_omission_metadata",
+            )
+        },
+        "complete": path.exists()
+        and not any(
+            counts[key]
+            for key in (
+                "malformed_json",
+                "non_object",
+                "invalid_event",
+                "omitted_fields",
+                "required_measurement_fields_omitted",
+                "invalid_omission_metadata",
+            )
+        ),
     }
 
 

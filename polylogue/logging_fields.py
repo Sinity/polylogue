@@ -348,6 +348,7 @@ def _fields() -> dict[str, FieldKind]:
 
 #: name -> kind. The complete set of emittable field names.
 FIELDS: Final[dict[str, FieldKind]] = _fields()
+FIELDS.update(omitted_fields="count", required_measurement_fields_omitted="count")
 
 #: Closed vocabulary for the ``outcome`` field. ``unmeasured`` exists so a
 #: probe that never produced an answer can say so instead of defaulting to
@@ -362,6 +363,8 @@ def field_kind(name: str) -> FieldKind | None:
 
 def rejection_reason(name: str) -> str | None:
     """Explain why ``name`` may not be emitted, or ``None`` if it may."""
+    if name in {"omitted_fields", "required_measurement_fields_omitted"}:
+        return "encoder_owned_field"
     if name in FIELDS:
         return None
     if name in FORBIDDEN_FIELDS:

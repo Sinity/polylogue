@@ -668,6 +668,68 @@ def test_combined_context_and_event_fields_stay_within_record_limit() -> None:
     assert any(row["event"] == "log.field_rejected" and row["reason"] == "event_field_limit" for row in records)
 
 
+@pytest.mark.parametrize("value", ["x" * 240, "\U0001f642" * 240])
+def test_byte_overflow_preserves_terminal_measurements(value: str) -> None:
+    optional = dict.fromkeys(
+        (
+            "run_id",
+            "pass_id",
+            "operation_id",
+            "request_id",
+            "attempt_id",
+            "unit_id",
+            "productive_id",
+            "session_id",
+            "message_id",
+            "block_id",
+            "raw_id",
+            "artifact_id",
+        ),
+        value,
+    )
+    with plog.capture() as records, plog.bind(**optional):
+        with plog.span("fixture") as span:
+            span.ok()
+    terminal = next(row for row in records if row["event"] == "fixture.ok")
+    assert plog._MEASUREMENT_FIELDS - {"parent_span_id", "task_id", "span_kind"} <= terminal.keys()
+    assert terminal["required_measurement_fields_omitted"] == 0
+    assert terminal["omitted_fields"] > 0
+    assert len(terminal) <= plog.EVENT_MAX_FIELDS
+    assert len(json.dumps(terminal).encode()) <= plog.EVENT_MAX_BYTES
+
+
+def test_mandatory_overflow_reports_loss_without_masking_work() -> None:
+    fields = dict.fromkeys(("trace_id", "span_id", "parent_span_id", "task_id"), "\U0001f642" * 256)
+    fields.update(outcome="error", duration_ms=1.25, span_start_ns=1, span_end_ns=2)
+    original = ValueError("fixture failure")
+    with plog.capture() as records:
+        with pytest.raises(ValueError) as raised:
+            try:
+                raise original
+            finally:
+                plog.emit("fixture.error", **fields)
+    assert raised.value is original
+    assert len(records) == 1
+    record = records[0]
+    assert record["required_measurement_fields_omitted"] > 0
+    assert record["omitted_fields"] == len(fields.keys() - record.keys())
+    assert record.keys() >= plog._ENVELOPE_FIELDS
+    assert record["duration_ms"] == 1.25
+    assert record["span_start_ns"] == 1
+    assert record["span_end_ns"] == 2
+    assert record["outcome"] == "error"
+    assert len(record) <= plog.EVENT_MAX_FIELDS
+    assert len(json.dumps(record).encode()) <= plog.EVENT_MAX_BYTES
+
+
+def test_omission_counts_are_encoder_owned_and_absent_without_loss() -> None:
+    with plog.capture() as records:
+        plog.emit("fixture.ok", omitted_fields=999, required_measurement_fields_omitted=999)
+    record = next(row for row in records if row["event"] == "fixture.ok")
+    assert plog._OMISSION_FIELDS.isdisjoint(record)
+    assert {row["reason"] for row in records if row["event"] == "log.field_rejected"} == {"encoder_owned_field"}
+
+
 def test_span_terminal_collisions_preserve_original_exception() -> None:
     """A terminal field from a caller cannot cause a second TypeError."""
     original = ValueError("original failure")

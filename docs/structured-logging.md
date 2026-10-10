@@ -98,7 +98,10 @@ TID, and synchronous thread-clock CPU endpoints. The clocks use nanoseconds;
 `duration_ms` remains wall time. These facts survive a filtered DEBUG start.
 Async spans and spans that exit on another thread report CPU as unavailable,
 since a thread clock would include unrelated task execution. Timing and causal
-fields take priority over optional metadata at the event field bound.
+fields take priority over optional metadata at both the field and byte bounds.
+Only trimmed records carry encoder-owned `omitted_fields` and
+`required_measurement_fields_omitted` counts; a nonzero measurement count means
+the record cannot qualify as complete timing evidence.
 
 Set `POLYLOGUE_TRACE_COMPUTE=1` before starting the process to record coarse
 `compute.queue` and `compute.service` spans at INFO. The flag is read once at

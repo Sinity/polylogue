@@ -420,6 +420,8 @@ _TRACE_FIELDS = frozenset(
     }
 )
 _ENVELOPE_FIELDS = frozenset({"ts", "level", "event", "monotonic_ns", "native_thread_id", "pid"})
+_MEASUREMENT_FIELDS = _TRACE_FIELDS - {"error_type", "reason", "error_detail"}
+_OMISSION_FIELDS = frozenset({"omitted_fields", "required_measurement_fields_omitted"})
 EVENT_MAX_BYTES = 4096
 _MAX_EVENT_INTEGER_BITS = 63
 _PHASE_NAME = re.compile(r"[a-z][a-z0-9_.]{0,47}\Z")
@@ -639,6 +641,8 @@ def _scalar(value: object) -> object:
 def _emit_raw(level: int, event: str, fields: Mapping[str, object]) -> None:
     global _sync_sink_failures
     record: dict[str, object] = dict(fields)
+    for key in _OMISSION_FIELDS:
+        record.pop(key, None)
     # Reserved keys are assigned last: a caller field can never rename the
     # event, restate its level, or forge its timestamp.
     record["monotonic_ns"] = time.monotonic_ns()
@@ -648,11 +652,28 @@ def _emit_raw(level: int, event: str, fields: Mapping[str, object]) -> None:
     record["level"] = _LEVEL_NAMES.get(level, "info")
     record["event"] = _truncate_scalar(event)
     try:
-        while len(json.dumps(record, default=str)) > EVENT_MAX_BYTES and fields:
-            removable = next((key for key in reversed(record) if key not in _ENVELOPE_FIELDS), None)
+        omitted = 0
+        required_omitted = 0
+        # json.dumps defaults to ASCII escaping, so this length is also the
+        # encoded byte length. Reserve omission slots only when trimming occurs.
+        while len(json.dumps(record, default=str)) > EVENT_MAX_BYTES or len(record) > EVENT_MAX_FIELDS:
+            candidates = [key for key in reversed(record) if key not in _ENVELOPE_FIELDS | _OMISSION_FIELDS]
+            removable = next((key for key in candidates if key not in _MEASUREMENT_FIELDS), None)
+            if removable is None and candidates:
+                # Oversized IDs can alone exceed the budget. Lose the largest
+                # required attribute first, preserving compact clock facts.
+                removable = max(candidates, key=lambda key: len(json.dumps({key: record[key]}, default=str)))
             if removable is None:
-                break
+                # Even the envelope cannot fit: count failed delivery without
+                # throwing into the operation or recursively logging a warning.
+                with _sinks_lock:
+                    _sync_sink_failures += 1
+                return
             record.pop(removable)
+            omitted += 1
+            required_omitted += int(removable in _MEASUREMENT_FIELDS)
+            record["omitted_fields"] = omitted
+            record["required_measurement_fields_omitted"] = required_omitted
     except Exception:
         # A diagnostic encoding failure cannot change the observed operation.
         with _sinks_lock:
