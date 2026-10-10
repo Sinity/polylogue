@@ -60,7 +60,7 @@ selected path without inspecting every source row
 `polylogue/storage/sqlite/archive_tiers/source.py:525-531`;
 `polylogue/storage/sqlite/archive_tiers/ops.py:218-225`).
 
-Raw inspection projects the selected component’s Raw IDs, logical keys and membership pairs on its pinned Source/Index snapshot, then applies the same exact receipt validator as executable replay plans. It does not reconstruct or hash the execution-only census and precondition witnesses.
+Raw inspection projects the selected component’s Raw IDs, logical keys and membership pairs on its pinned Source/Index snapshot, then applies the same exact receipt validator as executable replay plans. It does not reconstruct or hash the execution-only census and precondition witnesses. A page shares one exact execution-component assessment among its requested siblings only within that pinned read, after every sibling’s own census, policy, refusal and output checks. The page retains only requested Raw IDs and verdicts; a later snapshot assesses the receipts again.
 
 Raw/index materialization readiness and the archive-debt diagnostic share
 `current_typed_non_session_raw`. They may settle an unmatched raw as a valid
