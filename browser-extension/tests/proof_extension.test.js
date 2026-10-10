@@ -32,11 +32,11 @@ it("uninstalls the returned owned artifact even when its key identity differs", 
     ["Extensions.uninstall", { id: "o".repeat(32) }], ["browser.close"]]);
 });
 
-it("refuses the provider proof before any Chrome or native-manifest mutation", () => {
+it("refuses the owned provider proof outside its declared service before any Chrome mutation", () => {
   let report;
-  try { execFileSync(globalThis.process.execPath, [path.resolve("scripts/live_provider_proof.mjs")], { env: {}, stdio: "pipe" }); }
+  try { execFileSync(globalThis.process.execPath, [path.resolve("scripts/owned_provider_proof.mjs")], { env: {}, stdio: "pipe" }); }
   catch (error) { report = JSON.parse(error.stdout.toString("utf8")); }
-  expect(report).toMatchObject({ ok: false, error: { phase: "provider_preflight", category: "provider_isolation_refused" } });
+  expect(report).toMatchObject({ ok: false, error: { phase: "service_context", category: "operation_failed" } });
 });
 
 it("binds a distinct page-only identity and exact candidate resources without capture permissions", () => {

@@ -6,20 +6,12 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { firstControlJson } from "./shared_chrome_control.mjs";
 
-const PROVIDERS = {
-  chatgpt: { host: "chatgpt.com", provider: "chatgpt" },
-  claude: { host: "claude.ai", provider: "claude-ai" },
-};
 const _CONTROL_COMMAND = "/home/sinity/.local/bin/sinnix-chrome-control";
 const _DESKTOP_COMMAND = "/run/current-system/sw/bin/hyprctl";
 const _CDP_PORT = 9222;
 const _AGENT_WORKSPACE = "agentbrowser";
-const _WORKFLOW_TIMEOUT_MS = 90_000;
-const _STARTUP_TIMEOUT_MS = 30_000;
-const _INTERACTIVE_WAIT_MS = 15_000;
 const _CONTROL_TIMEOUT_MS = 10_000;
 
 const PROOF_PHASES = new Set([
@@ -56,6 +48,8 @@ const ERROR_CATEGORIES = new Map([
   ["proof_host_permission_failed", "control_failed"],
   ["proof_capture_incomplete", "capture_incomplete"],
   ["proof_owned_provider_isolation_unavailable", "provider_isolation_refused"],
+  ["proof_owned_tab_refused", "provider_isolation_refused"],
+  ["proof_owned_provider_binding_invalid", "provider_isolation_refused"],
   ["loopback_endpoint_required", "loopback_endpoint_required"],
   ["receiver_identity_mismatch", "receiver_identity_mismatch"],
   ["receiver_authentication_failed", "receiver_authentication_failed"],
@@ -108,7 +102,7 @@ function captureCategory(value) {
   return CAPTURE_CATEGORIES.has(value) ? value : "unknown";
 }
 
-function retainCaptureEvidence(provider, payload) {
+export function retainCaptureEvidence(provider, payload) {
   if (!["chatgpt", "claude-ai"].includes(provider.provider)) throw new Error("proof_capture_incomplete");
   const result = payload?.result;
   const object = result !== null && typeof result === "object" && !Array.isArray(result);
@@ -173,21 +167,7 @@ export async function inProofPhase(phase, operation) {
   return await operation();
 }
 
-function requiredEnvironment(name) {
-  const value = globalThis.process.env[name];
-  if (!value) throw new Error(`${name} must be supplied by the declared live-provider service`);
-  return value;
-}
-
-function receiverPortFromEnvironment(name) {
-  const port = Number(requiredEnvironment(name));
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`${name} is not a loopback port number`);
-  }
-  return port;
-}
-
-function requireExpectedServiceContext() {
+export function requireExpectedServiceContext() {
   // The runtime exports AGENTCTL_*; older hosts export the same values as SINNIXD_*.
   const prefix = globalThis.process.env.AGENTCTL_JOB_ID ? "AGENTCTL_" : "SINNIXD_";
   if (!globalThis.process.env[`${prefix}JOB_ID`]) {
@@ -203,19 +183,6 @@ function requireExpectedServiceContext() {
   if (!["agentctl-interactive.slice", "sinnixd-pueue-interactive.slice"].some((slice) => parts.includes(slice))) {
     throw new Error("live provider proof is not inside the interactive pool");
   }
-}
-
-function fixedInputs() {
-  const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-  const receiverPort = receiverPortFromEnvironment("POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT");
-  return {
-    extensionRoot: path.resolve(scriptDirectory, ".."),
-    receiverBaseUrl: `http://127.0.0.1:${receiverPort}`,
-    conversations: JSON.parse(requiredEnvironment("POLYLOGUE_LIVE_PROVIDER_CONVERSATIONS")),
-    timeoutMs: _WORKFLOW_TIMEOUT_MS,
-    startupTimeoutMs: _STARTUP_TIMEOUT_MS,
-    interactiveWaitMs: _INTERACTIVE_WAIT_MS,
-  };
 }
 
 function sleep(ms) {
@@ -360,67 +327,6 @@ export function runProofDesktop(args, spawnChild = spawn) {
   return runControlCommand(_DESKTOP_COMMAND, args, _CONTROL_TIMEOUT_MS, spawnChild);
 }
 
-function checkedDesktopWindow(value) {
-  if (!value || !/^0x[0-9a-f]+$/i.test(value.address || "") ||
-      !Number.isSafeInteger(value.stable_id) || value.stable_id < 0 ||
-      !Number.isSafeInteger(value.workspace_id) || !Number.isSafeInteger(value.monitor_id) || value.monitor_id < 0) throw new Error("proof_desktop_unavailable");
-  return value;
-}
-
-function desktopWindow(value) {
-  const stable = value?.stableId;
-  // Hyprland JSON writes stableId as unprefixed hexadecimal, even when all
-  // digits happen to be decimal. Lua exposes the same identity as a number.
-  if (typeof stable !== "number" && !(typeof stable === "string" && /^[0-9a-f]+$/i.test(stable))) throw new Error("proof_desktop_unavailable");
-  const identity = typeof stable === "string" ? Number.parseInt(stable, 16) : stable;
-  return checkedDesktopWindow({ address: value?.address, stable_id: identity, workspace_id: value?.workspace?.id, monitor_id: value?.monitor });
-}
-
-export async function captureProofOperator(control = runProofDesktop) {
-  const value = await control(["activewindow", "-j"]);
-  if (value?.workspace?.name === _AGENT_WORKSPACE) throw new Error("proof_agent_workspace_visible");
-  const original = desktopWindow(value);
-  const monitors = await control(["monitors", "-j"]);
-  checkedProofMonitors(monitors);
-  if (monitors.some(m => m.activeWorkspace.name === _AGENT_WORKSPACE)) throw new Error("proof_agent_workspace_visible");
-  original.monitor_workspaces = monitors.map(m => ({ monitor_id: m.id, workspace_id: m.activeWorkspace.id }));
-  return original;
-}
-
-export async function bindProofPopup(client, targetId, remaining, control = runProofDesktop, wait = sleep) {
-  if (!/^[A-F0-9]{32}$/i.test(targetId)) throw new Error("proof_popup_binding_failed");
-  // The original target id identifies only this disposable popup. Bind it to
-  // its compositor window before a native permission prompt can take focus.
-  const title = `Polylogue proof ${targetId}`;
-  await evaluateJson(client, `(() => { document.title = ${JSON.stringify(title)}; return true; })()`);
-  while (true) {
-    requireProofRunning();
-    remaining();
-    const rows = await control(["clients", "-j"]);
-    if (!Array.isArray(rows)) throw new Error("proof_popup_binding_failed");
-    const matches = rows.filter(w => w.class === "google-chrome" && w.title === `${title} - Google Chrome` && w.workspace?.name === _AGENT_WORKSPACE);
-    if (matches.length === 0) {
-      await wait(Math.min(250, remaining()));
-      continue;
-    }
-    if (matches.length !== 1) throw new Error("proof_popup_binding_failed");
-    try { return desktopWindow(matches[0]); }
-    catch { throw new Error("proof_popup_binding_failed"); }
-  }
-}
-
-export async function restoreProofOperator(original, popup, control = runProofDesktop) {
-  checkedDesktopWindow(original); checkedDesktopWindow(popup);
-  const before = original.monitor_workspaces?.find(m => m.monitor_id === popup.monitor_id);
-  if (!before || !Number.isSafeInteger(before.workspace_id)) throw new Error("proof_desktop_unavailable");
-  // This check and focus dispatch execute in one compositor transaction. A
-  // newer independent focus is preserved, including another Chrome window.
-  const response = await control(["eval", `local current = hl.get_active_window(); local original = hl.get_window("address:${original.address}"); if current and current.address == "${popup.address}" and current.stable_id == ${popup.stable_id} and current.workspace and current.workspace.name == "agentbrowser" and current.monitor and current.monitor.id == ${popup.monitor_id} then local workspace = hl.get_workspace(${before.workspace_id}); if original and original.stable_id == ${original.stable_id} and original.workspace and original.workspace.id == ${original.workspace_id} and workspace and workspace.monitor and workspace.monitor.id == ${popup.monitor_id} then hl.dispatch(hl.dsp.focus({workspace = workspace})); hl.dispatch(hl.dsp.focus({window = original})) else error("proof_desktop_unavailable") end end`]);
-  if (response?.ok !== true) throw new Error("proof_desktop_unavailable");
-  const current = desktopWindow(await control(["activewindow", "-j"]));
-  return current.address === original.address && current.stable_id === original.stable_id && current.workspace_id === original.workspace_id;
-}
-
 function checkedProofMonitors(monitors) {
   if (!Array.isArray(monitors) || monitors.length === 0 || monitors.some(m =>
     !Number.isSafeInteger(m.id) || m.id < 0 || !Number.isSafeInteger(m.activeWorkspace?.id) || typeof m.activeWorkspace?.name !== "string")) throw new Error("proof_desktop_unavailable");
@@ -549,167 +455,11 @@ export async function evaluateJson(client, expression, { userGesture = false, re
   return result.result?.value;
 }
 
-// Chrome derives an unpacked extension's id from its absolute path (or from the
-// manifest `key` when one is declared): the first 16 bytes of the SHA-256,
-// hex digits mapped onto a-p. Matching on that id, not on the manifest name,
-// binds the proof to the extension just loaded rather than to a same-named
-// extension loaded earlier from another checkout.
-function unpackedExtensionId(extensionRoot, manifest) {
-  const material = manifest.key ? globalThis.Buffer.from(manifest.key, "base64") : globalThis.Buffer.from(path.resolve(extensionRoot), "utf8");
-  const digest = createHash("sha256").update(material).digest("hex").slice(0, 32);
-  return [...digest].map((digit) => String.fromCharCode("a".charCodeAt(0) + Number.parseInt(digit, 16))).join("");
-}
-
-async function waitForExtensionWorker(extensionId, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  const prefix = `chrome-extension://${extensionId}/`;
-  while (Date.now() < deadline) {
-    const targets = await waitJson(`http://127.0.0.1:${_CDP_PORT}/json/list`, Math.min(timeoutMs, 2000));
-    const target = targets.find((item) => item.type === "service_worker" && item.url?.startsWith(prefix));
-    if (target) return connectCdp(target.webSocketDebuggerUrl);
-    await sleep(250);
-  }
-  throw new Error(`the extension just loaded (${extensionId}) has no service worker in shared Chrome`);
-}
-
-export async function receiverConfiguration(client) {
-  return evaluateJson(client, "chrome.storage.local.get(['receiverBaseUrl', 'polylogueReceiverPairing', 'polylogueAmbientSettings'])");
-}
-
-export async function configureReceiver(client, receiverBaseUrl) {
-  const outcome = await evaluateJson(client, `(async () => {
-    const pause = await chrome.runtime.sendMessage({ type: "polylogue.ambient.configure", automatic_capture_enabled: false });
-    if (!pause?.ok) throw new Error("proof_pause_failed");
-    const configured = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)} });
-    if (!configured?.ok || !Number.isSafeInteger(configured.configurationRevision)) throw new Error(configured?.error === "receiver_origin_not_permitted" ? "proof_receiver_permission_refused" : "proof_receiver_configuration_failed");
-    let revision = configured.configurationRevision;
-    try {
-      const handshake = await chrome.runtime.sendMessage({ type: "polylogue.receiverPairing.reset", expectedConfigurationRevision: revision });
-      if (Number.isSafeInteger(handshake?.configurationRevision)) revision = handshake.configurationRevision;
-      if (!handshake?.ok || handshake?.health?.status !== "ok" || !handshake?.pairing?.receiver_id || handshake.pairing.api_schema !== "polylogue-browser-capture/v1") return { ok: false, revision };
-      return { ok: true, revision, receiver_id: handshake.pairing.receiver_id, api_schema: handshake.pairing.api_schema };
-    } catch {
-      return { ok: false, revision };
-    }
-  })()`);
-  if (!outcome?.ok) {
-    const error = new Error("proof_receiver_handshake_failed");
-    error.receiverConfigurationRevision = Number.isSafeInteger(outcome?.revision) ? outcome.revision : null;
-    throw error;
-  }
-  return outcome;
-}
-
-export async function restoreReceiverConfiguration(client, previous, owned) {
-  return evaluateJson(client, `(async () => {
-    const restored = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", restore: {
-      previous: ${JSON.stringify(previous)}, owned: ${JSON.stringify(owned)}
-    } });
-    if (!restored?.ok) throw new Error("proof_receiver_configuration_changed");
-    // Incident policy remains paused. Existing queues and capture custody are
-    // untouched; this configuration restore grants no automatic resumption.
-    const paused = await chrome.runtime.sendMessage({ type: "polylogue.ambient.configure", automatic_capture_enabled: false });
-    if (!paused?.ok) throw new Error("proof_pause_restore_failed");
-    return true;
-  })()`);
-}
-
 export async function pageClient(targetId, timeoutMs) {
   const targets = await waitJson(`http://127.0.0.1:${_CDP_PORT}/json/list`, timeoutMs);
   const target = targets.find(item => item.id === targetId && item.type === "page");
   if (!target) throw new Error("owned proof page disappeared");
   return connectCdp(target.webSocketDebuggerUrl);
-}
-
-// One owner is registered before the first receiver or permission mutation.
-// Signal and normal cleanup borrow the same settlement promise; they cannot
-// remove a permission until its original grant has finished.
-export function proofReceiverCustody(client, previous, owned, origin) {
-  const owner = { client, previous, owned: { ...owned, revision: null }, origin,
-    permissionAdded: false, permissionGrant: null, configuration: null,
-    cleaning: false, settlement: null,
-    cleanup: { receiver: "unknown", permission: "not_required", mutations: "not_required" } };
-  Object.assign(cleanupEvidence, owner.cleanup);
-  pendingReceiverRestore = () => cleanupProofReceiver(owner);
-  return owner;
-}
-
-export function requestProofHostPermission(owner, afterSettlement = async () => {}) {
-  if (owner.cleaning) throw new Error("proof_shutdown_requested");
-  owner.cleanup.permission = cleanupEvidence.permission = "unknown";
-  owner.permissionGrant = (async () => {
-    let primary;
-    try {
-      const permission = `{ origins: [${JSON.stringify(owner.origin)}] }`;
-      const existing = await evaluateJson(owner.client, `chrome.permissions.contains(${permission})`);
-      if (existing === true) {
-        owner.cleanup.permission = cleanupEvidence.permission = "not_required";
-      } else {
-        if (existing !== false) throw new Error("proof_evaluation_failed");
-        if (owner.cleaning) throw new Error("proof_shutdown_requested");
-        // Request declared optional access in the owned popup with Chrome's user
-        // gesture contract, matching its Save action. Settings-site grants do not
-        // activate optional permissions. Keep this promise owned through settlement.
-        const granted = await evaluateJson(owner.client, `chrome.permissions.request(${permission})`, { userGesture: true });
-        if (granted === false) {
-          owner.cleanup.permission = cleanupEvidence.permission = "not_required";
-          throw new Error("proof_receiver_permission_refused");
-        }
-        if (granted !== true) throw new Error("proof_evaluation_failed");
-        owner.permissionAdded = true;
-        const active = await evaluateJson(owner.client, `chrome.permissions.contains(${permission})`);
-        if (active === false) throw new Error("proof_receiver_permission_refused");
-        if (active !== true) throw new Error("proof_evaluation_failed");
-      }
-    } catch (error) { primary = error; }
-    // Settle the original prompt guard after either grant result. Preserve both
-    // errors without replacing the primary permission/setup cause.
-    try { await afterSettlement(); }
-    catch (error) {
-      if (primary) throw new AggregateError([primary, error], "proof_prompt_restore_failed", { cause: primary });
-      throw error;
-    }
-    if (primary) throw primary;
-  })();
-  return owner.permissionGrant;
-}
-
-export function configureProofReceiver(owner) {
-  if (owner.cleaning) throw new Error("proof_shutdown_requested");
-  owner.configuration = configureReceiver(owner.client, owner.owned.baseUrl)
-    .then(handshake => { owner.owned.receiverId = handshake.receiver_id; owner.owned.revision = handshake.revision; return handshake; }, error => {
-      if (Number.isSafeInteger(error.receiverConfigurationRevision)) owner.owned.revision = error.receiverConfigurationRevision;
-      throw error;
-    });
-  return owner.configuration;
-}
-
-export function cleanupProofReceiver(owner) {
-  if (owner.settlement) return owner.settlement;
-  owner.cleaning = true;
-  owner.settlement = (async () => {
-    const failures = [];
-    const mutations = [owner.permissionGrant, owner.configuration].filter(Boolean);
-    owner.cleanup.mutations = mutations.length ? "settled" : "not_required";
-    for (const mutation of mutations) {
-      if (mutation) {
-        try { await mutation; } catch (error) { owner.cleanup.mutations = "failed"; failures.push(error); }
-      }
-    }
-    try { await restoreReceiverConfiguration(owner.client, owner.previous, owner.owned); owner.cleanup.receiver = "settled"; }
-    catch (error) { owner.cleanup.receiver = "failed"; failures.push(error); }
-    try {
-      if (owner.permissionAdded) {
-        const removed = await evaluateJson(owner.client, `chrome.permissions.remove({ origins: [${JSON.stringify(owner.origin)}] })`);
-        if (removed !== true) throw new Error("proof_host_permission_failed");
-        owner.permissionAdded = false;
-        owner.cleanup.permission = "settled";
-      }
-    } catch (error) { owner.cleanup.permission = "failed"; failures.push(error); }
-    Object.assign(cleanupEvidence, owner.cleanup);
-    if (failures.length) throw new AggregateError(failures, "proof_receiver_cleanup_failed");
-  })();
-  return owner.settlement;
 }
 
 export async function verifyInstalledExtension(client, extensionRoot, extensionId, manifest, extraFiles = []) {
@@ -730,30 +480,10 @@ export async function verifyInstalledExtension(client, extensionRoot, extensionI
   return { id: extensionId, version: observed.version, bundle_sha256: sha256(JSON.stringify(observed.rows)), verified_file_count: files.length };
 }
 
-async function proofWindowId(browserClient, targetId) {
-  const result = await browserClient.call("Browser.getWindowForTarget", { targetId });
-  if (!Number.isInteger(result.windowId)) throw new Error("shared Chrome proof target has no browser window");
-  return result.windowId;
-}
-
-export async function captureProvider(workerClient, provider, windowId, timeoutMs) {
-  const captured = await evaluateJson(workerClient, `(async () => {
-    const deadline = Date.now() + ${JSON.stringify(timeoutMs)};
-    while (Date.now() < deadline) {
-      const tabs = await chrome.tabs.query({ windowId: ${JSON.stringify(windowId)} });
-      if (tabs.length === 1) {
-        const tab = tabs[0];
-        try {
-          if (tab.url === ${JSON.stringify(provider.url)} && tab.pinned !== true) {
-            const result = await chrome.tabs.sendMessage(tab.id, { type: "polylogue.capturePage", providerSessionId: ${JSON.stringify(provider.nativeId)} });
-            return { result };
-          }
-        } catch { /* The content script is still loading. */ }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-    return { result: { ok: false, error: "capture_timed_out" } };
-  })()`);
+export async function captureProvider(workerClient, provider, tabId) {
+  const captured = await evaluateJson(workerClient, `(async () => ({
+    result: await globalThis.__polylogueOwnedProviderProof.capture(${JSON.stringify(tabId)}, ${JSON.stringify(provider.nativeId)})
+  }))()`);
   retainCaptureEvidence(provider, captured);
   if (provider.provider === "chatgpt") retainNativeProgress(captured?.result?.native_progress ?? []);
   return captured;
@@ -798,12 +528,8 @@ let createdTargetIds = [];
 let shutdownRequested = false;
 let pendingWindowCreation = null;
 let targetSettlement = null;
-// Set while the operator's receiver settings are replaced by the proof's, so a
-// signal restores them before exiting instead of leaving the shared extension
-// pointed at a receiver that is about to shut down.
-let pendingReceiverRestore = null;
 
-export function installShutdownCleanup() {
+export function installShutdownCleanup({ afterTargets = null } = {}) {
   for (const signal of ["SIGINT", "SIGTERM"]) {
     globalThis.process.once(signal, () => {
       if (shutdownRequested) return;
@@ -811,10 +537,8 @@ export function installShutdownCleanup() {
       // resolve an in-flight capture. Cleanup has its separate custody states.
       shutdownPhase = proofPhase;
       shutdownRequested = true;
-      Promise.resolve().then(() => pendingReceiverRestore && pendingReceiverRestore())
-        .catch(() => globalThis.process.stderr.write("proof_signal_receiver_cleanup_failed\n"))
-        .then(() => closeOwnedProofWindows())
-        .catch(() => globalThis.process.stderr.write("proof_signal_target_cleanup_failed\n"))
+      settleProofCleanup(afterTargets, null)
+        .catch(() => globalThis.process.stderr.write("proof_signal_owned_cleanup_failed\n"))
         .finally(() => {
           publishProofFailure(new Error("proof_shutdown_requested"));
           globalThis.process.exit(signal === "SIGINT" ? 130 : 143);
@@ -823,103 +547,13 @@ export function installShutdownCleanup() {
   }
 }
 
-export async function settleProofCleanup(receiverOwner, failure) {
+export async function settleProofCleanup(unloadExtension, failure) {
   const cleanupErrors = [];
-  try { if (receiverOwner) await cleanupProofReceiver(receiverOwner); }
-  catch (error) { cleanupErrors.push(error); }
-  pendingReceiverRestore = null;
-  try { await closeOwnedProofWindows(); }
-  catch (error) { cleanupErrors.push(error); }
-  if (cleanupErrors.length) throw new AggregateError([...(failure ? [failure] : []), ...cleanupErrors], "live proof cleanup failed", { cause: failure });
-}
-
-async function runLiveProviderProof() {
-  // Pausing background capture does not stop static MAIN-world interception
-  // or tab-status readers. No provider artifact may load until registration
-  // is restricted to proof-owned tabs before those effects can begin.
-  await inProofPhase("provider_preflight", () => { throw new Error("proof_owned_provider_isolation_unavailable"); });
-  await inProofPhase("service_context", () => requireExpectedServiceContext());
-  installShutdownCleanup();
-  const { extensionRoot, receiverBaseUrl, conversations, timeoutMs, startupTimeoutMs, interactiveWaitMs } = await inProofPhase("inputs", () => fixedInputs());
-  const deadline = Date.now() + timeoutMs;
-  const remaining = (phase) => {
-    requireProofRunning();
-    const budget = deadline - Date.now();
-    if (budget <= 0) throw new Error(`live provider proof timed out during ${phase}`);
-    return budget;
-  };
-  const selected = conversations.map(({ name, url, nativeId }) => {
-    const provider = PROVIDERS[name];
-    if (!provider || new globalThis.URL(url).hostname !== provider.host || !nativeId) throw new Error("invalid exact proof conversation");
-    return { ...provider, url, nativeId };
-  });
-  const manifest = JSON.parse(readFileSync(path.join(extensionRoot, "manifest.json"), "utf8"));
-  let workerClient;
-  let previousReceiverConfiguration;
-  let popupClient;
-  let receiverOwner;
-  let failure;
-  let result;
-  const origin = `${receiverBaseUrl}/*`;
-  try {
-    await inProofPhase("chrome_status", () => runChromeControl(["status"], Math.min(_CONTROL_TIMEOUT_MS, remaining("shared Chrome status"))));
-    await inProofPhase("extension_load", () => runChromeControl(["load-extension", "--path", extensionRoot], Math.min(_CONTROL_TIMEOUT_MS, remaining("extension load"))));
-    const version = await inProofPhase("chrome_connect", () => waitJson(`http://127.0.0.1:${_CDP_PORT}/json/version`, Math.min(startupTimeoutMs, remaining("shared Chrome CDP"))));
-    ownProofBrowser(await inProofPhase("chrome_connect", () => connectCdp(version.webSocketDebuggerUrl)));
-    workerClient = await inProofPhase("extension_startup", () => waitForExtensionWorker(unpackedExtensionId(extensionRoot, manifest), Math.min(startupTimeoutMs, remaining("extension startup"))));
-    const originalOperator = await inProofPhase("desktop_snapshot", () => captureProofOperator());
-    const popupTarget = await inProofPhase("popup_open", () => openProofWindow(`chrome-extension://${unpackedExtensionId(extensionRoot, manifest)}/src/popup.html`, remaining("proof popup")));
-    popupClient = await inProofPhase("popup_connect", () => pageClient(popupTarget, remaining("proof popup")));
-    const ownedPopup = await inProofPhase("popup_bind", () => bindProofPopup(popupClient, popupTarget, () => remaining("popup binding")));
-    previousReceiverConfiguration = await inProofPhase("receiver_snapshot", () => receiverConfiguration(popupClient));
-    receiverOwner = proofReceiverCustody(popupClient, previousReceiverConfiguration,
-      { baseUrl: receiverBaseUrl, receiverId: null },
-      origin);
-    if (shutdownRequested) throw new Error("proof_shutdown_requested");
-    const paused = await inProofPhase("pause", () => evaluateJson(popupClient, 'chrome.runtime.sendMessage({ type: "polylogue.ambient.configure", automatic_capture_enabled: false })'));
-    if (!paused?.ok) throw new Error("proof_pause_failed");
-    const installedExtension = await inProofPhase("revision", () => verifyInstalledExtension(popupClient, extensionRoot, unpackedExtensionId(extensionRoot, manifest), manifest));
-    await inProofPhase("permission_grant", () => requestProofHostPermission(receiverOwner, () => restoreProofOperator(originalOperator, ownedPopup)));
-    if (shutdownRequested) throw new Error("proof_shutdown_requested");
-    await inProofPhase("receiver_pairing", () => configureProofReceiver(receiverOwner));
-    if (shutdownRequested) throw new Error("proof_shutdown_requested");
-    const proofTargets = [];
-    for (const provider of selected) {
-      await inProofPhase("provider_preflight", () => requireHiddenProofWorkspace());
-      const targetId = await inProofPhase("provider_open", () => openProofWindow(provider.url, Math.min(_CONTROL_TIMEOUT_MS, remaining(`open ${provider.host}`))));
-      proofTargets.push({ provider, windowId: await inProofPhase("provider_window", () => proofWindowId(activeBrowserClient, targetId)) });
-    }
-    if (interactiveWaitMs > 0) await inProofPhase("provider_wait", () => sleep(Math.min(interactiveWaitMs, remaining("interactive wait"))));
-    const captures = await inProofPhase("capture", () => Promise.all(proofTargets.map(async ({ provider, windowId }) =>
-      [provider, await captureProvider(popupClient, provider, windowId, remaining("provider capture"))])));
-    const summary = await inProofPhase("summary", () => Object.fromEntries(captures.map(([provider, captured]) => [provider.host, providerSummary(provider, captured)])));
-    if (!Object.values(summary).every(item => item.ok === true)) throw new Error("proof_capture_incomplete");
-    result = { extension: installedExtension, ok: Object.values(summary).every((item) => item.ok === true), providers: summary, automatic_capture_enabled: false, privacy_posture: "shared-Chrome output hashes session ids and omits transcript text" };
-  } catch (error) {
-    failure = error;
-  } finally {
-    try { await settleProofCleanup(receiverOwner, failure); }
-    finally {
-      // A signal's handler owns target closure and process exit. Keep its
-      // clients alive until that same receiver settlement has completed.
-      if (!shutdownRequested) {
-        if (workerClient) workerClient.close();
-        if (popupClient) popupClient.close();
-        if (activeBrowserClient) activeBrowserClient.close();
-        activeBrowserClient = null;
-        createdTargetIds = [];
-      }
-    }
+  try { await closeOwnedProofWindows(); } catch (error) { cleanupErrors.push(error); }
+  if (unloadExtension !== null) {
+    cleanupEvidence.mutations = "unknown";
+    try { await unloadExtension(); cleanupEvidence.mutations = "settled"; }
+    catch (error) { cleanupEvidence.mutations = "failed"; cleanupErrors.push(error); }
   }
-  if (failure) throw failure;
-  return result;
-}
-
-if (globalThis.process.argv[1] && import.meta.url === pathToFileURL(globalThis.process.argv[1]).href) {
-  runLiveProviderProof()
-    .then((result) => { if (!shutdownRequested) globalThis.process.stdout.write(`${JSON.stringify(result)}\n`); })
-    .catch((error) => {
-      publishProofFailure(error);
-      globalThis.process.exitCode = 1;
-    });
+  if (cleanupErrors.length) throw new AggregateError([...(failure ? [failure] : []), ...cleanupErrors], "live proof cleanup failed", { cause: failure });
 }
