@@ -560,6 +560,13 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
         if object_count == 0:
             if _restore_tier_prototype(conn, tier, spec.baseline_version):
                 conn.execute("PRAGMA foreign_keys = ON")
+                if tier is ArchiveTier.OPS:
+                    # A prototype copies pages, including its seed row. This
+                    # destination was proved empty above and owns a new event
+                    # lifetime; existing admitted ledgers never take this path.
+                    from polylogue.storage.sqlite.archive_tiers.ops_write import _initialize_cloned_event_lifetime
+
+                    _initialize_cloned_event_lifetime(conn)
                 if tier is ArchiveTier.INDEX:
                     from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 

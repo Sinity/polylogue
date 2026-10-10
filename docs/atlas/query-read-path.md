@@ -407,3 +407,9 @@ reply evidence. Canonical unknown outcomes stay unknown. Structured outcome
 events retain each use occurrence even when two commands and outcomes match.
 The temporary association relation uses native scratch custody and never
 opens an archive tier (`analysis/transforms.py`, `core/tool_association.py`).
+
+Session title filters use Python Unicode `lower()` and literal substring matching.
+Working-directory filters compare case-sensitive path components after trimming,
+normalizing separators, collapsing repeated slashes and removing trailing slashes.
+The sync and async SQL readers use the same comparison functions as runtime
+filters; neither operation rewrites stored titles or paths.

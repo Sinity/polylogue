@@ -44,6 +44,7 @@ from polylogue.storage.io_phase_metrics import (
     native_connection_physically_closed,
     settle_connection_cursors,
 )
+from polylogue.storage.sqlite.query_comparisons import register_query_comparisons
 from polylogue.storage.sqlite.write_lease import (
     KnownTierWriteAuthority,
     UnleasedWriteError,
@@ -1397,6 +1398,7 @@ def _connect_archive_writer(
     )
     owner = NativeSQLCustodyOwner(connection)
     try:
+        register_query_comparisons(connection)
         if mutation_permit is None:
             for statement in write_connection_local_pragma_statements(profile):
                 connection.execute(statement)
@@ -2226,6 +2228,7 @@ def _open_readonly_owner(
     conn = connect_measured(database_uri, uri=True, timeout=timeout, check_same_thread=check_same_thread)
     owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=lifetime_dependencies, terminal_parent=terminal_parent)
     try:
+        register_query_comparisons(conn)
         if validate_schema:
             _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
         for stmt in profile.pragma_statements:

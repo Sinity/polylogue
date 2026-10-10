@@ -104,7 +104,6 @@ from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuer
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationSchema
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
-from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
     QueryPredicate,
     QuerySequencePredicate,
@@ -9088,21 +9087,17 @@ def _with_since_session_filter(
     if ref_paths:
         path_clauses: list[str] = []
         for ref_path in ref_paths:
-            exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(ref_path)
             path_clauses.append(
                 f"""
                 EXISTS (
                     SELECT 1
                     FROM session_working_dirs since_cwd
                     WHERE since_cwd.session_id = {table_alias}.session_id
-                      AND (
-                        REPLACE(since_cwd.path, char(92), '/') = ?
-                        OR REPLACE(since_cwd.path, char(92), '/') LIKE ? ESCAPE '\\'
-                      )
+                      AND pl_path_prefix(since_cwd.path, ?)
                 )
                 """.strip()
             )
-            merged_params.extend([exact_prefix, child_prefix])
+            merged_params.append(ref_path)
         clauses.append("(" + " OR ".join(path_clauses) + ")")
     clause = " AND ".join(clauses)
     if where:

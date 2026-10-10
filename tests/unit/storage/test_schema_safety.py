@@ -366,7 +366,7 @@ class TestSessionFilterSQL:
         assert isinstance(where_clause, str)
         assert isinstance(params, list)
         # The quote should be in params (handled by parameterization), not in SQL
-        assert "%test'provider%" in params
+        assert "test'provider" in params
         # SQL clause must use ? placeholder, not string interpolation
         assert "?" in where_clause
 
@@ -390,7 +390,7 @@ class TestSessionFilterSQL:
         assert len(params) == 0
 
     def test_build_filters_with_title_contains_special(self) -> None:
-        """Title search with SQL LIKE special characters must be safe."""
+        """Title search treats percent and underscore as literal characters."""
         from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters
 
         where_clause, params = _build_session_filters(title_contains="100% done")

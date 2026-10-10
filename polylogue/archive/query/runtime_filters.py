@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
-from polylogue.archive.query.path_prefix import path_matches_prefix
 from polylogue.archive.query.runtime_matching import (
     matches_action_sequence,
     matches_action_terms,
@@ -16,6 +15,7 @@ from polylogue.archive.query.runtime_matching import (
     matches_tool_terms,
 )
 from polylogue.archive.query.support import session_has_branches
+from polylogue.core.query_comparisons import path_matches_prefix, prose_contains
 
 if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
@@ -75,8 +75,7 @@ def apply_common_filters(
         if plan.until:
             results = [item for item in results if item.updated_at and item.updated_at <= plan.until]
         if plan.title:
-            lowered = plan.title.lower()
-            results = [item for item in results if item.display_title and lowered in item.display_title.lower()]
+            results = [item for item in results if prose_contains(item.display_title, plan.title)]
 
     # parent_id is never SQL-pushed (it is absent from ArchiveFilterKwargs), so
     # it must be applied as a residual filter on every path — not only when

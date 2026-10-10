@@ -76,7 +76,7 @@ def test_production_startup_reconverges_stale_ops_then_restart_keeps_event_ident
                 )
             )
         current_ops_digest = hashlib.sha256((root / "ops.db").read_bytes()).digest()
-        events = query_events_since(0, kinds=("synthetic_startup",)).events
+        events = query_events_since(None, kinds=("synthetic_startup",)).events
         assert len(events) == 1
         assert {
             p.name: hashlib.sha256(p.read_bytes()).digest()

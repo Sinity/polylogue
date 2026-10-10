@@ -979,6 +979,7 @@ async def _periodic_convergence_check(
     fts_owner: FtsConvergenceOwner,
     watcher_registered: asyncio.Event | None = None,
     raw_retention_callback: Callable[[], Awaitable[None]] | None = None,
+    wakeup: asyncio.Event | None = None,
 ) -> None:
     """Periodically retry recorded convergence debt."""
     db = _active_index_db_path()
@@ -1007,6 +1008,7 @@ async def _periodic_convergence_check(
         interval_s=_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS,
         gate=watcher_registered_gate(watcher_registered),
         run_first=True,
+        wakeup=wakeup,
     )
 
 
@@ -1799,7 +1801,15 @@ async def _periodic_health_check(
             partial(check_health, tiers=resolve_health_tiers(cfg.health_check_tiers), sources=sources),
         )
         if health.overall_status != "ok":
-            send_notifications(health.alerts, backend=backend, config=cfg.raw)
+            from polylogue.core.compute import compute_adapter
+
+            # Delivery may block on SMTP/HTTP. Its admitted physical call
+            # remains owned through cancellation and daemon shutdown.
+            delivery = compute_adapter().submit(
+                partial(send_notifications, health.alerts, backend=backend, config=cfg.raw),
+                admission_class="incremental-background",
+            )
+            await delivery.wait()
 
     await daemon_periodic_runner().run(
         "health_check",
@@ -2885,6 +2895,7 @@ async def _run_daemon_services_under_active_writer_lease(
     raw_observation_owner: RawObservationConvergenceOwner | None = None
     watcher_registered_gate_event: asyncio.Event | None = None
     raw_intake_wakeup = asyncio.Event()
+    convergence_wakeup = asyncio.Event()
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
     termination: BaseException | None = None
@@ -3211,6 +3222,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         fts_owner=fts_owner,
                         watcher_registered=gate,
                         raw_retention_callback=retry_raw_retention,
+                        wakeup=convergence_wakeup,
                     ),
                 ),
                 (
@@ -3669,6 +3681,10 @@ async def _run_daemon_services_under_active_writer_lease(
                                     error_type=type(exc).__name__,
                                     error_detail=str(exc),
                                 )
+                        # Publication has ended the candidate deferral. Wake
+                        # the existing debt owner after its prerequisites;
+                        # ordinary due/backoff checks still decide each retry.
+                        convergence_wakeup.set()
                         return ColdBuildSettlement("complete", attempts=generation.settlement_attempts)
 
                     async def refresh_cold_build_progress(_result: object) -> None:

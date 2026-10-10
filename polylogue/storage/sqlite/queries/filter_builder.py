@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.fields import storage_filters_require_stats_join
-from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.enums import Origin
 from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
@@ -99,9 +98,9 @@ def _build_session_filters(
         where_clauses.append("c.sort_key_ms <= ?" if needs_stats_alias else "sort_key_ms <= ?")
         params.append(_iso_to_epoch(until) * 1000.0)
     if title_contains is not None:
-        escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        where_clauses.append("c.title LIKE ? ESCAPE '\\'" if needs_stats_alias else "title LIKE ? ESCAPE '\\'")
-        params.append(f"%{escaped}%")
+        column = "c.title" if needs_stats_alias else "title"
+        where_clauses.append(f"pl_prose_contains({column}, ?)")
+        params.append(title_contains)
 
     aggregate_column = "c" if needs_stats_alias else "sessions"
     if has_tool_use:
@@ -141,14 +140,12 @@ def _build_session_filters(
             params.append(f"%{escaped}%")
     if cwd_prefix:
         session_id_col = "c.session_id" if needs_stats_alias else "sessions.session_id"
-        exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(cwd_prefix)
         where_clauses.append(
             "EXISTS (SELECT 1 FROM session_working_dirs cwd "
             f"WHERE cwd.session_id = {session_id_col} "
-            "AND (REPLACE(cwd.path, char(92), '/') = ? "
-            "OR REPLACE(cwd.path, char(92), '/') LIKE ? ESCAPE '\\'))"
+            "AND pl_path_prefix(cwd.path, ?))"
         )
-        params.extend([exact_prefix, child_prefix])
+        params.append(str(cwd_prefix))
     if action_terms:
         for term in action_terms:
             if str(term) == "none":

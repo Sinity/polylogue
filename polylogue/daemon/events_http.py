@@ -2,10 +2,10 @@
 
 Two shapes share the ``/api/events`` route:
 
-- ``GET /api/events?poll=1&since=<id>`` — JSON snapshot of new events.
+- ``GET /api/events?poll=1&since=<cursor>`` — JSON snapshot of new events.
   Used by the ETag-style polling fallback when ``EventSource`` is not
   available in the client.
-- ``GET /api/events?since=<id>`` — Server-Sent Events stream. Long-polls
+- ``GET /api/events?since=<cursor>`` — Server-Sent Events stream. Long-polls
   the daemon-event ledger for new rows and emits one SSE frame per
   event, with a heartbeat comment between idle ticks. Bounded by
   ``max_seconds`` so HTTP idle timeouts and tests cannot deadlock.
@@ -46,6 +46,7 @@ from polylogue.daemon.events import (
     EVENT_SUBSCRIBERS,
     EventCursorStatus,
     build_snapshot_envelope,
+    parse_event_cursor,
     query_events_since,
 )
 
@@ -75,7 +76,7 @@ def _build_snapshot_event(events: list[dict[str, object]]) -> dict[str, object]:
         kind = cast("str", event.get("kind", "")) or "unknown"
         counts[kind] += 1
     last = events[-1]
-    return build_snapshot_envelope(
+    snapshot = build_snapshot_envelope(
         event_id=cast("int", last["id"]),
         ts=cast("str", last["ts"]),
         event_count=len(events),
@@ -83,16 +84,18 @@ def _build_snapshot_event(events: list[dict[str, object]]) -> dict[str, object]:
         last_event_id=cast("int", last["id"]),
         kind_counts=dict(counts),
     )
+    snapshot["cursor"] = last["cursor"]
+    return snapshot
 
 
 def handle_events(handler: DaemonAPIHandler, params: dict[str, list[str]]) -> None:
     """Dispatch ``GET /api/events`` to either the poll or SSE shape."""
-    since_param = handler._get_int(params, "since", 0)
-    if since_param == 0:
-        header_id = handler.headers.get("Last-Event-ID", "")
-        with contextlib.suppress(ValueError, TypeError):
-            if header_id:
-                since_param = int(header_id)
+    since_param = handler._get_param(params, "since") or handler.headers.get("Last-Event-ID")
+    try:
+        parse_event_cursor(since_param)
+    except ValueError:
+        handler._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_event_cursor"})
+        return
     kinds_param = handler._get_param(params, "kinds")
     kinds: tuple[str, ...] = tuple(k.strip() for k in (kinds_param or "").split(",") if k.strip())
     coalesce_threshold = _resolve_coalesce_threshold(handler, params)
@@ -108,7 +111,7 @@ def handle_events(handler: DaemonAPIHandler, params: dict[str, list[str]]) -> No
                 HTTPStatus.OK,
                 {
                     "events": [resync],
-                    "last_event_id": page.latest_id,
+                    "last_event_id": page.latest_cursor,
                     "outcome": "degraded",
                     "resync": True,
                     "resync_reason": cast("dict[str, object]", resync["payload"])["reason"],
@@ -122,13 +125,13 @@ def handle_events(handler: DaemonAPIHandler, params: dict[str, list[str]]) -> No
                 HTTPStatus.OK,
                 {
                     "events": [snapshot],
-                    "last_event_id": snapshot["id"],
+                    "last_event_id": snapshot["cursor"],
                     "coalesced": True,
                     "coalesced_count": len(events),
                 },
             )
             return
-        latest = events[-1]["id"] if events else since_param
+        latest = events[-1]["cursor"] if events else page.latest_cursor
         handler._send_json(
             HTTPStatus.OK,
             {"events": events, "last_event_id": latest},
@@ -143,7 +146,7 @@ def handle_events(handler: DaemonAPIHandler, params: dict[str, list[str]]) -> No
 
 def _stream_events(
     handler: DaemonAPIHandler,
-    since: int,
+    since: str | None,
     kinds: tuple[str, ...],
     max_seconds: int,
     coalesce_threshold: int,
@@ -178,7 +181,7 @@ def _stream_events(
                 # The subscriber must refetch its materialized view; advancing
                 # to the newest retained id is the cursor that refetch is
                 # consistent with, and it cannot re-trip the same refusal.
-                cursor = page.latest_id
+                cursor = page.latest_cursor
                 subscription.advance(cursor)
                 time.sleep(1.0)
                 continue
@@ -187,11 +190,11 @@ def _stream_events(
                 if len(events) > coalesce_threshold:
                     snapshot = _build_snapshot_event(events)
                     _write_sse_event(handler, snapshot)
-                    cursor = int(cast("int", snapshot["id"]))
+                    cursor = cast("str", snapshot["cursor"])
                 else:
                     for event in events:
                         _write_sse_event(handler, event)
-                        cursor = int(cast("int", event["id"]))
+                        cursor = cast("str", event["cursor"])
                 subscription.advance(cursor)
             else:
                 _write_sse_comment(handler, b"tick")
@@ -249,7 +252,9 @@ def _write_sse_comment(handler: DaemonAPIHandler, comment: bytes) -> None:
 def _write_sse_event(handler: DaemonAPIHandler, event: dict[str, object]) -> None:
     from polylogue.core.json import dumps_bytes
 
-    event_id = event.get("id")
+    event_id = event.get("cursor")
+    if event_id is None:
+        event_id = ""
     kind = event.get("kind") or "message"
     payload = dumps_bytes(event)
     data_lines = payload.split(b"\n")

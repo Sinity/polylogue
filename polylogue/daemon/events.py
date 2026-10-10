@@ -78,10 +78,11 @@ def _open_events_reader(path: Path | None = None) -> sqlite3.Connection | None:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_events' LIMIT 1"
         ).fetchone()
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(daemon_event_retention)")}
     except BaseException:
         conn.close()
         raise
-    if exists is None:
+    if exists is None or "lifetime" not in columns:
         conn.close()
         return None
     return conn
@@ -101,6 +102,35 @@ def _iso_from_ms(value: object) -> str:
     return datetime.fromtimestamp(resolved / 1000, tz=UTC).isoformat()
 
 
+def parse_event_cursor(cursor: str | None) -> tuple[str | None, int]:
+    """Decode the opaque ledger lifetime and position; absence starts a new walk."""
+    if cursor is None:
+        return None, 0
+    if not isinstance(cursor, str):
+        raise ValueError("invalid_event_cursor")
+    lifetime, separator, position = cursor.partition(":")
+    if (
+        not separator
+        or len(lifetime) != 32
+        or any(character not in "0123456789abcdef" for character in lifetime)
+        or not position.isascii()
+        or not position.isdecimal()
+        or len(position) > 19
+    ):
+        raise ValueError("invalid_event_cursor")
+    ordinal = int(position)
+    if str(ordinal) != position or ordinal > 2**63 - 1:
+        raise ValueError("invalid_event_cursor")
+    return lifetime, ordinal
+
+
+def _ledger_lifetime(conn: sqlite3.Connection) -> str:
+    row = conn.execute("SELECT lifetime FROM daemon_event_retention WHERE ledger = ?", (_LEDGER_NAME,)).fetchone()
+    if row is None:
+        raise DatabaseError("event ledger has no lifetime identity")
+    return str(row[0])
+
+
 class EventSubscription:
     """One live subscriber's position in the ledger, held while its stream is open."""
 
@@ -110,7 +140,7 @@ class EventSubscription:
         self._registry = registry
         self._token = token
 
-    def advance(self, cursor: int) -> None:
+    def advance(self, cursor: str | None) -> None:
         """Record that the subscriber has now read every row through ``cursor``."""
         self._registry._advance(self._token, cursor)
 
@@ -143,7 +173,7 @@ class EventSubscriberRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._cursors: dict[int, int] = {}
+        self._cursors: dict[int, tuple[str | None, int]] = {}
         self._next_token = 0
         self._owners = 0
 
@@ -158,24 +188,24 @@ class EventSubscriberRegistry:
             with self._lock:
                 self._owners -= 1
 
-    def subscribe(self, cursor: int) -> EventSubscription:
+    def subscribe(self, cursor: str | None) -> EventSubscription:
         """Register a live subscriber that has read every row through ``cursor``."""
         with self._lock:
             token = self._next_token
             self._next_token += 1
-            self._cursors[token] = max(0, cursor)
+            self._cursors[token] = parse_event_cursor(cursor)
         return EventSubscription(self, token)
 
-    def _advance(self, token: int, cursor: int) -> None:
+    def _advance(self, token: int, cursor: str | None) -> None:
         with self._lock:
             if token in self._cursors:
-                self._cursors[token] = max(0, cursor)
+                self._cursors[token] = parse_event_cursor(cursor)
 
     def _close(self, token: int) -> None:
         with self._lock:
             self._cursors.pop(token, None)
 
-    def prune_through(self, latest_id: int) -> int | None:
+    def prune_through(self, latest_id: int, lifetime: str) -> int | None:
         """Return the highest id every live subscriber has read, or ``None`` when this process may not prune.
 
         With no live subscriber every row is read, so the answer is ``latest_id``.
@@ -185,7 +215,9 @@ class EventSubscriberRegistry:
                 return None
             if not self._cursors:
                 return latest_id
-            return min(latest_id, min(self._cursors.values()))
+            return min(
+                latest_id, min(position if owner == lifetime else 0 for owner, position in self._cursors.values())
+            )
 
 
 EVENT_SUBSCRIBERS = EventSubscriberRegistry()
@@ -233,7 +265,7 @@ def prune_daemon_events(
     latest_row = conn.execute("SELECT MAX(id) FROM daemon_events").fetchone()
     if latest_row is None or latest_row[0] is None:
         return 0
-    through = registry.prune_through(int(latest_row[0]))
+    through = registry.prune_through(int(latest_row[0]), _ledger_lifetime(conn))
     if through is None or through <= 0:
         return 0
     granular = sorted(GRANULAR_EVENT_KINDS | {CAPTURE_HEALTH_EVENT_KIND})
@@ -644,7 +676,8 @@ def build_snapshot_envelope(
     last_event_id: int | None,
     kind_counts: dict[str, int],
     resync_reason: str | None = None,
-    requested_since: int | None = None,
+    requested_since: str | None = None,
+    cursor: str | None = None,
 ) -> dict[str, object]:
     """Build the ``snapshot`` envelope shared by coalescing and resync.
 
@@ -666,6 +699,7 @@ def build_snapshot_envelope(
         payload["requested_since"] = requested_since
     return {
         "id": event_id,
+        "cursor": cursor,
         "ts": ts,
         "kind": "snapshot",
         "operation_id": None,
@@ -686,7 +720,9 @@ class DaemonEventPage:
     retained_min_id: int | None
     """Lowest id still in the ledger, or ``None`` when the ledger holds no rows."""
     latest_id: int
-    """The newest id the ledger has held: the cursor a resync is consistent with."""
+    """The newest numeric position the ledger has held."""
+    latest_cursor: str | None
+    """Lifetime-bound high-water consistent with a resync; None for an absent ledger."""
     resync: dict[str, object] | None = None
     """Snapshot-shaped envelope present exactly when ``status`` is ``AGED_OUT``."""
 
@@ -718,8 +754,6 @@ def _cursor_refusal_reason(last_id: int, pruned_through: int, high_water: int) -
     has read through the watermark has every later row; one below it has
     missed at least the watermark row itself.
     """
-    if last_id <= 0:
-        return None
     if last_id > high_water:
         # Ahead of every id this ledger ever held: the disposable ops tier was
         # reset or replaced under the subscriber.
@@ -730,12 +764,12 @@ def _cursor_refusal_reason(last_id: int, pruned_through: int, high_water: int) -
 
 
 def query_events_since(
-    last_id: int,
+    cursor: str | None,
     *,
     kinds: Sequence[str] | None = None,
     limit: int = 200,
 ) -> DaemonEventPage:
-    """Return the page of daemon events after ``last_id``, oldest-first.
+    """Return the page of daemon events after the opaque ``cursor``, oldest-first.
 
     Used by the live SSE stream and ETag polling fallback in the web reader.
     ``kinds`` restricts to a whitelist (empty/None means all kinds).
@@ -753,10 +787,13 @@ def query_events_since(
     the ``ROLLBACK`` in ``finally``; the connection is ``query_only``, so this
     read transaction can never become a write.
     """
+    cursor_lifetime, last_id = parse_event_cursor(cursor)
     conn = _open_events_reader()
     if conn is None:
-        if last_id <= 0:
-            return DaemonEventPage(status=EventCursorStatus.OK, events=(), retained_min_id=None, latest_id=0)
+        if cursor is None:
+            return DaemonEventPage(
+                status=EventCursorStatus.OK, events=(), retained_min_id=None, latest_id=0, latest_cursor=None
+            )
         resync = build_snapshot_envelope(
             event_id=0,
             ts=_iso_from_ms(current_epoch_ms()),
@@ -765,15 +802,26 @@ def query_events_since(
             last_event_id=None,
             kind_counts={},
             resync_reason="ledger_reset",
-            requested_since=last_id,
+            requested_since=cursor,
         )
         return DaemonEventPage(
-            status=EventCursorStatus.AGED_OUT, events=(), retained_min_id=None, latest_id=0, resync=resync
+            status=EventCursorStatus.AGED_OUT,
+            events=(),
+            retained_min_id=None,
+            latest_id=0,
+            latest_cursor=None,
+            resync=resync,
         )
     try:
         conn.execute("BEGIN")
         retained_min, latest, pruned_through = _retained_range(conn)
-        refusal = _cursor_refusal_reason(last_id, pruned_through, latest)
+        lifetime = _ledger_lifetime(conn)
+        latest_cursor = f"{lifetime}:{latest}"
+        refusal = (
+            RESYNC_LEDGER_RESET
+            if cursor_lifetime is not None and cursor_lifetime != lifetime
+            else (_cursor_refusal_reason(last_id, pruned_through, latest) if cursor is not None else None)
+        )
         if refusal is not None:
             kind_counts = {
                 str(row[0]): int(row[1])
@@ -788,13 +836,15 @@ def query_events_since(
                 last_event_id=latest if latest else None,
                 kind_counts=kind_counts,
                 resync_reason=refusal,
-                requested_since=last_id,
+                requested_since=cursor,
             )
+            resync["cursor"] = latest_cursor
             return DaemonEventPage(
                 status=EventCursorStatus.AGED_OUT,
                 events=(),
                 retained_min_id=retained_min,
                 latest_id=latest,
+                latest_cursor=latest_cursor,
                 resync=resync,
             )
         kinds_tuple = tuple(kinds or ())
@@ -818,6 +868,7 @@ def query_events_since(
             events=tuple(
                 {
                     "id": row[0],
+                    "cursor": f"{lifetime}:{row[0]}",
                     "ts": _iso_from_ms(row[1]),
                     "kind": row[2],
                     "operation_id": row[3],
@@ -827,21 +878,26 @@ def query_events_since(
             ),
             retained_min_id=retained_min,
             latest_id=latest,
+            latest_cursor=latest_cursor,
         )
     finally:
         conn.rollback()
         conn.close()
 
 
-def get_latest_event_id() -> int:
-    """Return the id of the most recent daemon event, or 0 if none exist."""
+def get_latest_event_cursor() -> str | None:
+    """Read the lifetime-bound high-water in one snapshot without hydrating events."""
     conn = _open_events_reader()
     if conn is None:
-        return 0
+        return None
     try:
+        conn.execute("BEGIN")
         row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM daemon_events").fetchone()
-        return int(row[0]) if row is not None else 0
+        assert row is not None
+        latest = max(int(row[0]), _pruned_through(conn))
+        return f"{_ledger_lifetime(conn)}:{latest}"
     finally:
+        conn.rollback()
         conn.close()
 
 
@@ -935,7 +991,7 @@ class EventSpec:
     """Tier holding the replay ledger this topic's cursor indexes."""
 
     cursor_field: str
-    """Ledger column carrying the monotonic resume cursor (``Last-Event-ID``)."""
+    """Ledger position combined with its lifetime in the public resume cursor."""
 
     frame: str
     """SSE ``event:`` frame name written on the wire for this topic."""
@@ -1240,7 +1296,7 @@ __all__ = [
     "emit_message_appended",
     "get_daemon_event_counts",
     "get_last_ingestion_batch",
-    "get_latest_event_id",
+    "get_latest_event_cursor",
     "get_recent_operations",
     "current_epoch_ms",
     "iter_daemon_events",

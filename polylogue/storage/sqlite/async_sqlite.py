@@ -21,6 +21,7 @@ import aiosqlite
 
 import polylogue.paths as _paths
 from polylogue.core.errors import DatabaseError
+from polylogue.core.query_comparisons import path_matches_prefix, prose_contains
 from polylogue.core.sql_settlement import SQLSettlementRetry
 from polylogue.storage.fts.pl_fold import pl_fold
 from polylogue.storage.io_phase_metrics import connect_measured
@@ -569,6 +570,8 @@ async def configure_connection(conn: aiosqlite.Connection, *, archive_root: Path
     await _apply_pragma_statements_async(conn, write_connection_pragma_statements(WRITE_CONNECTION_PROFILE))
     await _attach_sibling_tiers(conn, archive_root=archive_root)
     await conn.create_function("pl_fold", 1, pl_fold, deterministic=True)
+    await conn.create_function("pl_path_prefix", 2, path_matches_prefix, deterministic=True)
+    await conn.create_function("pl_prose_contains", 2, prose_contains, deterministic=True)
 
 
 async def configure_read_connection(conn: aiosqlite.Connection, *, archive_root: Path) -> None:
@@ -578,6 +581,8 @@ async def configure_read_connection(conn: aiosqlite.Connection, *, archive_root:
     await _apply_pragma_statements_async(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
     await _attach_sibling_tiers(conn, archive_root=archive_root, read_only=True)
     await conn.create_function("pl_fold", 1, pl_fold, deterministic=True)
+    await conn.create_function("pl_path_prefix", 2, path_matches_prefix, deterministic=True)
+    await conn.create_function("pl_prose_contains", 2, prose_contains, deterministic=True)
     # The same DB-boundary authorizer as the synchronous read profile: a
     # reader cannot re-enable writes, attach a writable file or mutate schema.
     await conn.set_authorizer(_authorize_read_operation)

@@ -86,8 +86,8 @@ def test_mid_stream_sqlite_error_keeps_the_body_valid_sse(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(events_http, "query_events_since", _boom)
 
-    handler = _stream_handler("/api/events?since=0&max_seconds=5")
-    handler._handle_events({"since": ["0"], "max_seconds": ["5"]})
+    handler = _stream_handler("/api/events?max_seconds=5")
+    handler._handle_events({"max_seconds": ["5"]})
 
     raw = cast("Any", handler.wfile).getvalue()
     assert calls["n"] == 1

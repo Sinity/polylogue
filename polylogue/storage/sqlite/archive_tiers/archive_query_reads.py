@@ -18,7 +18,6 @@ from polylogue.archive.query.metadata import (
     NUMERIC_QUERY_FIELD_REGISTRY,
     query_unit_descriptor,
 )
-from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryExistsPredicate,
@@ -2710,21 +2709,17 @@ def _session_filter_clause(
         )
         params.append(f"%{escaped}%")
     if cwd_prefix:
-        exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(cwd_prefix)
         clauses.append(
             f"""
             EXISTS (
                 SELECT 1
                 FROM session_working_dirs filter_cwd
                 WHERE filter_cwd.session_id = {table_alias}.session_id
-                  AND (
-                    REPLACE(filter_cwd.path, char(92), '/') = ?
-                    OR REPLACE(filter_cwd.path, char(92), '/') LIKE ? ESCAPE '\\'
-                  )
+                  AND pl_path_prefix(filter_cwd.path, ?)
             )
             """.strip()
         )
-        params.extend([exact_prefix, child_prefix])
+        params.append(str(cwd_prefix))
     if message_type:
         clauses.append(
             f"""
@@ -2738,9 +2733,8 @@ def _session_filter_clause(
         )
         params.append(message_type)
     if title:
-        clauses.append(f"{table_alias}.title LIKE ? ESCAPE '\\'")
-        escaped_title = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        params.append(f"%{escaped_title}%")
+        clauses.append(f"pl_prose_contains({table_alias}.title, ?)")
+        params.append(title)
     if min_messages is not None:
         clauses.append(f"{table_alias}.message_count >= ?")
         params.append(min_messages)
