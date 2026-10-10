@@ -52,7 +52,7 @@ function fixture({ mismatch = false, alias = false, extra = false } = {}) {
     },
   };
   deps.capture = async (_worker, provider, tabId) => {
-    const captured = await deps.evaluate(_worker, `(async () => ({result:await globalThis.__polylogueOwnedProviderProof.capture(${JSON.stringify(tabId)}, ${JSON.stringify(provider.nativeId)})}))()`);
+    const captured = await deps.evaluate(_worker, `(async () => ({result:await globalThis.__polylogueOwnedProviderProof.consumeCapture(${JSON.stringify(tabId)}, ${JSON.stringify(provider.nativeId)})}))()`);
     return captured;
   };
   return { deps, trace, binding, targets };
@@ -86,9 +86,9 @@ it("refuses physical window aliasing before extension registration", async () =>
   expect(trace).toContainEqual(["close.owned.windows"]);
 });
 
-it("refuses an extra reported tab before explicit capture and still settles owned custody", async () => {
+it("refuses an extra reported tab before consuming capture and still settles owned custody", async () => {
   const { deps, trace, binding } = fixture({ extra: true });
   await expect(runOwnedProviderProof(deps)).rejects.toThrow("proof_owned_tab_refused");
-  expect(trace.filter(row => row[0] === "evaluate" && row[1].includes(".capture(")).length).toBe(0);
+  expect(trace.filter(row => row[0] === "evaluate" && row[1].includes(".consumeCapture(")).length).toBe(0);
   expect(trace).toContainEqual(["Extensions.uninstall", { id: binding.extension_id }]);
 });

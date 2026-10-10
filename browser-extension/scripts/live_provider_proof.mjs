@@ -482,7 +482,7 @@ export async function verifyInstalledExtension(client, extensionRoot, extensionI
 
 export async function captureProvider(workerClient, provider, tabId) {
   const captured = await evaluateJson(workerClient, `(async () => ({
-    result: await globalThis.__polylogueOwnedProviderProof.capture(${JSON.stringify(tabId)}, ${JSON.stringify(provider.nativeId)})
+    result: await globalThis.__polylogueOwnedProviderProof.consumeCapture(${JSON.stringify(tabId)}, ${JSON.stringify(provider.nativeId)})
   }))()`);
   retainCaptureEvidence(provider, captured);
   if (provider.provider === "chatgpt") retainNativeProgress(captured?.result?.native_progress ?? []);

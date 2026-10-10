@@ -6,17 +6,22 @@ export async function createOwnedProviderBrowser(browser, declarations) {
   if (!Array.isArray(declarations) || declarations.length === 0) throw refused();
   const windows = new Map();
   const owned = new Map();
+  const windowNativeIds = new Map();
+  const automaticCaptures = new Map();
+  function revoke(tabId) { automaticCaptures.delete(tabId); return owned.delete(tabId); }
   for (const declaration of declarations) {
     if (!Number.isInteger(declaration.windowId) || declaration.windowId < 0 || windows.has(declaration.windowId)
-        || typeof declaration.url !== "string") throw refused();
+        || typeof declaration.url !== "string" || typeof declaration.nativeId !== "string" || !declaration.nativeId) throw refused();
     const url = new URL(declaration.url);
     if (url.protocol !== "https:" || !["chatgpt.com", "claude.ai"].includes(url.hostname)
-        || url.username || url.password || url.hash || url.toString() !== declaration.url) throw refused();
+        || url.username || url.password || url.hash || url.search || url.toString() !== declaration.url
+        || url.pathname !== `/${url.hostname === "chatgpt.com" ? "c" : "chat"}/${declaration.nativeId}`) throw refused();
     windows.set(declaration.windowId, declaration.url);
+    windowNativeIds.set(declaration.windowId, declaration.nativeId);
     // Never enumerate the operator's windows to discover a provider tab.
     const tabs = await browser.tabs.query({ windowId: declaration.windowId });
     if (tabs.length !== 1 || !valid(tabs[0], declaration.windowId, declaration.url)) throw refused();
-    owned.set(tabs[0].id, Object.freeze({ windowId: declaration.windowId, url: declaration.url }));
+    owned.set(tabs[0].id, Object.freeze({ windowId: declaration.windowId, url: declaration.url, nativeId: declaration.nativeId }));
   }
   function valid(tab, windowId, url) {
     return Number.isInteger(tab?.id) && tab.windowId === windowId && tab.url === url
@@ -26,7 +31,7 @@ export async function createOwnedProviderBrowser(browser, declarations) {
     const declaration = owned.get(tabId);
     if (!declaration) throw refused();
     const tab = await browser.tabs.get(tabId);
-    if (!valid(tab, declaration.windowId, declaration.url)) { owned.delete(tabId); throw refused(); }
+    if (!valid(tab, declaration.windowId, declaration.url)) { revoke(tabId); throw refused(); }
     return tab;
   }
   async function documentFor(tabId) {
@@ -34,7 +39,7 @@ export async function createOwnedProviderBrowser(browser, declarations) {
     const rows = await browser.scripting.executeScript({ target: { tabId }, world: "ISOLATED",
       func: expectedUrl => globalThis.location.href === expectedUrl, args: [tab.url] });
     if (rows.length !== 1 || rows[0].frameId !== 0 || rows[0].result !== true
-        || typeof rows[0].documentId !== "string" || !rows[0].documentId) { owned.delete(tabId); throw refused(); }
+        || typeof rows[0].documentId !== "string" || !rows[0].documentId) { revoke(tabId); throw refused(); }
     // The asynchronous document probe can overlap a tab move or SPA navigation.
     await current(tabId);
     return rows[0].documentId;
@@ -67,7 +72,16 @@ export async function createOwnedProviderBrowser(browser, declarations) {
     async sendMessage(tabId, message, options = {}) {
       const documentId = await documentFor(tabId);
       if (options.documentId !== undefined && options.documentId !== documentId) throw refused();
-      return browser.tabs.sendMessage(tabId, message, { ...options, documentId });
+      const capture = message.type === "polylogue.capturePage" ? { documentId, settled: false } : null;
+      if (capture) automaticCaptures.set(tabId, capture);
+      const result = await browser.tabs.sendMessage(tabId, message, { ...options, documentId });
+      if (capture) {
+        if (documentId !== await documentFor(tabId)) { revoke(tabId); throw refused(); }
+        if (automaticCaptures.get(tabId) === capture) {
+          capture.result = result; capture.settled = true;
+        }
+      }
+      return result;
     },
     async update(tabId, properties) {
       const tab = await current(tabId);
@@ -76,7 +90,7 @@ export async function createOwnedProviderBrowser(browser, declarations) {
       await current(tabId);
       return updated;
     },
-    async remove(tabId) { await current(tabId); await browser.tabs.remove(tabId); owned.delete(tabId); },
+    async remove(tabId) { await current(tabId); await browser.tabs.remove(tabId); revoke(tabId); },
     async create(properties) {
       if (!windows.has(properties.windowId) || properties.url !== windows.get(properties.windowId)
           || properties.pinned === true) throw refused();
@@ -86,25 +100,25 @@ export async function createOwnedProviderBrowser(browser, declarations) {
         if (Number.isInteger(tab?.id)) await browser.tabs.remove(tab.id);
         throw refused();
       }
-      owned.set(tab.id, Object.freeze({ windowId: tab.windowId, url: tab.url }));
+      owned.set(tab.id, Object.freeze({ windowId: tab.windowId, url: tab.url, nativeId: windowNativeIds.get(tab.windowId) }));
       return tab;
     },
     onActivated: event(browser.tabs.onActivated, listener => info => {
       const declaration = owned.get(info.tabId);
       if (!declaration) return;
-      if (info.windowId !== undefined && info.windowId !== declaration.windowId) { owned.delete(info.tabId); return; }
+      if (info.windowId !== undefined && info.windowId !== declaration.windowId) { revoke(info.tabId); return; }
       void current(info.tabId).then(() => listener(info), () => undefined);
     }),
     onUpdated: event(browser.tabs.onUpdated, listener => (tabId, change, tab) => {
       const declaration = owned.get(tabId);
       if (!declaration) return;
       if ((change.url !== undefined && change.url !== declaration.url) || !valid(tab, declaration.windowId, declaration.url)) {
-        owned.delete(tabId); return;
+        revoke(tabId); return;
       }
       void current(tabId).then(() => listener(tabId, change, tab), () => undefined);
     }),
     onRemoved: event(browser.tabs.onRemoved, listener => (tabId, ...args) => {
-      if (!owned.delete(tabId)) return;
+      if (!revoke(tabId)) return;
       listener(tabId, ...args);
     }),
   });
@@ -151,8 +165,15 @@ export async function createOwnedProviderBrowser(browser, declarations) {
     tabs, scripting, runtime, action });
   return Object.freeze({ browser: restricted,
     async ownedTabs() { return tabs.query({}); },
-    async capture(tabId, nativeId) {
-      return tabs.sendMessage(tabId, { type: "polylogue.capturePage", providerSessionId: nativeId });
+    async consumeCapture(tabId, nativeId) {
+      const declaration = owned.get(tabId);
+      if (!declaration || nativeId !== declaration.nativeId) throw refused();
+      const capture = automaticCaptures.get(tabId);
+      if (!capture?.settled) throw refused();
+      if (capture.documentId !== await documentFor(tabId)) { revoke(tabId); throw refused(); }
+      if (automaticCaptures.get(tabId) !== capture) throw refused();
+      automaticCaptures.delete(tabId);
+      return capture.result;
     },
     async startCapture() {
       if (messageListeners.size !== 1) throw refused();

@@ -36,7 +36,7 @@ function fixture() {
     action: { setBadgeText: vi.fn(), setBadgeBackgroundColor: vi.fn() },
     storage: {}, permissions: {}, alarms: { onAlarm: event() },
   };
-  return { rows, browser, declarations: [{ windowId: 21, url: firstUrl }, { windowId: 22, url: secondUrl }] };
+  return { rows, browser, declarations: [{ windowId: 21, url: firstUrl, nativeId: "neutral-first" }, { windowId: 22, url: secondUrl, nativeId: "neutral-second" }] };
 }
 const settle = () => new Promise(resolve => globalThis.setTimeout(resolve, 0));
 
@@ -99,6 +99,70 @@ it("revokes ownership when a tab moves or navigates during the document probe", 
     await expect(owner.browser.tabs.sendMessage(11, { type: "polylogue.capturePage" })).rejects.toThrow("proof_owned_tab_refused");
     expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
   }
+});
+
+it("consumes the exact automatic capture once and refuses stale or wrong-target results", async () => {
+  for (const patch of [{ windowId: 90 }, { url: "https://chatgpt.com/c/outside" }, { documentId: "new-document" }]) {
+    const { browser, declarations, rows } = fixture();
+    const owner = await createOwnedProviderBrowser(browser, declarations);
+    const result = { ok: true, envelope: { neutral: true }, captureResult: { artifact_ref: "neutral-artifact" } };
+    browser.tabs.sendMessage.mockResolvedValueOnce(result);
+    await owner.browser.tabs.sendMessage(11, { type: "polylogue.capturePage", reason: "auto_capture_missing" });
+    await expect(owner.consumeCapture(99, "neutral-first")).rejects.toThrow("proof_owned_tab_refused");
+    await expect(owner.consumeCapture(11, "neutral-second")).rejects.toThrow("proof_owned_tab_refused");
+    if (patch.documentId) browser.scripting.executeScript.mockResolvedValueOnce([{ frameId: 0, documentId: patch.documentId, result: true }]);
+    else rows.set(11, { ...rows.get(11), ...patch });
+    await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_owned_tab_refused");
+    expect(browser.tabs.sendMessage).toHaveBeenCalledTimes(1);
+  }
+  for (const result of [{ ok: true, envelope: { neutral: true }, captureResult: { artifact_ref: "neutral-artifact" } },
+    { ok: false, error: "capture_cancelled", outcome: "cancelled" }]) {
+    const { browser, declarations } = fixture();
+    const owner = await createOwnedProviderBrowser(browser, declarations);
+    browser.tabs.sendMessage.mockResolvedValueOnce(result);
+    await owner.browser.tabs.sendMessage(11, { type: "polylogue.capturePage", reason: "auto_capture_missing" });
+    expect(await owner.consumeCapture(11, "neutral-first")).toBe(result);
+    await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_owned_tab_refused");
+    expect(browser.tabs.sendMessage).toHaveBeenCalledTimes(1);
+  }
+});
+
+it("never consumes an older completion while a newer automatic capture is pending", async () => {
+  const { browser, declarations } = fixture();
+  const owner = await createOwnedProviderBrowser(browser, declarations);
+  let first; let second;
+  browser.tabs.sendMessage.mockImplementationOnce(() => new Promise(resolve => { first = resolve; }))
+    .mockImplementationOnce(() => new Promise(resolve => { second = resolve; }));
+  const older = owner.browser.tabs.sendMessage(11, { type: "polylogue.capturePage", reason: "auto_capture_missing" });
+  await vi.waitFor(() => expect(first).toBeTypeOf("function"));
+  const newer = owner.browser.tabs.sendMessage(11, { type: "polylogue.capturePage", reason: "auto_capture_unconverged_provider" });
+  await vi.waitFor(() => expect(second).toBeTypeOf("function"));
+  first({ ok: true, revision: "older" }); await older;
+  await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_owned_tab_refused");
+  const result = { ok: true, revision: "newer" };
+  second(result); await newer;
+  expect(await owner.consumeCapture(11, "neutral-first")).toBe(result);
+  expect(browser.tabs.sendMessage).toHaveBeenCalledTimes(2);
+});
+
+it("preserves a newer capture when it starts during old result validation", async () => {
+  const { browser, declarations } = fixture();
+  const owner = await createOwnedProviderBrowser(browser, declarations);
+  browser.tabs.sendMessage.mockResolvedValueOnce({ ok: true, revision: "older" });
+  await owner.browser.tabs.sendMessage(11, { type: "polylogue.capturePage", reason: "auto_capture_missing" });
+  let resolveNewer; let newer;
+  browser.tabs.sendMessage.mockImplementationOnce(() => new Promise(resolve => { resolveNewer = resolve; }));
+  browser.scripting.executeScript.mockImplementationOnce(async () => {
+    newer = owner.browser.tabs.sendMessage(11, { type: "polylogue.capturePage", reason: "auto_capture_unconverged_provider" });
+    await vi.waitFor(() => expect(resolveNewer).toBeTypeOf("function"));
+    return [{ frameId: 0, documentId: "neutral-document", result: true }];
+  });
+  await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_owned_tab_refused");
+  expect((await owner.browser.tabs.get(11)).id).toBe(11);
+  const result = { ok: true, revision: "newer" };
+  resolveNewer(result); await newer;
+  expect(await owner.consumeCapture(11, "neutral-first")).toBe(result);
+  expect(browser.tabs.sendMessage).toHaveBeenCalledTimes(2);
 });
 
 it("filters the actual production event router before unknown or moved tabs reach handlers", async () => {
@@ -192,6 +256,10 @@ it("runs automatic production capture and injection only through the admitted br
   browser.tabs.onUpdated.emit(99, { status: "complete" }, rows.get(99));
   await owner.startCapture();
   expect(stored.polylogueAmbientSettings.automatic_capture_enabled).toBe(true);
+  await expect(owner.consumeCapture(11, "neutral-second")).rejects.toThrow("proof_owned_tab_refused");
+  expect(await owner.consumeCapture(11, "neutral-first")).toEqual({ ok: false, error: "neutral_capture_refused" });
+  expect(await owner.consumeCapture(12, "neutral-second")).toEqual({ ok: false, error: "neutral_capture_refused" });
+  await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_owned_tab_refused");
   const captures = browser.tabs.sendMessage.mock.calls.filter(([, message]) => message.type === "polylogue.capturePage");
   expect(captures.map(([id]) => id).sort()).toEqual([11, 12]);
   expect(captures.every(([, , options]) => options.documentId === "neutral-document")).toBe(true);
