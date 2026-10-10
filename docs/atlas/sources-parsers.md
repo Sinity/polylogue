@@ -568,6 +568,11 @@ proves each raw's exact hash, size and head-prefix bytes independently. Prefix
 message views replay the backing sealed carrier sequentially, including its
 bounded decoded spool, and set the active leaf at that prefix's final message.
 
+Uncached neutral Raw capture copies each retained input once while computing
+its SHA-256 and byte count. Before/after source identity, expected digest and
+expected length must all agree before the private capture is exposed. A
+matching captured page still reuses its existing private bytes.
+
 ## Retained validation policy
 
 The daemon converts runtime configuration into `ValidationMode` and supplies

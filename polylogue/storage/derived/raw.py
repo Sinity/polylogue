@@ -2115,8 +2115,6 @@ class RawObservationDerivation(RawObservationInspection):
                 if blob_path is None:
                     raise RetainedPreparationRetryableError(f"retained JSONL bytes are absent for raw {raw_id}")
                 before = self._blob_stat_identity(blob_path)
-                if not blob_store.verify(blob_hash, stop=compute_cancel_requested):
-                    raise RetainedPreparationRetryableError(f"retained JSONL blob changed for raw {raw_id}")
                 neutral_directory = Path(tempfile.mkdtemp(prefix="codex-neutral-", dir=scratch))
                 staged_blob = neutral_directory / "input.jsonl"
                 digest = hashlib.sha256()
