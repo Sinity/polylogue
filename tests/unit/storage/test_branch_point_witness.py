@@ -195,6 +195,18 @@ class TestBranchPointWitness:
                     assert extras["metadata"] == {"revision": "before"}
                 elif extra_kind == "file_edit":
                     assert extras["file_edit"]["old_string"] == "before"
+                    assert conn.execute(
+                        "SELECT f.old_string,b.session_id FROM file_edits f "
+                        "JOIN blocks b ON b.block_id=f.tool_use_block_id WHERE f.session_id=?",
+                        (child_id,),
+                    ).fetchone()[:] == ("before", child_id)
+                    assert (
+                        conn.execute(
+                            "SELECT old_string FROM file_edits WHERE session_id='codex-session:parent'"
+                        ).fetchone()[0]
+                        == "after"
+                    )
+                    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
                 else:
                     assert extras["web_constructs"][0]["url"] == "before"
             finally:
