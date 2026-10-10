@@ -1807,15 +1807,15 @@ SESSION_LATENCY_PROFILES_SPEC = _make_table_spec(
         _raw_column("canonical_session_date", """canonical_session_date           TEXT"""),
         _raw_column(
             "median_tool_call_ms",
-            """median_tool_call_ms              INTEGER NOT NULL DEFAULT 0 CHECK(median_tool_call_ms >= 0)""",
+            """median_tool_call_ms              INTEGER CHECK(median_tool_call_ms >= 0)""",
         ),
         _raw_column(
             "p90_tool_call_ms",
-            """p90_tool_call_ms                 INTEGER NOT NULL DEFAULT 0 CHECK(p90_tool_call_ms >= 0)""",
+            """p90_tool_call_ms                 INTEGER CHECK(p90_tool_call_ms >= 0)""",
         ),
         _raw_column(
             "max_tool_call_ms",
-            """max_tool_call_ms                 INTEGER NOT NULL DEFAULT 0 CHECK(max_tool_call_ms >= 0)""",
+            """max_tool_call_ms                 INTEGER CHECK(max_tool_call_ms >= 0)""",
         ),
         _raw_column(
             "stuck_tool_count",
@@ -1823,11 +1823,11 @@ SESSION_LATENCY_PROFILES_SPEC = _make_table_spec(
         ),
         _raw_column(
             "median_agent_response_ms",
-            """median_agent_response_ms         INTEGER NOT NULL DEFAULT 0 CHECK(median_agent_response_ms >= 0)""",
+            """median_agent_response_ms         INTEGER CHECK(median_agent_response_ms >= 0)""",
         ),
         _raw_column(
             "median_user_response_ms",
-            """median_user_response_ms          INTEGER NOT NULL DEFAULT 0 CHECK(median_user_response_ms >= 0)""",
+            """median_user_response_ms          INTEGER CHECK(median_user_response_ms >= 0)""",
         ),
         _raw_column(
             "tool_call_count_by_category_json", """tool_call_count_by_category_json TEXT NOT NULL DEFAULT '{}'"""

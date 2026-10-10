@@ -9,7 +9,7 @@ from polylogue.analysis.fallback import FallbackReason
 from polylogue.analysis.temporal_source import TimeConfidence
 from polylogue.core.sources import source_name_to_origin
 
-ARCHIVE_INSIGHT_CONTRACT_VERSION = 12
+ARCHIVE_INSIGHT_CONTRACT_VERSION = 13
 
 
 class ArchiveInsightModel(BaseModel):
@@ -129,12 +129,14 @@ class SessionInferencePayload(ArchiveInsightModel):
 
 
 class SessionLatencyProfilePayload(ArchiveInsightModel):
-    median_tool_call_ms: int = 0
-    p90_tool_call_ms: int = 0
-    max_tool_call_ms: int = 0
+    """Nullable durations distinguish absent timestamp pairs from measured zero."""
+
+    median_tool_call_ms: int | None = None
+    p90_tool_call_ms: int | None = None
+    max_tool_call_ms: int | None = None
     stuck_tool_count: int = 0
-    median_agent_response_ms: int = 0
-    median_user_response_ms: int = 0
+    median_agent_response_ms: int | None = None
+    median_user_response_ms: int | None = None
     tool_call_count_by_category: dict[str, int] = Field(default_factory=dict)
     construct_boundary: str = (
         "agent-response time includes both model output delay and any intervening tool execution; "

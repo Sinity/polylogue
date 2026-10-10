@@ -123,10 +123,10 @@ def test_tool_call_latency_distribution_filters_by_tool_category() -> None:
     assert payload["median_tool_call_ms"] == 1000
 
 
-def test_tool_call_latency_distribution_empty_is_all_zero() -> None:
+def test_tool_call_latency_distribution_empty_has_no_measurement() -> None:
     payload = tool_call_latency_distribution_payload([])
-    assert payload["total_sessions"] == 0
-    assert payload["median_tool_call_ms"] == 0
-    assert payload["p90_tool_call_ms"] == 0
-    assert payload["max_tool_call_ms"] == 0
+    assert payload["total_sessions"] == payload["measured_sessions"] == 0
+    assert payload["median_tool_call_ms"] is None
+    assert payload["p90_tool_call_ms"] is None
+    assert payload["max_tool_call_ms"] is None
     assert payload["stuck_tool_count"] == 0

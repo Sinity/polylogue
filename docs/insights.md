@@ -130,7 +130,10 @@ latency includes model output delay and any intervening tool execution visible
 in the archive. Provider tool latency requires timestamped start/output event
 pairs; unpaired starts contribute only to `stuck_tool_count` when the session
 end is far enough past the start. User response latency caps long idle gaps so
-calendar-scale pauses do not masquerade as sessional latency.
+calendar-scale pauses do not masquerade as sessional latency. The five duration
+metrics are `None` without measured timestamp pairs and retain measured zero.
+The distribution includes zeros and reports `measured_sessions` separately
+from its selected `total_sessions`.
 
 MCP exposes three readers over these same rows:
 `session_latency_profile(session_id)`,

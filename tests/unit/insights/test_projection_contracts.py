@@ -19,7 +19,7 @@ def test_incompatible_insight_payloads_advance_published_versions() -> None:
     Anti-vacuity: pinning either discriminator to its former value makes this
     fail even if the payload remains internally valid.
     """
-    assert ARCHIVE_INSIGHT_CONTRACT_VERSION == 12
+    assert ARCHIVE_INSIGHT_CONTRACT_VERSION == 13
     assert INSIGHT_EXPORT_BUNDLE_VERSION == 2
 
 

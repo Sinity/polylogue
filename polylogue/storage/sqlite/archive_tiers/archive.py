@@ -10077,9 +10077,15 @@ def _session_latency_profile_from_archive_row(
         title=str(row["title"]) if row["title"] is not None else None,
         provenance=_archive_provenance(provenance),
         latency=SessionLatencyProfilePayload(
-            median_tool_call_ms=int(tool_facts["median_tool_call_ms"]) if tool_facts is not None else 0,
-            p90_tool_call_ms=int(tool_facts["p90_tool_call_ms"]) if tool_facts is not None else 0,
-            max_tool_call_ms=int(tool_facts["max_tool_call_ms"]) if tool_facts is not None else 0,
+            median_tool_call_ms=int(tool_facts["median_tool_call_ms"])
+            if tool_facts is not None and tool_facts["median_tool_call_ms"] is not None
+            else None,
+            p90_tool_call_ms=int(tool_facts["p90_tool_call_ms"])
+            if tool_facts is not None and tool_facts["p90_tool_call_ms"] is not None
+            else None,
+            max_tool_call_ms=int(tool_facts["max_tool_call_ms"])
+            if tool_facts is not None and tool_facts["max_tool_call_ms"] is not None
+            else None,
             stuck_tool_count=int(tool_facts["stuck_tool_count"]) if tool_facts is not None else 0,
             median_agent_response_ms=_median_ms(agent_response_ms),
             median_user_response_ms=_median_ms(user_response_ms),
@@ -10102,9 +10108,9 @@ def _latency_tool_category_counts(conn: sqlite3.Connection, session_id: str) -> 
     return {str(row["category"]): int(row["count"] or 0) for row in rows}
 
 
-def _median_ms(values: list[int]) -> int:
+def _median_ms(values: list[int]) -> int | None:
     if not values:
-        return 0
+        return None
     ordered = sorted(values)
     middle = len(ordered) // 2
     if len(ordered) % 2:

@@ -147,14 +147,14 @@ def compute_session_timing(
 
 @dataclass(frozen=True, slots=True)
 class SessionLatencyProfileFacts:
-    """Per-session latency aggregate derived from messages and session events."""
+    """Per-session latency: None means unmeasured; zero is a measured interval."""
 
-    median_tool_call_ms: int = 0
-    p90_tool_call_ms: int = 0
-    max_tool_call_ms: int = 0
+    median_tool_call_ms: int | None = None
+    p90_tool_call_ms: int | None = None
+    max_tool_call_ms: int | None = None
     stuck_tool_count: int = 0
-    median_agent_response_ms: int = 0
-    median_user_response_ms: int = 0
+    median_agent_response_ms: int | None = None
+    median_user_response_ms: int | None = None
     tool_call_count_by_category: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -179,9 +179,9 @@ class SessionLatencyProfileFacts:
         )
 
 
-def _median_ms(values: list[int]) -> int:
+def _median_ms(values: list[int]) -> int | None:
     if not values:
-        return 0
+        return None
     sorted_values = sorted(values)
     midpoint = len(sorted_values) // 2
     if len(sorted_values) % 2:
@@ -357,8 +357,8 @@ def compute_session_latency_profile(
     sorted_tool_durations = sorted(tool_durations)
     return SessionLatencyProfileFacts(
         median_tool_call_ms=_median_ms(tool_durations),
-        p90_tool_call_ms=int(percentile(sorted_tool_durations, 0.9, method="nearest")),
-        max_tool_call_ms=max(tool_durations) if tool_durations else 0,
+        p90_tool_call_ms=int(percentile(sorted_tool_durations, 0.9, method="nearest")) if tool_durations else None,
+        max_tool_call_ms=max(tool_durations) if tool_durations else None,
         stuck_tool_count=stuck_tool_count,
         median_agent_response_ms=_median_ms(agent_response_ms),
         median_user_response_ms=_median_ms(user_response_ms),

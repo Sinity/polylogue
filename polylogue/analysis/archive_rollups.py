@@ -339,7 +339,10 @@ def tool_call_latency_distribution_payload(
     *,
     tool_category: str | None = None,
 ) -> dict[str, object]:
-    """Distribution of materialized per-session tool-call latency (#1691).
+    """Distribution of measured per-session tool-call latency (#1691).
+
+    Selected sessions without timed pairs remain in total_sessions, but only
+    measured_sessions supply durations. Measured zero participates normally.
 
     Reuses the nearest-rank percentile from
     :mod:`polylogue.core.stats` (``percentile(..., method='nearest')``)
@@ -347,9 +350,9 @@ def tool_call_latency_distribution_payload(
     """
     from polylogue.core.stats import percentile
 
-    def _nearest_rank(values: list[int], p: float) -> int:
+    def _nearest_rank(values: list[int], p: float) -> int | None:
         if not values:
-            return 0
+            return None
         return int(percentile(sorted(values), p / 100.0, method="nearest"))
 
     filtered = insights
@@ -357,15 +360,18 @@ def tool_call_latency_distribution_payload(
         filtered = [
             insight for insight in insights if insight.latency.tool_call_count_by_category.get(tool_category, 0) > 0
         ]
-    medians = [insight.latency.median_tool_call_ms for insight in filtered if insight.latency.median_tool_call_ms]
-    p90s = [insight.latency.p90_tool_call_ms for insight in filtered if insight.latency.p90_tool_call_ms]
-    maxes = [insight.latency.max_tool_call_ms for insight in filtered if insight.latency.max_tool_call_ms]
+    medians = [
+        insight.latency.median_tool_call_ms for insight in filtered if insight.latency.median_tool_call_ms is not None
+    ]
+    p90s = [insight.latency.p90_tool_call_ms for insight in filtered if insight.latency.p90_tool_call_ms is not None]
+    maxes = [insight.latency.max_tool_call_ms for insight in filtered if insight.latency.max_tool_call_ms is not None]
     return {
         "total_sessions": len(filtered),
+        "measured_sessions": len(medians),
         "tool_category": tool_category,
         "median_tool_call_ms": _nearest_rank(medians, 50),
         "p90_tool_call_ms": _nearest_rank(p90s, 90),
-        "max_tool_call_ms": max(maxes) if maxes else 0,
+        "max_tool_call_ms": max(maxes) if maxes else None,
         "stuck_tool_count": sum(insight.latency.stuck_tool_count for insight in filtered),
         "construct_boundary": (
             "distribution is over materialized per-session aggregates; "
