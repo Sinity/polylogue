@@ -718,6 +718,7 @@ class PreparedJsonl:
     parser_stage_artifact: PreparedJsonl | None = field(default=None, compare=False, repr=False)
     positive_evidence_filtered: bool = False
     attempt_directory: Path | None = None
+    _owns_files: bool = field(default=True, compare=False, repr=False)
     #: For a terminal failure that never read bytes into a blob (a worker
     #: lost on this file), the source's (size, mtime_ns, inode) when the
     #: failing preparation began. Publication must not apply the failure to a
@@ -970,6 +971,34 @@ class PreparedJsonl:
         self.sessions_seal.verify(self.sessions_path, full=full, stop=stop)
         self.shard_seal.verify(self.shard_path, full=full, stop=stop)
 
+    def borrow_sealed_files(self) -> PreparedJsonl:
+        """Borrow immutable parser files; their page owner retains retirement.
+
+        No writer, material continuation or projection may cross this boundary.
+        Each borrower opens its own readers and still drains their native state.
+        """
+        if (
+            self.prepared_writes
+            or self.parser_stage_artifact is not None
+            or self._thread_projection.projection is not None
+        ):
+            raise ValueError("only closed neutral parser files can be borrowed")
+        if (
+            self.publication_publisher is not None
+            or self._blob_publication.seal is not None
+            or self._blob_publication.publisher is not None
+            or self._blob_publication.page
+            or self._blob_publication.material_page
+            or self._thread_projection.seal is not None
+        ):
+            raise ValueError("neutral parser borrow cannot carry publication work")
+        return replace(
+            self,
+            _owns_files=False,
+            _blob_publication=_ArtifactBlobPublication(),
+            _thread_projection=_ArtifactThreadProjection(),
+        )
+
     def discard(self) -> None:
         if self._thread_projection.projection is not None:
             self._thread_projection.projection.close()
@@ -1016,6 +1045,8 @@ class PreparedJsonl:
                 )
         if self.sessions_path is not None:
             discard_decoded_sessions(self.sessions_path)
+        if not self._owns_files:
+            return
         if self.attempt_directory is not None:
             try:
                 shutil.rmtree(self.attempt_directory)
