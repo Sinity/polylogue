@@ -1820,7 +1820,20 @@ class RawObservationDerivation(RawObservationInspection):
                 replacement = replace(replacement, reference_seal=seal)
                 seal.validate_observers_current()
                 return replacement
-            if first_source_binding:
+            missing_neutral = sum(key not in carry.artifacts for key in carry.neutral_artifacts)
+            if first_source_binding or missing_neutral:
+                # Census can move enrichment evidence without moving the
+                # page's parser input. Rebind missing enriched carriers through
+                # the same neutral owner instead of reparsing and revalidating
+                # the acquired input in the combined worker below.
+                emit(
+                    "storage.raw_observation.neutral_rebind",
+                    phase="source_preparation",
+                    productive_id=key,
+                    reason="initial_binding" if first_source_binding else "enrichment_changed",
+                    pending=missing_neutral,
+                    bound=carry.neutral_page is not None,
+                )
                 seal = self._prepare_neutral_jsonl_then_rebind(
                     key,
                     selection=selection,
@@ -2215,6 +2228,8 @@ class RawObservationDerivation(RawObservationInspection):
             else:
                 # Parser bytes survive rebinding; schema currency is checked below.
                 neutral = cached
+            validation_owner = "skipped"
+            validation_elapsed_ms = 0.0
             if neutral.error is None and neutral.resolved_provider is not None and neutral.parsed_prefix_size != 0:
                 from polylogue.sources.revision_backfill import _retained_validation_input
 
@@ -2223,15 +2238,18 @@ class RawObservationDerivation(RawObservationInspection):
                 # consumers. Fresh captures in this carry have a shorter lifetime.
                 page = carry.neutral_page
                 reuse = None
+                validation_owner = "fresh_capture"
                 if (
                     page is not None
                     and neutral_keys[raw_id] in page.artifacts
                     and (page.captures[raw_id].staged_blob == staged_blob)
                 ):
                     reuse = page.validation_reuse.setdefault(neutral_keys[raw_id], RetainedValidationReuse())
+                    validation_owner = "page"
                     # Cached drift belongs to the page until every ordered
                     # consumer settles, independently of parser attempt directories.
                     neutral_directory = Path(page.scratch_owner.name)
+                validation_started = time.perf_counter()
                 try:
                     with _retained_validation_input(staged_blob, prefix) as (validation_path, accepted_prefix_size):
                         verdict = validate_retained_document(
@@ -2260,7 +2278,17 @@ class RawObservationDerivation(RawObservationInspection):
                     )
                 else:
                     neutral = dataclasses.replace(neutral, validation_verdict=verdict)
+                finally:
+                    validation_elapsed_ms = (time.perf_counter() - validation_started) * 1000
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
+            emit(
+                "storage.raw_observation.neutral_artifact",
+                phase="source_preparation",
+                productive_id=raw_id,
+                cached=cached is not None,
+                kind=validation_owner,
+                elapsed_ms=validation_elapsed_ms,
+            )
             refreshed_neutral[raw_id] = neutral
             return neutral
 
@@ -2444,6 +2472,14 @@ class RawObservationDerivation(RawObservationInspection):
                     zip_coordinate = captured_raw.zip_coordinate
                     provider, _blob_hash, source_path, _kind, _raw_size = descriptor
                     neutral = carry.neutral_artifacts[neutral_keys[raw_id]]
+                    existing = carry.artifacts.get(neutral_keys[raw_id])
+                    if existing is not None and existing is not neutral:
+                        # Enriched Blob continuations belong to their original
+                        # publisher and seal. A fresh bind prepares new claims;
+                        # only the detached parser/verdict owner crosses it.
+                        del carry.artifacts[neutral_keys[raw_id]]
+                        carry.attachment_refs_published.discard(id(existing))
+                        _close_prepared_carriers({}, {}, (existing,))
                     if neutral.error is not None or neutral.deferred:
                         bound = neutral
                     else:

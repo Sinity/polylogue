@@ -193,7 +193,20 @@ unchanged. Physical input and drift backing currency are checked before reuse;
 changed schema bytes or override roots require fresh validation. File-backed
 drift borrows the page scratch root through all ordered consumers and retires
 with the page. Fresh captures and later pages validate independently. Historical
-captured validation receipts keep their original evidence. The neutral
+captured validation receipts keep their original evidence. If in-place census
+publication changes enrichment evidence, missing enriched carriers return
+through this neutral preparation and fresh Source bind. Unchanged page parser
+inputs and complete validation evidence remain reusable under the same checks;
+the combined parse-and-enrich fallback does not replace their owner. Enriched
+carriers and Blob continuation claims are prepared afresh for the new seal;
+their prior physical owners retire before those new claims are used.
+`storage.raw_observation.neutral_rebind` distinguishes initial binding from
+enrichment invalidation, with `pending` for missing neutral carriers and `bound`
+for page ownership. `neutral_artifact` records parser reuse (`cached`), validation
+owner eligibility (`kind`: `page`, `fresh_capture` or `skipped`) and validator-call
+duration (`elapsed_ms`). Page ownership does not claim a
+verdict hit: fresh schema or input currency can still require the full validation
+body, whose existing `work.progress` events remain separate. The neutral
 retained enrichment also resolves any remaining persisted-output tool-result
 envelopes from matching `PostToolUse` rows in `raw_hook_events`. Those rows are
 selected by Claude origin, parent-or-session native ID, and tool-use ID through
