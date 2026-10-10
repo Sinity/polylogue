@@ -252,7 +252,20 @@ def raw_replay_application_receipt_from_connection(
     index_db_path: Path,
 ) -> JSONDocument:
     """Read receipt authority from the caller's pinned source/index snapshot."""
-    marks = ",".join("?" for _ in plan.input_raw_ids)
+    return _raw_replay_application_receipt_for_authority(
+        conn, plan.input_raw_ids, plan.logical_keys, index_db_path=index_db_path
+    )
+
+
+def _raw_replay_application_receipt_for_authority(
+    conn: sqlite3.Connection,
+    input_raw_ids: Sequence[str],
+    logical_keys: Sequence[str],
+    *,
+    index_db_path: Path,
+) -> JSONDocument:
+    """Read receipt authority from the caller's pinned source/index snapshot."""
+    marks = ",".join("?" for _ in input_raw_ids)
     source = _rows(
         conn,
         f"""
@@ -260,7 +273,7 @@ def raw_replay_application_receipt_from_connection(
                append_end_offset, parsed_at_ms, parse_error
         FROM raw_sessions WHERE raw_id IN ({marks}) ORDER BY raw_id
         """,
-        plan.input_raw_ids,
+        input_raw_ids,
     )
     memberships = _rows(
         conn,
@@ -269,7 +282,7 @@ def raw_replay_application_receipt_from_connection(
         FROM raw_session_memberships
         WHERE raw_id IN ({marks}) ORDER BY raw_id, logical_source_key
         """,
-        plan.input_raw_ids,
+        input_raw_ids,
     )
     applications = _rows(
         conn,
@@ -282,10 +295,10 @@ def raw_replay_application_receipt_from_connection(
         FROM index_tier.raw_revision_applications
         WHERE raw_id IN ({marks}) ORDER BY raw_id, decision_id
         """,
-        plan.input_raw_ids,
+        input_raw_ids,
     )
-    if plan.logical_keys:
-        key_marks = ",".join("?" for _ in plan.logical_keys)
+    if logical_keys:
+        key_marks = ",".join("?" for _ in logical_keys)
         heads = _rows(
             conn,
             f"""
@@ -298,7 +311,7 @@ def raw_replay_application_receipt_from_connection(
             WHERE logical_source_key IN ({key_marks})
             ORDER BY logical_source_key
             """,
-            plan.logical_keys,
+            logical_keys,
         )
         sessions = _rows(
             conn,
@@ -310,7 +323,7 @@ def raw_replay_application_receipt_from_connection(
             WHERE h.logical_source_key IN ({key_marks})
             ORDER BY s.session_id
             """,
-            plan.logical_keys,
+            logical_keys,
         )
     else:
         heads = []
@@ -328,8 +341,61 @@ def raw_replay_application_receipt_from_connection(
     )
 
 
+def assess_raw_replay_materialization(
+    conn: sqlite3.Connection,
+    input_raw_ids: Sequence[str],
+    *,
+    index_db_path: Path,
+) -> tuple[bool, tuple[str, ...]]:
+    """Inspect exact current receipts without constructing an executable plan.
+
+    The caller owns one pinned Source/Index snapshot. Execution still captures
+    the full immutable plan; inspection needs only its Raw IDs, logical keys
+    and membership pairs, through the same receipt postcondition validator.
+    """
+    raw_ids = tuple(sorted(dict.fromkeys(input_raw_ids)))
+    if not raw_ids:
+        raise ValueError("raw replay plan requires at least one input raw id")
+    marks = ",".join("?" for _ in raw_ids)
+    source_rows = _rows(
+        conn,
+        f"SELECT raw_id, logical_source_key FROM raw_sessions WHERE raw_id IN ({marks}) ORDER BY raw_id",
+        raw_ids,
+    )
+    if tuple(str(row["raw_id"]) for row in source_rows) != raw_ids:
+        raise RuntimeError("raw replay plan input disappeared during census")
+    membership_rows = _rows(
+        conn,
+        f"SELECT raw_id, logical_source_key FROM raw_session_memberships "
+        f"WHERE raw_id IN ({marks}) ORDER BY raw_id, logical_source_key",
+        raw_ids,
+    )
+    logical_keys = _raw_replay_logical_keys(source_rows, membership_rows)
+    expected_memberships = {(str(row["raw_id"]), str(row["logical_source_key"])) for row in membership_rows}
+    receipt = _raw_replay_application_receipt_for_authority(conn, raw_ids, logical_keys, index_db_path=index_db_path)
+    return _validate_raw_replay_application_receipt(raw_ids, logical_keys, expected_memberships, receipt)
+
+
 def validate_raw_replay_application_receipt(
     plan: RawReplayPlan,
+    receipt: Mapping[str, object],
+) -> tuple[bool, tuple[str, ...]]:
+    """Prove exact replay postconditions; parsed timestamps are never sufficient."""
+    witness = plan.authority_witness.get("memberships")
+    expected_memberships = (
+        {(str(row.get("raw_id")), str(row.get("logical_source_key"))) for row in witness if isinstance(row, dict)}
+        if isinstance(witness, list)
+        else set()
+    )
+    return _validate_raw_replay_application_receipt(
+        plan.input_raw_ids, plan.logical_keys, expected_memberships, receipt
+    )
+
+
+def _validate_raw_replay_application_receipt(
+    raw_ids: Sequence[str],
+    logical_keys: Sequence[str],
+    expected_memberships: set[tuple[str, str]],
     receipt: Mapping[str, object],
 ) -> tuple[bool, tuple[str, ...]]:
     """Prove exact replay postconditions; parsed timestamps are never sufficient."""
@@ -350,17 +416,17 @@ def validate_raw_replay_application_receipt(
     head_rows = rows("head_rows")
     session_rows = rows("session_rows")
     source_ids = {str(row.get("raw_id")) for row in source_rows}
-    if source_ids != set(plan.input_raw_ids):
+    if source_ids != set(raw_ids):
         problems.append("source receipt raw ids do not match the immutable plan")
     if any(row.get("parsed_at_ms") is None or row.get("parse_error") is not None for row in source_rows):
         problems.append("source receipt contains an unparsed or parse-failed raw")
-    expected_keys = set(plan.logical_keys)
+    expected_keys = set(logical_keys)
     head_keys = {str(row.get("logical_source_key")) for row in head_rows}
     if not expected_keys:
         problems.append("executed replay plan has no logical authority keys")
     elif head_keys != expected_keys:
         problems.append("accepted head keys do not match the immutable plan")
-    input_raw_ids = set(plan.input_raw_ids)
+    input_raw_ids = set(raw_ids)
     source_by_raw_id = {str(row.get("raw_id")): row for row in source_rows}
     if len(source_by_raw_id) != len(source_rows):
         problems.append("source receipt contains duplicate raw ids")
@@ -370,12 +436,6 @@ def validate_raw_replay_application_receipt(
         if source_revision is not None:
             membership_key = (str(membership.get("raw_id")), str(membership.get("logical_source_key")))
             membership_revisions_by_raw_and_key.setdefault(membership_key, set()).add(str(source_revision))
-    witness = plan.authority_witness.get("memberships")
-    expected_memberships = (
-        {(str(row.get("raw_id")), str(row.get("logical_source_key"))) for row in witness if isinstance(row, dict)}
-        if isinstance(witness, list)
-        else set()
-    )
     observed_memberships = {(str(row.get("raw_id")), str(row.get("logical_source_key"))) for row in membership_rows}
     if observed_memberships != expected_memberships:
         problems.append("membership receipt pairs do not match the immutable authority witness")
@@ -770,6 +830,7 @@ __all__ = [
     "BLOCKER_ORIGIN_KEY",
     "raw_authority_parser_fingerprint",
     "RawReplayPlan",
+    "assess_raw_replay_materialization",
     "build_raw_replay_plan",
     "build_raw_replay_plans",
     "describe_raw_authority_blocker",

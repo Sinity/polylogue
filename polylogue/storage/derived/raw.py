@@ -62,10 +62,8 @@ from polylogue.storage.blob_store import (
     blob_store_for_connection,
 )
 from polylogue.storage.raw_authority import (
-    build_raw_replay_plan,
+    assess_raw_replay_materialization,
     iter_parser_census_logical_keys,
-    raw_replay_application_receipt_from_connection,
-    validate_raw_replay_application_receipt,
 )
 from polylogue.storage.source_blob_restoration import stage_blob_from_recorded_source
 from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
@@ -664,7 +662,10 @@ class RawObservationInspection:
         if not self._current(frame):
             return dict.fromkeys(keys, "stale")
         with self._read() as conn:
-            return {key: self._inspect(conn, key) for key in keys}
+            # Results belong only to this page and its pinned Source/Index read.
+            # Retain requested IDs, never the component's full material rows.
+            replay_assessments: dict[str, bool | None] = dict.fromkeys(keys)
+            return {key: self._inspect(conn, key, replay_assessments=replay_assessments) for key in keys}
 
     def source_paths(self, keys: Sequence[str]) -> Mapping[str, str]:
         if not keys:
@@ -707,7 +708,9 @@ class RawObservationInspection:
         with self._read() as conn:
             return {key: refusal for key in keys if (refusal := self._decode_refusal(conn, key)) is not None}
 
-    def _inspect(self, conn: sqlite3.Connection, key: str) -> str:
+    def _inspect(
+        self, conn: sqlite3.Connection, key: str, *, replay_assessments: dict[str, bool | None] | None = None
+    ) -> str:
         from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 
         raw = conn.execute(
@@ -966,6 +969,12 @@ class RawObservationInspection:
                     evidence_path = output["accepted_source_path"] or raw["source_path"]
                     if self._enrichment_evidence_moved(conn, evidence_path, output):
                         return "stale"
+        # Every per-Raw census, policy, output and refusal check above still
+        # runs. Only this snapshot's complete execution-component receipt is
+        # shared with requested siblings that reach this same final boundary.
+        check_compute_cancelled()
+        if replay_assessments is not None and (assessed := replay_assessments.get(key)) is not None:
+            return "valid" if assessed else "stale"
         from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
 
         component, _logical_keys = expand_raw_membership_selection_sync(conn, [key])
@@ -982,13 +991,15 @@ class RawObservationInspection:
             ).fetchall()
             if not self._terminal_revision_refusal(conn, str(row["raw_id"]), row["parser_fingerprint"])
         )
-        plan = build_raw_replay_plan(conn, execution_component)
-        receipt = raw_replay_application_receipt_from_connection(
+        exact, _problems = assess_raw_replay_materialization(
             conn,
-            plan,
+            execution_component,
             index_db_path=self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path,
         )
-        exact, _problems = validate_raw_replay_application_receipt(plan, receipt)
+        if replay_assessments is not None:
+            for raw_id in execution_component:
+                if raw_id in replay_assessments:
+                    replay_assessments[raw_id] = exact
         return "valid" if exact else "stale"
 
     def _enrichment_evidence_moved(self, conn: sqlite3.Connection, source_path: object, output: sqlite3.Row) -> bool:

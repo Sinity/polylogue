@@ -1347,6 +1347,7 @@ def _large_session_profile_record(
     *,
     logical_session_id: str | None,
     materialized_at: str,
+    source_binding: str | None = None,
 ) -> SessionProfileRecord:
     row = _session_count_row(conn, session_id)
     model_usage = sync_model_usage_batch(conn, [session_id]).get(session_id, [])
@@ -1358,7 +1359,11 @@ def _large_session_profile_record(
         materialized_at=materialized_at,
         model_usage=model_usage,
         terminal_state_result=terminal_state_result,
-        input_binding=session_input_bindings(conn, (session_id,)).get(session_id),
+        input_binding=(
+            source_binding
+            if source_binding is not None and conn.in_transaction
+            else session_input_bindings(conn, (session_id,)).get(session_id)
+        ),
     )
 
 
@@ -1392,6 +1397,7 @@ def build_large_session_insight_record_bundle_sync(
     *,
     logical_session_id: str | None = None,
     materialized_at: str | None = None,
+    source_binding: str | None = None,
 ) -> SessionInsightRecordBundle:
     built_at = materialized_at or now_iso()
     profile = _large_session_profile_record(
@@ -1399,6 +1405,7 @@ def build_large_session_insight_record_bundle_sync(
         session_id,
         logical_session_id=logical_session_id,
         materialized_at=built_at,
+        source_binding=source_binding,
     )
     return SessionInsightRecordBundle(
         profile_record=profile,
@@ -1447,16 +1454,21 @@ def _materialize_progress_desc(
     return f"Materializing: {profile_count}"
 
 
-def session_insight_compute_binding(conn: sqlite3.Connection, session_id: str) -> str:
+def session_insight_compute_binding(
+    conn: sqlite3.Connection, session_id: str, *, source_binding: str | None = None
+) -> str:
     """Bind a prepared profile to every value it reads from canonical usage.
 
     ``session_model_usage`` is a derived cache, but it is the canonical cost
     projection consumed by profile construction.  Its rows are refreshed by
     the short publication phase; including their ordered values here makes a
     preparation from before that refresh fail closed instead of publishing a
-    profile whose cost columns describe the previous rollup.
+    profile whose cost columns describe the previous rollup. Callers may pass
+    a source binding already observed in the same pinned transaction; standalone
+    calls observe it afresh. The canonical usage rows are always read here.
     """
-    source_binding = session_input_bindings(conn, (session_id,)).get(session_id, "")
+    if source_binding is None:
+        source_binding = session_input_bindings(conn, (session_id,)).get(session_id, "")
     digest = hashlib.blake2b(digest_size=16)
     digest.update(source_binding.encode("utf-8"))
     for row in conn.execute(
@@ -1490,7 +1502,9 @@ def prepare_session_insight_partition(
         return PreparedSessionInsightPartition(session_id, "", "", None)
 
     input_binding = session_input_bindings(conn, (session_id,))[session_id]
-    compute_binding = session_insight_compute_binding(conn, session_id)
+    compute_binding = session_insight_compute_binding(
+        conn, session_id, source_binding=input_binding if conn.in_transaction else None
+    )
     heavy = session_id in _heavy_session_ids_sync(conn, (session_id,))
     if heavy:
         root_id = thread_root_ids_sync(conn, (session_id,)).get(session_id)
@@ -1498,6 +1512,7 @@ def prepare_session_insight_partition(
             conn,
             session_id,
             logical_session_id=root_id,
+            source_binding=input_binding if conn.in_transaction else None,
         )
     else:
         batch = load_sync_batch(conn, (session_id,))
@@ -1572,7 +1587,8 @@ def publish_prepared_session_insight_partition(
         if (
             usage_certificate is None
             or tuple(usage_certificate) != (current_input, session_usage_rollup_recipe_version())
-            or session_insight_compute_binding(conn, prepared.session_id) != prepared.compute_binding
+            or session_insight_compute_binding(conn, prepared.session_id, source_binding=current_input)
+            != prepared.compute_binding
         ):
             conn.rollback()
             return False

@@ -504,8 +504,84 @@ def test_one_pass_replays_a_shared_raw_component_once(tmp_path: Path, monkeypatc
 
         assert report.done == 2 and report.failed == report.pending == 0
         assert replay.call_count == 1
+        from polylogue.storage import raw_authority
+
+        full_plan = Mock(wraps=raw_authority._raw_replay_plan_from_rows)
+        monkeypatch.setattr(raw_authority, "_raw_replay_plan_from_rows", full_plan)
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         assert adapter.inspect(raw_observation_frame(tmp_path), raw_ids) == dict.fromkeys(raw_ids, "valid")
+        assert full_plan.call_count == 0
+
+    _run_raw_law(tmp_path, run_phase)
+
+
+@pytest.mark.uses_real_clock
+@pytest.mark.parametrize("members", [8, 64])
+def test_shared_component_inspection_reuses_receipt_only_within_its_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, members: int
+) -> None:
+    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
+        import time
+
+        from polylogue.storage.derived import raw as raw_module
+        from polylogue.storage.raw_authority import assess_raw_replay_materialization
+
+        bootstrap_archive_root(tmp_path)
+        with _fixture_archive(tmp_path) as archive:
+            raw_ids = tuple(
+                archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=_chatgpt_payload(("shared-page",)),
+                    source_path="shared-page.json",
+                    canonical_source_path="shared-page.json",
+                    source_index=index,
+                    acquired_at_ms=1,
+                )
+                for index in range(members)
+            )
+        assert _run(tmp_path, compute_adapter=compute_adapter).done == members
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
+        frame = raw_observation_frame(tmp_path)
+        assessment = Mock(wraps=assess_raw_replay_materialization)
+        monkeypatch.setattr(raw_module, "assess_raw_replay_materialization", assessment)
+        original_read = adapter._read
+        statements: list[str] = []
+
+        @contextmanager
+        def counted_read() -> Iterator[sqlite3.Connection]:
+            with original_read() as conn:
+                conn.set_trace_callback(statements.append)
+                yield conn
+
+        monkeypatch.setattr(adapter, "_read", counted_read)
+        started = time.thread_time()
+        assert adapter.inspect(frame, raw_ids) == dict.fromkeys(raw_ids, "valid")
+        metrics = {
+            "members": members,
+            "assessments": assessment.call_count,
+            "selects": sum(statement.lstrip().upper().startswith("SELECT") for statement in statements),
+            "cpu_seconds": time.thread_time() - started,
+        }
+        print(json.dumps(metrics, sort_keys=True))
+        assert assessment.call_count == 1, metrics
+        assert tuple(assessment.call_args.args[1]) == tuple(sorted(raw_ids))
+        # A new snapshot must reread a changed application, even through this
+        # same adapter and unchanged Source frame; the old clean result expires.
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute("UPDATE raw_revision_applications SET decision_id='forged' WHERE raw_id=?", (raw_ids[-1],))
+        assessment.reset_mock()
+        assert adapter.inspect(frame, raw_ids) == dict.fromkeys(raw_ids, "stale")
+        assert assessment.call_count == 1
+        # A requested non-session observation keeps its own terminal policy
+        # beside a stale session component, without borrowing its assessment.
+        if members == 8:
+            non_session = _admit(tmp_path, (), path="non-session-page.json")
+            _prepare_source_phases(adapter, raw_observation_frame(tmp_path), non_session)
+            mixed = (*raw_ids, non_session)
+            assessment.reset_mock()
+            states = adapter.inspect(raw_observation_frame(tmp_path), mixed)
+            assert states == {**dict.fromkeys(raw_ids, "stale"), non_session: "valid"}
+            assert assessment.call_count == 1
 
     _run_raw_law(tmp_path, run_phase)
 
@@ -1692,7 +1768,8 @@ def test_zero_output_requires_parser_evidence(tmp_path: Path) -> None:
     _run_raw_law(tmp_path, run_phase)
 
 
-def test_inspection_rejects_stale_parser_recipe_and_excess_identity(tmp_path: Path) -> None:
+@pytest.mark.parametrize("fingerprint_field", ["parser_fingerprint", "lowering_fingerprint"])
+def test_inspection_rejects_stale_parser_recipe_and_excess_identity(tmp_path: Path, fingerprint_field: str) -> None:
     def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
         bootstrap_archive_root(tmp_path)
         raw_id = _admit(tmp_path, ("expected",))
@@ -1700,7 +1777,7 @@ def test_inspection_rejects_stale_parser_recipe_and_excess_identity(tmp_path: Pa
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         frame = raw_observation_frame(tmp_path)
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            conn.execute("UPDATE sessions SET parser_fingerprint = 'stale'")
+            conn.execute(f"UPDATE sessions SET {fingerprint_field} = 'stale'")
             conn.commit()
         assert adapter.inspect(frame, (raw_id,))[raw_id] == "stale"
         with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -1795,7 +1872,28 @@ def test_inspection_requires_exact_application_receipt(
             value = bytes(32) if field == "accepted_content_hash" else "forged"
             conn.execute(f"UPDATE raw_revision_applications SET {field} = ? WHERE raw_id = ?", (value, raw_id))
         assert adapter.inspect(frame, (raw_id,))[raw_id] == "stale"
-        monkeypatch.setattr(raw_adapter, "validate_raw_replay_application_receipt", lambda *_args: (True, ()))
+        from polylogue.storage import raw_authority
+
+        with adapter.read_current() as conn:
+            statements: list[str] = []
+            conn.set_trace_callback(statements.append)
+            plan = raw_authority.build_raw_replay_plan(conn, (raw_id,))
+            receipt = raw_authority.raw_replay_application_receipt_from_connection(
+                conn, plan, index_db_path=tmp_path / "index.db"
+            )
+            expected = raw_authority.validate_raw_replay_application_receipt(plan, receipt)
+            full_reads = sum(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+            statements.clear()
+            observed = raw_authority.assess_raw_replay_materialization(
+                conn, (raw_id,), index_db_path=tmp_path / "index.db"
+            )
+            projected_reads = sum(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+            conn.set_trace_callback(None)
+        assert observed == expected
+        assert not observed[0]
+        assert full_reads == 11
+        assert projected_reads == 7
+        monkeypatch.setattr(raw_adapter, "assess_raw_replay_materialization", lambda *_args, **_kwargs: (True, ()))
         assert adapter.inspect(frame, (raw_id,))[raw_id] == "valid"
 
     _run_raw_law(tmp_path, run_phase)

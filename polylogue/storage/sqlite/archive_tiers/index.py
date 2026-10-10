@@ -1703,25 +1703,28 @@ END;
 -- the stored binding to the shared classifier instead of recomputing one. The
 -- ``UPDATE OF`` column lists are generated from the very projections the
 -- digest commits to, so the two cannot drift apart in a review.
+-- An already-retired binding needs no further profile row write or profile
+-- query-frame bump. Every input mutation still increments demand, including
+-- those arriving after preparation while the stored binding remains NULL.
 --
 -- ``blocks`` is deliberately absent: the declared projection binds block
 -- content through ``messages.content_hash`` rather than reading blocks
 -- directly (see ``input_binding.SESSION_INPUT_PROJECTION_COLUMNS``).
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_messages_ai
 AFTER INSERT ON messages BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_messages_au
 AFTER UPDATE OF {_binding_columns(SESSION_INPUT_PROJECTION_COLUMNS)} ON messages BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
-     WHERE session_id IN (OLD.session_id, NEW.session_id);
+     WHERE session_id IN (OLD.session_id, NEW.session_id) AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("OLD.session_id")}
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_messages_ad
 AFTER DELETE ON messages BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("OLD.session_id")}
 END;
 
@@ -1730,7 +1733,7 @@ END;
 -- reports valid after a session-row change that moved the output.
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_sessions_au
 AFTER UPDATE OF {_binding_columns(SESSION_ROW_PROJECTION_COLUMNS)} ON sessions BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_demand_sessions_ai
@@ -1765,19 +1768,19 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_refs_ai
 AFTER INSERT ON attachment_refs BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_refs_au
 AFTER UPDATE OF session_id, attachment_id, position, {_binding_columns(SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS)} ON attachment_refs BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
-     WHERE session_id IN (OLD.session_id, NEW.session_id);
+     WHERE session_id IN (OLD.session_id, NEW.session_id) AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("OLD.session_id")}
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_refs_ad
 AFTER DELETE ON attachment_refs BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("OLD.session_id")}
 END;
 
@@ -1790,7 +1793,7 @@ CREATE TRIGGER IF NOT EXISTS session_profile_binding_attachments_au
 AFTER UPDATE OF {_binding_columns(SESSION_ATTACHMENT_PROJECTION_COLUMNS, exclude=("attachment_id",))} ON attachments
 BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
-     WHERE session_id IN (SELECT r.session_id FROM attachment_refs r WHERE r.attachment_id = NEW.attachment_id);
+     WHERE session_id IN (SELECT r.session_id FROM attachment_refs r WHERE r.attachment_id = NEW.attachment_id) AND input_content_hash IS NOT NULL;
     INSERT INTO session_profile_demand(session_id, revision)
     SELECT r.session_id, 1 FROM attachment_refs r WHERE r.attachment_id = NEW.attachment_id AND 1
     ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1;
@@ -1798,7 +1801,7 @@ END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_attachments_ad
 AFTER DELETE ON attachments BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
-     WHERE session_id IN (SELECT r.session_id FROM attachment_refs r WHERE r.attachment_id = OLD.attachment_id);
+     WHERE session_id IN (SELECT r.session_id FROM attachment_refs r WHERE r.attachment_id = OLD.attachment_id) AND input_content_hash IS NOT NULL;
     INSERT INTO session_profile_demand(session_id, revision)
     SELECT r.session_id, 1 FROM attachment_refs r WHERE r.attachment_id = OLD.attachment_id AND 1
     ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1;
@@ -1806,19 +1809,19 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_events_ai
 AFTER INSERT ON session_events BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_events_au
 AFTER UPDATE OF session_id, {_binding_columns(SESSION_EVENT_PROJECTION_COLUMNS)} ON session_events BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
-     WHERE session_id IN (OLD.session_id, NEW.session_id);
+     WHERE session_id IN (OLD.session_id, NEW.session_id) AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("OLD.session_id")}
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_events_ad
 AFTER DELETE ON session_events BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("OLD.session_id")}
 END;
 
@@ -1827,19 +1830,19 @@ END;
 -- transaction; row triggers cover that route and direct edits alike.
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_working_dirs_ai
 AFTER INSERT ON session_working_dirs BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_working_dirs_au
 AFTER UPDATE OF session_id, {_binding_columns(SESSION_WORKING_DIR_PROJECTION_COLUMNS)} ON session_working_dirs BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
-     WHERE session_id IN (OLD.session_id, NEW.session_id);
+     WHERE session_id IN (OLD.session_id, NEW.session_id) AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("OLD.session_id")}
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_working_dirs_ad
 AFTER DELETE ON session_working_dirs BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("OLD.session_id")}
 END;
 
@@ -1848,20 +1851,20 @@ END;
 -- dominant model while nothing else in the projection changes.
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_usage_ai
 AFTER INSERT ON session_provider_usage_events BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_usage_au
 AFTER UPDATE OF session_id, {_binding_columns(SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS)}
 ON session_provider_usage_events BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
-     WHERE session_id IN (OLD.session_id, NEW.session_id);
+     WHERE session_id IN (OLD.session_id, NEW.session_id) AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("OLD.session_id")}
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_usage_ad
 AFTER DELETE ON session_provider_usage_events BEGIN
-    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id AND input_content_hash IS NOT NULL;
     {_profile_demand_sql("OLD.session_id")}
 END;
 

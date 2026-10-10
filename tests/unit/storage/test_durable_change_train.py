@@ -2706,6 +2706,60 @@ def test_restart_and_every_runtime_consumer_are_required_before_release(
         release_durable_change_train(train, evidence_ref="proof:premature-release")
 
 
+@pytest.mark.parametrize("change", ("proven-nul-suffix", "released-schema", "released-inode"))
+def test_persisted_train_refuses_changed_proven_content_or_released_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
+    train = _admitted(ArchiveTier.SOURCE)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE base_items SET payload=? WHERE item_id='base-1'", ("retained\x00suffix-a",))
+        conn.commit()
+        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        train = apply_durable_change_train(conn, train)
+    train = record_durable_writer_release(train, evidence_ref="proof:synthetic-release")
+    assert train.schema_replay_proof is not None
+    with sqlite3.connect(db_path) as restarted:
+        consumers = _runtime_results()
+        restart = capture_durable_restart_convergence(
+            restarted, train, runtime_consumers=consumers, evidence_ref="proof:synthetic-restart"
+        )
+    train = prove_durable_change_train(
+        train,
+        schema_replay_proof=train.schema_replay_proof,
+        runtime_consumers=consumers,
+        restart_convergence=restart,
+    )
+    if change.startswith("released-"):
+        train = release_durable_change_train(train, evidence_ref="proof:synthetic-train-release")
+        with sqlite3.connect(db_path) as unchanged:
+            assert durable_change_train_module._verify_released_train_live_tier(unchanged, train) is None
+    manifest = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
+    write_durable_change_train_manifest(manifest, train, expected_revision=-1)
+    if change == "released-inode":
+        replacement = tmp_path / "replacement.db"
+        replacement.write_bytes(db_path.read_bytes())
+        os.replace(replacement, db_path)
+    else:
+        with sqlite3.connect(db_path) as changed:
+            if change == "proven-nul-suffix":
+                changed.execute("UPDATE base_items SET payload=? WHERE item_id='base-1'", ("retained\x00suffix-b",))
+            else:
+                changed.execute("CREATE INDEX synthetic_schema_drift ON base_items(payload)")
+            changed.commit()
+    with pytest.raises(DurableChangeTrainError):
+        if change == "proven-nul-suffix":
+            durable_change_train_module._prove_and_release_persisted_train(tmp_path, manifest, train)
+        else:
+            with sqlite3.connect(db_path) as changed:
+                durable_change_train_module._verify_released_train_live_tier(changed, train)
+    retained = load_durable_change_train_manifest(manifest)
+    assert retained.state is train.state
+    assert retained.revision == train.revision
+
+
 def test_manifest_semantics_reject_out_of_order_lifecycle_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2930,8 +2984,10 @@ def test_runtime_consumer_probe_keeps_native_owner_until_creator_retry(
         assert not directory.exists()
 
 
+@pytest.mark.parametrize("cancelled", (False, True))
 def test_canonical_train_inventory_retains_actual_connection_on_close_failure(
     monkeypatch: pytest.MonkeyPatch,
+    cancelled: bool,
 ) -> None:
     from polylogue.storage.sqlite import connection_profile, managed_connection
     from tests.infra.sqlite_cursor_settlement import ControlledConnection
@@ -2943,6 +2999,7 @@ def test_canonical_train_inventory_retains_actual_connection_on_close_failure(
 
     capture = migration_runner.capture_durable_schema_inventory
     actual: ControlledConnection | None = None
+    cancellation = InterruptedError("synthetic inventory cancellation")
 
     def capture_and_arm(connection: sqlite3.Connection) -> object:
         nonlocal actual
@@ -2950,6 +3007,8 @@ def test_canonical_train_inventory_retains_actual_connection_on_close_failure(
         assert isinstance(connection, ControlledConnection)
         actual = connection
         connection.close_failure = OSError("synthetic canonical inventory close remains unsettled")
+        if cancelled:
+            raise cancellation
         return result
 
     monkeypatch.setattr(managed_connection, "connect_measured", connect)
@@ -2962,6 +3021,8 @@ def test_canonical_train_inventory_retains_actual_connection_on_close_failure(
     try:
         assert actual.close_attempts == 1
         assert failed.value.owner.connection is actual
+        if cancelled:
+            assert failed.value.__cause__ is cancellation
         with pytest.raises(RuntimeError, match="terminal cleanup"):
             failed.value.owner.require_connection()
     finally:

@@ -60,6 +60,8 @@ selected path without inspecting every source row
 `polylogue/storage/sqlite/archive_tiers/source.py:525-531`;
 `polylogue/storage/sqlite/archive_tiers/ops.py:218-225`).
 
+Raw inspection projects the selected component’s Raw IDs, logical keys and membership pairs on its pinned Source/Index snapshot, then applies the same exact receipt validator as executable replay plans. It does not reconstruct or hash the execution-only census and precondition witnesses. A page shares one exact execution-component assessment among its requested siblings only within that pinned read, after every sibling’s own census, policy, refusal and output checks. The page retains only requested Raw IDs and verdicts; a later snapshot assesses the receipts again.
+
 Raw/index materialization readiness and the archive-debt diagnostic share
 `current_typed_non_session_raw`. They may settle an unmatched raw as a valid
 non-session only from a complete typed, non-terminal artifact
@@ -711,14 +713,28 @@ so HTTP rows and page count evidence describe the same matches.
 ## Derived session records and FTS discovery
 
 Session profile materialization publishes profile, latency and repository
-observations. Run, observed-event and context-snapshot products are derived on
-read through `run_projection_relations.py`; profile preparation does not compile
+observations. Preparation and publication each reuse their own transaction’s
+already-observed source binding when computing the canonical usage binding.
+Publication still reads fresh source values and usage certification; no binding
+is shared across those transactions. The bounded large-session profile uses the
+same pinned source binding; unpinned helpers retain independent reads. Profile
+inspection skips input hashing only when stored materializer, binding, latency
+or demand facts already force missing or stale. Every possibly valid profile
+still hashes current authoritative input, in both sync and async inspection.
+Input triggers clear a surviving profile binding once; later writes while it
+is NULL still advance every demand revision without rewriting the profile row.
+Input relation query frames continue to advance independently, and a prepared
+profile cannot acknowledge later demand.
+Run, observed-event and context-snapshot
+products are derived on read through `run_projection_relations.py`; profile preparation does not compile
 a second run projection to obtain unused counters. Unscoped FTS discovery merges
 the ordered session and block-membership indexes with one distinct session-key
 page, retaining empty sessions and blocks-only keys without collecting the
 remaining archive for every page (`storage/fts/derivation.py`, `required_page`).
 FTS inspection reads table and canonical-trigger compatibility once per pinned
-page snapshot. Partition membership and identity remain separate exact counts;
+page snapshot. Each compatible session partition counts expected and missing
+membership in one aggregate over its canonical blocks and FTS docsize relation.
+Identity remains a separate exact count;
 standalone partition probes and subsequent page snapshots read fresh schema facts.
 No schema facts survive the inspection transaction.
 

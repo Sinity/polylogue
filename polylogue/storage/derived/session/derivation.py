@@ -189,6 +189,28 @@ def _classify_partition_with_demand(
     return _STALE if demanded and status == _VALID else status
 
 
+def _profile_binding_candidates(
+    stored: Mapping[str, _StoredPartition],
+    session_ids: Sequence[str],
+    *,
+    materializer_version: int,
+    demanded: set[str],
+) -> tuple[str, ...]:
+    # Self-comparison does not prove current inputs. A provisional VALID only
+    # identifies stored facts that still require the authoritative input digest.
+    return tuple(
+        session_id
+        for session_id in session_ids
+        if _classify_partition_with_demand(
+            partition := stored.get(session_id, _ABSENT_PARTITION),
+            partition.input_binding,
+            materializer_version=materializer_version,
+            demanded=session_id in demanded,
+        )
+        == _VALID
+    )
+
+
 def _stored_partitions(conn: sqlite3.Connection, session_ids: Sequence[str]) -> Mapping[str, _StoredPartition]:
     unique = tuple(dict.fromkeys(session_ids))
     if not unique:
@@ -231,9 +253,7 @@ def inspect_session_profiles(
             unique,
         ).fetchall()
     }
-    # A session with no profile row is MISSING whatever its inputs say, so its
-    # projection is not read. Absence is the one status identity settles.
-    built = tuple(session_id for session_id in unique if stored[session_id].present)
+    built = _profile_binding_candidates(stored, unique, materializer_version=materializer_version, demanded=demanded)
     current = session_input_bindings(conn, built) if built else {}
     return {
         session_id: _classify_partition_with_demand(
@@ -346,14 +366,14 @@ async def inspect_session_profiles_async(
     async with conn.execute(sql, unique) as cursor:
         async for row in cursor:
             stored[str(row[0])] = _partition_row(row)
-    built = tuple(session_id for session_id in unique if session_id in stored)
-    current = await session_input_bindings_async(conn, built) if built else {}
     placeholders = ",".join("?" * len(unique))
     async with conn.execute(
         f"SELECT session_id FROM session_profile_demand WHERE session_id IN ({placeholders})",
         unique,
     ) as cursor:
         demanded = {str(row[0]) async for row in cursor}
+    built = _profile_binding_candidates(stored, unique, materializer_version=materializer_version, demanded=demanded)
+    current = await session_input_bindings_async(conn, built) if built else {}
     return {
         session_id: _classify_partition_with_demand(
             stored.get(session_id, _ABSENT_PARTITION),

@@ -21,6 +21,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.source_write import upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import MigrationError
+from tests.infra.durable_tier_fixtures import ship_synthetic_source_train
 from tests.infra.index_replacement import missing_coordinates_artifact, source_baseline
 
 
@@ -45,6 +46,144 @@ def _synthetic_partition_replacement() -> migration_runner.MigrationStep:
         sql=f"{migration_runner._INDEX_REPLACEMENT_MARKER}\n" + "\n\n".join(statements) + "\n",
         requires_backup=False,
     )
+
+
+@pytest.mark.parametrize("failure", (MigrationError, KeyboardInterrupt))
+def test_installed_partition_train_rolls_back_interruption_and_restarts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException]
+) -> None:
+    """A live DROP cannot survive a cancelled CREATE or change retained rows."""
+    path = tmp_path / "source.db"
+    conn, raw_ids = source_baseline(path)
+    ship_synthetic_source_train(
+        tmp_path / "package", monkeypatch, index_replacement_sql=_synthetic_partition_replacement().sql
+    )
+    execute = migration_runner._execute_migration_sql
+    try:
+        before_schema = migration_runner.capture_durable_schema_inventory(conn)
+        before_rows = migration_runner._durable_literal_rows_digest(conn)
+
+        def interrupt_live(connection: sqlite3.Connection, sql: str) -> None:
+            if connection is conn and sql.startswith(migration_runner._INDEX_REPLACEMENT_MARKER):
+                connection.execute("DROP INDEX idx_raw_artifacts_source_identity")
+                raise failure("synthetic partition interruption")
+            execute(connection, sql)
+
+        with monkeypatch.context() as context:
+            context.setattr(migration_runner, "_execute_migration_sql", interrupt_live)
+            with pytest.raises(failure):
+                migration_runner.migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+        assert not conn.in_transaction
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert migration_runner.capture_durable_schema_inventory(conn) == before_schema
+        assert migration_runner._durable_literal_rows_digest(conn) == before_rows
+    finally:
+        conn.close()
+    with closing(sqlite3.connect(path)) as restarted:
+        result = migration_runner.migrate_archive_tier(restarted, ArchiveTier.SOURCE, backup_manifest=None)
+        assert result.applied_versions == (2,)
+        assert migration_runner._durable_literal_rows_digest(restarted) == before_rows
+        assert {row[0] for row in restarted.execute("SELECT raw_id FROM raw_sessions")} == set(raw_ids)
+        assert restarted.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert (
+            migration_runner.migrate_archive_tier(restarted, ArchiveTier.SOURCE, backup_manifest=None).applied_versions
+            == ()
+        )
+
+
+def test_installed_partition_rehearsal_refuses_false_effect_before_live_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn, _raw_ids = source_baseline(tmp_path / "source.db")
+    ship_synthetic_source_train(
+        tmp_path / "package", monkeypatch, index_replacement_sql=_synthetic_partition_replacement().sql
+    )
+    execute = migration_runner._execute_migration_sql
+
+    def wrong_keys(replica: sqlite3.Connection, sql: str) -> None:
+        if replica is not conn and sql.startswith(migration_runner._INDEX_REPLACEMENT_MARKER):
+            sql = sql.replace(
+                "ON raw_artifacts(origin, source_path, source_index)", "ON raw_artifacts(origin, source_path)"
+            )
+        execute(replica, sql)
+
+    try:
+        before = migration_runner.capture_durable_schema_inventory(conn)
+        monkeypatch.setattr(migration_runner, "_execute_migration_sql", wrong_keys)
+        with pytest.raises(MigrationError):
+            migration_runner.migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert migration_runner.capture_durable_schema_inventory(conn) == before
+        assert not conn.in_transaction
+    finally:
+        conn.close()
+
+
+def test_installed_partition_rehearsal_keeps_caller_factories_and_source_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conn, _raw_ids = source_baseline(tmp_path / "source.db")
+    ship_synthetic_source_train(
+        tmp_path / "package", monkeypatch, index_replacement_sql=_synthetic_partition_replacement().sql
+    )
+    try:
+        before = migration_runner.capture_durable_schema_inventory(conn)
+        conn.text_factory = bytes
+        proof = migration_runner.rehearse_durable_migration_chain(
+            conn, ArchiveTier.SOURCE, target_version=2, evidence_ref="proof:caller-factories"
+        )
+        assert proof.matches
+        assert tuple(step.version for step in proof.steps) == (2,)
+        assert conn.row_factory is sqlite3.Row and conn.text_factory is bytes
+        assert migration_runner.capture_durable_schema_inventory(conn) == before
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_installed_partition_rehearsal_reuses_schema_across_archives_but_rechecks_ddl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_DDL_BY_TIER
+    from polylogue.storage.sqlite.migration_runner import DurableChangeTrainError
+
+    first, _ = source_baseline(tmp_path / "first.db")
+    second, _ = source_baseline(tmp_path / "second.db")
+    ship_synthetic_source_train(
+        tmp_path / "package", monkeypatch, index_replacement_sql=_synthetic_partition_replacement().sql
+    )
+    replicate = migration_runner._schema_only_replica
+    replicas = []
+
+    def record_replica(source: sqlite3.Connection) -> sqlite3.Connection:
+        replicas.append(source)
+        return replicate(source)
+
+    monkeypatch.setattr(migration_runner, "_schema_only_replica", record_replica)
+    try:
+        proofs = tuple(
+            migration_runner.rehearse_durable_migration_chain(
+                source, ArchiveTier.SOURCE, target_version=2, evidence_ref=f"proof:archive-{position}"
+            )
+            for position, source in enumerate((first, second))
+        )
+        assert replicas == [first]
+        assert proofs[0].chain_sha256 == proofs[1].chain_sha256
+        assert proofs[0].evidence_ref != proofs[1].evidence_ref
+        changed_ddl = ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE] + (
+            "\nCREATE INDEX synthetic_manifest_drift ON raw_sessions(acquired_at_ms);\n"
+        )
+        monkeypatch.setitem(ARCHIVE_BASELINE_DDL_BY_TIER, ArchiveTier.SOURCE, changed_ddl)
+        with pytest.raises(DurableChangeTrainError):
+            migration_runner.rehearse_durable_migration_chain(
+                second, ArchiveTier.SOURCE, target_version=2, evidence_ref="proof:changed-manifest"
+            )
+        assert replicas == [first]
+        assert first.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert second.execute("PRAGMA user_version").fetchone()[0] == 1
+    finally:
+        first.close()
+        second.close()
 
 
 @pytest.mark.parametrize(

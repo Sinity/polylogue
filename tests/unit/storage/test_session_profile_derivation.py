@@ -497,6 +497,209 @@ def test_prepared_partition_refuses_a_value_binding_that_moved_before_publish(
         ] == [0, 0]
 
 
+@pytest.mark.parametrize("reuse_source_binding", (False, True))
+def test_profile_adapter_reuses_only_same_transaction_source_bindings(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, reuse_source_binding: bool
+) -> None:
+    """Compute and publish keep distinct reads, with no duplicate pinned scan."""
+    from polylogue.storage.derived.session import rebuild
+    from polylogue.storage.derived.session.input_binding import SessionInputDigest
+
+    index_db, session_id = archive
+    assert _materialize(index_db, session_id) is True
+    _mutate(index_db, session_id, "word_count", "word_count + 1")
+    with write_lease("test.usage", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
+        publish_session_usage_rollup(
+            conn,
+            session_id,
+            input_binding=session_input_bindings(conn, (session_id,))[session_id],
+            recipe_version=session_usage_rollup_recipe_version(),
+        )
+    if not reuse_source_binding:
+        # The standalone helper retains the predecessor's fresh-source read.
+        original_compute_binding = rebuild.session_insight_compute_binding
+
+        def observe_source_again(conn: sqlite3.Connection, key: str, *, source_binding: str | None = None) -> str:
+            return original_compute_binding(conn, key)
+
+        monkeypatch.setattr(rebuild, "session_insight_compute_binding", observe_source_again)
+    digest_count = 0
+    projected_rows = 0
+    original_init = SessionInputDigest.__init__
+    original_add = SessionInputDigest.add_row
+
+    def counted_init(self: SessionInputDigest, session_ids: Sequence[str]) -> None:
+        nonlocal digest_count
+        digest_count += 1
+        original_init(self, session_ids)
+
+    def counted_add(self: SessionInputDigest, row: Sequence[object]) -> None:
+        nonlocal projected_rows
+        projected_rows += 1
+        original_add(self, row)
+
+    monkeypatch.setattr(SessionInputDigest, "__init__", counted_init)
+    monkeypatch.setattr(SessionInputDigest, "add_row", counted_add)
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+        archive_root=index_db.parent,
+    )
+    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="neutral")
+    prepared = adapter.compute(frame, session_id)
+    assert adapter.publish(frame, prepared) is True
+    assert _status(index_db, session_id) == "valid"
+    assert digest_count == (3 if reuse_source_binding else 5), digest_count
+    assert projected_rows == (9 if reuse_source_binding else 15), projected_rows
+
+
+def test_unpinned_profile_preparation_keeps_independent_source_observation(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.derived.session.input_binding import SessionInputDigest
+    from polylogue.storage.derived.session.rebuild import prepare_session_insight_partition
+
+    index_db, session_id = archive
+    digest_count = 0
+    original_init = SessionInputDigest.__init__
+
+    def counted_init(self: SessionInputDigest, session_ids: Sequence[str]) -> None:
+        nonlocal digest_count
+        digest_count += 1
+        original_init(self, session_ids)
+
+    monkeypatch.setattr(SessionInputDigest, "__init__", counted_init)
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        assert not conn.in_transaction
+        unpinned = prepare_session_insight_partition(conn, session_id)
+        assert digest_count == 2
+        digest_count = 0
+        conn.execute("BEGIN")
+        pinned = prepare_session_insight_partition(conn, session_id)
+        assert digest_count == 1
+        assert (pinned.input_binding, pinned.compute_binding) == (unpinned.input_binding, unpinned.compute_binding)
+
+
+@pytest.mark.parametrize("async_read", (False, True))
+@pytest.mark.parametrize(
+    "stored_state",
+    (
+        "missing",
+        "old-materializer",
+        "null-binding",
+        "missing-latency",
+        "old-latency",
+        "demand",
+        "valid",
+        "writer-changed-input",
+        "restored-old-binding",
+    ),
+)
+def test_profile_inspection_hashes_only_partitions_that_might_be_valid(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, stored_state: str, async_read: bool
+) -> None:
+    from polylogue.storage.derived.session.input_binding import SessionInputDigest
+
+    index_db, session_id = archive
+    assert _materialize(index_db, session_id)
+    changes = {
+        "missing": "DELETE FROM session_profiles WHERE session_id = ?",
+        "old-materializer": "UPDATE session_profiles SET materializer_version = materializer_version + 1 WHERE session_id = ?",
+        "null-binding": "UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = ?",
+        "missing-latency": "DELETE FROM session_latency_profiles WHERE session_id = ?",
+        "old-latency": "UPDATE session_latency_profiles SET materializer_version = materializer_version + 1 WHERE session_id = ?",
+        "demand": "INSERT INTO session_profile_demand(session_id, revision) VALUES (?, 1)",
+    }
+    if stored_state in changes:
+        with (
+            write_lease("test.profile_facts", archive_root=index_db.parent),
+            closing(_write_connection(index_db)) as conn,
+        ):
+            conn.execute(changes[stored_state], (session_id,))
+            conn.commit()
+    elif stored_state in ("writer-changed-input", "restored-old-binding"):
+        from polylogue.storage.derived.session import derivation
+
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+            old_binding = derivation.stored_session_profile_binding(conn, session_id)
+        assert old_binding is not None
+        _mutate(index_db, session_id, "role", "'assistant'")
+        if stored_state == "restored-old-binding":
+            # Synthetic stale cache custody: the real writer invalidates this
+            # binding and enqueues demand. Restore only the old certification
+            # facts to prove an apparently valid cache still hashes actual input.
+            with (
+                write_lease("test.profile_facts", archive_root=index_db.parent),
+                closing(_write_connection(index_db)) as conn,
+            ):
+                conn.execute(
+                    "UPDATE session_profiles SET input_content_hash = ? WHERE session_id = ?", (old_binding, session_id)
+                )
+                conn.execute("DELETE FROM session_profile_demand WHERE session_id = ?", (session_id,))
+                conn.commit()
+                stored = derivation._stored_partitions(conn, (session_id,))
+                assert stored[session_id].input_binding == old_binding
+                assert (
+                    derivation._classify_partition_with_demand(
+                        stored[session_id], old_binding, materializer_version=_MATERIALIZER_VERSION, demanded=False
+                    )
+                    == "valid"
+                )
+    digest_count = 0
+    original_init = SessionInputDigest.__init__
+
+    def counted_init(self: SessionInputDigest, session_ids: Sequence[str]) -> None:
+        nonlocal digest_count
+        digest_count += 1
+        original_init(self, session_ids)
+
+    monkeypatch.setattr(SessionInputDigest, "__init__", counted_init)
+
+    async def inspect_async() -> str:
+        async with aiosqlite.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+            return (
+                await inspect_session_profiles_async(conn, (session_id,), materializer_version=_MATERIALIZER_VERSION)
+            )[session_id]
+
+    status = asyncio.run(inspect_async()) if async_read else _status(index_db, session_id)
+    assert status == ("missing" if stored_state == "missing" else "valid" if stored_state == "valid" else "stale")
+    assert digest_count == (1 if stored_state in ("valid", "restored-old-binding") else 0), digest_count
+
+
+def test_large_profile_preparation_reuses_only_its_pinned_source_binding(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.derived.session import rebuild
+    from polylogue.storage.derived.session.input_binding import SessionInputDigest
+
+    index_db, session_id = archive
+    monkeypatch.setattr(rebuild, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 2)
+    digest_count = 0
+    original_init = SessionInputDigest.__init__
+
+    def counted_init(self: SessionInputDigest, session_ids: Sequence[str]) -> None:
+        nonlocal digest_count
+        digest_count += 1
+        original_init(self, session_ids)
+
+    monkeypatch.setattr(SessionInputDigest, "__init__", counted_init)
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        unpinned = rebuild.prepare_session_insight_partition(conn, session_id)
+        assert digest_count == 3
+        digest_count = 0
+        conn.execute("BEGIN")
+        pinned = rebuild.prepare_session_insight_partition(conn, session_id)
+        assert digest_count == 1, digest_count
+        assert (pinned.input_binding, pinned.compute_binding) == (unpinned.input_binding, unpinned.compute_binding)
+        assert pinned.bundle is not None
+        assert pinned.bundle.profile_record.workflow_shape == "bounded_large_session"
+        assert pinned.bundle.profile_record.input_content_hash == pinned.input_binding
+
+
 def test_prepared_profile_family_rolls_back_when_latency_write_fails(
     archive: tuple[Path, str],
 ) -> None:

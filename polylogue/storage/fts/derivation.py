@@ -410,16 +410,16 @@ class FtsDerivationAdapter:
         # indexed join.  Canonical writers call this on every unchanged
         # re-ingest, where hashing the session's whole text would dominate the
         # write and buy no extra evidence.
-        if key == GLOBAL_PARTITION or not schema.blocks_present:
-            expected_rows = _indexable_row_count(conn) if key == GLOBAL_PARTITION and schema.blocks_present else 0
-        else:
-            expected_rows = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND search_text != ''",
-                    (key,),
-                ).fetchone()[0]
-            )
         if not compatible:
+            if key == GLOBAL_PARTITION or not schema.blocks_present:
+                expected_rows = _indexable_row_count(conn) if key == GLOBAL_PARTITION and schema.blocks_present else 0
+            else:
+                expected_rows = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND search_text != ''",
+                        (key,),
+                    ).fetchone()[0]
+                )
             return FtsPartitionInspection(
                 key,
                 FtsKeyStatus.MISSING,
@@ -436,6 +436,7 @@ class FtsDerivationAdapter:
             )
 
         if key == GLOBAL_PARTITION:
+            expected_rows = _indexable_row_count(conn)
             present_rows = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0])
             missing_rows = int(
                 conn.execute(
@@ -481,16 +482,16 @@ class FtsDerivationAdapter:
                 ).fetchone()[0]
             )
         else:
-            missing_rows = int(
-                conn.execute(
-                    """
-                    SELECT COUNT(*) FROM blocks AS b
-                    LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
-                    WHERE b.session_id = ? AND b.search_text != '' AND d.id IS NULL
-                    """,
-                    (key,),
-                ).fetchone()[0]
-            )
+            counts = conn.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(d.id IS NULL), 0)
+                FROM blocks AS b
+                LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
+                WHERE b.session_id = ? AND b.search_text != ''
+                """,
+                (key,),
+            ).fetchone()
+            expected_rows, missing_rows = int(counts[0]), int(counts[1])
             present_rows = expected_rows - missing_rows
             excess_rows = int(
                 conn.execute(
