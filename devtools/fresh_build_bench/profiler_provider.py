@@ -135,7 +135,8 @@ class PerfCpuProfiler:
             raise ProfilerUnavailableError("perf_executable_unavailable")
         output_dir = output_dir.resolve()
         # Existing diagnostics are evidence, never an overwrite target.
-        output_dir.mkdir(parents=True, exist_ok=False)
+        # DWARF recordings contain process stack memory, including private data.
+        output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
         version = subprocess.run(
             [tool, "version", "--build-options"],
             capture_output=True,
