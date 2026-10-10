@@ -57,7 +57,7 @@ def ledger(workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> P
 def _seed(path: Path, kinds: list[str]) -> None:
     """Write rows of the given kinds, ids 1..n, into the production ledger schema."""
     events_mod.emit_daemon_event("bootstrap", payload={})
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute("DELETE FROM daemon_events")
         conn.executemany(
             "INSERT INTO daemon_events (id, ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, NULL, '{}')",
@@ -67,12 +67,12 @@ def _seed(path: Path, kinds: list[str]) -> None:
 
 
 def _ids(path: Path) -> list[int]:
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
         return [int(row[0]) for row in conn.execute("SELECT id FROM daemon_events ORDER BY id")]
 
 
 def _prune(path: Path, registry: EventSubscriberRegistry) -> int:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         removed = events_mod.prune_daemon_events(conn, subscribers=registry)
         conn.commit()
     return removed
@@ -183,7 +183,7 @@ def test_prune_between_range_and_page_unseen(ledger: Path, monkeypatch: pytest.M
         # write while its read transaction is open, so the interleave has to
         # arrive from outside.
         def commit_prune() -> None:
-            with sqlite3.connect(ledger, timeout=5.0) as writer:
+            with closing(sqlite3.connect(ledger, timeout=5.0)) as writer, writer:
                 writer.execute("DELETE FROM daemon_events WHERE id <= 2")
                 writer.commit()
 
@@ -570,6 +570,9 @@ def test_real_http_replacement_resync_and_native_cursor_reconnect(ledger: Path, 
             page = json.loads(body)
             assert status == 200 and page["outcome"] == "degraded"
             assert page["resync_reason"] == "ledger_reset"
+            fresh_status, fresh_body = request("/api/events?poll=1")
+            assert fresh_status == 200
+            assert [event["id"] for event in json.loads(fresh_body)["events"]] == list(range(1, count + 1))
             status, stream = request("/api/events?max_seconds=1", {"Last-Event-ID": cursor})
             assert status == 200 and b"event: snapshot\n" in stream
             assert b'"ledger_reset"' in stream
