@@ -497,6 +497,92 @@ def test_prepared_partition_refuses_a_value_binding_that_moved_before_publish(
         ] == [0, 0]
 
 
+@pytest.mark.parametrize("reuse_source_binding", (False, True))
+def test_profile_adapter_reuses_only_same_transaction_source_bindings(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, reuse_source_binding: bool
+) -> None:
+    """Compute and publish keep distinct reads, with no duplicate pinned scan."""
+    from polylogue.storage.derived.session import rebuild
+    from polylogue.storage.derived.session.input_binding import SessionInputDigest
+
+    index_db, session_id = archive
+    assert _materialize(index_db, session_id) is True
+    _mutate(index_db, session_id, "word_count", "word_count + 1")
+    with write_lease("test.usage", archive_root=index_db.parent), closing(_write_connection(index_db)) as conn:
+        publish_session_usage_rollup(
+            conn,
+            session_id,
+            input_binding=session_input_bindings(conn, (session_id,))[session_id],
+            recipe_version=session_usage_rollup_recipe_version(),
+        )
+    if not reuse_source_binding:
+        # The standalone helper retains the predecessor's fresh-source read.
+        original_compute_binding = rebuild.session_insight_compute_binding
+
+        def observe_source_again(conn: sqlite3.Connection, key: str, *, source_binding: str | None = None) -> str:
+            return original_compute_binding(conn, key)
+
+        monkeypatch.setattr(rebuild, "session_insight_compute_binding", observe_source_again)
+    digest_count = 0
+    projected_rows = 0
+    original_init = SessionInputDigest.__init__
+    original_add = SessionInputDigest.add_row
+
+    def counted_init(self: SessionInputDigest, session_ids: Sequence[str]) -> None:
+        nonlocal digest_count
+        digest_count += 1
+        original_init(self, session_ids)
+
+    def counted_add(self: SessionInputDigest, row: Sequence[object]) -> None:
+        nonlocal projected_rows
+        projected_rows += 1
+        original_add(self, row)
+
+    monkeypatch.setattr(SessionInputDigest, "__init__", counted_init)
+    monkeypatch.setattr(SessionInputDigest, "add_row", counted_add)
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+        archive_root=index_db.parent,
+    )
+    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="neutral")
+    prepared = adapter.compute(frame, session_id)
+    assert adapter.publish(frame, prepared) is True
+    assert _status(index_db, session_id) == "valid"
+    assert digest_count == (4 if reuse_source_binding else 6), digest_count
+    assert projected_rows == (12 if reuse_source_binding else 18), projected_rows
+
+
+def test_unpinned_profile_preparation_keeps_independent_source_observation(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.derived.session.input_binding import SessionInputDigest
+    from polylogue.storage.derived.session.rebuild import prepare_session_insight_partition
+
+    index_db, session_id = archive
+    digest_count = 0
+    original_init = SessionInputDigest.__init__
+
+    def counted_init(self: SessionInputDigest, session_ids: Sequence[str]) -> None:
+        nonlocal digest_count
+        digest_count += 1
+        original_init(self, session_ids)
+
+    monkeypatch.setattr(SessionInputDigest, "__init__", counted_init)
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
+        assert not conn.in_transaction
+        unpinned = prepare_session_insight_partition(conn, session_id)
+        assert digest_count == 2
+        digest_count = 0
+        conn.execute("BEGIN")
+        pinned = prepare_session_insight_partition(conn, session_id)
+        assert digest_count == 1
+        assert (pinned.input_binding, pinned.compute_binding) == (unpinned.input_binding, unpinned.compute_binding)
+
+
 def test_prepared_profile_family_rolls_back_when_latency_write_fails(
     archive: tuple[Path, str],
 ) -> None:

@@ -711,8 +711,11 @@ so HTTP rows and page count evidence describe the same matches.
 ## Derived session records and FTS discovery
 
 Session profile materialization publishes profile, latency and repository
-observations. Run, observed-event and context-snapshot products are derived on
-read through `run_projection_relations.py`; profile preparation does not compile
+observations. Preparation and publication each reuse their own transaction’s
+already-observed source binding when computing the canonical usage binding.
+Publication still reads fresh source values and usage certification; no binding
+is shared across those transactions. Run, observed-event and context-snapshot
+products are derived on read through `run_projection_relations.py`; profile preparation does not compile
 a second run projection to obtain unused counters. Unscoped FTS discovery merges
 the ordered session and block-membership indexes with one distinct session-key
 page, retaining empty sessions and blocks-only keys without collecting the
