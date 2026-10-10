@@ -1829,3 +1829,82 @@ def test_hook_identity_with_changed_payload_remains_a_reported_conflict(
         rows = conn.execute("SELECT payload_json FROM raw_hook_events").fetchall()
     assert len(rows) == 1
     assert json.loads(rows[0][0])["payload"]["text"] == "old"
+
+
+def test_hook_discovery_retains_only_one_decoded_carrier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real discovery page releases earlier records, then publishes every event."""
+    import gc
+    import hashlib
+    import weakref
+    from dataclasses import replace
+
+    from polylogue.operations import hook_event_derivation
+    from polylogue.sources.hooks import CarrierLine, CarrierRefusal
+    from polylogue.storage.derived import hook_events
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    for provider_index, provider in enumerate(("codex", "claude-code", "hermes")):
+        for event_index in range(2):
+            append_hook_event(
+                event_type="PostToolUse",
+                session_id=f"neutral-{provider}",
+                provider=provider,
+                timestamp=_TIMESTAMP,
+                payload={"tool_name": "exec", "arguments": {"marker": [provider, event_index]}, "result": "neutral λ"},
+                root=spool_root,
+                event_id=f"{provider_index * 2 + event_index:032x}",
+            )
+    assert acquire_hook_carriers(archive_root) == 3
+    expected: dict[str, tuple[dict[str, object], str]] = {}
+    for carrier in _carriers(spool_root):
+        lines, _ = read_hook_carrier(carrier.read_bytes())
+        relative = carrier.relative_to(hook_carrier_dir(spool_root)).as_posix()
+        for line in lines:
+            event_id = f"hook:{line.record['event_id']}"
+            expected[event_id] = (line.record, f"{relative}#{line.byte_offset:012d}:{event_id}")
+
+    class TrackedRecord(dict[str, object]):
+        pass
+
+    records: dict[str, list[weakref.ReferenceType[TrackedRecord]]] = {}
+    calls: dict[str, int] = {}
+    original_decode = read_hook_carrier
+
+    def decode(payload: bytes) -> tuple[tuple[CarrierLine, ...], tuple[CarrierRefusal, ...]]:
+        blob_hash = hashlib.sha256(payload).hexdigest()
+        calls[blob_hash] = calls.get(blob_hash, 0) + 1
+        lines, refusals = original_decode(payload)
+        tracked_records = tuple(TrackedRecord(line.record) for line in lines)
+        tracked = tuple(replace(line, record=record) for line, record in zip(lines, tracked_records, strict=True))
+        records[blob_hash] = [weakref.ref(record) for record in tracked_records]
+        return tracked, refusals
+
+    monkeypatch.setattr(hook_events, "read_hook_carrier", decode)
+    adapter = hook_events.HookEventsDerivation(archive_root)
+    monkeypatch.setattr(hook_event_derivation, "make_hook_events_derivation", lambda _root: adapter)
+    pending = hook_event_derivation.discover_pending_hook_carriers(archive_root, 32)
+    assert len(pending) == 3 and len(calls) == 3
+    gc.collect()
+    live_blobs = [blob_hash for blob_hash, refs in records.items() if any(ref() is not None for ref in refs)]
+    assert len(live_blobs) == 1
+    last_blob = live_blobs[0]
+    last_lines = adapter._carrier_lines(last_blob)
+    assert adapter._carrier_lines(last_blob) is last_lines
+    assert calls[last_blob] == 1
+    del last_lines
+
+    report = hook_event_derivation.converge_hook_carriers(
+        archive_root, raw_ids=tuple(raw_id for raw_id, _ in pending), limit=3
+    )
+    assert report.done == 3
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        actual = {
+            str(event_id): (json.loads(payload), str(coordinate))
+            for event_id, payload, coordinate in conn.execute(
+                "SELECT e.hook_event_id, e.payload_json, c.relative_path FROM raw_hook_events e "
+                "JOIN hook_event_carriers c USING (hook_event_id)"
+            )
+        }
+    assert actual == expected
+    assert hook_event_derivation.discover_pending_hook_carriers(archive_root, 32) == ()
+    assert hook_event_count(archive_root) == 6
