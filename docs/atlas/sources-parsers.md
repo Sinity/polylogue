@@ -185,8 +185,14 @@ plus the exact eligible parser operands and Claude sidecar-scope witness,
 before current enrichment and publication are prepared. If that bind becomes
 stale during enrichment, a new Source witness repeats the comparison and
 reuses detached parser artifacts only when the eligible raws and their parser
-operands still match exactly; changed inputs are reparsed. Each retry refreshes
-the cached carrier's current schema verdict before rebinding it. Historical
+operands still match exactly; changed inputs are reparsed. Each retry reads the
+ordered local and bundled schema bytes afresh. The public validator can reuse
+one complete verdict for the same still-owned page input, accepted prefix,
+validation mode and exact resolution/coordinate operands when that snapshot is
+unchanged. Physical input and drift backing currency are checked before reuse;
+changed schema bytes or override roots require fresh validation. File-backed
+drift borrows the page scratch root through all ordered consumers and retires
+with the page. Fresh captures and later pages validate independently. Historical
 captured validation receipts keep their original evidence. The neutral
 retained enrichment also resolves any remaining persisted-output tool-result
 envelopes from matching `PostToolUse` rows in `raw_hook_events`. Those rows are

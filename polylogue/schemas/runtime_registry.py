@@ -319,10 +319,11 @@ class SchemaRegistry:
         self._workload_profile_cache: dict[WorkloadProfileCacheKey, PublicSchemaDocument | None] = {}
         self._snapshots: dict[Path, dict[str, bytes]] = {}
         self._current_snapshot_roots: dict[str, tuple[Path, ...]] = {}
+        self._snapshot_identities: dict[str, object] = {}
         self._cache_lock = threading.RLock()
 
     @contextmanager
-    def current_provider_snapshot(self, provider: str | Provider) -> Iterator[None]:
+    def current_provider_snapshot(self, provider: str | Provider) -> Iterator[object]:
         """Reuse decoded declarations only after reading the exact current bytes.
 
         Keep resolution on that coherent snapshot through the caller's complete
@@ -338,17 +339,21 @@ class SchemaRegistry:
                 current[root] = read_provider_snapshot(root)
             check_compute_cancelled()
             previous_roots = self._current_snapshot_roots.get(provider_token)
-            if (
+            changed = (
                 (previous_roots is not None and previous_roots != roots)
                 or (previous_roots is None and provider_token in self._catalog_cache)
                 or any(
                     root in self._snapshots and self._snapshots[root] != snapshot for root, snapshot in current.items()
                 )
-            ):
+            )
+            if changed:
                 self.clear_cache()
             self._snapshots.update(current)
             self._current_snapshot_roots[provider_token] = roots
-            yield
+            # This identity certifies only this freshly read ordered snapshot.
+            # It survives equality, never a declaration or filesystem-mtime guess.
+            identity = self._snapshot_identities.setdefault(provider_token, object())
+            yield identity
 
     def _snapshot(self, provider_dir: Path) -> dict[str, bytes]:
         with self._cache_lock:
@@ -371,6 +376,7 @@ class SchemaRegistry:
         with self._cache_lock:
             self._snapshots.clear()
             self._current_snapshot_roots.clear()
+            self._snapshot_identities.clear()
             self._catalog_cache.clear()
             self._schema_cache.clear()
             self._workload_profile_cache.clear()

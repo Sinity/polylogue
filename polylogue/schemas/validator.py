@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Generator, Iterable, Mapping
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from re import compile as compile_pattern
@@ -18,7 +19,7 @@ except ImportError:
     Draft202012Validator = None
 
 from polylogue.archive.raw_payload import extract_payload_samples
-from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.compute_cancel import check_compute_cancelled, raise_if_operation_cancelled
 from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
@@ -44,6 +45,73 @@ if TYPE_CHECKING:
 
 ValidationSchema: TypeAlias = Mapping[str, object]
 ValidationSample: TypeAlias = JSONDocument
+
+
+@dataclass(frozen=True, slots=True)
+class _RetainedValidationEntry:
+    recipe: str
+    snapshot: object
+    path: Path
+    input_identity: tuple[int, int, int, int, int]
+    signature_directory: Path
+    verdict: RetainedValidationVerdict
+    backing_identity: tuple[Path, tuple[int, int, int, int, int]] | None
+
+
+class RetainedValidationReuse:
+    """One complete verdict borrowed for an owned captured input's lifetime.
+
+    The capture owner keeps the input and drift-signature directory alive and
+    clears this result before retiring them. Only the validator establishes a
+    reuse entry, after fresh schema and physical-input checks complete.
+    """
+
+    def __init__(self) -> None:
+        self._entry: _RetainedValidationEntry | None = None
+
+    def clear(self) -> None:
+        self._entry = None
+
+
+def _validation_input_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _validation_backing_identity(
+    verdict: RetainedValidationVerdict,
+) -> tuple[Path, tuple[int, int, int, int, int]] | None:
+    observation = verdict.drift_observation
+    path = None if observation is None else observation.unseen_key_signature._path
+    return None if path is None else (path, _validation_input_identity(path.stat()))
+
+
+@contextmanager
+def _owned_validation_input(path: Path, prefix: int | None) -> Generator[tuple[int, int, int, int, int]]:
+    from polylogue.schemas.observation_spill import AcceptedPrefixReadError
+
+    check_compute_cancelled()
+    with path.open("rb", buffering=0) as source:
+        before = _validation_input_identity(os.fstat(source.fileno()))
+        if prefix is not None and (prefix < 0 or before[2] < prefix):
+            raise AcceptedPrefixReadError("retained JSONL parser prefix exceeds source bytes")
+        try:
+            yield before
+        except BaseException as error:
+            raise_if_operation_cancelled(error)
+            raise
+        finally:
+            check_compute_cancelled()
+            unchanged = False
+            try:
+                unchanged = (
+                    before
+                    == _validation_input_identity(os.fstat(source.fileno()))
+                    == _validation_input_identity(path.stat())
+                )
+            except OSError as error:
+                raise AcceptedPrefixReadError("retained JSONL validation input changed") from error
+            if not unchanged:
+                raise AcceptedPrefixReadError("retained JSONL validation input changed")
 
 
 class ValidationErrorLike(Protocol):
@@ -828,6 +896,7 @@ def validate_retained_document(
     schema_resolution_is_explicit: bool = False,
     registry: SchemaRegistry | None = None,
     signature_directory: Path,
+    reuse: RetainedValidationReuse | None = None,
 ) -> RetainedValidationVerdict:
     """Validate a retained source revision with a compact spill-backed verdict.
 
@@ -840,11 +909,12 @@ def validate_retained_document(
     from polylogue.schemas.retained_validation import validate_retained_document as validate
 
     active_registry = registry
-    snapshot: AbstractContextManager[None] = nullcontext()
+    snapshot: AbstractContextManager[object | None] = nullcontext()
     if ValidationMode.from_string(mode) is not ValidationMode.OFF:
         active_registry = registry or SchemaRegistry()
         snapshot = active_registry.current_provider_snapshot(provider)
-    with snapshot:
+
+    def perform() -> RetainedValidationVerdict:
         return validate(
             provider,
             path,
@@ -862,10 +932,66 @@ def validate_retained_document(
             signature_directory=signature_directory,
         )
 
+    with snapshot as snapshot_identity:
+        if reuse is None or ValidationMode.from_string(mode) is ValidationMode.OFF:
+            return perform()
+        from polylogue.schemas.retained_validation import _retained_validation_productive_identity
+
+        recipe = _retained_validation_productive_identity(
+            provider,
+            path,
+            mode=mode,
+            raw_id=raw_id,
+            revision_sha256=revision_sha256,
+            evidence_id=evidence_id,
+            source_path=source_path,
+            jsonl=jsonl,
+            accepted_prefix_size=accepted_prefix_size,
+            captured_zip_coordinate=captured_zip_coordinate,
+            schema_resolution=schema_resolution,
+            schema_resolution_is_explicit=schema_resolution_is_explicit,
+            registry=active_registry,
+            signature_directory=signature_directory,
+        )
+        with _owned_validation_input(path, accepted_prefix_size) as input_identity:
+            entry = reuse._entry
+            try:
+                backing_current = entry is not None and entry.backing_identity == _validation_backing_identity(
+                    entry.verdict
+                )
+            except OSError:
+                backing_current = False
+            if (
+                entry is not None
+                and backing_current
+                and (
+                    entry.recipe == recipe
+                    and entry.snapshot is snapshot_identity
+                    and entry.path == path
+                    and entry.input_identity == input_identity
+                    and entry.signature_directory == signature_directory
+                )
+            ):
+                return entry.verdict
+            reuse.clear()
+            verdict = perform()
+        assert snapshot_identity is not None
+        reuse._entry = _RetainedValidationEntry(
+            recipe,
+            snapshot_identity,
+            path,
+            input_identity,
+            signature_directory,
+            verdict,
+            _validation_backing_identity(verdict),
+        )
+        return verdict
+
 
 __all__ = [
     "PayloadValidation",
     "RetainedValidationVerdict",
+    "RetainedValidationReuse",
     "SchemaValidator",
     "ValidationResult",
     "collect_validation_samples",

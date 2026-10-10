@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from polylogue.schemas.validator import (
+        RetainedValidationReuse,
         RetainedValidationVerdict,
         SchemaValidator,
         ValidationResult,
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "RetainedValidationReuse",
     "RetainedValidationVerdict",
     "SchemaValidator",
     "ValidationResult",
