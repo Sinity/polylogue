@@ -1498,11 +1498,18 @@ def test_a_candidate_edit_restored_before_the_end_is_a_change(tmp_path: Path) ->
 
 def test_readiness_is_rechecked_within_the_stall_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity (Codex P2, #5678): cache readiness for a fixed 60 s and a
-    30 s stall window declares a build stalled before its next census."""
+    30 s stall window declares a build stalled before its next census.
+    Omitting the final helper leaves an otherwise terminal run unqualified."""
     captured = _scripted_run(tmp_path, monkeypatch, [_terminal_frame()], stall_timeout_s=30.0)
 
-    ages = {kwargs.get("readiness_max_age_s") for kwargs in captured["observe_kwargs"] if kwargs}
+    loop_calls, final_call = captured["observe_kwargs"][:-1], captured["observe_kwargs"][-1]
+    ages = {kwargs.get("readiness_max_age_s") for kwargs in loop_calls}
     assert ages == {15.0}
+    probe = loop_calls[0]["readiness_probe"]
+    assert callable(probe) and all(kwargs["readiness_probe"] is probe for kwargs in loop_calls)
+    assert final_call["readiness_probe"] is probe
+    assert final_call["readiness_max_age_s"] == 0.0
+    assert captured["final"].readiness_complete
 
 
 def test_a_cancellation_after_the_loop_marks_the_receipt_interrupted(

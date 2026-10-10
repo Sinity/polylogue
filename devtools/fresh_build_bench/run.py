@@ -1186,7 +1186,9 @@ def _measure_and_write_receipt(
         outcome = "interrupted"
     finished = time.monotonic()
     finished_wall = time.time()
-    final = observe(paths["archive"], started)
+    # Recheck the physically drained archive with the same candidate imports;
+    # a cached pre-shutdown census cannot qualify its final state.
+    final = observe(paths["archive"], started, readiness_max_age_s=0.0, readiness_probe=readiness_probe)
     final.work_progress = final_work_progress
     final.useful_progress_at_s = last_useful_progress_at
     final.activity_at_s = last_activity_at
