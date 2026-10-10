@@ -1513,6 +1513,7 @@ def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified:
                     lines.append(f"    {table}: {left} != {right}")
     else:
         lines.append("output: not compared (fingerprint missing)")
+    lines.append("Inspection: exit status reports comparability. Performance acceptance is not evaluated.")
     return not blocking, "\n".join(lines)
 
 

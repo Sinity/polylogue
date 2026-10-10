@@ -126,7 +126,9 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("--json", action="store_true")
     report.add_argument("--refresh", action="store_true", help="recompute derived sections from the run directory")
 
-    compare = commands.add_parser("compare", help="compare two receipts")
+    compare = commands.add_parser(
+        "compare", help="inspect receipt comparability and output differences; no speed acceptance"
+    )
     compare.add_argument("before", type=Path)
     compare.add_argument("after", type=Path)
     compare.add_argument(

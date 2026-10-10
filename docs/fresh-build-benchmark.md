@@ -96,6 +96,13 @@ are unavailable from batch timer names; use the causal trace for interval eviden
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:
 same corpus, same run configuration, same benchmark implementation (a digest of the driver and report code, since `--candidate` may name another checkout), interpreter (version, GIL mode, build string and resolved executable) and host (architecture, CPU model, CPU count, memory, the effective CPU and memory limits the daemon sizes itself from, work filesystem), and both qualified.
+
+This command is an inspection operation. Exit zero establishes comparability;
+outputs may still differ or have no fingerprint. Paired `experiment` qualification
+also requires the declared output equivalence, but its timing summaries remain
+descriptive and leave code improvement unestablished. Neither exit status is a
+performance acceptance policy. A speed claim needs a separately declared effect,
+confirmation and resource policy.
 `--allow-unqualified` admits a run that promoted but did not settle (never one
 that stalled before promotion), with a warning; it never admits a run whose candidate or corpus changed during the
 build or whose event log lost events. An optimisation claims equivalence only on identical digests from
