@@ -98,7 +98,10 @@ def test_run_correlation_view_json_emits_payload() -> None:
     env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])
     env.polylogue.repository.get_session_commits = AsyncMock(return_value=[])
 
-    with patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()):
+    with (
+        patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()),
+        patch("polylogue.analysis.session_commit.select_local_checkout", return_value="/work/repo"),
+    ):
         run_correlation_view(env, session_id="target", output_format="json", github_api=False)
 
     # JSON output is printed through the console; capture the printed string.
@@ -140,7 +143,10 @@ def test_run_correlation_view_json_surfaces_checkout_commit() -> None:
         ]
     )
 
-    with patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()):
+    with (
+        patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()),
+        patch("polylogue.analysis.session_commit.select_local_checkout", return_value="/work/repo"),
+    ):
         run_correlation_view(env, session_id="target", output_format="json", github_api=False)
 
     printed = "".join(str(call.args[0]) for call in env.ui.console.print.call_args_list if call.args)
@@ -183,6 +189,7 @@ def test_run_correlation_view_github_enrichment_does_not_crash() -> None:
 
     with (
         patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()),
+        patch("polylogue.analysis.session_commit.select_local_checkout", return_value="/work/repo"),
         patch("subprocess.run", side_effect=FileNotFoundError("gh not installed")),
     ):
         run_correlation_view(env, session_id="target", output_format="json", github_api=True)
@@ -198,7 +205,10 @@ def test_run_correlation_view_plain_renders_window() -> None:
     env.polylogue.get_session = AsyncMock(return_value=_session())
     env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])
 
-    with patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()):
+    with (
+        patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()),
+        patch("polylogue.analysis.session_commit.select_local_checkout", return_value="/work/repo"),
+    ):
         run_correlation_view(env, session_id="target", github_api=False)
 
     rendered = " ".join(str(call.args[0]) for call in env.ui.console.print.call_args_list if call.args)

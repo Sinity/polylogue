@@ -27,6 +27,7 @@ def run_correlation_view(
     from polylogue.analysis.session_commit import (
         bridge_session_ids_from_events,
         build_correlation_result,
+        select_local_checkout,
         typed_refs_from_session_refs,
     )
     from polylogue.core.async_bridge import run_coroutine_sync
@@ -42,14 +43,7 @@ def run_correlation_view(
         env.ui.error("Session has no timestamp data.")
         raise SystemExit(1)
 
-    repo: str = repo_path or "."
-    if not repo_path:
-        repo_url = getattr(conv, "git_repository_url", None)
-        if isinstance(repo_url, str) and repo_url:
-            repo = repo_url
-        else:
-            directories = getattr(conv, "working_directories", ()) or ()
-            repo = str(directories[0]) if directories else "."
+    repo = select_local_checkout(repo_path, conv.working_directories)
 
     messages: list[dict[str, object]] = []
     for msg in conv.messages:

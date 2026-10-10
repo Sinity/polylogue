@@ -415,3 +415,14 @@ Working-directory filters compare case-sensitive path components after trimming,
 normalizing separators, collapsing repeated slashes and removing trailing slashes.
 The sync and async SQL readers use the same comparison functions as runtime
 filters; neither operation rewrites stored titles or paths.
+
+Git correlation selects a local checkout from an explicit `repo_path` or recorded
+working directories, validated by Git's actual top-level path. Remote repository
+URLs remain session identity metadata and are never passed as local directories.
+Unavailable local evidence raises `GitCorrelationUnavailableError` with a named
+reason, distinct from a successfully queried window without matching commits.
+Canonical hydrated `tool_input` supplies exact path evidence. Git filenames are
+read as NUL-delimited filesystem bytes and compared to repository-relative
+session paths without changing the reported original paths. Every admitted
+7–40-character commit prefix resolves through Git object identity; ambiguity
+is an explicit refusal rather than an arbitrary attributed commit.

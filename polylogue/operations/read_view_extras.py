@@ -186,6 +186,7 @@ def execute_correlation_read(payload: Mapping[str, object], *, archive: ArchiveS
         bridge_session_ids_from_events,
         build_correlation_result,
         correlation_result_to_payload,
+        select_local_checkout,
         typed_refs_from_session_refs,
     )
     from polylogue.archive.hydration import archive_envelope_to_session
@@ -200,11 +201,8 @@ def execute_correlation_read(payload: Mapping[str, object], *, archive: ArchiveS
     )
     if session.created_at is None or session.updated_at is None:
         raise ValueError("Session has no timestamp data.")
-    repo = (
-        payload.get("repo_path")
-        or session.git_repository_url
-        or (str(session.working_directories[0]) if session.working_directories else ".")
-    )
+    override = payload.get("repo_path")
+    repo = select_local_checkout(str(override) if override is not None else None, session.working_directories)
     connection = _index_connection(archive)
     refs = [
         SimpleNamespace(kind=row["kind"], repo=row["repo"], number=row["ref_number"], url=row["url"])
