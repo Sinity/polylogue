@@ -869,8 +869,16 @@ def test_registered_domain_order_must_put_prerequisites_before_consumers() -> No
     assert [adapter.domain for adapter in DerivationRegistry([upstream, downstream]).ordered()] == ["up", "down"]
 
 
-def test_bulk_inspection_fallback_stops_at_the_error_limit_and_resumes_siblings() -> None:
-    """The first attributed failure stops retries; unread siblings stay owed."""
+@pytest.mark.parametrize("poison_position", [0, 1])
+@pytest.mark.parametrize("restart", [False, True])
+def test_bulk_inspection_fallback_stops_at_the_error_limit_and_resumes_siblings(
+    poison_position: int, restart: bool
+) -> None:
+    """Process the healthy prefix before poison stops retries; retain the suffix.
+
+    Eagerly inspecting all fallback keys makes the middle poison consume the
+    error budget before the first missing key can publish, on every pass.
+    """
     calls: list[tuple[str, ...]] = []
 
     class PoisonedInspection(RecordingDerivation):
@@ -880,21 +888,58 @@ def test_bulk_inspection_fallback_stops_at_the_error_limit_and_resumes_siblings(
                 raise ValueError("synthetic unreadable key")
             return super().inspect(frame, keys)
 
-    adapter = PoisonedInspection("d", required=("poison", "good", "later"))
+    required = ("poison", "good", "later") if poison_position == 0 else ("good", "poison", "later")
+    adapter = PoisonedInspection("d", required=required)
     registry = DerivationRegistry([adapter])
     report = converge(registry, FRAME, budget=Budget(max_errors=1, retained_outcomes=0))
-    assert calls == [("poison", "good", "later"), ("poison",)]
-    assert report.failed == 1 and report.pending == 2 and report.done == 0
-    assert report.work.inspected == 3
-    assert adapter.computed == adapter.published == []
-    assert report.cursor.position("d").pending_keys == ("good", "later")
+    expected_calls = [required, (required[0],)]
+    if poison_position:
+        expected_calls.extend([("good",), ("poison",)])
+    assert calls == expected_calls
+    assert report.failed == 1 and report.pending == 2 - poison_position and report.done == poison_position
+    assert report.work.inspected == 3 + poison_position
+    assert adapter.computed == adapter.published == (["good"] if poison_position else [])
+    assert report.cursor.position("d").pending_keys == required[poison_position + 1 :]
     assert report.cursor_unsettled_domains == frozenset({"d"})
     assert report.outcomes == () and report.truncated
 
-    resumed = converge(registry, FRAME, budget=Budget(max_errors=1), cursor=report.cursor)
-    assert resumed.done == 2 and resumed.failed == resumed.pending == 0
+    resumed = converge(registry, FRAME, budget=Budget(max_errors=1), cursor=None if restart else report.cursor)
+    if restart:
+        assert resumed.failed == 1
+        resumed = converge(registry, FRAME, budget=Budget(max_errors=1), cursor=resumed.cursor)
+    assert resumed.done == 2 - poison_position and resumed.failed == resumed.pending == 0
     assert resumed.cursor.position("d").swept
     assert adapter.output == {"good": "b0", "later": "b0"}
+    assert adapter.computed == adapter.published == ["good", "later"]
+
+
+def test_fallback_compute_failure_stops_before_the_next_inspection_attempt() -> None:
+    """An earlier computation failure must stop a later inspection poison."""
+    calls: list[tuple[str, ...]] = []
+
+    class PoisonedInspection(RecordingDerivation):
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            calls.append(tuple(keys))
+            if "inspect-poison" in keys:
+                raise ValueError("synthetic unreadable key")
+            return super().inspect(frame, keys)
+
+    required = ("compute-poison", "inspect-poison", "later")
+    adapter = PoisonedInspection("d", required=required, poison=frozenset({"compute-poison"}))
+    registry = DerivationRegistry([adapter])
+    report = converge(registry, FRAME, budget=Budget(max_errors=1))
+
+    assert calls == [required, ("compute-poison",)]
+    assert report.failed == 1 and report.pending == 2 and report.done == 0
+    assert adapter.computed == ["compute-poison"] and adapter.published == []
+    assert report.cursor.position("d").pending_keys == ("inspect-poison", "later")
+
+    poison = converge(registry, FRAME, budget=Budget(max_errors=1), cursor=report.cursor)
+    assert poison.failed == poison.pending == 1 and poison.done == 0
+    assert poison.cursor.position("d").pending_keys == ("later",)
+    later = converge(registry, FRAME, budget=Budget(max_errors=1), cursor=poison.cursor)
+    assert later.done == 1 and later.failed == later.pending == 0
+    assert adapter.output == {"later": "b0"}
 
 
 @pytest.mark.parametrize("deadline_phase", ["bulk", "individual"])
@@ -1395,18 +1440,21 @@ def test_cursor_unsettled_evidence_survives_an_empty_outcome_sample(kind: str) -
     assert report.cursor_unsettled_domains == frozenset({"d"})
 
 
-def test_cursor_evidence_excludes_budget_suffix_even_when_its_inspection_failed() -> None:
-    """An inspected suffix still lies ahead of the cursor stopped at the budget."""
+def test_fallback_budget_suffix_stays_unvisited_and_ahead_of_the_cursor() -> None:
+    """Publication exhaustion prevents new fallback reads of the suffix."""
+    calls: list[tuple[str, ...]] = []
 
     class PoisonedSuffix(RecordingDerivation):
         def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            calls.append(tuple(keys))
             if "poison" in keys:
                 raise ValueError("synthetic suffix inspection fault")
             return super().inspect(frame, keys)
 
     adapter = PoisonedSuffix("d", required=("published", "budget", "poison"))
     report = converge(DerivationRegistry([adapter]), FRAME, budget=Budget(publication=1, retained_outcomes=0))
-    assert report.failed == 1 and report.pending == 1 and report.done == 1
+    assert calls == [("published", "budget", "poison"), ("published",), ("published",)]
+    assert report.failed == 0 and report.pending == 2 and report.done == 1
     assert report.cursor.position("d").pending_keys == ("budget", "poison")
     assert report.cursor_unsettled_domains == frozenset()
 
