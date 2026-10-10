@@ -323,10 +323,16 @@ class _RecordEvidence:
         from .origin_specs import detector_registry
 
         try:
-            for sequence in (False, True) if record else (False,):
-                provider, evidence = detector_registry().detect_record_events(self.events, sequence=sequence)
-                if bound is not None and provider is not None and not same_origin(provider, bound):
-                    raise ForeignOriginContentError(expected=bound, found=provider, evidence=evidence or "record shape")
+            from contextlib import closing
+
+            with closing(
+                detector_registry().iter_record_event_detections(self.events, include_singleton=record)
+            ) as detections:
+                for provider, evidence in detections:
+                    if bound is not None and provider is not None and not same_origin(provider, bound):
+                        raise ForeignOriginContentError(
+                            expected=bound, found=provider, evidence=evidence or "record shape"
+                        )
         finally:
             self.close()
 

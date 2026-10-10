@@ -55,12 +55,17 @@ its independent binding order and last winning witness. Acquisition classifies e
 decoded record and its singleton sequence in their independent detector order,
 sharing identical declared projections only for that record. Projected mapping
 read views validate their JSON conversion once for their read-only predicates
-and resolvers. Actual root arrays keep each binding's own complete fold. Event
+and resolvers. Actual root arrays keep each binding's own complete fold.
+Spilled event records share exact declared projections across record and
+singleton interpretations within one explicitly closed detection iterator.
+Each event traversal closes before another opens; projection resources settle
+before their record scalar owner retires, including early refusal. Event
 projections still consume and validate the complete input; acquisition retains
 every origin check. Large JSONL origin-validation records borrow one scratch
 schema owned by their byte stream. Each record's scalar and projection rows
 are rolled back after its evidence folds finish; ending or abandoning the
 stream closes the scratch store. Small records keep their decoded route.
+
 
 The artifact classifier proves a complete first physical JSONL value has a
 later nonblank line before trying the existing record fold first. The syntax

@@ -1017,7 +1017,7 @@ def test_record_detection_views_match_complete_event_route(value: object) -> Non
     def events_factory() -> Iterator[tuple[str, object]]:
         return iter(exact_backend.basic_parse(io.BytesIO(json.dumps(value).encode("utf-8"))))
 
-    expected = [registry.detect_record_events(events_factory, sequence=sequence) for sequence in (False, True)]
+    expected = list(registry.iter_record_event_detections(events_factory))
     assert list(registry.iter_record_detections(value)) == expected
 
 
@@ -1040,7 +1040,7 @@ def test_singleton_sequence_detection_matches_event_route_for_nested_and_dynamic
             return iter(exact_backend.basic_parse(io.BytesIO(encoded)))
 
         decoded = list(registry.iter_record_detections(value))
-        streamed = [registry.detect_record_events(events_factory, sequence=sequence) for sequence in (False, True)]
+        streamed = list(registry.iter_record_event_detections(events_factory))
         assert decoded == streamed
         assert decoded[1] == expected
 
@@ -1060,6 +1060,12 @@ def test_record_detection_views_keep_dynamic_provider_allowlist() -> None:
 
     with pytest.raises(DetectorBindingError, match="invalid projected dynamic provider"):
         list(one_binding_registry.iter_record_detections({}))
+    with pytest.raises(DetectorBindingError, match="invalid projected dynamic provider"):
+        list(
+            one_binding_registry.iter_record_event_detections(
+                lambda: iter(exact_backend.basic_parse(io.BytesIO(b"{}")))
+            )
+        )
 
 
 def test_detector_registry_rejects_broken_declarations_with_the_binding_id() -> None:
