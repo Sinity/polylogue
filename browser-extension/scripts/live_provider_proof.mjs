@@ -485,10 +485,14 @@ export async function verifyInstalledExtension(client, extensionRoot, extensionI
   return { id: extensionId, version: observed.version, bundle_sha256: sha256(JSON.stringify(observed.rows)), verified_file_count: files.length };
 }
 
-export async function captureProvider(workerClient, provider, tabId) {
+export async function captureProvider(workerClient, provider, tabId, retainFailure = null) {
   const captured = await evaluateJson(workerClient, `(async () => ({
     result: await globalThis.__polylogueOwnedProviderProof.consumeCapture(${JSON.stringify(tabId)}, ${JSON.stringify(provider.nativeId)})
   }))()`);
+  if (captured?.result?.ok !== true && retainFailure !== null) await retainFailure({
+    provider: provider.provider, returned_ok: captured?.result?.ok ?? null,
+    returned_error: captured?.result?.error ?? null, returned_outcome: captured?.result?.outcome ?? null,
+  });
   retainCaptureEvidence(provider, captured);
   if (provider.provider === "chatgpt") retainNativeProgress(captured?.result?.native_progress ?? []);
   return captured;

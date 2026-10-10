@@ -1,11 +1,11 @@
 // @vitest-environment node
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createOwnedProviderProofExtension, verifyOwnedProviderProofExtension } from "../scripts/owned_provider_extension.mjs";
-import { currentProofFailure, evaluateJson, proofFailureReport } from "../scripts/live_provider_proof.mjs";
-import { runOwnedProviderProof } from "../scripts/owned_provider_proof.mjs";
+import { captureProvider, currentProofFailure, evaluateJson, proofFailureReport } from "../scripts/live_provider_proof.mjs";
+import { ownedCaptureDiagnostic, runOwnedProviderProof } from "../scripts/owned_provider_proof.mjs";
 const owned = [];
 afterEach(() => { for (const root of owned.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture({ mismatch = false, alias = false, extra = false } = {}) {
@@ -133,4 +133,38 @@ it("retains missing-capture worker evidence before cleanup and preserves the clo
   expect(currentProofFailure(failure).error).toEqual({ phase: "capture_result", category: "automatic_capture_missing" });
   expect(JSON.stringify(currentProofFailure(failure))).not.toContain("private selected-runtime exception");
   expect(trace.findIndex(row => row[0] === "private.capture.diagnostic")).toBeLessThan(trace.findIndex(row => row[0] === "close.owned.windows"));
+});
+
+
+it("retains every non-ok reply privately before sanitization and owned cleanup", async () => {
+  const { deps, trace } = fixture();
+  const destination = path.join(deps.extensionRoot, "private-capture-diagnostic.json");
+  const diagnostic = ownedCaptureDiagnostic(destination);
+  const evaluate = deps.evaluate;
+  deps.evaluate = async (client, expression) => {
+    if (expression.includes("captureFailureDetails")) return { boundary_failures: [], debug_log: [{ stage: "native_assets" }], state: { error: "private runtime detail" } };
+    if (expression.includes("consumeCapture")) return { result: { ok: false, error: "private returned failure", outcome: "failed" } };
+    return evaluate(client, expression);
+  };
+  deps.connectWorker = async () => ({ call: async (_method, args) => ({ result: { value: await deps.evaluate(null, args.expression) } }), close() {} });
+  deps.capture = captureProvider;
+  deps.retainCaptureFailure = details => { diagnostic.retain(details); trace.push(["private.capture.diagnostic"]); };
+  const cleanup = deps.settleCleanup;
+  deps.settleCleanup = async unload => {
+    const snapshot = JSON.parse(readFileSync(destination, "utf8"));
+    expect(snapshot.snapshots.map(row => row.capture_reply)).toEqual(["chatgpt", "claude-ai"].map(provider => ({
+      provider, returned_ok: false, returned_error: "private returned failure", returned_outcome: "failed" })));
+    expect(snapshot.snapshots.every(row => row.state.error === "private runtime detail")).toBe(true);
+    expect(statSync(destination).mode & 0o777).toBe(0o600);
+    await cleanup(unload);
+  };
+  let failure;
+  try { await runOwnedProviderProof(deps); } catch (error) { failure = error; } finally { diagnostic.close(); }
+  expect(currentProofFailure(failure).error).toEqual({ phase: "capture_result", category: "capture_incomplete" });
+  expect(JSON.stringify(currentProofFailure(failure))).not.toContain("private returned failure");
+  expect(trace.filter(row => row[0] === "private.capture.diagnostic")).toHaveLength(2);
+  expect(trace.findIndex(row => row[0] === "private.capture.diagnostic")).toBeLessThan(trace.findIndex(row => row[0] === "close.owned.windows"));
+  const duplicate = ownedCaptureDiagnostic(destination);
+  try { expect(() => duplicate.retain({ replacement: true })).toThrow(); } finally { duplicate.close(); }
+  expect(JSON.parse(readFileSync(destination, "utf8")).snapshots).toHaveLength(2);
 });
