@@ -169,14 +169,15 @@ export async function createOwnedProviderBrowser(browser, declarations) {
       const declaration = owned.get(tabId);
       if (!declaration || nativeId !== declaration.nativeId) throw refused();
       const capture = automaticCaptures.get(tabId);
-      if (!capture?.settled) throw refused();
+      if (!capture) throw new Error("proof_automatic_capture_missing");
+      if (!capture.settled) throw new Error("proof_automatic_capture_pending");
       if (capture.documentId !== await documentFor(tabId)) { revoke(tabId); throw refused(); }
       if (automaticCaptures.get(tabId) !== capture) throw refused();
       automaticCaptures.delete(tabId);
       return capture.result;
     },
     async startCapture() {
-      if (messageListeners.size !== 1) throw refused();
+      if (messageListeners.size !== 1) throw new Error("proof_capture_listener_invalid");
       const listener = [...messageListeners][0];
       return new Promise(resolve => listener({ type: "polylogue.captureSupportedTabs", reason: "owned_provider_proof" },
         { id: browser.runtime.id, url: `chrome-extension://${browser.runtime.id}/proof.html` }, resolve));

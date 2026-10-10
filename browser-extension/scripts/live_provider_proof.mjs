@@ -19,6 +19,7 @@ const PROOF_PHASES = new Set([
   "extension_startup", "popup_open", "popup_connect", "receiver_snapshot", "pause",
   "revision", "permission_grant", "desktop_snapshot", "popup_bind", "provider_preflight",
   "receiver_pairing", "provider_open", "provider_window", "provider_wait", "capture", "summary",
+  "capture_start", "capture_membership", "capture_result",
 ]);
 const ERROR_CATEGORIES = new Map([
   ["shared Chrome control command failed", "control_failed"],
@@ -49,6 +50,10 @@ const ERROR_CATEGORIES = new Map([
   ["proof_capture_incomplete", "capture_incomplete"],
   ["proof_owned_provider_isolation_unavailable", "provider_isolation_refused"],
   ["proof_owned_tab_refused", "provider_isolation_refused"],
+  ["proof_automatic_capture_missing", "automatic_capture_missing"],
+  ["proof_automatic_capture_pending", "automatic_capture_pending"],
+  ["proof_automatic_capture_start_failed", "automatic_capture_start_failed"],
+  ["proof_capture_listener_invalid", "capture_listener_invalid"],
   ["proof_owned_provider_binding_invalid", "provider_isolation_refused"],
   ["loopback_endpoint_required", "loopback_endpoint_required"],
   ["receiver_identity_mismatch", "receiver_identity_mismatch"],

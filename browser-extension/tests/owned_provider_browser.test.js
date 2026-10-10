@@ -122,7 +122,7 @@ it("consumes the exact automatic capture once and refuses stale or wrong-target 
     browser.tabs.sendMessage.mockResolvedValueOnce(result);
     await owner.browser.tabs.sendMessage(11, { type: "polylogue.capturePage", reason: "auto_capture_missing" });
     expect(await owner.consumeCapture(11, "neutral-first")).toBe(result);
-    await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_owned_tab_refused");
+    await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_automatic_capture_missing");
     expect(browser.tabs.sendMessage).toHaveBeenCalledTimes(1);
   }
 });
@@ -138,7 +138,7 @@ it("never consumes an older completion while a newer automatic capture is pendin
   const newer = owner.browser.tabs.sendMessage(11, { type: "polylogue.capturePage", reason: "auto_capture_unconverged_provider" });
   await vi.waitFor(() => expect(second).toBeTypeOf("function"));
   first({ ok: true, revision: "older" }); await older;
-  await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_owned_tab_refused");
+  await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_automatic_capture_pending");
   const result = { ok: true, revision: "newer" };
   second(result); await newer;
   expect(await owner.consumeCapture(11, "neutral-first")).toBe(result);
@@ -259,7 +259,7 @@ it("runs automatic production capture and injection only through the admitted br
   await expect(owner.consumeCapture(11, "neutral-second")).rejects.toThrow("proof_owned_tab_refused");
   expect(await owner.consumeCapture(11, "neutral-first")).toEqual({ ok: false, error: "neutral_capture_refused" });
   expect(await owner.consumeCapture(12, "neutral-second")).toEqual({ ok: false, error: "neutral_capture_refused" });
-  await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_owned_tab_refused");
+  await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_automatic_capture_missing");
   const captures = browser.tabs.sendMessage.mock.calls.filter(([, message]) => message.type === "polylogue.capturePage");
   expect(captures.map(([id]) => id).sort()).toEqual([11, 12]);
   expect(captures.every(([, , options]) => options.documentId === "neutral-document")).toBe(true);
@@ -270,4 +270,13 @@ it("runs automatic production capture and injection only through the admitted br
   expect(browser.tabs.get.mock.calls.some(([id]) => id === 99)).toBe(false);
   expect(browser.tabs.query.mock.calls.every(([query]) => [21, 22].includes(query.windowId))).toBe(true);
   expect(network.mock.calls.every(([url]) => new URL(url).origin === "http://127.0.0.1:18765")).toBe(true);
+});
+
+
+it("distinguishes absent automatic work from an invalid listener without requesting capture", async () => {
+  const { browser, declarations } = fixture();
+  const owner = await createOwnedProviderBrowser(browser, declarations);
+  await expect(owner.consumeCapture(11, "neutral-first")).rejects.toThrow("proof_automatic_capture_missing");
+  await expect(owner.startCapture()).rejects.toThrow("proof_capture_listener_invalid");
+  expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
 });

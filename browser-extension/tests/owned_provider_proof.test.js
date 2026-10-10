@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createOwnedProviderProofExtension, verifyOwnedProviderProofExtension } from "../scripts/owned_provider_extension.mjs";
+import { currentProofFailure, evaluateJson, proofFailureReport } from "../scripts/live_provider_proof.mjs";
 import { runOwnedProviderProof } from "../scripts/owned_provider_proof.mjs";
 const owned = [];
 afterEach(() => { for (const root of owned.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -91,4 +92,30 @@ it("refuses an extra reported tab before consuming capture and still settles own
   await expect(runOwnedProviderProof(deps)).rejects.toThrow("proof_owned_tab_refused");
   expect(trace.filter(row => row[0] === "evaluate" && row[1].includes(".consumeCapture(")).length).toBe(0);
   expect(trace).toContainEqual(["Extensions.uninstall", { id: binding.extension_id }]);
+});
+
+
+it("reports failed automatic admission before consuming results", async () => {
+  const { deps, trace } = fixture();
+  const evaluate = deps.evaluate;
+  deps.evaluate = async (client, expression) => expression.includes("startCapture") ? { ok: false, error: "private detail" } : evaluate(client, expression);
+  let failure;
+  try { await runOwnedProviderProof(deps); } catch (error) { failure = error; }
+  expect(currentProofFailure(failure).error).toEqual({ phase: "capture_start", category: "automatic_capture_start_failed" });
+  expect(trace.some(row => row[0] === "evaluate" && row[1].includes("consumeCapture"))).toBe(false);
+});
+
+it("retains fixed capture guard codes through CDP and the public phase boundary", async () => {
+  for (const [code, category] of [["proof_automatic_capture_missing", "automatic_capture_missing"],
+    ["proof_automatic_capture_pending", "automatic_capture_pending"],
+    ["proof_capture_listener_invalid", "capture_listener_invalid"]]) {
+    const client = { call: async () => ({ exceptionDetails: { exception: { description: `Error: ${code}\nprivate target details` } } }) };
+    let failure;
+    try { await evaluateJson(client, "neutral expression"); } catch (error) { failure = error; }
+    const report = proofFailureReport("capture_result", failure);
+    expect(report.error).toEqual({ phase: "capture_result", category });
+    expect(JSON.stringify(report)).not.toContain("private target details");
+  }
+  expect(proofFailureReport("capture_membership", new Error("proof_owned_tab_refused")).error)
+    .toEqual({ phase: "capture_membership", category: "provider_isolation_refused" });
 });

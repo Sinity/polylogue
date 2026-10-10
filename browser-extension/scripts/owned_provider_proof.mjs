@@ -74,17 +74,23 @@ export async function runOwnedProviderProof({ extensionRoot, control = runChrome
     page = await connectPage(pageTarget, 30_000);
     const installed = await inProofPhase("revision", () => verifyInstalled(page, extensionRoot, binding.extension_id, manifest,
       ["proof.html", "owned_provider_browser.mjs", "proof_bootstrap.mjs", "owned-scope.json"]));
-    await inProofPhase("capture", () => evaluate(worker, "globalThis.__polylogueOwnedProviderProof.startCapture()"));
-    const admitted = await evaluate(worker, "globalThis.__polylogueOwnedProviderProof.ownedTabs()");
-    if (!Array.isArray(admitted) || admitted.length !== scope.targets.length || new Set(admitted.map(row => row.id)).size !== admitted.length
-        || admitted.some(row => !Number.isInteger(row.id) || !targets.some(target => row.url === target.url
-          && row.windowId === target.windowId && row.pinned !== true))) throw new Error("proof_owned_tab_refused");
+    await inProofPhase("capture_start", async () => {
+      const started = await evaluate(worker, "globalThis.__polylogueOwnedProviderProof.startCapture()");
+      if (started?.ok !== true) throw new Error("proof_automatic_capture_start_failed");
+    });
+    const admitted = await inProofPhase("capture_membership", async () => {
+      const rows = await evaluate(worker, "globalThis.__polylogueOwnedProviderProof.ownedTabs()");
+      if (!Array.isArray(rows) || rows.length !== scope.targets.length || new Set(rows.map(row => row.id)).size !== rows.length
+          || rows.some(row => !Number.isInteger(row.id) || !targets.some(target => row.url === target.url
+            && row.windowId === target.windowId && row.pinned !== true))) throw new Error("proof_owned_tab_refused");
+      return rows;
+    });
     const providers = {};
     for (const selected of scope.targets) {
       const tab = admitted.find(row => row.url === selected.url);
       if (!tab) throw new Error("proof_owned_tab_refused");
       const provider = { ...selected, host: new URL(selected.url).hostname, provider: selected.name === "chatgpt" ? "chatgpt" : "claude-ai" };
-      const captured = await inProofPhase("capture", () => capture(worker, provider, tab.id));
+      const captured = await inProofPhase("capture_result", () => capture(worker, provider, tab.id));
       providers[provider.host] = providerSummary(provider, captured);
     }
     if (!Object.values(providers).every(row => row.ok === true)) throw new Error("proof_capture_incomplete");
