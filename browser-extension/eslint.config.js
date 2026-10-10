@@ -45,10 +45,27 @@ export default [
     },
   },
   {
-    files: ["src/background.js", "src/background/**/*.js", "src/actions/**/*.js", "src/backfill/**/*.js", "src/capture/**/*.js"],
+    files: ["src/background.js", "src/background/**/*.js", "src/actions/**/*.js", "src/backfill/**/*.js", "src/capture/**/*.js", "src/vendor/**/*.js"],
     languageOptions: {
       sourceType: "module",
     },
+  },
+  {
+    files: ["src/vendor/sha256.js"],
+    languageOptions: {
+      // The locked UMD source names these loaders in guarded inactive branches.
+      globals: { global: "readonly", define: "readonly", require: "readonly" },
+    },
+  },
+  {
+    files: ["src/vendor/**/*.js"],
+    languageOptions: { globals: { TextDecoder: "readonly" } },
+  },
+  {
+    files: ["src/vendor/streamparser-json/tokenizer.js"],
+    // Preserve the locked compiler output's intentional tokenizer fallthrough.
+    // Vendor-byte parity is checked by the build and streaming parser laws.
+    rules: { "no-fallthrough": "off" },
   },
   {
     files: ["tests/**/*.js"],
@@ -69,6 +86,7 @@ export default [
         chrome: "readonly",
         TextEncoder: "readonly",
         btoa: "readonly",
+        setTimeout: "readonly",
       },
     },
   },

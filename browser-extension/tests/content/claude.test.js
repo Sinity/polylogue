@@ -138,9 +138,9 @@ describe("claude.js native capture (real source)", () => {
     expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable", native_attempts: [{ stage: "page_bridge_fetch", failure_stage: expectedStage, error: secret, accepted: false }] });
     if (stage === "admission") expect(fetch).not.toHaveBeenCalled();
     const provider = { provider: "claude-ai", nativeId: "conversation-1", url: dom.window.location.href };
-    const chrome = { tabs: { query: async () => [{ id: 1, url: provider.url, pinned: false }], sendMessage: async () => result } };
-    const popup = { call: async (_method, params) => ({ result: { value: await new Script(params.expression).runInNewContext({ chrome, Date, setTimeout: globalThis.setTimeout }) } }) };
-    await captureProvider(popup, provider, 1, 1000);
+    const __polylogueOwnedProviderProof = { consumeCapture: async () => result };
+    const popup = { call: async (_method, params) => ({ result: { value: await new Script(params.expression).runInNewContext({ __polylogueOwnedProviderProof }) } }) };
+    await captureProvider(popup, provider, 1);
     const report = proofFailureReport("summary", new Error("proof_capture_incomplete"));
     expect(report.capture_evidence[0].bridge).toMatchObject({ observed: true, accepted: false, category: "unknown", failure_stage: expectedStage, status: null });
     expect(JSON.stringify(report)).not.toContain(secret);

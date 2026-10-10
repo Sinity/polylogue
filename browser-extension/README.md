@@ -110,7 +110,7 @@ The proof starts a temporary receiver and uses Sinnix's shared Chrome in one par
 
 The page proof verifies Chrome's native transport. Production background and capture consumers are covered by the extension tests and the Node bridge to the actual native host; the page does not prove their automatic browser lifecycle. The deterministic receiver captures and archive/API convergence checks remain separate parts of the declared operation. It never launches Chrome, creates a browser profile, allocates another CDP port, changes the operator's native manifest, or captures operator tabs. AgentCTL owns supervision and cancellation.
 
-The separate `live_provider_proof` entry point refuses before loading an extension with `proof_owned_provider_isolation_unavailable`. Its remaining requirement is registration restricted to proof-owned provider tabs before static response interception and tab-status readers can run. The existing automatic-capture pause does not cover those effects. Provider lifecycle acceptance remains open until that registration boundary is implemented and verified.
+The separate `live_provider_proof` operation creates an independently keyed runtime artifact and opens only its explicitly selected provider conversations in owned agent windows. Before loading the worker, it binds those window IDs and exact URLs to a proof-only browser authority. The artifact has no static content scripts or popup. Its independently keyed Chrome action supplies the production badge API; tab-specific badge changes pass through the same owned-tab authority. The production background runtime registers through that authority with automatic capture enabled; injection and messages target the current top-level document. Unknown tabs, moved tabs, and navigation outside the selected URL are refused. The proof summary consumes each exact automatic capture result once after checking its native ID and current document; it does not trigger another provider read. The production source resources remain unchanged except for the recorded native-host name substitution; the worker bootstrap and first-owned-window interpretation of `currentWindow` are recorded proof substitutions. Cleanup closes its own windows and uninstalls its own artifact. Neutral controls establish this isolation boundary; an actual selected-provider run is still required to establish provider lifecycle acceptance.
 
 ## Capture status, pairing, and ambient status
 
@@ -283,6 +283,8 @@ native-id uniqueness constraint.
 
 ## Development
 
+Development tools require Node 20 (20.19+), Node 22 (22.12+), or Node 24+. Release linting uses the locked Mozilla addons-linter directly; browser-launch tooling is not installed.
+
 ```bash
 npm ci
 npm test              # vitest
@@ -309,7 +311,7 @@ On `v*.*.*` tag push the workflow:
 2. Runs ESLint + Vitest (incl. build-script regression tests)
 3. Builds `polylogue-browser-capture-<version>-chrome.zip` and
    `polylogue-browser-capture-<version>-firefox.xpi`
-4. Runs `web-ext lint` against the unpacked Firefox bundle
+4. Runs `addons-linter` against the unpacked Firefox bundle
 5. Captures Playwright screenshots of the popup at Chrome Web Store and
    AMO submission aspect ratios, bundled as `store-screenshots-<tag>.tar.gz`
 6. Uploads all artifacts to the matching GitHub Release (`gh release upload --clobber`)

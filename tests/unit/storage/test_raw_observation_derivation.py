@@ -1353,14 +1353,17 @@ def test_retained_blob_io_failure_retries_without_quarantine(tmp_path: Path, mon
         bootstrap_archive_root(tmp_path)
         with _fixture_archive(tmp_path) as archive:
             raw_id = archive.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=b'{"type":"session_meta","payload":{"id":"io-retry"}}\n',
-                source_path="io-retry.jsonl",
-                canonical_source_path="io-retry.jsonl",
+                provider=Provider.CHATGPT,
+                payload=_chatgpt_payload(("io-retry",)),
+                source_path="io-retry.json",
+                canonical_source_path="io-retry.json",
                 acquired_at_ms=1,
             )
 
+        attempted: list[bool] = []
+
         def fail_blob_open(*_args: object, **_kwargs: object) -> None:
+            attempted.append(True)
             raise OSError(errno.EMFILE, "too many open files")
 
         monkeypatch.setattr(revision_backfill, "prepare_jsonl_blob", fail_blob_open)
@@ -1368,6 +1371,7 @@ def test_retained_blob_io_failure_retries_without_quarantine(tmp_path: Path, mon
             RawObservationDerivation(tmp_path, compute_adapter=compute_adapter).compute(
                 raw_observation_frame(tmp_path), raw_id
             )
+        assert attempted == [True]
         with sqlite3.connect(tmp_path / "source.db") as conn:
             assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
                 None,
@@ -1395,14 +1399,17 @@ def test_retained_parser_error_settles_as_terminal_refusal(tmp_path: Path, monke
             )
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         frame = raw_observation_frame(tmp_path)
-        from polylogue.sources import revision_backfill
+        from polylogue.sources import prepared_jsonl
 
-        monkeypatch.setattr(
-            revision_backfill,
-            "prepare_retained_jsonl_artifact",
-            lambda *args, **kwargs: PreparedJsonl(None, None, None, "synthetic parser refusal"),
-        )
+        prepared_calls: list[str] = []
+
+        def refuse_prepared(*args: Any, **kwargs: Any) -> PreparedJsonl:
+            prepared_calls.append(str(args[1]))
+            return PreparedJsonl(None, None, None, "synthetic parser refusal")
+
+        monkeypatch.setattr(prepared_jsonl, "prepare_jsonl_blob", refuse_prepared)
         replacement = adapter.compute(frame, raw_id)
+        assert prepared_calls == ["bad-session.jsonl"]
         # The census commits in place during preparation and settles the
         # refusal; no replay publication follows it.
         assert [phase for phase, _receipt in replacement.committed_phase_receipts] == ["census"]
@@ -1416,6 +1423,60 @@ def test_retained_parser_error_settles_as_terminal_refusal(tmp_path: Path, monke
             assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchall() == [
                 ("terminal_unsupported_shape",)
             ]
+
+    _run_raw_law(tmp_path, run_phase)
+
+
+def test_malformed_retained_jsonl_commits_typed_refusal_and_preserves_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real malformed bytes settle at the original Source phase without replay."""
+    from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind, RetainedRawDecodeRefusalError
+    from polylogue.sources import prepared_jsonl
+    from polylogue.storage.blob_store import BlobStore
+
+    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
+        bootstrap_archive_root(tmp_path)
+        payload = b"{bad json}\n"
+        with _fixture_archive(tmp_path) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path="malformed-session.jsonl",
+                canonical_source_path="malformed-session.jsonl",
+                acquired_at_ms=1,
+            )
+        calls: list[str] = []
+        original = prepared_jsonl.prepare_jsonl_blob
+
+        def observe(*args: Any, **kwargs: Any) -> Any:
+            calls.append(str(args[1]))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(prepared_jsonl, "prepare_jsonl_blob", observe)
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
+        frame = raw_observation_frame(tmp_path)
+        with pytest.raises(RetainedRawDecodeRefusalError) as failed:
+            adapter.compute(frame, raw_id)
+        assert failed.value.raw_id == raw_id
+        assert failed.value.kind is RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
+        assert calls == ["malformed-session.jsonl"]
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            # Corrupt bytes cannot prove membership or a non-session verdict.
+            assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchall() == []
+            assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchall() == [
+                ("terminal_corrupt_input",)
+            ]
+            (blob_hash,) = conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone()
+        assert BlobStore(tmp_path / "blob").read_all(bytes(blob_hash).hex()) == payload
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        settled = _snapshot(tmp_path)
+        with pytest.raises(RetainedRawDecodeRefusalError) as repeated:
+            adapter.compute(frame, raw_id)
+        assert repeated.value.kind is failed.value.kind
+        assert calls == ["malformed-session.jsonl"]
+        assert _snapshot(tmp_path) == settled
 
     _run_raw_law(tmp_path, run_phase)
 

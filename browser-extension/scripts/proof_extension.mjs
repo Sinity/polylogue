@@ -52,6 +52,10 @@ export function verifyProofExtension(extensionRoot, sourceRoot = ROOT) {
       || JSON.stringify(manifest.permissions) !== '["nativeMessaging"]'
       || sha256(key) !== binding.key_sha256 || id !== binding.extension_id || manifest.version !== candidateManifest.version
       || !/^com\.polylogue\.browser_capture\.proof_[a-f0-9]{32}$/.test(binding.host_name)) throw new Error("proof_extension_binding_invalid");
+  return verifyCandidateResources(extensionRoot, binding, sourceRoot);
+}
+
+export function verifyCandidateResources(extensionRoot, binding, sourceRoot = ROOT) {
   if (JSON.stringify(resources(sourceRoot)) !== JSON.stringify(resources(extensionRoot))) throw new Error("proof_extension_resource_mismatch");
   for (const file of resources(sourceRoot)) {
     const expected = readFileSync(path.join(sourceRoot, file));

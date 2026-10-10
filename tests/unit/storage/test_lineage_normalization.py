@@ -20,6 +20,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider, ToolOutcome
+from polylogue.core.identity_law import block_id as archive_block_id
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -3741,6 +3742,11 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
         ),
     )
     worker_id = write_fixture_index_session(conn, _codex_session("worker", ["w0"]))
+    dispatch_block = conn.execute(
+        "SELECT block_id, content_identity, content_occurrence FROM blocks WHERE message_id = ? AND tool_id = ?",
+        (archive_message_id(parent_id, "m1"), "task-1"),
+    ).fetchone()
+    assert dispatch_block is not None
     conn.execute(
         """
         INSERT INTO session_links(
@@ -3748,7 +3754,7 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
             inheritance, status, parent_tool_use_block_id, confidence, evidence_json, observed_at_ms
         ) VALUES (?, 'codex-session', 'child', 'subagent', ?, 'spawned-fresh', NULL, ?, 1.0, '[]', 0)
         """,
-        (worker_id, child_id, f"{parent_id}:n:m1:0"),
+        (worker_id, child_id, dispatch_block[0]),
     )
     conn.commit()
 
@@ -3759,7 +3765,13 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
     pointer = conn.execute(
         "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
     ).fetchone()
-    assert tuple(pointer) == (f"{child_id}:n:m1:0",)
+    assert tuple(pointer) == (
+        archive_block_id(
+            archive_message_id(child_id, "m1"),
+            content_identity=dispatch_block[1],
+            content_occurrence=dispatch_block[2],
+        ),
+    )
     close_fixture_index_connection(conn)
 
 
@@ -4512,6 +4524,32 @@ def test_append_skips_materialized_native_prefix_after_parent_edge_retires(tmp_p
         close_fixture_index_connection(conn)
 
 
+@pytest.mark.parametrize(
+    ("prefix_native", "tail_native"),
+    [
+        ("m1:é", "m1:è"),
+        ("\ud800", "eda080"),
+        ("\ud800\udc00", "\U00010000"),
+        ("n:m1", "s:m1"),
+    ],
+    ids=["unicode", "surrogate-and-literal-hex", "surrogate-pair-and-scalar", "namespace-markers"],
+)
+def test_materialized_native_prefix_uses_exact_source_names(
+    tmp_path: Path, prefix_native: str, tail_native: str
+) -> None:
+    parent = [_msg(prefix_native, Role.USER, "hello", 0), _msg("answer", Role.ASSISTANT, "answer", 1)]
+    child = [*parent, _msg(tail_native, Role.USER, "child tail", 2)]
+    inheriting, materialized, replayed = _materialize_then_replay(tmp_path, parent, child, parent[:1])
+    child_id = "codex-session:child"
+    assert inheriting == [archive_message_id(child_id, tail_native)]
+    assert materialized == [
+        archive_message_id(child_id, prefix_native),
+        archive_message_id(child_id, "answer"),
+        archive_message_id(child_id, tail_native),
+    ]
+    assert replayed == materialized
+
+
 def test_a_materialized_child_keeps_its_ids_for_id_less_duplicates(tmp_path: Path) -> None:
     """ID-less duplicates across prefix and tail keep their content occurrences.
 
@@ -4787,6 +4825,27 @@ def test_a_scoped_replay_refuses_a_prefix_that_no_longer_matches(tmp_path: Path)
     _materialize_then_replay(tmp_path, parent, [*parent, *tail], [_msg("m0", Role.USER, "hello", 0)])
     with pytest.raises(InheritedPrefixMaterializationError, match="no longer appears"):
         _replay_child(tmp_path, [parent[1], *tail])
+
+
+def test_a_scoped_replay_refuses_native_names_that_redivide_a_newline_sequence(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import InheritedPrefixMaterializationError
+
+    parent = [
+        _msg("m0", Role.USER, "hello", 0),
+        _msg("x\nn:y", Role.ASSISTANT, "answer", 1),
+        _msg("z", Role.USER, "another turn", 2),
+    ]
+    tail = _msg("tail", Role.USER, "child tail", 3)
+    _inheriting, materialized, _replayed = _materialize_then_replay(tmp_path, parent, [*parent, tail], parent[:1])
+    changed = [
+        parent[0],
+        parent[1].model_copy(update={"provider_message_id": "x"}),
+        parent[2].model_copy(update={"provider_message_id": "y\nn:z"}),
+        tail,
+    ]
+    with pytest.raises(InheritedPrefixMaterializationError, match="no longer appears"):
+        _replay_child(tmp_path, changed)
+    assert _replay_child(tmp_path, [*parent, tail]) == materialized
 
 
 def test_a_deep_chain_composes_in_linear_time(tmp_path: Path) -> None:

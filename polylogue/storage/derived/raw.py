@@ -1806,6 +1806,10 @@ class RawObservationDerivation(RawObservationInspection):
             raw_ids, logical_keys = read.expand_raw_membership_selection(selected)
             if not raw_ids:
                 return seal
+            for raw_id in raw_ids:
+                refusal = read.raw_terminal_decode_refusal(raw_id)
+                if refusal is not None:
+                    raise refusal
             descriptors = {raw_id: read.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
             eligible_raw_ids: tuple[str, ...] = tuple(
                 raw_id for raw_id in raw_ids if _neutral_jsonl_candidate(descriptors[raw_id][0], descriptors[raw_id][2])

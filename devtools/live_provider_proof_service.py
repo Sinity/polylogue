@@ -13,14 +13,23 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import secrets
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
+from threading import Thread
 from typing import Any
 from urllib.parse import urlsplit
 
-from devtools.agentctl_service_context import require_declared_operation_context
+from devtools.agentctl_service_context import require_declared_operation_context, terminate_process_group
+from devtools.isolated_environment import isolated_home_environment
+from devtools.native_transport_proof import NativeProofCustodyError, scoped_native_host
 from devtools.shared_chrome_lock import shared_chrome_extension_lock
 from polylogue.browser_capture.models import validate_capture_envelope
+from polylogue.browser_capture.receiver import load_or_mint_receiver_identity, persist_receiver_token
+from polylogue.browser_capture.server import BrowserCaptureHandler, make_server
 from polylogue.core.enums import BlockType
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.browser_capture import (
@@ -29,8 +38,7 @@ from polylogue.sources.parsers.browser_capture import (
     parse,
 )
 
-_RECEIVER_PORT_ENV = "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"
-_NODE_PROOF_TIMEOUT_S = 120
+_SHARED_CHROME_LOCK_TIMEOUT_S = 120
 _MAX_ERROR_MESSAGE = 512
 
 _PROOF_PHASES = {
@@ -54,6 +62,9 @@ _PROOF_PHASES = {
     "provider_window",
     "provider_wait",
     "capture",
+    "capture_start",
+    "capture_membership",
+    "capture_result",
     "summary",
     "unknown",
 }
@@ -79,6 +90,11 @@ _PROOF_CATEGORIES = {
     "capture_incomplete",
     "cleanup_failed",
     "operation_failed",
+    "provider_isolation_refused",
+    "automatic_capture_missing",
+    "automatic_capture_pending",
+    "automatic_capture_start_failed",
+    "capture_listener_invalid",
 }
 _NATIVE_PROGRESS_STAGES = {
     "throttle",
@@ -383,27 +399,262 @@ def verify_captured_artifact(spool: Path, receipt: dict[str, Any]) -> dict[str, 
     }
 
 
-def run_proof(*, conversations_file: Path, repo_root: Path | None = None) -> dict[str, object]:
-    """Run the shared-Chrome workflow against a self-bound loopback receiver."""
+def _retain_proof_evidence(scratch: Path, spool: Path, evidence: Path) -> None:
+    """Retain the sealed selected receiver bytes and their original bindings."""
+    shutil.copytree(spool, evidence / "browser-capture")
+    for name, source in (
+        ("constructor-scope.json", scratch / "constructor-scope.json"),
+        ("owned-capture-diagnostic.json", scratch / "owned-capture-diagnostic.json"),
+        ("proof-binding.json", scratch / "native-transport-proof/extension/proof-binding.json"),
+        ("owned-scope.json", scratch / "native-transport-proof/extension/owned-scope.json"),
+    ):
+        if source.is_file():
+            shutil.copy2(source, evidence / name)
+    with (evidence / "retained-files.jsonl").open("x", encoding="utf-8") as manifest:
+        for source in evidence.rglob("*"):
+            if not source.is_file() or source == evidence / "retained-files.jsonl":
+                continue
+            digest = hashlib.sha256()
+            with source.open("rb") as handle:
+                while chunk := handle.read(64 * 1024):
+                    digest.update(chunk)
+            manifest.write(
+                json.dumps(
+                    {
+                        "path": str(source.relative_to(evidence)),
+                        "bytes": source.stat().st_size,
+                        "sha256": digest.hexdigest(),
+                    }
+                )
+                + "\n"
+            )
+
+
+def run_proof(
+    *, conversations_file: Path, chrome_user_data_dir: Path, evidence_root: Path, repo_root: Path | None = None
+) -> dict[str, object]:
+    """Capture only declared conversations through an owned-window runtime."""
     targets = conversation_targets(conversations_file)
-    with shared_chrome_extension_lock(timeout_s=_NODE_PROOF_TIMEOUT_S):
-        return _run_proof_locked(targets=targets, repo_root=repo_root)
+    with shared_chrome_extension_lock(timeout_s=_SHARED_CHROME_LOCK_TIMEOUT_S):
+        return _run_proof_locked(
+            targets=targets, chrome_user_data_dir=chrome_user_data_dir, evidence_root=evidence_root, repo_root=repo_root
+        )
 
 
-def _run_proof_locked(*, targets: list[dict[str, str]], repo_root: Path | None = None) -> dict[str, object]:
+def _run_proof_locked(
+    *, targets: list[dict[str, str]], chrome_user_data_dir: Path, evidence_root: Path, repo_root: Path | None = None
+) -> dict[str, object]:
     require_declared_operation_context("live_provider_proof")
-    # A second production extension would register content scripts on operator
-    # tabs before its ambient-capture pause. Until registration itself has owned
-    # target authority, do not load it or replace the operator's native host.
-    raise ChildProofError(
-        {
-            "ok": False,
-            "error": {"phase": "extension_load", "category": "provider_target_isolation_unavailable"},
-            "cleanup": dict.fromkeys(["receiver", "permission", "mutations", "targets"], "not_required"),
-            "native_progress": [],
-            "capture_evidence": [],
-        }
+    if not targets:
+        raise ValueError("proof requires explicitly owned conversation targets")
+    evidence_root = evidence_root.absolute()
+    evidence_root.mkdir(mode=0o700)
+    root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
+    scratch = Path(tempfile.mkdtemp(prefix="polylogue-owned-provider-proof-")).resolve()
+    spool, archive = scratch / "browser-capture", scratch / "archive"
+    spool.mkdir()
+    inherited = dict(os.environ)
+    environment = isolated_home_environment(
+        {key: value for key, value in inherited.items() if not key.startswith("POLYLOGUE_")},
+        home=scratch / "home",
     )
+    environment.update(POLYLOGUE_ARCHIVE_ROOT=str(archive), TMPDIR=str(scratch), POLYLOGUE_EMBEDDINGS_ENABLED="false")
+    scope_keys = {
+        key
+        for key in environment
+        if key.startswith("POLYLOGUE_") or key.startswith("XDG_") or key in {"HOME", "TMPDIR"}
+    }
+    for key in tuple(os.environ):
+        if key.startswith("POLYLOGUE_"):
+            os.environ.pop(key)
+    os.environ.update({key: environment[key] for key in scope_keys})
+    server = None
+    thread = None
+    thread_started = False
+    process: subprocess.Popen[str] | None = None
+    receiver_requests: list[dict[str, object]] = []
+    settled = False
+    retain_custody = False
+    evidence_retained = False
+    try:
+        secret = secrets.token_urlsafe(32)
+        persist_receiver_token(secret, archive / "browser-capture-receiver-token")
+        identity = load_or_mint_receiver_identity(archive / "browser-capture-receiver-id")
+        server = make_server("127.0.0.1", 0, spool_path=spool, archive_root=archive, auth_token=secret)
+        server.daemon_threads = False
+        server.block_on_close = True
+
+        class ObservedHandler(BrowserCaptureHandler):
+            def _finish_observed_request(self, method: str, started_at: float) -> None:
+                path = urlsplit(self.path).path
+                if path in {"/v1/status", "/v1/receiver/attest", "/v1/archive-state"}:
+                    status = getattr(self, "_polylogue_status", None)
+                    receiver_requests.append(
+                        {
+                            "method": method if method in {"GET", "POST", "OPTIONS"} else "unknown",
+                            "path": path,
+                            "status": status if type(status) is int and 100 <= status <= 599 else None,
+                        }
+                    )
+                super()._finish_observed_request(method, started_at)
+
+        server.RequestHandlerClass = ObservedHandler
+        port = int(server.server_address[1])
+        endpoint = f"http://127.0.0.1:{port}"
+        scope_path = scratch / "constructor-scope.json"
+        scope_path.write_text(json.dumps({"receiverUrl": endpoint, "receiverId": identity, "targets": targets}))
+        scope_path.chmod(0o600)
+
+        def build(extension: Path, host_name: str) -> dict[str, object]:
+            completed = subprocess.run(
+                [
+                    "node",
+                    str(root / "browser-extension/scripts/owned_provider_extension.mjs"),
+                    "--destination",
+                    str(extension),
+                    "--host",
+                    host_name,
+                    "--scope",
+                    str(scope_path),
+                ],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            binding = json.loads(completed.stdout)
+            if (
+                not isinstance(binding, dict)
+                or binding.get("kind") != "owned-provider-runtime"
+                or binding.get("owned_targets_bound") is not False
+            ):
+                raise ValueError("proof owned runtime constructor binding invalid")
+            return binding
+
+        with scoped_native_host(
+            repo_root=root,
+            scratch=scratch,
+            environment=environment,
+            chrome_user_data_dir=chrome_user_data_dir,
+            build_extension=build,
+        ) as host:
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            thread_started = True
+            try:
+                environment["POLYLOGUE_LIVE_PROVIDER_EXTENSION_ROOT"] = host["extension_root"]
+                environment["POLYLOGUE_LIVE_PROVIDER_DIAGNOSTIC_PATH"] = str(scratch / "owned-capture-diagnostic.json")
+                process = subprocess.Popen(
+                    ["node", "scripts/owned_provider_proof.mjs"],
+                    cwd=root / "browser-extension",
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+                try:
+                    stdout, _stderr = process.communicate()
+                except UnicodeError as error:
+                    raise failed_child(None, receiver_requests) from error
+                if process.returncode != 0:
+                    raise failed_child(stdout, receiver_requests)
+                try:
+                    result = json.loads(stdout)
+                except (ValueError, TypeError) as error:
+                    raise failed_child(stdout, receiver_requests) from error
+                if not isinstance(result, dict) or result.get("ok") is not True:
+                    raise failed_child(stdout, receiver_requests)
+                receipts = result.get("providers")
+                if not isinstance(receipts, dict) or set(receipts) != {
+                    urlsplit(target["url"]).hostname for target in targets
+                }:
+                    raise failed_child(None, receiver_requests)
+                isolation = result.get("isolation")
+                if (
+                    result.get("automatic_capture_enabled") is not True
+                    or not isinstance(isolation, dict)
+                    or isolation.get("declared_window_count") != len(targets)
+                    or isolation.get("admitted_tab_count") != len(targets)
+                    or isolation.get("static_content_scripts") is not False
+                    or isolation.get("document_bound_effects") is not True
+                    or isolation.get("current_window") != "first_declared_owned_window"
+                ):
+                    raise failed_child(None, receiver_requests)
+                try:
+                    for target in targets:
+                        receipt = receipts[urlsplit(target["url"]).hostname]
+                        if (
+                            not isinstance(receipt, dict)
+                            or receipt.get("provider") != {"chatgpt": "chatgpt", "claude": "claude-ai"}[target["name"]]
+                            or receipt.get("provider_session_id_sha256")
+                            != hashlib.sha256(target["nativeId"].encode()).hexdigest()
+                        ):
+                            raise ValueError("capture receipt differs from declared owned target")
+                    providers = {name: verify_captured_artifact(spool, receipt) for name, receipt in receipts.items()}
+                    extension = result["extension"]
+                    binding = result["proof_binding"]
+                    if (
+                        not isinstance(binding, dict)
+                        or binding.get("extension_id") != host["extension_id"]
+                        or binding.get("host_name") != host["host_name"]
+                    ):
+                        raise ValueError("owned native host binding differs")
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    failure = failed_child(None, receiver_requests)
+                    failure.report["error"] = {"phase": "summary", "category": "capture_incomplete"}
+                    raise failure from error
+                return {
+                    "ok": True,
+                    "ports": {"browser_capture": port},
+                    "providers": providers,
+                    "extension": extension,
+                    "proof_binding": binding,
+                    "isolation": isolation,
+                    "automatic_capture_enabled": True,
+                    "archive_convergence": "not_exercised",
+                    "retained_evidence": str(evidence_root),
+                    "receiver_requests": receiver_requests,
+                }
+            finally:
+                if process is not None:
+                    terminate_process_group(process)
+                server.shutdown()
+                server.server_close()
+                thread.join()
+                settled = True
+                retain_custody = True
+                _retain_proof_evidence(scratch, spool, evidence_root)
+                evidence_retained = True
+                retain_custody = False
+    except NativeProofCustodyError:
+        retain_custody = True
+        raise
+    finally:
+        if not settled:
+            if process is not None:
+                terminate_process_group(process)
+            if server is not None:
+                if thread_started:
+                    server.shutdown()
+                server.server_close()
+            if thread_started and thread is not None:
+                thread.join()
+            settled = True
+        if settled:
+            try:
+                if not evidence_retained and not (evidence_root / "browser-capture").exists():
+                    _retain_proof_evidence(scratch, spool, evidence_root)
+                    evidence_retained = True
+            except OSError:
+                retain_custody = True
+                raise
+            finally:
+                os.environ.clear()
+                os.environ.update(inherited)
+            if not retain_custody:
+                shutil.rmtree(scratch)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -412,9 +663,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--conversations-file", type=Path, required=True, help="Private JSON array of exact conversation URLs."
     )
+    parser.add_argument(
+        "--chrome-user-data-dir",
+        type=Path,
+        required=True,
+        help="Actual running Chrome user-data directory for the independently named native host.",
+    )
+    parser.add_argument(
+        "--evidence-root",
+        type=Path,
+        required=True,
+        help="Nonexistent private per-run directory retaining selected acquired bytes and bindings.",
+    )
     arguments = parser.parse_args(argv)
     try:
-        payload: dict[str, Any] = run_proof(conversations_file=arguments.conversations_file)
+        payload: dict[str, Any] = run_proof(
+            conversations_file=arguments.conversations_file,
+            chrome_user_data_dir=arguments.chrome_user_data_dir,
+            evidence_root=arguments.evidence_root,
+        )
     except ChildProofError as error:
         payload = {**error.report, "receiver_requests": error.receiver_requests}
     except (

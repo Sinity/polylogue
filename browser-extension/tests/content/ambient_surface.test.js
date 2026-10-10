@@ -157,7 +157,7 @@ describe("ambient capture status surface", () => {
 
   it("renders the same conversation, receiver, event, and assertion contracts as the popup", async () => {
     const dom = freshDom();
-    const { api, runtime } = mount(dom);
+    const { api } = mount(dom);
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
 
     const text = api.shadow.textContent;

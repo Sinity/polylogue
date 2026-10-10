@@ -686,7 +686,9 @@ Drive raw acquisition downloads through `download_into` into its caller-owned
 prepared CAS file. Metadata before and after the transfer must match the
 listing before cache replacement or CAS publication. Cache validation reads
 every JSON event; admitted cache files are stream-hashed into prepared CAS
-files. Both download and cache stages are completely read through the
+files. Whole-document validation subdivides consumer reads into bounded lexical
+chunks, so UTF-8 and tokenizer copies do not grow with the requested read size.
+Both download and cache stages are completely read through the
 acquisition boundary at their native JSON coordinate before cache or CAS
 publication, refusing foreign records even after an own-provider prefix.
 Cache copies use bounded reads of those exact staged bytes, and every

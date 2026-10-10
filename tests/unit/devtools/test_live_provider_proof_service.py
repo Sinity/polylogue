@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
-import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -102,11 +99,9 @@ else if(branch === 'attachment_count_valid') result.envelope.capture_summary.att
 else if(branch === 'artifact_present') delete result.captureResult.artifact_ref;
 else if(branch === 'receiver_request_present') delete result.captureResult.receiver_request_id;
 else result = {ok:false,error:branch};
-const chrome = {tabs:{query:async()=>[{id:1,url:provider.url,pinned:false}],sendMessage:async(_id,message)=>{
-  assert.deepEqual(JSON.parse(JSON.stringify(message)),{type:'polylogue.capturePage',providerSessionId:'synthetic'});return result;
-}}};
-const popup = {call:async(_method,params)=>({result:{value:await vm.runInNewContext(params.expression,{chrome,Date,URL,setTimeout})}})};
-const captured = await inProofPhase('capture',()=>captureProvider(popup,provider,1,1000));
+const __polylogueOwnedProviderProof = {consumeCapture:async(id,nativeId)=>{assert.equal(id,1);assert.equal(nativeId,'synthetic');return result;}};
+const popup = {call:async(_method,params)=>({result:{value:await vm.runInNewContext(params.expression,{__polylogueOwnedProviderProof,Date,URL,setTimeout})}})};
+const captured = await inProofPhase('capture',()=>captureProvider(popup,provider,1));
 let primary;
 try { await inProofPhase('summary',()=>{assert.equal(providerSummary(provider,captured).ok,false);throw new Error('proof_capture_incomplete');}); }
 catch(error){primary=error;}
@@ -243,64 +238,6 @@ def test_python_rejects_private_or_malformed_capture_evidence(fault: str) -> Non
     assert private not in json.dumps(error.report)
 
 
-class _FakeServer:
-    server_address = ("127.0.0.1", 49120)
-
-    def serve_forever(self) -> None:
-        return None
-
-    def shutdown(self) -> None:
-        return None
-
-    def server_close(self) -> None:
-        return None
-
-
-class _FakeThread:
-    def __init__(self, **_kwargs: object) -> None:
-        return None
-
-    def start(self) -> None:
-        return None
-
-    def join(self, timeout: float | None = None) -> None:
-        del timeout
-
-
-def test_live_provider_timeout_terminates_group_and_becomes_typed_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(live_provider_proof_service, "require_declared_operation_context", lambda _operation: "unit")
-    bound: list[object] = []
-
-    def fake_make_server(_host: str, port: int, **_kwargs: object) -> _FakeServer:
-        bound.append(port)
-        return _FakeServer()
-
-    monkeypatch.setattr(live_provider_proof_service, "make_server", fake_make_server)
-    monkeypatch.setattr(live_provider_proof_service, "Thread", _FakeThread)
-    process = SimpleNamespace(
-        communicate=lambda **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(["node"], 120)),
-        returncode=None,
-    )
-    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
-    terminated: list[object] = []
-    monkeypatch.setattr(live_provider_proof_service, "terminate_process_group", terminated.append)
-
-    selection = tmp_path / "conversations.json"
-    selection.write_text(json.dumps(["https://chatgpt.com/c/synthetic-proof"]))
-    assert live_provider_proof_service.main(["--json", "--conversations-file", str(selection)]) == 1
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is False
-    assert payload["error"] == {"phase": "unknown", "category": "control_timeout"}
-    assert set(payload["cleanup"].values()) == {"unknown"}
-    assert payload["receiver_requests"] == []
-    assert terminated == [process, process]
-    assert bound == [0]
-
-
 @pytest.mark.parametrize(
     "urls",
     [
@@ -427,70 +364,23 @@ def test_live_proof_sanitizes_private_validation_errors(
         raise ValueError("private synthetic transcript must not enter job output")
 
     monkeypatch.setattr(live_provider_proof_service, "run_proof", fail)
-    assert live_provider_proof_service.main(["--json", "--conversations-file", str(tmp_path / "selection.json")]) == 1
+    assert (
+        live_provider_proof_service.main(
+            [
+                "--json",
+                "--conversations-file",
+                str(tmp_path / "selection.json"),
+                "--chrome-user-data-dir",
+                str(tmp_path),
+                "--evidence-root",
+                str(tmp_path / "evidence"),
+            ]
+        )
+        == 1
+    )
     output = capsys.readouterr().out
     assert "private synthetic transcript" not in output
     assert json.loads(output)["error"]["type"] == "ValueError"
-
-
-def test_native_browser_summary_and_actual_pairing_restore_contract() -> None:
-    """The same helpers used by the owned extension page run without live Chrome."""
-    script = r"""
-import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { configureReceiver, restoreReceiverConfiguration, providerSummary } from './scripts/live_provider_proof.mjs';
-import { receiverConfigurationOwner } from './tests/infra/receiver_configuration.js';
-const provider = { host: 'chatgpt.com', provider: 'chatgpt', nativeId: 'synthetic-one' };
-const envelope = { session: { provider: 'chatgpt', provider_session_id: 'synthetic-one', turns: [] }, receiver_native: { sha256: 'a'.repeat(64) }, capture_summary: { captureMode: 'native_full', turnCount: 2, attachmentCount: 1 } };
-const payload = { result: { ok: true, envelope, captureResult: { artifact_ref: 'synthetic.json', receiver_request_id: 'request' } } };
-assert.equal(providerSummary(provider, payload).ok, true);
-for (const changed of [ { ...envelope, capture_summary: {} }, { ...envelope, receiver_native: {} }, { ...envelope, session: { ...envelope.session, provider_session_id: 'other' } } ]) assert.equal(providerSummary(provider, { result: { ...payload.result, envelope: changed } }).ok, false);
-assert.equal(providerSummary(provider, { result: { ...payload.result, captureResult: {} } }).ok, false);
-let values = { receiverBaseUrl: 'http://127.0.0.1:8765', polylogueReceiverPairing: { receiver_id: 'old' }, queue: ['retained'] };
-const previous = structuredClone(values);
-const messages = [];
-const chrome = { permissions: { contains: async () => true }, storage: { local: {
-  get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : Object.keys(keys)).filter(key => Object.hasOwn(values, key) || !Array.isArray(keys)).map(key => [key, Object.hasOwn(values, key) ? values[key] : keys[key]])),
-  set: async rows => Object.assign(values, rows), remove: async keys => (Array.isArray(keys) ? keys : [keys]).forEach(key => delete values[key]),
-} }, runtime: { sendMessage: async message => {
-  messages.push(message);
-  if (message.type === 'polylogue.configureReceiver' || message.type === 'polylogue.receiverPairing.reset') return receiverOwner.send(message);
-  return { ok: true };
-} } };
-const receiverOwner = receiverConfigurationOwner(chrome, async () => ({ body: { ok: true, receiver_id: 'proof', api_schema: 'polylogue-browser-capture/v1' }, response: { ok: true, status: 200 } }));
-const client = { call: async (_method, params) => {
-  try { return { result: { value: await vm.runInNewContext(params.expression, { chrome }) } }; }
-  catch (error) { return { exceptionDetails: { text: 'Uncaught (in promise)', exception: { description: `Error: ${error.message}\n at private synthetic stack` } } }; }
-} };
-const admitted = await configureReceiver(client, 'http://127.0.0.1:49001');
-assert.equal(admitted.receiver_id, 'proof');
-assert.deepEqual(messages.map(message => message.type), ['polylogue.ambient.configure', 'polylogue.configureReceiver', 'polylogue.receiverPairing.reset']);
-await restoreReceiverConfiguration(client, previous, { baseUrl: 'http://127.0.0.1:49001', receiverId: 'proof', revision: admitted.revision });
-assert.deepEqual(JSON.parse(JSON.stringify(values)), previous);
-assert.equal(messages.at(-1).automatic_capture_enabled, false);
-assert(!messages.some(message => Object.hasOwn(message, 'receiverAuthToken')));
-// A setup fault before any config mutation restores only the unchanged snapshot.
-await restoreReceiverConfiguration(client, previous, { baseUrl: 'http://127.0.0.1:49001', receiverId: null, revision: null });
-values.receiverBaseUrl = 'http://concurrent';
-await assert.rejects(restoreReceiverConfiguration(client, previous, { baseUrl: 'http://127.0.0.1:49001', receiverId: 'proof', revision: admitted.revision }));
-assert.equal(values.receiverBaseUrl, 'http://concurrent');
-values = { receiverBaseUrl: 'http://127.0.0.1:49001', polylogueReceiverPairing: { receiver_id: 'proof' }, queue: ['retained'] };
-const readmitted = await configureReceiver(client, 'http://127.0.0.1:49001');
-await restoreReceiverConfiguration(client, {}, { baseUrl: 'http://127.0.0.1:49001', receiverId: 'proof', revision: readmitted.revision });
-assert.deepEqual(values, { queue: ['retained'] });
-chrome.runtime.sendMessage = async () => ({ ok: true, health: { status: 'offline' }, pairing: null });
-await assert.rejects(configureReceiver(client, 'http://127.0.0.1:49001'));
-console.log(JSON.stringify({ ok: true }));
-"""
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path("browser-extension"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"ok": True}
 
 
 def test_live_proof_preserves_claude_tool_errors_and_signatures(tmp_path: Path) -> None:
@@ -513,101 +403,6 @@ def test_live_proof_preserves_claude_tool_errors_and_signatures(tmp_path: Path) 
         for turn in envelope["session"]["turns"]
         for block in turn["blocks"]
     )
-
-
-@pytest.mark.parametrize("settled_before_signal", [False, True])
-@pytest.mark.parametrize("concurrent_configuration", [False, True])
-def test_signal_cleanup_settles_owned_grant_and_removes_permission_after_restore_refusal(
-    settled_before_signal: bool, concurrent_configuration: bool
-) -> None:
-    script = (
-        "const options = "
-        + json.dumps({"settled": settled_before_signal, "concurrent": concurrent_configuration})
-        + ";\n"
-        + r"""
-import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { proofReceiverCustody, requestProofHostPermission, cleanupProofReceiver, installShutdownCleanup } from './scripts/live_provider_proof.mjs';
-const events = [];
-const previous = { receiverBaseUrl: 'http://127.0.0.1:8765' };
-const values = { ...previous, queue: ['retained'] };
-let finishGrant;
-let granted = false;
-const chrome = { storage: { local: {
-  get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : Object.keys(keys)).filter(key => Object.hasOwn(values, key) || !Array.isArray(keys)).map(key => [key, Object.hasOwn(values, key) ? values[key] : keys[key]])),
-  set: async rows => { events.push('restore'); Object.assign(values, rows); },
-  remove: async keys => (Array.isArray(keys) ? keys : [keys]).forEach(key => delete values[key]),
-} }, runtime: { sendMessage: async message => {
-  // The extension restores only an unchanged receiver (this proof never
-  // applied its owned configuration); a foreign change is refused.
-  if (message?.type === 'polylogue.configureReceiver' && message.restore) {
-    const unchanged = ['receiverBaseUrl', 'polylogueReceiverPairing'].every(key => values[key] === message.restore.previous[key]);
-    return unchanged ? { ok: true } : { ok: false, error: 'proof_receiver_configuration_changed' };
-  }
-  return { ok: true };
-} }, permissions: {
-  contains: async () => granted,
-  request: () => new Promise(resolve => {
-    events.push('grant_started');
-    finishGrant = () => { events.push('grant_settled'); granted = true; resolve(true); };
-  }),
-  remove: async () => {
-    assert.equal(granted, true);
-    assert(events.indexOf('grant_settled') > events.indexOf('grant_started'));
-    assert(events.indexOf('prompt_restore_settled') > events.indexOf('prompt_restore_started'));
-    events.push('permission_removed');
-    granted = false;
-    assert.deepEqual(values.queue, ['retained']);
-    if (options.concurrent) assert.equal(values.receiverBaseUrl, 'http://concurrent');
-    else assert.equal(values.receiverBaseUrl, previous.receiverBaseUrl);
-    process.stdout.write(JSON.stringify({ events, configuration: values.receiverBaseUrl }) + '\n');
-    return true;
-  },
-} };
-const client = { call: async (_method, params) => {
-  try { return { result: { value: await vm.runInNewContext(params.expression, { chrome }) } }; }
-  catch (error) { return { exceptionDetails: { text: 'Uncaught (in promise)', exception: { description: `Error: ${error.message}\n at private synthetic stack` } } }; }
-} };
-const owner = proofReceiverCustody(client, previous, { baseUrl: 'http://proof', receiverId: null }, 'http://proof/*');
-installShutdownCleanup();
-const grant = requestProofHostPermission(owner, async () => {
-  events.push('prompt_restore_started');
-  await new Promise(resolve => setImmediate(resolve));
-  events.push('prompt_restore_settled');
-});
-while (!finishGrant) await Promise.resolve();
-if (options.settled) { finishGrant(); await grant; }
-if (options.concurrent) values.receiverBaseUrl = 'http://concurrent';
-process.emit('SIGTERM');
-// An in-flight grant must remain owned until its callback settles.
-if (!options.settled) { assert.equal(granted, false); finishGrant(); }
-await grant;
-assert.equal(owner.cleaning, true);
-assert(owner.settlement);
-const settlement = owner.settlement;
-assert.equal(settlement, cleanupProofReceiver(owner));
-await settlement.catch(() => undefined);
-assert.throws(() => requestProofHostPermission(owner));
-"""
-    )
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path("browser-extension"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 143, result.stderr
-    reports = [json.loads(line) for line in result.stdout.splitlines()]
-    evidence = next(report for report in reports if "events" in report)
-    terminal = next(report for report in reports if report.get("ok") is False)
-    assert terminal["error"]["category"] == "shutdown"
-    assert terminal["cleanup"]["permission"] == "settled"
-    assert terminal["cleanup"]["receiver"] == ("failed" if concurrent_configuration else "settled")
-    assert evidence["events"].count("permission_removed") == 1
-    assert evidence["events"].index("permission_removed") > evidence["events"].index("grant_settled")
-    assert evidence["configuration"] == ("http://concurrent" if concurrent_configuration else "http://127.0.0.1:8765")
-    assert ("proof_signal_receiver_cleanup_failed" in result.stderr) is concurrent_configuration
 
 
 @pytest.mark.parametrize("page", ["popup", "admin", "provider"])
@@ -673,7 +468,7 @@ await settlement.catch(() => undefined);
         assert evidence["events"] == ["creation_started", "response_settled"]
     else:
         assert evidence["events"] == ["creation_started", "response_settled", "target_closed"]
-    assert ("proof_signal_target_cleanup_failed" in result.stderr) is (response != "verified")
+    assert ("proof_signal_owned_cleanup_failed" in result.stderr) is (response != "verified")
 
 
 @pytest.mark.parametrize(
@@ -724,27 +519,27 @@ def test_failed_child_report_crosses_actual_service_boundary_without_private_out
     stdout = secret if child_output == "malformed" else json.dumps(report)
     if child_output == "multiple_reports":
         stdout += "\n" + stdout
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(live_provider_proof_service, "require_declared_operation_context", lambda _operation: "unit")
-    calls: list[str] = []
 
-    class Server(_FakeServer):
-        def shutdown(self) -> None:
-            calls.append("shutdown")
+    def failed_run(**_kwargs: object) -> None:
+        raise live_provider_proof_service.failed_child(stdout, [])
 
-        def server_close(self) -> None:
-            calls.append("close")
-
-    monkeypatch.setattr(live_provider_proof_service, "make_server", lambda *_args, **_kwargs: Server())
-    monkeypatch.setattr(live_provider_proof_service, "Thread", _FakeThread)
-    process = SimpleNamespace(communicate=lambda **_kwargs: (stdout, secret), returncode=returncode)
-    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(
-        live_provider_proof_service, "terminate_process_group", lambda _process: calls.append("terminate")
-    )
+    monkeypatch.setattr(live_provider_proof_service, "run_proof", failed_run)
     selection = tmp_path / "selection.json"
     selection.write_text(json.dumps(["https://chatgpt.com/c/synthetic"]))
-    assert live_provider_proof_service.main(["--json", "--conversations-file", str(selection)]) == 1
+    assert (
+        live_provider_proof_service.main(
+            [
+                "--json",
+                "--conversations-file",
+                str(selection),
+                "--chrome-user-data-dir",
+                str(tmp_path),
+                "--evidence-root",
+                str(tmp_path / "evidence"),
+            ]
+        )
+        == 1
+    )
     output = capsys.readouterr().out
     assert secret not in output
     if child_output == "known":
@@ -753,8 +548,6 @@ def test_failed_child_report_crosses_actual_service_boundary_without_private_out
         assert json.loads(output)["error"] == {"phase": "unknown", "category": "operation_failed"}
         assert set(json.loads(output)["cleanup"].values()) == {"unknown"}
         assert json.loads(output)["receiver_requests"] == []
-    assert calls == ["terminate", "shutdown", "close"]
-    assert list(tmp_path.iterdir()) == [selection]
 
 
 def test_node_phase_and_terminal_report_use_fixed_categories_and_publish_once() -> None:
@@ -792,132 +585,6 @@ publishProofFailure(new Error(secret));
     report = json.loads(result.stdout)
     assert report["error"] == {"phase": "permission_grant", "category": "operation_failed"}
     assert "private-transcript" not in result.stdout
-
-
-@pytest.mark.parametrize("fault", ["none", "grant", "configure", "restore", "remove"])
-def test_actual_receiver_cleanup_reports_each_owned_outcome_independently(fault: str) -> None:
-    script = (
-        "const fault = "
-        + json.dumps(fault)
-        + ";\n"
-        + r"""
-import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { proofReceiverCustody, requestProofHostPermission, configureProofReceiver, cleanupProofReceiver, currentProofFailure } from './scripts/live_provider_proof.mjs';
-import { receiverConfigurationOwner } from './tests/infra/receiver_configuration.js';
-const secret = 'private synthetic transcript';
-const values = {};
-const events = [];
-let restoring = false;
-const chrome = { storage: { local: {
-  get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : Object.keys(keys)).filter(k => Object.hasOwn(values, k) || !Array.isArray(keys)).map(k => [k, Object.hasOwn(values, k) ? values[k] : keys[k]])),
-  set: async rows => { if (fault === 'restore' && restoring) throw new Error(secret); Object.assign(values, rows); },
-  remove: async keys => { if (fault === 'restore' && restoring) throw new Error(secret); (Array.isArray(keys) ? keys : [keys]).forEach(k => delete values[k]); },
-} }, runtime: { sendMessage: async message => {
-  if (message.type === 'polylogue.configureReceiver') {
-    if (message.restore) { restoring = true; return receiverOwner.send(message); }
-    const admitted = await receiverOwner.send(message);
-    if (fault === 'configure') throw new Error(secret);
-    return admitted;
-  }
-  if (message.type === 'polylogue.receiverPairing.reset') return receiverOwner.send(message);
-  return { ok: true };
-} }, permissions: {
-  contains: async () => events.includes('grant'),
-  request: async () => { events.push('grant'); if (fault === 'grant') throw new Error(secret); return true; },
-  remove: async () => { events.push('remove'); if (fault === 'remove') throw new Error(secret); return true; },
-} };
-const receiverOwner = receiverConfigurationOwner(chrome, async () => ({ body: { ok: true, receiver_id: 'proof', api_schema: 'polylogue-browser-capture/v1' }, response: { ok: true, status: 200 } }));
-const client = { call: async (_method, params) => {
-  try { return { result: { value: await vm.runInNewContext(params.expression, { chrome }) } }; }
-  catch (error) { return { exceptionDetails: { text: 'Uncaught (in promise)', exception: { description: `Error: ${error.message}\n at private synthetic stack` } } }; }
-} };
-const owner = proofReceiverCustody(client, {}, { baseUrl: 'http://127.0.0.1:49001', receiverId: null }, 'http://127.0.0.1:49001/*');
-await requestProofHostPermission(owner).catch(() => undefined);
-await configureProofReceiver(owner).catch(() => undefined);
-let failure;
-try { await cleanupProofReceiver(owner); } catch (error) { failure = error; }
-const report = currentProofFailure(failure);
-assert(!JSON.stringify(report).includes(secret));
-assert.equal(report.cleanup.receiver, ['restore', 'configure'].includes(fault) ? 'failed' : 'settled');
-assert.equal(report.cleanup.permission, fault === 'grant' ? 'unknown' : fault === 'remove' ? 'failed' : 'settled');
-assert.equal(report.cleanup.mutations, ['grant', 'configure'].includes(fault) ? 'failed' : 'settled');
-assert.equal(events.includes('remove'), fault !== 'grant');
-assert.equal(Boolean(failure), fault !== 'none');
-if (fault === 'configure') assert.equal(values.receiverBaseUrl, 'http://127.0.0.1:49001');
-console.log(JSON.stringify(report));
-"""
-    )
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path("browser-extension"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "private synthetic transcript" not in result.stdout
-    report = json.loads(result.stdout)
-    assert report["cleanup"]["targets"] == "not_required"
-
-
-@pytest.mark.parametrize("phase", ["configuration", "handshake", "permission"])
-def test_normal_cleanup_preserves_actual_primary_receiver_refusal_category(phase: str) -> None:
-    script = (
-        "const fault = "
-        + json.dumps(phase)
-        + ";\n"
-        + r"""
-import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { proofReceiverCustody, configureProofReceiver, settleProofCleanup, inProofPhase, currentProofFailure } from './scripts/live_provider_proof.mjs';
-import { receiverConfigurationOwner } from './tests/infra/receiver_configuration.js';
-const values = {};
-const messages = [];
-const chrome = { permissions: { contains: async () => true }, storage: { local: {
-  get: async keys => Object.fromEntries((Array.isArray(keys) ? keys : Object.keys(keys)).filter(k => Object.hasOwn(values, k) || !Array.isArray(keys)).map(k => [k, Object.hasOwn(values, k) ? values[k] : keys[k]])),
-  set: async rows => Object.assign(values, rows), remove: async keys => (Array.isArray(keys) ? keys : [keys]).forEach(k => delete values[k]),
-} }, runtime: { sendMessage: async message => {
-  messages.push(message);
-  if (message.type === 'polylogue.configureReceiver') {
-    if (message.restore) return receiverOwner.send(message);
-    if (fault === 'configuration') return { ok: false, error: 'private synthetic receiver refusal' };
-    if (fault === 'permission') return { ok: false, error: 'receiver_origin_not_permitted' };
-    return receiverOwner.send(message);
-  }
-  if (message.type === 'polylogue.receiverPairing.reset') return receiverOwner.send(message);
-  return { ok: true };
-} } };
-const receiverOwner = receiverConfigurationOwner(chrome, async () => { throw new Error('neutral-unreachable'); });
-const client = { call: async (_method, params) => {
-  try { return { result: { value: await vm.runInNewContext(params.expression, { chrome }) } }; }
-  catch (error) { return { exceptionDetails: { text: 'Uncaught (in promise)', exception: { description: `Error: ${error.message}\n at private synthetic stack` } } }; }
-} };
-const owner = proofReceiverCustody(client, {}, { baseUrl: 'http://127.0.0.1:49001', receiverId: null }, 'http://127.0.0.1:49001/*');
-let primary;
-try { await inProofPhase('receiver_pairing', () => configureProofReceiver(owner)); } catch (error) { primary = error; }
-assert(primary);
-let terminal;
-try { await settleProofCleanup(owner, primary); } catch (error) { terminal = error; }
-assert.equal(terminal.cause, primary);
-const report = currentProofFailure(terminal);
-assert.equal(report.error.phase, 'receiver_pairing');
-assert.equal(report.error.category, {configuration: 'receiver_configuration_failed', handshake: 'receiver_handshake_failed', permission: 'receiver_permission_refused'}[fault]);
-assert.deepEqual(report.cleanup, { receiver: 'settled', permission: 'not_required', mutations: 'failed', targets: 'not_required' });
-assert.deepEqual(values, {});
-assert(!JSON.stringify(report).includes('private synthetic'));
-console.log(JSON.stringify(report));
-"""
-    )
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path("browser-extension"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["cleanup"]["receiver"] == "settled"
 
 
 def test_original_cdp_evaluation_preserves_only_whitelisted_page_exception_categories() -> None:
@@ -973,243 +640,6 @@ console.log(JSON.stringify({ok: true}));
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"ok": True}
-
-
-@pytest.mark.parametrize("existing", [False, True])
-@pytest.mark.parametrize("granted", [False, True, None])
-@pytest.mark.parametrize("active", [False, True, None])
-def test_optional_permission_request_preserves_preexisting_access_and_exact_custody(
-    existing: bool, granted: bool | None, active: bool | None
-) -> None:
-    script = (
-        "const options = "
-        + json.dumps({"existing": existing, "granted": granted, "active": active})
-        + ";\n"
-        + r"""
-import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { proofReceiverCustody, requestProofHostPermission, settleProofCleanup, inProofPhase, currentProofFailure } from './scripts/live_provider_proof.mjs';
-const events = [];
-const origin = 'http://127.0.0.1:49152/*';
-const chrome = {permissions: {
-  contains: async request => {assert.deepEqual(Array.from(request.origins), [origin]);events.push('contains');return events.includes('request') ? options.active : options.existing;},
-  request: async request => {assert.deepEqual(Array.from(request.origins), [origin]);events.push('request');return options.granted;},
-  remove: async request => {assert.deepEqual(Array.from(request.origins), [origin]);events.push('remove');return true;},
-}, storage: {local: {get: async () => ({}), set: async () => {}, remove: async () => {}}}, runtime: {sendMessage: async () => ({ok: true})}};
-const client = {call: async (method, params) => {
-  assert.equal(method, 'Runtime.evaluate');
-  assert.equal(params.userGesture, params.expression.includes('permissions.request('));
-  assert(!params.expression.includes('developerPrivate'));
-  return {result: {value: await vm.runInNewContext(params.expression, {chrome})}};
-}};
-const owner = proofReceiverCustody(client, {}, {baseUrl: 'http://proof', receiverId: null}, origin);
-let primary;
-try {await inProofPhase('permission_grant', () => requestProofHostPermission(owner));} catch(error) {primary=error;}
-const newlyGranted = !options.existing && options.granted === true;
-assert.equal(owner.permissionAdded, newlyGranted);
-const success = options.existing || (options.granted === true && options.active === true);
-assert.equal(Boolean(primary), !success);
-let terminal;
-try {await settleProofCleanup(owner, primary);} catch(error) {terminal=error;}
-assert.equal(owner.permissionAdded, false);
-assert.equal(events.includes('request'), !options.existing);
-assert.equal(events.includes('remove'), newlyGranted);
-assert.equal(owner.cleanup.permission, newlyGranted ? 'settled' : options.existing || options.granted === false ? 'not_required' : 'unknown');
-assert.equal(owner.cleanup.receiver, 'settled');
-assert.equal(owner.cleanup.mutations, success ? 'settled' : 'failed');
-if(primary) {
-  assert.equal(terminal.cause, primary);
-  const report=currentProofFailure(terminal);
-  assert.equal(report.error.phase, 'permission_grant');
-  const refused = options.granted === false || (options.granted === true && options.active === false);
-  assert.equal(report.error.category, refused ? 'receiver_permission_refused' : 'operation_failed');
-}
-console.log(JSON.stringify({ok: true}));
-"""
-    )
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path("browser-extension"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"ok": True}
-
-
-@pytest.mark.parametrize("removed", [False, None])
-def test_optional_permission_removal_refusal_retains_failed_custody(removed: bool | None) -> None:
-    script = (
-        "const removed = "
-        + json.dumps(removed)
-        + ";\n"
-        + r"""
-import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { proofReceiverCustody, requestProofHostPermission, cleanupProofReceiver, currentProofFailure } from './scripts/live_provider_proof.mjs';
-let active = false;
-const chrome = { permissions: {
- contains: async () => active,
- request: async () => { active = true; return true; },
- remove: async () => removed,
-}, storage: {local: {get: async () => ({}), set: async () => {}, remove: async () => {}}}, runtime: {sendMessage: async () => ({ok: true})}};
-const client = {call: async (_method, params) => ({result: {value: await vm.runInNewContext(params.expression, {chrome})}})};
-const owner = proofReceiverCustody(client, {}, {baseUrl: 'http://proof', receiverId: null}, 'http://proof/*');
-await requestProofHostPermission(owner);
-let failure;
-try {await cleanupProofReceiver(owner);} catch(error) {failure=error;}
-assert(failure);
-assert.equal(owner.permissionAdded, true);
-assert.equal(owner.cleanup.permission, 'failed');
-assert.equal(owner.cleanup.receiver, 'settled');
-assert.equal(currentProofFailure(failure).error.category, 'cleanup_failed');
-console.log(JSON.stringify({ok: true}));
-"""
-    )
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path("browser-extension"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"ok": True}
-
-
-def test_shutdown_during_existing_permission_check_refuses_later_optional_request() -> None:
-    script = r"""
-import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { proofReceiverCustody, requestProofHostPermission, cleanupProofReceiver } from './scripts/live_provider_proof.mjs';
-let releaseCheck;
-let requests = 0;
-const chrome = {permissions: {
- contains: () => new Promise(resolve => {releaseCheck = () => resolve(false);}),
- request: async () => {requests++;return true;},
-}, storage: {local: {get: async () => ({}), set: async () => {}, remove: async () => {}}}, runtime: {sendMessage: async () => ({ok: true})}};
-const client = {call: async (_method, params) => ({result: {value: await vm.runInNewContext(params.expression, {chrome})}})};
-const owner = proofReceiverCustody(client, {}, {baseUrl: 'http://proof', receiverId: null}, 'http://proof/*');
-const request = requestProofHostPermission(owner);
-const cleanup = cleanupProofReceiver(owner);
-releaseCheck();
-await assert.rejects(request, {message: 'proof_shutdown_requested'});
-await assert.rejects(cleanup);
-assert.equal(requests, 0);
-assert.equal(owner.permissionAdded, false);
-assert.equal(owner.cleanup.mutations, 'failed');
-console.log(JSON.stringify({ok: true}));
-"""
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path("browser-extension"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"ok": True}
-
-
-@pytest.mark.parametrize(
-    "recovered", ["known", "private", "invalid_utf8", "decode", "partial_known", "partial_private"]
-)
-def test_timeout_consumes_final_or_partial_strict_child_report_without_private_faults(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], recovered: str
-) -> None:
-    report = {
-        "ok": False,
-        "error": {"phase": "capture", "category": "shutdown"},
-        "native_progress": [],
-        "capture_evidence": [],
-        "cleanup": {"receiver": "settled", "permission": "settled", "mutations": "failed", "targets": "settled"},
-    }
-    secret = "https://private.invalid/conversation?token=private-transcript"
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(live_provider_proof_service, "require_declared_operation_context", lambda _operation: "unit")
-    monkeypatch.setattr(live_provider_proof_service, "make_server", lambda *_args, **_kwargs: _FakeServer())
-    monkeypatch.setattr(live_provider_proof_service, "Thread", _FakeThread)
-    events: list[str] = []
-
-    class Process:
-        returncode = 143
-
-        def communicate(self, **_kwargs: object) -> tuple[str, str]:
-            events.append("communicate")
-            if events.count("communicate") == 1:
-                raise subprocess.TimeoutExpired(["node"], 120, output=secret.encode(), stderr=secret.encode())
-            assert "terminate" in events
-            if recovered.startswith("partial_"):
-                output = json.dumps(report).encode() if recovered == "partial_known" else secret.encode()
-                raise subprocess.TimeoutExpired(["node"], 2, output=output, stderr=secret.encode())
-            if recovered == "decode":
-                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, secret)
-            if recovered == "invalid_utf8":
-                raise subprocess.TimeoutExpired(["node"], 2, output=b"\xff", stderr=secret.encode())
-            return json.dumps(report) if recovered == "known" else secret, secret
-
-    process = Process()
-    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(
-        live_provider_proof_service, "terminate_process_group", lambda _process: events.append("terminate")
-    )
-    selection = tmp_path / "selection.json"
-    selection.write_text(json.dumps(["https://chatgpt.com/c/synthetic"]))
-    assert live_provider_proof_service.main(["--json", "--conversations-file", str(selection)]) == 1
-    output = capsys.readouterr().out
-    assert secret not in output
-    payload = json.loads(output)
-    if recovered in {"known", "partial_known"}:
-        assert payload == {**report, "receiver_requests": []}
-    else:
-        assert payload["error"] == {"phase": "unknown", "category": "control_timeout"}
-        assert set(payload["cleanup"].values()) == {"unknown"}
-    assert events == ["communicate", "terminate", "communicate", "terminate"]
-
-
-@pytest.mark.parametrize("fault", ["decode", "artifact", "extension"])
-def test_child_decode_and_receipt_faults_use_fixed_failure_without_private_text(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], fault: str
-) -> None:
-    secret = "https://private.invalid/conversation?token=private-transcript"
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(live_provider_proof_service, "require_declared_operation_context", lambda _operation: "unit")
-    monkeypatch.setattr(live_provider_proof_service, "make_server", lambda *_args, **_kwargs: _FakeServer())
-    monkeypatch.setattr(live_provider_proof_service, "Thread", _FakeThread)
-
-    class Process:
-        returncode = 0
-
-        def communicate(self, **_kwargs: object) -> tuple[str, str]:
-            if fault == "decode":
-                raise UnicodeDecodeError("utf-8", secret.encode() + b"\xff", len(secret), len(secret) + 1, secret)
-            return json.dumps({"ok": True, "providers": {"chatgpt.com": {"artifact_ref": "synthetic.json"}}}), secret
-
-    process = Process()
-    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(live_provider_proof_service, "terminate_process_group", lambda _process: None)
-
-    def verify(*_args: object) -> dict[str, object]:
-        if fault == "artifact":
-            raise ValueError(secret)
-        return {}
-
-    monkeypatch.setattr(live_provider_proof_service, "verify_captured_artifact", verify)
-    selection = tmp_path / "selection.json"
-    selection.write_text(json.dumps(["https://chatgpt.com/c/synthetic"]))
-    assert live_provider_proof_service.main(["--json", "--conversations-file", str(selection)]) == 1
-    output = capsys.readouterr().out
-    assert secret not in output
-    payload = json.loads(output)
-    assert payload["error"] == (
-        {"phase": "unknown", "category": "operation_failed"}
-        if fault == "decode"
-        else {"phase": "summary", "category": "capture_incomplete"}
-    )
-    assert set(payload["cleanup"].values()) == {"unknown"}
-    assert payload["receiver_requests"] == []
-    assert list(tmp_path.iterdir()) == [selection]
 
 
 @pytest.mark.parametrize("capture_result", ["returned", "rejected"])
@@ -1351,12 +781,12 @@ import vm from 'node:vm';
 import { captureProvider, inProofPhase, currentProofFailure, installShutdownCleanup, ownProofBrowser, openProofWindow } from './scripts/live_provider_proof.mjs';
 let reply, close;
 const progress = [{stage:'provider_response',state:'END'}, {stage:'body',state:'BEGIN'}];
-const chrome = {tabs:{query:async()=>[{id:1,url:'https://chatgpt.com/c/synthetic',pinned:false}],sendMessage:()=>new Promise(resolve=>{reply=resolve;})}};
-const popup = {call:async (_method, params)=>({result:{value:await vm.runInNewContext(params.expression,{chrome,Date,URL,setTimeout})}})};
+const __polylogueOwnedProviderProof = {consumeCapture:()=>new Promise(resolve=>{reply=resolve;})};
+const popup = {call:async (_method, params)=>({result:{value:await vm.runInNewContext(params.expression,{__polylogueOwnedProviderProof,Date,URL,setTimeout})}})};
 ownProofBrowser({call:async()=>{reply({ok:false,outcome:'cancelled',native_progress:progress});return new Promise(resolve=>{close=()=>resolve({success:true});});}});
 await openProofWindow('https://chatgpt.com/c/synthetic',1000,async()=>({id:'A'.repeat(32),url:'https://chatgpt.com/c/synthetic',parked:true,workspace:'agentbrowser',show_with:'F7'}));
 installShutdownCleanup();
-const main = inProofPhase('capture',()=>captureProvider(popup,{url:'https://chatgpt.com/c/synthetic',nativeId:'synthetic',provider:'chatgpt'},1,1000));
+const main = inProofPhase('capture',()=>captureProvider(popup,{url:'https://chatgpt.com/c/synthetic',nativeId:'synthetic',provider:'chatgpt'},1));
 while (!reply) await Promise.resolve();
 process.emit('SIGTERM');
 const response = await main;
@@ -1452,194 +882,51 @@ assert.deepEqual(await successful, {ok: true});
         assert retained["error"] == report["error"]
 
 
-@pytest.mark.parametrize("permission", ["granted", "refused", "preexisting", "cancelled"])
-def test_permission_owner_waits_for_prompt_workspace_restore_before_cleanup(permission: str) -> None:
-    script = (
-        "const option = "
-        + json.dumps(permission)
-        + ";\n"
-        + r"""
-import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { proofReceiverCustody, requestProofHostPermission, cleanupProofReceiver, proofFailureReport } from './scripts/live_provider_proof.mjs';
-const events=[]; const values={}; let active=option === 'preexisting'; let settle;
-const chrome={storage:{local:{get:async()=>values,set:async()=>{},remove:async()=>{}}},runtime:{sendMessage:async()=>({ok:true})},permissions:{
- contains:async()=>active,
- request:()=>new Promise((resolve,reject)=>{ settle=()=>{ events.push('request_settled'); if(option === 'cancelled') reject(new Error('proof_shutdown_requested')); else {active=option === 'granted'; resolve(active);} }; }),
- remove:async()=>{events.push('remove');active=false;return true;},
-}};
-const client={call:async(_method,{expression})=>({result:{value:await vm.runInNewContext(expression,{chrome})}})};
-const owner=proofReceiverCustody(client,{}, {baseUrl:'http://127.0.0.1:49000',receiverId:null}, 'http://127.0.0.1:49000/*');
-let restored; let entered;
-const enteredPromise=new Promise(resolve=>entered=resolve);
-const grant=requestProofHostPermission(owner,()=>{events.push('restore_started');entered();return new Promise(resolve=>restored=()=>{events.push('restore_settled');resolve();});});
-let primary;
-const caught=grant.catch(error=>{primary=error;});
-while (option !== 'preexisting' && !settle) await new Promise(resolve=>setImmediate(resolve));
-const cleanup=cleanupProofReceiver(owner).catch(()=>{});
-if(settle) settle();
-await enteredPromise;
-assert.ok(!events.includes('remove'));
-assert.equal(events.at(-1),'restore_started');
-restored(); await caught; await cleanup;
-if(option === 'granted') assert.deepEqual(events,['request_settled','restore_started','restore_settled','remove']);
-else assert.ok(!events.includes('remove'));
-if(option === 'refused') assert.equal(proofFailureReport('permission_grant',primary).error.category,'receiver_permission_refused');
-if(option === 'cancelled') assert.equal(proofFailureReport('permission_grant',primary).error.category,'shutdown');
-if(option === 'preexisting') assert.equal(active,true);
-"""
-    )
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path(__file__).resolve().parents[3] / "browser-extension",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-
-
-def test_prompt_restore_failure_preserves_original_permission_refusal() -> None:
-    script = r"""
-import assert from 'node:assert/strict';
-import { proofReceiverCustody, requestProofHostPermission, proofFailureReport } from './scripts/live_provider_proof.mjs';
-const client={call:async(_method,{expression})=>({result:{value:false}})};
-const owner=proofReceiverCustody(client,{}, {baseUrl:'http://127.0.0.1:49000',receiverId:null}, 'http://127.0.0.1:49000/*');
-let primary;
-try{await requestProofHostPermission(owner,async()=>{throw new Error('proof_desktop_unavailable');});}catch(error){primary=error;}
-assert.ok(primary instanceof AggregateError);
-assert.equal(proofFailureReport('permission_grant',primary).error.category,'receiver_permission_refused');
-"""
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path(__file__).resolve().parents[3] / "browser-extension",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-
-
-def test_popup_binding_operator_restoration_and_hidden_preflight_fail_closed() -> None:
-    script = r"""
-import assert from 'node:assert/strict';
-import { captureProofOperator, bindProofPopup, restoreProofOperator, requireHiddenProofWorkspace, proofFailureReport } from './scripts/live_provider_proof.mjs';
-const original={address:'0x123',stable_id:0x1a2b,workspace_id:2,monitor_id:0,monitor_workspaces:[{monitor_id:0,workspace_id:2},{monitor_id:1,workspace_id:3}]};
-const popup={address:'0x456',stable_id:0x1234,workspace_id:-1337,monitor_id:1};
-const originalRaw={address:'0x123',stableId:'1a2b',workspace:{id:2,name:'2'},monitor:0};
-const popupRaw={address:'0x456',stableId:'1234',workspace:{id:-1337,name:'agentbrowser'},monitor:1,class:'google-chrome',title:`Polylogue proof ${'A'.repeat(32)} - Google Chrome`};
-const target='A'.repeat(32); const calls=[];
-assert.deepEqual(await captureProofOperator(async command=>{calls.push(command);return command[0]==='monitors'?[{id:0,activeWorkspace:{id:2,name:'2'}},{id:1,activeWorkspace:{id:3,name:'3'}}]:originalRaw;}),original);
-let title;
-const client={call:async(_method,{expression})=>{title=expression;return {result:{value:true}};}};
-assert.deepEqual(await bindProofPopup(client,target,()=>1000,async command=>{calls.push(command);return [popupRaw];}),popup);
-assert.ok(title.includes(target));
-let lookups=0; let waits=0;
-assert.deepEqual(await bindProofPopup(client,target,()=>1000,async()=>++lookups===1?[]:[popupRaw],async()=>{waits+=1;}),popup);
-assert.equal(lookups,2);assert.equal(waits,1);
-for(const [raw,restored] of [[originalRaw,true],[{...originalRaw,address:'0x789',stableId:'7'},false]]) assert.equal(await restoreProofOperator(original,popup,async command=>{calls.push(command);return command[0]==='eval'?{ok:true}:raw;}),restored);
-await requireHiddenProofWorkspace(async command=>{calls.push(command);return [{id:0,activeWorkspace:{id:2,name:'2'}}];});
-let primary;
-try{await requireHiddenProofWorkspace(async()=>[{id:1,activeWorkspace:{id:-1337,name:'agentbrowser'}}]);}catch(error){primary=error;}
-assert.equal(proofFailureReport('provider_preflight',primary).error.category,'window_visibility_refused');
-for(const response of [null,{}, [], [{}]]) await assert.rejects(requireHiddenProofWorkspace(async()=>response),{message:'proof_desktop_unavailable'});
-await assert.rejects(captureProofOperator(async()=>({...originalRaw,address:'private-invalid'})),{message:'proof_desktop_unavailable'});
-await assert.rejects(bindProofPopup(client,target,()=>1000,async()=>[popupRaw,popupRaw]),{message:'proof_popup_binding_failed'});
-await assert.rejects(restoreProofOperator(original,popup,async()=>({ok:false})),{message:'proof_desktop_unavailable'});
-for(const [wire,identity] of [['1A2B',0x1a2b],['1234',0x1234],['0',0],['1fffffffffffff',Number.MAX_SAFE_INTEGER],[42,42]]) {
- const raw={...originalRaw,stableId:wire};
- const captured=await captureProofOperator(async command=>command[0]==='monitors'?[{id:0,activeWorkspace:{id:2,name:'2'}}]:raw);
- assert.equal(captured.stable_id,identity);
- const bound=await bindProofPopup(client,target,()=>1000,async()=>[{...popupRaw,stableId:wire}]);
- assert.equal(bound.stable_id,identity);
- assert.equal(await restoreProofOperator({...original,stable_id:identity},popup,async command=>{if(command[0]==='eval'){assert.ok(command[1].includes(`original.stable_id == ${identity}`));return {ok:true};}return raw;}),true);
-}
-for(const wire of ['', '0x1234', '-1', '1g', ' 1', '1 ', '20000000000000', null, true, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER+1]) {
- const raw={...originalRaw,stableId:wire};
- await assert.rejects(captureProofOperator(async()=>raw),{message:'proof_desktop_unavailable'});
- await assert.rejects(bindProofPopup(client,target,()=>1000,async()=>[{...popupRaw,stableId:wire}]),{message:'proof_popup_binding_failed'});
- await assert.rejects(restoreProofOperator(original,popup,async command=>command[0]==='eval'?{ok:true}:raw),{message:'proof_desktop_unavailable'});
-}
-assert.ok(calls.length>0);
-"""
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path(__file__).resolve().parents[3] / "browser-extension",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    report = {
-        "ok": False,
-        "error": {"phase": "provider_preflight", "category": "window_visibility_refused"},
-        "cleanup": dict.fromkeys(["mutations", "permission", "receiver", "targets"], "settled"),
-        "native_progress": [],
-        "capture_evidence": [],
-    }
-    assert live_provider_proof_service.child_failure_report(json.dumps(report)) == report
-
-
-def test_native_desktop_command_decodes_whole_json_before_identity_and_focus_checks() -> None:
-    script = r"""
-import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { runProofDesktop, runChromeControl, captureProofOperator, bindProofPopup, restoreProofOperator, requireHiddenProofWorkspace } from './scripts/live_provider_proof.mjs';
-function emitted(bytes, desktop=true) {
- return (_command,_args,options)=>{
-  if(desktop) assert.equal(Object.hasOwn(options.env,'LD_LIBRARY_PATH'),false);
-  const child=new EventEmitter();child.stdout=new EventEmitter();child.stderr=new EventEmitter();
-  queueMicrotask(()=>{for(const chunk of [bytes.slice(0,3),bytes.slice(3)]) child.stdout.emit('data',Buffer.from(chunk));child.emit('close',0);});
-  return child;
- };
-}
-const monitors=[{id:0,activeWorkspace:{id:2,name:'2'}}];
-const raw={address:'0x123',stableId:'1a2b',workspace:{id:2,name:'2'},monitor:0};
-const popupRaw={address:'0x456',stableId:'1234',workspace:{id:-1337,name:'agentbrowser'},monitor:0,class:'google-chrome',title:`Polylogue proof ${'A'.repeat(32)} - Google Chrome`};
-for(const wire of ['1a2b','1234',42]) {
- const value={...raw,stableId:wire};
- const control=command=>runProofDesktop(command,emitted(command[0]==='eval'?'ok\n':JSON.stringify(command[0]==='monitors'?monitors:value,null,2)+'\n'));
- const original=await captureProofOperator(control);
- assert.equal(original.stable_id,typeof wire==='string'?parseInt(wire,16):wire);
- const popup=await bindProofPopup({call:async()=>({result:{value:true}})},'A'.repeat(32),()=>1000,command=>runProofDesktop(command,emitted(JSON.stringify([popupRaw],null,2))));
- assert.equal(popup.stable_id,0x1234);
- assert.equal(await restoreProofOperator(original,popup,control),true);
- await requireHiddenProofWorkspace(control);
-}
-for(const bytes of ['{','diagnostic\n'+JSON.stringify(raw),JSON.stringify(raw)+'\n{}',JSON.stringify(monitors)+'\n[]']) {
- await assert.rejects(runProofDesktop(['activewindow','-j'],emitted(bytes)),{message:'proof_desktop_unavailable'});
- await assert.rejects(runProofDesktop(['monitors','-j'],emitted(bytes)),{message:'proof_desktop_unavailable'});
- await assert.rejects(runProofDesktop(['clients','-j'],emitted(bytes)),{message:'proof_desktop_unavailable'});
-}
-assert.deepEqual(await runChromeControl(['status'],1000,emitted('diagnostic\n'+JSON.stringify({ok:true})+'\n',false)),{ok:true});
-"""
-    result = subprocess.run(
-        ["node", "--input-type=module", "--eval", script],
-        cwd=Path(__file__).resolve().parents[3] / "browser-extension",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-
-
-def test_live_provider_proof_refuses_before_receiver_or_chrome_side_effects(
+@pytest.mark.parametrize(
+    ("phase", "category"),
+    [
+        ("capture_start", "automatic_capture_start_failed"),
+        ("capture_start", "capture_listener_invalid"),
+        ("capture_start", "provider_isolation_refused"),
+        ("capture_membership", "provider_isolation_refused"),
+        ("capture_result", "automatic_capture_missing"),
+        ("capture_result", "automatic_capture_pending"),
+        ("capture_result", "provider_isolation_refused"),
+    ],
+)
+def test_owned_automatic_capture_diagnostics_cross_actual_service_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    phase: str,
+    category: str,
 ) -> None:
-    monkeypatch.setattr(live_provider_proof_service, "require_declared_operation_context", lambda _operation: "unit")
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "operator-root"))
-
-    def forbidden(*_args: object, **_kwargs: object) -> None:
-        pytest.fail("unisolated provider proof attempted a child process")
-
-    monkeypatch.setattr(subprocess, "Popen", forbidden)
-    with pytest.raises(live_provider_proof_service.ChildProofError) as failure:
-        live_provider_proof_service._run_proof_locked(targets=[])
-    assert failure.value.report["error"] == {
-        "phase": "extension_load",
-        "category": "provider_target_isolation_unavailable",
+    report = {
+        "ok": False,
+        "error": {"phase": phase, "category": category},
+        "native_progress": [],
+        "capture_evidence": [],
+        "cleanup": {"receiver": "settled", "permission": "not_required", "mutations": "settled", "targets": "settled"},
     }
-    assert set(failure.value.report["cleanup"].values()) == {"not_required"}
-    assert not list(tmp_path.iterdir())
-    assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "operator-root")
+
+    def failed_run(**_kwargs: object) -> None:
+        raise live_provider_proof_service.failed_child(json.dumps(report), [])
+
+    monkeypatch.setattr(live_provider_proof_service, "run_proof", failed_run)
+    selection = tmp_path / "selection.json"
+    selection.write_text(json.dumps(["https://chatgpt.com/c/synthetic"]))
+    assert (
+        live_provider_proof_service.main(
+            [
+                "--json",
+                "--conversations-file",
+                str(selection),
+                "--chrome-user-data-dir",
+                str(tmp_path),
+                "--evidence-root",
+                str(tmp_path / "evidence"),
+            ]
+        )
+        == 1
+    )
+    assert json.loads(capsys.readouterr().out) == {**report, "receiver_requests": []}
