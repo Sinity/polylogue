@@ -344,7 +344,9 @@ def reconverge_managed_index_on_startup(
                     existing_candidate_generation_id=generation.generation_id,
                 )
                 frontier = rewind_frontier(generation)
-                if frontier < generation.reconstruction_raw_id:
+                if frontier < generation.reconstruction_raw_id or (
+                    not frontier and source_sequence() < generation.reconstruction_source_sequence
+                ):
                     generation = store.checkpoint_reconstruction(
                         generation,
                         raw_id=frontier,

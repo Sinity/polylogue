@@ -348,3 +348,48 @@ def test_shared_source_phase_refreshes_the_completed_prefix_or_rewinds_after_int
     with inspection.read_current() as conn:
         raws = tuple(row[0] for row in conn.execute("SELECT raw_id FROM raw_sessions"))
         assert all(inspection.inspect_current(conn, raw) == "valid" for raw in raws)
+
+
+def test_initial_binding_with_regressed_source_journal_replays_the_same_empty_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    make_populated_stale_index(root, tmp_path / "external" / "session.jsonl", independent_raws=1)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    monkeypatch.setattr(startup, "_RAW_PAGE", 1)
+    begin = IndexGenerationStore.begin_reconstruction
+
+    def stop_after_initial_binding(self: IndexGenerationStore, *args: Any, **kwargs: Any) -> IndexGeneration:
+        begin(self, *args, **kwargs)
+        raise asyncio.CancelledError()
+
+    with monkeypatch.context() as control:
+        control.setattr(IndexGenerationStore, "begin_reconstruction", stop_after_initial_binding)
+        with pytest.raises(asyncio.CancelledError):
+            _run_startup()
+    candidate = _inactive(root)
+    assert candidate.reconstruction_raw_id == ""
+    assert candidate.reconstruction_source_sequence > 0
+    mutate_fixture_database(root / "source.db", "DELETE FROM raw_existence_changes")
+    mutate_fixture_database(root / "source.db", "UPDATE raw_existence_journal_control SET retained_floor=0")
+    resets: list[IndexGeneration] = []
+    checkpoint = IndexGenerationStore.checkpoint_reconstruction
+
+    def observe_checkpoint(self: IndexGenerationStore, generation: IndexGeneration, **kwargs: Any) -> IndexGeneration:
+        result = checkpoint(self, generation, **kwargs)
+        if kwargs.get("rewind"):
+            resets.append(result)
+        return result
+
+    monkeypatch.setattr(IndexGenerationStore, "checkpoint_reconstruction", observe_checkpoint)
+    offered = _finish(root, monkeypatch)
+    assert offered
+    assert len(resets) == 1
+    assert resets[0].generation_id == candidate.generation_id
+    assert resets[0].reconstruction_raw_id == ""
+    assert resets[0].reconstruction_source_sequence == 0
+    assert ArchiveLocation.resolve(root).active_index_path.resolve() == Path(candidate.index_path)
+    with closing(open_readonly_connection(Path(candidate.index_path))) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
+        assert conn.execute("PRAGMA foreign_key_check").fetchone() is None

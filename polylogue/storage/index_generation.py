@@ -1173,6 +1173,11 @@ class IndexGenerationStore:
         self._require_write_lease("checkpoint_reconstruction")
         with self._lifecycle_lock():
             identity = Path(generation.index_path).lstat()
+            reset_empty_watermark = (
+                rewind
+                and raw_id == generation.reconstruction_raw_id == ""
+                and source_sequence < generation.reconstruction_source_sequence
+            )
             if (
                 self.load(generation.generation_id) != generation
                 or generation.state != "inactive"
@@ -1180,7 +1185,12 @@ class IndexGenerationStore:
                 or (identity.st_dev, identity.st_ino)
                 != (generation.reconstruction_device, generation.reconstruction_inode)
                 or (
-                    raw_id >= generation.reconstruction_raw_id if rewind else raw_id <= generation.reconstruction_raw_id
+                    (
+                        raw_id >= generation.reconstruction_raw_id
+                        if rewind
+                        else raw_id <= generation.reconstruction_raw_id
+                    )
+                    and not reset_empty_watermark
                 )
                 or (source_sequence < generation.reconstruction_source_sequence and not (rewind and raw_id == ""))
             ):
