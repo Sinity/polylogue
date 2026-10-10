@@ -99,7 +99,7 @@ else if(branch === 'attachment_count_valid') result.envelope.capture_summary.att
 else if(branch === 'artifact_present') delete result.captureResult.artifact_ref;
 else if(branch === 'receiver_request_present') delete result.captureResult.receiver_request_id;
 else result = {ok:false,error:branch};
-const __polylogueOwnedProviderProof = {capture:async(id,nativeId)=>{assert.equal(id,1);assert.equal(nativeId,'synthetic');return result;}};
+const __polylogueOwnedProviderProof = {consumeCapture:async(id,nativeId)=>{assert.equal(id,1);assert.equal(nativeId,'synthetic');return result;}};
 const popup = {call:async(_method,params)=>({result:{value:await vm.runInNewContext(params.expression,{__polylogueOwnedProviderProof,Date,URL,setTimeout})}})};
 const captured = await inProofPhase('capture',()=>captureProvider(popup,provider,1));
 let primary;
@@ -781,7 +781,7 @@ import vm from 'node:vm';
 import { captureProvider, inProofPhase, currentProofFailure, installShutdownCleanup, ownProofBrowser, openProofWindow } from './scripts/live_provider_proof.mjs';
 let reply, close;
 const progress = [{stage:'provider_response',state:'END'}, {stage:'body',state:'BEGIN'}];
-const __polylogueOwnedProviderProof = {capture:()=>new Promise(resolve=>{reply=resolve;})};
+const __polylogueOwnedProviderProof = {consumeCapture:()=>new Promise(resolve=>{reply=resolve;})};
 const popup = {call:async (_method, params)=>({result:{value:await vm.runInNewContext(params.expression,{__polylogueOwnedProviderProof,Date,URL,setTimeout})}})};
 ownProofBrowser({call:async()=>{reply({ok:false,outcome:'cancelled',native_progress:progress});return new Promise(resolve=>{close=()=>resolve({success:true});});}});
 await openProofWindow('https://chatgpt.com/c/synthetic',1000,async()=>({id:'A'.repeat(32),url:'https://chatgpt.com/c/synthetic',parked:true,workspace:'agentbrowser',show_with:'F7'}));
