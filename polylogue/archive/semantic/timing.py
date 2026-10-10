@@ -318,23 +318,20 @@ def _provider_tool_latencies(
 def _message_response_latencies(messages: Sequence[Message]) -> tuple[list[int], list[int]]:
     agent_response_ms: list[int] = []
     user_response_ms: list[int] = []
-    timestamped = [message for message in messages if message.timestamp is not None]
-    for index, message in enumerate(timestamped):
-        next_message = next(
-            (
-                candidate
-                for candidate in timestamped[index + 1 :]
-                if candidate.is_candidate_human_authored or candidate.is_assistant
-            ),
-            None,
-        )
-        if next_message is None or next_message.timestamp is None or message.timestamp is None:
+    # Adjacent eligible, timestamped messages are exactly the pairs selected
+    # by looking ahead from each message. Retain their declared order and
+    # avoid copying the remaining transcript for every lookahead.
+    previous: Message | None = None
+    for message in messages:
+        if message.timestamp is None or not (message.is_candidate_human_authored or message.is_assistant):
             continue
-        delta_ms = max(int((next_message.timestamp - message.timestamp).total_seconds() * 1000), 0)
-        if message.is_candidate_human_authored and next_message.is_assistant:
-            agent_response_ms.append(delta_ms)
-        elif message.is_assistant and next_message.is_candidate_human_authored and delta_ms <= 1_800_000:
-            user_response_ms.append(delta_ms)
+        if previous is not None and previous.timestamp is not None:
+            delta_ms = max(int((message.timestamp - previous.timestamp).total_seconds() * 1000), 0)
+            if previous.is_candidate_human_authored and message.is_assistant:
+                agent_response_ms.append(delta_ms)
+            elif previous.is_assistant and message.is_candidate_human_authored and delta_ms <= 1_800_000:
+                user_response_ms.append(delta_ms)
+        previous = message
     return agent_response_ms, user_response_ms
 
 
