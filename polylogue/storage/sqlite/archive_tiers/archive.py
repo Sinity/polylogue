@@ -1052,13 +1052,14 @@ class ArchiveStore:
                 read_only=read_only,
                 read_timeout=read_timeout,
                 opened_index_fd=opened_index_fd,
-                # polylogue-623q: only ever True for a write connection against
-                # an OWNED INACTIVE generation -- never read until promoted,
-                # discarded wholesale on any failure -- so it is safe to open
-                # with a far more aggressive durability/speed tradeoff than
-                # the live single-writer profile. See
-                # BULK_BUILD_WRITE_CONNECTION_PROFILE's docstring.
+                # Disposable inactive builds use the bulk writer profile.
+                # Retained-startup metadata instead selects durable WAL while
+                # preserving the same deferred reader-index/materializer work.
                 bulk_build_profile=owned_inactive_generation is not None,
+                resumable_build_profile=(
+                    authoritative_generation is not None
+                    and authoritative_generation.reconstruction_index_identity is not None
+                ),
                 active_cold_build=active_cold_build,
                 # Creating the deferred reader indexes here and dropping them
                 # two statements later is free on an empty generation and
@@ -1184,6 +1185,7 @@ class ArchiveStore:
         read_only: bool,
         read_timeout: float,
         bulk_build_profile: bool = False,
+        resumable_build_profile: bool = False,
         active_cold_build: bool = False,
         skip_runtime_index_ensure: bool = False,
         opened_index_fd: int | None = None,
@@ -1339,6 +1341,8 @@ class ArchiveStore:
             # actual writer handle before pragmas, attachments or index DDL.
             assert_tier_schema_supported(self._conn, self.index_db_path, ArchiveTier.INDEX)
             write_profile = BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
+            if resumable_build_profile:
+                write_profile = WRITE_CONNECTION_PROFILE
             if active_cold_build and not bulk_build_profile:
                 _assert_active_cold_build_index_only(
                     self.index_db_path,
@@ -1354,6 +1358,11 @@ class ArchiveStore:
 
                 write_profile = COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
             pragma_statements = write_connection_pragma_statements(write_profile)
+            if resumable_build_profile:
+                # A fsynced generation cursor may survive power loss. Its
+                # preceding WAL commits must survive too, even in test scratch
+                # where the ordinary synchronous override permits OFF.
+                pragma_statements = (*pragma_statements, "PRAGMA synchronous=FULL")
         from polylogue.storage.sqlite.connection_profile import StaleContinuationError, _generation_token
 
         if not read_only:

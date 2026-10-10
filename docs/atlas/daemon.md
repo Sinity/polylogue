@@ -8,8 +8,16 @@ retained Source. The startup compute kernel prepares work off the writer gate;
 its existing writer bridge publishes canonical Raw phases, readiness and the
 reference-checked generation promotion. Progress remains degraded until the
 successor is ready. Cancellation physically settles the original work and leaves
-the predecessor authoritative until promotion; restart discards interrupted
-inactive candidates and replays retained bytes without re-acquiring originals.
+the predecessor authoritative until promotion. Completed retained pages are
+checkpointed in the existing generation record after their physical publishers
+join and their WAL/FULL commits settle. Restart reuses the same candidate only
+with matching Index/Ops/parser identities, acquisition snapshot, predecessor,
+destination incarnation and durable reference custody. Its indexed `raw_id`
+cursor skips the completed prefix; an interrupted page replays idempotently.
+The existing Source change journal rewinds that cursor when a later interrupted
+page touched an earlier shared member. A pruned or regressed journal requires a full scan
+into the same candidate. Changed acquired evidence or custody creates a fresh
+generation without re-acquiring originals. Other owners remain untouched.
 Normal services start only after successful preflight. A current successor is
 not rebuilt again. Source parse acknowledgements remain with the regular retained
 replay stage; promotion and restart preserve pending states and current failures.

@@ -557,8 +557,22 @@ Source phases. ColdBuild retains its separate full revision-authority digest.
 Readiness, full replay completion, current Source/User/Audit observers and
 previously resolving purchased message references must all pass before the
 normal reference-checked promotion. No durable or purchased tier is replaced.
-Interrupted MEMORY candidates are discarded through their owner and rebuilt;
-a published successor completes its existing promotion tail on restart.
+Retained-startup candidates use WAL with FULL synchronization so completed
+pages survive interruption. Their existing generation record binds the exact
+recipe, acquired Source snapshot, predecessor and destination incarnation,
+durable reference custody, indexed `raw_id` cursor and Source journal watermark.
+The cursor advances only after original publishers settle and SQLite commits;
+its atomic file and directory fsync follows those commits. A crash before that
+checkpoint repeats the page through canonical idempotent replay. A changed
+completed Source member rewinds the cursor; a pruned or regressed journal restarts its scan
+into the same candidate. Changed acquired evidence, recipe or custody replaces
+the incompatible candidate. Durable WAL adds I/O compared with disposable
+MEMORY builds, in exchange for preserving completed work across restarts.
+Canonical replay retains one Index transaction per selected component, rather
+than committing each message; the generation record is synchronized once per
+completed page. A later shared component republishes the earlier member's
+application before that page advances the Source journal watermark.
+A published successor completes its existing promotion tail on restart.
 Lifecycle JSON and the first-touch pointer anchor use exclusive no-follow,
 attempt-owned temporary files. A regular temporary left by an interrupted
 write remains untouched and cannot reserve the next attempt's pathname.

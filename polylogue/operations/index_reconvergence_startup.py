@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import pickle
 import sqlite3
 import uuid
@@ -19,12 +21,17 @@ from polylogue.operations.raw_observation_derivation import make_raw_observation
 from polylogue.operations.raw_observation_owner import RawObservationArchiveWork
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, TierFileIdentity
 from polylogue.storage.index_generation import (
+    IndexGeneration,
     IndexGenerationStore,
     canonical_active_index_path,
     rebuild_source_acquisition_snapshot,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, read_schema_identity
+from polylogue.storage.sqlite.archive_tiers.schema_identity import (
+    DerivedTier,
+    derived_schema_identity,
+    read_schema_identity,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import locate_composed_message
 from polylogue.storage.sqlite.audit_leaf import VerifiedAuditLeaf
@@ -98,9 +105,8 @@ def reconverge_managed_index_on_startup(
 ) -> str | None:
     """Prepare off-gate, replay retained bytes, then publish under the writer.
 
-    No current-schema writer opens the predecessor. Interrupted MEMORY
-    candidates are disposable; the next startup reconstructs from retained
-    evidence rather than re-reading external originals.
+    No current-schema writer opens the predecessor. Completed durable pages
+    resume from the same candidate; an interrupted page replays idempotently.
     """
     from polylogue.maintenance.candidate_capacity import require_candidate_capacity
     from polylogue.operations.durable_change_train import assert_holds_archive_ownership
@@ -210,12 +216,102 @@ def reconverge_managed_index_on_startup(
                 store.complete_promotion_recovery(recovering.generation_id)
             return recovering.generation_id
         operation_id = str(uuid.uuid4())
-        require_candidate_capacity(root, operation_id=operation_id, baseline_digest=snapshot)
+        from polylogue.sources.origin_specs import parser_semantic_authority_fingerprint
+
+        recipe = (
+            derived_schema_identity(DerivedTier.INDEX),
+            derived_schema_identity(DerivedTier.OPS),
+            parser_semantic_authority_fingerprint(),
+        )
+        custody_digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "tiers": [item.as_dict() for item in (*conserved_bindings, binding)],
+                    "predecessor_frame": [
+                        tuple(row)
+                        for row in original.observer("index").execute(
+                            "SELECT * FROM query_unit_frame_state ORDER BY relation"
+                        )
+                    ],
+                    "assertions_epoch": tuple(
+                        original.observer("user")
+                        .execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1")
+                        .fetchone()
+                    ),
+                    "audit_head": tuple(
+                        original.observer("audit")
+                        .execute("SELECT generation,head_sha256 FROM audit_continuity_head WHERE singleton=1")
+                        .fetchone()
+                    ),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+
+        def source_sequence() -> int:
+            with closing(open_readonly_connection(root / "source.db")) as source:
+                return int(
+                    source.execute(
+                        "SELECT MAX((SELECT COALESCE(MAX(sequence),0) FROM raw_existence_changes), retained_floor) "
+                        "FROM raw_existence_journal_control WHERE singleton=1"
+                    ).fetchone()[0]
+                )
+
+        def reusable(candidate: IndexGeneration) -> bool:
+            identity = Path(candidate.index_path).stat()
+            if (
+                candidate.source_snapshot != snapshot
+                or (
+                    candidate.reconstruction_index_identity,
+                    candidate.reconstruction_ops_identity,
+                    candidate.reconstruction_parser_identity,
+                )
+                != recipe
+                or candidate.reconstruction_predecessor_id != parent.generation_id
+                or candidate.reconstruction_custody_digest != custody_digest
+                or (candidate.reconstruction_device, candidate.reconstruction_inode)
+                != (identity.st_dev, identity.st_ino)
+            ):
+                return False
+            with closing(
+                open_readonly_connection(Path(candidate.index_path), validate_schema=False)
+            ) as candidate_reader:
+                return read_schema_identity(candidate_reader, DerivedTier.INDEX) == recipe[0]
+
+        def rewind_frontier(candidate: IndexGeneration) -> str:
+            # An interrupted page can refine an earlier shared Raw before its
+            # Index publication. Keep the candidate, but replay that key. Loss
+            # of the journal or lost Source WAL commits requires a full scan into
+            # the same file; an empty prefix owns no stale completion claim.
+            with closing(open_readonly_connection(root / "source.db")) as source:
+                floor = int(
+                    source.execute(
+                        "SELECT retained_floor FROM raw_existence_journal_control WHERE singleton=1"
+                    ).fetchone()[0]
+                )
+                if (
+                    floor > candidate.reconstruction_source_sequence
+                    or source_sequence() < candidate.reconstruction_source_sequence
+                ):
+                    return ""
+                changed = source.execute(
+                    "SELECT MIN(raw_id) FROM raw_existence_changes WHERE sequence>? AND raw_id<=?",
+                    (candidate.reconstruction_source_sequence, candidate.reconstruction_raw_id),
+                ).fetchone()[0]
+                if changed is None:
+                    return candidate.reconstruction_raw_id
+                predecessor = source.execute(
+                    "SELECT raw_id FROM raw_sessions WHERE raw_id<? ORDER BY raw_id DESC LIMIT 1", (changed,)
+                ).fetchone()
+                return str(predecessor[0]) if predecessor is not None else ""
+
         require_current()
         original.validate_observers_current()
         with write_admission("daemon.index_reconvergence.create"):
             original.validate_observers_current()
             require_current()
+            generation = None
             # Only this startup owner's never-published candidates are reclaimed.
             for path in sorted(store.generations_root.glob("gen-*/generation.json")):
                 abandoned = store.load(path.parent.name)
@@ -224,15 +320,47 @@ def reconverge_managed_index_on_startup(
                 if abandoned.state == "promoting":
                     store.discard_unpublished_promotion(abandoned)
                 elif abandoned.state == "inactive":
-                    store.discard_if_inactive(abandoned)
-            generation = store.create(owner_id=_OWNER, source_snapshot=snapshot)
+                    if generation is None and reusable(abandoned):
+                        generation = abandoned
+                    else:
+                        store.discard_if_inactive(abandoned)
+            if generation is None:
+                require_candidate_capacity(root, operation_id=operation_id, baseline_digest=snapshot)
+                generation = store.create(owner_id=_OWNER, source_snapshot=snapshot)
+                generation = store.begin_reconstruction(
+                    generation,
+                    index_identity=recipe[0],
+                    ops_identity=recipe[1],
+                    parser_identity=recipe[2],
+                    predecessor_id=parent.generation_id,
+                    custody_digest=custody_digest,
+                    source_sequence=source_sequence(),
+                )
+            else:
+                require_candidate_capacity(
+                    root,
+                    operation_id=operation_id,
+                    baseline_digest=snapshot,
+                    existing_candidate_generation_id=generation.generation_id,
+                )
+                frontier = rewind_frontier(generation)
+                if frontier < generation.reconstruction_raw_id or (
+                    not frontier and source_sequence() < generation.reconstruction_source_sequence
+                ):
+                    generation = store.checkpoint_reconstruction(
+                        generation,
+                        raw_id=frontier,
+                        source_sequence=source_sequence(),
+                        rewind=True,
+                    )
             # Establish the reader-index deferral before any retained
             # preparation seals this candidate's SQLite incarnation.
             with ArchiveStore.open_owned_inactive_generation(
                 Path(generation.index_path).parent,
                 generation_id=generation.generation_id,
                 owner_id=generation.owner_id,
-                defer_secondary_indexes=True,
+                defer_secondary_indexes=not generation.reconstruction_raw_id,
+                preserve_secondary_index_layout=bool(generation.reconstruction_raw_id),
             ):
                 pass
         emit(
@@ -242,19 +370,12 @@ def reconverge_managed_index_on_startup(
             generation_id=generation.generation_id,
         )
         work = RawObservationArchiveWork(root, compute_adapter=compute_adapter)
-        adapter = make_raw_observation_derivation(
-            root,
-            compute_adapter=compute_adapter,
-            index_db_path=Path(generation.index_path),
-            owned_generation=generation,
-        )
-        destination = IndexMutationDestination.owned_inactive(generation)
 
         def admit(actor: str, function: Callable[[], T]) -> T:
             with write_admission(actor):
                 return function()
 
-        frontier = 0
+        frontier = generation.reconstruction_raw_id
         # The controller alone owns the original observers and promotion seal.
         # Page payloads live on disk; only a shared-admission window is offered.
         width = compute_adapter.snapshot().by_class("incremental-background").ceiling_slots
@@ -263,14 +384,21 @@ def reconverge_managed_index_on_startup(
                 require_current()
                 with closing(open_readonly_connection(root / "source.db")) as source:
                     rows = source.execute(
-                        "SELECT rowid,raw_id FROM raw_sessions WHERE rowid>? ORDER BY rowid LIMIT ?",
+                        "SELECT raw_id FROM raw_sessions WHERE raw_id>? ORDER BY raw_id LIMIT ?",
                         (frontier, min(_RAW_PAGE, width)),
                     ).fetchall()
                 if not rows:
                     break
-                selected = tuple(str(row[1]) for row in rows)
+                selected = tuple(str(row[0]) for row in rows)
 
-                async def prepare_page(selected: tuple[str, ...]) -> None:
+                async def prepare_page(selected: tuple[str, ...], generation: IndexGeneration) -> None:
+                    adapter = make_raw_observation_derivation(
+                        root,
+                        compute_adapter=compute_adapter,
+                        index_db_path=Path(generation.index_path),
+                        owned_generation=generation,
+                    )
+                    destination = IndexMutationDestination.owned_inactive(generation)
                     scope = pickle.dumps(selected, protocol=pickle.HIGHEST_PROTOCOL)
                     selection = work.sidecar_owner_selector(selected)
                     async with work.prepared_neutral_page(
@@ -295,9 +423,16 @@ def reconverge_managed_index_on_startup(
                         # No original observer is passed into this operation.
                         run_replay(lambda: replay().outcome.require_complete(), len(scope))
 
-                asyncio.run(prepare_page(selected))
+                asyncio.run(prepare_page(selected, generation))
                 require_current()
-                frontier = int(rows[-1][0])
+                with write_admission("daemon.index_reconvergence.checkpoint"):
+                    require_current()
+                    generation = store.checkpoint_reconstruction(
+                        generation,
+                        raw_id=str(rows[-1][0]),
+                        source_sequence=source_sequence(),
+                    )
+                frontier = generation.reconstruction_raw_id
                 emit(
                     "daemon.index_reconvergence.progress",
                     outcome="degraded",
