@@ -134,8 +134,19 @@ reservation and labels its `reservation_group`; those counts cannot be summed
 across member classes. Eligible control/read turns alternate; incremental/bulk
 turns retain their two-to-one schedule. Capacity one has no reservations and
 still runs admitted work. A reserve preserves capacity rather than preempting
-an already running operation. Byte-pressure and exclusive dependency capture
-can still refuse foreground admission. Startup and a standalone HTTP server use
+an already running operation. Ordinary byte pressure can still refuse admission.
+Exclusive background preparation retains its full byte charge and admits no
+other background work. One shared foreground operation may use an additional
+1 MiB accounting allowance, matching the HTTP read charge, in either arrival
+order. A larger foreground operation occupies that same queue position and
+waits for exclusive physical settlement before its normal charge and worker
+are acquired. Cancellation releases a queued position immediately, while a
+running operation keeps its reservation until native settlement. Status reports
+additional allowance use and deferred normal charge separately, and keeps the
+complete declared input demand visible. Deferred operands can already own
+memory: these quantities describe admission accounting, not a resident-memory
+bound. Capacity one queues foreground work until its worker is available.
+Startup and a standalone HTTP server use
 the same default of twelve workers; the API, watcher and convergence owners
 borrow the startup kernel when it is supplied. There is no second worker pool
 or independent HTTP width (`polylogue/core/compute.py`; `daemon/http.py`).

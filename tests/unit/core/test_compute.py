@@ -689,14 +689,14 @@ def test_ordered_map_retains_unknown_input_exclusivity_until_each_worker_settles
         assert snapshot.used_bytes == capacity_bytes
         failures: list[BaseException] = []
 
-        def unrelated_read() -> None:
+        def unrelated_background() -> None:
             try:
                 with pytest.raises(DaemonBackpressureError):
-                    adapter.submit(lambda: None, estimated_bytes=1)
+                    adapter.submit(lambda: None, admission_class="bulk-candidate", estimated_bytes=1)
             except BaseException as failure:
                 failures.append(failure)
 
-        reader = threading.Thread(target=unrelated_read)
+        reader = threading.Thread(target=unrelated_background)
         reader.start()
         reader.join(timeout=5)
         assert not reader.is_alive()

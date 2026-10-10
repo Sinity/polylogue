@@ -71,6 +71,9 @@ MAX_BACKGROUND_STARVATION_S = 60.0
 #: The daemon startup and standalone HTTP owners use this same pool width.
 DEFAULT_COMPUTE_WORKERS = 12
 
+#: Additional accounting for one foreground operation beside exclusive background work.
+FOREGROUND_BYTE_ALLOWANCE = 1024 * 1024
+
 
 class DaemonBackpressureError(RuntimeError):
     """The bounded compute queue cannot accept another unit of work."""
@@ -144,6 +147,10 @@ class AdmissionSnapshot:
     measurements while their reservations live, not forecasts of final input
     or parsed memory. An exclusive unit can begin before discovering any
     input, already holding its full ``used_bytes`` concurrency charge.
+    One foreground quantum can be charged in addition to that background
+    envelope. ``foreground_pending_bytes`` names a larger foreground charge
+    waiting for exclusive retirement; its original demand remains reported.
+    Queued operands can already reside in memory despite that deferred charge.
     """
 
     capacity_units: int
@@ -160,6 +167,9 @@ class AdmissionSnapshot:
     active_input_bytes: int = 0
     queued_input_bytes: int = 0
     exclusive_byte_units: int = 0
+    foreground_allowance_capacity_bytes: int = FOREGROUND_BYTE_ALLOWANCE
+    foreground_allowance_used_bytes: int = 0
+    foreground_pending_bytes: int = 0
 
     @property
     def queued(self) -> int:
@@ -194,6 +204,9 @@ class AdmissionSnapshot:
             "active_input_bytes": self.active_input_bytes,
             "queued_input_bytes": self.queued_input_bytes,
             "exclusive_byte_units": self.exclusive_byte_units,
+            "foreground_allowance_capacity_bytes": self.foreground_allowance_capacity_bytes,
+            "foreground_allowance_used_bytes": self.foreground_allowance_used_bytes,
+            "foreground_pending_bytes": self.foreground_pending_bytes,
             "rejected": self.rejected,
             "capacity_slots": self.capacity_slots,
             "background_max_wait_s": self.background_max_wait_s,
@@ -345,6 +358,8 @@ class _ClassState:
         "reserved_slots",
         "reserved_units",
         "used_units",
+        "used_bytes",
+        "used_input_bytes",
         "active_units",
         "active_slots",
         "admitted",
@@ -361,6 +376,8 @@ class _ClassState:
         self.reserved_slots = 0
         self.ceiling_slots = 0
         self.used_units = 0
+        self.used_bytes = 0
+        self.used_input_bytes = 0
         self.active_units = 0
         self.active_slots = 0
         self.admitted = 0
@@ -476,6 +493,7 @@ class _Task:
         "function",
         "future",
         "queue_delay_s",
+        "pending_bytes",
         "queued_at",
         "slots",
         "state",
@@ -506,6 +524,7 @@ class _Task:
         self.admission_class = admission_class
         self.units = units
         self.bytes = estimated_bytes
+        self.pending_bytes: int | None = None
         self.input_demand_bytes = input_demand_bytes
         self.exclusive_bytes = exclusive_bytes
         self.slots = slots
@@ -553,6 +572,7 @@ class BoundedComputeAdapter:
         self._active_input_bytes = 0
         self._used_input_bytes = 0
         self._exclusive_byte_units = 0
+        self._background_exclusive_units = 0
         self._active_slots = 0
         self._rejected = 0
         self._shutdown = False
@@ -601,6 +621,10 @@ class BoundedComputeAdapter:
             "queued_units": max(0, self._used_units - self._active_units),
             "capacity_bytes": self.capacity_bytes,
             "used_bytes": self._used_bytes,
+            "foreground_allowance_capacity_bytes": FOREGROUND_BYTE_ALLOWANCE,
+            "foreground_allowance_used_bytes": (
+                self._group_bytes("foreground") if self._background_exclusive_units else 0
+            ),
             # Each group shares one reserve. Report the aggregate
             # usage so a rejected sibling cannot make the bounded admission
             # envelope look larger than it is.
@@ -650,17 +674,59 @@ class BoundedComputeAdapter:
             if other != group
         )
 
-    def _acquire_locked(
-        self, state: _ClassState, units: int, estimated_bytes: int, *, input_demand_bytes: int, exclusive_bytes: bool
-    ) -> None:
+    def _background_exclusive(self, task: _Task) -> bool:
+        return task.admission_class in BACKGROUND_CLASSES and (
+            task.exclusive_bytes or task.input_demand_bytes > self.capacity_bytes
+        )
+
+    def _group_bytes(self, group: str, *, original: bool = False) -> int:
+        return sum(
+            state.used_input_bytes if original else state.used_bytes
+            for name in self._classes_by_group[group]
+            for state in (self._classes[name],)
+        )
+
+    def _acquire_locked(self, state: _ClassState, task: _Task) -> None:
+        group = self._class_group(state.admission_class)
         group_used_units = self._group_used_units(state.admission_class)
         other_reserved_units = self._unmet_other_unit_reserves(state.admission_class)
+        extra_bytes = 0
+        isolated = True
+        if self._background_exclusive_units:
+            # Exactly one foreground position, shared by control and reads.
+            # A larger operand waits without a worker or native SQL owner;
+            # its complete declared input demand remains observable.
+            isolated = group == "foreground" and group_used_units == 0
+            if isolated:
+                if (
+                    task.units == 1
+                    and not task.exclusive_bytes
+                    and task.input_demand_bytes <= FOREGROUND_BYTE_ALLOWANCE
+                ):
+                    extra_bytes = task.bytes
+                else:
+                    task.pending_bytes = task.bytes
+                    task.bytes = 0
+        elif self._background_exclusive(task):
+            # The same allowance applies when foreground work arrived first.
+            foreground_units = self._group_used_units("control")
+            isolated = (
+                group_used_units == 0
+                and self._exclusive_byte_units == 0
+                and foreground_units <= 1
+                and self._group_bytes("foreground", original=True) <= FOREGROUND_BYTE_ALLOWANCE
+            )
+            extra_bytes = self._group_bytes("foreground") if isolated else 0
+        else:
+            isolated = not (
+                (task.exclusive_bytes and (self._used_input_bytes > 0 or self._exclusive_byte_units > 0))
+                or (task.input_demand_bytes > 0 and self._exclusive_byte_units > 0)
+            )
         if (
-            self._used_units + units > self.capacity_units - other_reserved_units
-            or self._used_bytes + estimated_bytes > self.capacity_bytes
-            or group_used_units + units > state.ceiling_units
-            or (exclusive_bytes and (self._used_input_bytes > 0 or self._exclusive_byte_units > 0))
-            or (input_demand_bytes > 0 and self._exclusive_byte_units > 0)
+            self._used_units + task.units > self.capacity_units - other_reserved_units
+            or self._used_bytes + task.bytes > self.capacity_bytes + extra_bytes
+            or group_used_units + task.units > state.ceiling_units
+            or not isolated
         ):
             state.rejected += 1
             self._rejected += 1
@@ -669,12 +735,33 @@ class BoundedComputeAdapter:
                 admission_class=state.admission_class,
                 evidence=self._evidence(state),
             )
-        self._used_units += units
-        self._used_bytes += estimated_bytes
-        self._exclusive_byte_units += int(exclusive_bytes)
-        self._used_input_bytes += input_demand_bytes
-        state.used_units += units
+        self._used_units += task.units
+        self._used_bytes += task.bytes
+        self._exclusive_byte_units += int(task.exclusive_bytes and task.pending_bytes is None)
+        self._background_exclusive_units += int(self._background_exclusive(task))
+        self._used_input_bytes += task.input_demand_bytes
+        state.used_units += task.units
+        state.used_bytes += task.bytes
+        state.used_input_bytes += task.input_demand_bytes
         state.admitted += 1
+
+    def _activate_pending_bytes(self, task: _Task, state: _ClassState) -> bool:
+        charge = task.pending_bytes
+        if charge is None:
+            return True
+        if (
+            self._background_exclusive_units
+            or self._exclusive_byte_units
+            or self._used_bytes + charge > self.capacity_bytes
+            or (task.exclusive_bytes and self._used_input_bytes > task.input_demand_bytes)
+        ):
+            return False
+        task.bytes = charge
+        task.pending_bytes = None
+        self._used_bytes += charge
+        state.used_bytes += charge
+        self._exclusive_byte_units += int(task.exclusive_bytes)
+        return True
 
     def require_current_creator(self) -> None:
         """Require this reservation's actual creator for SQL-backed preparation."""
@@ -706,6 +793,7 @@ class BoundedComputeAdapter:
             task.input_demand_bytes += additional_bytes
             self._active_input_bytes += additional_bytes
             self._used_input_bytes += additional_bytes
+            self._classes[task.admission_class].used_input_bytes += additional_bytes
 
     def submit(
         self,
@@ -804,9 +892,7 @@ class BoundedComputeAdapter:
                         "requested_slots": min(units, self.max_workers),
                     },
                 )
-            self._acquire_locked(
-                state, units, estimated_bytes, input_demand_bytes=input_demand_bytes, exclusive_bytes=exclusive_bytes
-            )
+            self._acquire_locked(state, task)
             self._queues[admission_class].append(task)
             runnable = self._drain_locked()
 
@@ -960,6 +1046,9 @@ class BoundedComputeAdapter:
                 if background_turn is not None:
                     return None
                 foreground_blocked = True
+                continue
+            if not self._activate_pending_bytes(task, state):
+                foreground_blocked = foreground_turn is not None
                 continue
             queue.popleft()
             if foreground_turn is not None:
@@ -1158,9 +1247,12 @@ class BoundedComputeAdapter:
                 state.completed += 1
             self._used_units -= task.units
             self._used_bytes -= task.bytes
-            self._exclusive_byte_units -= int(task.exclusive_bytes)
+            self._exclusive_byte_units -= int(task.exclusive_bytes and task.pending_bytes is None)
+            self._background_exclusive_units -= int(self._background_exclusive(task))
             self._used_input_bytes -= task.input_demand_bytes
             state.used_units -= task.units
+            state.used_bytes -= task.bytes
+            state.used_input_bytes -= task.input_demand_bytes
             if active:
                 self._active_units -= task.units
                 self._active_bytes -= task.bytes
@@ -1235,6 +1327,12 @@ class BoundedComputeAdapter:
                 active_input_bytes=self._active_input_bytes,
                 queued_input_bytes=sum(task.input_demand_bytes for queue in self._queues.values() for task in queue),
                 exclusive_byte_units=self._exclusive_byte_units,
+                foreground_allowance_used_bytes=(
+                    self._group_bytes("foreground") if self._background_exclusive_units else 0
+                ),
+                foreground_pending_bytes=sum(
+                    task.pending_bytes or 0 for name in FOREGROUND_CLASSES for task in self._queues[name]
+                ),
             )
 
     def shutdown(self, *, wait: bool = False, cancel_futures: bool = True) -> None:
@@ -1349,6 +1447,7 @@ __all__ = [
     "MIN_BACKGROUND_RESERVED_SLOTS",
     "DEFAULT_COMPUTE_WORKERS",
     "FOREGROUND_CLASSES",
+    "FOREGROUND_BYTE_ALLOWANCE",
     "AdmissionClass",
     "AdmissionSnapshot",
     "BoundedComputeAdapter",

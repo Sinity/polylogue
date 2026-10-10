@@ -33,6 +33,7 @@ from polylogue.archive.query.transaction import (
 )
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES
 from polylogue.core.compute import (
+    FOREGROUND_BYTE_ALLOWANCE,
     BoundedComputeAdapter,
     DaemonBackpressureError,
     DaemonOperationCancelled,
@@ -1771,7 +1772,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 submitted = kernel.submit(
                     propagate(lambda: asyncio.run(self._run_archive_query(handler))),
                     admission_class="interactive-read",
-                    estimated_bytes=1024 * 1024,
+                    estimated_bytes=FOREGROUND_BYTE_ALLOWANCE,
                     cancellation=cancellation,
                 )
                 try:
