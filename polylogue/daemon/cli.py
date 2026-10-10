@@ -88,9 +88,6 @@ from polylogue.operations.embedding_lifecycle import (
     ensure_embedding_lifecycle_startup as _ensure_embedding_lifecycle_startup_sync,
 )
 from polylogue.sources.live import LiveWatcher, WatchSource
-from polylogue.sources.live.convergence_debt_retry import (
-    CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS as _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS,
-)
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.live.watcher import POLYLOGUE_OWNED_SOURCE_NAMES, daemon_watch_sources, default_sources
 
@@ -137,6 +134,7 @@ if TYPE_CHECKING:
     from polylogue.sources.live.watcher import EmbeddingConvergenceOwner
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
+_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 
 #: Wall budget for back-to-back bounded session-derivation passes in one
 #: periodic convergence tick; the tick interval leaves the rest for the others.
