@@ -136,7 +136,7 @@ turns retain their two-to-one schedule. Capacity one has no reservations and
 still runs admitted work. A reserve preserves capacity rather than preempting
 an already running operation. Byte-pressure and exclusive dependency capture
 can still refuse foreground admission. Startup and a standalone HTTP server use
-the same declared compute default; the API, watcher and convergence owners
+the same default of twelve workers; the API, watcher and convergence owners
 borrow the startup kernel when it is supplied. There is no second worker pool
 or independent HTTP width (`polylogue/core/compute.py`; `daemon/http.py`).
 

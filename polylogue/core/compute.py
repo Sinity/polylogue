@@ -69,7 +69,7 @@ MIN_BACKGROUND_RESERVED_SLOTS = 1
 MAX_BACKGROUND_STARVATION_S = 60.0
 
 #: The daemon startup and standalone HTTP owners use this same pool width.
-DEFAULT_COMPUTE_WORKERS = 8
+DEFAULT_COMPUTE_WORKERS = 12
 
 
 class DaemonBackpressureError(RuntimeError):
