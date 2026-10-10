@@ -452,6 +452,7 @@ def _output_fingerprint(
     cancelled: Callable[[], bool],
     recipe_binding: dict[str, Any] | None = None,
     _certified_recipe_pass: bool = False,
+    _strict_tables: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Per-table digests over the comparable index relations.
 
@@ -465,7 +466,7 @@ def _output_fingerprint(
     scratch.mkdir(parents=True, exist_ok=True)
     spool_path = scratch / "fingerprint.sqlite"
     spool_path.unlink(missing_ok=True)
-    tables: dict[str, dict[str, Any]] = {}
+    tables: dict[str, dict[str, Any]] = dict(_strict_tables) if _strict_tables is not None else {}
     with (
         closing(sqlite3.connect(f"file:{promoted_index}?mode=ro", uri=True)) as read,
         closing(sqlite3.connect(spool_path)) as spool,
@@ -478,7 +479,7 @@ def _output_fingerprint(
         # between rows; the progress handler interrupts them on cancellation.
         for connection in (read, spool):
             connection.set_progress_handler(lambda: 1 if cancelled() else 0, _CANCEL_CHECK_OPS)
-        for table in compared_table_census():
+        for table in ("sessions",) if _certified_recipe_pass else compared_table_census():
             volatile = _VOLATILE_COLUMNS[table]
             if not _has_table(read, table):
                 tables[table] = dict(_ABSENT_TABLE)
@@ -522,7 +523,8 @@ def _output_fingerprint(
                 digest.update(payload.encode())
                 digest.update(b"\n")
             tables[table] = {"rows": rows, "sha256": digest.hexdigest()}
-        tables["messages_fts:postings"] = _fts_postings(read, cancelled=cancelled)
+        if not _certified_recipe_pass:
+            tables["messages_fts:postings"] = _fts_postings(read, cancelled=cancelled)
     spool_path.unlink(missing_ok=True)
     overall = hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
     result = {"digest": overall, "tables": tables}
@@ -538,7 +540,14 @@ def _output_fingerprint(
         }
         if validated:
             result["recipe_qualified"].update(
-                _output_fingerprint(archive, promoted_index, scratch, cancelled=cancelled, _certified_recipe_pass=True)
+                _output_fingerprint(
+                    archive,
+                    promoted_index,
+                    scratch,
+                    cancelled=cancelled,
+                    _certified_recipe_pass=True,
+                    _strict_tables=tables,
+                )
             )
     return result
 

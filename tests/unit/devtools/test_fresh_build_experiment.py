@@ -345,3 +345,35 @@ def test_imported_recipe_functions_must_belong_to_actual_candidate(
 
     monkeypatch.setenv("POLYLOGUE_BENCH_CANDIDATE", str(tmp_path / "foreign"))
     assert imported_recipe_binding()["outcome"] == "mismatch"
+
+
+def test_secondary_fingerprint_reuses_non_session_and_fts_digests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+
+    from devtools.fresh_build_bench import report
+
+    index = tmp_path / "index.db"
+    with sqlite3.connect(index) as conn:
+        conn.execute("CREATE TABLE sessions (origin TEXT, parser_fingerprint TEXT, lowering_fingerprint TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('codex', 'parser', 'lowering')")
+        conn.execute("CREATE TABLE messages (content TEXT)")
+        conn.execute("INSERT INTO messages VALUES ('exact')")
+    scanned: list[str] = []
+    original = report._has_table
+
+    def counted(conn: sqlite3.Connection, name: str) -> bool:
+        scanned.append(name)
+        return original(conn, name)
+
+    monkeypatch.setattr(report, "_has_table", counted)
+    fingerprint = report.output_fingerprint(
+        tmp_path, str(index), tmp_path / "scratch", recipe_binding=_recipe_binding("parser", "lowering")
+    )
+    assert scanned.count("sessions") == 2
+    assert scanned.count("messages") == 1
+    assert scanned.count("messages_fts") == 1
+    for table, digest in fingerprint["tables"].items():
+        if table != "sessions":
+            assert fingerprint["recipe_qualified"]["tables"][table] == digest
