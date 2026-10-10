@@ -102,7 +102,7 @@ metadata rather than transcript text.
 Run the managed deterministic proof before loading a GUI browser:
 
 ```bash
-agentctl job start polylogue dev_loop_proof --workspace <workspace-id>
+agentctl job start polylogue dev_loop_proof --workspace <workspace-id> -- --chrome-user-data-dir <actual-running-Chrome-user-data-directory>
 agentctl job result <job-id>
 ```
 
