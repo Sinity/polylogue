@@ -69,7 +69,12 @@ from polylogue.operations.quick_check import (
     observe_quick_check,
     unmeasured_quick_check,
 )
-from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
+from polylogue.operations.status_protocol import (
+    ComponentSnapshot,
+    StatusComponentRegistry,
+    StatusComponentSpec,
+    StatusWatchSource,
+)
 from polylogue.operations.user_overlay_reads import readable_required_tier
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
@@ -78,7 +83,6 @@ from polylogue.readiness.claim_guard import (
     derive_claim_guard,
     search_unmeasured_reason,
 )
-from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import (
@@ -707,7 +711,7 @@ class DaemonStatus(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def live_source_status_payload(sources: tuple[WatchSource, ...]) -> JSONDocument:
+def live_source_status_payload(sources: tuple[StatusWatchSource, ...]) -> JSONDocument:
     """Return status for configured live-ingest roots."""
     items = [
         {
@@ -2275,7 +2279,9 @@ def _configured_source_status_fingerprint() -> str:
     )
 
 
-def _effective_watch_sources(sources: tuple[WatchSource, ...] | None = None) -> tuple[WatchSource, ...]:
+def _effective_watch_sources(
+    sources: tuple[StatusWatchSource, ...] | None = None,
+) -> tuple[StatusWatchSource, ...]:
     if sources is not None:
         return sources
     from polylogue.daemon.status_snapshot import runtime_watch_sources
@@ -2284,7 +2290,7 @@ def _effective_watch_sources(sources: tuple[WatchSource, ...] | None = None) -> 
     return runtime_sources if runtime_sources is not None else default_sources()
 
 
-def _health_source_fingerprint(sources: tuple[WatchSource, ...]) -> str:
+def _health_source_fingerprint(sources: tuple[StatusWatchSource, ...]) -> str:
     return json.dumps(
         [(source.name, str(source.root), source.exists(), os.access(source.root, os.R_OK)) for source in sources],
         separators=(",", ":"),
@@ -2294,7 +2300,7 @@ def _health_source_fingerprint(sources: tuple[WatchSource, ...]) -> str:
 class _DaemonStatusComponentRegistry(StatusComponentRegistry):
     """Retain each source selection's observations and in-flight collectors."""
 
-    def __init__(self, specs: list[StatusComponentSpec], sources: tuple[WatchSource, ...]) -> None:
+    def __init__(self, specs: list[StatusComponentSpec], sources: tuple[StatusWatchSource, ...]) -> None:
         super().__init__(specs)
         self.sources = sources
 
@@ -2489,7 +2495,9 @@ _PERIODIC_STATUS_REGISTRY_LOCK = threading.Lock()
 _PERIODIC_STATUS_REGISTRIES: dict[tuple[tuple[str, str], ...], _DaemonStatusComponentRegistry] = {}
 
 
-def periodic_status_component_registry(*, sources: tuple[WatchSource, ...] | None = None) -> StatusComponentRegistry:
+def periodic_status_component_registry(
+    *, sources: tuple[StatusWatchSource, ...] | None = None
+) -> StatusComponentRegistry:
     """Return the persistent registry owned by this effective source selection.
 
     ``_periodic_status_snapshot_refresh`` (``daemon/cli.py``) calls
@@ -2629,7 +2637,7 @@ def _component_is_unmeasured(snapshot: ComponentSnapshot, *, current_fingerprint
 
 def build_daemon_status(
     *,
-    sources: tuple[WatchSource, ...] | None = None,
+    sources: tuple[StatusWatchSource, ...] | None = None,
     include_expensive_health: bool = False,
     include_raw_replay_backlog: bool = True,
     include_exact_raw_materialization_readiness: bool = True,
@@ -3172,7 +3180,7 @@ def supervised_service_snapshot() -> tuple[dict[str, str], list[dict[str, object
 def daemon_status_payload(
     *,
     config: Config | None = None,
-    sources: tuple[WatchSource, ...] | None = None,
+    sources: tuple[StatusWatchSource, ...] | None = None,
     include_raw_replay_backlog: bool = False,
     include_exact_raw_materialization_readiness: bool = False,
     include_archive_debt: bool = False,

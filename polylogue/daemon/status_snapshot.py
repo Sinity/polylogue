@@ -27,13 +27,13 @@ from polylogue.daemon.discovery_progress import overlay_active_discovery
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.operations.daemon_status import archive_identity_status
 from polylogue.operations.quick_check import observe_quick_check, unmeasured_quick_check
+from polylogue.operations.status_protocol import StatusWatchSource
 from polylogue.paths import archive_root
 from polylogue.readiness.capability import (
     STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S,
     normalize_raw_frontier_status_payload,
     unknown_raw_frontier_integrity_projection,
 )
-from polylogue.sources.live import WatchSource
 from polylogue.storage.archive_identity import ArchiveLocation, resolve_active_index_path
 
 _SNAPSHOT_LOCK = threading.Lock()
@@ -48,7 +48,7 @@ class RuntimeComponentState:
 
     api_enabled: bool | None = None
     watcher_enabled: bool | None = None
-    watch_sources: tuple[WatchSource, ...] | None = None
+    watch_sources: tuple[StatusWatchSource, ...] | None = None
     browser_capture_enabled: bool | None = None
     browser_capture_status: Mapping[str, JSONValue] | None = None
 
@@ -234,7 +234,7 @@ def configure_runtime_components(
     *,
     api_enabled: bool | None = None,
     watcher_enabled: bool | None = None,
-    watch_sources: tuple[WatchSource, ...] | None = None,
+    watch_sources: tuple[StatusWatchSource, ...] | None = None,
     browser_capture_enabled: bool | None = None,
 ) -> None:
     """Record daemon component switches for request-safe status snapshots."""
@@ -248,7 +248,7 @@ def configure_runtime_components(
         )
 
 
-def runtime_watch_sources() -> tuple[WatchSource, ...] | None:
+def runtime_watch_sources() -> tuple[StatusWatchSource, ...] | None:
     """Return the selection published by the daemon composition owner."""
     return _runtime_component_state().watch_sources
 
