@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from builtins import BaseExceptionGroup
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -13,8 +14,12 @@ from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.write_lease import coordinator_write_lease_active
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+from polylogue.sources.prepared_jsonl import PreparedJsonl
+from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 from polylogue.storage.derived import raw as raw_module
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.selected_raw_preparation import acquire_independent_codex_raws
 
@@ -52,7 +57,13 @@ async def test_selected_independent_preparations_overlap_with_real_admission(
     active = peak = calls = 0
     original = raw_module._parse_captured_neutral
 
-    def prepare(*args: object, **kwargs: object):
+    def prepare(
+        raw_id: str,
+        captured: raw_module._CapturedNeutralRaw,
+        artifact_key: tuple[object, ...],
+        sidecar_scopes: Mapping[str, RetainedSidecarScope],
+        scratch: Path,
+    ) -> PreparedJsonl:
         nonlocal active, peak, calls
         assert not coordinator_write_lease_active()
         kernel.require_current_creator()
@@ -65,7 +76,7 @@ async def test_selected_independent_preparations_overlap_with_real_admission(
                 both_started.set()
         try:
             assert release.wait(10), "preparations did not reach the admitted rendezvous"
-            return original(*args, **kwargs)
+            return original(raw_id, captured, artifact_key, sidecar_scopes, scratch)
         finally:
             with lock:
                 active -= 1
@@ -85,6 +96,8 @@ async def test_selected_independent_preparations_overlap_with_real_admission(
         assert calls == 2, "fresh Source phases recopy/reparse unchanged neutral inputs"
         assert kernel.snapshot().used_units == kernel.snapshot().used_bytes == 0
         with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            assert archive.index_connection is not None
+            assert archive.source_connection is not None
             assert archive.index_connection is not None
             assert {
                 row[0] for row in archive.index_connection.execute("SELECT accepted_raw_id FROM raw_revision_heads")
@@ -135,8 +148,15 @@ async def test_selected_preparation_cancellation_joins_creators_before_scratch_r
     original_parse = raw_module._parse_captured_neutral
     original_close = raw_module.NeutralRawPreparation.close
 
-    def capture(*args: object, **kwargs: object):
-        result = original_capture(*args, **kwargs)
+    def capture(
+        adapter: raw_module.RawObservationDerivation,
+        key: str,
+        *,
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+        seal: PreparedIndexMutation,
+        carry: raw_module._PreparationCarry,
+    ) -> tuple[raw_module.NeutralRawPreparation, tuple[tuple[str, ...], tuple[str, ...]]] | None:
+        result = original_capture(adapter, key, selection=selection, seal=seal, carry=carry)
         if result is not None:
             pages.append(result[0])
         if phase == "capture":
@@ -144,8 +164,14 @@ async def test_selected_preparation_cancellation_joins_creators_before_scratch_r
             assert release.wait(10)
         return result
 
-    def parse(*args: object, **kwargs: object):
-        artifact = original_parse(*args, **kwargs)
+    def parse(
+        raw_id: str,
+        captured: raw_module._CapturedNeutralRaw,
+        artifact_key: tuple[object, ...],
+        sidecar_scopes: Mapping[str, RetainedSidecarScope],
+        scratch: Path,
+    ) -> PreparedJsonl:
+        artifact = original_parse(raw_id, captured, artifact_key, sidecar_scopes, scratch)
         started.set()
         assert release.wait(10)
         if cleanup_fault and phase == "parse":
@@ -182,6 +208,8 @@ async def test_selected_preparation_cancellation_joins_creators_before_scratch_r
                 await task
         assert kernel.snapshot().used_units == 0
         with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            assert archive.index_connection is not None
+            assert archive.source_connection is not None
             assert archive.index_connection.execute("SELECT count(*) FROM sessions").fetchone()[0] == 0
         if not cleanup_fault:
             monkeypatch.setattr(raw_module.RawObservationDerivation, "_capture_neutral_jsonl", original_capture)
@@ -197,6 +225,8 @@ async def test_selected_preparation_cancellation_joins_creators_before_scratch_r
             )
             (await restarted.replay_retained_raw_ids(raws)).require_complete()
             with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+                assert archive.index_connection is not None
+                assert archive.source_connection is not None
                 assert {
                     row[0] for row in archive.index_connection.execute("SELECT accepted_raw_id FROM raw_revision_heads")
                 } == set(raws)
@@ -234,15 +264,26 @@ async def test_default_selected_pages_preserve_all_independent_source_classifica
     capture_original = raw_module.RawObservationDerivation.capture_neutral_raws
     parse_original = raw_module._parse_captured_neutral
 
-    def capture(adapter, raw_ids, **kwargs):
-        result = capture_original(adapter, raw_ids, **kwargs)
+    def capture(
+        adapter: raw_module.RawObservationDerivation,
+        raw_ids: Sequence[str],
+        *,
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+    ) -> raw_module.NeutralRawPreparation | None:
+        result = capture_original(adapter, raw_ids, selection=selection)
         if result is not None:
             captured.append(tuple(result.captures))
         return result
 
-    def parse(raw_id, *args, **kwargs):
+    def parse(
+        raw_id: str,
+        captured: raw_module._CapturedNeutralRaw,
+        artifact_key: tuple[object, ...],
+        sidecar_scopes: Mapping[str, RetainedSidecarScope],
+        scratch: Path,
+    ) -> PreparedJsonl:
         parsed.append(raw_id)
-        return parse_original(raw_id, *args, **kwargs)
+        return parse_original(raw_id, captured, artifact_key, sidecar_scopes, scratch)
 
     monkeypatch.setattr(raw_module.RawObservationDerivation, "capture_neutral_raws", capture)
     monkeypatch.setattr(raw_module, "_parse_captured_neutral", parse)
@@ -252,6 +293,8 @@ async def test_default_selected_pages_preserve_all_independent_source_classifica
         assert [len(page) for page in captured] == [width, len(raws) - width]
         assert sorted(parsed) == sorted(raws)
         with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            assert archive.index_connection is not None
+            assert archive.source_connection is not None
             assert {
                 row[0] for row in archive.index_connection.execute("SELECT accepted_raw_id FROM raw_revision_heads")
             } == set(raws)
@@ -286,8 +329,14 @@ async def test_selected_preparation_rebinds_changed_selection_without_reparsing_
     started, release = threading.Event(), threading.Event()
     lock = threading.Lock()
 
-    def parse(raw_id, *args, **kwargs):
-        artifact = original(raw_id, *args, **kwargs)
+    def parse(
+        raw_id: str,
+        captured: raw_module._CapturedNeutralRaw,
+        artifact_key: tuple[object, ...],
+        sidecar_scopes: Mapping[str, RetainedSidecarScope],
+        scratch: Path,
+    ) -> PreparedJsonl:
+        artifact = original(raw_id, captured, artifact_key, sidecar_scopes, scratch)
         with lock:
             parsed.append(raw_id)
             if len(parsed) == 2:
@@ -313,6 +362,8 @@ async def test_selected_preparation_rebinds_changed_selection_without_reparsing_
         (await task).require_complete()
         assert parsed.count(raws[0]) == parsed.count(raws[1]) == parsed.count(replacement) == 1
         with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            assert archive.index_connection is not None
+            assert archive.source_connection is not None
             heads = {
                 row[0] for row in archive.index_connection.execute("SELECT accepted_raw_id FROM raw_revision_heads")
             }
@@ -334,15 +385,17 @@ async def test_selected_preparation_rebinds_changed_selection_without_reparsing_
 
 
 @pytest.mark.parametrize("state", ["publisher", "blob_retired", "blob_prepared", "thread_key"])
-def test_neutral_file_borrow_refuses_publication_or_projection_state(state: str) -> None:
+def test_neutral_file_borrow_refuses_publication_or_projection_state(tmp_path: Path, state: str) -> None:
     """A closed-file borrow cannot silently carry a producer's mutable state."""
     from dataclasses import replace
 
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
     artifact = PreparedJsonl(None, None, None)
     if state == "publisher":
-        artifact = replace(artifact, publication_publisher=object())
+        artifact = replace(
+            artifact, publication_publisher=ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+        )
     elif state == "blob_retired":
         artifact._blob_publication.retired = True
     elif state == "blob_prepared":

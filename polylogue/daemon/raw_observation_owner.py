@@ -190,7 +190,7 @@ class RawObservationConvergenceOwner:
             self._archive.append_plans_operation(
                 owner, plans, retained=retained, require_authority=self._require_source_frontier_authority
             ),
-            settlement_owners=lambda retained=retained: retained_settlement_owners(retained),
+            settlement_owners=partial(retained_settlement_owners, retained),
             estimated_bytes=sum(len(plan.payload) for plan in plans),
         )
 
@@ -347,7 +347,7 @@ class RawObservationConvergenceOwner:
                 )
                 try:
                     page = await captured.wait()
-                except BaseException as primary:
+                except BaseException as capture_failure:
                     if captured.future.done() and captured.future.exception() is None:
                         abandoned = captured.future.result()
                         if abandoned is not None:
@@ -355,8 +355,8 @@ class RawObservationConvergenceOwner:
                                 abandoned.close()
                             except BaseException as cleanup:
                                 raise BaseExceptionGroup(
-                                    "capture cancellation and cleanup failed", [primary, cleanup]
-                                ) from primary
+                                    "capture cancellation and cleanup failed", [capture_failure, cleanup]
+                                ) from capture_failure
                     raise
                 primary: BaseException | None = None
                 try:
@@ -378,7 +378,7 @@ class RawObservationConvergenceOwner:
                     result = await self.run_prepared_sync(
                         "watcher.live_ingest.retained",
                         replay,
-                        settlement_owners=lambda retained=retained: retained_settlement_owners(retained),
+                        settlement_owners=partial(retained_settlement_owners, retained),
                         estimated_bytes=len(scope_operand),
                     )
                     results.append(result)

@@ -2183,6 +2183,7 @@ class RawObservationDerivation(RawObservationInspection):
         blob_store = BlobStore(self.archive_root / "blob")
         from polylogue.schemas import validate_retained_document
 
+        assert carry.scratch_owner is not None
         scratch = Path(carry.scratch_owner.name)
         neutral_keys: dict[str, tuple[object, ...]] = {}
         neutral_by_raw: dict[str, PreparedJsonl] = {}
@@ -2419,10 +2420,10 @@ class RawObservationDerivation(RawObservationInspection):
                 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
                 for raw_id in eligible_raw_ids:
-                    captured = captures[raw_id]
-                    descriptor = captured.descriptor
-                    fallback_timestamp = captured.fallback_timestamp
-                    zip_coordinate = captured.zip_coordinate
+                    captured_raw = captures[raw_id]
+                    descriptor = captured_raw.descriptor
+                    fallback_timestamp = captured_raw.fallback_timestamp
+                    zip_coordinate = captured_raw.zip_coordinate
                     provider, _blob_hash, source_path, _kind, _raw_size = descriptor
                     neutral = carry.neutral_artifacts[neutral_keys[raw_id]]
                     if neutral.error is not None or neutral.deferred:
@@ -2484,7 +2485,7 @@ class RawObservationDerivation(RawObservationInspection):
         select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
         carry: _PreparationCarry | None = None,
     ) -> RawObservationReplacement:
-        carry = _PreparationCarry(reference_seal) if carry is None else carry
+        carry = _PreparationCarry(seal=reference_seal) if carry is None else carry
         from polylogue.core.prepared_file import VerificationCancelledError
         from polylogue.sources.dispatch import is_jsonl_source_path
         from polylogue.sources.revision_backfill import (
