@@ -416,9 +416,11 @@ class WorkProgressTail:
     long run does not retain one Python object per source recipe.
     """
 
-    def __init__(self, events: Path, *, state_root: Path | None = None) -> None:
+    def __init__(self, events: Path, *, state_root: Path | None = None, start_offset: int = 0) -> None:
         self._events = events
-        self._offset = 0
+        self._offset = start_offset
+        self._started_run: str | None = None
+        self._successful_pass_run: str | None = None
         self._pending = b""
         self._state_directory = tempfile.TemporaryDirectory(prefix="polylogue-work-progress-", dir=state_root)
         self._connection = sqlite3.connect(Path(self._state_directory.name) / "high-water.sqlite3")
@@ -446,12 +448,35 @@ class WorkProgressTail:
         self._connection.close()
         self._state_directory.cleanup()
 
+    @property
+    def current_daemon_observed(self) -> bool:
+        """Require this invocation to start and complete an initial convergence pass."""
+        return self._started_run is not None and self._started_run == self._successful_pass_run
+
     def _consume_line(self, line: bytes) -> None:
-        if b"daemon.work.progress" not in line and b"daemon.periodic.scheduled" not in line:
+        if not any(
+            token in line
+            for token in (
+                b"daemon.work.progress",
+                b"daemon.periodic.scheduled",
+                b"daemon.started",
+                b"daemon.convergence_debt.pass.ok",
+                b"daemon.convergence_debt.pass.empty",
+            )
+        ):
             return
         try:
             event = json.loads(line)
         except ValueError:
+            return
+        name = event.get("event")
+        if name in {"daemon.started", "daemon.convergence_debt.pass.ok", "daemon.convergence_debt.pass.empty"}:
+            run_id = event.get("run_id")
+            if isinstance(run_id, str) and run_id:
+                if name == "daemon.started":
+                    self._started_run = run_id
+                elif self._started_run is None or self._started_run == run_id:
+                    self._successful_pass_run = run_id
             return
         if event.get("event") == "daemon.periodic.scheduled" and event.get("loop") == "convergence_check":
             value = event.get("next_run_at")
@@ -954,6 +979,11 @@ def _measure_and_write_receipt(
     corpus_stamp = change_stamp(config.corpus)
     started_wall = time.time()
     started = time.monotonic()
+    # Ignore prior invocations, without missing events emitted immediately at startup.
+    try:
+        event_offset = paths["events"].stat().st_size
+    except FileNotFoundError:
+        event_offset = 0
     process = subprocess.Popen(
         command, cwd=config.candidate, env=daemon_env, stdout=log_stream, stderr=subprocess.STDOUT
     )
@@ -973,7 +1003,7 @@ def _measure_and_write_receipt(
     retry_opportunity_at: float | None = None
     last_useful_progress_at: float | None = None
     last_activity_at: float | None = None
-    work_progress = WorkProgressTail(paths["events"])
+    work_progress = WorkProgressTail(paths["events"], start_offset=event_offset)
     final_work_progress = 0
     # Wall minus monotonic elapsed, sampled every poll: a step that is
     # restored before the end still displaced the milestones logged meanwhile.
@@ -1049,7 +1079,7 @@ def _measure_and_write_receipt(
                 break
             if observation.promoted_index is not None and promoted_at is None:
                 promoted_at = observation.t
-            if observation.terminal:
+            if observation.terminal and work_progress.current_daemon_observed:
                 stable += 1
                 if stable == 1:
                     terminal_at = observation.t

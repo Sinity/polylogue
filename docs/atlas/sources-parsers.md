@@ -26,6 +26,12 @@ block identity, so repeated calls in one message remain distinct. Journal
 metadata references and attempt keys admit sidecars whose optional run ID is
 absent; the materializer and graph projector share that membership selection.
 
+Codex lookahead scratch values borrow nested disk-backed JSON nodes through
+its existing parse-owned tree descriptors. Calls, results and completed items
+retain complete values without copying whole records or serializing live SQLite
+connections. Replay resolves each node against its original still-live tree;
+closing lookahead retires its references without closing the source owner.
+
 Codex event-message mirrors consume one matching response occurrence only
 when exact text and role also carry a shared native identity, timestamp instant,
 or unambiguous turn ID. Contradictory time or turn evidence prevents matching;

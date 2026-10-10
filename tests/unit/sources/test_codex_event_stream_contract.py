@@ -1234,3 +1234,77 @@ def test_parse_stream_preserves_supplied_list_sinks(fixture: str) -> None:
     assert [event.model_dump(mode="json") for event in events] == [
         event.model_dump(mode="json") for event in expected.session_events
     ]
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        "tool_call_stream.jsonl",
+        "functions_exec_single.jsonl",
+        "functions_exec_multiple.jsonl",
+        "functions_exec_item_completed.jsonl",
+    ],
+)
+def test_disk_backed_codex_tool_lookahead_preserves_complete_plain_outputs(fixture: str) -> None:
+    """Retained views must not serialize their live SQLite connection."""
+    from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+    expected = _parse(_load_catalog(fixture), "owned-tool-lookahead")
+    with StreamedJSONDocument(CATALOG_DIR / fixture, jsonl=True) as records:
+        assert isinstance(records, list)
+        actual = _parse_impl(records, "owned-tool-lookahead")
+        assert actual == expected
+
+
+def test_codex_lookahead_borrows_nested_spill_without_copying_or_retiring_creator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pickle
+    import sqlite3
+
+    from polylogue.schemas.observation_spill import SpilledObject, StreamedJSONDocument
+    from polylogue.sources.parsers.codex import _CodexLookaheadIndex
+
+    source = tmp_path / "nested.json"
+    source.write_text(json.dumps({"complete": "value" * 100_000}), encoding="utf-8")
+    with StreamedJSONDocument(source) as record, sqlite3.connect("") as connection:
+        assert isinstance(record, SpilledObject)
+        index = _CodexLookaheadIndex(connection)
+
+        def refuse_copy(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("lookahead copied the borrowed JSON tree")
+
+        monkeypatch.setattr(SpilledObject, "items", refuse_copy)
+        sealed = index.dump_owned_value({"nested": [record]})
+        assert len(sealed) < 1_000
+        restored = index.load_owned_value(sealed)
+        assert isinstance(restored, dict)
+        borrowed = restored["nested"][0]
+        assert borrowed._connection is record._connection
+        assert borrowed._node_id == record._node_id
+        assert borrowed["complete"] == "value" * 100_000
+        index.close()
+        with pytest.raises(pickle.UnpicklingError, match="owner is unavailable"):
+            index.load_owned_value(sealed)
+        assert record["complete"] == "value" * 100_000
+
+
+def test_codex_lookahead_keeps_identical_node_ids_bound_to_their_original_trees(tmp_path: Path) -> None:
+    import sqlite3
+
+    from polylogue.schemas.observation_spill import StreamedJSONDocument
+    from polylogue.sources.parsers.codex import _CodexLookaheadIndex
+
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first.write_text('{"value": "first"}', encoding="utf-8")
+    second.write_text('{"value": "second"}', encoding="utf-8")
+    with StreamedJSONDocument(first) as left, StreamedJSONDocument(second) as right, sqlite3.connect("") as connection:
+        index = _CodexLookaheadIndex(connection)
+        encoded = index.dump_owned_value([left, right])
+        decoded = index.load_owned_value(encoded)
+        assert isinstance(decoded, list)
+        assert [value["value"] for value in decoded] == ["first", "second"]
+        assert decoded[0]._node_id == decoded[1]._node_id
+        assert decoded[0]._connection is not decoded[1]._connection
+        index.close()

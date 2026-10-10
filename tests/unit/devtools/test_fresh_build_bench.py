@@ -644,6 +644,11 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
     class Process:
         pid = 1
 
+        def __init__(self) -> None:
+            with (tmp_path / "events.jsonl").open("a") as events:
+                for name in ("daemon.started", "daemon.convergence_debt.pass.empty"):
+                    events.write(json.dumps({"event": name, "run_id": "current-bench"}) + "\n")
+
         def poll(self) -> None:
             return None
 
@@ -971,6 +976,7 @@ def _scripted_run(
     wall_jump: float = 0.0,
     wall_restore: bool = False,
     interrupt_at_stop: bool = False,
+    startup_after_polls: int = 0,
 ) -> dict[str, Any]:
     """Drive ``_measure_and_write_receipt`` through scripted observations, one per 600 s poll."""
     from devtools.fresh_build_bench import report, run
@@ -993,10 +999,21 @@ def _scripted_run(
             clock["wall"] -= wall_jump
         frame = frames[min(index["i"], len(frames) - 1)]
         index["i"] += 1
+        if startup_after_polls and index["i"] == startup_after_polls:
+            emit_startup()
         return Observation(clock["now"] - started, cursor_rows=1, **frame)
+
+    def emit_startup() -> None:
+        with (tmp_path / "events.jsonl").open("a") as events:
+            for name in ("daemon.started", "daemon.convergence_debt.pass.empty"):
+                events.write(json.dumps({"event": name, "run_id": "current-bench"}) + "\n")
 
     class Process:
         pid = 1
+
+        def __init__(self) -> None:
+            if not startup_after_polls:
+                emit_startup()
 
         def poll(self) -> None:
             return None
@@ -2751,3 +2768,42 @@ def test_work_progress_tail_reads_schedule_without_counting_progress(tmp_path: P
         assert reader.poll() == 0
     finally:
         reader.close()
+
+
+def test_terminal_gate_requires_current_invocation_events(tmp_path: Path) -> None:
+    from devtools.fresh_build_bench.run import WorkProgressTail
+
+    events = tmp_path / "events.jsonl"
+
+    def append(name: str, run_id: str) -> None:
+        with events.open("a") as handle:
+            handle.write(json.dumps({"event": name, "run_id": run_id}) + "\n")
+
+    append("daemon.started", "old")
+    append("daemon.convergence_debt.pass.empty", "old")
+    tail = WorkProgressTail(events, state_root=tmp_path, start_offset=events.stat().st_size)
+    try:
+        tail.poll()
+        assert not tail.current_daemon_observed
+        append("daemon.started", "new")
+        append("daemon.convergence_debt.pass.ok", "old")
+        tail.poll()
+        assert not tail.current_daemon_observed
+        append("daemon.convergence_debt.pass.empty", "new")
+        tail.poll()
+        assert tail.current_daemon_observed
+        assert tail.advancing == 0
+    finally:
+        tail.close()
+
+
+def test_ready_archive_waits_for_new_daemon_before_finishing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _scripted_run(
+        tmp_path,
+        monkeypatch,
+        [_terminal_frame()],
+        stall_timeout_s=7200.0,
+        startup_after_polls=3,
+    )
+    assert captured["outcome"] == "terminal"
+    assert len(captured["observations"]) >= 4

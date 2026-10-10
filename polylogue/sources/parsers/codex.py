@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import codecs
 import hashlib
+import io
 import itertools
 import json
 import math
@@ -164,6 +165,39 @@ class _CodexSpilledRecord:
     node_id: int
 
 
+class _CodexOwnedPickler(pickle.Pickler):
+    """Retain lazy JSON nodes under the parse's existing borrowed-tree owner."""
+
+    def __init__(self, output: io.BytesIO, trees: dict[int, sqlite3.Connection]) -> None:
+        super().__init__(output, protocol=pickle.HIGHEST_PROTOCOL)
+        self._trees = trees
+
+    def persistent_id(self, value: object) -> _CodexSpilledRecord | None:
+        from polylogue.schemas.observation_spill import SpilledArray, SpilledObject
+
+        if isinstance(value, (SpilledObject, SpilledArray)):
+            tree_id = id(value._connection)
+            self._trees[tree_id] = value._connection
+            return _CodexSpilledRecord(tree_id, value._node_id)
+        return None
+
+
+class _CodexOwnedUnpickler(pickle.Unpickler):
+    def __init__(self, source: io.BytesIO, trees: dict[int, sqlite3.Connection]) -> None:
+        super().__init__(source)
+        self._trees = trees
+
+    def persistent_load(self, reference: object) -> object:
+        from polylogue.schemas.observation_spill import _load_node
+
+        if not isinstance(reference, _CodexSpilledRecord):
+            raise pickle.UnpicklingError("invalid Codex lookahead node reference")
+        connection = self._trees.get(reference.tree_id)
+        if connection is None:
+            raise pickle.UnpicklingError("Codex lookahead node owner is unavailable")
+        return _load_node(connection, reference.node_id)
+
+
 class _CodexLookaheadIndex:
     """Disk-backed facts shared by the two passes over one rollout."""
 
@@ -248,6 +282,14 @@ class _CodexLookaheadIndex:
             );
             """
         )
+
+    def dump_owned_value(self, value: object) -> bytes:
+        output = io.BytesIO()
+        _CodexOwnedPickler(output, self._borrowed_record_trees).dump(value)
+        return output.getvalue()
+
+    def load_owned_value(self, value: bytes) -> object:
+        return _CodexOwnedUnpickler(io.BytesIO(value), self._borrowed_record_trees).load()
 
     def retain_records(self, records: Iterable[object], budget_bytes: int) -> list[object] | None:
         """Keep ``records`` in memory while they fit ``budget_bytes``, else spool them all.
@@ -341,7 +383,7 @@ class _CodexLookaheadIndex:
         row = self.connection.execute(
             "SELECT envelope FROM codex_resolved WHERE record_index = ?", (record_index,)
         ).fetchone()
-        return pickle.loads(row[0]) if row is not None else None
+        return cast(_CodexExecEnvelope, self.load_owned_value(row[0])) if row is not None else None
 
     def add_workdir(self, value: str) -> None:
         self.connection.execute("INSERT OR IGNORE INTO codex_workdirs VALUES (?)", (_sql_key(value),))
@@ -3414,7 +3456,7 @@ class _CodexLookaheadObserver:
                     "INSERT INTO codex_items VALUES (?, ?, ?, ?)",
                     (
                         record_index,
-                        pickle.dumps(_reduced_code_mode_item(executed), protocol=pickle.HIGHEST_PROTOCOL),
+                        index_store.dump_owned_value(_reduced_code_mode_item(executed)),
                         self._open_call_index,
                         self._last_call_index,
                     ),
@@ -3455,7 +3497,7 @@ class _CodexLookaheadObserver:
                     record_index,
                     _sql_key(tool_id) if tool_id is not None else None,
                     occurrence,
-                    pickle.dumps(envelope, protocol=pickle.HIGHEST_PROTOCOL),
+                    index_store.dump_owned_value(envelope),
                 ),
             )
             self._open_call_index = record_index
@@ -3476,7 +3518,7 @@ class _CodexLookaheadObserver:
                         record_index,
                         _sql_key(tool_id),
                         index_store.occurrence("output", tool_id),
-                        pickle.dumps(inner, protocol=pickle.HIGHEST_PROTOCOL),
+                        index_store.dump_owned_value(inner),
                     ),
                 )
 
@@ -3510,7 +3552,7 @@ def _resolve_codex_lookahead(index_store: _CodexLookaheadIndex) -> _CodexLookahe
     for call_index, envelope_blob in connection.execute(
         "SELECT record_index, envelope FROM codex_calls ORDER BY record_index"
     ):
-        envelope = pickle.loads(envelope_blob)
+        envelope = cast(_CodexExecEnvelope, index_store.load_owned_value(envelope_blob))
         for child_index, child in enumerate(envelope.children):
             connection.execute(
                 "INSERT INTO codex_slots(slot, call_index, child_index, registry_type, command) VALUES (?, ?, ?, ?, ?)",
@@ -3527,7 +3569,7 @@ def _resolve_codex_lookahead(index_store: _CodexLookaheadIndex) -> _CodexLookahe
     for item_order, item_blob, open_index, last_index in connection.execute(
         "SELECT item_order, item, open_call_index, last_call_index FROM codex_items ORDER BY item_order"
     ):
-        executed = pickle.loads(item_blob)
+        executed = cast(dict[str, object], index_store.load_owned_value(item_blob))
         compatible = _CODE_MODE_ITEM_CHILD_TYPES[str(executed.get("type") or "")]
         chosen: tuple[int, int, int] | None = None
         for command in _code_mode_item_commands(executed):
@@ -3559,7 +3601,7 @@ def _resolve_codex_lookahead(index_store: _CodexLookaheadIndex) -> _CodexLookahe
     for call_index, tool_id, occurrence, envelope_blob in connection.execute(
         "SELECT record_index, tool_id, occurrence, envelope FROM codex_calls ORDER BY record_index"
     ):
-        envelope = pickle.loads(envelope_blob)
+        envelope = cast(_CodexExecEnvelope, index_store.load_owned_value(envelope_blob))
         output_index = None
         if tool_id is not None:
             output_row = connection.execute(
@@ -3568,7 +3610,7 @@ def _resolve_codex_lookahead(index_store: _CodexLookaheadIndex) -> _CodexLookahe
             ).fetchone()
             if output_row is not None:
                 output_index, output_blob = output_row
-                output_record = pickle.loads(output_blob)
+                output_record = cast(dict[str, object], index_store.load_owned_value(output_blob))
                 output = output_record.get("output")
                 if output is None:
                     output = output_record.get("tools")
@@ -3579,21 +3621,21 @@ def _resolve_codex_lookahead(index_store: _CodexLookaheadIndex) -> _CodexLookahe
                     results=_code_mode_child_results(output, child_count=len(envelope.children)),
                 )
         matched = {
-            child_index: pickle.loads(item_blob)
+            child_index: cast(dict[str, object], index_store.load_owned_value(item_blob))
             for child_index, item_blob in connection.execute(
                 "SELECT child_index, item FROM codex_matched WHERE call_index = ? ORDER BY child_index",
                 (call_index,),
             )
         }
         appended = [
-            pickle.loads(item_blob)
+            cast(dict[str, object], index_store.load_owned_value(item_blob))
             for (item_blob,) in connection.execute(
                 "SELECT item FROM codex_appended WHERE call_index = ? ORDER BY item_order",
                 (call_index,),
             )
         ]
         resolved = _apply_code_mode_item_evidence(envelope, matched, appended)
-        resolved_blob = pickle.dumps(resolved, protocol=pickle.HIGHEST_PROTOCOL)
+        resolved_blob = index_store.dump_owned_value(resolved)
         connection.execute("INSERT INTO codex_resolved VALUES (?, ?)", (call_index, resolved_blob))
         if output_index is not None:
             connection.execute("INSERT INTO codex_resolved VALUES (?, ?)", (output_index, resolved_blob))
