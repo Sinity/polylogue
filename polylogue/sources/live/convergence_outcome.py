@@ -51,7 +51,13 @@ def record_convergence_outcomes(
     for path, debts in outcomes:
         writes = tuple(
             ConvergenceDebtWrite(
-                debt.stage, "source_path", str(path), debt.error, debt.deferred, attempted=debt.attempted
+                debt.stage,
+                "source_path",
+                str(path),
+                debt.error,
+                debt.deferred,
+                attempted=debt.attempted,
+                retry_promptly=debt.retry_promptly,
             )
             for debt in debts
         )

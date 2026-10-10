@@ -6,10 +6,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
+from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
 from polylogue.storage.frontier_inspection import (
     inspect_prepared_raw_authority_frontier,
 )
+from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
 
 if TYPE_CHECKING:
     from polylogue.core.compute import BoundedComputeAdapter
@@ -36,9 +37,14 @@ def make_raw_frontier_inspection_stage(db_path: Path, *, compute_adapter: Bounde
     def execute(_path: Path) -> StageExecuteReturn:
         # The caller's run_convergence_sync supplies the real exclusive worker
         # and original stage bridge. This factory supplies no new kernel.
-        return inspect_prepared_raw_authority_frontier(
-            root, input_demand=compute_adapter.amend_current_input_demand
-        ).healthy
+        try:
+            return inspect_prepared_raw_authority_frontier(
+                root, input_demand=compute_adapter.amend_current_input_demand
+            ).healthy
+        except ReferenceSealStaleError:
+            # Nothing stale is published. The next ordinary pass prepares from
+            # current authority rather than backing off a failed operation.
+            return StageExecutionResult(success=False, stale_preparation=True)
 
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         return True if not paths else execute(paths[0])

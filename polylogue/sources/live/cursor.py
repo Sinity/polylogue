@@ -27,6 +27,7 @@ from polylogue.logging import get_logger
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 from polylogue.sources.live.convergence_debt_retry import (
     convergence_debt_retry_at,
+    parse_retry_datetime,
     retry_is_future,
     same_pending_convergence_debt,
 )
@@ -189,6 +190,7 @@ class ConvergenceDebtWrite:
     deferred: bool = False
     materializer_version: str | None = None
     attempted: bool = True
+    retry_promptly: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -789,6 +791,7 @@ class CursorStore:
         materializer_version: str | None,
         now: str,
         deferred: bool = False,
+        retry_promptly: bool = False,
     ) -> None:
         """Read the current debt row and write the updated one inside ONE
         connection/transaction (``BEGIN IMMEDIATE`` before the read), so a
@@ -811,6 +814,7 @@ class CursorStore:
                     now=now,
                     deferred=deferred,
                     attempted=True,
+                    retry_promptly=retry_promptly,
                 )
 
         if not best_effort_cursor_write("archive ops convergence debt sync", write):
@@ -833,8 +837,11 @@ class CursorStore:
         now: str,
         deferred: bool,
         attempted: bool,
+        retry_promptly: bool = False,
     ) -> None:
         """Apply one debt transition inside the caller's locked transaction."""
+        if retry_promptly and not deferred:
+            raise ValueError("prompt convergence retry requires deferred debt")
         now_ms = _required_epoch_ms(now)
         row = conn.execute(
             """
@@ -858,18 +865,37 @@ class CursorStore:
             subject_type=subject_type,
             subject_id=subject_id,
             archive_root=self._db_path.parent,
+            retry_promptly=retry_promptly,
         )
-        if row is not None and same_pending_convergence_debt(
-            row[1],
-            row[2],
-            status=row[3],
-            error=error,
-            deferred=deferred,
-            now=now,
-            retry_at=retry_at,
+        existing_retry = parse_retry_datetime(row[1]) if row is not None else None
+        if (
+            retry_promptly
+            and row is not None
+            and row[3] == "deferred"
+            and row[2] == error
+            and retry_is_future(row[1], now=now)
+            and existing_retry is not None
+            and existing_retry <= retry_at
+        ):
+            # Reobserving this pending stage cannot postpone its eligibility.
+            return
+        if (
+            not retry_promptly
+            and row is not None
+            and same_pending_convergence_debt(
+                row[1],
+                row[2],
+                status=row[3],
+                error=error,
+                deferred=deferred,
+                now=now,
+                retry_at=retry_at,
+            )
         ):
             return
-        status_only_transition = row is not None and row[2] == error and row[3] != expected_status
+        status_only_transition = (
+            not retry_promptly and row is not None and row[2] == error and row[3] != expected_status
+        )
         attempts_delta = (
             0
             if status_only_transition or (row is not None and retry_is_future(row[1], now=now) and row[2] == error)
@@ -884,6 +910,7 @@ class CursorStore:
                 subject_type=subject_type,
                 subject_id=subject_id,
                 archive_root=self._db_path.parent,
+                retry_promptly=retry_promptly,
             )
         add_archive_convergence_debt(
             conn,
@@ -938,6 +965,7 @@ class CursorStore:
                             materializer_version=debt_write.materializer_version,
                             now=now,
                             deferred=debt_write.deferred,
+                            retry_promptly=debt_write.retry_promptly,
                             attempted=debt_write.attempted,
                         )
 
@@ -1869,6 +1897,7 @@ class CursorStore:
         error: str | None = None,
         materializer_version: str | None = None,
         deferred: bool = False,
+        retry_promptly: bool = False,
     ) -> None:
         """Record derived convergence debt without marking source ingest failed.
 
@@ -1876,7 +1905,10 @@ class CursorStore:
         deliberate bounded-backpressure deferral (a ``false_means_pending``
         convergence stage, or an explicit "deferred to preserve writer
         availability" policy choice) rather than a genuine check/execute
-        failure -- it drives whether the row lands as
+        failure. A typed stale preparation uses ``retry_promptly`` to keep
+        the existing periodic cadence rather than exponential failure delay.
+        This classification is supplied by the evaluated stage, never inferred
+        from stored error text. ``deferred`` drives whether the row lands as
         ``convergence_debt.status = 'deferred'`` (excluded from
         failure-count alerting) or ``'failed'``.
         """
@@ -1889,6 +1921,7 @@ class CursorStore:
             materializer_version=materializer_version,
             now=now,
             deferred=deferred,
+            retry_promptly=retry_promptly,
         )
 
     def clear_convergence_debt_under_prefix(

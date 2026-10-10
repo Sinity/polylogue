@@ -425,7 +425,7 @@ def test_frontier_fallback_exception_records_failed_debt_except_cancellation(
     bounded_compute_adapter: BoundedComputeAdapter,
     failure_kind: str,
 ) -> None:
-    """An exception from the actual inspection factory keeps canonical backoff."""
+    """Stale preparation is pending; I/O fails and cancellation escapes."""
     from polylogue.core.compute import DaemonOperationCancelled
     from polylogue.operations import raw_frontier_inspection
     from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
@@ -445,16 +445,21 @@ def test_frontier_fallback_exception_records_failed_debt_except_cancellation(
 
     monkeypatch.setattr(raw_frontier_inspection, "frontier_coverage_for_archive", lambda _root: {})
     monkeypatch.setattr(raw_frontier_inspection, "inspect_prepared_raw_authority_frontier", fail_inspection)
-    with pytest.raises(type(failure)) as raised:
+    if failure_kind == "stale_seal":
         daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
-    assert raised.value is failure
+    else:
+        with pytest.raises(type(failure)) as raised:
+            daemon_cli._drain_convergence_debt_and_archive(
+                archive / "index.db", compute_adapter=bounded_compute_adapter
+            )
+        assert raised.value is failure
     cursor = CursorStore(archive / "index.db", initialize=False)
     debt = cursor.list_convergence_debt(stage="raw_frontier_inspection")
     if failure_kind == "cancelled":
         assert debt == []
     else:
         assert len(debt) == 1
-        assert debt[0].status == "failed"
+        assert debt[0].status == ("deferred" if failure_kind == "stale_seal" else "failed")
         assert cursor.list_convergence_debt(stage="raw_frontier_inspection", retry_due_only=True) == []
         daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
         assert executions == 1
@@ -558,3 +563,117 @@ def test_archive_discovery_keeps_existing_stage_retry_ownership(
     daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
     assert len(stage.executions) == int(due)
     assert len(_rows(archive)) == int(not (due and converges))
+
+
+@pytest.mark.parametrize("historical_failure", [False, True])
+def test_stale_frontier_preparation_retries_on_cadence_after_restart(
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    historical_failure: bool,
+) -> None:
+    """Fresh preparation, not failed-work backoff, owns a stale frontier retry."""
+    from datetime import UTC, datetime, timedelta, tzinfo
+    from types import SimpleNamespace
+    from typing import Self
+
+    from polylogue.operations import raw_frontier_inspection
+    from polylogue.sources.live import convergence_debt_retry
+    from polylogue.sources.live import cursor as cursor_module
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    class Clock(datetime):
+        current = datetime(2030, 1, 1, tzinfo=UTC)
+
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> Self:
+            del tz
+            return cls.fromtimestamp(cls.current.timestamp(), tz=UTC)
+
+    for module in (daemon_cli, cursor_module, convergence_debt_retry):
+        monkeypatch.setattr(module, "datetime", Clock)
+    monkeypatch.setattr("polylogue.daemon.cli.time.time", lambda: Clock.current.timestamp())
+    executions = 0
+
+    def inspect(*_args: object, **_kwargs: object) -> object:
+        nonlocal executions
+        executions += 1
+        if executions <= 3:
+            raise ReferenceSealStaleError("neutral journal changed before publication")
+        return SimpleNamespace(healthy=True)
+
+    monkeypatch.setattr(raw_frontier_inspection, "frontier_coverage_for_archive", lambda _root: {})
+    monkeypatch.setattr(raw_frontier_inspection, "inspect_prepared_raw_authority_frontier", inspect)
+    stage = raw_frontier_inspection.make_raw_frontier_inspection_stage(
+        archive / "index.db", compute_adapter=bounded_compute_adapter
+    )
+    monkeypatch.setattr(
+        "polylogue.daemon.convergence_stages.make_default_convergence_stages", lambda _db, **_kwargs: (stage,)
+    )
+    if historical_failure:
+        # A preexisting failed row is not classified from its stored text.
+        cursor = CursorStore(archive / "index.db")
+        for delay in (60, 120, 240):
+            cursor.record_convergence_debt(
+                stage=stage.name,
+                subject_type="source_path",
+                subject_id=str(archive / "index.db"),
+                error="neutral historical failure",
+            )
+            historical_debt = cursor.list_convergence_debt(stage=stage.name)[0]
+            assert historical_debt.status == "failed" and historical_debt.next_retry_at is not None
+            assert datetime.fromisoformat(historical_debt.next_retry_at) == Clock.current + timedelta(seconds=delay)
+            Clock.current += timedelta(seconds=delay)
+    for attempt in range(1, 4):
+        daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
+        assert executions == attempt
+        # A reconstructed store reads the persisted schedule; no in-memory retry owner.
+        cursor = CursorStore(archive / "index.db", initialize=False)
+        debt = cursor.list_convergence_debt(stage=stage.name)
+        assert len(debt) == 1 and debt[0].status == "deferred"
+        assert debt[0].next_retry_at is not None
+        assert datetime.fromisoformat(debt[0].next_retry_at) == Clock.current + timedelta(seconds=60)
+        daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
+        assert executions == attempt
+        Clock.current += timedelta(seconds=60)
+    daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert executions == 4
+    assert CursorStore(archive / "index.db", initialize=False).list_convergence_debt(stage=stage.name) == []
+
+
+def test_stale_preparation_debt_keeps_its_stage_attribution(
+    archive: Path, monkeypatch: pytest.MonkeyPatch, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
+    from polylogue.daemon.convergence import DaemonConverger
+    from polylogue.operations import raw_frontier_inspection
+    from polylogue.sources.live.convergence_debt import convergence_debt_from_states
+    from polylogue.sources.live.convergence_outcome import record_convergence_outcomes
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    def stale(*_args: object, **_kwargs: object) -> object:
+        raise ReferenceSealStaleError("neutral changed input")
+
+    def io(_path: Path) -> bool:
+        raise OSError("neutral unrelated I/O")
+
+    monkeypatch.setattr(raw_frontier_inspection, "frontier_coverage_for_archive", lambda _root: {})
+    monkeypatch.setattr(raw_frontier_inspection, "inspect_prepared_raw_authority_frontier", stale)
+    stages = (
+        raw_frontier_inspection.make_raw_frontier_inspection_stage(
+            archive / "index.db", compute_adapter=bounded_compute_adapter
+        ),
+        ConvergenceStage("neutral_io", "neutral", lambda _path: True, io, writer_admission="bridged"),
+    )
+    path = archive / "neutral.jsonl"
+    states, _ = DaemonConverger(stages=stages).converge_batch((path,))
+    debts = convergence_debt_from_states((path,), states)
+    by_stage = {debt.stage: debt for debt in debts}
+    assert by_stage["raw_frontier_inspection"].retry_promptly
+    assert by_stage["raw_frontier_inspection"].error == "stage state: stale"
+    assert not by_stage["neutral_io"].retry_promptly
+    assert by_stage["neutral_io"].error == "neutral unrelated I/O"
+    cursor = CursorStore(archive / "index.db")
+    record_convergence_outcomes(cursor, ((path, debts),))
+    stored = {debt.stage: debt for debt in cursor.list_convergence_debt()}
+    assert stored["raw_frontier_inspection"].status == "deferred"
+    assert stored["neutral_io"].status == "failed"

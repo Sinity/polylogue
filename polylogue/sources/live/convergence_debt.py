@@ -14,13 +14,14 @@ class ConvergenceDebt:
     error: str | None = None
     # True when this row reflects a stage's deliberate bounded-backpressure
     # deferral (``ConvergenceStage.false_means_pending``) rather than a
-    # genuine check/execute failure.
+    # genuine check/execute failure. Stale preparation also remains pending.
     # Drives ``convergence_debt.status`` ("deferred" vs "failed") so daemon
     # health/alerting doesn't mistake normal backpressure for breakage.
     deferred: bool = False
     # NOT_RUN observes existing work without executing the stage. Repeated
     # observations must not postpone its retry or count as another attempt.
     attempted: bool = True
+    retry_promptly: bool = False
 
 
 def debt_by_path(debts: Iterable[ConvergenceDebt]) -> dict[Path, tuple[ConvergenceDebt, ...]]:
@@ -48,7 +49,7 @@ def convergence_debt_from_states(paths: Iterable[Path], states: object) -> list[
 
 
 #: Stage states that mean "work still owed" without meaning "something broke".
-_DEFERRED_STAGE_STATES = frozenset({"pending", "not_run"})
+_DEFERRED_STAGE_STATES = frozenset({"pending", "not_run", "stale"})
 
 
 def stage_state_value(value: object) -> str:
@@ -65,7 +66,9 @@ def is_deferred_stage_state(value: object) -> bool:
     behind an unfinished barrier stage. ``StageState.NOT_RUN`` is the third:
     a whole-archive stage that a deliberately narrowed batch pass did not
     execute. None of the three is an error, so debt rows carrying these
-    states should read as "deferred", not "failed".
+    states should read as "deferred", not "failed". ``StageState.STALE``
+    records an expected changed-authority refusal and retries on ordinary
+    cadence, rather than a growing failure delay.
     """
     return stage_state_value(value) in _DEFERRED_STAGE_STATES
 
@@ -84,9 +87,14 @@ def convergence_debt_from_state(path: Path, state: object) -> list[ConvergenceDe
             ConvergenceDebt(
                 path=path,
                 stage=str(stage_name),
-                error=optional_error(last_error) or f"stage state: {state_value}",
+                error=(
+                    "stage state: stale"
+                    if state_value == "stale"
+                    else optional_error(last_error) or f"stage state: {state_value}"
+                ),
                 deferred=state_value in _DEFERRED_STAGE_STATES,
                 attempted=state_value != "not_run",
+                retry_promptly=state_value == "stale",
             )
         )
     if not debts:
