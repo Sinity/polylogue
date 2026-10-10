@@ -560,14 +560,14 @@ of dropping content silently.
 
 Use the declared `dev_loop_proof` AgentCTL operation when changing receiver, extension, or provider adapters from a branch. It binds the proof to a managed checkout; the Polylogue child selects its own loopback API and receiver ports and isolates XDG configuration. The proof checks the shared-Chrome control boundary with one owned `agentbrowser` target, proves receiver authentication and deterministic provider capture, then reports archive and API convergence through the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start, wait, and result commands.
 
-The declared `live_provider_proof` route currently refuses with
-`provider_target_isolation_unavailable` before starting a receiver or loading
-an extension. A second full runtime would register content scripts on operator
-provider tabs before its automatic-capture pause; that pause does not establish
-owned-target custody. Restoring this proof requires scoped script registration
-and provider-target authority. The page-only `dev_loop_proof` exercises native
-transport without registering background workers or provider content scripts.
-
+The declared `live_provider_proof` uses a separate key/ID, independently named
+native host and neutral receiver. It binds exact owned provider windows before
+loading the runtime, registers no static content scripts, and restricts
+browser effects to those admitted documents. Automatic and explicit capture
+share that authority; the operator's extension and fixed native manifest are
+untouched. Its artifact proof binds the selected native identity and exact
+admitted bytes, while archive convergence remains outside this route. See
+[`dev-loop.md`](dev-loop.md) for inputs and lifecycle ownership.
 
 ## Current residual map for #1824 / #1847
 

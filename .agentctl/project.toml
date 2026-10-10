@@ -136,7 +136,7 @@ exec = ["python", "-m", "devtools.live_provider_proof_service", "--json"]
 pool = "interactive"
 result = "json"
 cache = "none"
-timeout_seconds = 180
+timeout_seconds = 0
 
 [packets.defaults]
 backend = "claude"
