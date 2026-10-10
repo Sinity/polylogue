@@ -6,6 +6,7 @@ export function createOwnedTargetCleanup({
   control,
   targetId,
   processLike = process,
+  afterClose = async () => {},
 }) {
   let cleanupPromise = null;
   let signalReceived = false;
@@ -18,7 +19,7 @@ export function createOwnedTargetCleanup({
 
   const close = () => {
     if (cleanupPromise === null) {
-      cleanupPromise = Promise.resolve().then(() => control(["close", targetId]));
+      cleanupPromise = Promise.resolve().then(() => control(["close", targetId])).finally(afterClose);
     }
     return cleanupPromise;
   };

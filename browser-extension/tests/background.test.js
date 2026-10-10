@@ -123,7 +123,6 @@ function installChromeMock(storagePatch = {}) {
   const generation = ++mockGeneration;
   const live = () => generation === mockGeneration;
   stored = {
-    receiverAuthToken: "token-1",
     receiverBaseUrl: "http://127.0.0.1:8875",
     ...storagePatch,
   };
@@ -924,7 +923,7 @@ describe("background receiver diagnostics", () => {
     expect(response.receiver_request_id).toBe("receiver-request-1");
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/browser-captures");
-    expect(fetchCalls[0].options.headers.Authorization).toBe("Bearer token-1");
+    expect(fetchCalls[0].options.headers.Authorization).toBeUndefined();
     expect(fetchCalls[0].options.headers["Content-Type"]).toBe("application/json");
     expect(fetchCalls[0].options.headers["X-Request-ID"]).toMatch(/^polylogue-ext-/);
     expect(fetchCalls[0].options.headers["X-Polylogue-Extension-Contract"])
@@ -2382,6 +2381,11 @@ describe("background receiver diagnostics", () => {
       providerWorkCalls += 1;
       throw new Error("unexpected_provider_work");
     });
+    // Settle initialization with no provider document, then test the concrete
+    // receiver refusal on the separate recovery route with its document present.
+    tabs = [];
+    await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+    tabs = failure === "missing_tab" ? [] : existingTabs;
     let discoveryCalls = 0;
     let releaseDiscovery;
     globalThis.fetch = vi.fn(async (url, options = {}) => {
@@ -2397,7 +2401,7 @@ describe("background receiver diagnostics", () => {
         if (body.intent_key) return captureJobFixtureResponse(url, options);
         if (body.provider !== "chatgpt") return responseJson({ jobs: [] });
         discoveryCalls += 1;
-        if (failure === "receiver_refusal" && discoveryCalls <= 2) return responseJson({ error: "unavailable" }, { ok: false, status: 503 });
+        if (failure === "receiver_refusal" && discoveryCalls === 1) return responseJson({ error: "unavailable" }, { ok: false, status: 503 });
         await new Promise(resolve => { releaseDiscovery = resolve; });
         return responseJson({ jobs: [{
           job_id: "receiver-recovered-job", provider: "chatgpt", scope: body.scope,
@@ -2413,15 +2417,14 @@ describe("background receiver diagnostics", () => {
       return captureJobFixtureResponse(url, options) || responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
     expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: true, jobs: [] });
-    // Initialization performs discovery and its first unavailable-provider retry.
-    // Keep both refused so the next status owns the suspended retry.
-    expect(discoveryCalls).toBe(failure === "missing_tab" ? 0 : 2);
+    // The first post-initialization retry refuses; the next status owns the suspended retry.
+    expect(discoveryCalls).toBe(failure === "missing_tab" ? 0 : 1);
     tabs = existingTabs;
     const first = sendRuntimeMessage({ type: "polylogue.backfill.status" });
     await vi.waitFor(() => expect(releaseDiscovery).toBeTypeOf("function"));
     const second = sendRuntimeMessage({ type: "polylogue.backfill.status" });
     await new Promise(resolve => globalThis.setTimeout(resolve, 0));
-    expect(discoveryCalls).toBe(failure === "missing_tab" ? 1 : 3);
+    expect(discoveryCalls).toBe(failure === "missing_tab" ? 1 : 2);
     releaseDiscovery();
     for (const status of await Promise.all([first, second])) {
       expect(status).toMatchObject({ ok: true, jobs: [expect.objectContaining({
@@ -2429,7 +2432,7 @@ describe("background receiver diagnostics", () => {
       })] });
     }
     await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-    expect(discoveryCalls).toBe(failure === "missing_tab" ? 1 : 3);
+    expect(discoveryCalls).toBe(failure === "missing_tab" ? 1 : 2);
     expect(providerWorkCalls).toBe(0);
     const scopedCalls = fetchCalls.filter(call => new globalThis.URL(call.url).pathname === "/v1/capture-jobs/discover");
     expect(scopedCalls.every(call => !call.options.body.includes(accountHandle))).toBe(true);
@@ -4772,6 +4775,24 @@ describe("ambient capture status", () => {
 });
 
 describe("receiver health probe", () => {
+  it.each([
+    ["receiver_identity_mismatch", "pairing_mismatch", "mismatch"],
+    ["receiver_authentication_failed", "unauthorized", "unauthorized"],
+  ])("classifies native %s without transferring a credential", async (code, status, state) => {
+    await loadBackground({ receiverAuthToken: "neutral-retired", neutralUnrelatedSetting: "preserved", polylogueReceiverPairing: {
+      receiver_id: "neutral-original", api_schema: "polylogue-browser-capture/v1", state: "online",
+    } });
+    globalThis.fetch = vi.fn(async (_url, init) => {
+      expect(init.receiverId).toBe("neutral-original");
+      expect(init.headers.Authorization).toBeUndefined();
+      throw new Error(code);
+    });
+    const result = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
+    expect(result).toMatchObject({ ok: false, status, detail: code, pairing: { state, receiver_id: "neutral-original" } });
+    expect(globalThis.fetch).toHaveBeenCalledOnce();
+    expect(stored.receiverAuthToken).toBeUndefined();
+    expect(stored.neutralUnrelatedSetting).toBe("preserved");
+  });
   beforeEach(async () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -4803,72 +4824,6 @@ describe("receiver health probe", () => {
       },
     });
     expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/status");
-  });
-
-  it("refreshes a rejected credential through the native host at most once per health check", async () => {
-    // The receiver keeps rejecting even the freshly bootstrapped token (it was
-    // started with an explicit token other than the persisted one). Before the
-    // bound, every 401 re-bootstrapped and re-probed forever; the mock stops
-    // answering after three launches so that regression fails on the count
-    // instead of hanging.
-    const sendNativeMessage = vi.fn(async () => (
-      sendNativeMessage.mock.calls.length > 3
-        ? { ok: false, error: "test_recursion_guard" }
-        : { ok: true, auth_token: "minted-token", receiver_id: "rx-native", api_schema: "polylogue-browser-capture/v1" }
-    ));
-    globalThis.chrome.runtime.sendNativeMessage = sendNativeMessage;
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, authorization: options.headers?.Authorization || null });
-      return responseJson({ ok: false, error: "unauthorized" }, { ok: false, status: 401 });
-    });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
-
-    expect(response).toMatchObject({ ok: true, status: "unauthorized", detail: "unauthorized" });
-    expect(sendNativeMessage).toHaveBeenCalledTimes(1);
-    expect(fetchCalls.map((call) => [call.url, call.authorization])).toEqual([
-      ["http://127.0.0.1:8875/v1/status", "Bearer token-1"],
-      ["http://127.0.0.1:8875/v1/status", "Bearer minted-token"],
-    ]);
-  });
-
-  it("does not launch the native host again for a credential it just bootstrapped", async () => {
-    await loadBackground({ receiverAuthToken: "" });
-    const sendNativeMessage = vi.fn(async () => (
-      sendNativeMessage.mock.calls.length > 3
-        ? { ok: false, error: "test_recursion_guard" }
-        : { ok: true, auth_token: "minted-token", receiver_id: "rx-native", api_schema: "polylogue-browser-capture/v1" }
-    ));
-    globalThis.chrome.runtime.sendNativeMessage = sendNativeMessage;
-    globalThis.fetch = vi.fn(async (url) => {
-      fetchCalls.push({ url });
-      return responseJson({ ok: false, error: "unauthorized" }, { ok: false, status: 401 });
-    });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
-
-    expect(response).toMatchObject({ ok: true, status: "unauthorized" });
-    expect(sendNativeMessage).toHaveBeenCalledTimes(1);
-    expect(fetchCalls.filter((call) => String(call.url).endsWith("/v1/status"))).toHaveLength(1);
-  });
-
-  it("reports a fresh profile as offline when the native host finds no receiver", async () => {
-    await loadBackground({ receiverAuthToken: "" });
-    globalThis.chrome.runtime.sendNativeMessage = vi.fn(async () => ({
-      ok: false,
-      error: "receiver_unreachable",
-      receiver_id: "rx-native",
-    }));
-    globalThis.fetch = vi.fn(async (url) => {
-      fetchCalls.push({ url });
-      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
-    });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
-
-    expect(response).toMatchObject({ ok: false, status: "unreachable", detail: "receiver_unreachable" });
-    expect(stored.receiverAuthToken).toBe("");
-    expect(fetchCalls).toEqual([]);
   });
 
   it("preflights paired writes and reuses the short trusted-identity cache", async () => {
@@ -5063,8 +5018,7 @@ describe("receiver health probe", () => {
     await sendRuntimeMessage({
       type: "polylogue.configureReceiver",
       receiverBaseUrl: "http://127.0.0.1:8876",
-      receiverAuthToken: "token-1",
-    });
+      });
 
     expect(stored.polylogueReceiverPairing).toMatchObject({ dev_override: true });
 
@@ -5073,8 +5027,7 @@ describe("receiver health probe", () => {
     await sendRuntimeMessage({
       type: "polylogue.configureReceiver",
       receiverBaseUrl: "http://127.0.0.1:8765",
-      receiverAuthToken: "token-1",
-    });
+      });
 
     expect(stored.polylogueReceiverPairing).toMatchObject({ dev_override: false });
   });
@@ -5091,8 +5044,7 @@ describe("receiver health probe", () => {
     const response = await sendRuntimeMessage({
       type: "polylogue.configureReceiver",
       receiverBaseUrl: "http://127.0.0.1:8766",
-      receiverAuthToken: "token-1",
-    });
+      });
 
     expect(response).toMatchObject({ ok: false, error: "receiver_origin_not_permitted" });
     expect(stored.receiverBaseUrl).toBe(before);
@@ -5105,35 +5057,10 @@ describe("receiver health probe", () => {
     const response = await sendRuntimeMessage({
       type: "polylogue.configureReceiver",
       receiverBaseUrl: "http://127.0.0.1:8766",
-      receiverAuthToken: "token-1",
-    });
+      });
 
     expect(response).toMatchObject({ ok: true });
     expect(stored.receiverBaseUrl).toBe("http://127.0.0.1:8766");
-  });
-
-  it.each([undefined, false])("pairing reset credential refresh obeys explicit policy %s", async (policy) => {
-    const sendNativeMessage = vi.fn(async () => ({ ok: true, auth_token: "minted-token", receiver_id: "rx-native", api_schema: "polylogue-browser-capture/v1" }));
-    globalThis.chrome.runtime.sendNativeMessage = sendNativeMessage;
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, authorization: options.headers?.Authorization || null });
-      return responseJson({ ok: false, error: "unauthorized" }, { ok: false, status: 401 });
-    });
-    const response = await sendRuntimeMessage({ type: "polylogue.receiverPairing.reset", ...(policy === undefined ? {} : { allow_credential_refresh: policy }) });
-    expect(response.health).toMatchObject({ status: "unauthorized", detail: "unauthorized" });
-    expect(sendNativeMessage).toHaveBeenCalledTimes(policy === false ? 0 : 1);
-    expect(fetchCalls.map(call => call.url)).toEqual(Array(policy === false ? 1 : 2).fill("http://127.0.0.1:8875/v1/status"));
-    expect(stored.receiverBaseUrl).toBe("http://127.0.0.1:8875");
-  });
-
-  it("pairing reset credential refresh refusal also prevents missing-token bootstrap", async () => {
-    await loadBackground({ receiverAuthToken: "" });
-    globalThis.chrome.runtime.sendNativeMessage = vi.fn();
-    globalThis.fetch = vi.fn();
-    const response = await sendRuntimeMessage({ type: "polylogue.receiverPairing.reset", allow_credential_refresh: false });
-    expect(response.health).toMatchObject({ status: "unauthorized", detail: "receiver_auth_missing" });
-    expect(globalThis.chrome.runtime.sendNativeMessage).not.toHaveBeenCalled();
-    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("resets only the pairing key and preserves pending work", async () => {
@@ -5166,17 +5093,6 @@ describe("receiver health probe", () => {
     expect(await (await staging.file(prepared.ref)).text()).toBe(body);
   });
 
-  it("keeps a missing receiver token local without probing the receiver", async () => {
-    await loadBackground({ receiverAuthToken: "" });
-    globalThis.fetch = vi.fn(async () => responseJson({ ok: false, error: "unauthorized" }));
-
-    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
-
-    expect(response).toMatchObject({ ok: true, status: "unauthorized", detail: "receiver_auth_missing" });
-    expect(response.receiver_request_id).toBeUndefined();
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
   it("reports the receiver as unreachable when the fetch itself fails", async () => {
     globalThis.fetch = vi.fn(async () => {
       throw new TypeError("Failed to fetch");
@@ -5200,70 +5116,6 @@ describe("receiver health probe", () => {
     const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
 
     expect(response).toMatchObject({ ok: false, status: "unreachable", detail: "non_json_response" });
-  });
-});
-
-describe("pairing-code bootstrap (polylogue-gnie)", () => {
-  beforeEach(async () => {
-    vi.restoreAllMocks();
-    vi.useRealTimers();
-    // A fresh install has no bearer token configured -- that is exactly the
-    // state this flow exists to fix.
-    await loadBackground({ receiverAuthToken: "" });
-  });
-
-  it("exchanges a valid pairing code for the bearer token without an Authorization header", async () => {
-    globalThis.fetch = vi.fn(async (url, options) => {
-      fetchCalls.push({ url, options });
-      if (String(url).endsWith("/v1/pairing/redeem")) {
-        return responseJson({ ok: true, auth_token: "minted-token", receiver_id: "rx-fresh" });
-      }
-      if (String(url).endsWith("/v1/status")) {
-        return responseJson({ ok: true, api_schema: "polylogue-browser-capture/v1", receiver_id: "rx-fresh" });
-      }
-      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
-    });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.pairWithCode", code: "ABCD1234" });
-
-    expect(response.ok).toBe(true);
-    expect(stored.receiverAuthToken).toBe("minted-token");
-    const redeemCall = fetchCalls.find((call) => String(call.url).endsWith("/v1/pairing/redeem"));
-    expect(redeemCall).toBeDefined();
-    expect(JSON.parse(redeemCall.options.body)).toEqual({ code: "ABCD1234" });
-    expect(redeemCall.options.headers.Authorization).toBeUndefined();
-  });
-
-  it("does not store a token when the receiver rejects the code", async () => {
-    globalThis.fetch = vi.fn(async (url) => {
-      fetchCalls.push({ url });
-      return responseJson({ ok: false, error: "pairing_code_rejected" }, { ok: false, status: 401 });
-    });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.pairWithCode", code: "WRONGCOD" });
-
-    expect(response).toMatchObject({ ok: false, error: "pairing_code_rejected" });
-    expect(stored.receiverAuthToken).toBe("");
-  });
-
-  it("rejects an empty code locally without a network call", async () => {
-    globalThis.fetch = vi.fn();
-
-    const response = await sendRuntimeMessage({ type: "polylogue.pairWithCode", code: "   " });
-
-    expect(response).toMatchObject({ ok: false, error: "pairing_code_required" });
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
-  it("reports the fetch failure when the receiver is unreachable", async () => {
-    globalThis.fetch = vi.fn(async () => {
-      throw new TypeError("Failed to fetch");
-    });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.pairWithCode", code: "ABCD1234" });
-
-    expect(response).toMatchObject({ ok: false, error: "Failed to fetch" });
-    expect(stored.receiverAuthToken).toBe("");
   });
 });
 

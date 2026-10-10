@@ -404,15 +404,21 @@ console.log(JSON.stringify({ calls, result }));
 def test_shared_chrome_node_workflow_closes_only_its_returned_target() -> None:
     program = """
 import { runSharedChromeControlWorkflow } from './scripts/dev_loop_shared_chrome_proof.mjs';
-
 const calls = [];
+const id = 'p'.repeat(32);
+const url = `chrome-extension://${id}/proof.html`;
 const control = async (args) => {
   calls.push(args);
-  if (args[0] === 'agent-window') return { id: 'A'.repeat(32), url: 'about:blank', parked: true, workspace: 'agentbrowser', show_with: 'F7' };
+  if (args[0] === 'load-extension') return { id };
+  if (args[0] === 'agent-window') return { id: 'A'.repeat(32), url, parked: true, workspace: 'agentbrowser', show_with: 'F7' };
   if (args[0] === 'close' && args[1] !== 'A'.repeat(32)) throw new Error('attempted to close an unowned target');
   return {};
 };
-const result = await runSharedChromeControlWorkflow({ extensionRoot: '.', control });
+const result = await runSharedChromeControlWorkflow({ extensionRoot: '.', control,
+  verifyBinding: () => ({ extension_id: id }), browserVersion: async () => ({}),
+  connect: async () => ({ call: async (method, args) => calls.push([method, args]), close: () => calls.push(['browser.close']) }),
+  connectPage: async () => ({ close: () => calls.push(['page.close']) }),
+  verifyInstalled: async () => ({ id }), evaluate: async () => ({ upload_bytes: 1048593 }) });
 console.log(JSON.stringify({ calls, result }));
 """
     completed = subprocess.run(
@@ -422,36 +428,44 @@ console.log(JSON.stringify({ calls, result }));
         capture_output=True,
         check=False,
     )
-
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {
-        "calls": [
-            ["status"],
-            ["load-extension", "--path", "."],
-            ["agent-window", "--url", "about:blank"],
-            ["close", "A" * 32],
-        ],
-        "result": {"ok": True, "shared_chrome": {"extension_loaded": True, "target_closed": True}},
+    payload = json.loads(completed.stdout)
+    assert payload["calls"] == [
+        ["status"],
+        ["load-extension", "--path", "."],
+        ["agent-window", "--url", f"chrome-extension://{'p' * 32}/proof.html"],
+        ["close", "A" * 32],
+        ["page.close"],
+        ["Extensions.uninstall", {"id": "p" * 32}],
+        ["browser.close"],
+    ]
+    assert payload["result"] == {
+        "ok": True,
+        "shared_chrome": {"extension_loaded": True, "target_closed": True, "extension_unloaded": True},
+        "installed_extension": {"id": "p" * 32},
+        "proof_binding": {"extension_id": "p" * 32},
+        "native_transport": {"upload_bytes": 1048593},
     }
 
 
 def test_shared_chrome_node_workflow_rejects_special_workspace_and_reclaims_target() -> None:
     program = """
 import { runSharedChromeControlWorkflow } from './scripts/dev_loop_shared_chrome_proof.mjs';
-
 const calls = [];
+const id = 'p'.repeat(32);
 const control = async (args) => {
   calls.push(args);
-  if (args[0] === 'agent-window') return { id: 'B'.repeat(32), url: 'about:blank', parked: true, workspace: ['special', 'agentbrowser'].join(':'), show_with: 'F7' };
+  if (args[0] === 'load-extension') return { id };
+  if (args[0] === 'agent-window') return { id: 'B'.repeat(32), url: `chrome-extension://${id}/proof.html`, parked: true, workspace: ['special', 'agentbrowser'].join(':'), show_with: 'F7' };
   if (args[0] === 'close' && args[1] !== 'B'.repeat(32)) throw new Error('attempted to close an unowned target');
   return {};
 };
 try {
-  await runSharedChromeControlWorkflow({ extensionRoot: '.', control });
+  await runSharedChromeControlWorkflow({ extensionRoot: '.', control,
+    verifyBinding: () => ({ extension_id: id }), browserVersion: async () => ({}),
+    connect: async () => ({ call: async (method, args) => calls.push([method, args]), close: () => calls.push(['browser.close']) }) });
   process.exitCode = 2;
-} catch (error) {
-  console.log(JSON.stringify({ message: error.message, calls }));
-}
+} catch (error) { console.log(JSON.stringify({ message: error.message, calls })); }
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "--eval", program],
@@ -460,11 +474,14 @@ try {
         capture_output=True,
         check=False,
     )
-
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
     assert "agentbrowser" in payload["message"]
-    assert payload["calls"][-1] == ["close", "B" * 32]
+    assert payload["calls"][-3:] == [
+        ["close", "B" * 32],
+        ["Extensions.uninstall", {"id": "p" * 32}],
+        ["browser.close"],
+    ]
 
 
 def test_anti_vacuity_owned_target_cleanup_waits_for_a_slow_close() -> None:

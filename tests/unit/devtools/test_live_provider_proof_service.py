@@ -446,7 +446,7 @@ const payload = { result: { ok: true, envelope, captureResult: { artifact_ref: '
 assert.equal(providerSummary(provider, payload).ok, true);
 for (const changed of [ { ...envelope, capture_summary: {} }, { ...envelope, receiver_native: {} }, { ...envelope, session: { ...envelope.session, provider_session_id: 'other' } } ]) assert.equal(providerSummary(provider, { result: { ...payload.result, envelope: changed } }).ok, false);
 assert.equal(providerSummary(provider, { result: { ...payload.result, captureResult: {} } }).ok, false);
-let values = { receiverBaseUrl: 'http://127.0.0.1:8765', receiverAuthToken: 'old-token', polylogueReceiverPairing: { receiver_id: 'old' }, queue: ['retained'] };
+let values = { receiverBaseUrl: 'http://127.0.0.1:8765', polylogueReceiverPairing: { receiver_id: 'old' }, queue: ['retained'] };
 const previous = structuredClone(values);
 const messages = [];
 const chrome = { permissions: { contains: async () => true }, storage: { local: {
@@ -462,24 +462,24 @@ const client = { call: async (_method, params) => {
   try { return { result: { value: await vm.runInNewContext(params.expression, { chrome }) } }; }
   catch (error) { return { exceptionDetails: { text: 'Uncaught (in promise)', exception: { description: `Error: ${error.message}\n at private synthetic stack` } } }; }
 } };
-const admitted = await configureReceiver(client, 'http://127.0.0.1:49001', 'proof-token');
+const admitted = await configureReceiver(client, 'http://127.0.0.1:49001');
 assert.equal(admitted.receiver_id, 'proof');
 assert.deepEqual(messages.map(message => message.type), ['polylogue.ambient.configure', 'polylogue.configureReceiver', 'polylogue.receiverPairing.reset']);
-await restoreReceiverConfiguration(client, previous, { baseUrl: 'http://127.0.0.1:49001', token: 'proof-token', receiverId: 'proof', revision: admitted.revision });
+await restoreReceiverConfiguration(client, previous, { baseUrl: 'http://127.0.0.1:49001', receiverId: 'proof', revision: admitted.revision });
 assert.deepEqual(JSON.parse(JSON.stringify(values)), previous);
 assert.equal(messages.at(-1).automatic_capture_enabled, false);
-assert.equal(messages.find(message => message.type === 'polylogue.receiverPairing.reset').allow_credential_refresh, false);
+assert(!messages.some(message => Object.hasOwn(message, 'receiverAuthToken')));
 // A setup fault before any config mutation restores only the unchanged snapshot.
-await restoreReceiverConfiguration(client, previous, { baseUrl: 'http://127.0.0.1:49001', token: 'proof-token', receiverId: null, revision: null });
+await restoreReceiverConfiguration(client, previous, { baseUrl: 'http://127.0.0.1:49001', receiverId: null, revision: null });
 values.receiverBaseUrl = 'http://concurrent';
-await assert.rejects(restoreReceiverConfiguration(client, previous, { baseUrl: 'http://127.0.0.1:49001', token: 'proof-token', receiverId: 'proof', revision: admitted.revision }));
+await assert.rejects(restoreReceiverConfiguration(client, previous, { baseUrl: 'http://127.0.0.1:49001', receiverId: 'proof', revision: admitted.revision }));
 assert.equal(values.receiverBaseUrl, 'http://concurrent');
-values = { receiverBaseUrl: 'http://127.0.0.1:49001', receiverAuthToken: 'proof-token', polylogueReceiverPairing: { receiver_id: 'proof' }, queue: ['retained'] };
-const readmitted = await configureReceiver(client, 'http://127.0.0.1:49001', 'proof-token');
-await restoreReceiverConfiguration(client, {}, { baseUrl: 'http://127.0.0.1:49001', token: 'proof-token', receiverId: 'proof', revision: readmitted.revision });
+values = { receiverBaseUrl: 'http://127.0.0.1:49001', polylogueReceiverPairing: { receiver_id: 'proof' }, queue: ['retained'] };
+const readmitted = await configureReceiver(client, 'http://127.0.0.1:49001');
+await restoreReceiverConfiguration(client, {}, { baseUrl: 'http://127.0.0.1:49001', receiverId: 'proof', revision: readmitted.revision });
 assert.deepEqual(values, { queue: ['retained'] });
 chrome.runtime.sendMessage = async () => ({ ok: true, health: { status: 'offline' }, pairing: null });
-await assert.rejects(configureReceiver(client, 'http://127.0.0.1:49001', 'proof-token'));
+await assert.rejects(configureReceiver(client, 'http://127.0.0.1:49001'));
 console.log(JSON.stringify({ ok: true }));
 """
     result = subprocess.run(
@@ -550,7 +550,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { proofReceiverCustody, requestProofHostPermission, cleanupProofReceiver, installShutdownCleanup } from './scripts/live_provider_proof.mjs';
 const events = [];
-const previous = { receiverBaseUrl: 'http://127.0.0.1:8765', receiverAuthToken: 'old-token' };
+const previous = { receiverBaseUrl: 'http://127.0.0.1:8765' };
 const values = { ...previous, queue: ['retained'] };
 let finishGrant;
 let granted = false;
@@ -562,7 +562,7 @@ const chrome = { storage: { local: {
   // The extension restores only an unchanged receiver (this proof never
   // applied its owned configuration); a foreign change is refused.
   if (message?.type === 'polylogue.configureReceiver' && message.restore) {
-    const unchanged = ['receiverBaseUrl', 'receiverAuthToken'].every(key => values[key] === message.restore.previous[key]);
+    const unchanged = ['receiverBaseUrl', 'polylogueReceiverPairing'].every(key => values[key] === message.restore.previous[key]);
     return unchanged ? { ok: true } : { ok: false, error: 'proof_receiver_configuration_changed' };
   }
   return { ok: true };
@@ -589,7 +589,7 @@ const client = { call: async (_method, params) => {
   try { return { result: { value: await vm.runInNewContext(params.expression, { chrome }) } }; }
   catch (error) { return { exceptionDetails: { text: 'Uncaught (in promise)', exception: { description: `Error: ${error.message}\n at private synthetic stack` } } }; }
 } };
-const owner = proofReceiverCustody(client, previous, { baseUrl: 'http://proof', token: 'proof-token', receiverId: null }, 'http://proof/*');
+const owner = proofReceiverCustody(client, previous, { baseUrl: 'http://proof', receiverId: null }, 'http://proof/*');
 installShutdownCleanup();
 const grant = requestProofHostPermission(owner, async () => {
   events.push('prompt_restore_started');
@@ -853,7 +853,7 @@ const client = { call: async (_method, params) => {
   try { return { result: { value: await vm.runInNewContext(params.expression, { chrome }) } }; }
   catch (error) { return { exceptionDetails: { text: 'Uncaught (in promise)', exception: { description: `Error: ${error.message}\n at private synthetic stack` } } }; }
 } };
-const owner = proofReceiverCustody(client, {}, { baseUrl: 'http://127.0.0.1:49001', token: 'synthetic-token', receiverId: null }, 'http://127.0.0.1:49001/*');
+const owner = proofReceiverCustody(client, {}, { baseUrl: 'http://127.0.0.1:49001', receiverId: null }, 'http://127.0.0.1:49001/*');
 await requestProofHostPermission(owner).catch(() => undefined);
 await configureProofReceiver(owner).catch(() => undefined);
 let failure;
@@ -865,7 +865,7 @@ assert.equal(report.cleanup.permission, fault === 'grant' ? 'unknown' : fault ==
 assert.equal(report.cleanup.mutations, ['grant', 'configure'].includes(fault) ? 'failed' : 'settled');
 assert.equal(events.includes('remove'), fault !== 'grant');
 assert.equal(Boolean(failure), fault !== 'none');
-if (fault === 'configure') assert.equal(values.receiverAuthToken, 'synthetic-token');
+if (fault === 'configure') assert.equal(values.receiverBaseUrl, 'http://127.0.0.1:49001');
 console.log(JSON.stringify(report));
 """
     )
@@ -995,7 +995,7 @@ def test_private_proof_scope_owns_actual_status_and_attestation_identity_until_s
                 attestation = json.loads(response.read())
                 assert attestation["receiver_id"] == status["receiver_id"]
                 assert attestation["proof"] == receiver.receiver_attestation_proof(
-                    token, status["receiver_id"], challenge
+                    token, status["receiver_id"], challenge, attestation["endpoint"]
                 )
                 identity = root / "browser-capture-receiver-id"
                 assert identity.read_text() == status["receiver_id"]
@@ -1080,7 +1080,7 @@ const client = { call: async (_method, params) => {
   try { return { result: { value: await vm.runInNewContext(params.expression, { chrome }) } }; }
   catch (error) { return { exceptionDetails: { text: 'Uncaught (in promise)', exception: { description: `Error: ${error.message}\n at private synthetic stack` } } }; }
 } };
-const owner = proofReceiverCustody(client, {}, { baseUrl: 'http://127.0.0.1:49001', token: 'synthetic-token', receiverId: null }, 'http://127.0.0.1:49001/*');
+const owner = proofReceiverCustody(client, {}, { baseUrl: 'http://127.0.0.1:49001', receiverId: null }, 'http://127.0.0.1:49001/*');
 let primary;
 try { await inProofPhase('receiver_pairing', () => configureProofReceiver(owner)); } catch (error) { primary = error; }
 assert(primary);
@@ -1322,7 +1322,7 @@ const client = {call: async (method, params) => {
   assert(!params.expression.includes('developerPrivate'));
   return {result: {value: await vm.runInNewContext(params.expression, {chrome})}};
 }};
-const owner = proofReceiverCustody(client, {}, {baseUrl: 'http://proof', token: 'synthetic', receiverId: null}, origin);
+const owner = proofReceiverCustody(client, {}, {baseUrl: 'http://proof', receiverId: null}, origin);
 let primary;
 try {await inProofPhase('permission_grant', () => requestProofHostPermission(owner));} catch(error) {primary=error;}
 const newlyGranted = !options.existing && options.granted === true;
@@ -1375,7 +1375,7 @@ const chrome = { permissions: {
  remove: async () => removed,
 }, storage: {local: {get: async () => ({}), set: async () => {}, remove: async () => {}}}, runtime: {sendMessage: async () => ({ok: true})}};
 const client = {call: async (_method, params) => ({result: {value: await vm.runInNewContext(params.expression, {chrome})}})};
-const owner = proofReceiverCustody(client, {}, {baseUrl: 'http://proof', token: 'synthetic', receiverId: null}, 'http://proof/*');
+const owner = proofReceiverCustody(client, {}, {baseUrl: 'http://proof', receiverId: null}, 'http://proof/*');
 await requestProofHostPermission(owner);
 let failure;
 try {await cleanupProofReceiver(owner);} catch(error) {failure=error;}
@@ -1410,7 +1410,7 @@ const chrome = {permissions: {
  request: async () => {requests++;return true;},
 }, storage: {local: {get: async () => ({}), set: async () => {}, remove: async () => {}}}, runtime: {sendMessage: async () => ({ok: true})}};
 const client = {call: async (_method, params) => ({result: {value: await vm.runInNewContext(params.expression, {chrome})}})};
-const owner = proofReceiverCustody(client, {}, {baseUrl: 'http://proof', token: 'synthetic', receiverId: null}, 'http://proof/*');
+const owner = proofReceiverCustody(client, {}, {baseUrl: 'http://proof', receiverId: null}, 'http://proof/*');
 const request = requestProofHostPermission(owner);
 const cleanup = cleanupProofReceiver(owner);
 releaseCheck();
@@ -1789,7 +1789,7 @@ const chrome={storage:{local:{get:async()=>values,set:async()=>{},remove:async()
  remove:async()=>{events.push('remove');active=false;return true;},
 }};
 const client={call:async(_method,{expression})=>({result:{value:await vm.runInNewContext(expression,{chrome})}})};
-const owner=proofReceiverCustody(client,{}, {baseUrl:'http://127.0.0.1:49000',token:'synthetic',receiverId:null}, 'http://127.0.0.1:49000/*');
+const owner=proofReceiverCustody(client,{}, {baseUrl:'http://127.0.0.1:49000',receiverId:null}, 'http://127.0.0.1:49000/*');
 let restored; let entered;
 const enteredPromise=new Promise(resolve=>entered=resolve);
 const grant=requestProofHostPermission(owner,()=>{events.push('restore_started');entered();return new Promise(resolve=>restored=()=>{events.push('restore_settled');resolve();});});
@@ -1824,7 +1824,7 @@ def test_prompt_restore_failure_preserves_original_permission_refusal() -> None:
 import assert from 'node:assert/strict';
 import { proofReceiverCustody, requestProofHostPermission, proofFailureReport } from './scripts/live_provider_proof.mjs';
 const client={call:async(_method,{expression})=>({result:{value:false}})};
-const owner=proofReceiverCustody(client,{}, {baseUrl:'http://127.0.0.1:49000',token:'synthetic',receiverId:null}, 'http://127.0.0.1:49000/*');
+const owner=proofReceiverCustody(client,{}, {baseUrl:'http://127.0.0.1:49000',receiverId:null}, 'http://127.0.0.1:49000/*');
 let primary;
 try{await requestProofHostPermission(owner,async()=>{throw new Error('proof_desktop_unavailable');});}catch(error){primary=error;}
 assert.ok(primary instanceof AggregateError);

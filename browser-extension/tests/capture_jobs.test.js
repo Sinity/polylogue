@@ -29,9 +29,17 @@ describe("CaptureJob extension recovery", () => {
       });
       await expect(client.scopeNamespace()).resolves.toBe("cjs1:worker-global");
       expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBe("Bearer receiver-token");
     } finally {
       globalThis.fetch = previousFetch;
     }
+  });
+
+  it("omits Authorization for an injected native transport", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true }) }));
+    const client = new CaptureJobClient({ baseUrl: "http://receiver", fetchImpl });
+    await client.request("POST", "/v1/capture-jobs", { neutral: true });
+    expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBeUndefined();
   });
 
   it("derives opaque scopes and rehydrates after chrome.storage cache loss", async () => {

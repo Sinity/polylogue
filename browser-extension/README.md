@@ -7,7 +7,7 @@ backfills.
 ## Install
 
 There are three supported installation paths. All of them require the
-local receiver to be running first.
+local receiver and registered Polylogue native host.
 
 ### 1. Start the receiver
 
@@ -15,7 +15,11 @@ local receiver to be running first.
 polylogued browser-capture serve
 ```
 
-Keep this terminal open. The receiver runs on `http://127.0.0.1:8765`.
+Register the native host with `polylogued browser-capture native-host install --extension-id <id>`
+for the extension ID shown by the browser. Receiver requests pass through
+this host over one authenticated socket; the extension stores no bearer token
+and has no manual token or pairing-code entry. Keep the receiver terminal open.
+The receiver runs on `http://127.0.0.1:8765`.
 For normal long-running use, `polylogued run` starts the receiver together
 with live source watching.
 
@@ -102,7 +106,9 @@ agentctl job start polylogue dev_loop_proof --workspace <workspace-id>
 agentctl job result <job-id>
 ```
 
-The proof starts a temporary receiver, proves unauthenticated rejection, asks Sinnix's shared-Chrome control boundary to load the unpacked extension and create one parked `agentbrowser` window, submits deterministic ChatGPT and Claude captures through the receiver, and verifies archive/API convergence without cookies or raw turn text in its bounded result. It never launches Chrome or Chromium, creates a browser profile, or allocates a private CDP port. AgentCTL owns process supervision, timeout, cancellation, and cleanup; the proof service selects its loopback receiver port. The shared-Chrome provider proof runs only through the declared `live_provider_proof` AgentCTL operation. It opens parked, proof-owned windows in the authenticated browser and does not create another Polylogue daemon lifecycle.
+The proof starts a temporary receiver and uses Sinnix's shared Chrome in one parked `agentbrowser` window. Its independently named native host runs with the neutral receiver's paths. A fresh extension key identifies a page-only proof artifact, with no background worker, provider content scripts, action, or host permissions. The artifact preserves the candidate's source resources except for the recorded native-host name substitution. Chrome's loaded resource hashes, extension ID, and version are checked against that artifact. The proof uploads more than 1 MiB, verifies exact streamed response bytes, and checks cancellation and receiver-identity refusal before removing its own page, extension, native manifest, and launcher.
+
+The page proof verifies Chrome's native transport. Production background and capture consumers are covered by the extension tests and the Node bridge to the actual native host; the page does not prove their automatic browser lifecycle. The deterministic receiver captures and archive/API convergence checks remain separate parts of the declared operation. It never launches Chrome, creates a browser profile, allocates another CDP port, changes the operator's native manifest, or captures operator tabs. AgentCTL owns supervision and cancellation. The separate `live_provider_proof` operation requires its own provider-capture scope and is not exercised by this neutral transport proof.
 
 ## Capture status, pairing, and ambient status
 

@@ -187,7 +187,6 @@ function fixedInputs() {
   return {
     extensionRoot: path.resolve(scriptDirectory, ".."),
     receiverBaseUrl: `http://127.0.0.1:${receiverPort}`,
-    receiverToken: requiredEnvironment("POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN"),
     conversations: JSON.parse(requiredEnvironment("POLYLOGUE_LIVE_PROVIDER_CONVERSATIONS")),
     timeoutMs: _WORKFLOW_TIMEOUT_MS,
     startupTimeoutMs: _STARTUP_TIMEOUT_MS,
@@ -471,7 +470,7 @@ export function closeOwnedProofWindows() {
   return targetSettlement;
 }
 
-function connectCdp(webSocketDebuggerUrl) {
+export function connectCdp(webSocketDebuggerUrl) {
   const socket = new globalThis.WebSocket(webSocketDebuggerUrl);
   const pending = new Map();
   let sequence = 0;
@@ -549,18 +548,18 @@ async function waitForExtensionWorker(extensionId, timeoutMs) {
 }
 
 export async function receiverConfiguration(client) {
-  return evaluateJson(client, "chrome.storage.local.get(['receiverBaseUrl', 'receiverAuthToken', 'polylogueReceiverPairing', 'polylogueAmbientSettings'])");
+  return evaluateJson(client, "chrome.storage.local.get(['receiverBaseUrl', 'polylogueReceiverPairing', 'polylogueAmbientSettings'])");
 }
 
-export async function configureReceiver(client, receiverBaseUrl, receiverToken) {
+export async function configureReceiver(client, receiverBaseUrl) {
   const outcome = await evaluateJson(client, `(async () => {
     const pause = await chrome.runtime.sendMessage({ type: "polylogue.ambient.configure", automatic_capture_enabled: false });
     if (!pause?.ok) throw new Error("proof_pause_failed");
-    const configured = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)}, receiverAuthToken: ${JSON.stringify(receiverToken)} });
+    const configured = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)} });
     if (!configured?.ok || !Number.isSafeInteger(configured.configurationRevision)) throw new Error(configured?.error === "receiver_origin_not_permitted" ? "proof_receiver_permission_refused" : "proof_receiver_configuration_failed");
     let revision = configured.configurationRevision;
     try {
-      const handshake = await chrome.runtime.sendMessage({ type: "polylogue.receiverPairing.reset", allow_credential_refresh: false, expectedConfigurationRevision: revision });
+      const handshake = await chrome.runtime.sendMessage({ type: "polylogue.receiverPairing.reset", expectedConfigurationRevision: revision });
       if (Number.isSafeInteger(handshake?.configurationRevision)) revision = handshake.configurationRevision;
       if (!handshake?.ok || handshake?.health?.status !== "ok" || !handshake?.pairing?.receiver_id || handshake.pairing.api_schema !== "polylogue-browser-capture/v1") return { ok: false, revision };
       return { ok: true, revision, receiver_id: handshake.pairing.receiver_id, api_schema: handshake.pairing.api_schema };
@@ -590,7 +589,7 @@ export async function restoreReceiverConfiguration(client, previous, owned) {
   })()`);
 }
 
-async function pageClient(targetId, timeoutMs) {
+export async function pageClient(targetId, timeoutMs) {
   const targets = await waitJson(`http://127.0.0.1:${_CDP_PORT}/json/list`, timeoutMs);
   const target = targets.find(item => item.id === targetId && item.type === "page");
   if (!target) throw new Error("owned proof page disappeared");
@@ -652,7 +651,7 @@ export function requestProofHostPermission(owner, afterSettlement = async () => 
 
 export function configureProofReceiver(owner) {
   if (owner.cleaning) throw new Error("proof_shutdown_requested");
-  owner.configuration = configureReceiver(owner.client, owner.owned.baseUrl, owner.owned.token)
+  owner.configuration = configureReceiver(owner.client, owner.owned.baseUrl)
     .then(handshake => { owner.owned.receiverId = handshake.receiver_id; owner.owned.revision = handshake.revision; return handshake; }, error => {
       if (Number.isSafeInteger(error.receiverConfigurationRevision)) owner.owned.revision = error.receiverConfigurationRevision;
       throw error;
@@ -688,8 +687,8 @@ export function cleanupProofReceiver(owner) {
   return owner.settlement;
 }
 
-async function verifyInstalledExtension(client, extensionRoot, extensionId, manifest) {
-  const files = ["manifest.json", ...readdirSync(path.join(extensionRoot, "src"), { recursive: true, withFileTypes: true })
+export async function verifyInstalledExtension(client, extensionRoot, extensionId, manifest, extraFiles = []) {
+  const files = ["manifest.json", ...extraFiles, ...readdirSync(path.join(extensionRoot, "src"), { recursive: true, withFileTypes: true })
     .filter(entry => entry.isFile()).map(entry => path.relative(extensionRoot, path.join(entry.parentPath, entry.name)))].sort();
   const expected = files.map(file => [file, createHash("sha256").update(readFileSync(path.join(extensionRoot, file))).digest("hex")]);
   const observed = await evaluateJson(client, `(async () => {
@@ -812,7 +811,7 @@ export async function settleProofCleanup(receiverOwner, failure) {
 async function runLiveProviderProof() {
   await inProofPhase("service_context", () => requireExpectedServiceContext());
   installShutdownCleanup();
-  const { extensionRoot, receiverBaseUrl, receiverToken, conversations, timeoutMs, startupTimeoutMs, interactiveWaitMs } = await inProofPhase("inputs", () => fixedInputs());
+  const { extensionRoot, receiverBaseUrl, conversations, timeoutMs, startupTimeoutMs, interactiveWaitMs } = await inProofPhase("inputs", () => fixedInputs());
   const deadline = Date.now() + timeoutMs;
   const remaining = (phase) => {
     requireProofRunning();
@@ -845,7 +844,7 @@ async function runLiveProviderProof() {
     const ownedPopup = await inProofPhase("popup_bind", () => bindProofPopup(popupClient, popupTarget, () => remaining("popup binding")));
     previousReceiverConfiguration = await inProofPhase("receiver_snapshot", () => receiverConfiguration(popupClient));
     receiverOwner = proofReceiverCustody(popupClient, previousReceiverConfiguration,
-      { baseUrl: receiverBaseUrl, token: receiverToken, receiverId: null },
+      { baseUrl: receiverBaseUrl, receiverId: null },
       origin);
     if (shutdownRequested) throw new Error("proof_shutdown_requested");
     const paused = await inProofPhase("pause", () => evaluateJson(popupClient, 'chrome.runtime.sendMessage({ type: "polylogue.ambient.configure", automatic_capture_enabled: false })'));

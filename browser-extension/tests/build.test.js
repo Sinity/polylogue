@@ -138,7 +138,6 @@ describe("build.mjs full archive emission", () => {
     // background.test.js's successful-capture fixtures do.
     let stored = {
       receiverBaseUrl: "http://127.0.0.1:8765",
-      receiverAuthToken: "token",
       polylogueReceiverPairing: {
         state: "online",
         receiver_id: "packaged-receiver",
@@ -213,6 +212,7 @@ describe("build.mjs full archive emission", () => {
     globalThis.IDBKeyRange = IDBKeyRange;
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { storage: memoryOriginStorage() } });
     globalThis.chrome = {
+      __polylogueNetwork: (...args) => globalThis.fetch(...args),
       action: { setBadgeText: vi.fn(), setBadgeBackgroundColor: vi.fn() },
       alarms: { create: vi.fn(), clear: vi.fn(), onAlarm: { addListener: vi.fn((listener) => { alarmListener = listener; }) } },
       runtime: {
@@ -559,7 +559,6 @@ describe("build.mjs full archive emission", () => {
       .toEqual(readFileSync(join(unpacked, "src", "background", "runtime.js")));
     stored = {
       receiverBaseUrl: "http://127.0.0.1:8765",
-      receiverAuthToken: "token",
       polylogueBackfillRecoveryCheckpoint: {
         version: 1,
         jobs: [{

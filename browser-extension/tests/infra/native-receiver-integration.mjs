@@ -10,16 +10,19 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { IndexedDbBackfillStore } from "../../src/backfill/storage.js";
 import { CaptureStaging } from "../../src/capture/staging.js";
 import { memoryOriginStorage } from "./capture-staging.js";
+import { nativeRuntime } from "./native-port.mjs";
+import { nativeFetch } from "../../src/background/native_fetch.js";
 
-const [baseUrl, token, fixture, provider, nativeId] = process.argv.slice(2);
+const [baseUrl, receiverId, commandJson, fixture, provider, nativeId] = process.argv.slice(2);
+const transport = nativeRuntime(JSON.parse(commandJson));
 globalThis.IDBKeyRange = IDBKeyRange;
 globalThis.indexedDB = new IDBFactory();
 const origin = memoryOriginStorage();
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: { storage: origin } });
 // The original runtime constructs its durable store when this module loads.
 const { startBackgroundRuntime } = await import("../../src/background/runtime.js");
-const status = await (await globalThis.fetch(`${baseUrl}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json();
-const values = { receiverBaseUrl: baseUrl, receiverAuthToken: token,
+const status = await (await nativeFetch(transport, `${baseUrl}/v1/status`, { receiverId })).json();
+const values = { receiverBaseUrl: baseUrl,
   polylogueReceiverPairing: { state: "online", receiver_id: status.receiver_id, api_schema: status.api_schema, endpoint: baseUrl } };
 const storageArea = (values) => ({
   async get(defaults) { return { ...defaults, ...values }; },
@@ -49,7 +52,7 @@ const adapters = {
       assetRequests += 1;
       return { ok: true, acquisition: { attachments: [], outcome: { failed: [{ status: "no_resolvable_source" }] } } };
     } },
-  network: async (url, options) => { calls.push({ path: new URL(url).pathname, method: options?.method || "GET" }); return globalThis.fetch(url, options); },
+  network: async (url, options) => { calls.push({ path: new URL(url).pathname, method: options?.method || "GET" }); return nativeFetch(transport, url, options); },
   now: () => Date.now(), log() {},
 };
 startBackgroundRuntime(adapters);

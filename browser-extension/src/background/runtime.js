@@ -58,7 +58,6 @@ const RECEIVER_API_SCHEMA = "polylogue-browser-capture/v1";
 const RECEIVER_PAIRING_KEY = "polylogueReceiverPairing";
 const RECEIVER_HEALTH_TIMEOUT_MS = 5000;
 const MISSION_INTELLIGENCE_TIMEOUT_MS = 7000;
-const NATIVE_BOOTSTRAP_HOST = "com.polylogue.browser_capture";
 const RECEIVER_TRUST_CACHE_MS = 10000;
 const AMBIENT_SETTINGS_KEY = "polylogueAmbientSettings";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
@@ -216,8 +215,7 @@ async function withExtensionInstanceAttribution(envelope, sender = null) {
 
 async function* commitCaptureJobsToReceiver(instanceId) {
   const settings = await receiverSettings();
-  if (!settings.authToken) throw new Error("capture_job_receiver_auth_required");
-  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local });
+  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
   for await (const job of captureStore.jobs()) {
     try {
       if (!/^h1:[A-Za-z0-9_-]{43}$/.test(job.account_scope || "")) throw new Error("capture_job_account_scope_unresolved");
@@ -285,8 +283,7 @@ function captureJobRetryState(job) {
 
 async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
   const settings = await receiverSettings();
-  if (!settings.authToken) return { successfulProviders: [], unavailableProviders: providers };
-  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local });
+  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
   const successfulProviders = [];
   const unavailableProviders = [];
   for (const provider of providers) {
@@ -426,8 +423,7 @@ async function startBackfill(request) {
   const pending = (async () => {
     const coordinator = await backfillCoordinator();
     const settings = await receiverSettings();
-    if (!settings.authToken) throw new Error("capture_job_receiver_auth_required");
-    const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local });
+    const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
     const handle = await providerAccountHandle(provider);
     if (!handle) throw new Error(`capture_job_identity_unavailable:${provider}`);
     const accountScope = await deriveAccountScope(await client.scopeNamespace(), provider, handle);
@@ -522,11 +518,9 @@ function injectionPlanForUrl(url) {
 
 async function receiverSettings() {
   const stored = await runtimeChrome.storage.local.get({
-    receiverAuthToken: "",
     receiverBaseUrl: DEFAULT_RECEIVER,
   });
   return {
-    authToken: String(stored.receiverAuthToken || ""),
     baseUrl: String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, ""),
   };
 }
@@ -562,7 +556,7 @@ async function receiverScopeIsCurrent(scope) {
   if (scope.revision !== receiverConfigurationRevision) return false;
   const current = await receiverSettings();
   return scope.revision === receiverConfigurationRevision
-    && current.baseUrl === scope.settings.baseUrl && current.authToken === scope.settings.authToken;
+    && current.baseUrl === scope.settings.baseUrl;
 }
 async function receiverHealthScope() {
   return serializeStorageMutation(async () => ({
@@ -573,15 +567,14 @@ async function receiverHealthScope() {
 }
 async function restoreReceiverSettings(previous, owned) {
   return serializeStorageMutation(async () => {
-    const keys = ["receiverBaseUrl", "receiverAuthToken", RECEIVER_PAIRING_KEY];
+    const keys = ["receiverBaseUrl", RECEIVER_PAIRING_KEY];
     if (!previous || typeof previous !== "object" || Array.isArray(previous)
-      || !owned || typeof owned.baseUrl !== "string" || typeof owned.token !== "string"
+      || !owned || typeof owned.baseUrl !== "string"
       || !(owned.receiverId === null || typeof owned.receiverId === "string")
       || !(owned.revision === null || (Number.isSafeInteger(owned.revision) && owned.revision >= 0))) {
       throw new Error("proof_receiver_configuration_changed");
     }
     if ((Object.hasOwn(previous, "receiverBaseUrl") && typeof previous.receiverBaseUrl !== "string")
-      || (Object.hasOwn(previous, "receiverAuthToken") && typeof previous.receiverAuthToken !== "string")
       || (Object.hasOwn(previous, RECEIVER_PAIRING_KEY) && previous[RECEIVER_PAIRING_KEY] !== null
         && (typeof previous[RECEIVER_PAIRING_KEY] !== "object" || Array.isArray(previous[RECEIVER_PAIRING_KEY])))) {
       throw new Error("proof_receiver_configuration_changed");
@@ -595,7 +588,7 @@ async function restoreReceiverSettings(previous, owned) {
       && JSON.stringify(current[key]) === JSON.stringify(previous[key]));
     if (unchanged) return { ...await receiverSettings(), configurationRevision: receiverConfigurationRevision };
     if (owned.revision !== receiverConfigurationRevision) throw new Error("proof_receiver_configuration_changed");
-    if (current.receiverBaseUrl !== owned.baseUrl || current.receiverAuthToken !== owned.token
+    if (current.receiverBaseUrl !== owned.baseUrl
       || (owned.receiverId !== null && current[RECEIVER_PAIRING_KEY]?.receiver_id !== owned.receiverId)) {
       throw new Error("proof_receiver_configuration_changed");
     }
@@ -611,9 +604,8 @@ async function restoreReceiverSettings(previous, owned) {
   });
 }
 
-async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "", expectedScope = null) {
+async function saveReceiverSettings(receiverBaseUrl) {
   return serializeStorageMutation(async () => {
-    if (expectedScope && !await receiverScopeIsCurrent(expectedScope)) return null;
     trustedReceiverHealthCache = null;
     const normalizedBaseUrl = String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "") || DEFAULT_RECEIVER;
     if (normalizedBaseUrl !== DEFAULT_RECEIVER && !(await loopbackOriginIsGranted(normalizedBaseUrl))) {
@@ -623,7 +615,6 @@ async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "", exp
     }
     receiverConfigurationRevision += 1;
     await runtimeChrome.storage.local.set({
-      receiverAuthToken: String(receiverAuthToken || ""),
       receiverBaseUrl: normalizedBaseUrl,
     });
     // An operator who explicitly types a non-canonical endpoint into settings
@@ -648,23 +639,8 @@ async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "", exp
       });
     }
     const settings = await receiverSettings();
-    return expectedScope ? { settings, revision: receiverConfigurationRevision } : { ...settings, configurationRevision: receiverConfigurationRevision };
+    return { ...settings, configurationRevision: receiverConfigurationRevision };
   });
-}
-
-async function bootstrapReceiverCredential(settings, expectedReceiverId, scope) {
-  if (!await receiverScopeIsCurrent(scope)) return { ok: false, error: "receiver_configuration_changed" };
-  if (!runtimeChrome.runtime?.sendNativeMessage) return { ok: false, error: "native_messaging_unavailable" };
-  try {
-    const result = await runtimeChrome.runtime.sendNativeMessage(NATIVE_BOOTSTRAP_HOST, { endpoint: settings.baseUrl, receiver_id: expectedReceiverId, extension_id: runtimeChrome.runtime.id });
-    if (!result?.ok || !result.auth_token || !result.receiver_id || !result.api_schema) return { ok: false, error: result?.error || "native_bootstrap_rejected" };
-    if (expectedReceiverId && result.receiver_id !== expectedReceiverId) return { ok: false, error: "receiver_pairing_mismatch" };
-    const configured = await saveReceiverSettings(settings.baseUrl, result.auth_token, scope);
-    if (!configured) return { ok: false, error: "receiver_configuration_changed" };
-    return { ...result, scope: configured };
-  } catch (error) {
-    return { ok: false, error: String(error?.message || error) };
-  }
 }
 
 async function storedReceiverPairing() {
@@ -1415,14 +1391,13 @@ async function loadCaptureQueueIntoCache() {
   return queue;
 }
 
-async function probeReceiverStatus(baseUrl, authToken = "") {
+async function probeReceiverStatus(baseUrl) {
   const requestId = buildReceiverRequestId();
   const controller = new globalThis.AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort("receiver_health_timeout"), RECEIVER_HEALTH_TIMEOUT_MS);
   await appendDebugLog({ stage: "receiver_request", method: "GET", path: "/v1/status", endpoint: baseUrl, request_id: requestId });
   try {
     const headers = { "X-Request-ID": requestId };
-    if (authToken) headers.Authorization = `Bearer ${authToken}`;
     const response = await runtimeNetwork(`${baseUrl}/v1/status`, { headers, signal: controller.signal });
     const body = await response.json().catch(() => null);
     const receiverRequestId = response.headers?.get?.("X-Request-ID") || requestId;
@@ -1454,103 +1429,13 @@ async function probeReceiverStatus(baseUrl, authToken = "") {
   }
 }
 
-// polylogue-gnie: exchange a short-lived one-time pairing code (minted via
-// `polylogued browser-capture pairing start`) for the receiver's bearer
-// token. Deliberately does NOT go through postJson/requestHeaders -- those
-// require an already-configured token (or ensureTrustedReceiver, which
-// requires an already-paired identity), both circular for a fresh install
-// that has neither yet. No Authorization header is sent; the code itself is
-// this route's one-time credential.
-async function redeemPairingCode(baseUrl, code) {
-  const requestId = buildReceiverRequestId();
-  const controller = new globalThis.AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort("pairing_redeem_timeout"), RECEIVER_HEALTH_TIMEOUT_MS);
-  await appendDebugLog({ stage: "receiver_request", method: "POST", path: "/v1/pairing/redeem", endpoint: baseUrl, request_id: requestId });
-  try {
-    const response = await runtimeNetwork(`${baseUrl}/v1/pairing/redeem`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Request-ID": requestId },
-      body: JSON.stringify({ code }),
-      signal: controller.signal,
-    });
-    const body = await response.json().catch(() => null);
-    const receiverRequestId = response.headers?.get?.("X-Request-ID") || requestId;
-    await appendDebugLog({
-      stage: "receiver_response",
-      method: "POST",
-      path: "/v1/pairing/redeem",
-      endpoint: baseUrl,
-      request_id: requestId,
-      receiver_request_id: receiverRequestId,
-      ok: response.ok,
-      status: response.status,
-    });
-    if (!response.ok || !body?.auth_token) {
-      return { ok: false, error: body?.error || `http_${response.status}`, receiverRequestId };
-    }
-    return { ok: true, authToken: body.auth_token, receiverId: body.receiver_id, receiverRequestId };
-  } catch (error) {
-    await appendDebugLog({
-      stage: "receiver_error",
-      method: "POST",
-      path: "/v1/pairing/redeem",
-      endpoint: baseUrl,
-      request_id: requestId,
-      error: String(error.message || error),
-    });
-    return { ok: false, error: String(error.message || error) };
-  } finally {
-    globalThis.clearTimeout(timeout);
-  }
-}
-
-async function pairWithCode(code) {
-  const trimmed = String(code || "").trim();
-  if (!trimmed) return { ok: false, error: "pairing_code_required" };
-  const scope = await receiverHealthScope();
-  const settings = scope.settings;
-  const result = await redeemPairingCode(settings.baseUrl, trimmed);
-  if (!result.ok) return result;
-  const configured = await saveReceiverSettings(settings.baseUrl, result.authToken, scope);
-  if (!configured) return { ok: false, error: "receiver_configuration_changed" };
-  // A code exchange is an explicit, just-completed pairing act -- confirm
-  // it against the receiver immediately rather than waiting for the next
-  // scheduled health check, but do not let a stale non-canonical endpoint
-  // silently fail over (same posture as an explicit settings save).
-  const health = await checkReceiverHealth({ allowCanonicalRecovery: false, expectedScope: configured });
-  return serializeStorageMutation(async () => {
-    if (!await receiverScopeIsCurrent(configured)) return { ok: false, error: "receiver_configuration_changed" };
-    return { ok: true, health, pairing: health.pairing || (await storedReceiverPairing()) };
-  });
-}
-
-async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredentialRefresh = true, expectedScope = null } = {}) {
+async function checkReceiverHealth({ allowCanonicalRecovery = true, expectedScope = null } = {}) {
   let scope = await receiverHealthScope();
   if (expectedScope && !await receiverScopeIsCurrent(expectedScope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint: scope.settings.baseUrl, pairing: null };
   const settings = scope.settings;
   const pairingBefore = scope.pairing;
 
-  // A fresh extension profile has no authority to probe an authenticated
-  // receiver. Keep that unpaired state local: repeatedly sending an empty
-  // request only creates receiver-side auth noise and cannot establish trust.
-  if (!settings.authToken) {
-    if (!allowCredentialRefresh) return { ok: true, status: "unauthorized", detail: "receiver_auth_missing", endpoint: settings.baseUrl, pairing: pairingBefore };
-    const bootstrap = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null, scope);
-    // The credential was just fetched; another native launch cannot improve it.
-    if (bootstrap.ok) return checkReceiverHealth({ allowCanonicalRecovery: false, allowCredentialRefresh: false, expectedScope: bootstrap.scope });
-    // The native host found nothing answering at the endpoint (a stopped
-    // daemon): that is an offline receiver, not a credential problem.
-    if (bootstrap.error === "receiver_unreachable") {
-      return { ok: false, status: "unreachable", detail: "receiver_unreachable", endpoint: settings.baseUrl, pairing: pairingBefore };
-    }
-    return { ok: true, status: "unauthorized", detail: bootstrap.error === "native_messaging_unavailable" ? "receiver_auth_missing" : (bootstrap.error || "receiver_auth_missing"), endpoint: settings.baseUrl, pairing: pairingBefore };
-  }
-
-  // A 401 may mean the stored credential is stale, so the native host is asked
-  // once for the current one. A second 401 is a real mismatch (e.g. a receiver
-  // run with an explicit token other than the persisted one): report it rather
-  // than re-bootstrapping forever, one native-host launch per round.
-  async function classifyProbe(endpoint, probe, recoveredFrom = null, allowCredentialRefresh = true) {
+  async function classifyProbe(endpoint, probe, recoveredFrom = null) {
     if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint, pairing: null };
     const body = probe.body;
     if (!body || typeof body !== "object") {
@@ -1564,13 +1449,6 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
       };
     }
     if (body.error === "unauthorized" || probe.response?.status === 401) {
-      if (allowCredentialRefresh) {
-        const refreshed = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null, scope);
-        if (refreshed.ok) {
-          scope = refreshed.scope;
-          return classifyProbe(settings.baseUrl, await probeReceiverStatus(settings.baseUrl, refreshed.auth_token), null, false);
-        }
-      }
       if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint, pairing: null };
       const pairing = pairingBefore
         ? await serializeStorageMutation(async () => await receiverScopeIsCurrent(scope) ? persistReceiverPairing({
@@ -1641,12 +1519,24 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
 
   let primaryFailure = null;
   try {
-    const primary = await probeReceiverStatus(settings.baseUrl, settings.authToken);
-    const classified = await classifyProbe(settings.baseUrl, primary, null, allowCredentialRefresh);
+    const primary = await probeReceiverStatus(settings.baseUrl);
+    const classified = await classifyProbe(settings.baseUrl, primary);
     if (classified.status !== "unreachable") return classified;
     primaryFailure = classified.detail || "receiver_unavailable";
   } catch (error) {
     primaryFailure = String(error.message || error);
+    if (["receiver_identity_mismatch", "receiver_authentication_failed"].includes(primaryFailure)) {
+      const mismatch = primaryFailure === "receiver_identity_mismatch";
+      const pairing = await serializeStorageMutation(async () => {
+        if (!await receiverScopeIsCurrent(scope)) return null;
+        trustedReceiverHealthCache = null;
+        return persistReceiverPairing({ ...pairingBefore, endpoint: settings.baseUrl,
+          state: mismatch ? "mismatch" : "unauthorized", last_error: primaryFailure,
+          checked_at: new Date().toISOString() });
+      });
+      if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint: settings.baseUrl, pairing: null };
+      return { ok: false, status: mismatch ? "pairing_mismatch" : "unauthorized", detail: primaryFailure, endpoint: settings.baseUrl, pairing };
+    }
   }
 
   if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint: settings.baseUrl, pairing: null };
@@ -1665,7 +1555,7 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
     && !pairingBefore?.dev_override
   ) {
     try {
-      const canonical = await probeReceiverStatus(DEFAULT_RECEIVER, settings.authToken);
+      const canonical = await probeReceiverStatus(DEFAULT_RECEIVER);
       const body = canonical.body;
       if (
         body?.ok === true
@@ -1873,10 +1763,8 @@ function buildReceiverRequestId() {
 }
 
 async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
-  const settings = await receiverSettings();
   const headers = {};
   if (hasBody) headers["Content-Type"] = "application/json";
-  if (settings.authToken) headers.Authorization = `Bearer ${settings.authToken}`;
   if (requestId) headers["X-Request-ID"] = requestId;
   headers["X-Polylogue-Extension-Contract"] = EXTENSION_CONTRACT_EPOCH;
   return headers;
@@ -1933,8 +1821,7 @@ async function prepareNativeCapture(capture, { rawRef, relatedRefs, queueContext
   progress("native_prepare", "BEGIN");
   await ensureTrustedReceiver();
   const settings = await receiverSettings();
-  if (!settings.authToken) throw new Error("capture_job_receiver_auth_required");
-  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
+  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
   client.nativeOwnerChanged = async (adopted) => {
     const retained = await captureStore.getCapture(capture.id);
     if (!retained) throw new Error("native_preparation_owner_missing");
@@ -2030,7 +1917,7 @@ async function publishNativeCapture(reference, recordRef, signal) {
   if (!capture || capture.state !== "ready" || capture.receiver_native.sha256 !== reference.sha256) throw new Error("native_final_artifact_conflict");
   if (capture.receiver_receipt) return capture.receiver_receipt;
   const settings = await receiverSettings();
-  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, fetchImpl: runtimeNetwork });
+  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, fetchImpl: runtimeNetwork });
   client.nativeOwnerChanged = async (adopted) => {
     const retained = await captureStore.getCapture(recordRef);
     if (!retained) throw new Error("native_preparation_owner_missing");
@@ -4041,7 +3928,11 @@ export function startBackgroundRuntime(adapters) {
   trustedReceiverHealthCache = null;
   cachedQueueLength = 0;
   runtimeChrome = adapters;
-  runtimeNetwork = adapters.network;
+  // Retire stored credentials without reading or transferring their value.
+  void runtimeChrome.storage.local.remove("receiverAuthToken");
+  runtimeNetwork = async (input, init = {}) => adapters.network(input, {
+    ...init, receiverId: (await storedReceiverPairing())?.receiver_id || null,
+  });
   captureStore = captureRetryStore;
   captureStaging = adapters.captureStaging || new CaptureStaging(globalThis.navigator?.storage, captureStore);
   runtimeWorkerId = globalThis.crypto.randomUUID();
@@ -4151,7 +4042,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         if (Object.hasOwn(message, "expectedConfigurationRevision") && !Number.isSafeInteger(message.expectedConfigurationRevision)) throw new Error("receiver_configuration_changed");
         reset = await clearReceiverPairing(message.expectedConfigurationRevision ?? null);
-        const health = await checkReceiverHealth({ allowCanonicalRecovery: false, allowCredentialRefresh: message.allow_credential_refresh !== false, expectedScope: reset });
+        const health = await checkReceiverHealth({ allowCanonicalRecovery: false, expectedScope: reset });
         sendResponse({ ok: true, health, pairing: health.pairing, configurationRevision: reset.revision });
       } catch (error) {
         sendResponse({ ok: false, error: error?.message || "receiver_pairing_reset_failed", configurationRevision: reset?.revision ?? null });
@@ -4214,16 +4105,12 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         settings = restoring
           ? await restoreReceiverSettings(message.restore.previous, message.restore.owned)
-          : await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
+          : await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER);
       } catch (error) {
         sendResponse({ ok: false, error: error?.message || "configure_receiver_failed" });
         return;
       }
-      sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, authConfigured: Boolean(settings.authToken), configurationRevision: settings.configurationRevision });
-      return;
-    }
-    if (message.type === "polylogue.pairWithCode") {
-      sendResponse(await pairWithCode(message.code));
+      sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, configurationRevision: settings.configurationRevision });
       return;
     }
     if (message.type === "polylogue.backfill.start") {
@@ -4532,7 +4419,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const job = await captureStore.assertJobExecution(message.queue_context.jobId, message.queue_context.owner, message.queue_context.generation);
           if (typeof message.account_handle !== "string" || !message.account_handle) throw new Error("capture_job_account_scope_unresolved");
           const settings = await receiverSettings();
-          const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local });
+          const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
           const observedScope = await deriveAccountScope(await client.scopeNamespace(), provider, message.account_handle);
           if (observedScope !== job.account_scope) throw new Error("capture_job_account_scope_mismatch");
         }

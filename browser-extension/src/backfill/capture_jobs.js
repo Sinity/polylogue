@@ -68,7 +68,7 @@ export class CaptureJobClient {
   async request(method, path, body, { headers = {}, signal = null, raw = false, stream = false, receipt = false } = {}) {
       const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.token}`, "X-Polylogue-Client-Protocol": String(CAPTURE_JOB_PROTOCOL), ...headers },
+        headers: { "Content-Type": "application/json", ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}), "X-Polylogue-Client-Protocol": String(CAPTURE_JOB_PROTOCOL), ...headers },
         ...(method === "GET" ? {} : { body: raw ? body : JSON.stringify(body) }),
         cache: "no-store",
         ...(signal ? { signal } : {}),

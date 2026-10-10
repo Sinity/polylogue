@@ -224,7 +224,7 @@ describe("shared operator status vocabulary", () => {
     expect(api.receiverPairingPresentation({ health: { status: "recovered", endpoint: "http://127.0.0.1:8765" } }).headline)
       .toBe("Receiver recovered");
     expect(api.receiverPairingPresentation({ health: { status: "unauthorized" } }).headline)
-      .toBe("Pairing token required");
+      .toBe("Receiver authentication failed");
     expect(api.receiverPairingPresentation({
       pairing: { state: "mismatch" },
       health: { status: "pairing_mismatch" },
@@ -257,7 +257,7 @@ describe("shared operator status vocabulary", () => {
     expect(pairingMismatch).toMatchObject({ kind: "auth_pairing_mismatch", actionId: "reset-pairing" });
 
     const unauthorized = api.computeAttention({ health: { status: "unauthorized" } });
-    expect(unauthorized).toMatchObject({ kind: "auth_pairing_mismatch", actionId: "receiver-token" });
+    expect(unauthorized).toMatchObject({ kind: "auth_pairing_mismatch", actionId: "receiver-url" });
 
     const unknownOutcome = api.computeAttention({
       browserActions: [

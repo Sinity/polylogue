@@ -108,7 +108,7 @@
         "The configured endpoint answered as a different receiver. Reset pairing only after verifying the local receiver.",
       );
     } else if (state.error === "unauthorized") {
-      status = withDetail(OPERATOR_STATUS.needs_attention, "The receiver requires its local pairing token.");
+      status = withDetail(OPERATOR_STATUS.needs_attention, "The native host could not authenticate the local receiver.");
       status.tone = "bad";
     } else if (state.online === false) {
       status = withDetail(OPERATOR_STATUS.receiver_offline);
@@ -197,8 +197,8 @@
       status,
       badge: ["bad", "needs attention"],
       archive: status.label,
-      headline: "Receiver requires its pairing token.",
-      detail: 'Run `polylogued browser-capture token show` and paste the value into “Receiver token”, then Save.',
+      headline: "Receiver authentication failed.",
+      detail: 'Check that the native host and receiver use the same local archive.',
     };
     if (state.online === false) {
       const lastSeen = state.receiver_pairing?.last_seen_at
@@ -490,7 +490,7 @@
     if (health?.status === "unauthorized") {
       return {
         status: { ...OPERATOR_STATUS.needs_attention, tone: "bad" },
-        headline: "Pairing token required",
+        headline: "Receiver authentication failed",
         detail: configuredUrl || pairing?.endpoint || "Local receiver",
       };
     }
@@ -560,9 +560,9 @@
       return {
         kind: "auth_pairing_mismatch",
         tone: "bad",
-        headline: "Receiver requires its pairing token",
-        detail: "Run `polylogued browser-capture token show` and paste the value into the receiver token field.",
-        actionId: "receiver-token",
+        headline: "Receiver authentication failed",
+        detail: "Check that the native host and receiver use the same local archive.",
+        actionId: "receiver-url",
         actionLabel: "Open receiver settings",
       };
     }
