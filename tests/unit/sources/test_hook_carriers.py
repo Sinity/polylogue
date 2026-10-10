@@ -278,6 +278,103 @@ def test_a_carrier_never_mints_a_session(tmp_path: Path, monkeypatch: pytest.Mon
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == carriers
 
 
+def test_hook_derivation_uses_literal_coordinate_range_across_revisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neighbour carriers cannot change a binding, even with LIKE metacharacters."""
+    import hashlib
+
+    from polylogue.operations.hook_event_derivation import discover_pending_hook_carriers
+    from polylogue.storage.derived.hook_events import HookEventsDerivation, carrier_identity
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    parent = carrier_path(spool_root, "codex").parent
+    parent.mkdir(parents=True, exist_ok=True)
+    selected = parent / "Case%_Ł.ndjson"
+    neighbours = [
+        parent / "case%_Ł.ndjson",
+        parent / "CaseXYŁ.ndjson",
+        parent / "Case%_Ł.ndjson-more.ndjson",
+        parent / "Case%_Ł.ndjso.ndjson",
+    ]
+
+    def append(path: Path, event_number: int) -> None:
+        append_carrier_line(
+            path,
+            validated_hook_record(
+                {
+                    "event_id": f"{event_number:032x}",
+                    "event_type": "PostToolUse",
+                    "session_id": "literal-coordinate-session",
+                    "timestamp": _TIMESTAMP,
+                    "provider": "codex",
+                    "payload": {"tool_name": "exec", "tool_output_preview": str(event_number)},
+                }
+            ),
+        )
+
+    append(selected, 1)
+    append(selected, 2)
+    assert materialize_hook_carriers(archive_root) == 2
+    derivation = HookEventsDerivation(archive_root)
+    frame = SimpleNamespace(
+        archive_root=archive_root,
+        recipe_version=lambda domain: derivation.recipe_version if domain == derivation.domain else None,
+    )
+    identity = carrier_identity(str(selected))
+
+    def binding_and_keys(expected_count: int) -> tuple[str, list[str]]:
+        with derivation._read() as conn:
+            # Independent expected selection uses literal Python prefix semantics.
+            rows = conn.execute(
+                "SELECT relative_path FROM hook_event_carriers WHERE source_id = ?",
+                (identity.source_id,),
+            ).fetchall()
+            expected = sorted(
+                str(row["relative_path"])
+                for row in rows
+                if str(row["relative_path"]).startswith(identity.relative_path + "#")
+            )
+            assert len(expected) == expected_count
+            raw_keys = [
+                str(row["raw_id"])
+                for row in conn.execute(
+                    "SELECT raw_id, hex(blob_hash) AS blob_hash FROM raw_sessions "
+                    "WHERE source_path = ? ORDER BY acquired_at_ms, rowid",
+                    (str(selected),),
+                )
+            ]
+            assert raw_keys
+            blob_hash = str(
+                conn.execute(
+                    "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?", (raw_keys[-1],)
+                ).fetchone()[0]
+            )
+            actual = derivation._binding(conn, identity, blob_hash)
+            assert (
+                actual
+                == hashlib.sha256(
+                    repr((blob_hash, identity.source_id, identity.relative_path, expected)).encode()
+                ).hexdigest()
+            )
+        assert set(derivation.inspect(frame, raw_keys).values()) == {"valid"}
+        return actual, raw_keys
+
+    original_binding, _ = binding_and_keys(2)
+    for number, neighbour in enumerate(neighbours, start=10):
+        append(neighbour, number)
+    assert materialize_hook_carriers(archive_root) == 6
+    assert binding_and_keys(2)[0] == original_binding
+
+    append(selected, 3)
+    assert acquire_hook_carriers(archive_root) == 1
+    assert discover_pending_hook_carriers(archive_root, 10)
+    assert materialize_acquired_hook_carriers(archive_root) == 7
+    new_binding, keys = binding_and_keys(3)
+    assert len(keys) == 2
+    assert new_binding != original_binding
+
+
 def test_concurrent_producers_never_interleave_a_line(tmp_path: Path) -> None:
     """200 concurrent producers append 200 whole, parseable lines.
 

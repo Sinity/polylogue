@@ -269,12 +269,14 @@ class HookEventsDerivation:
             # materialize. Reporting it stale forever would pin the traversal
             # on a key no publication can ever resolve.
             return "valid"
+        # Coordinates append "#" to the literal carrier path. The binary PK
+        # range selects that prefix without case folding or LIKE wildcards.
         recorded = {
             str(row["relative_path"]): (str(row["hook_event_id"]), bytes(row["payload_digest"]))
             for row in conn.execute(
                 "SELECT relative_path, hook_event_id, payload_digest FROM hook_event_carriers "
-                "WHERE source_id = ? AND relative_path LIKE ?",
-                (identity.source_id, f"{identity.relative_path}#%"),
+                "WHERE source_id = ? AND relative_path >= ? AND relative_path < ?",
+                (identity.source_id, f"{identity.relative_path}#", f"{identity.relative_path}$"),
             )
         }
         events = carrier_hook_events(lines, source_path=source_path, base_offset=base_offset)
@@ -291,8 +293,9 @@ class HookEventsDerivation:
         recorded = sorted(
             str(row["relative_path"])
             for row in conn.execute(
-                "SELECT relative_path FROM hook_event_carriers WHERE source_id = ? AND relative_path LIKE ?",
-                (identity.source_id, f"{identity.relative_path}#%"),
+                "SELECT relative_path FROM hook_event_carriers "
+                "WHERE source_id = ? AND relative_path >= ? AND relative_path < ?",
+                (identity.source_id, f"{identity.relative_path}#", f"{identity.relative_path}$"),
             )
         )
         return hashlib.sha256(
