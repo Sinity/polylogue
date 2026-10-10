@@ -35,6 +35,8 @@ export async function createOwnedProviderBrowser(browser, declarations) {
       func: expectedUrl => globalThis.location.href === expectedUrl, args: [tab.url] });
     if (rows.length !== 1 || rows[0].frameId !== 0 || rows[0].result !== true
         || typeof rows[0].documentId !== "string" || !rows[0].documentId) { owned.delete(tabId); throw refused(); }
+    // The asynchronous document probe can overlap a tab move or SPA navigation.
+    await current(tabId);
     return rows[0].documentId;
   }
   function event(source, listenerWrapper) {

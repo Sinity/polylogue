@@ -85,6 +85,22 @@ it("pins provider script and message effects to the checked top-frame document",
   expect(browser.scripting.executeScript.mock.calls.filter(([details]) => details.files)).toHaveLength(1);
 });
 
+it("revokes ownership when a tab moves or navigates during the document probe", async () => {
+  for (const patch of [{ windowId: 90 }, { url: "https://chatgpt.com/c/outside" }]) {
+    const { browser, declarations, rows } = fixture();
+    const owner = await createOwnedProviderBrowser(browser, declarations);
+    browser.scripting.executeScript.mockImplementationOnce(async () => {
+      rows.set(11, { ...rows.get(11), ...patch });
+      return [{ frameId: 0, documentId: "neutral-document", result: true }];
+    });
+    await expect(owner.browser.scripting.executeScript({ target: { tabId: 11 }, files: ["src/content/chatgpt.js"] }))
+      .rejects.toThrow("proof_owned_tab_refused");
+    expect(browser.scripting.executeScript.mock.calls.filter(([details]) => details.files)).toHaveLength(0);
+    await expect(owner.browser.tabs.sendMessage(11, { type: "polylogue.capturePage" })).rejects.toThrow("proof_owned_tab_refused");
+    expect(browser.tabs.sendMessage).not.toHaveBeenCalled();
+  }
+});
+
 it("filters the actual production event router before unknown or moved tabs reach handlers", async () => {
   const { browser, declarations, rows } = fixture();
   const owner = await createOwnedProviderBrowser(browser, declarations);
