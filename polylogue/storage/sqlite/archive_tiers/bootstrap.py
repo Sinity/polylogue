@@ -1,4 +1,8 @@
-"""Fresh bootstrap helpers for archive databases."""
+"""Fresh bootstrap helpers for archive databases.
+
+Writer module: ops.
+Fresh Ops destinations receive their event lifetime inside bootstrap custody.
+"""
 
 from __future__ import annotations
 
