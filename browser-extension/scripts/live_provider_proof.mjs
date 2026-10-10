@@ -55,6 +55,7 @@ const ERROR_CATEGORIES = new Map([
   ["proof_pause_restore_failed", "pause_failed"],
   ["proof_host_permission_failed", "control_failed"],
   ["proof_capture_incomplete", "capture_incomplete"],
+  ["proof_owned_provider_isolation_unavailable", "provider_isolation_refused"],
 ]);
 let proofPhase = "service_context";
 let shutdownPhase = null;
@@ -809,6 +810,10 @@ export async function settleProofCleanup(receiverOwner, failure) {
 }
 
 async function runLiveProviderProof() {
+  // Pausing background capture does not stop static MAIN-world interception
+  // or tab-status readers. No provider artifact may load until registration
+  // is restricted to proof-owned tabs before those effects can begin.
+  await inProofPhase("provider_preflight", () => { throw new Error("proof_owned_provider_isolation_unavailable"); });
   await inProofPhase("service_context", () => requireExpectedServiceContext());
   installShutdownCleanup();
   const { extensionRoot, receiverBaseUrl, conversations, timeoutMs, startupTimeoutMs, interactiveWaitMs } = await inProofPhase("inputs", () => fixedInputs());

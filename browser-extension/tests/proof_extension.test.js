@@ -6,9 +6,17 @@ import { afterEach, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import { createProofExtension, verifyProofExtension } from "../scripts/proof_extension.mjs";
 import { createOwnedTargetCleanup } from "../scripts/shared_chrome_proof_cleanup.mjs";
+import { execFileSync } from "node:child_process";
 
 const owned = [];
 afterEach(() => { for (const directory of owned.splice(0)) rmSync(directory, { recursive: true, force: true }); });
+
+it("refuses the provider proof before any Chrome or native-manifest mutation", () => {
+  let report;
+  try { execFileSync(globalThis.process.execPath, [path.resolve("scripts/live_provider_proof.mjs")], { env: {}, stdio: "pipe" }); }
+  catch (error) { report = JSON.parse(error.stdout.toString("utf8")); }
+  expect(report).toMatchObject({ ok: false, error: { phase: "provider_preflight", category: "provider_isolation_refused" } });
+});
 
 it("binds a distinct page-only identity and exact candidate resources without capture permissions", () => {
   const root = mkdtempSync(path.join(tmpdir(), "polylogue-proof-extension-")); owned.push(root);
