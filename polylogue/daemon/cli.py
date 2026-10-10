@@ -415,6 +415,36 @@ def _is_polylogue_owned_source(source: WatchSource) -> bool:
     return source.name in POLYLOGUE_OWNED_SOURCE_NAMES or source.role == "primary-writable"
 
 
+async def _prepare_owned_source_roots(sources: Sequence[WatchSource]) -> None:
+    """Prepare owned acquisition roots before discovery, even without a receiver."""
+    from polylogue.browser_capture.source_checkpoint import extract_source_checkpoints
+    from polylogue.core.compute import compute_adapter
+
+    for source in sources:
+        if not _is_polylogue_owned_source(source):
+            continue
+        source.root.mkdir(parents=True, exist_ok=True)
+        if source.name == "browser-capture":
+            submitted = compute_adapter().submit(
+                propagate(partial(extract_source_checkpoints, source.root)),
+                admission_class="incremental-background",
+                exclusive_bytes=True,
+                estimated_bytes=0,
+            )
+            result = await submitted.wait()
+            if result.cells:
+                emit(
+                    "source.checkpoint_intake",
+                    level=INFO,
+                    source=source.name,
+                    cells=result.cells,
+                    published=result.published,
+                    duplicates=result.duplicates,
+                    superseded=result.superseded,
+                    unbound_provenance=result.unbound_provenance,
+                )
+
+
 def _active_index_db_path() -> Path:
     """Return the archive-rooted ``index.db`` path for daemon maintenance.
 
@@ -2771,9 +2801,7 @@ async def _run_daemon_services_under_active_writer_lease(
         # Ownership is the source's role, never where its path resolves: a
         # provider directory relocated by a symlink into the archive tree
         # still belongs to its tool, and a dangling one is a retryable gap.
-        for src in sources:
-            if _is_polylogue_owned_source(src):
-                src.root.mkdir(parents=True, exist_ok=True)
+        await _prepare_owned_source_roots(sources)
 
         if lifecycle_events_enabled:
             await _emit_daemon_lifecycle_event(
