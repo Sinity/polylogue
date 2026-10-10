@@ -376,7 +376,7 @@ def test_frontier_fallback_preserves_existing_debt_retry_schedule(
         with sqlite3.connect(archive / "ops.db") as conn:
             conn.execute("UPDATE convergence_debt SET next_retry_at = '2999-01-01T00:00:00+00:00'")
 
-    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
     assert len(stage.executions) == int(due)
     assert len(_rows(archive)) == int(not (due and converges))
 
@@ -394,7 +394,7 @@ def test_blocked_frontier_fallback_retains_registered_telemetry_outcome(
         lambda _db, **_kwargs: stage.build(),
     )
     with plog.capture() as records:
-        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+        daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
     terminal = [r for r in records if r["event"] == "daemon.raw_frontier_inspection.pass.completed"]
     assert len(terminal) == 1
     assert terminal[0]["outcome"] == "degraded"
@@ -406,15 +406,15 @@ def test_blocked_frontier_fallback_retains_registered_telemetry_outcome(
     assert debt[0].status == "deferred"
     assert debt[0].next_retry_at is not None
     assert cursor.list_convergence_debt(stage=stage.name, retry_due_only=True) == []
-    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
     assert len(stage.executions) == 1
     # A due retry runs once, keeps pending debt, and schedules its next backoff.
     with sqlite3.connect(archive / "ops.db") as conn:
         conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
-    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
     assert len(stage.executions) == 2
     assert cursor.list_convergence_debt(stage=stage.name, retry_due_only=True) == []
-    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
     assert len(stage.executions) == 2
 
 
@@ -446,7 +446,7 @@ def test_frontier_fallback_exception_records_failed_debt_except_cancellation(
     monkeypatch.setattr(raw_frontier_inspection, "frontier_coverage_for_archive", lambda _root: {})
     monkeypatch.setattr(raw_frontier_inspection, "inspect_prepared_raw_authority_frontier", fail_inspection)
     with pytest.raises(type(failure)) as raised:
-        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+        daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
     assert raised.value is failure
     cursor = CursorStore(archive / "index.db", initialize=False)
     debt = cursor.list_convergence_debt(stage="raw_frontier_inspection")
@@ -456,7 +456,7 @@ def test_frontier_fallback_exception_records_failed_debt_except_cancellation(
         assert len(debt) == 1
         assert debt[0].status == "failed"
         assert cursor.list_convergence_debt(stage="raw_frontier_inspection", retry_due_only=True) == []
-        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+        daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
         assert executions == 1
 
 
@@ -493,9 +493,68 @@ def test_frontier_fallback_refuses_unpersisted_retry_debt(
     monkeypatch.setattr(raw_frontier_inspection, "frontier_coverage_for_archive", lambda _root: {})
     monkeypatch.setattr(raw_frontier_inspection, "inspect_prepared_raw_authority_frontier", inspect)
     with plog.capture() as records, pytest.raises(sqlite3.OperationalError) as raised:
-        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+        daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
     assert is_transient_sqlite_lock(raised.value)
     if inspection_raises:
         assert raised.value.__context__ is inspection_failure
     assert not [r for r in records if r["event"] == "daemon.raw_frontier_inspection.pass.completed"]
     assert _rows(archive) == []
+
+
+def test_archive_discovery_publishes_required_rows_without_retry_debt(
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+) -> None:
+    """Startup reconstruction and lost Ops must not need a changed source batch."""
+    from polylogue import logging as plog
+    from polylogue.daemon import convergence_stages
+
+    stages = (
+        convergence_stages.make_delegation_work_evidence_stage(archive / "index.db"),
+        convergence_stages.make_fts_readiness_binding_stage(archive / "index.db"),
+    )
+    monkeypatch.setattr(convergence_stages, "make_default_convergence_stages", lambda _db, **_kwargs: stages)
+    assert _rows(archive) == []
+    with sqlite3.connect(archive / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_readiness_binding").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM work_evidence_graphs").fetchone()[0] == 0
+    with plog.capture() as records:
+        assert (
+            daemon_cli._drain_convergence_debt_and_archive(
+                archive / "index.db", compute_adapter=bounded_compute_adapter
+            )
+            == 2
+        )
+    with sqlite3.connect(archive / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_readiness_binding").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM work_evidence_graphs").fetchone()[0] == 1
+    assert _rows(archive) == []
+    completed = [record for record in records if record["event"] == "daemon.convergence.stage.discovery.completed"]
+    assert {record["stage"] for record in completed} == {stage.name for stage in stages}
+    assert all(record["outcome"] == "ok" for record in completed)
+    assert not [record for record in records if record["event"] == "log.field_rejected"]
+    with plog.capture() as unchanged:
+        daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert not [record for record in unchanged if record["event"] == "daemon.convergence.stage.discovery.completed"]
+
+
+@pytest.mark.parametrize("due", [False, True])
+@pytest.mark.parametrize("converges", [False, True])
+def test_archive_discovery_keeps_existing_stage_retry_ownership(
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    due: bool,
+    converges: bool,
+) -> None:
+    """Discovery must not repeat a due attempt or bypass its future backoff."""
+    stage = _Stage("delegation_work_evidence", subject_independent=True, converges=converges)
+    _install(monkeypatch, stage)
+    _seed(archive, stage.name, 1)
+    if not due:
+        with sqlite3.connect(archive / "ops.db") as conn:
+            conn.execute("UPDATE convergence_debt SET next_retry_at = '2999-01-01T00:00:00+00:00'")
+    daemon_cli._drain_convergence_debt_and_archive(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert len(stage.executions) == int(due)
+    assert len(_rows(archive)) == int(not (due and converges))

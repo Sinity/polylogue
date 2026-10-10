@@ -470,7 +470,7 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
         raise sqlite3.OperationalError("database is locked")
 
     with (
-        patch.object(daemon_cli, "_drain_convergence_debt_and_frontier", fake_drain),
+        patch.object(daemon_cli, "_drain_convergence_debt_and_archive", fake_drain),
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
@@ -622,7 +622,7 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
             "daemon_write_coordinator",
             lambda: SimpleNamespace(run_sync=None),
         )
-        monkeypatch.setattr(daemon_cli, "_drain_convergence_debt_and_frontier", fake_drain)
+        monkeypatch.setattr(daemon_cli, "_drain_convergence_debt_and_archive", fake_drain)
         monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
         task = asyncio.create_task(
             daemon_cli._periodic_convergence_check(
@@ -662,7 +662,7 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     # The drain itself runs off the writer lease (polylogue-ssplv); the
     # coordinator is reached only by the admission each stage's write uses.
     with (
-        patch.object(daemon_cli, "_drain_convergence_debt_and_frontier", fake_drain),
+        patch.object(daemon_cli, "_drain_convergence_debt_and_archive", fake_drain),
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",

@@ -539,23 +539,17 @@ checks it before renewing a lease, so a premarker expired terminal job cannot
 revive through recovery. This receiver state is separate from the archive tiers
 and archive writer.
 
-The periodic convergence-debt owner also checks canonical accepted-frontier
-coverage after draining stage debts. It runs the existing inspection stage on
-the same admitted compute worker and stage writer bridge when the mark is absent
-or its source/cursor authority changed. A full-convergence admission refusal
-can leave no debt rows, so an empty debt ledger does not suppress this check.
-The owner performs the admitted Ops bootstrap before the debt probe, so a
-missing disposable tier can be recreated. Existing frontier debt retains its
-due retry and backoff ownership; the
-coverage fallback never runs another census in that debt pass. A blocked
-fallback records deferred frontier debt through the stage writer bridge, so
-later attempts use the canonical debt retry schedule and backoff. An inspection
-exception records failed debt and propagates its original error; cancellation
-creates no failure debt. A lock-exhausted debt sync raises a typed retryable
-SQLite failure; the pass cannot report a persisted handoff when no row landed.
-Completed
-current healthy coverage avoids another census; cancellation and
-inspection refusals retain their ordinary typed outcomes.
+The periodic convergence owner discovers every declared subject-independent,
+archive-wide stage even when the disposable retry ledger is empty. Each stage
+inspects its current authority, so startup Index reconstruction and recreated
+Ops can settle the FTS readiness binding, work-evidence graph, Raw verdict cache
+and accepted-frontier coverage without a new acquisition batch. Discovery uses
+the same admitted compute worker and each stage's declared writer bridge.
+Existing debt retains its due retry and backoff ownership, including a row
+cleared by the current pass; discovery never repeats that attempt. A pending
+or failed discovery records ordinary stage debt. Cancellation creates no failure
+debt, and an unpersisted retry handoff remains a visible error. Healthy stage
+checks avoid repeated publication.
 
 Resolved runtime Config projections and source clones retain the explicit API
 authentication token and allow-no-auth policy without reading ambient settings.

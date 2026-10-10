@@ -869,7 +869,7 @@ def _converge_selected_session_parts_sync(
     return tuple(outcomes)
 
 
-def _run_stage_execute(stage: ConvergenceStage, call: Callable[[], StageExecuteReturn]) -> StageExecuteReturn:
+def execute_convergence_stage(stage: ConvergenceStage, call: Callable[[], StageExecuteReturn]) -> StageExecuteReturn:
     """Invoke one stage body with the writer admission its contract declares."""
     from polylogue.core.stage_admission import admit_stage_write
 
@@ -1321,7 +1321,7 @@ class DaemonConverger:
                         state.stages[stage_name] = StageState.IN_PROGRESS
                         t_stage = time.perf_counter()
                         try:
-                            execute_result = _run_stage_execute(stage, partial(stage.execute, path))
+                            execute_result = execute_convergence_stage(stage, partial(stage.execute, path))
                         except DaemonOperationCancelled:
                             raise
                         except Exception as exc:
@@ -1462,7 +1462,7 @@ class DaemonConverger:
                     state.stages[stage_name] = StageState.IN_PROGRESS
                     t_stage = time.perf_counter()
                     try:
-                        execute_result = _run_stage_execute(stage, partial(stage.execute, path))
+                        execute_result = execute_convergence_stage(stage, partial(stage.execute, path))
                     except DaemonOperationCancelled:
                         raise
                     except Exception as exc:
@@ -1533,7 +1533,9 @@ class DaemonConverger:
                         ordered_needs_work = tuple(path for path in active_paths if path in batch_needs_work)
                         t_stage = time.perf_counter()
                         try:
-                            execute_result = _run_stage_execute(stage, partial(stage.execute_many, ordered_needs_work))
+                            execute_result = execute_convergence_stage(
+                                stage, partial(stage.execute_many, ordered_needs_work)
+                            )
                         except DaemonOperationCancelled:
                             raise
                         except Exception as exc:
@@ -1670,7 +1672,7 @@ class DaemonConverger:
 
                         t_stage = time.perf_counter()
                         try:
-                            execute_result = _run_stage_execute(
+                            execute_result = execute_convergence_stage(
                                 stage, partial(stage.execute_sessions, tuple(batch_needs_work))
                             )
                         except DaemonOperationCancelled:
@@ -1763,6 +1765,7 @@ class DaemonConverger:
 
 
 __all__ = [
+    "execute_convergence_stage",
     "SessionState",
     "ConvergenceStage",
     "DaemonConverger",

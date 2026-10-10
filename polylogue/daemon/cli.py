@@ -1170,7 +1170,7 @@ async def _run_convergence_debt_pass(db: Path) -> None:
                     partial(
                         _run_with_stage_admission,
                         _daemon_stage_write_admission(),
-                        partial(_drain_convergence_debt_and_frontier, db, compute_adapter=adapter),
+                        partial(_drain_convergence_debt_and_archive, db, compute_adapter=adapter),
                     )
                 ),
                 admission_class="incremental-background",
@@ -1188,41 +1188,45 @@ async def _run_convergence_debt_pass(db: Path) -> None:
                 return
             raise
         if repaired:
-            pass_span.ok(retried=repaired)
+            pass_span.ok(confirmed=repaired)
         else:
-            pass_span.empty(retried=0)
+            pass_span.empty(confirmed=0)
 
 
-def _drain_convergence_debt_and_frontier(db: Path, *, compute_adapter: BoundedComputeAdapter) -> int:
-    """Derive frontier work even when an unadmitted pass recorded no debt.
+def _drain_convergence_debt_and_archive(db: Path, *, compute_adapter: BoundedComputeAdapter) -> int:
+    """Discover archive-wide obligations independently of disposable retry debt.
 
-    This runs on the periodic pass's original admitted compute worker, with
-    its existing stage writer bridge. Completed current coverage skips the
-    census; a changed source/cursor watermark or an absent mark requires it.
+    Existing debt owns its retry schedule, even when this pass clears it.
+    Stages without debt inspect current authority on the same admitted worker
+    and publish through their declared writer bridge.
     """
     from polylogue.core.compute import DaemonOperationCancelled
-    from polylogue.operations.raw_frontier_inspection import make_raw_frontier_inspection_stage
+    from polylogue.daemon.convergence import execute_convergence_stage
+    from polylogue.daemon.convergence_stages import make_default_convergence_stages
     from polylogue.sources.live.cursor import CursorStore
 
-    # Ops is disposable: restore it through the original admitted bootstrap
-    # before querying debt, while retaining the pre-drain ownership snapshot.
     cursor = admit_stage_write("maintenance.convergence_debt.initialize", partial(CursorStore, db))
-    frontier_debt = cursor.list_convergence_debt(stage="raw_frontier_inspection", limit=1)
+    stages = tuple(
+        stage
+        for stage in make_default_convergence_stages(db, compute_adapter=compute_adapter)
+        if stage.whole_archive and stage.subject_independent
+    )
+    recorded = {stage.name for stage in stages if cursor.list_convergence_debt(stage=stage.name, limit=1)}
     retried = _drain_convergence_debt_backlog(db, compute_adapter=compute_adapter)
-    # Recorded debt owns both due execution and backoff. Check before draining
-    # as well: a successful due retry may clear its row during this pass.
-    if frontier_debt or cursor.list_convergence_debt(stage="raw_frontier_inspection", limit=1):
-        return retried
-    stage = make_raw_frontier_inspection_stage(db, compute_adapter=compute_adapter)
-    if stage.check(db):
+    for stage in stages:
+        check_compute_cancelled()
+        if stage.name in recorded or cursor.list_convergence_debt(stage=stage.name, limit=1):
+            continue
         try:
-            healthy = stage.execute(db)
+            if not stage.check(db):
+                continue
+            healthy = bool(execute_convergence_stage(stage, partial(stage.execute, db)))
         except DaemonOperationCancelled:
             raise
         except Exception as exc:
             check_compute_cancelled()
             admit_stage_write(
-                "maintenance.convergence_debt.frontier",
+                "maintenance.convergence_debt.discovery",
                 partial(
                     cursor.record_convergence_debt,
                     stage=stage.name,
@@ -1235,22 +1239,31 @@ def _drain_convergence_debt_and_frontier(db: Path, *, compute_adapter: BoundedCo
         if not healthy:
             check_compute_cancelled()
             admit_stage_write(
-                "maintenance.convergence_debt.frontier",
+                "maintenance.convergence_debt.discovery",
                 partial(
                     cursor.record_convergence_debt,
                     stage=stage.name,
                     subject_type="source_path",
                     subject_id=str(db),
                     error="stage state: pending",
-                    deferred=True,
+                    deferred=stage.false_means_pending,
                 ),
             )
+        retried += int(healthy)
         emit(
-            "daemon.raw_frontier_inspection.pass.completed",
+            "daemon.convergence.stage.discovery.completed",
+            stage=stage.name,
             outcome="ok" if healthy else "degraded",
-            reason="complete" if healthy else "frontier_inspection_blocked",
+            reason="complete" if healthy else ("stage_pending" if stage.false_means_pending else "stage_failed"),
             path=db,
         )
+        if stage.name == "raw_frontier_inspection":
+            emit(
+                "daemon.raw_frontier_inspection.pass.completed",
+                outcome="ok" if healthy else "degraded",
+                reason="complete" if healthy else "frontier_inspection_blocked",
+                path=db,
+            )
     return retried
 
 
