@@ -13,6 +13,12 @@ inactive candidates and replays retained bytes without re-acquiring originals.
 Normal services start only after successful preflight. A current successor is
 not rebuilt again. Source parse acknowledgements remain with the regular retained
 replay stage; promotion and restart preserve pending states and current failures.
+An active fresh-format generation from the empty-bootstrap owner may have
+earlier derived DDL. Retained reconstruction admits it only after proving every
+predecessor material table, virtual table and view empty, including unknown
+tables, with canonical metadata controls. Positive Source still runs the full
+retained replay into a canonical successor. Other owners and populated
+noncanonical shapes remain refused; no predecessor DDL or identity is rewritten.
 Retained startup candidates establish reader-index deferral at creation, before
 canonical preparation seals their SQLite incarnation. Owned inactive replay
 defers per-session FTS, action-pair and delegation-fact maintenance. Readiness

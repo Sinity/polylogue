@@ -57,6 +57,35 @@ def _require_shape(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
         raise IndexReconvergenceRefusedError(f"unprovable_{tier.value}_shape")
 
 
+def _require_empty_bootstrap_predecessor(conn: sqlite3.Connection, *, owner_id: str) -> None:
+    """Admit an owned fresh-format empty generation without reading old material.
+
+    Derived DDL may change between releases. Only the earlier bootstrap
+    owner's completely empty material can cross that boundary; metadata
+    controls retain their canonical shape and every unknown table is checked.
+    """
+    expected = canonical_schema_manifest(ArchiveTier.INDEX)
+    actual = SchemaManifest.from_connection(conn, ArchiveTier.INDEX)
+    if owner_id != "daemon:empty-index-startup" or actual.version != expected.version:
+        raise IndexReconvergenceRefusedError("unprovable_index_shape")
+    controls = {"raw_existence_journal_control", "session_profile_demand_state", "query_unit_frame_state"}
+    expected_controls = {obj for obj in expected.objects if obj[0] == "table" and obj[1] in controls}
+    actual_controls = {obj for obj in actual.objects if obj[0] == "table" and obj[1] in controls}
+    if actual_controls != expected_controls:
+        raise IndexReconvergenceRefusedError("unprovable_index_shape")
+    for schema, name, kind, *_ in conn.execute("PRAGMA table_list").fetchall():
+        check_compute_cancelled()
+        if schema != "main" or name.startswith("sqlite_") or name in controls | {"schema_identity"} or kind == "shadow":
+            continue
+        quoted = '"' + name.replace('"', '""') + '"'
+        try:
+            populated = conn.execute(f"SELECT 1 FROM {quoted} LIMIT 1").fetchone() is not None
+        except sqlite3.DatabaseError as exc:
+            raise IndexReconvergenceRefusedError("unprovable_index_population") from exc
+        if populated:
+            raise IndexReconvergenceRefusedError("nonempty_predecessor_index")
+
+
 def reconverge_managed_index_on_startup(
     root: Path,
     *,
@@ -89,7 +118,11 @@ def reconverge_managed_index_on_startup(
             return None  # The separate verified-empty bootstrap owner handles regular Index.
         raise IndexReconvergenceRefusedError("managed_index_escapes_archive")
     store = IndexGenerationStore(location, repair_anchor=False)
+    parent = store.load(index.parent.name)
+    if parent.state not in {"active", "promoting"} or Path(parent.index_path).resolve() != index:
+        raise IndexReconvergenceRefusedError("unprovable_active_generation")
     recovering = None
+    empty_predecessor = False
     with VerifiedAuditLeaf(index.parent, filename=index.name) as leaf:
         with closing(open_readonly_connection(leaf.anchored_path, validate_schema=False)) as conn:
             try:
@@ -105,14 +138,19 @@ def reconverge_managed_index_on_startup(
                 recovering = active
             if read_schema_identity(conn, DerivedTier.INDEX) is None:
                 raise IndexReconvergenceRefusedError("missing_index_identity")
-            _require_shape(conn, ArchiveTier.INDEX)
+            try:
+                _require_shape(conn, ArchiveTier.INDEX)
+            except IndexReconvergenceRefusedError:
+                _require_empty_bootstrap_predecessor(conn, owner_id=parent.owner_id)
+                empty_predecessor = True
         leaf.assert_unchanged()
-    parent = store.load(index.parent.name)
-    if (parent.state != "active" and parent != recovering) or Path(parent.index_path).resolve() != index:
+    if store.load(index.parent.name) != parent or (parent.state != "active" and parent != recovering):
         raise IndexReconvergenceRefusedError("unprovable_active_generation")
 
     with PreparedIndexMutation(index, archive_root=root) as original, ExitStack() as custody:
         with original.original_read_snapshot():
+            if empty_predecessor:
+                _require_empty_bootstrap_predecessor(original.observer("index"), owner_id=parent.owner_id)
             for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT):
                 conn = original.observer(tier.value)
                 try:
