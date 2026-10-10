@@ -633,6 +633,7 @@ def test_focused_profile_requires_a_behavioral_pytest_selection() -> None:
     assert focused["exec"] == ["python", "-m", "devtools.pytest_slot"]
     assert focused["arguments"] == "required"
     assert focused["result"] == "pytest"
+    assert focused["timeout_seconds"] == 0
     assert operation["exec"] == ["devtools", "verify", "--quick"]
     assert operation["result"] == "json"
     assert operation["timeout_seconds"] == 2400
@@ -640,9 +641,8 @@ def test_focused_profile_requires_a_behavioral_pytest_selection() -> None:
     assert affected["pool"] == "pytest"
     assert affected["result"] == "pytest"
     assert affected["cache"] == "tree+environment"
-    assert affected["timeout_seconds"] == 7200
-    # Anti-vacuity: deleting either operation's descriptor deadline makes
-    # this fail, even if AgentCTL applies a host default.
+    assert affected["timeout_seconds"] == 0
+    # Explicit zero avoids inheriting a host deadline for progressing work.
     assert complete["exec"] == ["devtools", "verify", "--all"]
     # polylogue-p2mbi AC4 (#5405): `checkout = "candidate"`. The unset default
     # does not select a tree, it REFUSES every workspace but the project root

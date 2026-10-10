@@ -50,7 +50,9 @@ pool = "pytest-quick"
 result = "pytest"
 arguments = "required"
 cache = "none"
-timeout_seconds = 7200
+# A progressing selection may exceed two hours. AgentCTL remains the
+# cancellation owner; elapsed time alone does not establish a stalled test.
+timeout_seconds = 0
 
 [operations.verify_affected]
 description = "Run Polylogue's affected-test verification plan"
@@ -58,7 +60,9 @@ exec = ["devtools", "verify"]
 pool = "pytest"
 result = "pytest"
 cache = "tree+environment"
-timeout_seconds = 7200
+# A progressing selection may exceed two hours. AgentCTL remains the
+# cancellation owner; elapsed time alone does not establish a stalled test.
+timeout_seconds = 0
 
 [operations.scratch]
 description = "Run one bounded script from /realm/tmp/work in the bulk pool: workers' heavy censuses and probes"
