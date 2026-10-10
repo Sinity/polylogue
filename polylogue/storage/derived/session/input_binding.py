@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 
 import aiosqlite
 
@@ -399,12 +400,29 @@ ORDER BY pue.session_id, pue.position
 """
 
 
+# Fixed immutable framing tables contain no observed Source values or digests.
+# Larger lengths, row counts and integers retain the same exact encoding.
+_SCALAR_FRAME_PREFIXES = MappingProxyType(
+    {tag: tuple(tag + str(size).encode("ascii") + b":" for size in range(1024)) for tag in (b"T", b"B", b"I", b"R")}
+)
+_SMALL_INTEGER_FRAMES = tuple(
+    b"I" + str(len(str(value))).encode("ascii") + b":" + str(value).encode("ascii") for value in range(4096)
+)
+_ROW_COUNT_FRAMES = tuple(str(count).encode("ascii") + b":" for count in range(128))
+
+
 def encode_input_binding_row(values: Sequence[object]) -> bytes:
     """Frame SQLite scalar values without erasing nulls, types, or boundaries."""
-    out = bytearray(str(len(values)).encode("ascii") + b":")
+    count = len(values)
+    parts = [_ROW_COUNT_FRAMES[count] if count < 128 else str(count).encode("ascii") + b":"]
+    append = parts.append
     for value in values:
         if value is None:
-            out.extend(b"N")
+            append(b"N")
+            continue
+        # bool and int subclasses keep their declared spelling (True is I4:True).
+        if type(value) is int and 0 <= value < 4096:
+            append(_SMALL_INTEGER_FRAMES[value])
             continue
         if isinstance(value, str):
             tag, payload = b"T", value.encode("utf-8")
@@ -416,11 +434,10 @@ def encode_input_binding_row(values: Sequence[object]) -> bytes:
             tag, payload = b"R", value.hex().encode("ascii")
         else:
             raise TypeError(f"unsupported SQLite binding value: {type(value).__name__}")
-        out.extend(tag)
-        out.extend(str(len(payload)).encode("ascii"))
-        out.extend(b":")
-        out.extend(payload)
-    return bytes(out)
+        size = len(payload)
+        prefixes = _SCALAR_FRAME_PREFIXES[tag]
+        append((prefixes[size] if size < 1024 else tag + str(size).encode("ascii") + b":") + payload)
+    return b"".join(parts)
 
 
 class SessionInputDigest:

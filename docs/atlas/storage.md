@@ -733,6 +733,11 @@ same pinned source binding; unpinned helpers retain independent reads. Profile
 inspection skips input hashing only when stored materializer, binding, latency
 or demand facts already force missing or stale. Every possibly valid profile
 still hashes current authoritative input, in both sync and async inspection.
+Input binding rows use exact typed, length-prefixed scalar frames. Their encoder
+joins complete frames once and reuses only fixed immutable framing prefixes,
+small integer encodings and row-count prefixes. Values, digests and validity
+verdicts are never cached; larger values retain the same byte format
+(`storage/derived/session/input_binding.py:encode_input_binding_row`).
 Input triggers clear a surviving profile binding once; later writes while it
 is NULL still advance every demand revision without rewriting the profile row.
 Input relation query frames continue to advance independently, and a prepared
