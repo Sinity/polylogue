@@ -198,7 +198,7 @@ def test_streamed_dynamic_keys_and_growing_nested_variants_do_not_accumulate_in_
 def test_abandoned_lazy_view_propagates_its_cursor_close_failure(tmp_path: Path, view: str) -> None:
     import sqlite3
     import sys
-    from collections.abc import Generator
+    from collections.abc import Generator, Iterator
     from typing import Any, cast
 
     from polylogue.schemas.observation_spill import SpilledArray, SpilledObject, StreamedJSONReadError
@@ -237,6 +237,7 @@ def test_abandoned_lazy_view_propagates_its_cursor_close_failure(tmp_path: Path,
 
             connection = cast(sqlite3.Connection, Connection())
             mapping = SpilledObject(connection, document._node_id)
+            iterator: Iterator[object]
             if view == "array":
                 array = document["neutral"]
                 assert isinstance(array, SpilledArray)

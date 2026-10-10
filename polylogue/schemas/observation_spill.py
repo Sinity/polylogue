@@ -260,6 +260,41 @@ class SpilledObject(dict[str, JSONValue], _ValidatedJSONContainer):
         )
         return int(row[0])
 
+    def validation_sample(self) -> JSONDocument:
+        """Detach a small completed sample; retain the owned tree for larger ones."""
+        check_compute_cancelled()
+        # Follow the actual view edges: projected objects can share children
+        # whose original decoder parent differs. Read no key or scalar content
+        # until metadata proves the complete sample's allocation bounds.
+        row = _read_row(
+            self._connection,
+            """
+            WITH RECURSIVE subtree(id,depth,key_token) AS (
+                SELECT ?,0,NULL UNION ALL
+                SELECT m.child_id,s.depth+1,m.key_token FROM subtree s
+                JOIN json_object_members m ON m.parent_id=s.id WHERE s.depth<=64
+                UNION ALL
+                SELECT a.child_id,s.depth+1,NULL FROM subtree s
+                JOIN json_array_items a ON a.parent_id=s.id WHERE s.depth<=64
+                LIMIT 1025
+            )
+            SELECT COUNT(*),MAX(s.depth),
+                COALESCE(SUM(COALESCE(t.decoded_bytes,length(n.scalar_json),0)),0)+
+                COALESCE(SUM(k.decoded_bytes),0)
+            FROM subtree s JOIN json_nodes n ON n.id=s.id
+            LEFT JOIN json_scalar_tokens t ON t.kind=n.kind AND t.token=n.token
+            LEFT JOIN json_scalar_tokens k ON k.kind='string' AND k.token=s.key_token
+            """,
+            (self._node_id,),
+        )
+        check_compute_cancelled()
+        if row is None or row[0] == 0:
+            raise ValueError("streamed JSON tree lost a referenced node")
+        nodes, depth, token_bytes = (int(value or 0) for value in row)
+        if nodes > 1024 or depth > 64 or token_bytes > 65536:
+            return self
+        return cast(JSONDocument, _detached_validation_value(self))
+
     def matching_field_names(self, names: set[str] | frozenset[str]) -> Generator[str, None, None]:
         """Intersect declared names with streamed keys without probing every declaration."""
         long_names: dict[bytes, list[str]] = {}
@@ -622,7 +657,7 @@ class SpilledArray(list[JSONValue], Sequence[JSONValue], _ValidatedJSONContainer
         row = _read_row(self._connection, "SELECT COUNT(*) FROM json_array_items WHERE parent_id = ?", (self._node_id,))
         return int(row[0])
 
-    def __iter__(self) -> Iterator[JSONValue]:
+    def __iter__(self) -> Generator[JSONValue, None, None]:
         with closing(
             _read_rows(
                 self._connection,
@@ -863,6 +898,19 @@ def _load_node(connection: sqlite3.Connection, node_id: int) -> JSONValue:
     if kind == "string":
         return bytes(scalar_json).decode("utf-8", "surrogatepass")
     return cast(JSONValue, json.loads(str(scalar_json)))
+
+
+def _detached_validation_value(value: JSONValue) -> JSONValue:
+    check_compute_cancelled()
+    if isinstance(value, SpilledObject):
+        with closing(value.key_entries()) as entries:
+            return {
+                key.read(): _detached_validation_value(_load_node(value._connection, child)) for key, child in entries
+            }
+    if isinstance(value, SpilledArray):
+        with closing(value.__iter__()) as entries:
+            return [_detached_validation_value(child) for child in entries]
+    return value
 
 
 def _store_schema_node(connection: sqlite3.Connection, child: object) -> int:
