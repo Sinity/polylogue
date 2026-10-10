@@ -2215,7 +2215,7 @@ class RawObservationDerivation(RawObservationInspection):
 
                 prefix = neutral.parsed_prefix_size if self._validation_mode is not ValidationMode.OFF else None
                 try:
-                    with _retained_validation_input(staged_blob, prefix, neutral_directory) as validation_path:
+                    with _retained_validation_input(staged_blob, prefix) as (validation_path, accepted_prefix_size):
                         verdict = validate_retained_document(
                             neutral.resolved_provider,
                             validation_path,
@@ -2225,6 +2225,7 @@ class RawObservationDerivation(RawObservationInspection):
                             evidence_id=raw_id,
                             source_path=source_path,
                             jsonl=True,
+                            accepted_prefix_size=accepted_prefix_size,
                             captured_zip_coordinate=captured.zip_coordinate,
                             registry=self._schema_registry,
                             signature_directory=neutral_directory,
@@ -3055,7 +3056,10 @@ class RawObservationDerivation(RawObservationInspection):
                                     if is_jsonl_source_path(path) and self._validation_mode is not ValidationMode.OFF
                                     else None
                                 )
-                                with _retained_validation_input(blob_path, prefix, scratch) as validation_path:
+                                with _retained_validation_input(blob_path, prefix) as (
+                                    validation_path,
+                                    accepted_prefix_size,
+                                ):
                                     verdict = validate_retained_document(
                                         artifact.resolved_provider or provider,
                                         validation_path,
@@ -3065,6 +3069,7 @@ class RawObservationDerivation(RawObservationInspection):
                                         evidence_id=raw_id,
                                         source_path=path,
                                         jsonl=is_jsonl_source_path(path),
+                                        accepted_prefix_size=accepted_prefix_size,
                                         captured_zip_coordinate=carry.zip_coordinates[raw_id],
                                         registry=self._schema_registry,
                                         signature_directory=scratch,

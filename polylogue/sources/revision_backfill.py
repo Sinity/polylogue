@@ -950,32 +950,14 @@ def prepare_retained_jsonl_artifact(
 
 
 @contextmanager
-def _retained_validation_input(
-    blob_path: Path,
-    prefix_size: int | None,
-    directory: Path,
-) -> Iterator[Path]:
-    """Expose exactly the parsed JSONL frontier to the spill-backed validator."""
-    if prefix_size is None or prefix_size == blob_path.stat().st_size:
-        yield blob_path
-        return
-    if prefix_size < 0:
-        raise RetainedPreparationRetryableError("retained JSONL parser returned a negative prefix")
-    fd, raw_path = tempfile.mkstemp(prefix="validation-", suffix=".jsonl", dir=directory)
-    path = Path(raw_path)
+def _retained_validation_input(blob_path: Path, prefix_size: int | None) -> Iterator[tuple[Path, int | None]]:
+    """Bind the parser's frontier without constructing a second input file."""
+    from polylogue.schemas.observation_spill import AcceptedPrefixReadError
+
     try:
-        remaining = prefix_size
-        with os.fdopen(fd, "wb") as target, blob_path.open("rb") as source:
-            while remaining:
-                check_compute_cancelled()
-                chunk = source.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    raise RetainedPreparationRetryableError("retained JSONL parser prefix exceeds source bytes")
-                target.write(chunk)
-                remaining -= len(chunk)
-        yield path
-    finally:
-        path.unlink(missing_ok=True)
+        yield blob_path, prefix_size
+    except AcceptedPrefixReadError as error:
+        raise RetainedPreparationRetryableError(str(error)) from error
 
 
 def _attach_retained_validation_verdict(
@@ -1003,7 +985,7 @@ def _attach_retained_validation_verdict(
 
         validation_prefix = artifact.parsed_prefix_size if jsonl and validation_mode is not ValidationMode.OFF else None
         try:
-            with _retained_validation_input(blob_path, validation_prefix, directory) as validation_path:
+            with _retained_validation_input(blob_path, validation_prefix) as (validation_path, accepted_prefix_size):
                 verdict = validate_retained_document(
                     artifact.resolved_provider,
                     validation_path,
@@ -1013,6 +995,7 @@ def _attach_retained_validation_verdict(
                     evidence_id=raw_id,
                     source_path=source_path,
                     jsonl=jsonl,
+                    accepted_prefix_size=accepted_prefix_size,
                     captured_zip_coordinate=captured_zip_coordinate,
                     registry=schema_registry,
                     signature_directory=directory,
