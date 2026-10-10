@@ -392,6 +392,8 @@ Typed session list and search scopes share the generic read's explicit-reference
 
 ## Scalar profile analytics
 
+Session metric correlation reduces the full matched profile scope using centered, independently scaled covariance and variance sums. Centering avoids raw-moment cancellation from large metric offsets, and scaling bounds products before summation; a genuinely constant metric remains undefined.
+
 Python profile histograms and workflow distributions use the same profile-existence and session scope predicates as profile insight rows on one controlled read snapshot. Histograms group native workflow, terminal-state and origin columns without profile payload hydration, provenance lookups or usage-cost reads. Week distributions stream the native canonical date; project distributions extract only the declared cwd array. Abandoned-session reads count the complete severity-filtered scope before selecting the requested evidence page, preserving date, recency and identity ordering and Python slice limits. Exact profile-record reads retain their cost projection.
 
 Tool usage applies an exact session ID predicate before entry aggregation and pagination. Its coverage map remains exhaustive across origins. Bidirectional work-evidence neighborhoods union separate source and target index seeks before the final edge order and limit; edges selected by both branches are deduplicated, and distinct parallel edges retain their identities. Typed edge validation remains unchanged. This does not depend on graph planner statistics.

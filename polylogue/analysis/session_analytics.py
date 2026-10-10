@@ -80,6 +80,19 @@ def session_metric_value(profile: SessionProfileInsight, key: str) -> float | No
     return None
 
 
+def _centered_metric_values(values: Sequence[float]) -> list[float]:
+    # Shift before scaling so a large common offset does not erase the spread.
+    # Halving each bound keeps the midpoint finite even for opposite extremes.
+    midpoint = min(values) / 2.0 + max(values) / 2.0
+    shifted = [value - midpoint for value in values]
+    scale = max(abs(value) for value in shifted)
+    if scale == 0:
+        return shifted
+    scaled = [value / scale for value in shifted]
+    mean = math.fsum(scaled) / len(scaled)
+    return [value - mean for value in scaled]
+
+
 def pearson_session_correlation(
     profiles: Sequence[SessionProfileInsight],
     *,
@@ -112,13 +125,11 @@ def pearson_session_correlation(
             "interpretation": "insufficient data (need at least 3 samples)",
         }
 
-    sum_x = sum(p[0] for p in pairs)
-    sum_y = sum(p[1] for p in pairs)
-    sum_xy = sum(p[0] * p[1] for p in pairs)
-    sum_x2 = sum(p[0] * p[0] for p in pairs)
-    sum_y2 = sum(p[1] * p[1] for p in pairs)
-
-    denominator = math.sqrt((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y))
+    centered_x = _centered_metric_values([x for x, _ in pairs])
+    centered_y = _centered_metric_values([y for _, y in pairs])
+    variance_x = math.fsum(x * x for x in centered_x)
+    variance_y = math.fsum(y * y for y in centered_y)
+    denominator = math.sqrt(variance_x) * math.sqrt(variance_y)
     if denominator == 0:
         return {
             "metric_x": metric_x,
@@ -128,7 +139,8 @@ def pearson_session_correlation(
             "interpretation": "constant metric — zero variance, correlation undefined",
         }
 
-    r = (n * sum_xy - sum_x * sum_y) / denominator
+    covariance = math.fsum(x * y for x, y in zip(centered_x, centered_y, strict=True))
+    r = covariance / denominator
     r = max(-1.0, min(1.0, r))
 
     if abs(r) >= 0.7:
