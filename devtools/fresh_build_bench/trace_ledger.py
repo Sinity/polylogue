@@ -444,7 +444,7 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
         "clock": "host_monotonic_ns",
         "exclusive_scope": "observed same-thread work children only",
         "cpu_coverage": _cpu_coverage(slices),
-        "measurement_coverage_complete": not counts["measurement_loss_events"],
+        "required_field_omissions_absent": not counts["measurement_loss_events"],
         "precise_chronology_available": bool(counts["measured_spans"]),
         "spans": [asdict(s) for s in slices],
     }

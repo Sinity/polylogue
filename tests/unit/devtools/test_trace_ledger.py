@@ -49,7 +49,7 @@ def test_required_measurement_loss_marks_coverage_incomplete_without_discarding_
     omitted: object,
 ) -> None:
     _, ledger = reduce_events([_terminal("body", 1, 10, required_measurement_fields_omitted=omitted)])
-    assert ledger["measurement_coverage_complete"] is False
+    assert ledger["required_field_omissions_absent"] is False
     assert ledger["coverage"]["measurement_loss_events"] == 1
     assert ledger["coverage"]["invalid_required_measurement_omission_counts"] == (
         0 if type(omitted) is int and omitted == 1 else 1
@@ -64,7 +64,7 @@ def test_optional_field_trimming_preserves_independent_measurement_coverage() ->
             _terminal("second", 11, 20, omitted_fields=4, required_measurement_fields_omitted=0),
         ]
     )
-    assert ledger["measurement_coverage_complete"] is True
+    assert ledger["required_field_omissions_absent"] is True
     assert ledger["coverage"]["measurement_loss_events"] == 0
 
 
