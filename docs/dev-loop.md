@@ -32,7 +32,8 @@ devtools test tests/unit/devtools/test_dev_loop_service.py
 `live_provider_proof` takes `--conversations-file /absolute/private/conversations.json`,
 a private JSON array of exact `https://chatgpt.com/c/<id>` or
 `https://claude.ai/chat/<id>` URLs, with one selected conversation per provider.
-Pass `--chrome-user-data-dir` for the actual shared Chrome profile. Homepages
+Pass `--chrome-user-data-dir` for the actual shared Chrome profile and
+`--evidence-root` for a nonexistent private per-run directory. Homepages
 are rejected before browser mutation. Conversation URLs and credentials stay
 out of job arguments and public reports.
 
@@ -49,7 +50,9 @@ and loaded-resource bindings. This route does not prove archive convergence.
 
 On completion, error or cancellation, the runner closes its owned windows
 and unloads its extension before the Python owner removes its scoped host,
-neutral receiver and private scratch. The operator's extension, settings,
+neutral receiver and private scratch. The sealed selected spool, original
+constructor/runtime bindings and per-file byte hashes remain in the evidence
+directory on successful and failed settled exits. The operator's extension, settings,
 fixed native manifest and provider tabs remain untouched. The page-only
 `dev_loop_proof` remains the separate nativePort byte-conservation proof.
 

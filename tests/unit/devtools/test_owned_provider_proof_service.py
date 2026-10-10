@@ -61,18 +61,15 @@ def test_owned_provider_runtime_uses_private_native_authority_and_settles_custod
         destination.mkdir()
         host = args[args.index("--host") + 1]
         constructor["host"] = host
-        return subprocess.CompletedProcess(
-            args,
-            0,
-            json.dumps(
-                {
-                    "kind": "owned-provider-runtime",
-                    "owned_targets_bound": False,
-                    "host_name": host,
-                    "extension_id": "a" * 32,
-                }
-            ),
-        )
+        binding = {
+            "kind": "owned-provider-runtime",
+            "owned_targets_bound": False,
+            "host_name": host,
+            "extension_id": "a" * 32,
+        }
+        (destination / "proof-binding.json").write_text(json.dumps(binding))
+        (destination / "owned-scope.json").write_text(json.dumps(scope))
+        return subprocess.CompletedProcess(args, 0, json.dumps(binding))
 
     class Process:
         returncode = 1 if fault == "child" else 0
@@ -139,7 +136,9 @@ def test_owned_provider_runtime_uses_private_native_authority_and_settles_custod
     native_id = envelope["session"]["provider_session_id"]
     targets = [{"name": "chatgpt", "url": "https://chatgpt.com/c/" + native_id, "nativeId": native_id}]
     if fault == "none":
-        result = service._run_proof_locked(targets=targets, chrome_user_data_dir=profile)
+        result = service._run_proof_locked(
+            targets=targets, chrome_user_data_dir=profile, evidence_root=tmp_path / "evidence"
+        )
         assert result["ok"] is True
         assert result["archive_convergence"] == "not_exercised"
         assert result["automatic_capture_enabled"] is True
@@ -158,15 +157,25 @@ def test_owned_provider_runtime_uses_private_native_authority_and_settles_custod
             else service.ChildProofError
         )
         with pytest.raises(expected):
-            service._run_proof_locked(targets=targets, chrome_user_data_dir=profile)
+            service._run_proof_locked(
+                targets=targets, chrome_user_data_dir=profile, evidence_root=tmp_path / "evidence"
+            )
+    assert (tmp_path / "evidence/retained-files.jsonl").is_file()
+    if processes:
+        retained = tmp_path / "evidence/browser-capture/artifact.json"
+        assert retained.is_file()
+        manifests = [json.loads(line) for line in (tmp_path / "evidence/retained-files.jsonl").read_text().splitlines()]
+        row = next(row for row in manifests if row["path"] == "browser-capture/artifact.json")
+        assert hashlib.sha256(retained.read_bytes()).hexdigest() == row["sha256"]
+        assert (tmp_path / "evidence/proof-binding.json").is_file()
     assert os.environ == before
     assert operator_manifest.read_text() == "operator untouched"
     if fault == "custody":
         manifest = hosts / (constructor["host"] + ".json")
         assert manifest.read_text() == "changed neutral manifest"
-        retained = list(tmp_path.glob("polylogue-owned-provider-proof-*"))
-        assert len(retained) == 1
-        assert (retained[0] / "native-transport-proof/native-host").is_file()
+        retained_roots = list(tmp_path.glob("polylogue-owned-provider-proof-*"))
+        assert len(retained_roots) == 1
+        assert (retained_roots[0] / "native-transport-proof/native-host").is_file()
     else:
         assert list(hosts.iterdir()) == [operator_manifest]
         assert not list(tmp_path.glob("polylogue-owned-provider-proof-*"))
@@ -184,4 +193,4 @@ def test_owned_provider_empty_scope_refuses_before_receiver_or_browser(
     monkeypatch.setattr(service, "make_server", forbidden)
     monkeypatch.setattr("devtools.live_provider_proof_service.subprocess.Popen", forbidden)
     with pytest.raises(ValueError, match="explicitly owned"):
-        service._run_proof_locked(targets=[], chrome_user_data_dir=tmp_path)
+        service._run_proof_locked(targets=[], chrome_user_data_dir=tmp_path, evidence_root=tmp_path / "evidence")

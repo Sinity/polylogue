@@ -372,6 +372,8 @@ def test_live_proof_sanitizes_private_validation_errors(
                 str(tmp_path / "selection.json"),
                 "--chrome-user-data-dir",
                 str(tmp_path),
+                "--evidence-root",
+                str(tmp_path / "evidence"),
             ]
         )
         == 1
@@ -526,7 +528,15 @@ def test_failed_child_report_crosses_actual_service_boundary_without_private_out
     selection.write_text(json.dumps(["https://chatgpt.com/c/synthetic"]))
     assert (
         live_provider_proof_service.main(
-            ["--json", "--conversations-file", str(selection), "--chrome-user-data-dir", str(tmp_path)]
+            [
+                "--json",
+                "--conversations-file",
+                str(selection),
+                "--chrome-user-data-dir",
+                str(tmp_path),
+                "--evidence-root",
+                str(tmp_path / "evidence"),
+            ]
         )
         == 1
     )

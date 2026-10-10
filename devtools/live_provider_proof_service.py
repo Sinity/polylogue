@@ -392,21 +392,55 @@ def verify_captured_artifact(spool: Path, receipt: dict[str, Any]) -> dict[str, 
     }
 
 
+def _retain_proof_evidence(scratch: Path, spool: Path, evidence: Path) -> None:
+    """Retain the sealed selected receiver bytes and their original bindings."""
+    shutil.copytree(spool, evidence / "browser-capture")
+    for name, source in (
+        ("constructor-scope.json", scratch / "constructor-scope.json"),
+        ("proof-binding.json", scratch / "native-transport-proof/extension/proof-binding.json"),
+        ("owned-scope.json", scratch / "native-transport-proof/extension/owned-scope.json"),
+    ):
+        if source.is_file():
+            shutil.copy2(source, evidence / name)
+    with (evidence / "retained-files.jsonl").open("x", encoding="utf-8") as manifest:
+        for source in evidence.rglob("*"):
+            if not source.is_file() or source == evidence / "retained-files.jsonl":
+                continue
+            digest = hashlib.sha256()
+            with source.open("rb") as handle:
+                while chunk := handle.read(64 * 1024):
+                    digest.update(chunk)
+            manifest.write(
+                json.dumps(
+                    {
+                        "path": str(source.relative_to(evidence)),
+                        "bytes": source.stat().st_size,
+                        "sha256": digest.hexdigest(),
+                    }
+                )
+                + "\n"
+            )
+
+
 def run_proof(
-    *, conversations_file: Path, chrome_user_data_dir: Path, repo_root: Path | None = None
+    *, conversations_file: Path, chrome_user_data_dir: Path, evidence_root: Path, repo_root: Path | None = None
 ) -> dict[str, object]:
     """Capture only declared conversations through an owned-window runtime."""
     targets = conversation_targets(conversations_file)
     with shared_chrome_extension_lock(timeout_s=_SHARED_CHROME_LOCK_TIMEOUT_S):
-        return _run_proof_locked(targets=targets, chrome_user_data_dir=chrome_user_data_dir, repo_root=repo_root)
+        return _run_proof_locked(
+            targets=targets, chrome_user_data_dir=chrome_user_data_dir, evidence_root=evidence_root, repo_root=repo_root
+        )
 
 
 def _run_proof_locked(
-    *, targets: list[dict[str, str]], chrome_user_data_dir: Path, repo_root: Path | None = None
+    *, targets: list[dict[str, str]], chrome_user_data_dir: Path, evidence_root: Path, repo_root: Path | None = None
 ) -> dict[str, object]:
     require_declared_operation_context("live_provider_proof")
     if not targets:
         raise ValueError("proof requires explicitly owned conversation targets")
+    evidence_root = evidence_root.absolute()
+    evidence_root.mkdir(mode=0o700)
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     scratch = Path(tempfile.mkdtemp(prefix="polylogue-owned-provider-proof-")).resolve()
     spool, archive = scratch / "browser-capture", scratch / "archive"
@@ -433,6 +467,7 @@ def _run_proof_locked(
     receiver_requests: list[dict[str, object]] = []
     settled = False
     retain_custody = False
+    evidence_retained = False
     try:
         secret = secrets.token_urlsafe(32)
         persist_receiver_token(secret, archive / "browser-capture-receiver-token")
@@ -570,6 +605,7 @@ def _run_proof_locked(
                     "isolation": isolation,
                     "automatic_capture_enabled": True,
                     "archive_convergence": "not_exercised",
+                    "retained_evidence": str(evidence_root),
                     "receiver_requests": receiver_requests,
                 }
             finally:
@@ -579,6 +615,10 @@ def _run_proof_locked(
                 server.server_close()
                 thread.join()
                 settled = True
+                retain_custody = True
+                _retain_proof_evidence(scratch, spool, evidence_root)
+                evidence_retained = True
+                retain_custody = False
     except NativeProofCustodyError:
         retain_custody = True
         raise
@@ -594,10 +634,18 @@ def _run_proof_locked(
                 thread.join()
             settled = True
         if settled:
+            try:
+                if not evidence_retained and not (evidence_root / "browser-capture").exists():
+                    _retain_proof_evidence(scratch, spool, evidence_root)
+                    evidence_retained = True
+            except OSError:
+                retain_custody = True
+                raise
+            finally:
+                os.environ.clear()
+                os.environ.update(inherited)
             if not retain_custody:
                 shutil.rmtree(scratch)
-            os.environ.clear()
-            os.environ.update(inherited)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -612,10 +660,18 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Actual running Chrome user-data directory for the independently named native host.",
     )
+    parser.add_argument(
+        "--evidence-root",
+        type=Path,
+        required=True,
+        help="Nonexistent private per-run directory retaining selected acquired bytes and bindings.",
+    )
     arguments = parser.parse_args(argv)
     try:
         payload: dict[str, Any] = run_proof(
-            conversations_file=arguments.conversations_file, chrome_user_data_dir=arguments.chrome_user_data_dir
+            conversations_file=arguments.conversations_file,
+            chrome_user_data_dir=arguments.chrome_user_data_dir,
+            evidence_root=arguments.evidence_root,
         )
     except ChildProofError as error:
         payload = {**error.report, "receiver_requests": error.receiver_requests}
