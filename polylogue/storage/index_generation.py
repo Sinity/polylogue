@@ -20,7 +20,7 @@ import uuid
 from builtins import BaseExceptionGroup
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from types import BuiltinFunctionType, TracebackType
@@ -289,6 +289,17 @@ class IndexGeneration:
     # generation built before the choice existed has to read as 0 ("whatever
     # SQLite defaulted to") rather than as a claim about 8192.
     page_size: int = 0
+    # A completed retained-startup page is reusable only with this recipe and
+    # custody. Empty cursor means no page has completed; it is not completion.
+    reconstruction_index_identity: str | None = None
+    reconstruction_ops_identity: str | None = None
+    reconstruction_parser_identity: str | None = None
+    reconstruction_predecessor_id: str | None = None
+    reconstruction_custody_digest: str = ""
+    reconstruction_device: int = 0
+    reconstruction_inode: int = 0
+    reconstruction_raw_id: str = ""
+    reconstruction_source_sequence: int = 0
 
 
 @dataclass(slots=True)
@@ -1100,6 +1111,82 @@ class IndexGenerationStore:
             raise RuntimeError("invalid generation metadata") from exc
         self._validate_generation(generation, generation_id)
         return generation
+
+    def begin_reconstruction(
+        self,
+        generation: IndexGeneration,
+        *,
+        index_identity: str,
+        ops_identity: str,
+        parser_identity: str,
+        predecessor_id: str,
+        custody_digest: str,
+        source_sequence: int,
+    ) -> IndexGeneration:
+        """Bind an empty owned candidate before its first durable replay open."""
+        self._require_write_lease("begin_reconstruction")
+        with self._lifecycle_lock():
+            if (
+                self.load(generation.generation_id) != generation
+                or generation.state != "inactive"
+                or generation.reconstruction_index_identity is not None
+            ):
+                raise RuntimeError("reconstruction requires the exact owning inactive generation")
+            path = Path(generation.index_path)
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                identity = os.fstat(descriptor)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            current_identity = path.lstat()
+            if (current_identity.st_dev, current_identity.st_ino) != (identity.st_dev, identity.st_ino):
+                raise RuntimeError("reconstruction destination changed before its initial checkpoint")
+            current = replace(
+                generation,
+                reconstruction_index_identity=index_identity,
+                reconstruction_ops_identity=ops_identity,
+                reconstruction_parser_identity=parser_identity,
+                reconstruction_predecessor_id=predecessor_id,
+                reconstruction_custody_digest=custody_digest,
+                reconstruction_device=identity.st_dev,
+                reconstruction_inode=identity.st_ino,
+                reconstruction_source_sequence=source_sequence,
+            )
+            self._write(current)
+            return current
+
+    def checkpoint_reconstruction(
+        self,
+        generation: IndexGeneration,
+        *,
+        raw_id: str,
+        source_sequence: int,
+        rewind: bool = False,
+    ) -> IndexGeneration:
+        """Persist a settled durable page, or rewind before rechecking Source.
+
+        Rewind never removes candidate rows. Their ordinary canonical replay
+        owns idempotent replacement; the cursor certifies only the earlier prefix.
+        """
+        self._require_write_lease("checkpoint_reconstruction")
+        with self._lifecycle_lock():
+            identity = Path(generation.index_path).lstat()
+            if (
+                self.load(generation.generation_id) != generation
+                or generation.state != "inactive"
+                or generation.reconstruction_index_identity is None
+                or (identity.st_dev, identity.st_ino)
+                != (generation.reconstruction_device, generation.reconstruction_inode)
+                or (
+                    raw_id >= generation.reconstruction_raw_id if rewind else raw_id <= generation.reconstruction_raw_id
+                )
+                or source_sequence < generation.reconstruction_source_sequence
+            ):
+                raise RuntimeError("reconstruction checkpoint no longer owns its candidate or frontier")
+            current = replace(generation, reconstruction_raw_id=raw_id, reconstruction_source_sequence=source_sequence)
+            self._write(current)
+            return current
 
     def prepare_promotion(self, generation: IndexGeneration) -> PreparedIndexPromotion:
         """Prepare all archive-sized promotion proofs before writer admission."""

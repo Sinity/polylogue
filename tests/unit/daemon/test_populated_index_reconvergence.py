@@ -485,7 +485,8 @@ def test_cancelled_startup_keeps_predecessor_and_restarts_from_retained_source(
         )
     current_metadata = tuple((root / ".index-generations").glob("gen-*/generation.json"))
     assert len(current_metadata) == 2
-    assert any(not item.exists() for item in abandoned)
+    assert all(item.exists() for item in abandoned)
+    assert set(current_metadata) == set(abandoned)
     # A normal current-runtime restart must not reconstruct or rewrite Source acknowledgement.
     source_before_restart = logical_rows(root / "source.db")
     with pytest.raises(PreflightReachedError):
