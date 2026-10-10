@@ -124,7 +124,7 @@ def ship_synthetic_source_train(
     if index_replacement_sql is not None:
         assert not requires_backup
         sql = index_replacement_sql
-        schema_objects = (
+        schema_objects: tuple[str, ...] = (
             "index:idx_raw_artifacts_source_identity",
             "index:idx_raw_artifacts_failure_identity",
         )
