@@ -122,9 +122,9 @@ public filters use `origin`. `Provider` is the provider-wire token, legitimate
 at acquisition, parser, and schema boundaries and a leak on public surfaces.
 `Source` carries richer acquisition identity. GEMINI+DRIVE maps to
 AISTUDIO_DRIVE non-injectively, so never reverse an Origin into a guessed
-Provider (`docs/provider-origin-identity.md`). Detection in
-`sources/dispatch.py` is shape-based in tightness order; insert a new detector
-at its true tightness or an earlier parser claims its records.
+Provider (`docs/provider-origin-identity.md`). Bound-source shape checks
+validate the declared origin; foreign content is a typed refusal. Use
+OriginSpec for declared artifact kinds and unbound import classification.
 
 ## Runtime
 
