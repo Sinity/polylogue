@@ -194,14 +194,17 @@ def test_client_streams_large_input_to_real_uds_worker_and_retires_custody(
 ) -> None:
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import Provider
+    from polylogue.core.refs import normalize_durable_object_ref_text
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from tests.infra.daemon_operations import running_daemon_operations
     from tests.infra.live_ingest import write_index_session
 
+    seeded_refs: dict[str, str] = {}
+
     def seed(root: Path) -> None:
         with ArchiveStore.open_existing(root, read_only=False) as archive:
-            write_index_session(
+            session_id = write_index_session(
                 archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
@@ -209,6 +212,13 @@ def test_client_streams_large_input_to_real_uds_worker_and_retires_custody(
                     messages=[ParsedMessage(provider_message_id="m", role=Role.USER, text="neutral")],
                 ),
             )
+            row = archive._conn.execute(
+                "SELECT b.block_id FROM blocks b JOIN messages m ON m.message_id = b.message_id WHERE m.session_id = ?",
+                (session_id,),
+            ).fetchone()
+            assert row is not None
+            seeded_refs.update(target=f"session:{session_id}", prompt=f"block:{row[0]}")
+            assert all(normalize_durable_object_ref_text(ref) == ref for ref in seeded_refs.values())
 
     raw = (
         json.dumps(
@@ -221,6 +231,8 @@ def test_client_streams_large_input_to_real_uds_worker_and_retires_custody(
     control.pop("input")
     control["target_ref"] = "session:codex-session:annotation-stream"
     with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        control["target_ref"] = seeded_refs["target"]
+        control["prompt_ref"] = seeded_refs["prompt"]
         actual = stack.runtime.call
         paths = []
 
@@ -260,7 +272,7 @@ def test_client_streams_large_input_to_real_uds_worker_and_retires_custody(
             request_id="neutral-streamed-import",
             input=io.BytesIO(raw),
         )
-        assert result is not None and result["outcome"] == "completed"
+        assert result is not None and result["outcome"] == "completed", result
         assert result["result"]["result"]["valid_count"] == 1
         assert paths and not any(path.exists() for path in paths)
         assert not list((stack.archive_root / "operation-inputs").rglob("*.tmp"))
