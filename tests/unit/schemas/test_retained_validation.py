@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import gc
 import hashlib
 import json
 import sqlite3
 import tracemalloc
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -1392,3 +1393,299 @@ def test_retained_winner_acceptance_reuses_validation_but_preserves_drift(
         signature_directory=tmp_path,
     )
     assert verdict == reference
+
+
+def test_retained_small_samples_avoid_per_property_disk_membership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_property: Callable[[str, object], None]
+) -> None:
+    path = tmp_path / "bounded-records.jsonl"
+    _write_jsonl(path, [{"type": "message", "kind": number} for number in range(12)])
+    properties: dict[str, object] = {"type": {"type": "string"}, "kind": {"type": "integer"}}
+    properties.update({f"absent_{number}": {"type": "string"} for number in range(200)})
+    registry = SchemaRegistry(storage_root=tmp_path / "bounded-schemas")
+    registry.write_schema_version(
+        "claude-code",
+        "v2",
+        {"type": "object", "properties": properties},
+        element_kind="session_record_stream",
+    )
+    probes = 0
+    original = observation_spill.SpilledObject._member
+
+    def member(self: observation_spill.SpilledObject, key: str) -> int | None:
+        nonlocal probes
+        if key.startswith("absent_"):
+            probes += 1
+        return original(self, key)
+
+    monkeypatch.setattr(observation_spill.SpilledObject, "_member", member)
+    verdict = validate_retained_document(
+        Provider.CLAUDE_CODE,
+        path,
+        mode=ValidationMode.STRICT,
+        raw_id="raw-bounded",
+        revision_sha256="a" * 64,
+        evidence_id="raw-bounded",
+        jsonl=True,
+        schema_resolution=_resolution("v2"),
+        schema_resolution_is_explicit=True,
+        registry=registry,
+        signature_directory=tmp_path,
+    )
+    assert verdict.status is ValidationStatus.PASSED
+    assert verdict.sample_count == 12
+    assert verdict.invalid_count == verdict.error_count == verdict.drift_count == 0
+    record_property("disk_property_probes", probes)
+    assert probes < 10
+
+
+def test_bounded_validation_sample_preserves_exact_decoder_values(tmp_path: Path) -> None:
+    path = tmp_path / "exact-sample.json"
+    text = (
+        '{"type":"record","kind":9007199254740993,"duplicate":1,"duplicate":2,'
+        '"number":1.25,"negative":-0.0,"escaped":"\\ud800",'
+        '"nested":[true,null,{"value":"exact"}]}'
+    )
+    path.write_text(text, encoding="utf-8")
+    with observation_spill.StreamedJSONDocument(path) as payload:
+        assert isinstance(payload, observation_spill.SpilledObject)
+        sample = payload.validation_sample()
+        assert type(sample) is dict
+        assert sample == json.loads(text)
+        assert sample["duplicate"] == 2
+        assert type(sample["kind"]) is int
+        assert sample["kind"] == 9007199254740993
+        assert sample["escaped"] == "\ud800"
+        assert json.dumps(sample, ensure_ascii=True) == json.dumps(json.loads(text), ensure_ascii=True)
+    assert sample["nested"] == [True, None, {"value": "exact"}]
+
+
+@pytest.mark.parametrize("shape", ["token", "aggregate", "key", "nodes", "depth"])
+def test_bounded_validation_fallback_precedes_scalar_reconstruction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    if shape == "token":
+        row: JSONDocument = {"value": "x" * 65537}
+    elif shape == "aggregate":
+        row = {"a": "x" * 40000, "b": "y" * 40000}
+    elif shape == "key":
+        row = {"x" * 65537: None}
+    elif shape == "nodes":
+        row = {"items": [None] * 1024}
+    else:
+        nested: JSONValue = None
+        for _ in range(70):
+            nested = [nested]
+        row = {"items": nested}
+    path = tmp_path / "fallback.json"
+    path.write_text(json.dumps(row), encoding="utf-8")
+    with observation_spill.StreamedJSONDocument(path) as payload:
+        assert isinstance(payload, observation_spill.SpilledObject)
+
+        def scalar_read(self: observation_spill._ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
+            raise AssertionError("ineligible sample reconstructed a scalar")
+
+        def key_read(self: observation_spill.SpilledKey) -> str:
+            raise AssertionError("ineligible sample reconstructed a key")
+
+        monkeypatch.setattr(observation_spill._ScalarTokenStore, "read", scalar_read)
+        monkeypatch.setattr(observation_spill.SpilledKey, "read", key_read)
+        assert payload.validation_sample() is payload
+
+
+def test_bounded_samples_do_not_bypass_complete_stream_syntax(tmp_path: Path) -> None:
+    from ijson.common import IncompleteJSONError
+
+    path = tmp_path / "unfinished.jsonl"
+    path.write_text('{"type":"message","kind":1}\n{"type":', encoding="utf-8")
+    with pytest.raises(IncompleteJSONError):
+        validate_retained_document(
+            Provider.CLAUDE_CODE,
+            path,
+            mode=ValidationMode.STRICT,
+            raw_id="raw-tail",
+            revision_sha256="a" * 64,
+            evidence_id="raw-tail",
+            jsonl=True,
+            registry=_registry(tmp_path, {"type": "integer"}),
+            signature_directory=tmp_path,
+        )
+
+
+def test_bounded_sample_cancellation_retires_all_owned_cursors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.core.compute import DaemonOperationCancelled
+
+    path = tmp_path / "cancel-copy.json"
+    path.write_text(json.dumps({"rows": [{"value": number} for number in range(24)]}), encoding="utf-8")
+    owner = observation_spill.StreamedJSONDocument(path)
+    calls = 0
+    database: Path | None = None
+    connection: sqlite3.Connection | None = None
+    with pytest.raises(DaemonOperationCancelled):
+        with owner as payload:
+            assert isinstance(payload, observation_spill.SpilledObject)
+            connection = owner.connection
+            database = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+
+            def cancelled() -> None:
+                nonlocal calls
+                calls += 1
+                if calls == 20:
+                    raise DaemonOperationCancelled("neutral sample cancellation")
+
+            monkeypatch.setattr(observation_spill, "check_compute_cancelled", cancelled)
+            payload.validation_sample()
+    assert calls == 20
+    assert database is not None and not database.exists()
+    assert connection is not None
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")
+
+
+@pytest.mark.parametrize("mode", [ValidationMode.STRICT, ValidationMode.ADVISORY])
+def test_bounded_samples_match_complete_spill_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: ValidationMode
+) -> None:
+    path = tmp_path / "verdict-parity.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {"type": "message", "kind": 1},
+            {"type": "message", "kind": 2, "new_field": "value"},
+            {"type": "message", "kind": "invalid"},
+        ],
+    )
+    registry = _registry(tmp_path, {"type": "integer"})
+
+    def validate() -> RetainedValidationVerdict:
+        return validate_retained_document(
+            Provider.CLAUDE_CODE,
+            path,
+            mode=mode,
+            raw_id="raw-parity",
+            revision_sha256="a" * 64,
+            evidence_id="raw-parity",
+            jsonl=True,
+            schema_resolution=_resolution("v2"),
+            schema_resolution_is_explicit=True,
+            registry=registry,
+            signature_directory=tmp_path,
+        )
+
+    with monkeypatch.context() as unchanged:
+        unchanged.setattr(observation_spill.SpilledObject, "validation_sample", lambda sample: sample)
+        original = validate()
+    lowered = validate()
+    assert original.sample_count == lowered.sample_count == 3
+    assert original.invalid_count == lowered.invalid_count == 1
+    exact_original = dataclasses.asdict(original)
+    exact_lowered = dataclasses.asdict(lowered)
+    assert original.drift_observation is not None and lowered.drift_observation is not None
+    original_signature = original.drift_observation.unseen_key_signature
+    lowered_signature = lowered.drift_observation.unseen_key_signature
+    exact_original["drift_observation"]["unseen_key_signature"] = _signature_text(original_signature)
+    exact_lowered["drift_observation"]["unseen_key_signature"] = _signature_text(lowered_signature)
+    assert exact_lowered == exact_original
+
+
+def test_nested_duplicate_samples_preserve_observations_and_schema_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "nested-duplicates.json"
+    path.write_text(
+        '{"type":"message","kind":1,"nested":{"value":"old","value":2},'
+        '"nested":{"value":"replaced","value":3},"rows":[{"flag":false,"flag":true}]}',
+        encoding="utf-8",
+    )
+    schema: dict[str, object] = {
+        "type": "object",
+        "x-polylogue-sample-granularity": "document",
+        "properties": {
+            "nested": {
+                "type": "object",
+                "minProperties": 1,
+                "maxProperties": 1,
+                "required": ["value"],
+                "properties": {"value": {"const": 3}},
+            },
+            "rows": {
+                "type": "array",
+                "items": {"type": "object", "maxProperties": 1, "properties": {"flag": {"const": True}}},
+            },
+        },
+        "required": ["nested", "rows"],
+    }
+    registry = SchemaRegistry(storage_root=tmp_path / "duplicate-schemas")
+    registry.write_schema_version("claude-code", "v2", schema, element_kind="session_record_stream")
+    with observation_spill.StreamedJSONDocument(path) as payload:
+        assert isinstance(payload, observation_spill.SpilledObject)
+        nested = payload["nested"]
+        assert isinstance(nested, observation_spill.SpilledObject) and len(nested) == 1
+        native = payload.validation_sample()
+        assert type(native) is dict
+        assert native["nested"] == {"value": 3}
+        observed_spill, cluster_spill = registry.observe_payload("claude-code", payload)
+        observed_native, cluster_native = registry.observe_payload("claude-code", native)
+        assert cluster_native == cluster_spill
+        assert [
+            (
+                o.artifact_kind,
+                o.bundle_scope,
+                o.exact_structure_id,
+                tuple(b"".join(observation_spill.profile_token_chunks(token)) for token in o.profile_tokens),
+                o.source_witnesses,
+            )
+            for o in observed_native
+        ] == [
+            (
+                o.artifact_kind,
+                o.bundle_scope,
+                o.exact_structure_id,
+                tuple(b"".join(observation_spill.profile_token_chunks(token)) for token in o.profile_tokens),
+                o.source_witnesses,
+            )
+            for o in observed_spill
+        ]
+
+    def validate() -> RetainedValidationVerdict:
+        return validate_retained_document(
+            Provider.CLAUDE_CODE,
+            path,
+            mode=ValidationMode.STRICT,
+            raw_id="raw-duplicates",
+            revision_sha256="a" * 64,
+            evidence_id="raw-duplicates",
+            schema_resolution=_resolution("v2"),
+            schema_resolution_is_explicit=True,
+            registry=registry,
+            signature_directory=tmp_path,
+        )
+
+    with monkeypatch.context() as unchanged:
+        unchanged.setattr(observation_spill.SpilledObject, "validation_sample", lambda sample: sample)
+        original = validate()
+    lowered = validate()
+    assert original.status is lowered.status is ValidationStatus.PASSED
+    assert original.sample_count == lowered.sample_count == 1
+    assert original.invalid_count == lowered.invalid_count == 0
+    assert original.schema_resolution == lowered.schema_resolution
+    assert original.first_diagnostic == lowered.first_diagnostic
+
+
+@pytest.mark.parametrize("view", ["projection", "schema"])
+def test_bounded_sample_metadata_follows_shared_view_membership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, view: str
+) -> None:
+    path = tmp_path / "shared-view.json"
+    path.write_text(json.dumps({"value": "x" * 65537}), encoding="utf-8")
+    owner = observation_spill.StreamedJSONDocument(path)
+    with owner as payload:
+        assert isinstance(payload, observation_spill.SpilledObject)
+        sample = payload.key_union(set()) if view == "projection" else owner.store_schema({"value": "x" * 65537})
+        assert isinstance(sample, observation_spill.SpilledObject)
+
+        def scalar_read(self: observation_spill._ScalarTokenStore, kind: str, ordinal: int) -> JSONValue:
+            raise AssertionError("shared view reconstructed an ineligible scalar")
+
+        monkeypatch.setattr(observation_spill._ScalarTokenStore, "read", scalar_read)
+        assert sample.validation_sample() is sample

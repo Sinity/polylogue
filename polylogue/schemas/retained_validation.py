@@ -844,13 +844,15 @@ def _validation_samples(
     schema: Mapping[str, object],
     provider: Provider,
 ) -> Iterator[Mapping[str, object]]:
+    from polylogue.schemas.observation_spill import SpilledObject
+
     granularity = schema.get("x-polylogue-sample-granularity")
     if granularity not in {"record", "document"}:
         granularity = "record" if provider in {Provider.CLAUDE_CODE, Provider.CODEX} else "document"
     if isinstance(payload, Mapping):
         if granularity == "document" or is_record_candidate(cast(JSONDocument, payload)):
             advance_work_progress(messages=1)
-            yield payload
+            yield payload.validation_sample() if isinstance(payload, SpilledObject) else payload
         return
     if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
         for value in payload:
@@ -859,7 +861,7 @@ def _validation_samples(
                 granularity == "document" or is_record_candidate(cast(JSONDocument, value))
             ):
                 advance_work_progress(messages=1)
-                yield value
+                yield value.validation_sample() if isinstance(value, SpilledObject) else value
 
 
 def _diagnostic(error: ValidationError) -> str:

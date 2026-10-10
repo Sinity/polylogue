@@ -126,6 +126,12 @@ Retained schema validation owns reducer tables once per spill connection and
 reuses each selected-schema validator across its complete record scan. Lazy
 normalized objects and arrays consume the original ordered cursors, checking
 cancellation before loading each value and closing those cursors on early exit.
+Completed validation samples detach into native dictionaries and lists only
+after tree metadata proves at most 1,024 nodes, depth 64, and 64 KiB of total
+decoded scalar and key bytes. Larger samples retain the same disk-backed view;
+these allocation thresholds never reject or truncate input. The full decoder,
+EOF proof, schema observations, exact scalar reads, and schema backing remain
+owned by the original document. Detached samples stay local to the active scan.
 Session revision projections reuse an ordinary event's full inner payload
 digest for its comparison projection; provider-measured generation payloads
 still compute their declared reduced digest separately.
