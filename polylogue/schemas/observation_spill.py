@@ -12,8 +12,10 @@ import codecs
 import hashlib
 import io
 import json
+import os
 import re
 import sqlite3
+import sys
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, ItemsView, Iterable, Iterator, KeysView, Mapping, Sequence, ValuesView
 from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, suppress
@@ -23,7 +25,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Never, SupportsIndex, TypeVar, cast, overload
 
-from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.compute_cancel import check_compute_cancelled, raise_if_operation_cancelled
 from polylogue.core.json import JSONDocument, JSONValue, _ValidatedJSONContainer
 from polylogue.core.json_envelope import _Readable
 from polylogue.core.work_progress import advance_work_progress
@@ -941,6 +943,77 @@ class _ExactJSONText(io.RawIOBase):
         return count
 
 
+class AcceptedPrefixReadError(OSError):
+    """The physical source no longer supplies the declared accepted bytes."""
+
+
+class _AcceptedPrefixReader:
+    def __init__(self, source: io.FileIO, length: int) -> None:
+        self.source = source
+        self.length = length
+        self.position = 0
+
+    def read(self, size: int = -1) -> bytes:
+        check_compute_cancelled()
+        remaining = self.length - self.position
+        if size < 0 or size > remaining:
+            size = remaining
+        if not size:
+            return b""
+        chunk = self.source.read(size)
+        if not chunk:
+            raise AcceptedPrefixReadError("retained JSONL parser prefix exceeds source bytes")
+        self.position += len(chunk)
+        return chunk
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        if whence == os.SEEK_CUR:
+            offset += self.position
+        elif whence == os.SEEK_END:
+            offset += self.length
+        elif whence != os.SEEK_SET:
+            raise ValueError("invalid accepted-prefix seek origin")
+        if not 0 <= offset <= self.length:
+            raise ValueError("seek exceeds accepted prefix")
+        self.source.seek(offset)
+        self.position = offset
+        return offset
+
+
+@contextmanager
+def _document_bytes(
+    path: Path, accepted_prefix_size: int | None
+) -> Iterator[io.BufferedReader | _AcceptedPrefixReader]:
+    check_compute_cancelled()
+    if accepted_prefix_size is None:
+        with path.open("rb") as complete_source:
+            yield complete_source
+        return
+    if accepted_prefix_size < 0:
+        raise AcceptedPrefixReadError("retained JSONL parser returned a negative prefix")
+    with path.open("rb", buffering=0) as source:
+        before = os.fstat(source.fileno())
+
+        def identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+            return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+        if before.st_size < accepted_prefix_size:
+            raise AcceptedPrefixReadError("retained JSONL parser prefix exceeds source bytes")
+        try:
+            yield _AcceptedPrefixReader(source, accepted_prefix_size)
+        finally:
+            primary = sys.exception()
+            if primary is not None:
+                raise_if_operation_cancelled(primary)
+            unchanged = False
+            try:
+                unchanged = identity(before) == identity(os.fstat(source.fileno())) == identity(path.stat())
+            except OSError as error:
+                raise AcceptedPrefixReadError("retained JSONL validation input changed") from error
+            if not unchanged:
+                raise AcceptedPrefixReadError("retained JSONL validation input changed") from primary
+
+
 class StreamedJSONDocument(AbstractContextManager[JSONValue]):
     """Decode JSON to private disk and expose a lazy view.
 
@@ -948,9 +1021,10 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
     exposed as an item in one synthetic lazy array.
     """
 
-    def __init__(self, path: Path | None, *, jsonl: bool = False) -> None:
+    def __init__(self, path: Path | None, *, jsonl: bool = False, accepted_prefix_size: int | None = None) -> None:
         self._path = path
         self._jsonl = jsonl
+        self._accepted_prefix_size = accepted_prefix_size
         self._owned = ExitStack()
         self._connection: sqlite3.Connection | None = None
         self._root_id: int | None = None
@@ -1014,7 +1088,7 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
             connection.execute("PRAGMA foreign_keys=ON")
             self._connection = connection
             self._root_id = (
-                self._decode(connection, self._path)
+                self._decode(connection, self._path, accepted_prefix_size=self._accepted_prefix_size)
                 if self._path is not None
                 else cast(int, connection.execute("INSERT INTO json_nodes(kind) VALUES ('array')").lastrowid)
             )
@@ -1105,6 +1179,7 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
         strip_bom: bool = True,
         provider_utf8: bool = True,
         text_encoding: str | None = None,
+        accepted_prefix_size: int | None = None,
     ) -> int:
         stack: list[_Frame] = []
         tokens = _ScalarTokenStore(connection, allow_nonfinite=allow_nonfinite)
@@ -1189,7 +1264,10 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
 
         from polylogue.core.json_envelope import LexemeAlignedReader, _PrefixStringReader
 
-        with path.open("rb") as stream:
+        with _document_bytes(path, accepted_prefix_size) as stream:
+            if self._jsonl and accepted_prefix_size == 0:
+                assert root_id is not None
+                return root_id
             encoding = text_encoding or json.detect_encoding(stream.read(4))
             stream.seek(0)
             with io.BufferedReader(

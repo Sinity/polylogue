@@ -575,6 +575,14 @@ matching captured page still reuses its existing private bytes.
 
 ## Retained validation policy
 
+Retained schema validation accepts the parser's exact accepted byte count on
+the existing input. Its decoder owns one pinned physical reader, checks source
+identity and physical extent, and exposes EOF at that boundary. It creates no
+second prefix file. An unfinished tail remains in original Source; an empty
+accepted frontier stays a zero-record stream. Changed or shortened physical
+input is retryable, and cancellation closes both reader and spill ownership.
+
+
 The daemon converts runtime configuration into `ValidationMode` and supplies
 it to the resident Raw owner. Direct owner callers supply the same typed
 argument; its default is advisory. Changing an environment variable after

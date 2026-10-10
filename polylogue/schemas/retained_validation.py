@@ -105,6 +105,7 @@ def _retained_validation_productive_identity(
     evidence_id: str,
     source_path: str | None = None,
     jsonl: bool = False,
+    accepted_prefix_size: int | None = None,
     captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
@@ -145,6 +146,7 @@ def _retained_validation_productive_identity(
         evidence_id,
         source_path,
         jsonl,
+        accepted_prefix_size,
         zip_coordinate,
         ValidationMode.from_string(mode).value,
         resolution,
@@ -640,6 +642,7 @@ def validate_retained_document(
     evidence_id: str,
     source_path: str | None = None,
     jsonl: bool = False,
+    accepted_prefix_size: int | None = None,
     captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
@@ -666,7 +669,7 @@ def validate_retained_document(
 
     from polylogue.schemas.observation_spill import StreamedJSONDocument
 
-    document = StreamedJSONDocument(path, jsonl=jsonl)
+    document = StreamedJSONDocument(path, jsonl=jsonl, accepted_prefix_size=accepted_prefix_size)
     with document as payload, _ValidationScratch(document.connection).activate():
         spill = _active_spill(document)
         active_registry = registry or SchemaRegistry()
