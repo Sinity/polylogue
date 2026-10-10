@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from "node:fs";
+import { closeSync, ftruncateSync, openSync, readFileSync, writeSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { bindOwnedProviderTargets, verifyOwnedProviderProofExtension } from "./owned_provider_extension.mjs";
@@ -8,6 +8,20 @@ import { connectCdp, publishProofFailure, evaluateJson, inProofPhase,
   requireExpectedServiceContext, requireProofRunning, captureProvider, requireHiddenProofWorkspace, runChromeControl,
   verifyInstalledExtension, settleProofCleanup } from "./live_provider_proof.mjs";
 
+// One private file descriptor owns all failed capture snapshots for this run.
+export function ownedCaptureDiagnostic(destination) {
+  let fd = null;
+  const snapshots = [];
+  return {
+    retain(details) {
+      if (fd === null) fd = openSync(destination, "wx", 0o600);
+      snapshots.push(details);
+      ftruncateSync(fd, 0);
+      writeSync(fd, `${JSON.stringify({ snapshots })}\n`, 0, "utf8");
+    },
+    close() { if (fd !== null) { closeSync(fd); fd = null; } },
+  };
+}
 const sleep = ms => new Promise(resolve => globalThis.setTimeout(resolve, ms));
 async function workerFor(extensionId) {
   while (true) {
@@ -91,7 +105,11 @@ export async function runOwnedProviderProof({ extensionRoot, control = runChrome
       const tab = admitted.find(row => row.url === selected.url);
       if (!tab) throw new Error("proof_owned_tab_refused");
       const provider = { ...selected, host: new URL(selected.url).hostname, provider: selected.name === "chatgpt" ? "chatgpt" : "claude-ai" };
-      const captured = await inProofPhase("capture_result", () => capture(worker, provider, tab.id));
+      const retainedFailure = retainCaptureFailure === null ? null : async returned => {
+        const details = await evaluate(worker, "globalThis.__polylogueOwnedProviderProof.captureFailureDetails()");
+        await retainCaptureFailure({ ...details, capture_reply: returned });
+      };
+      const captured = await inProofPhase("capture_result", () => capture(worker, provider, tab.id, retainedFailure));
       providers[provider.host] = providerSummary(provider, captured);
     }
     if (!Object.values(providers).every(row => row.ok === true)) throw new Error("proof_capture_incomplete");
@@ -120,13 +138,16 @@ export async function runOwnedProviderProof({ extensionRoot, control = runChrome
   return result;
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  let diagnostic = null;
   Promise.resolve().then(() => {
     requireExpectedServiceContext();
     const extensionRoot = process.env.POLYLOGUE_LIVE_PROVIDER_EXTENSION_ROOT;
     if (!extensionRoot) throw new Error("proof_owned_provider_binding_invalid");
     const diagnosticPath = process.env.POLYLOGUE_LIVE_PROVIDER_DIAGNOSTIC_PATH;
+    diagnostic = diagnosticPath ? ownedCaptureDiagnostic(diagnosticPath) : null;
     return runOwnedProviderProof({ extensionRoot: path.resolve(extensionRoot),
-      retainCaptureFailure: diagnosticPath ? details => writeFileSync(diagnosticPath, `${JSON.stringify(details)}\n`, { flag: "wx", mode: 0o600 }) : null });
+      retainCaptureFailure: diagnostic?.retain ?? null });
   }).then(result => process.stdout.write(`${JSON.stringify(result)}\n`))
-    .catch(error => { publishProofFailure(error); process.exitCode = 1; });
+    .catch(error => { publishProofFailure(error); process.exitCode = 1; })
+    .finally(() => diagnostic?.close());
 }
