@@ -99,6 +99,10 @@ def test_owned_provider_runtime_uses_private_native_authority_and_settles_custod
             response = connection.getresponse()
             assert response.status == 401
             response.read()
+            connection.request("GET", "/v1/archive-state?provider=chatgpt&provider_session_id=neutral-private-id")
+            response = connection.getresponse()
+            assert response.status == 401
+            response.read()
             connection.close()
             spool = self.root / "browser-capture"
             envelope, turns, attachments = native_proof_artifact(self.root, "native-rich-blocks-v1.json")
@@ -146,7 +150,11 @@ def test_owned_provider_runtime_uses_private_native_authority_and_settles_custod
         assert result["ok"] is True
         assert result["archive_convergence"] == "not_exercised"
         assert result["automatic_capture_enabled"] is True
-        assert result["receiver_requests"] == [{"method": "GET", "path": "/v1/status", "status": 401}]
+        assert result["receiver_requests"] == [
+            {"method": "GET", "path": "/v1/status", "status": 401},
+            {"method": "GET", "path": "/v1/archive-state", "status": 401},
+        ]
+        assert "neutral-private-id" not in json.dumps(result["receiver_requests"])
         providers = result["providers"]
         assert isinstance(providers, dict)
         assert providers["chatgpt.com"]["message_count"] > 0

@@ -487,7 +487,7 @@ def _run_proof_locked(
         class ObservedHandler(BrowserCaptureHandler):
             def _finish_observed_request(self, method: str, started_at: float) -> None:
                 path = urlsplit(self.path).path
-                if path in {"/v1/status", "/v1/receiver/attest"}:
+                if path in {"/v1/status", "/v1/receiver/attest", "/v1/archive-state"}:
                     status = getattr(self, "_polylogue_status", None)
                     receiver_requests.append(
                         {
