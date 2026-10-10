@@ -5,7 +5,10 @@ const AGENT_WORKSPACE = "agentbrowser";
 const CONTROL_TIMEOUT_MS = 30_000;
 
 export function firstControlJson(bytes) {
-  for (const line of Buffer.from(bytes).toString("utf8").split("\n")) {
+  const text = Buffer.from(bytes).toString("utf8");
+  // The installed control prints complete, indented JSON. Diagnostic-prefixed
+  // single-line responses retain their existing explicit parsing route.
+  for (const line of [text, ...text.split("\n")]) {
     try {
       const value = JSON.parse(line);
       if (value && typeof value === "object") return value;

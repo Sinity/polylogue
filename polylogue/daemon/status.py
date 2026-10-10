@@ -69,7 +69,12 @@ from polylogue.operations.quick_check import (
     observe_quick_check,
     unmeasured_quick_check,
 )
-from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
+from polylogue.operations.status_protocol import (
+    ComponentSnapshot,
+    StatusComponentRegistry,
+    StatusComponentSpec,
+    StatusWatchSource,
+)
 from polylogue.operations.user_overlay_reads import readable_required_tier
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
@@ -78,7 +83,6 @@ from polylogue.readiness.claim_guard import (
     derive_claim_guard,
     search_unmeasured_reason,
 )
-from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import (
@@ -707,7 +711,7 @@ class DaemonStatus(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def live_source_status_payload(sources: tuple[WatchSource, ...]) -> JSONDocument:
+def live_source_status_payload(sources: tuple[StatusWatchSource, ...]) -> JSONDocument:
     """Return status for configured live-ingest roots."""
     items = [
         {
@@ -2275,6 +2279,32 @@ def _configured_source_status_fingerprint() -> str:
     )
 
 
+def _effective_watch_sources(
+    sources: tuple[StatusWatchSource, ...] | None = None,
+) -> tuple[StatusWatchSource, ...]:
+    if sources is not None:
+        return sources
+    from polylogue.daemon.status_snapshot import runtime_watch_sources
+
+    runtime_sources = runtime_watch_sources()
+    return runtime_sources if runtime_sources is not None else default_sources()
+
+
+def _health_source_fingerprint(sources: tuple[StatusWatchSource, ...]) -> str:
+    return json.dumps(
+        [(source.name, str(source.root), source.exists(), os.access(source.root, os.R_OK)) for source in sources],
+        separators=(",", ":"),
+    )
+
+
+class _DaemonStatusComponentRegistry(StatusComponentRegistry):
+    """Retain each source selection's observations and in-flight collectors."""
+
+    def __init__(self, specs: list[StatusComponentSpec], sources: tuple[StatusWatchSource, ...]) -> None:
+        super().__init__(specs)
+        self.sources = sources
+
+
 def _daemon_status_component_specs(
     *,
     checked_health: Callable[[set[HealthTier]], DaemonHealth],
@@ -2283,6 +2313,7 @@ def _daemon_status_component_specs(
     include_exact_raw_materialization_readiness: bool,
     fingerprint: Callable[[], str] | None = None,
     medium_health_ttl_s: float | None = None,
+    health_fast_fingerprint: Callable[[], str] | None = None,
 ) -> list[StatusComponentSpec]:
     """Component declarations shared by the ephemeral per-call path and the
     persistent periodic-refresh registry (polylogue-20d.17).
@@ -2445,7 +2476,7 @@ def _daemon_status_component_specs(
             collector=lambda: checked_health(health_tiers() & {HealthTier.FAST}),
             deadline_s=1.5,
             cost_class="moderate",
-            fingerprint=fingerprint,
+            fingerprint=health_fast_fingerprint if health_fast_fingerprint is not None else fingerprint,
             ttl_s=_HEALTH_FAST_TTL_S,
         ),
         StatusComponentSpec(
@@ -2461,11 +2492,13 @@ def _daemon_status_component_specs(
 
 
 _PERIODIC_STATUS_REGISTRY_LOCK = threading.Lock()
-_PERIODIC_STATUS_REGISTRY: StatusComponentRegistry | None = None
+_PERIODIC_STATUS_REGISTRIES: dict[tuple[tuple[str, str], ...], _DaemonStatusComponentRegistry] = {}
 
 
-def periodic_status_component_registry() -> StatusComponentRegistry:
-    """Return the process-wide persistent registry backing the periodic status refresh.
+def periodic_status_component_registry(
+    *, sources: tuple[StatusWatchSource, ...] | None = None
+) -> StatusComponentRegistry:
+    """Return the persistent registry owned by this effective source selection.
 
     ``_periodic_status_snapshot_refresh`` (``daemon/cli.py``) calls
     ``refresh_status_snapshot`` every 10s for the life of the daemon process.
@@ -2483,23 +2516,25 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
     the collector, and once an attempt finishes, every subsequent tick reuses
     the real result until its own ``ttl_s``/fingerprint expires.
 
-    Built once per process (lazily, on first call) with the same collection
+    Built once per source selection (lazily, on first call) with the same collection
     parameters ``refresh_status_snapshot`` always passes
     (``include_raw_replay_backlog=False``,
     ``include_exact_raw_materialization_readiness=False``). Its health
-    collector resolves ``health_check_tiers`` on every refresh, matching the
+    collector uses the bound source tuple and resolves ``health_check_tiers`` on every refresh, matching the
     daemon's periodic health loop. Direct one-shot CLI/API status calls are
     unaffected, since they never pass a ``registry`` into
     ``build_daemon_status``/``daemon_status_payload`` and keep their existing
     fresh-per-call ephemeral-registry contract.
     """
-    global _PERIODIC_STATUS_REGISTRY
+    watch_sources = _effective_watch_sources(sources)
+    source_key = tuple((source.name, str(source.root)) for source in watch_sources)
     with _PERIODIC_STATUS_REGISTRY_LOCK:
-        if _PERIODIC_STATUS_REGISTRY is None:
+        registry = _PERIODIC_STATUS_REGISTRIES.get(source_key)
+        if registry is None:
 
             def _checked_health(tiers: set[HealthTier]) -> DaemonHealth:
                 try:
-                    return check_health(tiers=tiers)
+                    return check_health(tiers=tiers, sources=watch_sources)
                 except Exception as exc:
                     emit(
                         "daemon.status.health_check_failed",
@@ -2529,6 +2564,11 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
                 include_raw_replay_backlog=False,
                 include_exact_raw_materialization_readiness=False,
                 fingerprint=lambda: _daemon_status_fingerprint(_active_status_db_path()),
+                health_fast_fingerprint=lambda: (
+                    _daemon_status_fingerprint(_active_status_db_path())
+                    + "|"
+                    + _health_source_fingerprint(watch_sources)
+                ),
             )
             specs.append(
                 StatusComponentSpec(
@@ -2540,15 +2580,15 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
                     fingerprint=lambda: _daemon_status_fingerprint(_active_status_db_path(), include_user_tier=True),
                 )
             )
-            _PERIODIC_STATUS_REGISTRY = StatusComponentRegistry(specs)
-        return _PERIODIC_STATUS_REGISTRY
+            registry = _DaemonStatusComponentRegistry(specs, watch_sources)
+            _PERIODIC_STATUS_REGISTRIES[source_key] = registry
+        return registry
 
 
 def reset_periodic_status_component_registry() -> None:
-    """Drop the persistent periodic-refresh registry singleton. Test-only."""
-    global _PERIODIC_STATUS_REGISTRY
+    """Drop the persistent periodic-refresh registries. Test-only."""
     with _PERIODIC_STATUS_REGISTRY_LOCK:
-        _PERIODIC_STATUS_REGISTRY = None
+        _PERIODIC_STATUS_REGISTRIES.clear()
 
 
 _UNMEASURED_UNSET: Any = object()
@@ -2597,7 +2637,7 @@ def _component_is_unmeasured(snapshot: ComponentSnapshot, *, current_fingerprint
 
 def build_daemon_status(
     *,
-    sources: tuple[WatchSource, ...] | None = None,
+    sources: tuple[StatusWatchSource, ...] | None = None,
     include_expensive_health: bool = False,
     include_raw_replay_backlog: bool = True,
     include_exact_raw_materialization_readiness: bool = True,
@@ -2622,7 +2662,9 @@ def build_daemon_status(
     default ``None`` -- a fresh per-call registry, correct for their pure
     -recompute contract.
     """
-    watch_sources = sources if sources is not None else default_sources()
+    watch_sources = _effective_watch_sources(sources)
+    if isinstance(registry, _DaemonStatusComponentRegistry) and registry.sources != watch_sources:
+        registry = periodic_status_component_registry(sources=watch_sources)
     # An enabled switch alone cannot prove that the receiver bound. Outside
     # the runtime owner, its actual policy and liveness remain unobserved.
     browser_capture_policy = browser_capture_status_payload()
@@ -2636,7 +2678,7 @@ def build_daemon_status(
 
     def _checked_health(tiers: set[HealthTier]) -> DaemonHealth:
         try:
-            return check_health(tiers=tiers)
+            return check_health(tiers=tiers, sources=watch_sources)
         except Exception as exc:
             # DaemonHealth() alone defaults to overall_status=OK with zero
             # alerts — the single most misleading fallback possible for a
@@ -3138,7 +3180,7 @@ def supervised_service_snapshot() -> tuple[dict[str, str], list[dict[str, object
 def daemon_status_payload(
     *,
     config: Config | None = None,
-    sources: tuple[WatchSource, ...] | None = None,
+    sources: tuple[StatusWatchSource, ...] | None = None,
     include_raw_replay_backlog: bool = False,
     include_exact_raw_materialization_readiness: bool = False,
     include_archive_debt: bool = False,
@@ -3154,7 +3196,7 @@ def daemon_status_payload(
     """
     config_was_explicit = config is not None
 
-    watch_sources = sources if sources is not None else default_sources()
+    watch_sources = _effective_watch_sources(sources)
 
     last_ingestion = None
     try:

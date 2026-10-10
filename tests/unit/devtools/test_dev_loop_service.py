@@ -5,6 +5,8 @@ import os
 import socket
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -35,6 +37,11 @@ def test_declared_operation_has_a_json_contract_and_no_retired_keys() -> None:
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 
+@contextmanager
+def _neutral_native_scope(**_kwargs: Any) -> Iterator[dict[str, str]]:
+    yield {}
+
+
 def _fixed_service_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dev_loop_service, "require_declared_operation_context", lambda operation: f"unit-{operation}")
     monkeypatch.setenv("AGENTCTL_PROJECT_ID", "polylogue")
@@ -58,7 +65,8 @@ def test_run_proof_reads_owned_bound_ports_and_product_convergence(
     monkeypatch.setattr(dev_loop_service, "_start_daemon", lambda **kwargs: started.update(kwargs))
     monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
     monkeypatch.setattr(dev_loop_service, "_await_api", lambda **_kwargs: None)
-    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
+    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(dev_loop_service, "scoped_native_transport_proof", _neutral_native_scope)
     monkeypatch.setattr(
         dev_loop_service,
         "_submit_deterministic_captures",
@@ -74,7 +82,7 @@ def test_run_proof_reads_owned_bound_ports_and_product_convergence(
     )
     monkeypatch.setattr(dev_loop_service, "_fetch_api_messages", lambda **_kwargs: True)
 
-    payload = dev_loop_service.run_proof()
+    payload = dev_loop_service.run_proof(chrome_user_data_dir=tmp_path)
 
     assert payload == {
         "ok": True,
@@ -218,7 +226,8 @@ def test_run_proof_rejects_one_malformed_expected_provider_before_convergence(
     monkeypatch.setattr(dev_loop_service, "_await_listener_ports", lambda **_kwargs: (48801, 48865))
     monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
     monkeypatch.setattr(dev_loop_service, "_await_api", lambda **_kwargs: None)
-    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
+    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(dev_loop_service, "scoped_native_transport_proof", _neutral_native_scope)
     monkeypatch.setattr(
         dev_loop_service,
         "_submit_deterministic_captures",
@@ -234,7 +243,7 @@ def test_run_proof_rejects_one_malformed_expected_provider_before_convergence(
     )
 
     with pytest.raises(RuntimeError, match="entries were malformed: claude-ai"):
-        dev_loop_service.run_proof()
+        dev_loop_service.run_proof(chrome_user_data_dir=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -303,7 +312,10 @@ def test_shared_chrome_control_is_the_only_dev_loop_browser_handoff(
         {
             "args": ["node", "scripts/dev_loop_shared_chrome_proof.mjs"],
             "returncode": 0,
-            "communicate": lambda self, **_kwargs: ('{"ok":true}\n', ""),
+            "communicate": lambda self, **_kwargs: (
+                '{"ok":true,"native_transport":{"cancellation":true,"response_sha256":"neutral-sha"}}\n',
+                "",
+            ),
         },
     )()
     launched: dict[str, object] = {}
@@ -314,7 +326,13 @@ def test_shared_chrome_control_is_the_only_dev_loop_browser_handoff(
     )
     monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
 
-    dev_loop_service._run_shared_chrome_control(repo_root=tmp_path)
+    dev_loop_service._run_shared_chrome_control(
+        repo_root=tmp_path,
+        proof_environment={
+            "POLYLOGUE_DEV_LOOP_EXTENSION_ROOT": str(tmp_path / "browser-extension"),
+            "POLYLOGUE_DEV_LOOP_ATTACHMENT_SHA256": "neutral-sha",
+        },
+    )
 
     assert launched["command"] == ["node", "scripts/dev_loop_shared_chrome_proof.mjs"]
     kwargs = cast(dict[str, Any], launched["kwargs"])
@@ -337,7 +355,13 @@ def test_shared_chrome_control_preserves_bounded_child_failure(tmp_path: Path, m
     monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
 
     with pytest.raises(RuntimeError, match="control boundary rejected the window") as failure:
-        dev_loop_service._run_shared_chrome_control(repo_root=tmp_path)
+        dev_loop_service._run_shared_chrome_control(
+            repo_root=tmp_path,
+            proof_environment={
+                "POLYLOGUE_DEV_LOOP_EXTENSION_ROOT": str(tmp_path / "browser-extension"),
+                "POLYLOGUE_DEV_LOOP_ATTACHMENT_SHA256": "neutral-sha",
+            },
+        )
 
     assert "\n" not in str(failure.value)
 
@@ -404,15 +428,21 @@ console.log(JSON.stringify({ calls, result }));
 def test_shared_chrome_node_workflow_closes_only_its_returned_target() -> None:
     program = """
 import { runSharedChromeControlWorkflow } from './scripts/dev_loop_shared_chrome_proof.mjs';
-
 const calls = [];
+const id = 'p'.repeat(32);
+const url = `chrome-extension://${id}/proof.html`;
 const control = async (args) => {
   calls.push(args);
-  if (args[0] === 'agent-window') return { id: 'A'.repeat(32), url: 'about:blank', parked: true, workspace: 'agentbrowser', show_with: 'F7' };
+  if (args[0] === 'load-extension') return { id, path: '.' };
+  if (args[0] === 'agent-window') return { id: 'A'.repeat(32), url, parked: true, workspace: 'agentbrowser', show_with: 'F7' };
   if (args[0] === 'close' && args[1] !== 'A'.repeat(32)) throw new Error('attempted to close an unowned target');
   return {};
 };
-const result = await runSharedChromeControlWorkflow({ extensionRoot: '.', control });
+const result = await runSharedChromeControlWorkflow({ extensionRoot: '.', control,
+  verifyBinding: () => ({ extension_id: id }), browserVersion: async () => ({}),
+  connect: async () => ({ call: async (method, args) => calls.push([method, args]), close: () => calls.push(['browser.close']) }),
+  connectPage: async () => ({ close: () => calls.push(['page.close']) }),
+  verifyInstalled: async () => ({ id }), evaluate: async () => ({ upload_bytes: 1048593 }) });
 console.log(JSON.stringify({ calls, result }));
 """
     completed = subprocess.run(
@@ -422,36 +452,44 @@ console.log(JSON.stringify({ calls, result }));
         capture_output=True,
         check=False,
     )
-
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == {
-        "calls": [
-            ["status"],
-            ["load-extension", "--path", "."],
-            ["agent-window", "--url", "about:blank"],
-            ["close", "A" * 32],
-        ],
-        "result": {"ok": True, "shared_chrome": {"extension_loaded": True, "target_closed": True}},
+    payload = json.loads(completed.stdout)
+    assert payload["calls"] == [
+        ["status"],
+        ["load-extension", "--path", "."],
+        ["agent-window", "--url", f"chrome-extension://{'p' * 32}/proof.html"],
+        ["close", "A" * 32],
+        ["page.close"],
+        ["Extensions.uninstall", {"id": "p" * 32}],
+        ["browser.close"],
+    ]
+    assert payload["result"] == {
+        "ok": True,
+        "shared_chrome": {"extension_loaded": True, "target_closed": True, "extension_unloaded": True},
+        "installed_extension": {"id": "p" * 32},
+        "proof_binding": {"extension_id": "p" * 32},
+        "native_transport": {"upload_bytes": 1048593},
     }
 
 
 def test_shared_chrome_node_workflow_rejects_special_workspace_and_reclaims_target() -> None:
     program = """
 import { runSharedChromeControlWorkflow } from './scripts/dev_loop_shared_chrome_proof.mjs';
-
 const calls = [];
+const id = 'p'.repeat(32);
 const control = async (args) => {
   calls.push(args);
-  if (args[0] === 'agent-window') return { id: 'B'.repeat(32), url: 'about:blank', parked: true, workspace: ['special', 'agentbrowser'].join(':'), show_with: 'F7' };
+  if (args[0] === 'load-extension') return { id, path: '.' };
+  if (args[0] === 'agent-window') return { id: 'B'.repeat(32), url: `chrome-extension://${id}/proof.html`, parked: true, workspace: ['special', 'agentbrowser'].join(':'), show_with: 'F7' };
   if (args[0] === 'close' && args[1] !== 'B'.repeat(32)) throw new Error('attempted to close an unowned target');
   return {};
 };
 try {
-  await runSharedChromeControlWorkflow({ extensionRoot: '.', control });
+  await runSharedChromeControlWorkflow({ extensionRoot: '.', control,
+    verifyBinding: () => ({ extension_id: id }), browserVersion: async () => ({}),
+    connect: async () => ({ call: async (method, args) => calls.push([method, args]), close: () => calls.push(['browser.close']) }) });
   process.exitCode = 2;
-} catch (error) {
-  console.log(JSON.stringify({ message: error.message, calls }));
-}
+} catch (error) { console.log(JSON.stringify({ message: error.message, calls })); }
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "--eval", program],
@@ -460,11 +498,14 @@ try {
         capture_output=True,
         check=False,
     )
-
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
     assert "agentbrowser" in payload["message"]
-    assert payload["calls"][-1] == ["close", "B" * 32]
+    assert payload["calls"][-3:] == [
+        ["close", "B" * 32],
+        ["Extensions.uninstall", {"id": "p" * 32}],
+        ["browser.close"],
+    ]
 
 
 def test_anti_vacuity_owned_target_cleanup_waits_for_a_slow_close() -> None:
@@ -559,9 +600,9 @@ def test_api_readiness_uses_the_unauthenticated_liveness_contract(monkeypatch: p
 
 
 def test_main_emits_one_bounded_json_error(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr(dev_loop_service, "run_proof", lambda: (_ for _ in ()).throw(ValueError("x" * 600)))
+    monkeypatch.setattr(dev_loop_service, "run_proof", lambda **_kwargs: (_ for _ in ()).throw(ValueError("x" * 600)))
 
-    assert dev_loop_service.main(["--json"]) == 1
+    assert dev_loop_service.main(["--json", "--chrome-user-data-dir", "/neutral/chrome"]) == 1
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
@@ -575,7 +616,8 @@ def test_proof_daemon_owns_ephemeral_ports_through_product_convergence(
     """A competing binder cannot take either actual listener before proof readiness."""
     _fixed_service_context(monkeypatch)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "scratch"))
-    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
+    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(dev_loop_service, "scoped_native_transport_proof", _neutral_native_scope)
     original = dev_loop_service._await_listener_ports
     observed: list[tuple[int, int]] = []
 
@@ -593,7 +635,7 @@ def test_proof_daemon_owns_ephemeral_ports_through_product_convergence(
         return ports
 
     monkeypatch.setattr(dev_loop_service, "_await_listener_ports", read_owned)
-    result = dev_loop_service.run_proof(readiness_timeout_s=45)
+    result = dev_loop_service.run_proof(chrome_user_data_dir=tmp_path, readiness_timeout_s=45)
     assert result["ok"] is True and len(observed) == 1
     api, capture = observed[0]
     assert 0 < api != capture > 0
@@ -642,5 +684,5 @@ def test_listener_readback_failure_still_terminates_proof_child(
 
     monkeypatch.setattr(dev_loop_service, "_await_listener_ports", refused)
     with pytest.raises(RuntimeError, match="listener readback refused"):
-        dev_loop_service.run_proof()
+        dev_loop_service.run_proof(chrome_user_data_dir=tmp_path)
     assert stopped == [child]

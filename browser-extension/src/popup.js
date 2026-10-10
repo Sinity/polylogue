@@ -602,13 +602,11 @@ async function render() {
     polylogueConversationTimeline: {},
     polylogueReceiverPairing: null,
     polylogueAmbientSettings: { enabled: true, disabled_sites: {} },
-    receiverAuthToken: "",
     receiverBaseUrl: DEFAULT_RECEIVER,
   });
   renderLog(stored.polylogueCaptureLog);
   renderDebugLog(stored.polylogueDebugLog);
   document.getElementById("receiver-url").value = stored.receiverBaseUrl;
-  document.getElementById("receiver-token").value = stored.receiverAuthToken || "";
   document.getElementById("receiver").textContent = stored.receiverBaseUrl;
 
   const [tab, openTabs, mission, browserActions] = await Promise.all([
@@ -869,7 +867,6 @@ document.getElementById("automatic-capture-enabled")?.addEventListener("change",
 document.getElementById("save").addEventListener("click", async () => {
   await withAction("save", async () => {
     const receiverBaseUrl = document.getElementById("receiver-url").value;
-    const receiverAuthToken = document.getElementById("receiver-token").value;
     // A non-default receiver port is an optional host permission (leak audit
     // L7): request it here, inside the operator's click, because
     // chrome.permissions.request needs a user gesture the service worker
@@ -885,22 +882,10 @@ document.getElementById("save").addEventListener("click", async () => {
       const granted = await chrome.permissions.request({ origins: [origin] });
       if (!granted) throw new Error("receiver_origin_not_permitted");
     }
-    const result = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl, receiverAuthToken });
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl });
     if (result && result.ok === false) throw new Error(result.error || "configure_receiver_failed");
     await refreshStatus("popup_configure_receiver");
   }, { busy: "Saving", ok: "Saved" });
-});
-
-document.getElementById("pair-with-code")?.addEventListener("click", async () => {
-  await withAction("pair-with-code", async () => {
-    const codeInput = document.getElementById("pairing-code");
-    const code = codeInput.value.trim();
-    if (!code) throw new Error("pairing_code_required");
-    const result = await chrome.runtime.sendMessage({ type: "polylogue.pairWithCode", code });
-    if (!result?.ok) throw new Error(result?.error || "pairing_failed");
-    codeInput.value = "";
-    await refreshStatus("popup_pair_with_code");
-  }, { busy: "Pairing", ok: "Paired" });
 });
 
 // The support packet exists to be exported and shared with an operator or a

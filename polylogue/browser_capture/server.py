@@ -6,6 +6,7 @@ import hmac
 import json
 import re
 import secrets
+import socket
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
@@ -78,6 +79,7 @@ from polylogue.browser_capture.receiver import (
     existing_capture_state,
     receiver_identity,
     receiver_request_config,
+    receiver_socket_authority,
     receiver_status_payload,
     receiver_status_proof,
 )
@@ -1550,7 +1552,23 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_attestation_request")
             return
-        proof = attest_receiver(self.receiver_config, request.challenge)
+        # An old accepted connection must not sign for a listener that has
+        # released its port. A relay could retain that connection and then
+        # acquire the same port after the original listener closes.
+        try:
+            listener = self.server.socket
+            accepted = self.connection.getsockname()
+            if (
+                not listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+                or listener.getsockname()[1] != accepted[1]
+            ):
+                self._safe_error(HTTPStatus.SERVICE_UNAVAILABLE, "receiver_listener_unavailable")
+                return
+            endpoint = receiver_socket_authority(accepted)
+        except OSError:
+            self._safe_error(HTTPStatus.SERVICE_UNAVAILABLE, "receiver_listener_unavailable")
+            return
+        proof = attest_receiver(self.receiver_config, request.challenge, endpoint)
         if proof is None:
             # With auth disabled there is no secret to prove possession of.
             self._safe_error(HTTPStatus.CONFLICT, "receiver_auth_disabled")
@@ -1560,8 +1578,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             BrowserCaptureReceiverAttestationPayload(
                 api_schema=BROWSER_CAPTURE_API_SCHEMA,
                 receiver_id=receiver_identity(self.receiver_config),
+                endpoint=endpoint,
                 proof=proof,
             ).model_dump(mode="json"),
+            keep_alive=self.headers.get("Connection", "").lower() == "keep-alive",
         )
 
     def _mission_control(self, provider: str, provider_session_id: str) -> None:

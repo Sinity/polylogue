@@ -300,10 +300,9 @@ def pairing_start(ttl_seconds: int, output_format: str | None) -> None:
     """Mint a short-lived one-time pairing code.
 
     Enter the printed code into the extension popup's "Pairing code" field
-    (Diagnostics > Receiver settings) within the TTL. The extension exchanges
-    it for the receiver's bearer token automatically -- the operator never
-    views or pastes the token itself. The code is single-use and invalidated
-    after 5 wrong attempts; run this command again to mint a fresh one.
+    through the external HTTP client's pairing route within the TTL. The code
+    is single-use. The browser extension uses native transport and never
+    receives or stores the receiver bearer.
     """
     minted = mint_pairing_code(ttl_seconds=ttl_seconds)
     if output_format == "json":
@@ -312,12 +311,12 @@ def pairing_start(ttl_seconds: int, output_format: str | None) -> None:
         )
         return
     click.echo(f"Pairing code: {minted.code}")
-    click.echo(f"Expires in {minted.ttl_seconds}s -- enter it in the extension popup's Pairing code field now.")
+    click.echo(f"Expires in {minted.ttl_seconds}s -- redeem it through the external HTTP client pairing route.")
 
 
 @browser_capture_command.group("native-host")
 def native_host_group() -> None:
-    """Install the browser-scoped secure credential bootstrap."""
+    """Install the browser-scoped authenticated receiver transport."""
 
 
 @native_host_group.command("install")

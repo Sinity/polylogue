@@ -55,6 +55,30 @@ const ERROR_CATEGORIES = new Map([
   ["proof_pause_restore_failed", "pause_failed"],
   ["proof_host_permission_failed", "control_failed"],
   ["proof_capture_incomplete", "capture_incomplete"],
+  ["proof_owned_provider_isolation_unavailable", "provider_isolation_refused"],
+  ["loopback_endpoint_required", "loopback_endpoint_required"],
+  ["receiver_identity_mismatch", "receiver_identity_mismatch"],
+  ["receiver_authentication_failed", "receiver_authentication_failed"],
+  ["receiver_unreachable", "receiver_unreachable"],
+  ["receiver_observation_storage_failed", "receiver_observation_storage_failed"],
+  ["receiver_transport_namespace_unavailable", "receiver_transport_namespace_unavailable"],
+  ["native_request_invalid", "native_request_invalid"],
+  ["native_input_incomplete", "native_input_incomplete"],
+  ["native_operation_cancelled", "native_operation_cancelled"],
+  ["native_request_body_invalid", "native_request_body_invalid"],
+  ["native_route_forbidden", "native_route_forbidden"],
+  ["native_request_header_forbidden", "native_request_header_forbidden"],
+  ["native_messaging_unavailable", "native_messaging_unavailable"],
+  ["native_transport_disconnected", "native_transport_disconnected"],
+  ["native_response_frame_invalid", "native_response_frame_invalid"],
+  ["native_response_cancelled", "native_response_cancelled"],
+  ["proof_native_inputs_invalid", "proof_native_inputs_invalid"],
+  ["proof_native_upload_mismatch", "proof_native_upload_mismatch"],
+  ["proof_native_refusal_missing", "proof_native_refusal_missing"],
+  ["proof_native_cancel_empty", "proof_native_cancel_empty"],
+  ["proof_native_cancel_missing", "proof_native_cancel_missing"],
+  ["proof_native_download_refused", "proof_native_download_refused"],
+  ["proof_native_download_mismatch", "proof_native_download_mismatch"],
 ]);
 let proofPhase = "service_context";
 let shutdownPhase = null;
@@ -187,7 +211,6 @@ function fixedInputs() {
   return {
     extensionRoot: path.resolve(scriptDirectory, ".."),
     receiverBaseUrl: `http://127.0.0.1:${receiverPort}`,
-    receiverToken: requiredEnvironment("POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN"),
     conversations: JSON.parse(requiredEnvironment("POLYLOGUE_LIVE_PROVIDER_CONVERSATIONS")),
     timeoutMs: _WORKFLOW_TIMEOUT_MS,
     startupTimeoutMs: _STARTUP_TIMEOUT_MS,
@@ -471,7 +494,7 @@ export function closeOwnedProofWindows() {
   return targetSettlement;
 }
 
-function connectCdp(webSocketDebuggerUrl) {
+export function connectCdp(webSocketDebuggerUrl) {
   const socket = new globalThis.WebSocket(webSocketDebuggerUrl);
   const pending = new Map();
   let sequence = 0;
@@ -512,7 +535,7 @@ async function waitJson(url, timeoutMs) {
   throw new Error(`timed out waiting for shared Chrome CDP: ${lastError}`);
 }
 
-export async function evaluateJson(client, expression, { userGesture = false } = {}) {
+export async function evaluateJson(client, expression, { userGesture = false, retainUnknownException = null } = {}) {
   const result = await client.call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture });
   if (result.exceptionDetails) {
     // CDP's text is usually generic. Only an exact known first line of the
@@ -520,6 +543,7 @@ export async function evaluateJson(client, expression, { userGesture = false } =
     const description = result.exceptionDetails.exception?.description;
     const firstLine = typeof description === "string" ? description.split("\n", 1)[0] : null;
     const known = [...ERROR_CATEGORIES.keys()].find(code => firstLine === `Error: ${code}`);
+    if (!known && retainUnknownException !== null) await retainUnknownException(result.exceptionDetails);
     throw new Error(known || "proof_evaluation_failed");
   }
   return result.result?.value;
@@ -549,18 +573,18 @@ async function waitForExtensionWorker(extensionId, timeoutMs) {
 }
 
 export async function receiverConfiguration(client) {
-  return evaluateJson(client, "chrome.storage.local.get(['receiverBaseUrl', 'receiverAuthToken', 'polylogueReceiverPairing', 'polylogueAmbientSettings'])");
+  return evaluateJson(client, "chrome.storage.local.get(['receiverBaseUrl', 'polylogueReceiverPairing', 'polylogueAmbientSettings'])");
 }
 
-export async function configureReceiver(client, receiverBaseUrl, receiverToken) {
+export async function configureReceiver(client, receiverBaseUrl) {
   const outcome = await evaluateJson(client, `(async () => {
     const pause = await chrome.runtime.sendMessage({ type: "polylogue.ambient.configure", automatic_capture_enabled: false });
     if (!pause?.ok) throw new Error("proof_pause_failed");
-    const configured = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)}, receiverAuthToken: ${JSON.stringify(receiverToken)} });
+    const configured = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)} });
     if (!configured?.ok || !Number.isSafeInteger(configured.configurationRevision)) throw new Error(configured?.error === "receiver_origin_not_permitted" ? "proof_receiver_permission_refused" : "proof_receiver_configuration_failed");
     let revision = configured.configurationRevision;
     try {
-      const handshake = await chrome.runtime.sendMessage({ type: "polylogue.receiverPairing.reset", allow_credential_refresh: false, expectedConfigurationRevision: revision });
+      const handshake = await chrome.runtime.sendMessage({ type: "polylogue.receiverPairing.reset", expectedConfigurationRevision: revision });
       if (Number.isSafeInteger(handshake?.configurationRevision)) revision = handshake.configurationRevision;
       if (!handshake?.ok || handshake?.health?.status !== "ok" || !handshake?.pairing?.receiver_id || handshake.pairing.api_schema !== "polylogue-browser-capture/v1") return { ok: false, revision };
       return { ok: true, revision, receiver_id: handshake.pairing.receiver_id, api_schema: handshake.pairing.api_schema };
@@ -590,7 +614,7 @@ export async function restoreReceiverConfiguration(client, previous, owned) {
   })()`);
 }
 
-async function pageClient(targetId, timeoutMs) {
+export async function pageClient(targetId, timeoutMs) {
   const targets = await waitJson(`http://127.0.0.1:${_CDP_PORT}/json/list`, timeoutMs);
   const target = targets.find(item => item.id === targetId && item.type === "page");
   if (!target) throw new Error("owned proof page disappeared");
@@ -652,7 +676,7 @@ export function requestProofHostPermission(owner, afterSettlement = async () => 
 
 export function configureProofReceiver(owner) {
   if (owner.cleaning) throw new Error("proof_shutdown_requested");
-  owner.configuration = configureReceiver(owner.client, owner.owned.baseUrl, owner.owned.token)
+  owner.configuration = configureReceiver(owner.client, owner.owned.baseUrl)
     .then(handshake => { owner.owned.receiverId = handshake.receiver_id; owner.owned.revision = handshake.revision; return handshake; }, error => {
       if (Number.isSafeInteger(error.receiverConfigurationRevision)) owner.owned.revision = error.receiverConfigurationRevision;
       throw error;
@@ -688,8 +712,8 @@ export function cleanupProofReceiver(owner) {
   return owner.settlement;
 }
 
-async function verifyInstalledExtension(client, extensionRoot, extensionId, manifest) {
-  const files = ["manifest.json", ...readdirSync(path.join(extensionRoot, "src"), { recursive: true, withFileTypes: true })
+export async function verifyInstalledExtension(client, extensionRoot, extensionId, manifest, extraFiles = []) {
+  const files = ["manifest.json", ...extraFiles, ...readdirSync(path.join(extensionRoot, "src"), { recursive: true, withFileTypes: true })
     .filter(entry => entry.isFile()).map(entry => path.relative(extensionRoot, path.join(entry.parentPath, entry.name)))].sort();
   const expected = files.map(file => [file, createHash("sha256").update(readFileSync(path.join(extensionRoot, file))).digest("hex")]);
   const observed = await evaluateJson(client, `(async () => {
@@ -810,9 +834,13 @@ export async function settleProofCleanup(receiverOwner, failure) {
 }
 
 async function runLiveProviderProof() {
+  // Pausing background capture does not stop static MAIN-world interception
+  // or tab-status readers. No provider artifact may load until registration
+  // is restricted to proof-owned tabs before those effects can begin.
+  await inProofPhase("provider_preflight", () => { throw new Error("proof_owned_provider_isolation_unavailable"); });
   await inProofPhase("service_context", () => requireExpectedServiceContext());
   installShutdownCleanup();
-  const { extensionRoot, receiverBaseUrl, receiverToken, conversations, timeoutMs, startupTimeoutMs, interactiveWaitMs } = await inProofPhase("inputs", () => fixedInputs());
+  const { extensionRoot, receiverBaseUrl, conversations, timeoutMs, startupTimeoutMs, interactiveWaitMs } = await inProofPhase("inputs", () => fixedInputs());
   const deadline = Date.now() + timeoutMs;
   const remaining = (phase) => {
     requireProofRunning();
@@ -845,7 +873,7 @@ async function runLiveProviderProof() {
     const ownedPopup = await inProofPhase("popup_bind", () => bindProofPopup(popupClient, popupTarget, () => remaining("popup binding")));
     previousReceiverConfiguration = await inProofPhase("receiver_snapshot", () => receiverConfiguration(popupClient));
     receiverOwner = proofReceiverCustody(popupClient, previousReceiverConfiguration,
-      { baseUrl: receiverBaseUrl, token: receiverToken, receiverId: null },
+      { baseUrl: receiverBaseUrl, receiverId: null },
       origin);
     if (shutdownRequested) throw new Error("proof_shutdown_requested");
     const paused = await inProofPhase("pause", () => evaluateJson(popupClient, 'chrome.runtime.sendMessage({ type: "polylogue.ambient.configure", automatic_capture_enabled: false })'));

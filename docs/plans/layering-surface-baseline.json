@@ -707,11 +707,6 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/status.py",
-    "import": "polylogue.sources.live"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/status.py",
     "import": "polylogue.sources.live.watcher"
   },
   {

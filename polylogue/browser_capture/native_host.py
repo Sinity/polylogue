@@ -9,21 +9,17 @@ import json
 import os
 import secrets
 import sqlite3
-import struct
 import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import ParseResult, urlparse
 
 from ijson.common import JSONError
 
-from polylogue.browser_capture.models import BROWSER_CAPTURE_API_SCHEMA
 from polylogue.browser_capture.receiver import (
-    load_or_mint_receiver_identity,
-    load_or_mint_receiver_token,
     receiver_attestation_proof,
+    receiver_socket_authority,
     receiver_status_proof,
 )
 from polylogue.core.json import JSONValue
@@ -78,7 +74,7 @@ def install_native_host(
     target.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "name": NATIVE_HOST_NAME,
-        "description": "Polylogue browser-capture secure credential bootstrap",
+        "description": "Polylogue authenticated browser-capture transport",
         "path": launcher,
         "type": "stdio",
         **(
@@ -105,52 +101,21 @@ def install_native_host(
     return target
 
 
-def _read_message() -> dict[str, object] | None:
-    header = sys.stdin.buffer.read(4)
-    if len(header) != 4:
-        return None
-    size = struct.unpack("<I", header)[0]
-    if size > 64 * 1024:
-        return None
-    payload = sys.stdin.buffer.read(size)
-    value = json.loads(payload) if len(payload) == size else None
-    return value if isinstance(value, dict) else None
-
-
-def _write_message(value: dict[str, object]) -> None:
-    payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
-    sys.stdout.buffer.write(struct.pack("<I", len(payload)) + payload)
-    sys.stdout.buffer.flush()
-
-
-#: Seconds without progress on the loopback attestation exchange before the
-#: receiver counts as unauthenticated. It bounds each blocking socket step, not
-#: the whole exchange, and matches the extension's receiver health bound: a
-#: receiver that answers nothing cannot be told apart from an impostor that
-#: holds the port open, and the extension retries on its next health check.
-RECEIVER_ATTESTATION_IDLE_TIMEOUT_S = 5.0
-
-
-def _authenticate_receiver(endpoint: ParseResult, receiver_id: str, secret: str) -> str | None:
-    """Challenge the endpoint; ``None`` when it answers with the bearer-keyed proof.
-
-    Otherwise return the refusal code: ``receiver_unreachable`` when nothing
-    answered, ``receiver_authentication_failed`` when something else did, and
-    ``receiver_observation_storage_failed`` when local response custody could
-    not create, write, decode or close its spill. Only
-    the challenge crosses the socket, so an impostor listening on the receiver
-    port learns no bearer from this exchange. This proof alone does not
-    establish endpoint ownership against a relay to another genuine receiver.
-    """
-    connection = http.client.HTTPConnection(
-        endpoint.hostname or "", endpoint.port or 80, timeout=RECEIVER_ATTESTATION_IDLE_TIMEOUT_S
-    )
+def _authenticate_receiver(connection: http.client.HTTPConnection, receiver_id: str, secret: str) -> str | None:
+    """Authenticate and retain this socket without releasing its credential."""
     challenge = secrets.token_urlsafe(32)
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "Connection": "keep-alive"}
     try:
+        assert connection.sock is not None
+        try:
+            endpoint = receiver_socket_authority(connection.sock.getpeername())
+        except OSError:
+            return "receiver_transport_namespace_unavailable"
+        # No later step may silently create another, unauthenticated socket.
+        connection.auto_open = 0
         connection.request(
             "POST",
-            endpoint.path.rstrip("/") + "/v1/receiver/attest",
+            "/v1/receiver/attest",
             body=json.dumps({"challenge": challenge}),
             headers=headers,
         )
@@ -158,11 +123,17 @@ def _authenticate_receiver(endpoint: ParseResult, receiver_id: str, secret: str)
         if response.status != 200:
             return "receiver_authentication_failed"
         with _receiver_response_document(response) as body:
-            proof = body.get("proof") if isinstance(body, dict) else None
+            if not isinstance(body, dict):
+                return "receiver_authentication_failed"
+            proof = body.get("proof")
             if (
                 isinstance(proof, str)
                 and proof.isascii()
-                and hmac.compare_digest(proof, receiver_attestation_proof(secret, receiver_id, challenge))
+                and body.get("receiver_id") == receiver_id
+                and body.get("endpoint") == endpoint
+                and hmac.compare_digest(proof, receiver_attestation_proof(secret, receiver_id, challenge, endpoint))
+                and connection.sock is not None
+                and not response.will_close
             ):
                 return None
     except (OSError, http.client.HTTPException):
@@ -171,8 +142,6 @@ def _authenticate_receiver(endpoint: ParseResult, receiver_id: str, secret: str)
         return "receiver_observation_storage_failed"
     except (ValueError, JSONError):
         return "receiver_authentication_failed"
-    finally:
-        connection.close()
     return "receiver_authentication_failed"
 
 
@@ -260,6 +229,7 @@ def _receiver_response_document(
 
 
 def main() -> int:
+    from polylogue.browser_capture.native_transport import _send, serve_native_operation
     from polylogue.runtime import require_free_threaded_runtime
 
     require_free_threaded_runtime(consumer="polylogue browser native host")
@@ -267,37 +237,10 @@ def main() -> int:
     extension_id = (
         sender.removeprefix("chrome-extension://").rstrip("/") if sender.startswith("chrome-extension://") else sender
     )
-    request = _read_message()
-    if not extension_id or request is None:
-        _write_message({"ok": False, "error": "native_sender_identity_required"})
+    if not extension_id:
+        _send(sys.stdout.buffer, {"type": "error", "error": "native_sender_identity_required"})
         return 1
-    endpoint = str(request.get("endpoint") or "")
-    parsed = urlparse(endpoint)
-    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        _write_message({"ok": False, "error": "loopback_endpoint_required"})
-        return 1
-    receiver_id = load_or_mint_receiver_identity()
-    expected = request.get("receiver_id")
-    if expected is not None and expected != receiver_id:
-        _write_message({"ok": False, "error": "receiver_identity_mismatch", "receiver_id": receiver_id})
-        return 1
-    # Loopback is not identity: whatever process owns the port would receive
-    # the bearer, and a fresh profile has no expected receiver id to compare.
-    # Release it only to an endpoint that proves it already holds it.
-    secret = load_or_mint_receiver_token()
-    refusal = _authenticate_receiver(parsed, receiver_id, secret)
-    if refusal is not None:
-        _write_message({"ok": False, "error": refusal, "receiver_id": receiver_id})
-        return 1
-    _write_message(
-        {
-            "ok": True,
-            "receiver_id": receiver_id,
-            "api_schema": BROWSER_CAPTURE_API_SCHEMA,
-            "auth_token": secret,
-        }
-    )
-    return 0
+    return serve_native_operation(extension_id, input_fd=sys.stdin.buffer.fileno(), output=sys.stdout.buffer)
 
 
 __all__ = ["NATIVE_HOST_NAME", "install_native_host", "main", "native_host_manifest_path"]

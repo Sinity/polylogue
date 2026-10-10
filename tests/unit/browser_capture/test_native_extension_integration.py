@@ -11,12 +11,15 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from threading import Thread
 
 import pytest
 
+from devtools.isolated_environment import isolated_home_environment
 from polylogue.browser_capture.capture_jobs import capture_job_store_root
+from polylogue.browser_capture.receiver import load_or_mint_receiver_identity, persist_receiver_token
 from polylogue.browser_capture.server import make_server
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
@@ -36,6 +39,7 @@ from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
 )
 def test_extension_background_publishes_canonical_complete_artifact(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     provider: str,
     fixture: str,
     native_id: str,
@@ -49,13 +53,26 @@ def test_extension_background_publishes_canonical_complete_artifact(
     shutil.copytree(extension_root / "src", test_tree / "src")
     test_infra = test_tree / "tests" / "infra"
     test_infra.mkdir(parents=True)
-    for filename in ("native-receiver-integration.mjs", "capture-staging.js"):
+    for filename in ("native-receiver-integration.mjs", "native-port.mjs", "capture-staging.js"):
         shutil.copy2(extension_root / "tests" / "infra" / filename, test_infra / filename)
     indexeddb_package = Path(os.environ["POLYLOGUE_FAKE_INDEXEDDB_PACKAGE"])
     dependency = test_tree / "node_modules" / "fake-indexeddb"
     dependency.parent.mkdir(parents=True)
     dependency.symlink_to(indexeddb_package, target_is_directory=True)
     token = "synthetic-native-integration-token"
+    archive = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    persist_receiver_token(token)
+    identity = load_or_mint_receiver_identity()
+    child_environment = isolated_home_environment(os.environ, home=tmp_path / "native-home")
+    child_environment["POLYLOGUE_ARCHIVE_ROOT"] = str(archive)
+    child_environment["TMPDIR"] = str(tmp_path)
+    host_command = [
+        sys.executable,
+        "-c",
+        "from polylogue.browser_capture.native_host import main; raise SystemExit(main())",
+        "chrome-extension://synthetic-native-integration/",
+    ]
     server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
     server.daemon_threads = False
     server.block_on_close = True
@@ -67,12 +84,14 @@ def test_extension_background_publishes_canonical_complete_artifact(
                 "node",
                 str(test_infra / "native-receiver-integration.mjs"),
                 f"http://127.0.0.1:{server.server_port}",
-                token,
+                identity,
+                json.dumps(host_command),
                 str(source),
                 provider,
                 native_id,
             ],
             cwd=test_tree,
+            env=child_environment,
             capture_output=True,
             text=True,
             check=False,

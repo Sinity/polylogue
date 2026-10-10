@@ -26,10 +26,24 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from polylogue.core.status_error_privacy import redact_status_error
+
+
+class StatusWatchSource(Protocol):
+    """Source availability facts consumed by status, without acquisition policy."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def root(self) -> Path: ...
+
+    def exists(self) -> bool: ...
+
 
 ComponentState = Literal["fresh", "stale", "refreshing", "timed_out", "unavailable", "degraded"]
 

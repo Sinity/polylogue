@@ -53,9 +53,6 @@ function installDom() {
       <span id="page"></span>
       <span id="archive"></span>
       <input id="receiver-url" />
-      <input id="receiver-token" />
-      <input id="pairing-code" />
-      <button id="pair-with-code"><span class="button-status"></span></button>
       <p id="state-detail"></p>
       <button id="save"><span class="button-status"></span></button>
       <button id="copy-ref" class="conversation-only"><span class="button-status"></span></button>
@@ -110,7 +107,6 @@ function installChromeMock(storagePatch = {}, tabs = [CHATGPT_TAB], sendMessage 
     polylogueCaptureLog: [],
     polylogueDebugLog: [],
     polylogueState: null,
-    receiverAuthToken: "",
     receiverBaseUrl: "http://127.0.0.1:8765",
     ...storagePatch,
   };
@@ -255,12 +251,12 @@ describe("popup capture", () => {
     });
 
     expect(globalThis.document.getElementById("archive").textContent).toBe("Needs attention");
-    expect(globalThis.document.getElementById("state-detail").textContent).toContain("browser-capture token show");
+    expect(globalThis.document.getElementById("state-detail").textContent).toContain("native host and receiver use the same local archive");
 
     const attentionSection = globalThis.document.getElementById("attention-section");
     await vi.waitFor(() => expect(attentionSection.hidden).toBe(false));
     expect(globalThis.document.getElementById("attention-heading").textContent)
-      .toBe("Receiver requires its pairing token");
+      .toBe("Receiver authentication failed");
     const actionButton = globalThis.document.getElementById("attention-action");
     expect(actionButton.hidden).toBe(false);
 
@@ -997,23 +993,17 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("queue-log").textContent).toContain("No captures queued for retry.");
   });
 
-  it("pairs with a one-time code and clears the input on success (polylogue-gnie)", async () => {
+  it("saves endpoint settings without a credential", async () => {
     const sent = [];
-    await loadPopup({}, [CHATGPT_TAB], async (message) => {
-      sent.push(message);
-      if (message.type === "polylogue.pairWithCode") return { ok: true, health: { status: "ok" }, pairing: null };
-      return { ok: true };
-    });
-    document.getElementById("pairing-code").value = "ABCD1234";
-
-    document.getElementById("pair-with-code").click();
-    await vi.waitFor(() =>
-      expect(sent.some((message) => message.type === "polylogue.pairWithCode")).toBe(true)
-    );
-
-    expect(sent).toContainEqual({ type: "polylogue.pairWithCode", code: "ABCD1234" });
-    await vi.waitFor(() => expect(document.getElementById("pairing-code").value).toBe(""));
+    await loadPopup({}, [CHATGPT_TAB], async message => { sent.push(message); return { ok: true }; });
+    document.getElementById("save").click();
+    await vi.waitFor(() => expect(sent.some(message => message.type === "polylogue.configureReceiver")).toBe(true));
+    const configured = sent.find(message => message.type === "polylogue.configureReceiver");
+    expect(configured).toEqual({ type: "polylogue.configureReceiver", receiverBaseUrl: "http://127.0.0.1:8765" });
+    expect(document.getElementById("receiver-token")).toBeNull();
+    expect(document.getElementById("pairing-code")).toBeNull();
   });
+
 });
 
 describe("popup DOM/action budget", () => {

@@ -1,6 +1,8 @@
+import { nativeFetch } from "./native_fetch.js";
+
 /** Explicit browser seams used by the background composition root. */
 export function createBackgroundAdapters(browser = globalThis.chrome, network = null, clock = Date) {
-  const fetchImpl = network || globalThis.fetch;
+  const fetchImpl = network || ((input, init) => nativeFetch(browser.runtime, input, init));
   return Object.freeze({
     storage: browser.storage,
     alarms: browser.alarms,
