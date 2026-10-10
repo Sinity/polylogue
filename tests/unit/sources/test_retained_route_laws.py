@@ -540,6 +540,7 @@ async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblin
         directory: Path,
         allow_generic_object_alias: bool = False,
         validation_mode: ValidationMode = ValidationMode.ADVISORY,
+        **preparation_options: Any,
     ) -> Any:
         if raw_id == acquired["broken"]:
             if failure_kind == "prepared_file":
@@ -551,6 +552,7 @@ async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblin
             directory=directory,
             allow_generic_object_alias=allow_generic_object_alias,
             validation_mode=validation_mode,
+            **preparation_options,
         )
 
     monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", failing)
