@@ -1060,3 +1060,90 @@ def test_actual_startup_dense_retained_preparation_cost(tmp_path: Path, monkeypa
     test_actual_startup_independent_preparation_uses_shared_admission(
         tmp_path, monkeypatch, 8, 64 * 1024 * 1024, "cost-dense"
     )
+
+
+@pytest.mark.uses_real_clock
+def test_startup_failed_replay_settlement_stays_on_its_creator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An actual failed child seal never enters the controller's cleanup census."""
+    import threading
+    from collections.abc import Callable
+    from concurrent.futures import Future
+    from typing import TypeVar
+
+    from polylogue.core import compute as compute_module
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.core.sql_settlement import SQLCustodyOwner
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriterSettlementError
+    from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    root = tmp_path / "archive"
+    old, _, _ = make_populated_stale_index(root, tmp_path / "external" / "retained.jsonl", independent_raws=1)
+    kernel = BoundedComputeAdapter(max_workers=3, queue_units=8, queue_bytes=64 * 1024 * 1024)
+    monkeypatch.setattr(compute_module, "compute_adapter", lambda: kernel)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    original_close = PreparedIndexMutation.close
+    original_run = DaemonWriteCoordinator.run_prepared_sync
+    failed: list[PreparedIndexMutation] = []
+    closed: list[threading.Thread] = []
+    controller_census: list[tuple[SQLCustodyOwner, ...]] = []
+    release = threading.Event()
+    execution = threading.local()
+
+    def close(seal: PreparedIndexMutation) -> None:
+        if getattr(execution, "replay", False) and not seal._closed:
+            if not failed:
+                failed.append(seal)
+            if seal is failed[0]:
+                assert threading.current_thread() is seal.index_thread
+                if not release.is_set():
+                    raise RuntimeError("neutral child observer close failure")
+                closed.append(threading.current_thread())
+        original_close(seal)
+
+    T = TypeVar("T")
+
+    async def run(
+        coordinator: DaemonWriteCoordinator,
+        actor: str,
+        operation: Callable[[], T],
+        *,
+        submit_worker: Callable[[Callable[[], None]], Future[None]] | None,
+        settlement_owners: Callable[[], tuple[SQLCustodyOwner, ...]],
+    ) -> T:
+        def owners() -> tuple[SQLCustodyOwner, ...]:
+            observed = settlement_owners()
+            if actor == "daemon.index_reconvergence.startup" and failed:
+                assert threading.current_thread() is not failed[0].index_thread
+                assert failed[0] not in observed
+                assert observed == retained_native_settlement_owners_on_current_thread()
+                controller_census.append(observed)
+                release.set()
+            return observed
+
+        def invoke() -> T:
+            execution.replay = actor == "daemon.index_reconvergence.replay"
+            return operation()
+
+        return await original_run(coordinator, actor, invoke, submit_worker=submit_worker, settlement_owners=owners)
+
+    monkeypatch.setattr(PreparedIndexMutation, "close", close)
+    monkeypatch.setattr(DaemonWriteCoordinator, "run_prepared_sync", run)
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                )
+            )
+        assert failed and controller_census
+        assert ArchiveLocation.resolve(root).active_index_path.resolve(strict=True) == old
+    finally:
+        release.set()
+        kernel.shutdown(wait=True)
+    assert closed and all(thread is failed[0].index_thread for thread in closed)
+    assert failed[0]._closed

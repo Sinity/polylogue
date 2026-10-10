@@ -2571,10 +2571,9 @@ async def _run_daemon_services_under_active_writer_lease(
             "daemon.index_reconvergence.startup",
             prepare_index_reconvergence,
             submit_worker=None,
-            settlement_owners=lambda: (
-                *retained_native_settlement_owners_on_current_thread(),
-                *retained_settlement_owners(retained_reconvergence),
-            ),
+            # Replay replacements belong to their child creators. The outer
+            # controller retains only its own registered observers and handles.
+            settlement_owners=retained_native_settlement_owners_on_current_thread,
         )
     except BaseException:
         archive_owner.release()
