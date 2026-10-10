@@ -87,7 +87,11 @@ SYNTHETIC_SOURCE_TRAIN_TABLE = "synthetic_train_items"
 
 
 def ship_synthetic_source_train(
-    package_root: Path, monkeypatch: pytest.MonkeyPatch, *, requires_backup: bool = False
+    package_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    requires_backup: bool = False,
+    index_replacement_sql: str | None = None,
 ) -> None:
     """Install one Source train (slot 002) and raise the runtime Source target to it.
 
@@ -97,7 +101,8 @@ def ship_synthetic_source_train(
     ``source-002.json``; with ``requires_backup`` the step omits the additive
     claim, so bootstrap takes its verified pre-migration backup first. The
     runtime maps are patched in place, so every module that imported them
-    observes the same raised target.
+    observes the same raised target. ``index_replacement_sql`` installs a
+    row-preserving replacement for the Source artifact partition indexes.
     """
     import json
     import re
@@ -116,7 +121,16 @@ def ship_synthetic_source_train(
     tier = ArchiveTier.SOURCE
     table = SYNTHETIC_SOURCE_TRAIN_TABLE
     create = f"CREATE TABLE {table} (id INTEGER PRIMARY KEY) STRICT;\n"
-    sql = create if requires_backup else f"-- migration-safety: additive-no-backup\n{create}"
+    if index_replacement_sql is not None:
+        assert not requires_backup
+        sql = index_replacement_sql
+        schema_objects = (
+            "index:idx_raw_artifacts_source_identity",
+            "index:idx_raw_artifacts_failure_identity",
+        )
+    else:
+        sql = create if requires_backup else f"-- migration-safety: additive-no-backup\n{create}"
+        schema_objects = (f"table:{table}",)
     # An imported package is cached in sys.modules, so each test gets its own name.
     package = "fixture_source_train_" + re.sub(r"\W", "_", str(package_root.resolve()))[-80:]
     tier_package = package_root / package / tier.value
@@ -129,7 +143,7 @@ def ship_synthetic_source_train(
     rider = DurableChangeRider(
         rider_id="rider:synthetic-source-train",
         owner_ref="owner:synthetic-source-train-rider",
-        schema_objects=(f"table:{table}",),
+        schema_objects=schema_objects,
         runtime_consumers=(
             DurableRuntimeConsumer(
                 "bootstrap",
@@ -171,7 +185,7 @@ def ship_synthetic_source_train(
     monkeypatch.setitem(
         ARCHIVE_DDL_BY_TIER,
         tier,
-        f"{ARCHIVE_DDL_BY_TIER[tier]}\nCREATE TABLE {table} (id INTEGER PRIMARY KEY) STRICT;\n",
+        f"{ARCHIVE_DDL_BY_TIER[tier]}\n{sql}",
     )
 
 
