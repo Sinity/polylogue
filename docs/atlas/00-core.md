@@ -62,8 +62,9 @@ duplicated in caller metadata:
   (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:337-342`).
 - `identity_source` records which identity path fired; `MessageIdentitySource`
   owns its closed vocabulary (`polylogue/core/types.py:13-16`).
-- `block_id` is generated as `message_id || ':' || position`
-  (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:561-566`).
+- `block_id` is generated from its message ID, semantic content digest and
+  occurrence among identical blocks. Position records display order
+  (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:576`).
 
 `material_origin` is independent from role and expresses authoredness. Tool
 outcomes use the canonical `blocks.tool_outcome` enum; deliberate unknown
