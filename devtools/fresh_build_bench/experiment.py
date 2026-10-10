@@ -11,15 +11,17 @@ from pathlib import Path
 from typing import Any
 
 from devtools.fresh_build_bench.corpus import load_manifest, verify_manifest
+from devtools.fresh_build_bench.recipe_qualification import output_equivalence
 from devtools.fresh_build_bench.report import comparability_problems
 from devtools.fresh_build_bench.run import RunConfig, run_build
 
 
 def reduce_experiment(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    """Expose raw samples, median and spread; claim speed only beyond noise."""
+    """Descriptive arm differences; neither range separation nor A/A proves speed."""
     problems: list[str] = []
     reference = samples[0]["receipt"]
     fingerprints = set()
+    equivalences = []
     policies: dict[str, set[str]] = {"A": set(), "B": set()}
     candidates: dict[str, set[str]] = {"A": set(), "B": set()}
     for sample in samples:
@@ -31,19 +33,34 @@ def reduce_experiment(samples: list[dict[str, Any]]) -> dict[str, Any]:
             problems.append("missing exact output fingerprint")
         else:
             fingerprints.add(fingerprint["digest"])
+            equivalences.append(output_equivalence(reference.get("output_fingerprint") or {}, fingerprint))
         policy = receipt.get("effective_compute_policy")
         if not policy or policy.get("outcome") != "bound":
             problems.append("unbound effective compute policy")
         else:
             policies[sample["arm"]].add(json.dumps(policy["states"], sort_keys=True))
-    if len(fingerprints) > 1:
-        problems.append("different exact outputs")
+    if any(value is None for value in equivalences):
+        problems.append("different exact outputs without validated parser/lowering recipe equivalence")
     for arm, values in policies.items():
         if len(values) != 1:
             problems.append(f"arm {arm} effective compute policy changed or unavailable")
     for arm, values in candidates.items():
         if len(values) != 1:
             problems.append(f"arm {arm} candidate changed between runs")
+
+    def actual_candidate(receipt: dict[str, Any]) -> str | None:
+        binding = (receipt.get("effective_compute_policy") or {}).get("product_binding") or {}
+        candidate = receipt.get("candidate")
+        modules = binding.get("modules")
+        if not candidate or not modules or binding.get("outcome") != "bound":
+            return None
+        return json.dumps(
+            {"candidate": candidate, "modules": {name: row.get("sha256") for name, row in modules.items()}},
+            sort_keys=True,
+        )
+
+    actual = [actual_candidate(sample["receipt"]) for sample in samples]
+    calibration = bool(actual) and all(value is not None and value == actual[0] for value in actual)
     metrics = {}
     for name in ("promotion", "terminal"):
         arms = {}
@@ -73,13 +90,35 @@ def reduce_experiment(samples: list[dict[str, Any]]) -> dict[str, Any]:
         )
         assessment = "single-sample" if not distribution else "within-observed-noise"
         if separated and delta is not None:
-            assessment = "B-faster-than-observed-spread" if delta < 0 else "B-slower-than-observed-spread"
-        metrics[name] = {"arms": arms, "delta_median_s": delta, "assessment": assessment}
+            assessment = "observed-arm-difference"
+        metrics[name] = {
+            "arms": arms,
+            "delta_median_s": delta,
+            "assessment": assessment,
+            "sample_kind": "repeated-samples" if distribution else "single-sample-per-arm",
+            "inference": "descriptive-only; observed ranges are not confidence intervals; sample insufficiency for speed proof",
+            "measurement": "event-milestone"
+            if name == "promotion"
+            else "readiness-observation-with-poll-scan-and-cache-delay",
+            "measurement_uncertainty": [
+                sample["receipt"].get("terminal_measurement", {"kind": "unrecorded-observer-resolution"})
+                for sample in samples
+            ]
+            if name == "terminal"
+            else [],
+        }
     return {
         "qualified": not problems,
         "problems": sorted(set(problems)),
         "exact_output_equivalent": len(fingerprints) == 1 and not any("fingerprint" in p for p in problems),
         "metrics": metrics,
+        "experiment_kind": "A/A-calibration" if calibration else "candidate-comparison",
+        "code_improvement": "not-applicable-identical-actual-candidate" if calibration else "not-established",
+        "output_equivalence": "exact"
+        if len(fingerprints) == 1
+        else "recipe-qualified-exact"
+        if equivalences and all(equivalences)
+        else None,
         "scope": "ordinary-daemon-terminal-route",
         "cache_state": "fresh archive and bytecode directory per run; host filesystem cache uncontrolled",
     }
@@ -143,4 +182,34 @@ def run_experiment(
     }
     document["qualified"] = document["qualified"] and complete
     (config.work / "experiment.json").write_text(json.dumps(document, indent=1, sort_keys=True) + "\n")
+    return document
+
+
+def refresh_experiment(path: Path) -> dict[str, Any]:
+    """Write a derived comparison; preserve experiment and constituent receipts."""
+    from devtools.fresh_build_bench.report import benchmark_implementation_sha256, refresh
+
+    original = path.read_bytes()
+    document = json.loads(original)
+    samples = []
+    for sample in document["samples"]:
+        recording = Path(sample["path"])
+        if hashlib.sha256(recording.read_bytes()).hexdigest() != sample["sha256"]:
+            raise ValueError("experiment constituent receipt changed")
+        samples.append({**sample, "receipt": refresh(recording)})
+    reduction = (
+        reduce_experiment(samples)
+        if {sample["arm"] for sample in samples} == {"A", "B"}
+        else {"qualified": False, "problems": ["paired sequence incomplete"], "metrics": {}}
+    )
+    document.update(reduction)
+    document["qualified"] = reduction["qualified"] and document["complete"]
+    document["derived_from"] = {
+        "path": str(path.resolve()),
+        "sha256": hashlib.sha256(original).hexdigest(),
+        "reducer_sha256": benchmark_implementation_sha256(),
+    }
+    payload = json.dumps(document, indent=1, sort_keys=True) + "\n"
+    view = path.with_name(f"{path.stem}.view-{hashlib.sha256(payload.encode()).hexdigest()}.json")
+    view.write_text(payload)
     return document

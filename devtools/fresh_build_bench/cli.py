@@ -310,10 +310,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.refresh:
             from devtools.fresh_build_bench.report import refresh
 
+            if json.loads(args.receipt.read_text()).get("format") == "polylogue.fresh-build-experiment.v1":
+                from devtools.fresh_build_bench.experiment import refresh_experiment
+
+                print(json.dumps(refresh_experiment(args.receipt), indent=1, sort_keys=True))
+                return 0
             receipt = refresh(args.receipt)
         else:
             receipt = json.loads(args.receipt.read_text(encoding="utf-8"))
-        print(json.dumps(receipt, indent=1) if args.json else render(receipt))
+        print(
+            json.dumps(receipt, indent=1)
+            if args.json or receipt.get("format") == "polylogue.fresh-build-experiment.v1"
+            else render(receipt)
+        )
         return 0
     if args.command == "compare":
         from devtools.fresh_build_bench.report import compare

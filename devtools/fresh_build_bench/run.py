@@ -243,6 +243,10 @@ class Observation:
     work_progress: int = 0
     promoted_index: str | None = None
     readiness: dict[str, bool] = field(default_factory=dict)
+    scan_finished_s: float | None = None
+    readiness_checked_s: list[float] | None = None
+    readiness_cached: bool = False
+    readiness_cache_max_age_s: float | None = None
     error: str | None = None
     #: Whether a failed read may succeed on a later poll (a busy or locked
     #: database, a file swapped by a generation promotion). A schema the
@@ -289,9 +293,13 @@ def _promoted_index(archive: Path) -> str | None:
 
 
 def observe(archive: Path, started: float, *, readiness_max_age_s: float | None = None) -> Observation:
-    observation = Observation(t=round(time.monotonic() - started, 3))
+    observation = Observation(
+        t=round(time.monotonic() - started, 3),
+        readiness_cache_max_age_s=_READINESS_POLL_S if readiness_max_age_s is None else readiness_max_age_s,
+    )
     ops_path, source_path = archive / "ops.db", archive / "source.db"
     if not ops_path.exists() or not source_path.exists():
+        observation.scan_finished_s = round(time.monotonic() - started, 3)
         return observation
     try:
         with closing(_ro(ops_path)) as conn:
@@ -372,6 +380,8 @@ def observe(archive: Path, started: float, *, readiness_max_age_s: float | None 
                 and _last_readiness.get("archive") == str(archive)
             ):
                 observation.readiness = dict(_last_readiness["readiness"])  # type: ignore[call-overload]
+                observation.readiness_cached = True
+                observation.readiness_checked_s = list(_last_readiness["checked_s"])
             else:
                 from polylogue.storage.archive_readiness import archive_readiness_status
 
@@ -381,10 +391,17 @@ def observe(archive: Path, started: float, *, readiness_max_age_s: float | None 
                     str(name): isinstance(surface, dict) and surface.get("ready") is True
                     for name, surface in surfaces.items()
                 }
-                _last_readiness.update(at=now, archive=str(archive), readiness=dict(observation.readiness))
+                observation.readiness_checked_s = [round(now - started, 3), round(time.monotonic() - started, 3)]
+                _last_readiness.update(
+                    at=now,
+                    archive=str(archive),
+                    readiness=dict(observation.readiness),
+                    checked_s=observation.readiness_checked_s,
+                )
     except (OSError, sqlite3.Error) as exc:
         observation.error = f"{type(exc).__name__}: {exc}"
         observation.error_retryable = _retryable_observation_error(exc)
+    observation.scan_finished_s = round(time.monotonic() - started, 3)
     return observation
 
 
@@ -1096,7 +1113,9 @@ def _measure_and_write_receipt(
             if observation.terminal and work_progress.current_daemon_observed:
                 stable += 1
                 if stable == 1:
-                    terminal_at = observation.t
+                    terminal_at = (
+                        observation.scan_finished_s if observation.scan_finished_s is not None else observation.t
+                    )
                 if stable >= config.stable_polls:
                     outcome = "terminal"
                     break

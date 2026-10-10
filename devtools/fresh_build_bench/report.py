@@ -424,7 +424,12 @@ _CANCEL_CHECK_OPS: Final = 100_000
 
 
 def output_fingerprint(
-    archive: Path, promoted_index: str, scratch: Path, *, cancelled: Callable[[], bool] = lambda: False
+    archive: Path,
+    promoted_index: str,
+    scratch: Path,
+    *,
+    cancelled: Callable[[], bool] = lambda: False,
+    recipe_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Per-table digests over the comparable index relations (see :func:`_output_fingerprint`).
 
@@ -432,7 +437,7 @@ def output_fingerprint(
     :class:`FingerprintCancelledError`, like one seen between rows.
     """
     try:
-        return _output_fingerprint(archive, promoted_index, scratch, cancelled=cancelled)
+        return _output_fingerprint(archive, promoted_index, scratch, cancelled=cancelled, recipe_binding=recipe_binding)
     except sqlite3.OperationalError as exc:
         if cancelled():
             raise FingerprintCancelledError("cancelled during the output fingerprint") from exc
@@ -440,7 +445,13 @@ def output_fingerprint(
 
 
 def _output_fingerprint(
-    archive: Path, promoted_index: str, scratch: Path, *, cancelled: Callable[[], bool]
+    archive: Path,
+    promoted_index: str,
+    scratch: Path,
+    *,
+    cancelled: Callable[[], bool],
+    recipe_binding: dict[str, Any] | None = None,
+    _certified_recipe_pass: bool = False,
 ) -> dict[str, Any]:
     """Per-table digests over the comparable index relations.
 
@@ -476,6 +487,11 @@ def _output_fingerprint(
                 str(row["name"])
                 for row in read.execute(f'PRAGMA table_xinfo("{table}")')
                 if row["name"] not in volatile
+                and not (
+                    _certified_recipe_pass
+                    and table == "sessions"
+                    and row["name"] in {"parser_fingerprint", "lowering_fingerprint"}
+                )
             ]
             spool.execute("DROP TABLE IF EXISTS facts")
             spool.execute("CREATE TABLE facts (payload TEXT NOT NULL)")
@@ -509,7 +525,22 @@ def _output_fingerprint(
         tables["messages_fts:postings"] = _fts_postings(read, cancelled=cancelled)
     spool_path.unlink(missing_ok=True)
     overall = hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
-    return {"digest": overall, "tables": tables}
+    result = {"digest": overall, "tables": tables}
+    if recipe_binding is not None and not _certified_recipe_pass:
+        from devtools.fresh_build_bench.recipe_qualification import RECIPE_COLUMNS, validate_recipe_rows
+
+        with closing(sqlite3.connect(f"file:{promoted_index}?mode=ro", uri=True)) as conn:
+            validated = validate_recipe_rows(conn, recipe_binding)
+        result["recipe_qualified"] = {
+            "validated": validated,
+            "columns": list(RECIPE_COLUMNS),
+            "binding": recipe_binding,
+        }
+        if validated:
+            result["recipe_qualified"].update(
+                _output_fingerprint(archive, promoted_index, scratch, cancelled=cancelled, _certified_recipe_pass=True)
+            )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +679,35 @@ def evaluate_budgets(limits: dict[str, float], observed: dict[str, float | None]
         value = observed.get(name)
         rows[name] = {"limit": limit, "observed": value, "pass": value is not None and value <= limit}
     return rows
+
+
+def terminal_measurement(observations: list[Any], terminal_at: float | None, *, certified: bool) -> dict[str, Any]:
+    """Observer windows, never an invented product completion timestamp."""
+    first = next(
+        (
+            i
+            for i, row in enumerate(observations)
+            if row.terminal and (row.scan_finished_s if row.scan_finished_s is not None else row.t) == terminal_at
+        ),
+        None,
+    )
+    ready = observations[first] if first is not None else None
+    lower = observations[first - 1].t if first else 0.0
+    if ready and ready.readiness_checked_s:
+        lower = min(lower, ready.readiness_checked_s[0])
+    return {
+        "kind": "readiness-observation",
+        "first_observed_s": terminal_at,
+        "observation_window_s": [lower, ready.scan_finished_s if ready else None],
+        "certified_s": observations[-1].scan_finished_s
+        if observations and terminal_at is not None and certified
+        else None,
+        "readiness_check_window_s": ready.readiness_checked_s if ready else None,
+        "readiness_cached": ready.readiness_cached if ready else None,
+        "readiness_cache_max_age_s": ready.readiness_cache_max_age_s if ready else None,
+        "semantics": "non-atomic scans; window describes observation resolution, not an exact completion event; "
+        "stable polls certify repeated observations and may reuse cached readiness",
+    }
 
 
 def _progress_timeline(observations: list[Any]) -> list[tuple[Any, ...]]:
@@ -866,7 +926,8 @@ def _derive_dependents(receipt: dict[str, Any]) -> None:
     )
     receipt["throughput"] = {
         "mib_per_s_to_promotion": round(total_mib / promoted, 3) if promoted else None,
-        "mib_per_s_to_terminal": round(total_mib / terminal_at, 3) if terminal_at else None,
+        "mib_per_s_to_terminal": None,
+        "terminal_note": "readiness observation includes poll and scan delay; throughput is not measured",
         "files_per_s_to_promotion": round(receipt["corpus"]["file_count"] / promoted, 3) if promoted else None,
     }
     tree = receipt.get("process_tree") or {}
@@ -934,7 +995,15 @@ def build_receipt(
     if config.fingerprint and final.promoted_index is not None and outcome != "interrupted":
         try:
             fingerprint = output_fingerprint(
-                paths["archive"], final.promoted_index, paths["work"] / "tmp", cancelled=cancelled
+                paths["archive"],
+                final.promoted_index,
+                paths["work"] / "tmp",
+                cancelled=cancelled,
+                recipe_binding=(
+                    json.loads((paths["work"] / "policy.json").read_text()).get("recipe_binding")
+                    if (paths["work"] / "policy.json").exists()
+                    else None
+                ),
             )
         except FingerprintCancelledError:
             fingerprint = None
@@ -1017,6 +1086,8 @@ def build_receipt(
             "digest": config_digest(config),
             "argv": command[3:],
             "profile": config.profile,
+            "poll_s": config.poll_s,
+            "stable_polls": config.stable_polls,
             "overrides": sorted(key for key, _value in config.extra_env),
         },
         "corpus": {
@@ -1031,6 +1102,7 @@ def build_receipt(
             },
             "population": manifest.get("parameters", {}).get("population"),
         },
+        "terminal_measurement": terminal_measurement(observations, terminal_at, certified=outcome == "terminal"),
         "timing_s": {
             "wall": round(wall_s, 3),
             "terminal": terminal_at,
@@ -1090,6 +1162,16 @@ def build_receipt(
         # the error that refused it, and retried failures stay visible.
         "observation_errors": _observation_errors(observations),
         "progress": _progress_timeline(observations),
+        "readiness_observations": [
+            {
+                "started_s": row.t,
+                "finished_s": row.scan_finished_s,
+                "terminal": row.terminal,
+                "checked_s": row.readiness_checked_s,
+                "cached": row.readiness_cached,
+            }
+            for row in observations
+        ],
         # Unrounded: ``refresh`` re-reduces the event log from this origin.
         "started_at_unix": started_wall,
         "clock_step_s": round(clock_step_s, 3),
@@ -1162,6 +1244,10 @@ def render(receipt: dict[str, Any]) -> str:
     profile = receipt.get("profile") or {}
     if profile.get("outcome") == "refused":
         lines.append(f"profile outcome=refused reason={profile.get('reason')}")
+    lines.append(
+        "terminal measurement  "
+        + json.dumps(receipt.get("terminal_measurement", {"kind": "historical-observer-timing"}), sort_keys=True)
+    )
     lines.append("timing  " + "  ".join(f"{key}={_fmt(value)}" for key, value in timing.items() if key != "shutdown"))
     lines.append("throughput  " + "  ".join(f"{k}={_fmt(v)}" for k, v in receipt["throughput"].items()))
     thread_cpu = receipt.get("thread_cpu_s") or {}
@@ -1354,8 +1440,15 @@ def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified:
     if blocking:
         lines.append("output: not compared (receipts are not comparable)")
     elif a_fp and b_fp:
-        if a_fp["digest"] == b_fp["digest"]:
+        from devtools.fresh_build_bench.recipe_qualification import output_equivalence
+
+        equivalence = output_equivalence(a_fp, b_fp)
+        if equivalence == "exact":
             lines.append("output: IDENTICAL (per-table digests match)")
+        elif equivalence == "recipe-qualified-exact":
+            lines.append(
+                "output: RECIPE-QUALIFIED IDENTICAL (strict digests differ; certified parser/lowering columns only)"
+            )
         else:
             lines.append("output: DIFFERENT")
             for table in sorted(set(a_fp["tables"]) | set(b_fp["tables"])):
@@ -1404,6 +1497,18 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
             "preparation_done": milestones.get("preparation_done_s"),
         }
     )
+    if "terminal_measurement" not in receipt:
+        terminal = receipt["timing_s"].get("terminal")
+        previous = [row[0] for row in receipt.get("progress", []) if terminal is not None and row[0] < terminal]
+        receipt["terminal_measurement"] = {
+            "kind": "historical-readiness-observation",
+            "first_observed_s": terminal,
+            "observation_window_s": [max(previous, default=0.0), None],
+            "certified_s": None,
+            "readiness_check_window_s": None,
+            "readiness_cached": None,
+            "semantics": "poll start recorded; scan finish and cache/check times were not retained; completion unknown",
+        }
     _derive_dependents(receipt)
     # The projection's inputs are sealed into the receipt itself; the
     # corpus directory may be gone by the time a newer report refreshes it.

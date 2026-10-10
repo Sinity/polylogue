@@ -73,6 +73,7 @@ def start_from_environment() -> None:
     states: list[dict[str, Any]] = []
     errors: list[str] = []
     lock = threading.Lock()
+    recipe_binding: dict[str, Any] = {}
 
     def capture() -> bool:
         try:
@@ -97,6 +98,7 @@ def start_from_environment() -> None:
                 "states": list(states),
                 "errors": list(errors),
                 "product_binding": product_binding(),
+                "recipe_binding": recipe_binding,
                 "source": "live published compute adapter snapshot",
                 "coverage": "periodic 50ms and normal process exit; transient policies may be missed",
             }
@@ -117,6 +119,16 @@ def start_from_environment() -> None:
         stop.set()
         thread.join()
         capture()
+        try:
+            # Driver-owned helper loaded by path; imports inside it resolve
+            # to the daemon's actual candidate, not the report interpreter.
+            import runpy
+
+            recipe_binding.update(
+                runpy.run_path(str(Path(__file__).with_name("recipe_qualification.py")))["imported_recipe_binding"]()
+            )
+        except Exception as exc:
+            recipe_binding.update(outcome="unavailable", error=type(exc).__name__)
         write()
 
     atexit.register(finish)
