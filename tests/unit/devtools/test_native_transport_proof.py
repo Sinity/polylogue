@@ -18,8 +18,9 @@ def test_scoped_manifest_binds_neutral_paths_and_removes_only_its_owned_artifact
     monkeypatch: pytest.MonkeyPatch,
     fail: bool,
 ) -> None:
-    manifests = tmp_path / "operator-manifests"
-    manifests.mkdir()
+    profile = tmp_path / "actual-custom-chrome"
+    manifests = profile / "NativeMessagingHosts"
+    manifests.mkdir(parents=True)
     fixed = manifests / "com.polylogue.browser_capture.json"
     fixed.write_bytes(b"operator-owned")
     wrapper = tmp_path / "native-wrapper"
@@ -30,7 +31,6 @@ def test_scoped_manifest_binds_neutral_paths_and_removes_only_its_owned_artifact
     secret = archive / "browser-capture-receiver-token"
     secret.write_text("neutral-secret-not-public")
     secret.chmod(0o600)
-    monkeypatch.setattr(native_transport_proof, "native_host_manifest_path", lambda: fixed)
     monkeypatch.setattr(shutil, "which", lambda _name: str(wrapper))
 
     def build(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -60,6 +60,7 @@ def test_scoped_manifest_binds_neutral_paths_and_removes_only_its_owned_artifact
             scratch=tmp_path,
             environment=environment,
             endpoint="http://127.0.0.1:12345",
+            chrome_user_data_dir=profile,
         ) as binding:
             host = binding["POLYLOGUE_DEV_LOOP_NATIVE_HOST"]
             manifest = manifests / f"{host}.json"

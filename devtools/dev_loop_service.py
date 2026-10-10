@@ -435,7 +435,11 @@ def _redacted_convergence(convergence: dict[str, dict[str, object]]) -> dict[str
 
 
 def run_proof(
-    *, repo_root: Path | None = None, readiness_timeout_s: float = 45.0, diagnostic_path: Path | None = None
+    *,
+    chrome_user_data_dir: Path,
+    repo_root: Path | None = None,
+    readiness_timeout_s: float = 45.0,
+    diagnostic_path: Path | None = None,
 ) -> dict[str, object]:
     """Run the bounded Polylogue semantics inside the AgentCTL job boundary."""
     checkout = (repo_root or Path(__file__).resolve().parents[1]).resolve()
@@ -467,6 +471,7 @@ def run_proof(
             scratch=artifact_root,
             environment=environment,
             endpoint=receiver_url,
+            chrome_user_data_dir=chrome_user_data_dir,
         ) as native_environment:
             if diagnostic_path is not None:
                 native_environment["POLYLOGUE_DEV_LOOP_DIAGNOSTIC_PATH"] = str(diagnostic_path.absolute())
@@ -526,9 +531,17 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Retain unknown neutral-page exception details privately at an exclusive path.",
     )
+    parser.add_argument(
+        "--chrome-user-data-dir",
+        type=Path,
+        required=True,
+        help="Actual running Chrome user-data directory for its independently named proof host.",
+    )
     arguments = parser.parse_args(argv)
     try:
-        payload: dict[str, Any] = run_proof(diagnostic_path=arguments.diagnostic_path)
+        payload: dict[str, Any] = run_proof(
+            chrome_user_data_dir=arguments.chrome_user_data_dir, diagnostic_path=arguments.diagnostic_path
+        )
     except Exception as error:
         payload = {
             "ok": False,

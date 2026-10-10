@@ -14,7 +14,6 @@ from http.client import HTTPConnection
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from polylogue.browser_capture.native_host import native_host_manifest_path
 from polylogue.browser_capture.receiver import read_receiver_credential
 
 
@@ -62,6 +61,7 @@ def scoped_native_transport_proof(
     scratch: Path,
     environment: Mapping[str, str],
     endpoint: str,
+    chrome_user_data_dir: Path,
 ) -> Iterator[dict[str, str]]:
     """Publish only an independently named manifest and a page-only extension.
 
@@ -117,7 +117,10 @@ def scoped_native_transport_proof(
         encoding="utf-8",
     )
     launcher.chmod(0o700)
-    manifest = native_host_manifest_path().with_name(f"{host_name}.json")
+    profile = chrome_user_data_dir.absolute()
+    if not profile.is_dir():
+        raise RuntimeError("owned proof requires the actual Chrome user-data directory")
+    manifest = profile / "NativeMessagingHosts" / f"{host_name}.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "name": host_name,

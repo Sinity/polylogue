@@ -82,7 +82,7 @@ def test_run_proof_reads_owned_bound_ports_and_product_convergence(
     )
     monkeypatch.setattr(dev_loop_service, "_fetch_api_messages", lambda **_kwargs: True)
 
-    payload = dev_loop_service.run_proof()
+    payload = dev_loop_service.run_proof(chrome_user_data_dir=tmp_path)
 
     assert payload == {
         "ok": True,
@@ -243,7 +243,7 @@ def test_run_proof_rejects_one_malformed_expected_provider_before_convergence(
     )
 
     with pytest.raises(RuntimeError, match="entries were malformed: claude-ai"):
-        dev_loop_service.run_proof()
+        dev_loop_service.run_proof(chrome_user_data_dir=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -600,9 +600,9 @@ def test_api_readiness_uses_the_unauthenticated_liveness_contract(monkeypatch: p
 
 
 def test_main_emits_one_bounded_json_error(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr(dev_loop_service, "run_proof", lambda: (_ for _ in ()).throw(ValueError("x" * 600)))
+    monkeypatch.setattr(dev_loop_service, "run_proof", lambda **_kwargs: (_ for _ in ()).throw(ValueError("x" * 600)))
 
-    assert dev_loop_service.main(["--json"]) == 1
+    assert dev_loop_service.main(["--json", "--chrome-user-data-dir", "/neutral/chrome"]) == 1
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
@@ -635,7 +635,7 @@ def test_proof_daemon_owns_ephemeral_ports_through_product_convergence(
         return ports
 
     monkeypatch.setattr(dev_loop_service, "_await_listener_ports", read_owned)
-    result = dev_loop_service.run_proof(readiness_timeout_s=45)
+    result = dev_loop_service.run_proof(chrome_user_data_dir=tmp_path, readiness_timeout_s=45)
     assert result["ok"] is True and len(observed) == 1
     api, capture = observed[0]
     assert 0 < api != capture > 0
@@ -684,5 +684,5 @@ def test_listener_readback_failure_still_terminates_proof_child(
 
     monkeypatch.setattr(dev_loop_service, "_await_listener_ports", refused)
     with pytest.raises(RuntimeError, match="listener readback refused"):
-        dev_loop_service.run_proof()
+        dev_loop_service.run_proof(chrome_user_data_dir=tmp_path)
     assert stopped == [child]

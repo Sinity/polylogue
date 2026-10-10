@@ -6,7 +6,7 @@ Create or use a managed workspace, then start the fixed operation:
 
 ```bash
 agentctl workspace create polylogue browser-proof --branch feature/browser-proof
-agentctl job start polylogue dev_loop_proof --workspace <workspace-id>
+agentctl job start --project /realm/project/polylogue/repo --workspace <workspace-path> dev_loop_proof -- --chrome-user-data-dir <actual-running-Chrome-user-data-directory>
 agentctl job wait <job-id>
 agentctl job result <job-id>
 ```
@@ -66,3 +66,5 @@ Diagnostics do not await storage writes or certify successful effects.
 | `native_prepare` | Receiver preparation entry through raw prefix/member preparation and retained summary |
 | `native_assets` | Exact asset-plan iteration, acquisition and receipts |
 | `native_finalize` | Owner refresh and final native artifact seal |
+
+The scoped native manifest is created only under the explicitly bound running Chrome user-data directory, in `NativeMessagingHosts`. A custom `--user-data-dir` changes that lookup location; the proof never publishes a second manifest to the default profile.
