@@ -169,7 +169,7 @@ def test_status_route_etag_changes_when_the_liveness_probe_fails(monkeypatch: py
         handler._send_json = _send_json  # type: ignore[method-assign]
         return handler
 
-    monkeypatch.setattr("polylogue.daemon.http.get_latest_event_id", lambda: 7)
+    monkeypatch.setattr("polylogue.daemon.http.get_latest_event_cursor", lambda: "a" * 32 + ":7")
     monkeypatch.setattr("polylogue.daemon.http.get_status_snapshot_payload", lambda: {"ok": True})
 
     monkeypatch.setattr("polylogue.daemon.status._check_daemon_liveness", lambda: None)

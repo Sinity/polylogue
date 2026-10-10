@@ -51,7 +51,7 @@ from polylogue.core.staged_body import BodyStorageExhaustedError, StagedBody
 from polylogue.daemon import workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
-    get_latest_event_id,
+    get_latest_event_cursor,
 )
 from polylogue.daemon.peer_identity import peer_socket_owned_by_current_uid
 from polylogue.daemon.route_contracts import (
@@ -3194,7 +3194,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_status(self, params: dict[str, list[str]] | None = None) -> None:
-        latest_event_id = get_latest_event_id()
+        latest_event_id = get_latest_event_cursor()
         status = get_status_snapshot_payload()
         status["last_event_id"] = latest_event_id
         # polylogue-xvwpi: suppressing the liveness probe dropped the key

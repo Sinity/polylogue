@@ -343,8 +343,10 @@ CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, op
 -- with the typed aged_out resync.
 CREATE TABLE IF NOT EXISTS daemon_event_retention (
     ledger             TEXT PRIMARY KEY,
-    pruned_through_id  INTEGER NOT NULL CHECK(pruned_through_id >= 0)
+    pruned_through_id  INTEGER NOT NULL CHECK(pruned_through_id >= 0),
+    lifetime TEXT NOT NULL DEFAULT (lower(hex(randomblob(16))))
 ) STRICT;
+INSERT OR IGNORE INTO daemon_event_retention(ledger, pruned_through_id) VALUES ('daemon_events', 0);
 
 -- Judgment automation receipts are the typed authority for scheduler health.
 -- Keep the legacy daemon_events row as a compatibility/event-stream record,

@@ -3,14 +3,14 @@
 The daemon exposes daemon-event notifications to the web reader via two
 shapes off the same handler:
 
-- ``GET /api/events?poll=1&since=<id>`` — JSON snapshot of events with
-  ``id > since``. Used by ETag/poll fallback when ``EventSource`` is
+- ``GET /api/events?poll=1&since=<cursor>`` — JSON snapshot of events with
+  the opaque lifetime-bound continuation. Used by ETag/poll fallback when ``EventSource`` is
   unavailable.
-- ``GET /api/events?since=<id>`` — Server-Sent Events stream of the same
+- ``GET /api/events?since=<cursor>`` — Server-Sent Events stream of the same
   payload, bounded by ``max_seconds`` so HTTP idle timeouts and tests
   cannot deadlock.
 
-``GET /api/status`` advertises the same monotonic ``last_event_id`` and
+``GET /api/status`` advertises the same lifetime-bound ``last_event_id`` and
 sets a weak ``ETag`` so clients can long-poll without paying the full
 status payload on every probe.
 """
@@ -90,6 +90,14 @@ def _response_json(response: bytes) -> dict[str, object]:
     return cast(dict[str, object], payload)
 
 
+def _cursor(position: int) -> str:
+    from polylogue.daemon.events import get_latest_event_cursor
+
+    current = get_latest_event_cursor()
+    assert current is not None
+    return current.rsplit(":", 1)[0] + f":{position}"
+
+
 @pytest.fixture
 def empty_events_db(workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Path:
     """Force the daemon-events DB into an isolated workspace."""
@@ -122,14 +130,14 @@ class TestEventsPollFallback:
     """``GET /api/events?poll=1`` returns JSON envelopes for ETag-style polling."""
 
     def test_poll_with_no_events_returns_empty_envelope(self, empty_events_db: Path) -> None:
-        handler = _make_handler("GET", "/api/events?poll=1&since=0")
+        handler = _make_handler("GET", "/api/events?poll=1")
         send_json = capture_json_response(handler)
         handler.do_GET()
 
         send_json.assert_called_once()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload == {"events": [], "last_event_id": 0}
+        assert payload == {"events": [], "last_event_id": None}
         assert not empty_events_db.exists()
 
     def test_poll_returns_events_after_since(self, empty_events_db: Path) -> None:
@@ -138,7 +146,7 @@ class TestEventsPollFallback:
         emit_daemon_event("ingestion_batch", payload={"files": 1})
         emit_daemon_event("ingest", operation_id="op-2", payload={"path": "/tmp/x"})
 
-        handler = _make_handler("GET", "/api/events?poll=1&since=0")
+        handler = _make_handler("GET", "/api/events?poll=1")
         send_json = capture_json_response(handler)
         handler.do_GET()
 
@@ -146,7 +154,7 @@ class TestEventsPollFallback:
         assert status == HTTPStatus.OK
         events = payload["events"]
         assert [e["kind"] for e in events] == ["ingestion_batch", "ingest"]
-        assert payload["last_event_id"] == events[-1]["id"]
+        assert payload["last_event_id"] == events[-1]["cursor"]
 
     def test_poll_kinds_filter_whitelist(self, empty_events_db: Path) -> None:
         from polylogue.daemon.events import emit_daemon_event
@@ -154,7 +162,7 @@ class TestEventsPollFallback:
         emit_daemon_event("ingestion_batch", payload={"n": 1})
         emit_daemon_event("noise", payload={"n": 2})
 
-        handler = _make_handler("GET", "/api/events?poll=1&since=0&kinds=ingestion_batch,ingest")
+        handler = _make_handler("GET", "/api/events?poll=1&kinds=ingestion_batch,ingest")
         send_json = capture_json_response(handler)
         handler.do_GET()
 
@@ -166,10 +174,10 @@ class TestEventsPollFallback:
         from polylogue.daemon.events import emit_daemon_event
 
         emit_daemon_event("ingestion_batch", payload={})
-        handler = _make_handler("GET", "/api/events?poll=1&since=0")
+        handler = _make_handler("GET", "/api/events?poll=1")
         send_json = capture_json_response(handler)
         handler.do_GET()
-        first_id = send_json.call_args.args[1]["events"][0]["id"]
+        first_id = send_json.call_args.args[1]["events"][0]["cursor"]
 
         handler = _make_handler("GET", f"/api/events?poll=1&since={first_id}")
         send_json = capture_json_response(handler)
@@ -186,7 +194,7 @@ class TestEventsSSEStream:
         emit_daemon_event("ingestion_batch", payload={"files": 3})
         emit_daemon_event("ingest", operation_id="op-99", payload={})
 
-        handler = _make_handler("GET", "/api/events?since=0&max_seconds=1")
+        handler = _make_handler("GET", "/api/events?max_seconds=1")
         handler.do_GET()
 
         out = cast("BytesIO", handler.wfile).getvalue()
@@ -205,10 +213,10 @@ class TestEventsSSEStream:
         emit_daemon_event("ingestion_batch", payload={"n": 2})
 
         # Last-Event-ID set to the first event's id should suppress it.
-        handler_first = _make_handler("GET", "/api/events?poll=1&since=0")
+        handler_first = _make_handler("GET", "/api/events?poll=1")
         send_json_first = capture_json_response(handler_first)
         handler_first.do_GET()
-        first_id = send_json_first.call_args.args[1]["events"][0]["id"]
+        first_id = send_json_first.call_args.args[1]["events"][0]["cursor"]
 
         handler = _make_handler(
             "GET",
@@ -241,8 +249,8 @@ class TestEventLedgerReadIsolation:
         monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
 
         assert list(events_mod.iter_daemon_events()) == []
-        assert events_mod.query_events_since(0).events == ()
-        assert events_mod.get_latest_event_id() == 0
+        assert events_mod.query_events_since(None).events == ()
+        assert events_mod.get_latest_event_cursor() is None
         assert events_mod.get_daemon_event_counts() == {}
         assert events_mod.get_last_ingestion_batch() is None
         assert list(events_mod.get_recent_operations()) == []
@@ -269,8 +277,8 @@ class TestEventLedgerReadIsolation:
         monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
 
         assert list(events_mod.iter_daemon_events()) == []
-        assert events_mod.query_events_since(0).events == ()
-        assert events_mod.get_latest_event_id() == 0
+        assert events_mod.query_events_since(None).events == ()
+        assert events_mod.get_latest_event_cursor() is None
         assert events_mod.get_daemon_event_counts() == {}
         assert events_path.stat().st_size == size_before
         with sqlite3.connect(f"file:{events_path}?mode=ro", uri=True) as conn:
@@ -300,8 +308,8 @@ class TestEventLedgerReadIsolation:
             monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
 
             assert [event["kind"] for event in events_mod.iter_daemon_events()] == ["committed"]
-            assert [event["kind"] for event in events_mod.query_events_since(0).events] == ["committed"]
-            assert events_mod.get_latest_event_id() == 1
+            assert [event["kind"] for event in events_mod.query_events_since(None).events] == ["committed"]
+            assert events_mod.get_latest_event_cursor() == _cursor(1)
             assert events_mod.get_daemon_event_counts() == {"committed": 1}
             assert writer.in_transaction is True
             assert writer.total_changes == writer_changes
@@ -312,7 +320,7 @@ class TestEventLedgerReadIsolation:
         finally:
             writer.close()
 
-        assert [event["kind"] for event in events_mod.query_events_since(1).events] == [
+        assert [event["kind"] for event in events_mod.query_events_since(_cursor(1)).events] == [
             "uncommitted",
             "writer-still-active",
         ]
@@ -606,7 +614,7 @@ class TestGranularEventKinds:
 
         handler = _make_handler(
             "GET",
-            "/api/events?poll=1&since=0&kinds=message.appended,session.updated",
+            "/api/events?poll=1&kinds=message.appended,session.updated",
         )
         send_json = capture_json_response(handler)
         handler.do_GET()
@@ -762,7 +770,7 @@ class TestBackpressureCoalescing:
         for _ in range(20):
             emit_message_appended(session_id="c", appended_count=1)
 
-        handler = _make_handler("GET", "/api/events?poll=1&since=0&coalesce=5")
+        handler = _make_handler("GET", "/api/events?poll=1&coalesce=5")
         send_json = capture_json_response(handler)
         handler.do_GET()
         payload = send_json.call_args.args[1]
@@ -775,7 +783,7 @@ class TestBackpressureCoalescing:
         assert snapshot["payload"]["kind_counts"] == {"message.appended": 20}
         # last_event_id advances past every coalesced row so the next
         # request doesn't replay the same burst.
-        assert payload["last_event_id"] == snapshot["id"]
+        assert payload["last_event_id"] == snapshot["cursor"]
 
     def test_poll_below_threshold_returns_individual_events(self, empty_events_db: Path) -> None:
         from polylogue.daemon.events import emit_message_appended
@@ -783,7 +791,7 @@ class TestBackpressureCoalescing:
         for _ in range(3):
             emit_message_appended(session_id="c", appended_count=1)
 
-        handler = _make_handler("GET", "/api/events?poll=1&since=0&coalesce=10")
+        handler = _make_handler("GET", "/api/events?poll=1&coalesce=10")
         send_json = capture_json_response(handler)
         handler.do_GET()
         payload = send_json.call_args.args[1]
@@ -797,7 +805,7 @@ class TestBackpressureCoalescing:
         for _ in range(15):
             emit_message_appended(session_id="c", appended_count=1)
 
-        handler = _make_handler("GET", "/api/events?since=0&max_seconds=1&coalesce=5")
+        handler = _make_handler("GET", "/api/events?max_seconds=1&coalesce=5")
         handler.do_GET()
         out = cast("BytesIO", handler.wfile).getvalue()
         # A coalesced burst emits exactly one snapshot frame, not 15.
@@ -816,7 +824,7 @@ class TestAccessTokenQueryRejected:
     ) -> None:
         handler = _make_handler(
             "GET",
-            f"/api/events?poll=1&since=0&{credential_param}=secret",
+            f"/api/events?poll=1&{credential_param}=secret",
             server=MockDaemonServer(auth_token="secret"),
         )
         send_error = MagicMock()
@@ -1035,7 +1043,7 @@ class TestAdvertisedTopicContracts:
         emit_session_updated(session_id="synthetic:s1", source_name="synthetic", appended_count=2)
         emit_message_appended(session_id="synthetic:s1", source_name="synthetic", appended_count=3)
 
-        by_kind = {event["kind"]: event for event in query_events_since(0).events}
+        by_kind = {event["kind"]: event for event in query_events_since(None).events}
         assert set(by_kind) == {EVENT_SESSION_APPENDED, EVENT_SESSION_UPDATED, EVENT_MESSAGE_APPENDED}
         for kind, event in by_kind.items():
             spec = EVENT_SPECS[cast("str", kind)]
@@ -1051,7 +1059,7 @@ class TestAdvertisedTopicContracts:
         from polylogue.daemon.events import EVENT_SPECS, emit_session_updated
 
         emit_session_updated(session_id="synthetic:s1", source_name="synthetic", appended_count=1)
-        handler = _make_handler("GET", "/api/events?since=0&max_seconds=1")
+        handler = _make_handler("GET", "/api/events?max_seconds=1")
         handler.do_GET()
         out = cast("BytesIO", handler.wfile).getvalue()
         frame = EVENT_SPECS["session.updated"].frame
@@ -1086,7 +1094,7 @@ class TestDaemonEventRetention:
 
         emitted: list[int] = []
 
-        def emit_then_query(cursor: int, **kwargs: object) -> object:
+        def emit_then_query(cursor: str | None, **kwargs: object) -> object:
             if not emitted:
                 for index in range(3):
                     emit_message_appended(session_id=f"s-{index}", source_name="codex", appended_count=1)
@@ -1105,18 +1113,18 @@ class TestDaemonEventRetention:
         from polylogue.daemon.events import EVENT_SUBSCRIBERS, emit_message_appended, query_events_since
 
         with EVENT_SUBSCRIBERS.owning():
-            subscription = EVENT_SUBSCRIBERS.subscribe(0)
+            subscription = EVENT_SUBSCRIBERS.subscribe(None)
             emit_message_appended(session_id="s-1", source_name="codex", appended_count=1)
-            assert len(query_events_since(0).events) == 1
+            assert len(query_events_since(None).events) == 1
             subscription.close()
             emit_message_appended(session_id="s-2", source_name="codex", appended_count=1)
-            assert query_events_since(0).events == ()
+            assert query_events_since(None).events == ()
 
 
 class TestAgedOutCursorResync:
     """A pruned replay gap is an explicit resync, never a short or empty answer."""
 
-    def _force_gap(self) -> int:
+    def _force_gap(self) -> str:
         """Emit, prune below the client's cursor, and return that stale cursor.
 
         Uses the production enforcement point to do the pruning, so the fixture
@@ -1126,7 +1134,7 @@ class TestAgedOutCursorResync:
 
         for index in range(4):
             emit_daemon_event("ingestion_batch", payload={"n": index})
-        client_cursor = cast("int", query_events_since(0).events[0]["id"])
+        client_cursor = cast("str", query_events_since(None).events[0]["cursor"])
         # The daemon owns the ledger and no subscriber is live, so the next emit
         # removes every superseded batch record the client has not read.
         with EVENT_SUBSCRIBERS.owning():
@@ -1150,14 +1158,14 @@ class TestAgedOutCursorResync:
         assert payload["requested_since"] == stale_cursor
         assert payload["first_event_id"] == page.retained_min_id
         assert payload["last_event_id"] == page.latest_id
-        assert page.retained_min_id is not None and page.retained_min_id > stale_cursor + 1
+        assert page.retained_min_id is not None and page.retained_min_id > int(stale_cursor.rsplit(":", 1)[1]) + 1
 
     def test_cursor_inside_the_retained_range_is_served_normally(self, empty_events_db: Path) -> None:
         from polylogue.daemon.events import EventCursorStatus, emit_daemon_event, query_events_since
 
         emit_daemon_event("ingestion_batch", payload={"n": 0})
         emit_daemon_event("ingestion_batch", payload={"n": 1})
-        first_id = cast("int", query_events_since(0).events[0]["id"])
+        first_id = cast("str", query_events_since(None).events[0]["cursor"])
 
         page = query_events_since(first_id)
         assert page.status is EventCursorStatus.OK
@@ -1169,7 +1177,7 @@ class TestAgedOutCursorResync:
         from polylogue.daemon.events import EventCursorStatus, emit_daemon_event, query_events_since
 
         emit_daemon_event("ingestion_batch", payload={"n": 0})
-        page = query_events_since(9_999)
+        page = query_events_since(_cursor(9_999))
 
         assert page.status is EventCursorStatus.AGED_OUT
         assert cast("dict[str, object]", cast("dict[str, object]", page.resync)["payload"])["reason"] == "ledger_reset"
@@ -1178,7 +1186,7 @@ class TestAgedOutCursorResync:
         from polylogue.daemon import events
 
         monkeypatch.setattr(events, "_events_db_path", lambda: tmp_path / "removed-ops.db")
-        page = events.query_events_since(42)
+        page = events.query_events_since("a" * 32 + ":42")
         assert page.status is events.EventCursorStatus.AGED_OUT
         assert page.resync is not None
         assert cast(dict[str, object], page.resync["payload"])["reason"] == "ledger_reset"
@@ -1214,6 +1222,7 @@ class TestAgedOutCursorResync:
                 events=({"id": 1},),
                 retained_min_id=5,
                 latest_id=9,
+                latest_cursor="a" * 32 + ":9",
                 resync={"kind": "snapshot"},
             )
 
@@ -1226,6 +1235,7 @@ class TestAgedOutCursorResync:
                 events=(),
                 retained_min_id=5,
                 latest_id=9,
+                latest_cursor="a" * 32 + ":9",
                 resync={"kind": "snapshot"},
             )
 
@@ -1267,13 +1277,14 @@ class TestAgedOutCursorResync:
         from polylogue.daemon.events import query_events_since
 
         resync = cast("dict[str, object]", query_events_since(stale_cursor).resync)
-        coalesced = _build_snapshot_event([{"id": 1, "ts": "t", "kind": "ingestion_batch"}])
+        coalesced = _build_snapshot_event([{"id": 1, "cursor": "a" * 32 + ":1", "ts": "t", "kind": "ingestion_batch"}])
 
         assert set(coalesced) == set(resync)
         assert set(cast("dict[str, object]", coalesced["payload"])) <= set(cast("dict[str, object]", resync["payload"]))
         assert (
             build_snapshot_envelope(
                 event_id=1,
+                cursor="a" * 32 + ":1",
                 ts="t",
                 event_count=1,
                 first_event_id=1,
