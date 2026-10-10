@@ -73,6 +73,7 @@ from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
     from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
+    from polylogue.schemas.validator import RetainedValidationReuse
     from polylogue.sources.parsers.base import ParsedSession
     from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.sources.revision_backfill import (
@@ -327,6 +328,7 @@ class NeutralRawPreparation:
     operands: Mapping[str, _NeutralParserOperand]
     sidecar_scopes: Mapping[str, RetainedSidecarScope]
     artifacts: dict[tuple[object, ...], PreparedJsonl] = dataclasses_field(default_factory=dict)
+    validation_reuse: dict[tuple[object, ...], RetainedValidationReuse] = dataclasses_field(default_factory=dict)
 
     def parser_jobs(
         self, validation_mode: ValidationMode
@@ -365,6 +367,9 @@ class NeutralRawPreparation:
     def close(self) -> None:
         _close_prepared_carriers({}, {}, self.artifacts.values())
         self.artifacts.clear()
+        for reuse in self.validation_reuse.values():
+            reuse.clear()
+        self.validation_reuse.clear()
         _cleanup_scratch(self.scratch_owner)
 
 
@@ -1567,10 +1572,10 @@ class RawObservationDerivation(RawObservationInspection):
                 return replace(outcome, carried_payload=carry)
             if outcome == "restart":
                 carry.discard_payload(keep=replacement)
-                carry = _PreparationCarry(committed=carry.committed)
+                carry = _PreparationCarry(neutral_page=neutral_page, committed=carry.committed)
                 continue
             if outcome == "widen":
-                carry = _PreparationCarry()
+                carry = _PreparationCarry(neutral_page=neutral_page)
                 widened = (
                     *widened,
                     *(raw_id for raw_id in replacement.lineage_parent_raw_ids if raw_id not in widened),
@@ -2179,7 +2184,7 @@ class RawObservationDerivation(RawObservationInspection):
         raw_ids, logical_keys = original_selection
         eligible_raw_ids = tuple(captures)
         blob_store = BlobStore(self.archive_root / "blob")
-        from polylogue.schemas import validate_retained_document
+        from polylogue.schemas import RetainedValidationReuse, validate_retained_document
 
         assert carry.scratch_owner is not None
         scratch = Path(carry.scratch_owner.name)
@@ -2208,12 +2213,25 @@ class RawObservationDerivation(RawObservationInspection):
                 # Transfer ownership before validation or checkpoint work can fail.
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
             else:
-                # Parser bytes survive rebinding; current schema evidence does not.
+                # Parser bytes survive rebinding; schema currency is checked below.
                 neutral = cached
             if neutral.error is None and neutral.resolved_provider is not None and neutral.parsed_prefix_size != 0:
                 from polylogue.sources.revision_backfill import _retained_validation_input
 
                 prefix = neutral.parsed_prefix_size if self._validation_mode is not ValidationMode.OFF else None
+                # Only the external page owns these files through all ordered
+                # consumers. Fresh captures in this carry have a shorter lifetime.
+                page = carry.neutral_page
+                reuse = None
+                if (
+                    page is not None
+                    and neutral_keys[raw_id] in page.artifacts
+                    and (page.captures[raw_id].staged_blob == staged_blob)
+                ):
+                    reuse = page.validation_reuse.setdefault(neutral_keys[raw_id], RetainedValidationReuse())
+                    # Cached drift belongs to the page until every ordered
+                    # consumer settles, independently of parser attempt directories.
+                    neutral_directory = Path(page.scratch_owner.name)
                 try:
                     with _retained_validation_input(staged_blob, prefix) as (validation_path, accepted_prefix_size):
                         verdict = validate_retained_document(
@@ -2229,6 +2247,7 @@ class RawObservationDerivation(RawObservationInspection):
                             captured_zip_coordinate=captured.zip_coordinate,
                             registry=self._schema_registry,
                             signature_directory=neutral_directory,
+                            reuse=reuse,
                         )
                 except Exception as error:
                     from polylogue.sources.prepared_jsonl import classify_decode_failure

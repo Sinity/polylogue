@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+import time
 from collections.abc import Callable, Iterable
 from contextlib import closing
 from functools import partial
@@ -1999,3 +2000,187 @@ def test_empty_claude_history_keeps_raw_only_admission(tmp_path: Path) -> None:
     assert read_raw_failure_lifecycle(tmp_path / "source.db").terminal == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT parse_error FROM raw_sessions").fetchone() == (None,)
+
+
+def test_neutral_unchanged_rebind_reuses_complete_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_property: Callable[[str, object], None]
+) -> None:
+    from polylogue.schemas import retained_validation
+
+    bootstrap_archive_root(tmp_path)
+    payload = b'{"type":"session_meta","payload":{"id":"same-input"}}\n' + b"".join(
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": f"m-{ordinal}",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "neutral text " * 16}],
+                },
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+        for ordinal in range(1000)
+    )
+    target = _admit(tmp_path, (), provider=Provider.CODEX, path="session.jsonl", payload=payload)
+    original_validate = retained_validation.validate_retained_document
+    original_compute = RawObservationDerivation._compute_prepared
+    durations: list[float] = []
+    retried = False
+
+    def validate(*args: Any, **kwargs: Any) -> Any:
+        start = time.process_time()
+        try:
+            return original_validate(*args, **kwargs)
+        finally:
+            durations.append(time.process_time() - start)
+
+    def compute(self: RawObservationDerivation, *args: Any, **kwargs: Any) -> Any:
+        nonlocal retried
+        if not retried:
+            retried = True
+            raise ReferenceSealStaleError("synthetic unchanged Source rebind")
+        return original_compute(self, *args, **kwargs)
+
+    monkeypatch.setattr(retained_validation, "validate_retained_document", validate)
+    monkeypatch.setattr(RawObservationDerivation, "_compute_prepared", compute)
+
+    async def replay() -> None:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            (await owner.replay_retained_raw_ids((target,))).require_complete()
+
+    asyncio.run(replay())
+    record_property("validation_body_calls", len(durations))
+    record_property("validation_body_cpu_seconds", durations)
+    record_property("raw_input_bytes", len(payload))
+    measurement = Path.cwd() / ".cache" / "validation-reuse-measurements" / f"{tmp_path.parent.name}.json"
+    measurement.parent.mkdir(parents=True, exist_ok=True)
+    measurement.write_text(
+        json.dumps(
+            {
+                "validation_body_calls": len(durations),
+                "validation_body_cpu_seconds": durations,
+                "raw_input_bytes": len(payload),
+                "route": "owned-retained-neutral-page",
+            }
+        )
+    )
+    with sqlite3.connect(tmp_path / "index.db") as connection:
+        messages = connection.execute(
+            "SELECT message_id,session_id,native_id,source_native_id_json,position,role,identity_source "
+            "FROM messages ORDER BY position"
+        ).fetchall()
+        assert messages == [
+            (
+                f"codex-session:same-input:n:m-{ordinal}",
+                "codex-session:same-input",
+                f"m-{ordinal}",
+                json.dumps(f"m-{ordinal}"),
+                ordinal,
+                "user",
+                "native",
+            )
+            for ordinal in range(1000)
+        ]
+        assert connection.execute("SELECT text FROM blocks ORDER BY rowid").fetchall() == [
+            ("neutral text " * 16,) for _ in range(1000)
+        ]
+    assert len(durations) == 1
+
+
+def test_neutral_page_census_restart_keeps_drift_until_page_retirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.schemas import retained_validation
+    from polylogue.schemas.runtime_registry import SchemaRegistry
+    from polylogue.storage.derived.raw import NeutralRawPreparation
+
+    bootstrap_archive_root(tmp_path)
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    registry.write_schema_version(
+        "codex",
+        "v999",
+        {"type": "object", "properties": {"type": {"type": "string"}, "payload": {"type": "object"}}},
+        element_kind="event_record",
+    )
+    original_init = RawObservationDerivation.__init__
+    original_compute = RawObservationDerivation._compute_prepared
+    retried = False
+
+    def initialize(self: RawObservationDerivation, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        self._schema_registry = registry
+
+    def compute(self: RawObservationDerivation, *args: Any, **kwargs: Any) -> Any:
+        nonlocal retried
+        if not retried:
+            retried = True
+            raise ReferenceSealStaleError("synthetic unchanged Source rebind with borrowed drift")
+        return original_compute(self, *args, **kwargs)
+
+    monkeypatch.setattr(RawObservationDerivation, "__init__", initialize)
+    monkeypatch.setattr(RawObservationDerivation, "_compute_prepared", compute)
+    payload = (
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {"id": "first"},
+                **{f"neutral_unused_field_{ordinal}": True for ordinal in range(400)},
+            }
+        ).encode()
+        + b"\n"
+        + _codex_conversation_bytes("first").split(b"\n", 1)[1]
+    )
+    first = _admit(tmp_path, (), provider=Provider.CODEX, path="first.jsonl", payload=payload)
+    second = _admit(
+        tmp_path, (), provider=Provider.CODEX, path="second.jsonl", payload=_codex_conversation_bytes("second")
+    )
+    original_validate = retained_validation.validate_retained_document
+    original_close = NeutralRawPreparation.close
+    verdicts = []
+    signatures: list[Path] = []
+    closed_pages = 0
+
+    def validate(*args: Any, **kwargs: Any) -> Any:
+        verdict = original_validate(*args, **kwargs)
+        verdicts.append(verdict)
+        return verdict
+
+    def close(page: NeutralRawPreparation) -> None:
+        nonlocal closed_pages
+        closed_pages += 1
+        memos = tuple(page.validation_reuse.values())
+        owned_signatures: list[Path] = []
+        for memo in memos:
+            assert memo._entry is not None
+            verdict = memo._entry.verdict
+            if verdict.drift_observation is not None:
+                signature = verdict.drift_observation.unseen_key_signature
+                assert len(b"".join(signature.iter_utf8_chunks())) == signature.byte_count
+                if signature._path is not None:
+                    assert signature._path.parent == Path(page.scratch_owner.name)
+                    owned_signatures.append(signature._path)
+        signatures.extend(owned_signatures)
+        original_close(page)
+        assert not page.validation_reuse
+        assert all(memo._entry is None for memo in memos)
+        assert all(not path.exists() for path in owned_signatures)
+
+    monkeypatch.setattr(retained_validation, "validate_retained_document", validate)
+    monkeypatch.setattr(NeutralRawPreparation, "close", close)
+
+    async def replay() -> None:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            (await owner.replay_retained_raw_ids((first, second))).require_complete()
+
+    asyncio.run(replay())
+    assert len(verdicts) == 2
+    assert signatures and closed_pages == 2
+    assert retried
+    with sqlite3.connect(tmp_path / "index.db") as connection:
+        assert connection.execute("SELECT native_id FROM messages ORDER BY native_id").fetchall() == [
+            ("m-first",),
+            ("m-second",),
+        ]
