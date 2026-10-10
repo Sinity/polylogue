@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
 import socket
 import sqlite3
 import struct
+import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,6 +24,7 @@ from urllib.parse import urlparse
 import pytest
 
 import polylogue.browser_capture.receiver as receiver_module
+from devtools.isolated_environment import isolated_home_environment
 from polylogue.browser_capture import native_host, native_transport
 from polylogue.browser_capture.server import BrowserCaptureHandler, make_server
 
@@ -494,3 +497,117 @@ def test_native_input_interrupts_blocked_socket_and_settles_stages(tmp_path: Pat
     peer.close()
     assert not failures
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+@pytest.mark.uses_real_clock("native subprocess and HTTP own their cancellation and byte-stream clocks")
+@pytest.mark.parametrize("blocked", [False, True])
+def test_actual_native_process_streams_large_bytes_or_settles_input_eof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocked: bool
+) -> None:
+    archive = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    receiver_module.persist_receiver_token(_SECRET)
+    identity = receiver_module.load_or_mint_receiver_identity()
+    started, release = Event(), Event()
+    acquired: list[bytes] = []
+    data = bytes((index * 31 + 7) % 256 for index in range(1024 * 1024 + 17))
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path / "spool", auth_token=_SECRET)
+
+    class OwnedHandler(BrowserCaptureHandler):
+        def _do_put(self) -> None:
+            if self._reject_origin() or self._reject_token():
+                return
+            acquired.append(self.rfile.read(int(self.headers["Content-Length"])))
+            started.set()
+            if blocked:
+                release.wait(10)
+                return
+            self._send_attachment(
+                io.BytesIO(acquired[0]),
+                len(acquired[0]),
+                content_type="application/octet-stream",
+                filename="neutral.bin",
+            )
+
+    server.RequestHandlerClass = OwnedHandler
+    environment = isolated_home_environment(os.environ, home=tmp_path / "home")
+    environment["POLYLOGUE_ARCHIVE_ROOT"] = str(archive)
+    environment["TMPDIR"] = str(tmp_path)
+    command = [
+        sys.executable,
+        "-c",
+        "from polylogue.browser_capture.native_host import main; raise SystemExit(main())",
+        "chrome-extension://native-neutral/",
+    ]
+    with _serving(server) as endpoint:
+        process = subprocess.Popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment
+        )
+        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        source_pipe = cast(BinaryIO, process.stdin)
+        response_pipe = cast(BinaryIO, process.stdout)
+        raw_frames = bytearray()
+        try:
+            _send_frame(
+                source_pipe,
+                {
+                    "type": "request",
+                    "version": 1,
+                    "endpoint": endpoint,
+                    "receiver_id": identity,
+                    "method": "PUT",
+                    "path": "/v1/neutral-bytes",
+                    "headers": {},
+                },
+            )
+            for sequence, offset in enumerate(range(0, len(data), 64 * 1024)):
+                _send_frame(
+                    source_pipe,
+                    {
+                        "type": "body",
+                        "sequence": sequence,
+                        "data": base64.b64encode(data[offset : offset + 64 * 1024]).decode("ascii"),
+                    },
+                )
+                frame, raw = _read_frame(response_pipe)
+                raw_frames.extend(raw)
+                assert frame == {"type": "body_ack", "sequence": sequence}
+            _send_frame(source_pipe, {"type": "body_end"})
+            if blocked:
+                assert started.wait(5)
+                process.stdin.close()
+                frame, raw = _read_frame(response_pipe)
+                raw_frames.extend(raw)
+                assert frame == {"type": "error", "error": "native_input_incomplete"}
+                assert process.wait(timeout=5) == 1
+            else:
+                frame, raw = _read_frame(response_pipe)
+                raw_frames.extend(raw)
+                assert frame["type"] == "response" and frame["status"] == 200
+                received = bytearray()
+                chunks = 0
+                while True:
+                    _send_frame(source_pipe, {"type": "response_next"})
+                    frame, raw = _read_frame(response_pipe)
+                    raw_frames.extend(raw)
+                    if frame["type"] == "response_end":
+                        break
+                    assert frame["type"] == "response_body" and frame["sequence"] == chunks
+                    received.extend(base64.b64decode(str(frame["data"])))
+                    chunks += 1
+                assert chunks > 16
+                assert hashlib.sha256(received).digest() == hashlib.sha256(data).digest()
+                assert received == data
+                assert process.wait(timeout=5) == 0
+            assert acquired == [data]
+            assert _SECRET.encode() not in raw_frames
+            assert not list(tmp_path.glob("polylogue-native-operation-*"))
+        finally:
+            release.set()
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if not process.stdin.closed:
+                process.stdin.close()
+            process.stdout.close()
+            process.stderr.close()

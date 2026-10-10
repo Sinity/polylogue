@@ -493,27 +493,6 @@ console.log(JSON.stringify({ ok: true }));
     assert json.loads(result.stdout) == {"ok": True}
 
 
-def test_live_receiver_constructor_failure_removes_only_private_scratch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(live_provider_proof_service, "require_declared_operation_context", lambda _operation: "unit")
-
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "global-root"))
-
-    def fail(*_args: object, **_kwargs: object) -> None:
-        assert Path(os.environ["POLYLOGUE_ARCHIVE_ROOT"]).parent.parent == tmp_path
-        raise OSError("synthetic receiver setup failure")
-
-    monkeypatch.setattr(live_provider_proof_service, "make_server", fail)
-    with pytest.raises(OSError):
-        live_provider_proof_service._run_proof_locked(
-            targets=[{"name": "chatgpt", "url": "https://chatgpt.com/c/synthetic", "nativeId": "synthetic"}]
-        )
-    assert list(tmp_path.iterdir()) == []
-    assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "global-root")
-
-
 def test_live_proof_preserves_claude_tool_errors_and_signatures(tmp_path: Path) -> None:
     from polylogue.core.enums import Provider
     from tests.infra.live_provider_proof import native_proof_artifact
@@ -882,172 +861,6 @@ console.log(JSON.stringify(report));
     assert report["cleanup"]["targets"] == "not_required"
 
 
-@pytest.mark.parametrize("child_timeout", [False, True])
-@pytest.mark.parametrize("unset", [False, True])
-@pytest.mark.parametrize("teardown_fault", [False, True])
-def test_private_proof_scope_owns_actual_status_and_attestation_identity_until_shutdown(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unset: bool, teardown_fault: bool, child_timeout: bool
-) -> None:
-    from http.client import HTTPConnection
-
-    from polylogue.browser_capture import receiver
-    from polylogue.browser_capture.server import make_server as original_make_server
-    from polylogue.paths import browser_capture_receiver_identity_path
-
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(live_provider_proof_service, "require_declared_operation_context", lambda _operation: "unit")
-    global_root = tmp_path / "global-root"
-    if unset:
-        monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
-    else:
-        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(global_root))
-    seen: list[Path] = []
-    original_identity_path = browser_capture_receiver_identity_path
-
-    def private_identity_path() -> Path:
-        target = original_identity_path()
-        assert target.parent != global_root
-        assert target.parent.name == "archive" and target.parent.parent.parent == tmp_path
-        seen.append(target)
-        return target
-
-    monkeypatch.setattr(receiver, "browser_capture_receiver_identity_path", private_identity_path)
-    observed: dict[str, Any] = {}
-    owned_servers: list[Any] = []
-    original_closes: list[Any] = []
-
-    def make_server(*args: Any, **kwargs: Any) -> Any:
-        server = original_make_server(*args, **kwargs)
-        owned_servers.append(server)
-        original_closes.append(server.server_close)
-        if teardown_fault:
-
-            def fail_close() -> None:
-                assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(observed["root"])
-                raise OSError("synthetic physical close failure")
-
-            monkeypatch.setattr(server, "server_close", fail_close)
-        return server
-
-    monkeypatch.setattr(live_provider_proof_service, "make_server", make_server)
-
-    class Process:
-        returncode = 1
-
-        def __init__(self, *_args: object, **kwargs: Any) -> None:
-            self.environment = kwargs["env"]
-
-        def communicate(self, **_kwargs: object) -> tuple[str, str]:
-            if getattr(self, "timed_out", False):
-                return json.dumps(
-                    {
-                        "ok": False,
-                        "error": {"phase": "capture", "category": "shutdown"},
-                        "native_progress": [],
-                        "capture_evidence": [],
-                        "cleanup": dict.fromkeys(["receiver", "permission", "mutations", "targets"], "settled"),
-                    }
-                ), "private synthetic stderr"
-            environment = self.environment
-            root = Path(environment["POLYLOGUE_ARCHIVE_ROOT"])
-            assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(root)
-            port = int(environment["POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"])
-            token = environment["POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN"]
-            origin = "chrome-extension://synthetic-proof"
-            connection = HTTPConnection("127.0.0.1", port, timeout=5)
-            try:
-                connection.request(
-                    "OPTIONS",
-                    "/v1/status",
-                    headers={
-                        "Origin": origin,
-                        "Access-Control-Request-Method": "GET",
-                        "Access-Control-Request-Headers": "Authorization, X-Request-ID",
-                        "Access-Control-Request-Private-Network": "true",
-                    },
-                )
-                response = connection.getresponse()
-                assert response.status == 204
-                assert response.getheader("Access-Control-Allow-Origin") == origin
-                assert response.getheader("Access-Control-Allow-Private-Network") == "true"
-                response.read()
-                connection.request("GET", "/v1/status", headers={"Origin": origin, "Authorization": "Bearer incorrect"})
-                response = connection.getresponse()
-                assert response.status == 401
-                response.read()
-                connection.request("GET", "/v1/status", headers={"Origin": origin, "Authorization": f"Bearer {token}"})
-                response = connection.getresponse()
-                assert response.status == 200
-                status = json.loads(response.read())
-                challenge = "A" * 43
-                connection.request(
-                    "POST",
-                    "/v1/receiver/attest",
-                    json.dumps({"challenge": challenge}),
-                    {
-                        "Origin": origin,
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                    },
-                )
-                response = connection.getresponse()
-                assert response.status == 200
-                attestation = json.loads(response.read())
-                assert attestation["receiver_id"] == status["receiver_id"]
-                assert attestation["proof"] == receiver.receiver_attestation_proof(
-                    token, status["receiver_id"], challenge, attestation["endpoint"]
-                )
-                identity = root / "browser-capture-receiver-id"
-                assert identity.read_text() == status["receiver_id"]
-                assert identity.with_name(identity.name + ".lock").is_file()
-                observed["root"] = root
-            finally:
-                connection.close()
-            if child_timeout:
-                self.timed_out = True
-                raise subprocess.TimeoutExpired(["node"], 120, output=b"private synthetic partial transcript")
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": {"phase": "receiver_pairing", "category": "receiver_handshake_failed"},
-                    "native_progress": [],
-                    "capture_evidence": [],
-                    "cleanup": dict.fromkeys(["receiver", "permission", "mutations", "targets"], "not_required"),
-                }
-            ), ""
-
-    monkeypatch.setattr(subprocess, "Popen", Process)
-    monkeypatch.setattr(live_provider_proof_service, "terminate_process_group", lambda _process: None)
-    try:
-        with pytest.raises(OSError if teardown_fault else live_provider_proof_service.ChildProofError) as failure:
-            live_provider_proof_service._run_proof_locked(targets=[])
-        assert len(seen) == 3
-        assert not global_root.exists()
-        if teardown_fault:
-            assert owned_servers[0].socket.fileno() >= 0
-            assert observed["root"].exists()
-            assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(observed["root"])
-        else:
-            assert isinstance(failure.value, live_provider_proof_service.ChildProofError)
-            if child_timeout:
-                assert failure.value.report["error"] == {"phase": "capture", "category": "shutdown"}
-                assert set(failure.value.report["cleanup"].values()) == {"settled"}
-            assert failure.value.receiver_requests == [
-                {"method": "OPTIONS", "path": "/v1/status", "status": 204},
-                {"method": "GET", "path": "/v1/status", "status": 401},
-                {"method": "GET", "path": "/v1/status", "status": 200},
-                {"method": "POST", "path": "/v1/receiver/attest", "status": 200},
-            ]
-            assert owned_servers[0].socket.fileno() == -1
-            assert not observed["root"].exists()
-            assert os.environ.get("POLYLOGUE_ARCHIVE_ROOT") == (None if unset else str(global_root))
-    finally:
-        # The injected close fault retained the original owner. Settle its real
-        # socket before pytest restores the process environment and temp root.
-        original_closes[0]()
-        assert owned_servers[0].socket.fileno() == -1
-
-
 @pytest.mark.parametrize("phase", ["configuration", "handshake", "permission"])
 def test_normal_cleanup_preserves_actual_primary_receiver_refusal_category(phase: str) -> None:
     script = (
@@ -1105,139 +918,6 @@ console.log(JSON.stringify(report));
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["cleanup"]["receiver"] == "settled"
-
-
-@pytest.mark.parametrize("route", ["status", "attest"])
-@pytest.mark.parametrize("close_fault", [False, True])
-def test_private_receiver_waits_for_delayed_identity_request_before_releasing_scope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, close_fault: bool
-) -> None:
-    from http.client import HTTPConnection
-    from threading import Event, Thread, current_thread
-
-    from polylogue.browser_capture import receiver
-    from polylogue.browser_capture.server import make_server as original_make_server
-    from polylogue.paths import browser_capture_receiver_identity_path
-
-    entered, release, closing, closed = Event(), Event(), Event(), Event()
-    observed: dict[str, Any] = {}
-    failures: list[BaseException] = []
-    global_root = tmp_path / "global-root"
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(global_root))
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(live_provider_proof_service, "require_declared_operation_context", lambda _operation: "unit")
-    original_identity_path = browser_capture_receiver_identity_path
-
-    def delayed_identity_path() -> Path:
-        if "handler" not in observed:
-            observed["handler"] = current_thread()
-            assert observed["handler"] in observed["server"]._threads
-            entered.set()
-            assert release.wait(5)
-        else:
-            assert current_thread() is observed["handler"]
-        target = original_identity_path()
-        assert target.parent == observed["root"]
-        assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(observed["root"])
-        return target
-
-    monkeypatch.setattr(receiver, "browser_capture_receiver_identity_path", delayed_identity_path)
-
-    def make_server(*args: Any, **kwargs: Any) -> Any:
-        server = original_make_server(*args, **kwargs)
-        observed["server"] = server
-        observed["original_close"] = server.server_close
-
-        def close() -> None:
-            closing.set()
-            if close_fault:
-                raise OSError("synthetic request-owner close failure")
-            observed["original_close"]()
-            closed.set()
-
-        monkeypatch.setattr(server, "server_close", close)
-        return server
-
-    monkeypatch.setattr(live_provider_proof_service, "make_server", make_server)
-
-    def request(environment: dict[str, str]) -> None:
-        connection = HTTPConnection("127.0.0.1", int(environment["POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"]), timeout=5)
-        try:
-            headers = {"Authorization": f"Bearer {environment['POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN']}"}
-            if route == "status":
-                connection.request("GET", "/v1/status", headers=headers)
-            else:
-                headers["Content-Type"] = "application/json"
-                connection.request("POST", "/v1/receiver/attest", json.dumps({"challenge": "A" * 43}), headers)
-            response = connection.getresponse()
-            assert response.status == 200
-            response.read()
-        except BaseException as error:
-            failures.append(error)
-        finally:
-            connection.close()
-
-    class Process:
-        returncode = 1
-
-        def __init__(self, *_args: object, **kwargs: Any) -> None:
-            self.environment = kwargs["env"]
-
-        def communicate(self, **_kwargs: object) -> tuple[str, str]:
-            observed["root"] = Path(self.environment["POLYLOGUE_ARCHIVE_ROOT"])
-            client = Thread(target=request, args=(self.environment,))
-            observed["client"] = client
-            client.start()
-            assert entered.wait(5)
-            return "{}", ""
-
-    monkeypatch.setattr(subprocess, "Popen", Process)
-    monkeypatch.setattr(live_provider_proof_service, "terminate_process_group", lambda _process: None)
-
-    def release_after_close_started() -> None:
-        try:
-            assert closing.wait(5)
-            server = observed["server"]
-            assert not server.daemon_threads and server.block_on_close
-            assert observed["handler"].is_alive() and not observed["handler"].daemon
-            assert not closed.is_set()
-            assert observed["root"].parent.is_dir()
-            assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(observed["root"])
-            assert not global_root.exists()
-        except BaseException as error:
-            failures.append(error)
-        finally:
-            release.set()
-
-    releaser = Thread(target=release_after_close_started)
-    if not close_fault:
-        releaser.start()
-    try:
-        with pytest.raises(OSError if close_fault else RuntimeError):
-            live_provider_proof_service._run_proof_locked(targets=[])
-        if close_fault:
-            assert not closed.is_set() and not release.is_set()
-            assert observed["client"].is_alive()
-            assert observed["root"].parent.is_dir()
-            assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(observed["root"])
-            assert not global_root.exists()
-            release.set()
-            observed["original_close"]()
-        else:
-            releaser.join(5)
-            assert not releaser.is_alive() and closed.is_set()
-            assert not observed["root"].parent.exists()
-            assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(global_root)
-        observed["client"].join(5)
-        assert not observed["client"].is_alive()
-        assert not failures
-        assert not global_root.exists()
-    finally:
-        release.set()
-        observed["original_close"]()
-        observed["client"].join(5)
-        if releaser.ident is not None:
-            releaser.join(5)
 
 
 def test_original_cdp_evaluation_preserves_only_whitelisted_page_exception_categories() -> None:
@@ -1941,3 +1621,25 @@ assert.deepEqual(await runChromeControl(['status'],1000,emitted('diagnostic\n'+J
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_live_provider_proof_refuses_before_receiver_or_chrome_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(live_provider_proof_service, "require_declared_operation_context", lambda _operation: "unit")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "operator-root"))
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("unisolated provider proof attempted a child process")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    with pytest.raises(live_provider_proof_service.ChildProofError) as failure:
+        live_provider_proof_service._run_proof_locked(targets=[])
+    assert failure.value.report["error"] == {
+        "phase": "extension_load",
+        "category": "provider_target_isolation_unavailable",
+    }
+    assert set(failure.value.report["cleanup"].values()) == {"not_required"}
+    assert not list(tmp_path.iterdir())
+    assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "operator-root")

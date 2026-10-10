@@ -51,15 +51,22 @@ class NativeTransportError(RuntimeError):
     """A named refusal before or during a native operation."""
 
 
+class NativeOutputClosedError(RuntimeError):
+    """The browser no longer owns a writable native response channel."""
+
+
 class NativeStorageError(RuntimeError):
     """Native request or frame custody failed locally."""
 
 
 def _send(output: BinaryIO, value: dict[str, object]) -> None:
     data = json.dumps(value, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    output.write(struct.pack("<I", len(data)))
-    output.write(data)
-    output.flush()
+    try:
+        output.write(struct.pack("<I", len(data)))
+        output.write(data)
+        output.flush()
+    except OSError as exc:
+        raise NativeOutputClosedError("native_output_closed") from exc
 
 
 class NativeInput:
@@ -181,19 +188,35 @@ class NativeInput:
                         raise self.failure from None
                     raise NativeTransportError("native_operation_cancelled") from None
 
+    def check_cancelled(self) -> None:
+        if self.cancelled.is_set():
+            if self.failure is not None:
+                raise self.failure
+            raise NativeTransportError("native_operation_cancelled")
+
     @contextmanager
     def frame(self) -> Iterator[dict[str, JSONValue]]:
         staged = self._next_frame()
         if isinstance(staged, BaseException):
             raise staged
         try:
-            with StreamedJSONDocument(staged.path) as value:
+            document = StreamedJSONDocument(staged.path)
+            try:
+                value = document.__enter__()
+            except OSError as exc:
+                raise NativeStorageError("receiver_observation_storage_failed") from exc
+            try:
                 if not isinstance(value, dict):
                     raise NativeTransportError("native_request_invalid")
                 if value.get("type") == "cancel":
                     self.cancel()
                     raise NativeTransportError("native_operation_cancelled")
                 yield value
+            finally:
+                try:
+                    document.__exit__(None, None, None)
+                except OSError as exc:
+                    raise NativeStorageError("receiver_observation_storage_failed") from exc
         except (sqlite3.Error, NativeConnectionSettlementError) as exc:
             raise NativeStorageError("receiver_observation_storage_failed") from exc
         except (ValueError, JSONError) as exc:
@@ -331,74 +354,102 @@ def serve_native_operation(extension_id: str, *, input_fd: int, output: BinaryIO
         ):
             with frames.frame() as request:
                 host, port, method, path, expected, headers = _request(request)
-            identity = load_or_mint_receiver_identity()
+            try:
+                identity = load_or_mint_receiver_identity()
+                secret = load_or_mint_receiver_token()
+            except OSError as exc:
+                raise NativeStorageError("receiver_observation_storage_failed") from exc
             if expected is not None and expected != identity:
                 raise NativeTransportError("receiver_identity_mismatch")
-            secret = load_or_mint_receiver_token()
             try:
                 body = stage_body_chunks(_body(frames, output), spool_root=Path(temporary), durable=False)
             except OSError as exc:
                 raise NativeStorageError("receiver_observation_storage_failed") from exc
-            connection = http.client.HTTPConnection(host, port, timeout=None)
-            # Bind cancellation before proof or operation response reads.
-            _connect(connection, frames, host, port)
-            assert connection.sock is not None
-            frames.bind_socket(connection.sock)
-            refusal = _authenticate_receiver(connection, identity, secret)
-            if refusal is not None:
-                raise NativeTransportError(refusal)
-            assert connection.sock is not None
-            connection.sock.settimeout(None)
-            headers["Authorization"] = f"Bearer {secret}"
-            headers["Origin"] = f"chrome-extension://{extension_id}"
-            headers["Content-Length"] = str(body.size_bytes)
-            with body.path.open("rb") as source:
-                connection.request(method, path, body=source if body.size_bytes else None, headers=headers)
-            response = connection.getresponse()
-            _send(
-                output,
-                {
-                    "type": "response",
-                    "status": response.status,
-                    "headers": dict(response.getheaders()),
-                    "receiver_id": identity,
-                    "api_schema": BROWSER_CAPTURE_API_SCHEMA,
-                },
-            )
-            sequence = 0
             try:
-                while True:
-                    with frames.frame() as frame:
-                        if frame.get("type") != "response_next":
-                            raise NativeTransportError("native_request_invalid")
-                    chunk = response.read(_CHUNK_BYTES)
-                    if not chunk:
-                        _send(output, {"type": "response_end"})
-                        return 0
-                    _send(
-                        output,
-                        {
-                            "type": "response_body",
-                            "sequence": sequence,
-                            "data": base64.b64encode(chunk).decode("ascii"),
-                        },
-                    )
-                    sequence += 1
+                connection = http.client.HTTPConnection(host, port, timeout=None)
+                # Bind cancellation before proof or operation response reads.
+                _connect(connection, frames, host, port)
+                assert connection.sock is not None
+                frames.bind_socket(connection.sock)
+                refusal = _authenticate_receiver(connection, identity, secret)
+                if refusal is not None:
+                    raise NativeTransportError(refusal)
+                assert connection.sock is not None
+                connection.sock.settimeout(None)
+                headers["Authorization"] = f"Bearer {secret}"
+                headers["Origin"] = f"chrome-extension://{extension_id}"
+                headers["Content-Length"] = str(body.size_bytes)
+                response: http.client.HTTPResponse | None = None
+                with body.path.open("rb") as source:
+                    try:
+                        connection.request(method, path, body=source if body.size_bytes else None, headers=headers)
+                        response = connection.getresponse()
+                    except (OSError, http.client.HTTPException):
+                        frames.check_cancelled()
+                        raise
+                assert response is not None
+                _send(
+                    output,
+                    {
+                        "type": "response",
+                        "status": response.status,
+                        "headers": dict(response.getheaders()),
+                        "receiver_id": identity,
+                        "api_schema": BROWSER_CAPTURE_API_SCHEMA,
+                    },
+                )
+                sequence = 0
+                try:
+                    while True:
+                        with frames.frame() as frame:
+                            if frame.get("type") != "response_next":
+                                raise NativeTransportError("native_request_invalid")
+                        try:
+                            chunk = response.read(_CHUNK_BYTES)
+                        except (OSError, http.client.HTTPException):
+                            frames.check_cancelled()
+                            raise
+                        frames.check_cancelled()
+                        if not chunk:
+                            _send(output, {"type": "response_end"})
+                            return 0
+                        _send(
+                            output,
+                            {
+                                "type": "response_body",
+                                "sequence": sequence,
+                                "data": base64.b64encode(chunk).decode("ascii"),
+                            },
+                        )
+                        sequence += 1
+                finally:
+                    response.close()
             finally:
-                response.close()
+                try:
+                    body.discard()
+                except OSError as exc:
+                    raise NativeStorageError("receiver_observation_storage_failed") from exc
+                body = None
+    except NativeOutputClosedError:
+        return 1
     except NativeTransportError as exc:
-        with suppress(BrokenPipeError):
+        with suppress(NativeOutputClosedError):
             _send(output, {"type": "error", "error": str(exc)})
     except (BodyIncompleteError, EOFError):
-        _send(output, {"type": "error", "error": "native_input_incomplete"})
+        with suppress(NativeOutputClosedError):
+            _send(output, {"type": "error", "error": "native_input_incomplete"})
     except (BodyStorageExhaustedError, StreamedJSONReadError, NativeStorageError):
-        _send(output, {"type": "error", "error": "receiver_observation_storage_failed"})
+        with suppress(NativeOutputClosedError):
+            _send(output, {"type": "error", "error": "receiver_observation_storage_failed"})
     except ReceiverCredentialError:
-        _send(output, {"type": "error", "error": "receiver_credential_unavailable"})
+        with suppress(NativeOutputClosedError):
+            _send(output, {"type": "error", "error": "receiver_credential_unavailable"})
     except ValueError:
-        _send(output, {"type": "error", "error": "native_request_invalid"})
+        with suppress(NativeOutputClosedError):
+            _send(output, {"type": "error", "error": "native_request_invalid"})
     except (OSError, http.client.HTTPException):
-        _send(output, {"type": "error", "error": "receiver_unreachable"})
+        with suppress(NativeOutputClosedError):
+            _send(output, {"type": "error", "error": "receiver_unreachable"})
     finally:
         if connection is not None:
             connection.close()

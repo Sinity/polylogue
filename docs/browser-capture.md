@@ -560,15 +560,14 @@ of dropping content silently.
 
 Use the declared `dev_loop_proof` AgentCTL operation when changing receiver, extension, or provider adapters from a branch. It binds the proof to a managed checkout; the Polylogue child selects its own loopback API and receiver ports and isolates XDG configuration. The proof checks the shared-Chrome control boundary with one owned `agentbrowser` target, proves receiver authentication and deterministic provider capture, then reports archive and API convergence through the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start, wait, and result commands.
 
-Live shared-Chrome proof runs only through the declared `live_provider_proof`
-AgentCTL operation. It must not create an alternative Polylogue daemon
-lifecycle, ad hoc receiver lease, free CDP port, or direct Chrome launcher. It
-uses Sinnix's `agent-window` control boundary in the running authenticated
-browser, verifies each proof window hidden on `agentbrowser`, and closes
-only proof-created targets. Select exact conversations through a private
-`--conversations-file`; see [the live proof contract](dev-loop.md#shared-chrome-live-provider-proof).
-Its standalone receiver verifies admitted native bytes without opening the archive,
-and automatic capture remains paused after cleanup.
+The declared `live_provider_proof` route currently refuses with
+`provider_target_isolation_unavailable` before starting a receiver or loading
+an extension. A second full runtime would register content scripts on operator
+provider tabs before its automatic-capture pause; that pause does not establish
+owned-target custody. Restoring this proof requires scoped script registration
+and provider-target authority. The page-only `dev_loop_proof` exercises native
+transport without registering background workers or provider content scripts.
+
 
 ## Current residual map for #1824 / #1847
 

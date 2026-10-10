@@ -13,20 +13,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
-import secrets
-import shutil
 import subprocess
-import tempfile
 from pathlib import Path
-from threading import Thread
 from typing import Any
 from urllib.parse import urlsplit
 
-from devtools.agentctl_service_context import require_declared_operation_context, terminate_process_group
+from devtools.agentctl_service_context import require_declared_operation_context
 from devtools.shared_chrome_lock import shared_chrome_extension_lock
 from polylogue.browser_capture.models import validate_capture_envelope
-from polylogue.browser_capture.server import BrowserCaptureHandler, make_server
 from polylogue.core.enums import BlockType
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.browser_capture import (
@@ -398,135 +392,18 @@ def run_proof(*, conversations_file: Path, repo_root: Path | None = None) -> dic
 
 def _run_proof_locked(*, targets: list[dict[str, str]], repo_root: Path | None = None) -> dict[str, object]:
     require_declared_operation_context("live_provider_proof")
-    root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
-    extension_root = root / "browser-extension"
-    # A private per-run directory, removed afterwards: the receiver writes the
-    # complete captured transcripts here, and they must not outlive the proof.
-    scratch = Path(tempfile.mkdtemp(prefix="polylogue-live-provider-proof-")).resolve()
-    spool = scratch / "browser-capture"
-    spool.mkdir(parents=True, exist_ok=True)
-    receiver_token = secrets.token_urlsafe(32)
-    process: subprocess.Popen[Any] | None = None
-    server = None
-    thread = None
-    thread_started = False
-    receiver_requests: list[dict[str, object]] = []
-    previous_archive_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
-    # The operation lock owns this process scope. HTTP identity lookup uses the
-    # existing archive-root authority, including worker threads and attestation.
-    os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(scratch / "archive")
-    try:
-        server = make_server("127.0.0.1", 0, spool_path=spool, auth_token=receiver_token)
-        # ThreadingMixIn tracks only non-daemon handlers. Close must join them
-        # before the identity scope and its private directory can be released.
-        server.daemon_threads = False
-        server.block_on_close = True
-
-        class ObservedHandler(BrowserCaptureHandler):
-            def _finish_observed_request(self, method: str, started_at: float) -> None:
-                path = urlsplit(self.path).path
-                if path in {"/v1/status", "/v1/receiver/attest"}:
-                    status = getattr(self, "_polylogue_status", None)
-                    receiver_requests.append(
-                        {
-                            "method": method if method in {"GET", "POST", "OPTIONS"} else "unknown",
-                            "path": path,
-                            "status": int(status)
-                            if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599
-                            else None,
-                        }
-                    )
-                super()._finish_observed_request(method, started_at)
-
-        server.RequestHandlerClass = ObservedHandler
-        receiver_port = int(server.server_address[1])
-        thread = Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        thread_started = True
-        environment = os.environ.copy()
-        environment["XDG_CONFIG_HOME"] = str(scratch / "xdg-config")
-        environment["POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN"] = receiver_token
-        environment[_RECEIVER_PORT_ENV] = str(receiver_port)
-        environment["POLYLOGUE_LIVE_PROVIDER_CONVERSATIONS"] = json.dumps(targets)
-        process = subprocess.Popen(
-            ["node", "scripts/live_provider_proof.mjs"],
-            cwd=extension_root,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-        assert process is not None
-        try:
-            stdout, _stderr = process.communicate(timeout=_NODE_PROOF_TIMEOUT_S)
-        except subprocess.TimeoutExpired as error:
-            terminate_process_group(process)
-            # communicate's second result includes the original partial output.
-            # A signal may have published the actual phase and cleanup result.
-            terminated_stdout: str | bytes | None = error.stdout
-            try:
-                terminated_stdout, _stderr = process.communicate(timeout=2)
-            except subprocess.TimeoutExpired as settlement_error:
-                if settlement_error.stdout is not None:
-                    terminated_stdout = settlement_error.stdout
-            except UnicodeError:
-                terminated_stdout = None
-            raise failed_child(terminated_stdout, receiver_requests, timed_out=True) from error
-        except UnicodeError as error:
-            raise failed_child(None, receiver_requests) from error
-        if process.returncode != 0:
-            raise failed_child(stdout, receiver_requests)
-        try:
-            result = json.loads(stdout)
-        except (ValueError, TypeError) as error:
-            raise failed_child(stdout, receiver_requests) from error
-        if not isinstance(result, dict) or result.get("ok") is not True:
-            raise failed_child(stdout, receiver_requests)
-        receipts = result.get("providers")
-        if (
-            not isinstance(receipts, dict)
-            or not all(isinstance(receipt, dict) for receipt in receipts.values())
-            or set(receipts) != {urlsplit(target["url"]).hostname for target in targets}
-        ):
-            raise failed_child(None, receiver_requests)
-        try:
-            providers = {host: verify_captured_artifact(spool, receipt) for host, receipt in receipts.items()}
-            extension = result["extension"]
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            failure = failed_child(None, receiver_requests)
-            failure.report["error"] = {"phase": "summary", "category": "capture_incomplete"}
-            raise failure from error
-        return {
-            "ok": True,
-            "ports": {"browser_capture": receiver_port},
-            "providers": providers,
-            "extension": extension,
-            "automatic_capture_enabled": False,
-            "archive_convergence": "not_exercised",
-            "receiver_requests": receiver_requests,
+    # A second production extension would register content scripts on operator
+    # tabs before its ambient-capture pause. Until registration itself has owned
+    # target authority, do not load it or replace the operator's native host.
+    raise ChildProofError(
+        {
+            "ok": False,
+            "error": {"phase": "extension_load", "category": "provider_target_isolation_unavailable"},
+            "cleanup": dict.fromkeys(["receiver", "permission", "mutations", "targets"], "not_required"),
+            "native_progress": [],
+            "capture_evidence": [],
         }
-    finally:
-        if process is not None:
-            terminate_process_group(process)
-        try:
-            if server is not None:
-                if thread_started:
-                    server.shutdown()
-                server.server_close()
-            if thread is not None and thread_started:
-                thread.join()
-        except BaseException:
-            # Retain private custody if receiver teardown could not settle.
-            # Removing its directory while a request still owns it is unsafe.
-            raise
-        else:
-            shutil.rmtree(scratch)
-            # Never restore while a request can still mint under that scope.
-            if previous_archive_root is None:
-                os.environ.pop("POLYLOGUE_ARCHIVE_ROOT", None)
-            else:
-                os.environ["POLYLOGUE_ARCHIVE_ROOT"] = previous_archive_root
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

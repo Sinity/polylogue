@@ -5,6 +5,8 @@ import os
 import socket
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -35,6 +37,11 @@ def test_declared_operation_has_a_json_contract_and_no_retired_keys() -> None:
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 
+@contextmanager
+def _neutral_native_scope(**_kwargs: Any) -> Iterator[dict[str, str]]:
+    yield {}
+
+
 def _fixed_service_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dev_loop_service, "require_declared_operation_context", lambda operation: f"unit-{operation}")
     monkeypatch.setenv("AGENTCTL_PROJECT_ID", "polylogue")
@@ -58,7 +65,8 @@ def test_run_proof_reads_owned_bound_ports_and_product_convergence(
     monkeypatch.setattr(dev_loop_service, "_start_daemon", lambda **kwargs: started.update(kwargs))
     monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
     monkeypatch.setattr(dev_loop_service, "_await_api", lambda **_kwargs: None)
-    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
+    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(dev_loop_service, "scoped_native_transport_proof", _neutral_native_scope)
     monkeypatch.setattr(
         dev_loop_service,
         "_submit_deterministic_captures",
@@ -218,7 +226,8 @@ def test_run_proof_rejects_one_malformed_expected_provider_before_convergence(
     monkeypatch.setattr(dev_loop_service, "_await_listener_ports", lambda **_kwargs: (48801, 48865))
     monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
     monkeypatch.setattr(dev_loop_service, "_await_api", lambda **_kwargs: None)
-    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
+    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(dev_loop_service, "scoped_native_transport_proof", _neutral_native_scope)
     monkeypatch.setattr(
         dev_loop_service,
         "_submit_deterministic_captures",
@@ -303,7 +312,10 @@ def test_shared_chrome_control_is_the_only_dev_loop_browser_handoff(
         {
             "args": ["node", "scripts/dev_loop_shared_chrome_proof.mjs"],
             "returncode": 0,
-            "communicate": lambda self, **_kwargs: ('{"ok":true}\n', ""),
+            "communicate": lambda self, **_kwargs: (
+                '{"ok":true,"native_transport":{"cancellation":true,"response_sha256":"neutral-sha"}}\n',
+                "",
+            ),
         },
     )()
     launched: dict[str, object] = {}
@@ -314,7 +326,13 @@ def test_shared_chrome_control_is_the_only_dev_loop_browser_handoff(
     )
     monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
 
-    dev_loop_service._run_shared_chrome_control(repo_root=tmp_path)
+    dev_loop_service._run_shared_chrome_control(
+        repo_root=tmp_path,
+        proof_environment={
+            "POLYLOGUE_DEV_LOOP_EXTENSION_ROOT": str(tmp_path / "browser-extension"),
+            "POLYLOGUE_DEV_LOOP_ATTACHMENT_SHA256": "neutral-sha",
+        },
+    )
 
     assert launched["command"] == ["node", "scripts/dev_loop_shared_chrome_proof.mjs"]
     kwargs = cast(dict[str, Any], launched["kwargs"])
@@ -337,7 +355,13 @@ def test_shared_chrome_control_preserves_bounded_child_failure(tmp_path: Path, m
     monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
 
     with pytest.raises(RuntimeError, match="control boundary rejected the window") as failure:
-        dev_loop_service._run_shared_chrome_control(repo_root=tmp_path)
+        dev_loop_service._run_shared_chrome_control(
+            repo_root=tmp_path,
+            proof_environment={
+                "POLYLOGUE_DEV_LOOP_EXTENSION_ROOT": str(tmp_path / "browser-extension"),
+                "POLYLOGUE_DEV_LOOP_ATTACHMENT_SHA256": "neutral-sha",
+            },
+        )
 
     assert "\n" not in str(failure.value)
 
@@ -592,7 +616,8 @@ def test_proof_daemon_owns_ephemeral_ports_through_product_convergence(
     """A competing binder cannot take either actual listener before proof readiness."""
     _fixed_service_context(monkeypatch)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "scratch"))
-    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
+    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(dev_loop_service, "scoped_native_transport_proof", _neutral_native_scope)
     original = dev_loop_service._await_listener_ports
     observed: list[tuple[int, int]] = []
 

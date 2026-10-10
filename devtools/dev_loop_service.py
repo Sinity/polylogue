@@ -23,6 +23,7 @@ from urllib.parse import quote, urlencode
 
 from devtools.agentctl_service_context import require_declared_operation_context, terminate_process_group
 from devtools.isolated_environment import isolated_home_environment
+from devtools.native_transport_proof import scoped_native_transport_proof
 from devtools.shared_chrome_lock import shared_chrome_extension_lock
 from polylogue.browser_capture.server import make_server
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -281,20 +282,22 @@ def _start_daemon(
         )
 
 
-def _run_shared_chrome_control(*, repo_root: Path, timeout_s: float = _SHARED_CHROME_TIMEOUT_S) -> None:
+def _run_shared_chrome_control(
+    *, repo_root: Path, proof_environment: dict[str, str], timeout_s: float = _SHARED_CHROME_TIMEOUT_S
+) -> dict[str, object]:
     with shared_chrome_extension_lock(timeout_s=timeout_s):
-        _run_shared_chrome_control_locked(repo_root=repo_root, timeout_s=timeout_s)
+        return _run_shared_chrome_control_locked(
+            repo_root=repo_root, proof_environment=proof_environment, timeout_s=timeout_s
+        )
 
 
-def _run_shared_chrome_control_locked(*, repo_root: Path, timeout_s: float) -> None:
+def _run_shared_chrome_control_locked(
+    *, repo_root: Path, proof_environment: dict[str, str], timeout_s: float
+) -> dict[str, object]:
     """Exercise the existing Chrome only through Sinnix's owned control boundary."""
     extension_root = repo_root / "browser-extension"
     environment = os.environ.copy()
-    environment.update(
-        {
-            "POLYLOGUE_DEV_LOOP_EXTENSION_ROOT": str(extension_root),
-        }
-    )
+    environment.update(proof_environment)
     process = subprocess.Popen(
         ["node", "scripts/dev_loop_shared_chrome_proof.mjs"],
         cwd=str(extension_root),
@@ -319,6 +322,12 @@ def _run_shared_chrome_control_locked(*, repo_root: Path, timeout_s: float) -> N
     payload = json.loads(stdout)
     if not isinstance(payload, dict) or payload.get("ok") is not True:
         raise RuntimeError("shared-Chrome control proof reported failure")
+    native = payload.get("native_transport")
+    if not isinstance(native, dict) or native.get("cancellation") is not True:
+        raise RuntimeError("native transport proof missing")
+    if native.get("response_sha256") != proof_environment["POLYLOGUE_DEV_LOOP_ATTACHMENT_SHA256"]:
+        raise RuntimeError("native response bytes differ")
+    return payload
 
 
 def _submit_deterministic_captures(*, capture_port: int, session_id: str) -> dict[str, dict[str, str]]:
@@ -451,7 +460,13 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
         receiver_url = f"http://127.0.0.1:{capture_port}"
         _await_api(base_url=api_url, timeout_s=readiness_timeout_s, daemon=daemon)
         session_id = f"polylogue-agentctl-proof-{api_port}-{capture_port}"
-        _run_shared_chrome_control(repo_root=checkout)
+        with scoped_native_transport_proof(
+            repo_root=checkout,
+            scratch=artifact_root,
+            environment=environment,
+            endpoint=receiver_url,
+        ) as native_environment:
+            chrome_proof = _run_shared_chrome_control(repo_root=checkout, proof_environment=native_environment)
         providers = _validated_provider_captures(
             _submit_deterministic_captures(capture_port=capture_port, session_id=session_id)
         )
@@ -488,7 +503,7 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
             "ok": True,
             "ports": {"api": api_port, "browser_capture": capture_port},
             "receiver_auth": {"ok": True},
-            "shared_chrome": {"ok": True},
+            "shared_chrome": chrome_proof,
             "provider_capture": {
                 "providers": sorted(str(name) for name in providers),
                 "archive_converged": archive_ok,
