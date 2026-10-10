@@ -773,6 +773,169 @@ def test_historical_codex_page_image_is_not_finalized_as_current_state(
 
 
 @pytest.mark.asyncio
+async def test_historical_codex_state_keeps_its_own_validation_policy(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A newer coordinate winner cannot reopen an older native grammar's census."""
+    from polylogue.core.enums import Provider, ValidationMode
+    from polylogue.sources.sqlite_export import logical_export_bytes
+    from polylogue.sources.sqlite_snapshot import member_export_scope
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.retained_replay import replay_retained_components_async
+
+    archive, _codex_root, state_root = _make_processor(workspace_env, "historical-state", "historical-state.db")
+    root = workspace_env["archive_root"]
+    source = state_root / "memories_1.sqlite"
+
+    def acquire(memory: str, order: int) -> str:
+        _write_memories_1_sqlite(source, raw_memory=memory)
+        payload = logical_export_bytes(source, scope=member_export_scope(source))
+        with ArchiveStore.open_existing(root, read_only=False) as writer:
+            return writer.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=str(source),
+                canonical_source_path=str(source),
+                acquired_at_ms=order,
+            )
+
+    try:
+        raw_id = await run_archive_fixture_write(root, lambda: acquire("first retained memory", 1))
+        await replay_retained_components_async(root, selected_raw_ids=(raw_id,))
+        newer = await run_archive_fixture_write(root, lambda: acquire("second retained memory", 2))
+        await replay_retained_components_async(root, selected_raw_ids=(newer,))
+        with sqlite3.connect(root / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE source_path=?", (str(source),)).fetchone() == (
+                2,
+            )
+            assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone() == (0,)
+            winner = conn.execute("SELECT * FROM raw_artifacts WHERE source_path=?", (str(source),)).fetchall()
+            assert winner and str(winner[0][1]) == newer
+
+        def omit_historical_policy() -> None:
+            with sqlite3.connect(root / "source.db") as conn:
+                conn.execute(
+                    "UPDATE raw_sessions SET validation_mode=NULL,validation_status=NULL WHERE raw_id=?", (raw_id,)
+                )
+
+        await run_archive_fixture_write(root, omit_historical_policy)
+        await replay_retained_components_async(root, selected_raw_ids=(raw_id,))
+        await replay_retained_components_async(root, selected_raw_ids=(raw_id,))
+        with sqlite3.connect(root / "source.db") as conn:
+            state = conn.execute(
+                "SELECT validation_status,validation_mode FROM raw_sessions WHERE raw_id=?", (raw_id,)
+            ).fetchone()
+            assert state == ("skipped", "advisory")
+            assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone() == (0,)
+            assert conn.execute("SELECT * FROM raw_artifacts WHERE source_path=?", (str(source),)).fetchall() == winner
+        await replay_retained_components_async(root, selected_raw_ids=(raw_id,), validation_mode=ValidationMode.STRICT)
+        with sqlite3.connect(root / "source.db") as conn:
+            assert conn.execute(
+                "SELECT validation_status,validation_mode FROM raw_sessions WHERE raw_id=?", (raw_id,)
+            ).fetchone() == ("skipped", "strict")
+        assert await archive.count_sessions() == 0
+        assert BlobStore(root / "blob").verify_all().passed
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["cancel", "artifact_failure"])
+async def test_native_schema_exemption_requires_successful_preparation(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.enums import Provider
+    from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+    from polylogue.sources.sqlite_export import logical_export_bytes
+    from polylogue.sources.sqlite_snapshot import member_export_scope
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.retained_replay import replay_retained_components_async
+
+    archive, _codex_root, state_root = _make_processor(workspace_env, "refused-native", "refused-native.db")
+    root = workspace_env["archive_root"]
+    source = state_root / "memories_1.sqlite"
+
+    def acquire() -> str:
+        _write_memories_1_sqlite(source)
+        with ArchiveStore.open_existing(root, read_only=False) as writer:
+            return writer.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=logical_export_bytes(source, scope=member_export_scope(source)),
+                source_path=str(source),
+                canonical_source_path=str(source),
+                acquired_at_ms=1,
+            )
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        if failure == "cancel":
+            raise DaemonOperationCancelled("synthetic native preparation cancellation")
+        raise ValueError("synthetic native artifact failure")
+
+    try:
+        raw_id = await run_archive_fixture_write(root, acquire)
+        with monkeypatch.context() as patch:
+            patch.setattr("polylogue.sources.prepared_jsonl._prepare_codex_state_blob", refuse)
+            expected = DaemonOperationCancelled if failure == "cancel" else RetainedPreparationRetryableError
+            with pytest.raises(expected):
+                await replay_retained_components_async(root, selected_raw_ids=(raw_id,))
+        with sqlite3.connect(root / "source.db") as conn:
+            assert conn.execute(
+                "SELECT validation_status,validation_mode FROM raw_sessions WHERE raw_id=?", (raw_id,)
+            ).fetchone() == (None, None)
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+            ).fetchone() == (0,)
+        await replay_retained_components_async(root, selected_raw_ids=(raw_id,))
+        with sqlite3.connect(root / "source.db") as conn:
+            assert conn.execute(
+                "SELECT validation_status,validation_mode FROM raw_sessions WHERE raw_id=?", (raw_id,)
+            ).fetchone() == ("skipped", "advisory")
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_source", [False, True])
+async def test_codex_memory_update_retains_each_native_validation_policy(
+    workspace_env: dict[str, Path], replace_source: bool
+) -> None:
+    archive, _codex_root, state_root = _make_processor(workspace_env, "updated-memory", "updated-memory.db")
+    root = workspace_env["archive_root"]
+    source = state_root / "memories_1.sqlite"
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="codex-state", root=state_root, layout=export_drop_layout((".sqlite", ".db"))),),
+        cursor=CursorStore(root / "ops.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        _write_memories_1_sqlite(source, raw_memory="first retained memory")
+        first = await ingest_files_with_owners(processor, [source], emit_event=False)
+        assert first.failed_file_count == 0
+        if replace_source:
+            _write_memories_1_sqlite(source, raw_memory="second retained memory")
+        else:
+            with sqlite3.connect(source) as writer:
+                writer.execute("UPDATE stage1_outputs SET raw_memory='second retained memory'")
+        second = await ingest_files_with_owners(processor, [source], emit_event=False)
+        assert second.failed_file_count == 0
+        repeated = await ingest_files_with_owners(processor, [source], emit_event=False)
+        assert repeated.failed_file_count == 0
+        with sqlite3.connect(root / "source.db") as conn:
+            assert conn.execute(
+                "SELECT validation_status,validation_mode FROM raw_sessions WHERE source_path=? ORDER BY rowid",
+                (str(source),),
+            ).fetchall() == [("skipped", "advisory"), ("skipped", "advisory")]
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_artifacts WHERE source_path=?", (str(source),)
+            ).fetchone() == (1,)
+        assert await archive.count_sessions() == 0
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_schema_drift_candidate_does_not_block_other_retained_state_receipts(
     workspace_env: dict[str, Path],
 ) -> None:
