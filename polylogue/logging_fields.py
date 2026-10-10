@@ -98,6 +98,7 @@ def _fields() -> dict[str, FieldKind]:
         "trace_id",
         "span_id",
         "parent_span_id",
+        "task_id",
         "run_id",
         "pass_id",
         "operation_id",
@@ -198,6 +199,8 @@ def _fields() -> dict[str, FieldKind]:
         "config_keys",
         "source_event",
         "evidence",
+        "span_kind",
+        "cpu_scope",
     )
 
     # -- measurements ----------------------------------------------------
@@ -235,6 +238,15 @@ def _fields() -> dict[str, FieldKind]:
         "status_code",
         "exit_code",
         "pid",
+        "holder_pid",
+        "native_thread_id",
+        "monotonic_ns",
+        "span_start_ns",
+        "span_end_ns",
+        "span_start_native_thread_id",
+        "span_start_pid",
+        "thread_cpu_start_ns",
+        "thread_cpu_end_ns",
         # reconciliation dispositions: rows cleared, kept for inspection, or
         # left classified-but-undecided.
         "cleared",

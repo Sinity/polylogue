@@ -978,3 +978,45 @@ def test_idle_flush_cannot_acknowledge_later_records() -> None:
         if caller.ident is not None:
             caller.join(timeout=1)
         plog.reset_events()
+
+
+def test_emitter_owns_monotonic_pid_and_native_tid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(plog.time, "monotonic_ns", lambda: 123456)
+    monkeypatch.setattr(plog.threading, "get_native_id", lambda: 81)
+    monkeypatch.setattr(plog.os, "getpid", lambda: 42)
+    with plog.capture() as records:
+        plog.emit("owned.stamp", monotonic_ns=1, native_thread_id=2, pid=3)
+    assert records[-1]["monotonic_ns"] == 123456
+    assert records[-1]["native_thread_id"] == 81
+    assert records[-1]["pid"] == 42
+
+
+def test_terminal_stamps_survive_filtered_start_and_caller_collisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = iter([100, 110, 200, 210])
+    cpu = iter([5, 55])
+    monkeypatch.setattr(plog.time, "monotonic_ns", lambda: next(clock))
+    monkeypatch.setattr(plog.time, "thread_time_ns", lambda: next(cpu))
+    plog.set_level("info")
+    with plog.capture() as records:
+        with plog.span("timed") as active:
+            active.ok(span_start_ns=999, span_end_ns=999, thread_cpu_end_ns=999)
+    assert len(records) == 1
+    assert records[0]["span_start_ns"] == 100
+    assert records[0]["span_end_ns"] == 110
+    assert records[0]["thread_cpu_start_ns"] == 5
+    assert records[0]["thread_cpu_end_ns"] == 55
+    assert records[0]["cpu_scope"] == "thread"
+
+
+def test_async_span_refuses_thread_cpu_that_includes_other_tasks() -> None:
+    async def scenario() -> None:
+        with plog.span("async.body") as active:
+            await asyncio.sleep(0)
+            active.ok()
+
+    with plog.capture() as records:
+        asyncio.run(scenario())
+    terminal = next(r for r in records if r["event"] == "async.body.ok")
+    assert terminal["cpu_scope"] == "unavailable"
+    assert terminal["thread_cpu_start_ns"] is None
+    assert terminal["thread_cpu_end_ns"] is None

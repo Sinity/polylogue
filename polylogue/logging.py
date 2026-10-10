@@ -398,6 +398,28 @@ _retired_sink_totals = {
 }
 FIELD_MAX_CHARS = 256
 EVENT_MAX_FIELDS = 32
+_TRACE_FIELDS = frozenset(
+    {
+        "trace_id",
+        "span_id",
+        "parent_span_id",
+        "task_id",
+        "span_kind",
+        "outcome",
+        "span_start_ns",
+        "span_end_ns",
+        "span_start_native_thread_id",
+        "span_start_pid",
+        "thread_cpu_start_ns",
+        "thread_cpu_end_ns",
+        "cpu_scope",
+        "duration_ms",
+        "error_type",
+        "reason",
+        "error_detail",
+    }
+)
+_ENVELOPE_FIELDS = frozenset({"ts", "level", "event", "monotonic_ns", "native_thread_id", "pid"})
 EVENT_MAX_BYTES = 4096
 _MAX_EVENT_INTEGER_BITS = 63
 _PHASE_NAME = re.compile(r"[a-z][a-z0-9_.]{0,47}\Z")
@@ -492,9 +514,10 @@ def _validate(fields: Mapping[str, object]) -> tuple[dict[str, object], dict[str
     """Split ``fields`` into the allowlisted subset and the rejected names."""
     accepted: dict[str, object] = {}
     rejected: dict[str, str] = {}
-    for name, value in fields.items():
-        # Three envelope keys (timestamp, level, event) are added at emit.
-        if len(accepted) >= EVENT_MAX_FIELDS - 3:
+    for name in sorted(fields, key=lambda key: key not in _TRACE_FIELDS):
+        value = fields[name]
+        # Envelope fields are assigned by the emitting thread.
+        if len(accepted) >= EVENT_MAX_FIELDS - len(_ENVELOPE_FIELDS):
             rejected[name] = "event_field_limit"
             continue
         reason = rejection_reason(name)
@@ -618,12 +641,15 @@ def _emit_raw(level: int, event: str, fields: Mapping[str, object]) -> None:
     record: dict[str, object] = dict(fields)
     # Reserved keys are assigned last: a caller field can never rename the
     # event, restate its level, or forge its timestamp.
+    record["monotonic_ns"] = time.monotonic_ns()
+    record["native_thread_id"] = threading.get_native_id()
+    record["pid"] = os.getpid()
     record["ts"] = _now()
     record["level"] = _LEVEL_NAMES.get(level, "info")
     record["event"] = _truncate_scalar(event)
     try:
         while len(json.dumps(record, default=str)) > EVENT_MAX_BYTES and fields:
-            removable = next((key for key in reversed(record) if key not in {"ts", "level", "event"}), None)
+            removable = next((key for key in reversed(record) if key not in _ENVELOPE_FIELDS), None)
             if removable is None:
                 break
             record.pop(removable)
@@ -686,7 +712,25 @@ class Span:
     fields: MutableMapping[str, object] = _dc_field(default_factory=dict)
     _outcome: str | None = None
     _level: int = INFO
-    _start: float = 0.0
+    _start: int = 0
+    _start_tid: int = 0
+    _start_pid: int = 0
+    _cpu_start: int | None = None
+
+    def _timing(self) -> dict[str, object]:
+        end = time.monotonic_ns()
+        same_owner = self._start_tid == threading.get_native_id() and self._start_pid == os.getpid()
+        measured = same_owner and self._cpu_start is not None and not _in_async_task()
+        return {
+            "duration_ms": round((end - self._start) / 1_000_000, 3),
+            "span_start_ns": self._start,
+            "span_end_ns": end,
+            "span_start_native_thread_id": self._start_tid,
+            "span_start_pid": self._start_pid,
+            "thread_cpu_start_ns": self._cpu_start if measured else None,
+            "thread_cpu_end_ns": time.thread_time_ns() if measured else None,
+            "cpu_scope": "thread" if measured else "unavailable",
+        }
 
     def set(self, **fields: object) -> None:
         """Attach fields to the terminal event."""
@@ -723,6 +767,18 @@ class Span:
         self._finish("unmeasured", WARNING, reason=reason, **fields)
 
 
+def _in_async_task() -> bool:
+    # Avoid importing asyncio on the CLI startup path. A synchronous span
+    # inside an async task can suspend, mixing CPU from other tasks on its TID.
+    module = sys.modules.get("asyncio")
+    if module is None:
+        return False
+    try:
+        return module.current_task() is not None
+    except RuntimeError:
+        return False
+
+
 @contextlib.contextmanager
 def span(name: str, /, **fields: object) -> Iterator[Span]:
     """Open a correlated span. See :class:`Span` for the outcome contract."""
@@ -740,16 +796,24 @@ def span(name: str, /, **fields: object) -> Iterator[Span]:
 
     bound = {**parent, **correlation, **accepted}
     token = _context.set(bound)
-    active = Span(name=name, trace_id=trace_id, span_id=span_id, _start=time.perf_counter())
+    active = Span(
+        name=name,
+        trace_id=trace_id,
+        span_id=span_id,
+        _start=time.monotonic_ns(),
+        _start_tid=threading.get_native_id(),
+        _start_pid=os.getpid(),
+        _cpu_start=None if _in_async_task() else time.thread_time_ns(),
+    )
     try:
         emit(f"{name}.start", level=DEBUG)
         yield active
     except BaseException as exc:
-        duration_ms = round((time.perf_counter() - active._start) * 1000, 3)
+        timing = active._timing()
         terminal = {key: value for key, value in active.fields.items() if key not in {"level", "event"}}
         terminal.update(
             outcome="error",
-            duration_ms=duration_ms,
+            **timing,
             error_type=type(exc).__name__,
             error_detail=_exception_detail(exc),
         )
@@ -757,15 +821,15 @@ def span(name: str, /, **fields: object) -> Iterator[Span]:
             emit(f"{name}.error", level=ERROR, **terminal)
         raise
     else:
-        duration_ms = round((time.perf_counter() - active._start) * 1000, 3)
+        timing = active._timing()
         outcome = active._outcome
         if outcome is None:
             terminal = {key: value for key, value in active.fields.items() if key not in {"level", "event"}}
-            terminal.update(outcome="unmeasured", reason="span_exited_without_outcome", duration_ms=duration_ms)
+            terminal.update(outcome="unmeasured", reason="span_exited_without_outcome", **timing)
             emit(f"{name}.unmeasured", level=WARNING, **terminal)
         else:
             terminal = {key: value for key, value in active.fields.items() if key not in {"level", "event"}}
-            terminal.update(outcome=outcome, duration_ms=duration_ms)
+            terminal.update(outcome=outcome, **timing)
             emit(f"{name}.{outcome}", level=active._level, **terminal)
     finally:
         _context.reset(token)

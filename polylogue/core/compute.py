@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import os
 import threading
 from builtins import BaseExceptionGroup
 from collections import deque
@@ -26,9 +27,11 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from functools import partial
-from time import monotonic
+from time import monotonic, monotonic_ns
 from typing import Generic, Literal, TypeVar, cast
+from uuid import uuid4
 
+from polylogue import logging as plog
 from polylogue.core.sql_settlement import (
     NativeSQLSettlementEvidence,
     SQLCustodyOwner,
@@ -38,6 +41,8 @@ from polylogue.core.sql_settlement import (
 )
 
 AdmissionClass = Literal["interactive-read", "control", "incremental-background", "bulk-candidate"]
+TRACE_COMPUTE = os.environ.get("POLYLOGUE_TRACE_COMPUTE") == "1"
+
 T = TypeVar("T")
 InputT = TypeVar("InputT")
 
@@ -498,6 +503,9 @@ class _Task:
         "queue_delay_s",
         "pending_bytes",
         "queued_at",
+        "trace_task_id",
+        "trace_queued_ns",
+        "trace_queued_tid",
         "slots",
         "state",
         "sql_retry",
@@ -532,6 +540,13 @@ class _Task:
         self.exclusive_bytes = exclusive_bytes
         self.slots = slots
         self.queued_at = monotonic()
+        self.trace_task_id = uuid4().hex[:16] if TRACE_COMPUTE else None
+        self.trace_queued_ns = monotonic_ns() if self.trace_task_id is not None else 0
+        self.trace_queued_tid = threading.get_native_id() if self.trace_task_id is not None else 0
+        if self.trace_task_id is not None:
+            correlation = dict(plog.current_context())
+            correlation.setdefault("trace_id", self.trace_task_id)
+            self.context.run(lambda: plog.set_run_context(**correlation))
         self.queue_delay_s = 0.0
         self.state = "admitted"
         self.sql_retry = SQLSettlementRetry()
@@ -1110,7 +1125,31 @@ class BoundedComputeAdapter:
                 if task.cancellation.cancelled:
                     failure = DaemonOperationCancelled("operation cancelled before compute started")
                 else:
-                    result = task.function()
+                    if task.trace_task_id is None:
+                        result = task.function()
+                    else:
+                        # Admission-to-worker-start is a causal wait, not work
+                        # occupying the submitting thread. Emit outside locks.
+                        plog.emit(
+                            "compute.queue.ok",
+                            span_id=uuid4().hex[:16],
+                            parent_span_id=plog.current_context().get("span_id"),
+                            task_id=task.trace_task_id,
+                            span_kind="wait",
+                            outcome="ok",
+                            span_start_ns=task.trace_queued_ns,
+                            span_end_ns=monotonic_ns(),
+                            span_start_native_thread_id=task.trace_queued_tid,
+                            span_start_pid=os.getpid(),
+                            cpu_scope="unavailable",
+                            stage=task.admission_class,
+                            wait_ms=round(task.queue_delay_s * 1000, 3),
+                        )
+                        with plog.span(
+                            "compute.service", task_id=task.trace_task_id, span_kind="work", stage=task.admission_class
+                        ) as service:
+                            result = task.function()
+                            service.ok()
             except BaseException as exc:
                 failure = exc
             finally:

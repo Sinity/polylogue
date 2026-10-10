@@ -890,7 +890,7 @@ def _acquire_ownership_lock_fd(path: Path, *, owner: str, dir_fd: int | None = N
             outcome="degraded",
             reason="recorded_holder_not_running",
             path=path,
-            pid=holder_pid,
+            holder_pid=holder_pid,
         )
         for _ in range(_STALE_RECLAIM_ATTEMPTS):
             try:
