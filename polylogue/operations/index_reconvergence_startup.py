@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import pickle
 import sqlite3
 import uuid
@@ -93,6 +94,7 @@ def reconverge_managed_index_on_startup(
     compute_adapter: BoundedComputeAdapter,
     write_admission: Callable[[str], AbstractContextManager[object]],
     retained: list[RawObservationReplacement],
+    run_replay: Callable[[Callable[[], object], int], object],
 ) -> str | None:
     """Prepare off-gate, replay retained bytes, then publish under the writer.
 
@@ -253,29 +255,48 @@ def reconverge_managed_index_on_startup(
                 return function()
 
         frontier = 0
+        # The controller alone owns the original observers and promotion seal.
+        # Page payloads live on disk; only a shared-admission window is offered.
+        width = compute_adapter.snapshot().by_class("incremental-background").ceiling_slots
         with stage_write_admission(admit):
             while True:
-                check_compute_cancelled()
+                require_current()
                 with closing(open_readonly_connection(root / "source.db")) as source:
                     rows = source.execute(
                         "SELECT rowid,raw_id FROM raw_sessions WHERE rowid>? ORDER BY rowid LIMIT ?",
-                        (frontier, _RAW_PAGE),
+                        (frontier, min(_RAW_PAGE, width)),
                     ).fetchall()
                 if not rows:
                     break
                 selected = tuple(str(row[1]) for row in rows)
-                replay = work.retained_replay_operation(
-                    pickle.dumps(selected, protocol=pickle.HIGHEST_PROTOCOL),
-                    retained=retained,
-                    destination=lambda: (adapter, Path(generation.index_path), destination),
-                    require_authority=work.require_source_frontier_authority,
-                    select_retained_raw_ids=work.sidecar_owner_selector(selected),
-                    on_terminal_refusal=None,
-                    on_dependency_refusal=None,
-                    on_membership_refusal=None,
-                    before_publication=None,
-                )
-                replay().outcome.require_complete()
+
+                async def prepare_page(selected: tuple[str, ...]) -> None:
+                    scope = pickle.dumps(selected, protocol=pickle.HIGHEST_PROTOCOL)
+                    selection = work.sidecar_owner_selector(selected)
+                    async with work.prepared_neutral_page(
+                        selected,
+                        destination=lambda: (adapter, Path(generation.index_path), destination),
+                        require_authority=work.require_source_frontier_authority,
+                        selection=selection,
+                    ) as page:
+                        replay = work.retained_replay_operation(
+                            scope,
+                            retained=retained,
+                            destination=lambda: (adapter, Path(generation.index_path), destination),
+                            require_authority=work.require_source_frontier_authority,
+                            select_retained_raw_ids=selection,
+                            on_terminal_refusal=None,
+                            on_dependency_refusal=None,
+                            on_membership_refusal=None,
+                            before_publication=None,
+                            neutral_page=page,
+                        )
+                        # The daemon retains each physical publisher creator.
+                        # No original observer is passed into this operation.
+                        run_replay(lambda: replay().outcome.require_complete(), len(scope))
+
+                asyncio.run(prepare_page(selected))
+                require_current()
                 frontier = int(rows[-1][0])
                 emit(
                     "daemon.index_reconvergence.progress",

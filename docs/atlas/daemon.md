@@ -616,3 +616,11 @@ schedule to observe the first convergence-owner opportunity after a retained
 frontier retry becomes due. It reserves that inactivity origin once per useful
 progress epoch; later failed attempts and schedules cannot renew it. Scheduling
 evidence never counts as productive progress or archive completion.
+
+Retained startup reconstruction keeps its original tier observers and promotion
+seal on the coordinator's physical preparation creator. It offers one shared
+background-admission window at a time to the same neutral capture and parser
+owner used by live retained replay. Each ordered replay obtains ordinary writer
+admission; startup does not reserve an exclusive compute slot for the whole
+reconstruction. Cancellation joins capture, parser and publisher creators before
+retiring the original observers or releasing archive ownership.

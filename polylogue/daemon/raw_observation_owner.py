@@ -339,37 +339,12 @@ class RawObservationConvergenceOwner:
                 # Default sidecar ownership starts from this window. A caller's
                 # explicit dependency selection is preserved before expansion.
                 selection = select_retained_raw_ids or self._archive.sidecar_owner_selector(offered)
-                capture = self._archive.neutral_capture_operation(
+                async with self._archive.prepared_neutral_page(
                     offered,
                     destination=self._archive.destination_adapter,
                     require_authority=self._require_source_frontier_authority,
                     selection=selection,
-                )
-                # Capture has no publication. Await the compute future itself:
-                # coordinator receipt delivery precedes physical slot release.
-                captured = self._compute_adapter.submit(
-                    propagate(capture),
-                    admission_class="incremental-background",
-                    estimated_bytes=len(scope_operand),
-                    exclusive_bytes=True,
-                )
-                try:
-                    page = await captured.wait()
-                except BaseException as capture_failure:
-                    if captured.future.done() and captured.future.exception() is None:
-                        abandoned = captured.future.result()
-                        if abandoned is not None:
-                            try:
-                                abandoned.close()
-                            except BaseException as cleanup:
-                                raise BaseExceptionGroup(
-                                    "capture cancellation and cleanup failed", [capture_failure, cleanup]
-                                ) from capture_failure
-                    raise
-                primary: BaseException | None = None
-                try:
-                    if page is not None:
-                        await self._archive.parse_neutral_page(page)
+                ) as page:
                     retained: list[RawObservationReplacement] = []
                     replay = self._archive.retained_replay_operation(
                         scope_operand,
@@ -393,17 +368,4 @@ class RawObservationConvergenceOwner:
                     results.append(result)
                     considered = {*offered, *result.considered_raw_ids}
                     remaining = [raw_id for raw_id in remaining if raw_id not in considered]
-                except BaseException as failure:
-                    primary = failure
-                    raise
-                finally:
-                    if page is not None:
-                        try:
-                            page.close()
-                        except BaseException as cleanup:
-                            if primary is not None:
-                                raise BaseExceptionGroup(
-                                    "retained page and cleanup failed", [primary, cleanup]
-                                ) from primary
-                            raise
         return self._archive.combine_retained_results(results)

@@ -800,3 +800,350 @@ def test_changed_acquisition_custody_refuses_startup_promotion(
         and row.get("reason") == reason
         for row in records
     )
+
+
+@pytest.mark.uses_real_clock
+@pytest.mark.parametrize(
+    "workers,capacity,control",
+    [
+        (1, 64 * 1024 * 1024, "complete"),
+        (3, 64 * 1024 * 1024, "complete"),
+        (8, 1, "complete"),
+        (8, 64 * 1024 * 1024, "cancel"),
+        (8, 64 * 1024 * 1024, "cancel-capture"),
+        (8, 64 * 1024 * 1024, "namespace"),
+    ],
+)
+def test_actual_startup_independent_preparation_uses_shared_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workers: int, capacity: int, control: str
+) -> None:
+    """Full startup overlaps physical parsers and keeps promotion creator-bound.
+
+    Removing the neutral page seam makes the parallel rendezvous fail. A one
+    byte envelope serializes oversized inputs; cancellation waits for their
+    physical creators, and a replaced Source namespace cannot promote.
+    """
+    import shutil
+    import threading
+    import time
+    from collections.abc import Callable, Mapping, Sequence
+
+    from polylogue.core import compute as compute_module
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.core.write_lease import coordinator_write_lease_active
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.sources.sidecar_evidence import RetainedSidecarScope
+    from polylogue.storage.derived import raw as raw_module
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+
+    root = tmp_path / "archive"
+    old, _, _ = make_populated_stale_index(
+        root,
+        tmp_path / "external" / "retained.jsonl",
+        independent_raws=16 if control == "cost-dense" else 2,
+        independent_messages=8 if control == "cost" else 1,
+        independent_text_size=128 * 1024 if control.startswith("cost") else 8,
+    )
+    kernel = BoundedComputeAdapter(max_workers=workers, queue_units=8, queue_bytes=capacity)
+    monkeypatch.setattr(compute_module, "compute_adapter", lambda: kernel)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    original = raw_module._parse_captured_neutral
+    controller_threads: list[threading.Thread] = []
+    joined_threads: list[threading.Thread] = []
+    original_enter = PreparedIndexMutation.__enter__
+    original_join = threading.Thread.join
+
+    def entered(seal: PreparedIndexMutation) -> PreparedIndexMutation:
+        if seal.index_path == old and seal.index_thread.name == "daemon.index_reconvergence.startup":
+            assert seal.index_task is None
+            controller_threads.append(seal.index_thread)
+        return original_enter(seal)
+
+    def joined(thread: threading.Thread, timeout: float | None = None) -> None:
+        original_join(thread, timeout)
+        if thread.name == "daemon.index_reconvergence.startup":
+            assert not thread.is_alive()
+            joined_threads.append(thread)
+
+    monkeypatch.setattr(PreparedIndexMutation, "__enter__", entered)
+    if not control.startswith("cost"):
+        monkeypatch.setattr(threading.Thread, "join", joined)
+    lock = threading.Lock()
+    reached, release = threading.Event(), threading.Event()
+    active = peak = calls = 0
+    expected_peak = min(2, kernel.snapshot().by_class("incremental-background").ceiling_slots) if capacity != 1 else 1
+    maximum_bytes = maximum_input_bytes = 0
+    started = time.monotonic()
+
+    def parse(
+        raw_id: str,
+        captured: raw_module._CapturedNeutralRaw,
+        artifact_key: tuple[object, ...],
+        sidecar_scopes: Mapping[str, RetainedSidecarScope],
+        scratch: Path,
+    ) -> PreparedJsonl:
+        nonlocal active, peak, calls, maximum_bytes, maximum_input_bytes
+        kernel.require_current_creator()
+        assert not coordinator_write_lease_active()
+        snapshot = kernel.snapshot()
+        if not control.startswith("cost"):
+            assert snapshot.exclusive_byte_units == 0
+            assert snapshot.active_input_bytes >= captured.descriptor[4]
+        with lock:
+            active += 1
+            calls += 1
+            peak = max(peak, active)
+            maximum_bytes = max(maximum_bytes, snapshot.used_bytes)
+            maximum_input_bytes = max(maximum_input_bytes, snapshot.active_input_bytes)
+            if active == expected_peak:
+                reached.set()
+        try:
+            if not control.startswith("cost"):
+                assert release.wait(10), "startup did not admit independent neutral preparation"
+            return original(raw_id, captured, artifact_key, sidecar_scopes, scratch)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(raw_module, "_parse_captured_neutral", parse)
+    if control == "cancel-capture":
+        original_capture = raw_module.RawObservationDerivation.capture_neutral_raws
+
+        def capture(
+            adapter: raw_module.RawObservationDerivation,
+            raw_ids: Sequence[str],
+            *,
+            selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+        ) -> raw_module.NeutralRawPreparation | None:
+            nonlocal active
+            page = original_capture(adapter, raw_ids, selection=selection)
+            with lock:
+                active += 1
+            reached.set()
+            try:
+                assert release.wait(10)
+                return page
+            finally:
+                with lock:
+                    active -= 1
+
+        monkeypatch.setattr(raw_module.RawObservationDerivation, "capture_neutral_raws", capture)
+
+    class PreflightReachedError(Exception):
+        pass
+
+    def preflight() -> None:
+        current = ArchiveLocation.resolve(root).active_index_path.resolve(strict=True)
+        if control == "namespace":
+            assert current == old
+        else:
+            assert current != old
+            with closing(open_readonly_connection(current)) as conn:
+                assert_tier_schema_supported(conn, current)
+                assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == (
+                    17 if control == "cost-dense" else 3
+                )
+                assert conn.execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone()[0] == (
+                    17 if control == "cost-dense" else 3
+                )
+        raise PreflightReachedError
+
+    monkeypatch.setattr(daemon_cli, "_check_schema_version_fast", preflight)
+
+    async def startup() -> None:
+        task = asyncio.create_task(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+            )
+        )
+        rendezvous = asyncio.create_task(
+            asyncio.sleep(0, result=True) if control.startswith("cost") else asyncio.to_thread(reached.wait, 10)
+        )
+        try:
+            if control.startswith("cost"):
+                with pytest.raises(PreflightReachedError):
+                    await task
+                rendezvous.cancel()
+                assert active == 0
+                assert kernel.snapshot().used_units == kernel.snapshot().used_bytes == 0
+                return
+            done, _ = await asyncio.wait((task, rendezvous), return_when=asyncio.FIRST_COMPLETED)
+            if task in done:
+                await task
+                pytest.fail("startup ended before independent preparation")
+            assert await rendezvous
+            if control in {"cancel", "cancel-capture"}:
+                task.cancel()
+                await asyncio.sleep(0)
+                assert not task.done(), "startup abandoned its physical parser creators"
+            elif control == "namespace":
+                replacement = root / "source-replacement.db"
+                shutil.copyfile(root / "source.db", replacement)
+                replacement.replace(root / "source.db")
+            release.set()
+            if control in {"cancel", "cancel-capture"}:
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert ArchiveLocation.resolve(root).active_index_path.resolve(strict=True) == old
+            else:
+                with pytest.raises(PreflightReachedError):
+                    await task
+            assert active == 0
+            assert kernel.snapshot().used_units == kernel.snapshot().used_bytes == 0
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, rendezvous, return_exceptions=True)
+
+    try:
+        asyncio.run(startup())
+        if not control.startswith("cost"):
+            assert controller_threads
+            assert all(thread in joined_threads and not thread.is_alive() for thread in controller_threads)
+        if control.startswith("cost") or control == "cancel-capture":
+            pass
+        elif capacity == 1:
+            assert peak == 1
+        else:
+            assert expected_peak <= peak <= kernel.snapshot().by_class("incremental-background").ceiling_slots
+        if control == "complete":
+            assert calls == 3
+        if capacity != 1 and control != "cancel-capture":
+            assert 0 < maximum_bytes <= capacity
+        assert not tuple((root / "blob").glob("**/.raw-prepared-*"))
+        # Retained neutral measurements report the whole startup, not parser time.
+        measurement = {
+            "elapsed_s": time.monotonic() - started,
+            "peak_parsers": peak,
+            "parser_calls": calls,
+            "maximum_admitted_bytes": maximum_bytes,
+            "maximum_input_bytes": maximum_input_bytes,
+            "capacity": capacity,
+            "control": control,
+        }
+        (tmp_path / "startup-measurement.json").write_text(json.dumps(measurement))
+        if control.startswith("cost"):
+            import hashlib
+            import sys
+
+            module_path = sys.modules["polylogue.operations.index_reconvergence_startup"].__file__
+            assert module_path is not None
+            product = Path(module_path)
+            measurement["startup_module_sha256"] = hashlib.sha256(product.read_bytes()).hexdigest()
+            measurement["input_bytes"] = sum(
+                path.stat().st_size for path in (root / "blob").glob("*/*") if path.is_file()
+            )
+            cache = Path(__file__).resolve().parents[3] / ".cache"
+            (cache / f"startup-cost-{time.time_ns()}.json").write_text(json.dumps(measurement))
+    finally:
+        kernel.shutdown(wait=True)
+
+
+@pytest.mark.uses_real_clock
+def test_actual_startup_retained_preparation_cost(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Measure the complete ordinary startup with two independent MiB inputs."""
+    test_actual_startup_independent_preparation_uses_shared_admission(
+        tmp_path, monkeypatch, 8, 64 * 1024 * 1024, "cost"
+    )
+
+
+@pytest.mark.uses_real_clock
+def test_actual_startup_dense_retained_preparation_cost(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Count repeated real parsing and total startup for sixteen independent inputs."""
+    test_actual_startup_independent_preparation_uses_shared_admission(
+        tmp_path, monkeypatch, 8, 64 * 1024 * 1024, "cost-dense"
+    )
+
+
+@pytest.mark.uses_real_clock
+def test_startup_failed_replay_settlement_stays_on_its_creator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An actual failed child seal never enters the controller's cleanup census."""
+    import threading
+    from collections.abc import Callable
+    from concurrent.futures import Future
+    from typing import TypeVar
+
+    from polylogue.core import compute as compute_module
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.core.sql_settlement import SQLCustodyOwner
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriterSettlementError
+    from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    root = tmp_path / "archive"
+    old, _, _ = make_populated_stale_index(root, tmp_path / "external" / "retained.jsonl", independent_raws=1)
+    kernel = BoundedComputeAdapter(max_workers=3, queue_units=8, queue_bytes=64 * 1024 * 1024)
+    monkeypatch.setattr(compute_module, "compute_adapter", lambda: kernel)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    original_close = PreparedIndexMutation.close
+    original_run = DaemonWriteCoordinator.run_prepared_sync
+    failed: list[PreparedIndexMutation] = []
+    closed: list[threading.Thread] = []
+    controller_census: list[tuple[SQLCustodyOwner, ...]] = []
+    release = threading.Event()
+    execution = threading.local()
+
+    def close(seal: PreparedIndexMutation) -> None:
+        if getattr(execution, "replay", False) and not seal._closed:
+            if not failed:
+                failed.append(seal)
+            if seal is failed[0]:
+                assert threading.current_thread() is seal.index_thread
+                if not release.is_set():
+                    raise RuntimeError("neutral child observer close failure")
+                closed.append(threading.current_thread())
+        original_close(seal)
+
+    T = TypeVar("T")
+
+    async def run(
+        coordinator: DaemonWriteCoordinator,
+        actor: str,
+        operation: Callable[[], T],
+        *,
+        submit_worker: Callable[[Callable[[], None]], Future[None]] | None,
+        settlement_owners: Callable[[], tuple[SQLCustodyOwner, ...]],
+    ) -> T:
+        def owners() -> tuple[SQLCustodyOwner, ...]:
+            observed = settlement_owners()
+            if actor == "daemon.index_reconvergence.startup" and failed:
+                assert threading.current_thread() is not failed[0].index_thread
+                assert failed[0] not in observed
+                assert observed == retained_native_settlement_owners_on_current_thread()
+                controller_census.append(observed)
+                release.set()
+            return observed
+
+        def invoke() -> T:
+            execution.replay = actor == "daemon.index_reconvergence.replay"
+            return operation()
+
+        return await original_run(coordinator, actor, invoke, submit_worker=submit_worker, settlement_owners=owners)
+
+    monkeypatch.setattr(PreparedIndexMutation, "close", close)
+    monkeypatch.setattr(DaemonWriteCoordinator, "run_prepared_sync", run)
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            asyncio.run(
+                daemon_cli.run_daemon_services(
+                    sources=(),
+                    enable_watch=False,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                )
+            )
+        assert failed and controller_census
+        assert ArchiveLocation.resolve(root).active_index_path.resolve(strict=True) == old
+    finally:
+        release.set()
+        kernel.shutdown(wait=True)
+    assert closed and all(thread is failed[0].index_thread for thread in closed)
+    assert failed[0]._closed

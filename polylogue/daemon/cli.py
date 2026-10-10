@@ -2511,6 +2511,7 @@ async def _run_daemon_services_under_active_writer_lease(
         raise
 
     retained_reconvergence: list[RawObservationReplacement] = []
+    startup_owner_loop = asyncio.get_running_loop()
 
     def prepare_index_reconvergence() -> None:
         if empty_generation_id is not None:
@@ -2522,8 +2523,6 @@ async def _run_daemon_services_under_active_writer_lease(
             reconverge_managed_index_on_startup,
         )
         from polylogue.operations.reset_safety import archive_tiers_closed
-
-        startup_kernel.require_current_creator()
 
         @contextmanager
         def admit_writer(actor: str) -> Iterator[object]:
@@ -2542,6 +2541,25 @@ async def _run_daemon_services_under_active_writer_lease(
                     compute_adapter=startup_kernel,
                     write_admission=admit_writer,
                     retained=retained_reconvergence,
+                    run_replay=lambda operation, weight: asyncio.run_coroutine_threadsafe(
+                        write_coordinator.run_prepared_sync(
+                            "daemon.index_reconvergence.replay",
+                            operation,
+                            submit_worker=lambda worker: (
+                                startup_kernel.submit(
+                                    propagate(worker),
+                                    admission_class="incremental-background",
+                                    estimated_bytes=weight,
+                                    exclusive_bytes=True,
+                                ).future
+                            ),
+                            settlement_owners=lambda: (
+                                *retained_native_settlement_owners_on_current_thread(),
+                                *retained_settlement_owners(retained_reconvergence),
+                            ),
+                        ),
+                        startup_owner_loop,
+                    ).result(),
                 )
             except IndexReconvergenceRefusedError as exc:
                 emit("daemon.index_reconvergence.startup", level=WARNING, outcome="refused", reason=exc.reason)
@@ -2552,15 +2570,10 @@ async def _run_daemon_services_under_active_writer_lease(
         await write_coordinator.run_prepared_sync(
             "daemon.index_reconvergence.startup",
             prepare_index_reconvergence,
-            submit_worker=lambda worker: (
-                startup_kernel.submit(
-                    propagate(worker), admission_class="control", estimated_bytes=0, exclusive_bytes=True
-                ).future
-            ),
-            settlement_owners=lambda: (
-                *retained_native_settlement_owners_on_current_thread(),
-                *retained_settlement_owners(retained_reconvergence),
-            ),
+            submit_worker=None,
+            # Replay replacements belong to their child creators. The outer
+            # controller retains only its own registered observers and handles.
+            settlement_owners=retained_native_settlement_owners_on_current_thread,
         )
     except BaseException:
         archive_owner.release()

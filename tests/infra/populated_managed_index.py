@@ -21,6 +21,9 @@ def make_populated_stale_index(
     multi_session: bool = False,
     include_history: bool = False,
     include_codex_materials: bool = False,
+    independent_raws: int = 0,
+    independent_messages: int = 1,
+    independent_text_size: int = 8,
 ) -> tuple[Path, str, tuple[str, ...]]:
     old = make_empty_managed_index(root, stale=False)
     source.parent.mkdir()
@@ -125,6 +128,17 @@ def make_populated_stale_index(
             root / "source.db",
             "UPDATE raw_membership_census SET parser_fingerprint='prior-parser' WHERE raw_id=?",
             (history_id,),
+        )
+    if independent_raws:
+        from tests.infra.selected_raw_preparation import acquire_independent_codex_raws
+
+        asyncio.run(
+            run_archive_fixture_write(
+                root,
+                lambda: acquire_independent_codex_raws(
+                    root, independent_raws, messages=independent_messages, text_size=independent_text_size
+                ),
+            )
         )
     mutate_fixture_database(old, "UPDATE schema_identity SET identity='prior-runtime' WHERE tier='index'")
     return old, raw_id, session_ids
