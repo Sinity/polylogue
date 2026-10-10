@@ -292,3 +292,37 @@ def test_late_parent_moves_every_descendant_to_its_root(tmp_path: Path) -> None:
     threads = [tuple(row) for row in conn.execute("SELECT thread_id, session_count, depth FROM threads")]
     assert threads == [(parent_id, 3, 2)]
     conn.close()
+
+
+def test_unchanged_lineage_projection_does_not_issue_session_updates(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers import write
+
+    conn = _connect(tmp_path / "index.db")
+    parent = write_fixture_index_session(conn, _session("no-op-parent", [_text("p", Role.USER, "parent", 0)]))
+    child = write_fixture_index_session(
+        conn, _session("no-op-child", [_text("c", Role.USER, "child", 0)], parent="no-op-parent")
+    )
+    grandchild = write_fixture_index_session(
+        conn, _session("no-op-grandchild", [_text("g", Role.USER, "grandchild", 0)], parent="no-op-child")
+    )
+    before = [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT session_id,parent_session_id,root_session_id,branch_type,session_kind FROM sessions ORDER BY session_id"
+        )
+    ]
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    try:
+        for session_id in (parent, child, grandchild):
+            write._refresh_session_projection(conn, session_id, seen=set())
+    finally:
+        conn.set_trace_callback(None)
+    assert not [sql for sql in statements if sql.lstrip().upper().startswith("UPDATE SESSIONS")]
+    after = [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT session_id,parent_session_id,root_session_id,branch_type,session_kind FROM sessions ORDER BY session_id"
+        )
+    ]
+    assert after == before
