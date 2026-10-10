@@ -56,6 +56,8 @@ from .dispatch import (
 )
 
 if TYPE_CHECKING:
+    import sqlite3
+
     from polylogue.schemas.observation_spill import _ScalarTokenStore
     from polylogue.sources.parsers.hermes_identity import CapturedHermesProfile
     from polylogue.sources.source_staging import SourceInputBinding
@@ -124,6 +126,8 @@ class BoundRecordValidator:
         self._pending = bytearray()
         self._line_limit = JSONL_MEMORY_BUFFER_BYTES if active and self._is_jsonl else 0
         self._line: _DocumentValidator | None = None
+        self._spill_lifetime = ExitStack()
+        self._spill_connection: sqlite3.Connection | None = None
         self._finished = False
         #: A refusal is sticky: a consumer that swallows it and reads on (an
         #: identity pass falling back to byte identity) meets it again.
@@ -174,16 +178,26 @@ class BoundRecordValidator:
 
     def close(self) -> None:
         self._pending = bytearray()
-        for document in (self._document, self._line):
-            if document is not None:
-                document.close()
+        try:
+            for document in (self._document, self._line):
+                if document is not None:
+                    document.close()
+        finally:
+            self._spill_lifetime.close()
+            self._spill_connection = None
 
     def _feed_line(self, data: bytes) -> None:
         if self._line is None and len(self._pending) + len(data) <= self._line_limit:
             self._pending += data
             return
         if self._line is None:
-            self._line = _DocumentValidator(self._bound, records=True)
+            if self._spill_connection is None:
+                from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+                owner = StreamedJSONDocument(None)
+                self._spill_lifetime.enter_context(owner)
+                self._spill_connection = owner.connection
+            self._line = _DocumentValidator(self._bound, records=True, connection=self._spill_connection)
             held, self._pending = bytes(self._pending), bytearray()
             if held:
                 self._line.feed(held)
@@ -309,10 +323,16 @@ class _RecordEvidence:
         from .origin_specs import detector_registry
 
         try:
-            for sequence in (False, True) if record else (False,):
-                provider, evidence = detector_registry().detect_record_events(self.events, sequence=sequence)
-                if bound is not None and provider is not None and not same_origin(provider, bound):
-                    raise ForeignOriginContentError(expected=bound, found=provider, evidence=evidence or "record shape")
+            from contextlib import closing
+
+            with closing(
+                detector_registry().iter_record_event_detections(self.events, include_singleton=record)
+            ) as detections:
+                for provider, evidence in detections:
+                    if bound is not None and provider is not None and not same_origin(provider, bound):
+                        raise ForeignOriginContentError(
+                            expected=bound, found=provider, evidence=evidence or "record shape"
+                        )
         finally:
             self.close()
 
@@ -323,7 +343,7 @@ class _DocumentValidator:
     ``records`` marks a JSONL line, whose top-level object is a record.
     """
 
-    def __init__(self, bound: Provider | None, *, records: bool) -> None:
+    def __init__(self, bound: Provider | None, *, records: bool, connection: sqlite3.Connection | None = None) -> None:
         from polylogue.core.json_envelope import _PrefixStringReader
         from polylogue.schemas.observation_spill import StreamedJSONDocument, _ScalarTokenStore
 
@@ -337,9 +357,21 @@ class _DocumentValidator:
         self._failed = False
         self._seen = False
         self._lifetime = ExitStack()
-        owner = StreamedJSONDocument(None)
-        self._lifetime.enter_context(owner)
-        self._tokens = _ScalarTokenStore(owner.connection)
+        if connection is None:
+            owner = StreamedJSONDocument(None)
+            self._lifetime.enter_context(owner)
+            connection = owner.connection
+        else:
+            # The byte stream owns the schema. All scalar and projection rows
+            # belong to this record and expire after its evidence folds settle.
+            connection.execute("SAVEPOINT origin_record")
+
+            def release_record() -> None:
+                connection.execute("ROLLBACK TO origin_record")
+                connection.execute("RELEASE origin_record")
+
+            self._lifetime.callback(release_record)
+        self._tokens = _ScalarTokenStore(connection)
         self._transport = _PrefixStringReader(
             io.BytesIO(),
             scalar_values=True,

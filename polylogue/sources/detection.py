@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import functools
 import inspect
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import import_module
@@ -110,68 +110,106 @@ class CompiledDetectorRegistry:
             return provider, compiled.binding.evidence_label
         return None, None
 
-    def detect_record_events(
+    def iter_record_event_detections(
         self,
         events_factory: Callable[[], Iterator[tuple[str, object]]],
         *,
-        sequence: bool,
-    ) -> tuple[Provider | None, str | None]:
-        """Classify one acquisition record through the declared complete folds."""
+        include_singleton: bool = True,
+    ) -> Generator[tuple[Provider | None, str | None], None, None]:
+        """Classify an owned event record and its optional singleton view.
+
+        Exact declared projections share a read view only within this iterator.
+        Actual root arrays retain each binding's independent predicate fold.
+        Closing the iterator releases all projection resources before the
+        caller retires the event/scalar owner.
+        """
         from contextlib import ExitStack
-        from itertools import chain
 
-        from polylogue.sources.detection_projection import DetectorProjection, _project
+        from polylogue.sources.detection_projection import DetectorProjection, _project, detection_read_view
 
-        first_event = next(events_factory(), None)
-        array_input = sequence or (first_event is not None and first_event[0] == "start_array")
-        modes = (
-            (DetectionMode.SEQUENCE_DOCUMENT, DetectionMode.SEQUENCE_RECORD_STREAM)
-            if array_input
-            else (DetectionMode.RECORD,)
-        )
-        for mode in modes:
-            for compiled in self.by_mode.get(mode, ()):
-                binding = compiled.binding
-                rule = _stream_projection(binding)
-                events = events_factory()
-                if sequence:
-                    events = chain((("start_array", None),), events, (("end_array", None),))
-                first = next(events, None)
-                if first is None:
-                    continue
+        with ExitStack() as stack:
+            first_events = events_factory()
+            with ExitStack() as probe:
+                close = getattr(first_events, "close", None)
+                if close is not None:
+                    probe.callback(close)
+                first_event = next(first_events, None)
+            root_array = first_event is not None and first_event[0] == "start_array"
+            projections: dict[str, object] = {}
+            for sequence in (False, True) if include_singleton else (False,):
+                array_input = sequence or root_array
+                modes = (
+                    (DetectionMode.SEQUENCE_DOCUMENT, DetectionMode.SEQUENCE_RECORD_STREAM)
+                    if array_input
+                    else (DetectionMode.RECORD,)
+                )
+                result: tuple[Provider | None, str | None] = (None, None)
+                matched = False
+                for mode in modes:
+                    for compiled in self.by_mode.get(mode, ()):
+                        binding = compiled.binding
+                        path = binding.stream_projection_path
+                        if path is None:
+                            raise DetectorBindingError(
+                                f"{binding.binding_id}: complete stream projection is undeclared"
+                            )
+                        actual_array_fold = root_array and not sequence
+                        with ExitStack() as binding_stack:
+                            if actual_array_fold or path not in projections:
+                                rule = _stream_projection(binding)
 
-                def array_predicate(item: object, predicate: Predicate = compiled.predicate) -> bool:
-                    return predicate([item])
+                                def array_predicate(item: object, predicate: Predicate = compiled.predicate) -> bool:
+                                    return predicate([item])
 
-                with ExitStack() as stack:
-                    root_rule = (
-                        DetectorProjection(
-                            item=rule,
-                            array_fold="any",
-                            array_predicate=array_predicate,
-                        )
-                        if array_input
-                        else rule
-                    )
-                    payload = _project(events, first[0], first[1], root_rule, stack)
-                    if not compiled.predicate(payload):
-                        continue
-                    resolved_provider: object = (
-                        binding.fixed_provider
-                        if compiled.provider_resolver is None
-                        else compiled.provider_resolver(payload)
-                    )
-                    if (
-                        compiled.provider_resolver is not None
-                        and resolved_provider is not None
-                        and (
-                            not isinstance(resolved_provider, Provider)
-                            or resolved_provider not in binding.dynamic_provider_allowlist
-                        )
-                    ):
-                        raise DetectorBindingError(f"{binding.binding_id}: invalid projected dynamic provider")
-                    return cast(Provider | None, resolved_provider), binding.evidence_label
-        return None, None
+                                root_rule = (
+                                    DetectorProjection(item=rule, array_fold="any", array_predicate=array_predicate)
+                                    if actual_array_fold
+                                    else rule
+                                )
+                                with ExitStack() as traversal:
+                                    events = events_factory()
+                                    close = getattr(events, "close", None)
+                                    if close is not None:
+                                        traversal.callback(close)
+                                    first = next(events, None)
+                                    if first is None:
+                                        continue
+                                    projected = detection_read_view(
+                                        _project(
+                                            events,
+                                            first[0],
+                                            first[1],
+                                            root_rule,
+                                            binding_stack if actual_array_fold else stack,
+                                        )
+                                    )
+                                if not actual_array_fold:
+                                    projections[path] = projected
+                            else:
+                                projected = projections[path]
+                            payload = [projected] if sequence else projected
+                            if not compiled.predicate(payload):
+                                continue
+                            resolved_provider: object = (
+                                binding.fixed_provider
+                                if compiled.provider_resolver is None
+                                else compiled.provider_resolver(payload)
+                            )
+                            if (
+                                compiled.provider_resolver is not None
+                                and resolved_provider is not None
+                                and (
+                                    not isinstance(resolved_provider, Provider)
+                                    or resolved_provider not in binding.dynamic_provider_allowlist
+                                )
+                            ):
+                                raise DetectorBindingError(f"{binding.binding_id}: invalid projected dynamic provider")
+                            result = cast(Provider | None, resolved_provider), binding.evidence_label
+                            matched = True
+                            break
+                    if matched:
+                        break
+                yield result
 
     def iter_record_detections(self, value: object) -> Iterator[tuple[Provider | None, str | None]]:
         """Classify a decoded record, then its singleton-sequence view.
