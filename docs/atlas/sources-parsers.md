@@ -42,7 +42,9 @@ Retained schema decoding stores exact string and number tokens as private
 SQLite chunks. Full syntax validation completes before lazy container views
 are exposed. Schema structure, fingerprint and profile consumers use stored
 kinds; boolean additional-property validation and drift checks traverse keys.
-Selected values are reconstructed exactly. Codex recognition does not copy
+Selected values are reconstructed exactly. Known-unread drift intersects the
+actual streamed record keys with the declared unread names in one metadata scan;
+long-key digest matches still require streamed exact equality. Codex recognition does not copy
 unconstrained payload members into its temporary type-validation model; the
 original mapping continues to supply lowering and schema observations.
 
