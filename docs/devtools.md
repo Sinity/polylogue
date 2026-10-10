@@ -140,6 +140,11 @@ Pattern baselines use `path:sha1:context_sha1` content anchors, where the digest
 
 ## Validation and Evidence
 
+Focused pytest and affected-test verification have no total execution deadline.
+AgentCTL owns their cancellation and child cleanup. Use the run-bound progress
+evidence to investigate a suspected stall; a long individual test or unrelated
+log output alone does not establish one. Cancel the recorded job when necessary.
+
 When changing semantics, validation, or surfaces:
 
 ```bash
