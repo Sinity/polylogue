@@ -10456,7 +10456,16 @@ def _project_manual_continuations(conn: sqlite3.Connection, session_id: str) -> 
         # A declared standalone Index has no durable assertions to project.
         return
     scope.note_lineage_change(session_id)
-    conn.execute("DELETE FROM session_links WHERE src_session_id=? AND method='manual-continuation'", (session_id,))
+    # Edges can predate this session's first row, so test their own ownership.
+    # An empty projection has nothing to retire, even when a User reader exists.
+    if (
+        conn.execute(
+            "SELECT 1 FROM session_links WHERE src_session_id=? AND method='manual-continuation' LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        is not None
+    ):
+        conn.execute("DELETE FROM session_links WHERE src_session_id=? AND method='manual-continuation'", (session_id,))
     try:
         with connection_cursor(
             reader,
