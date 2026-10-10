@@ -3741,6 +3741,11 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
         ),
     )
     worker_id = write_fixture_index_session(conn, _codex_session("worker", ["w0"]))
+    dispatch_block = conn.execute(
+        "SELECT block_id, content_identity, content_occurrence FROM blocks WHERE message_id = ? AND tool_id = ?",
+        (archive_message_id(parent_id, "m1"), "task-1"),
+    ).fetchone()
+    assert dispatch_block is not None
     conn.execute(
         """
         INSERT INTO session_links(
@@ -3748,7 +3753,7 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
             inheritance, status, parent_tool_use_block_id, confidence, evidence_json, observed_at_ms
         ) VALUES (?, 'codex-session', 'child', 'subagent', ?, 'spawned-fresh', NULL, ?, 1.0, '[]', 0)
         """,
-        (worker_id, child_id, f"{parent_id}:n:m1:0"),
+        (worker_id, child_id, dispatch_block[0]),
     )
     conn.commit()
 
@@ -3759,7 +3764,13 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
     pointer = conn.execute(
         "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
     ).fetchone()
-    assert tuple(pointer) == (f"{child_id}:n:m1:0",)
+    assert tuple(pointer) == (
+        _write_module.archive_block_id(
+            archive_message_id(child_id, "m1"),
+            content_identity=dispatch_block[1],
+            content_occurrence=dispatch_block[2],
+        ),
+    )
     close_fixture_index_connection(conn)
 
 
