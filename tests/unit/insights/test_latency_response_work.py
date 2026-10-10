@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from types import FrameType
-from typing import SupportsIndex, overload
+from typing import TYPE_CHECKING, SupportsIndex, overload
 
 import pytest
 
@@ -14,6 +13,9 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.semantic.timing import _message_response_latencies, compute_session_latency_profile
 from polylogue.core.enums import MaterialOrigin
 from tests.infra.builders import make_msg
+
+if TYPE_CHECKING:
+    from _typeshed import TraceFunction
 
 STAMP = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -74,7 +76,7 @@ def test_response_pairing_does_not_copy_message_tails(count: int) -> None:
     assert len(observed[1:]) == copied[0] == count - 1
     copied[0] = 0
 
-    def observe(frame: FrameType, event: str, argument: object) -> Callable[..., object]:
+    def observe(frame: FrameType, event: str, argument: object) -> TraceFunction:
         if frame.f_code is _message_response_latencies.__code__ and event == "line":
             for name, value in tuple(frame.f_locals.items()):
                 if type(value) is list and value and isinstance(value[0], Message):
