@@ -278,6 +278,9 @@ def test_terminal_window_includes_scan_cache_and_later_certification() -> None:
     assert result["readiness_cached"]
     assert result["readiness_check_window_s"] == [20, 21]
     assert terminal_measurement(observations, 25, certified=False)["certified_s"] is None
+    observations[0].readiness_checked_s = [10, 11]
+    observations[0].readiness_cached = True
+    assert terminal_measurement(observations, 25, certified=True)["observation_window_s"] == [10, 25]
 
 
 def _recipe_binding(parser: str, lowering: str) -> dict[str, Any]:

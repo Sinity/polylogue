@@ -692,7 +692,12 @@ def terminal_measurement(observations: list[Any], terminal_at: float | None, *, 
         None,
     )
     ready = observations[first] if first is not None else None
-    lower = observations[first - 1].t if first else 0.0
+    previous = observations[first - 1] if first else None
+    lower = previous.t if previous else 0.0
+    # A cached negative census does not prove readiness was still false at
+    # the later poll. Include the original scan in the observer window.
+    if previous and previous.readiness_checked_s and not previous.readiness_complete:
+        lower = min(lower, previous.readiness_checked_s[0])
     if ready and ready.readiness_checked_s:
         lower = min(lower, ready.readiness_checked_s[0])
     return {
