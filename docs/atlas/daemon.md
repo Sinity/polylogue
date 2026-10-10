@@ -239,7 +239,10 @@ eligibility are owned by `operations/session_source_membership.py`; retained
 source paths use the configured durable root while session joins follow the
 active index generation. An unreadable active generation raises instead of
 serving membership from a conventional shadow index. `operations/sinex_convergence.py` composes publication
-and its primary-mode derivation barrier. FTS readiness acquisition and publication
+and its primary-mode derivation barrier. The selected-object barrier seeks the
+newest accepted timestamp through the existing Source index, then resolves
+rowid ties; historical receipt rows cannot re-block an allowed newest revision.
+Publication admission still rereads that current authority. FTS readiness acquisition and publication
 are owned by `operations/fts_derivation.py`; the daemon stage schedules them.
 
 The ordinary pinned status payload includes an `attachments` readiness component

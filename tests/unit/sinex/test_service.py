@@ -6,6 +6,7 @@ import json
 import sqlite3
 from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -263,3 +264,74 @@ def test_status_preserves_invalid_config_diagnostic_without_reading_ledger(
     assert "active_lag" not in payload and "blocking" not in payload
     with pytest.raises(ValueError):
         PublicationMode.from_string(mode)
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        ([], False),
+        ([(10, None)], True),
+        ([(10, "persisted_confirmed")], False),
+        ([(10, "durable_debt")], False),
+        ([(10, "spool_accepted_lossless")], False),
+        ([(20, "persisted_confirmed"), (10, None)], False),
+        ([(10, "persisted_confirmed"), (20, None)], True),
+        ([(20, None), (20, "persisted_confirmed")], False),
+        ([(20, "persisted_confirmed"), (20, None)], True),
+    ],
+)
+def test_primary_barrier_seeks_newest_timestamp_then_rowid(
+    tmp_path: Path, rows: list[tuple[int, str | None]], expected: bool
+) -> None:
+    from polylogue.sinex.service import primary_blocking_object_ids
+
+    db = tmp_path / "source.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE sinex_publication_obligations "
+            "(object_id TEXT, created_at_ms INTEGER, last_receipt_state TEXT)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_sinex_publication_obligations_object "
+            "ON sinex_publication_obligations(object_id, created_at_ms DESC)"
+        )
+        conn.executemany("INSERT INTO sinex_publication_obligations VALUES ('selected', ?, ?)", rows)
+        conn.execute("INSERT INTO sinex_publication_obligations VALUES ('unrelated', 99, NULL)")
+    assert primary_blocking_object_ids(db, ["selected", "absent", "selected"]) == ({"selected"} if expected else set())
+
+
+def test_primary_barrier_latest_lookup_uses_existing_index_without_ranking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sinex.service import primary_blocking_object_ids
+
+    db = tmp_path / "source.db"
+    original_connect = sqlite3.connect
+    with original_connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE sinex_publication_obligations "
+            "(object_id TEXT, created_at_ms INTEGER, last_receipt_state TEXT)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_sinex_publication_obligations_object "
+            "ON sinex_publication_obligations(object_id, created_at_ms DESC)"
+        )
+        conn.executemany(
+            "INSERT INTO sinex_publication_obligations VALUES ('selected', ?, NULL)",
+            [(1,), (2,), (2,)],
+        )
+    statements: list[str] = []
+
+    def traced_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn: sqlite3.Connection = original_connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
+    assert primary_blocking_object_ids(db, ["selected"]) == {"selected"}
+    query = next(sql for sql in statements if sql.lstrip().startswith("WITH requested"))
+    with original_connect(db) as conn:
+        plan = [str(row[3]) for row in conn.execute("EXPLAIN QUERY PLAN " + query)]
+    assert sum("idx_sinex_publication_obligations_object" in detail for detail in plan) == 2
+    assert not any("TEMP B-TREE" in detail for detail in plan)
+    assert "ROW_NUMBER" not in query
