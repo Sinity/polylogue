@@ -35,7 +35,7 @@ _INVALID_ESCAPE = b"\\q"
 
 #: A run of bytes that can belong to a JSON number token outside strings.
 _NUMBER_RUN = re.compile(rb"[-+0-9.eE]+")
-_EXACT_NUMBER_RUN = re.compile(rb"-Infinity|Infinity|NaN|[-0-9][-+0-9.eE]*")
+_EXACT_NUMBER_RUN = re.compile(rb"-Infinity|Infinity|NaN|[-+0-9.][-+0-9.eE]*")
 _INVALID_STRUCTURE_BYTE = re.compile(rb"[^\x09\x0a\x0d\x20-\x7e]")
 
 #: Passed in place of an over-long integer token so the tokenizer rejects it
@@ -288,12 +288,15 @@ class _PrefixStringReader:
         if self._number_sink is None:
             segment = _NON_FINITE.sub(b" 1e999 " if self._scalar_values else _NON_FINITE_PLACEHOLDER, segment)
         position = 0
-        number_runs = _EXACT_NUMBER_RUN if self._number_sink is not None else _NUMBER_RUN
-        runs = number_runs.finditer(segment)
-        if self._number_sink is not None and self._number_open and (continuation := _NUMBER_RUN.match(segment)):
+        # A new number candidate starts with a digit, sign or dot, never the
+        # e in true or false. Leading plus/dot still need numeric validation
+        # to stay malformed. Exponent fragments are numeric only while
+        # continuing an already-open token across a physical chunk boundary.
+        runs = _EXACT_NUMBER_RUN.finditer(segment)
+        if self._number_open and (continuation := _NUMBER_RUN.match(segment)):
             from itertools import chain
 
-            runs = chain((continuation,), number_runs.finditer(segment, continuation.end()))
+            runs = chain((continuation,), _EXACT_NUMBER_RUN.finditer(segment, continuation.end()))
         for run in runs:
             if self._number_open and run.start() > 0:
                 self._end_number(out)
