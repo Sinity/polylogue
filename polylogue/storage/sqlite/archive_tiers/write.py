@@ -9822,7 +9822,7 @@ class PreparedCodexSpawnParentLinks:
         ) as cursor:
             return [int(row[0]) for row in cursor]
 
-    def session_header(self, session_id: str) -> tuple[object, object, object] | None:
+    def session_header(self, session_id: str) -> tuple[object, object, object, object] | None:
         row = self.inputs.session_record(session_id)
         if row is None:
             return None
@@ -9830,6 +9830,7 @@ class PreparedCodexSpawnParentLinks:
             self._cell("sessions", row.physical_rowid, "root_session_id", row.root_session_id),
             self._cell("sessions", row.physical_rowid, "branch_type", row.branch_type),
             self._cell("sessions", row.physical_rowid, "session_kind", row.session_kind),
+            self._cell("sessions", row.physical_rowid, "parent_session_id", row.parent_session_id),
         )
 
     def composing_parent_link(self, session_id: str) -> tuple[object, object] | None:
@@ -10322,7 +10323,7 @@ class ConnectionSessionLinkResolutionRead:
 class SessionLineageProjectionRead(Protocol):
     """Original or produced lineage operands for the shared projection body."""
 
-    def session_header(self, session_id: str) -> tuple[object, object, object] | None: ...
+    def session_header(self, session_id: str) -> tuple[object, object, object, object] | None: ...
     def composing_parent_link(self, session_id: str) -> tuple[object, object] | None: ...
     def first_link_type(self, session_id: str) -> tuple[object] | None: ...
     def session_written(self, session_id: str, columns: tuple[str, ...]) -> None: ...
@@ -10341,14 +10342,14 @@ class ConnectionSessionLineageProjectionRead:
     def descendant_root_written(self, physical_rowid: int) -> None:
         pass
 
-    def session_header(self, session_id: str) -> tuple[object, object, object] | None:
+    def session_header(self, session_id: str) -> tuple[object, object, object, object] | None:
         with connection_cursor(
             self._connection,
-            "SELECT root_session_id,branch_type,session_kind FROM sessions WHERE session_id=?",
+            "SELECT root_session_id,branch_type,session_kind,parent_session_id FROM sessions WHERE session_id=?",
             (session_id,),
         ) as cursor:
             row = cursor.fetchone()
-        return None if row is None else (row[0], row[1], row[2])
+        return None if row is None else (row[0], row[1], row[2], row[3])
 
     def composing_parent_link(self, session_id: str) -> tuple[object, object] | None:
         with connection_cursor(
@@ -11766,6 +11767,9 @@ def _project_lineage_root(
     else:
         branch_type = str(header[1]) if header is not None and header[1] else None
     previous_root_id = _stored_root_session_id(read, session_id)
+    projected_kind = _projected_session_kind(read, session_id, branch_type)
+    if header == (session_id, branch_type, projected_kind, None):
+        return
     with connection_cursor(
         conn,
         """
@@ -11774,12 +11778,16 @@ def _project_lineage_root(
             root_session_id = session_id,
             branch_type = ?,
             session_kind = ?
-        WHERE session_id = ?
+        WHERE session_id = ? AND (
+            parent_session_id IS NOT NULL OR root_session_id IS NOT session_id
+            OR branch_type IS NOT ? OR session_kind IS NOT ?)
+        RETURNING session_id
         """,
-        (branch_type, _projected_session_kind(read, session_id, branch_type), session_id),
-    ):
-        pass
-    read.session_written(session_id, ("parent_session_id", "root_session_id", "branch_type", "session_kind"))
+        (branch_type, projected_kind, session_id, branch_type, projected_kind),
+    ) as cursor:
+        changed = cursor.fetchone() is not None
+    if changed:
+        read.session_written(session_id, ("parent_session_id", "root_session_id", "branch_type", "session_kind"))
     if previous_root_id != session_id:
         _propagate_root_to_descendants(conn, session_id, session_id, read=read)
 
@@ -11798,6 +11806,9 @@ def _project_lineage_child(
     )
     projected_branch_type = _branch_type_from_link_type(link_type)
     previous_root_id = _stored_root_session_id(read, session_id)
+    projected_kind = _projected_session_kind(read, session_id, projected_branch_type)
+    if read.session_header(session_id) == (parent_root_id, projected_branch_type, projected_kind, parent_session_id):
+        return
     with connection_cursor(
         conn,
         """
@@ -11806,18 +11817,26 @@ def _project_lineage_child(
             root_session_id = ?,
             branch_type = ?,
             session_kind = ?
-        WHERE session_id = ?
+        WHERE session_id = ? AND (
+            parent_session_id IS NOT ? OR root_session_id IS NOT ?
+            OR branch_type IS NOT ? OR session_kind IS NOT ?)
+        RETURNING session_id
         """,
         (
             parent_session_id,
             parent_root_id,
             projected_branch_type,
-            _projected_session_kind(read, session_id, projected_branch_type),
+            projected_kind,
             session_id,
+            parent_session_id,
+            parent_root_id,
+            projected_branch_type,
+            projected_kind,
         ),
-    ):
-        pass
-    read.session_written(session_id, ("parent_session_id", "root_session_id", "branch_type", "session_kind"))
+    ) as cursor:
+        changed = cursor.fetchone() is not None
+    if changed:
+        read.session_written(session_id, ("parent_session_id", "root_session_id", "branch_type", "session_kind"))
     if previous_root_id != parent_root_id:
         _propagate_root_to_descendants(conn, session_id, parent_root_id, read=read)
 
