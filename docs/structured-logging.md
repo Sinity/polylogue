@@ -118,6 +118,14 @@ profile. Queue waits have separate logical lanes. Missing starts, unmatched
 terminals, rejected fields, loss counters when present, and unavailable legacy
 chronology remain visible. Duration-derived intervals are marked inferred.
 
+The ledger's `cpu_coverage.measured_thread_cpu_union_ns` unions measured CPU
+clock intervals per process and native thread. It counts nested or overlapping
+siblings once, even when their causal parent is async. Per-span exclusive CPU
+remains relative to direct children and must not be summed as global coverage.
+The thread rows report overlapping inclusive CPU and uninstrumented CPU between
+their first and last endpoints. CPU outside those endpoint ranges or on other
+threads is unavailable; the reducer cannot determine native TID reuse.
+
 ### Cost
 
 `emit` compares one integer before doing anything else, so a suppressed event

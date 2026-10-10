@@ -9,6 +9,8 @@ parent's residual. Legacy duration-only records have no precise chronology.
 An inherited span ID is correlation, not ownership: causal owners need explicit
 terminal endpoints or an exactly matched start. Duplicate genuine owners make
 causal and exclusive measurements unavailable.
+Global measured CPU coverage unions comparable clock intervals per (PID, TID),
+including nested siblings only once. Parent-local exclusive CPU is not additive.
 """
 
 from __future__ import annotations
@@ -76,6 +78,66 @@ class Slice:
         # Virtual integer TIDs keep Chrome/Perfetto lanes separate from Linux
         # native TIDs without giving a logical wait execution occupancy.
         return self.logical_tid if self.logical_tid is not None else self.tid or 0
+
+
+def _cpu_coverage(slices: list[Slice]) -> dict[str, Any]:
+    """Account for observed CPU without requiring a complete parent tree."""
+    work = [s for s in slices if s.kind == "work"]
+    threads: dict[tuple[int, int], list[Slice]] = defaultdict(list)
+    for item in work:
+        if (
+            item.causal_owner
+            and item.chronology == "measured"
+            and item.pid is not None
+            and item.tid is not None
+            and item.tid == item.end_tid
+            and item.thread_cpu_start_ns is not None
+            and item.thread_cpu_end_ns is not None
+        ):
+            threads[(item.pid, item.tid)].append(item)
+    by_thread = []
+    for (pid, tid), items in sorted(threads.items()):
+        intervals = [
+            (s.thread_cpu_start_ns, s.thread_cpu_end_ns)
+            for s in items
+            if s.thread_cpu_start_ns is not None and s.thread_cpu_end_ns is not None
+        ]
+        left = min(start for start, _ in intervals)
+        right = max(end for _, end in intervals)
+        covered = interval_union(intervals)
+        inclusive_sum = sum(end - start for start, end in intervals)
+        by_thread.append(
+            {
+                "pid": pid,
+                "native_thread_id": tid,
+                "included_spans": len(items),
+                "first_thread_cpu_ns": left,
+                "last_thread_cpu_ns": right,
+                "measured_cpu_union_ns": covered,
+                "clock_range_cpu_ns": right - left,
+                "uncovered_cpu_between_endpoints_ns": right - left - covered,
+                "inclusive_cpu_sum_ns_not_additive": inclusive_sum,
+                "overlapping_inclusive_cpu_ns": inclusive_sum - covered,
+            }
+        )
+    included = sum(row["included_spans"] for row in by_thread)
+    exclusive = [s.exclusive_cpu_ns for s in work if s.exclusive_cpu_ns is not None]
+    return {
+        "scope": "union of measured synchronous work clock intervals per (PID, native TID)",
+        "measured_thread_cpu_union_ns": sum(row["measured_cpu_union_ns"] for row in by_thread) if by_thread else None,
+        "included_spans": included,
+        "excluded_work_spans": len(work) - included,
+        "threads": by_thread,
+        "parent_local_exclusive_cpu_sum_ns_not_additive": sum(exclusive) if exclusive else None,
+        "parent_local_exclusive_cpu_known_spans": len(exclusive),
+        "limitations": (
+            "Clock ranges compare endpoints of one native thread in one process. "
+            "Uncovered CPU between those endpoints is uninstrumented; CPU outside "
+            "the ranges and on other threads is unavailable. Native TID reuse is "
+            "not identified. Parent-local residuals can overlap across siblings "
+            "and must not be summed as global coverage."
+        ),
+    }
 
 
 def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -370,6 +432,7 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
         "loss_counters": losses or None,
         "clock": "host_monotonic_ns",
         "exclusive_scope": "observed same-thread work children only",
+        "cpu_coverage": _cpu_coverage(slices),
         "precise_chronology_available": bool(counts["measured_spans"]),
         "spans": [asdict(s) for s in slices],
     }

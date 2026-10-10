@@ -42,6 +42,33 @@ def test_union_never_double_counts_nested_and_overlapping_intervals() -> None:
     assert interval_union([(1, 10), (2, 3), (8, 12), (20, 21)]) == 12
 
 
+def test_global_cpu_unions_nested_siblings_and_reports_uncovered_clock_range() -> None:
+    _, ledger = reduce_events(
+        [
+            _terminal("async_pass", 0, 100, tid=3),
+            _terminal("compute.service", 0, 80, parent="async_pass", cpu=(10, 60)),
+            # These stage spans are nested in the wrapper, but share its async cause.
+            _terminal("stage_a", 10, 40, parent="async_pass", cpu=(15, 35)),
+            _terminal("stage_b", 30, 50, parent="async_pass", cpu=(30, 40)),
+            _terminal("later", 90, 100, cpu=(70, 80)),
+            _terminal("parallel", 20, 50, tid=2, cpu=(10, 40)),
+        ]
+    )
+    coverage = ledger["cpu_coverage"]
+    assert coverage["measured_thread_cpu_union_ns"] == 90  # 60 on TID 1, 30 on TID 2.
+    assert coverage["included_spans"] == 5
+    assert coverage["excluded_work_spans"] == 1
+    assert coverage["parent_local_exclusive_cpu_sum_ns_not_additive"] == 120
+    first = coverage["threads"][0]
+    assert first["pid"] == 7 and first["native_thread_id"] == 1
+    assert first["clock_range_cpu_ns"] == 70
+    assert first["measured_cpu_union_ns"] == 60
+    assert first["uncovered_cpu_between_endpoints_ns"] == 10
+    assert first["overlapping_inclusive_cpu_ns"] == 30
+    assert coverage["threads"][1]["uncovered_cpu_between_endpoints_ns"] == 0
+    assert next(s for s in ledger["spans"] if s["name"] == "compute.service")["exclusive_cpu_ns"] == 50
+
+
 def test_exclusive_work_subtracts_union_of_same_thread_children_only() -> None:
     events = [
         _terminal("root", 0, 100, cpu=(0, 70)),
