@@ -47,7 +47,7 @@ function manifestFor(candidate, key, scope) {
     permissions: candidate.permissions.filter(permission => permission !== "activeTab"),
     host_permissions: [...new Set([`${scope.receiverUrl}/*`, ...scope.targets.map(target => `${new URL(target.url).origin}/*`),
       ...(scope.targets.some(target => target.name === "claude") ? ["https://*.claudeusercontent.com/*"] : [])])],
-    background: { service_worker: "proof_bootstrap.mjs", type: "module" } };
+    background: { service_worker: "proof_bootstrap.mjs", type: "module" }, action: {} };
 }
 function recordGenerated(extensionRoot, binding) {
   return { ...binding, generated_resources: generatedFiles.map(file => [file, digest(readFileSync(path.join(extensionRoot, file)))]) };
@@ -64,7 +64,7 @@ export function createOwnedProviderProofExtension({ destination, hostName, recei
   writeFileSync(path.join(destination, "owned-scope.json"), `${JSON.stringify(scope)}\n`);
   const binding = recordGenerated(destination, { ...base, kind: "owned-provider-runtime", owned_targets_bound: false,
     substitutions: { ...base.substitutions,
-      manifest: "fresh key; production worker through owned-tab browser authority; no static content scripts or action",
+      manifest: "fresh key; production worker through owned-tab browser authority; no static content scripts; badge action without popup",
       currentWindow: "first declared owned proof window", bootstrap: "receiver configured before production worker registration; automatic capture enabled" } });
   writeFileSync(path.join(destination, "proof-binding.json"), `${JSON.stringify(binding, null, 2)}\n`);
   return binding;

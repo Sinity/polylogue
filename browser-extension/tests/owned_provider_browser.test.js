@@ -256,6 +256,9 @@ it("runs automatic production capture and injection only through the admitted br
   browser.tabs.onUpdated.emit(99, { status: "complete" }, rows.get(99));
   await owner.startCapture();
   expect(stored.polylogueAmbientSettings.automatic_capture_enabled).toBe(true);
+  expect(browser.action.setBadgeText).toHaveBeenCalled();
+  expect(browser.action.setBadgeBackgroundColor).toHaveBeenCalled();
+  expect(browser.action.setBadgeText.mock.calls.every(([details]) => details.tabId === undefined || [11, 12].includes(details.tabId))).toBe(true);
   await expect(owner.consumeCapture(11, "neutral-second")).rejects.toThrow("proof_owned_tab_refused");
   expect(await owner.consumeCapture(11, "neutral-first")).toEqual({ ok: false, error: "neutral_capture_refused" });
   expect(await owner.consumeCapture(12, "neutral-second")).toEqual({ ok: false, error: "neutral_capture_refused" });

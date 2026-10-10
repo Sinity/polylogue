@@ -27,7 +27,7 @@ it("binds fresh runtime identity before loading, with no static scripts or opera
   expect(bound.extension_id).toBe(binding.extension_id); expect(bound.key_sha256).toBe(binding.key_sha256);
   expect(bound.owned_targets_bound).toBe(true);
   const manifest = JSON.parse(readFileSync(path.join(destination, "manifest.json"), "utf8"));
-  expect(manifest.content_scripts).toBeUndefined(); expect(manifest.action).toBeUndefined();
+  expect(manifest.content_scripts).toBeUndefined(); expect(manifest.action).toEqual({});
   expect(manifest.background).toEqual({ service_worker: "proof_bootstrap.mjs", type: "module" });
   expect(manifest.host_permissions).toEqual(["http://127.0.0.1:18765/*", "https://chatgpt.com/*", "https://claude.ai/*", "https://*.claudeusercontent.com/*"]);
   expect(JSON.parse(readFileSync(path.join(destination, "owned-scope.json"), "utf8")).targets).toEqual([
@@ -53,4 +53,14 @@ it("refuses extra static provider registration or replaced authority code", () =
     } else writeFileSync(target, `${readFileSync(target, "utf8")}\n `);
     expect(() => verifyOwnedProviderProofExtension(destination)).toThrow("proof_owned_provider_binding_invalid");
   }
+});
+
+
+it("refuses adding a popup to the independently keyed production badge action", () => {
+  const { destination } = build(); bindOwnedProviderTargets(destination, targets());
+  const target = path.join(destination, "manifest.json");
+  const manifest = JSON.parse(readFileSync(target, "utf8"));
+  manifest.action.default_popup = "src/popup.html";
+  writeFileSync(target, JSON.stringify(manifest));
+  expect(() => verifyOwnedProviderProofExtension(destination)).toThrow("proof_owned_provider_binding_invalid");
 });
