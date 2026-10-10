@@ -684,6 +684,9 @@ def test_byte_overflow_preserves_terminal_measurements(value: str) -> None:
             "block_id",
             "raw_id",
             "artifact_id",
+            "blob_hash",
+            "content_hash",
+            "source_id",
         ),
         value,
     )
