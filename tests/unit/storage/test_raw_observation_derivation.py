@@ -23,7 +23,12 @@ from polylogue.operations.raw_observation_derivation import (
     raw_observation_frame,
 )
 from polylogue.sources.revision_backfill import PreparedRevisionReplayResult, RevisionCensusResult
-from polylogue.storage.derived.raw import RawFrame, RawObservationDerivation, RawObservationReplacement
+from polylogue.storage.derived.raw import (
+    NeutralRawPreparation,
+    RawFrame,
+    RawObservationDerivation,
+    RawObservationReplacement,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
 from polylogue.storage.sqlite.write_lease import write_lease
@@ -2038,6 +2043,7 @@ def test_computed_raw_carrier_settles_at_its_actual_publication_boundary(
                 *,
                 replay_current: bool = False,
                 select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
+                neutral_page: NeutralRawPreparation | None = None,
             ) -> RawObservationReplacement:
                 replacement = original_compute(
                     self,
@@ -2045,6 +2051,7 @@ def test_computed_raw_carrier_settles_at_its_actual_publication_boundary(
                     key,
                     replay_current=replay_current,
                     select_retained_raw_ids=select_retained_raw_ids,
+                    neutral_page=neutral_page,
                 )
                 captured.append(replacement)
                 return replacement
