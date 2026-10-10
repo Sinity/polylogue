@@ -880,3 +880,53 @@ assert.deepEqual(await successful, {ok: true});
     for report in reports:
         retained = live_provider_proof_service.failed_child(json.dumps(report), []).report
         assert retained["error"] == report["error"]
+
+
+@pytest.mark.parametrize(
+    ("phase", "category"),
+    [
+        ("capture_start", "automatic_capture_start_failed"),
+        ("capture_start", "capture_listener_invalid"),
+        ("capture_start", "provider_isolation_refused"),
+        ("capture_membership", "provider_isolation_refused"),
+        ("capture_result", "automatic_capture_missing"),
+        ("capture_result", "automatic_capture_pending"),
+        ("capture_result", "provider_isolation_refused"),
+    ],
+)
+def test_owned_automatic_capture_diagnostics_cross_actual_service_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    phase: str,
+    category: str,
+) -> None:
+    report = {
+        "ok": False,
+        "error": {"phase": phase, "category": category},
+        "native_progress": [],
+        "capture_evidence": [],
+        "cleanup": {"receiver": "settled", "permission": "not_required", "mutations": "settled", "targets": "settled"},
+    }
+
+    def failed_run(**_kwargs: object) -> None:
+        raise live_provider_proof_service.failed_child(json.dumps(report), [])
+
+    monkeypatch.setattr(live_provider_proof_service, "run_proof", failed_run)
+    selection = tmp_path / "selection.json"
+    selection.write_text(json.dumps(["https://chatgpt.com/c/synthetic"]))
+    assert (
+        live_provider_proof_service.main(
+            [
+                "--json",
+                "--conversations-file",
+                str(selection),
+                "--chrome-user-data-dir",
+                str(tmp_path),
+                "--evidence-root",
+                str(tmp_path / "evidence"),
+            ]
+        )
+        == 1
+    )
+    assert json.loads(capsys.readouterr().out) == {**report, "receiver_requests": []}

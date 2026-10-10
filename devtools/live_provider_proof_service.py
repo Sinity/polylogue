@@ -62,6 +62,9 @@ _PROOF_PHASES = {
     "provider_window",
     "provider_wait",
     "capture",
+    "capture_start",
+    "capture_membership",
+    "capture_result",
     "summary",
     "unknown",
 }
@@ -88,6 +91,10 @@ _PROOF_CATEGORIES = {
     "cleanup_failed",
     "operation_failed",
     "provider_isolation_refused",
+    "automatic_capture_missing",
+    "automatic_capture_pending",
+    "automatic_capture_start_failed",
+    "capture_listener_invalid",
 }
 _NATIVE_PROGRESS_STAGES = {
     "throttle",
