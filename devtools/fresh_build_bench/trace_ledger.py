@@ -154,6 +154,14 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
             counts["missing_native_thread_ids"] += 1
         if event.get("event") == "log.field_rejected":
             counts["rejected_fields"] += 1
+        if "required_measurement_fields_omitted" in event:
+            omitted = _ns(event["required_measurement_fields_omitted"])
+            if omitted is None:
+                counts["invalid_required_measurement_omission_counts"] += 1
+                counts["measurement_loss_events"] += 1
+            elif omitted:
+                counts["required_measurement_fields_omitted"] += omitted
+                counts["measurement_loss_events"] += 1
         if str(event.get("event", "")).startswith("log."):
             for field in ("dropped", "undrained", "failures", "priority_evictions"):
                 value = _ns(event.get(field))
@@ -424,6 +432,9 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
         "correlation_id_collisions",
         "ambiguous_owner_ids",
         "detached_correlated_events",
+        "required_measurement_fields_omitted",
+        "invalid_required_measurement_omission_counts",
+        "measurement_loss_events",
     ):
         counts.setdefault(field, 0)
     ledger = {
@@ -433,6 +444,7 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
         "clock": "host_monotonic_ns",
         "exclusive_scope": "observed same-thread work children only",
         "cpu_coverage": _cpu_coverage(slices),
+        "measurement_coverage_complete": not counts["measurement_loss_events"],
         "precise_chronology_available": bool(counts["measured_spans"]),
         "spans": [asdict(s) for s in slices],
     }

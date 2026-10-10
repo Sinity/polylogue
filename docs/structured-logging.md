@@ -128,6 +128,10 @@ remains relative to direct children and must not be summed as global coverage.
 The thread rows report overlapping inclusive CPU and uninstrumented CPU between
 their first and last endpoints. CPU outside those endpoint ranges or on other
 threads is unavailable; the reducer cannot determine native TID reuse.
+`measurement_coverage_complete` is false when an emitter reports omitted
+required measurement fields or an invalid omission count. Surviving independent
+intervals remain measured; optional metadata trimming alone does not invalidate
+their coverage.
 
 ### Cost
 

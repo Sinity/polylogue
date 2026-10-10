@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from devtools.fresh_build_bench.trace_ledger import interval_union, main, reduce_events
 
 
@@ -40,6 +42,30 @@ def _terminal(
 
 def test_union_never_double_counts_nested_and_overlapping_intervals() -> None:
     assert interval_union([(1, 10), (2, 3), (8, 12), (20, 21)]) == 12
+
+
+@pytest.mark.parametrize("omitted", [1, -1, None, True, "1"])
+def test_required_measurement_loss_marks_coverage_incomplete_without_discarding_surviving_timing(
+    omitted: object,
+) -> None:
+    _, ledger = reduce_events([_terminal("body", 1, 10, required_measurement_fields_omitted=omitted)])
+    assert ledger["measurement_coverage_complete"] is False
+    assert ledger["coverage"]["measurement_loss_events"] == 1
+    assert ledger["coverage"]["invalid_required_measurement_omission_counts"] == (
+        0 if type(omitted) is int and omitted == 1 else 1
+    )
+    assert ledger["spans"][0]["chronology"] == "measured"
+
+
+def test_optional_field_trimming_preserves_independent_measurement_coverage() -> None:
+    _, ledger = reduce_events(
+        [
+            _terminal("body", 1, 10, omitted_fields=4),
+            _terminal("second", 11, 20, omitted_fields=4, required_measurement_fields_omitted=0),
+        ]
+    )
+    assert ledger["measurement_coverage_complete"] is True
+    assert ledger["coverage"]["measurement_loss_events"] == 0
 
 
 def test_global_cpu_unions_nested_siblings_and_reports_uncovered_clock_range() -> None:
