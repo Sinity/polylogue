@@ -884,11 +884,12 @@ def test_mixed_default_retained_selection_neutralizes_only_eligible_codex_raw(
         assert {str(raw_id) for raw_id, parsed_at_ms in census if parsed_at_ms is not None} == {codex_raw, opaque_raw}
 
 
-@pytest.mark.parametrize("replace_sidecar", [False, True])
+@pytest.mark.parametrize(("replace_sidecar", "initial_sidecar"), [(False, True), (True, True), (True, False)])
 def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     replace_sidecar: bool,
+    initial_sidecar: bool,
 ) -> None:
     """Claude's detached parser consumes captured CAS sidecars, then binds current Source."""
     from polylogue.schemas import validate_retained_document as validate_original
@@ -902,12 +903,16 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     owner_path = project / f"{session_id}.jsonl"
     sidecar_path = project / session_id / "tool-results" / "toolu_capture.txt"
     sidecar_text = "retained-output-only: " + ("synthetic output " * 40)
-    sidecar = _admit(
-        tmp_path,
-        (),
-        provider=Provider.UNKNOWN,
-        path=sidecar_path.as_posix(),
-        payload=sidecar_text.encode(),
+    sidecar = (
+        _admit(
+            tmp_path,
+            (),
+            provider=Provider.UNKNOWN,
+            path=sidecar_path.as_posix(),
+            payload=sidecar_text.encode(),
+        )
+        if initial_sidecar
+        else None
     )
     sibling_sidecar_path = project / session_id / "tool-results" / "toolu_sibling.txt"
     sibling_sidecar = _admit(
@@ -1073,6 +1078,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
             "WHERE s.raw_id = ? AND b.block_type = 'tool_result'",
             (target,),
         ).fetchall()
+        assert conn.execute("SELECT native_id FROM sessions WHERE raw_id=?", (target,)).fetchall() == [(session_id,)]
         assert len(rows) == 1
         assert rows[0][0] == ("new retained output after rebind" if replace_sidecar else sidecar_text)
         assert conn.execute(
@@ -1081,7 +1087,8 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
             (target,),
         ).fetchone() == (1,), "the sibling-owned file is resolved from its retained tool_result record"
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sidecar,)).fetchone() == (1,)
+        if sidecar is not None:
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sidecar,)).fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_sidecar,)).fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_raw,)).fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
