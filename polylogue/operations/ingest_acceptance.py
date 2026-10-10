@@ -95,6 +95,27 @@ def generation_materialized(archive_root: Path, source_generation_id: str) -> bo
         )
 
 
+def generation_raws_predate_acceptance(archive_root: Path, source_generation_id: str, accepted_at_ms: int) -> bool:
+    """Exclude any Raw this accepted request could have introduced.
+
+    Its admission producer uses this exact accepted stamp, independently of
+    subsequent wall-clock changes. Equal or future older stamps are ambiguous
+    and conservatively cannot prove a wholly preexisting generation.
+    """
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as conn:
+        return bool(
+            conn.execute(
+                "SELECT NOT EXISTS(SELECT 1 FROM source_item_raw_members AS m LEFT JOIN raw_sessions AS r ON r.raw_id=m.raw_id "
+                "WHERE m.source_generation_id=? AND (r.raw_id IS NULL OR r.acquired_at_ms IS NULL OR r.acquired_at_ms>=?))",
+                (source_generation_id, accepted_at_ms),
+            ).fetchone()[0]
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class IngestRecovery:
     """Recovery route for an interrupted ingest.

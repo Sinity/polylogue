@@ -51,6 +51,7 @@ if TYPE_CHECKING:
         PreparedSessionSourceRead,
         RawObservationReplacement,
         RetainedMaterializationResult,
+        RetainedPublicationIntent,
         RetainedReplayOutcome,
     )
 
@@ -247,6 +248,7 @@ class RawObservationConvergenceOwner:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None = None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
         before_publication: Callable[[], None] | None = None,
+        publication_intent: Callable[[RetainedPublicationIntent], None] | None = None,
     ) -> RetainedReplayOutcome:
         acquired = tuple(raw_ids)
         return (
@@ -256,6 +258,7 @@ class RawObservationConvergenceOwner:
                 on_dependency_refusal=on_dependency_refusal,
                 on_membership_refusal=on_membership_refusal,
                 before_publication=before_publication,
+                publication_intent=publication_intent,
             )
         ).outcome
 
@@ -268,6 +271,7 @@ class RawObservationConvergenceOwner:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None = None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
         before_publication: Callable[[], None] | None = None,
+        publication_intent: Callable[[RetainedPublicationIntent], None] | None = None,
     ) -> RetainedMaterializationResult:
         acquired = tuple(raw_ids)
         await self._write_coordinator.run_sync(
@@ -280,6 +284,7 @@ class RawObservationConvergenceOwner:
             on_dependency_refusal=on_dependency_refusal,
             on_membership_refusal=on_membership_refusal,
             before_publication=before_publication,
+            publication_intent=publication_intent,
         )
 
     async def replay_retained_raw_ids(
@@ -291,6 +296,7 @@ class RawObservationConvergenceOwner:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None = None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
         before_publication: Callable[[], None] | None = None,
+        publication_intent: Callable[[RetainedPublicationIntent], None] | None = None,
     ) -> RetainedReplayOutcome:
         return (
             await self._materialize_retained_raw_ids(
@@ -300,6 +306,7 @@ class RawObservationConvergenceOwner:
                 on_dependency_refusal=on_dependency_refusal,
                 on_membership_refusal=on_membership_refusal,
                 before_publication=before_publication,
+                publication_intent=publication_intent,
             )
         ).outcome
 
@@ -312,6 +319,7 @@ class RawObservationConvergenceOwner:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None = None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
         before_publication: Callable[[], None] | None = None,
+        publication_intent: Callable[[RetainedPublicationIntent], None] | None = None,
     ) -> RetainedMaterializationResult:
         """Settle real selected replay receipts, including preparatory Source phases."""
         selected = tuple(dict.fromkeys(raw_ids))
@@ -373,6 +381,7 @@ class RawObservationConvergenceOwner:
                         on_dependency_refusal=on_dependency_refusal,
                         on_membership_refusal=on_membership_refusal,
                         before_publication=before_publication,
+                        publication_intent=publication_intent,
                         neutral_page=page,
                     )
                     result = await self.run_prepared_sync(

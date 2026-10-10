@@ -85,7 +85,9 @@ def _serving(archive_root: Path) -> Iterator[tuple[ServiceHarness, Any]]:
     yield harness, api_server
 
 
-async def _die_after_acceptance(archive_root: Path, source: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def _die_after_acceptance(
+    archive_root: Path, source: Path, monkeypatch: pytest.MonkeyPatch, *, after_materialization: bool = False
+) -> None:
     """Accept the source, then end the attempt as a killed process would: no finalization, no fence."""
 
     async def killed(self: IngestExecution, *_args: object, **_kwargs: object) -> tuple[()]:
@@ -98,7 +100,7 @@ async def _die_after_acceptance(archive_root: Path, source: Path, monkeypatch: p
 
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     with monkeypatch.context() as patch:
-        patch.setattr(IngestExecution, "input_page", killed)
+        patch.setattr(IngestExecution, "finalize" if after_materialization else "input_page", killed)
         patch.setattr(IngestExecution, "mark_unknown", nothing)
         patch.setattr(IngestExecution, "fence", nothing)
         with _serving(archive_root) as (harness, _api_server):
@@ -148,6 +150,137 @@ async def _archive(tmp_path: Path) -> tuple[Path, Path]:
     archive_root = tmp_path / "archive"
     await run_archive_fixture_write(archive_root, lambda: bootstrap_archive_root(archive_root))
     return archive_root, source
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "interruption", ["before", "unchanged", "changed", "parser", "lowering", "lineage", "unwitnessed", "tie", "future"]
+)
+async def test_repeated_delivery_restart_preserves_zero_change_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str
+) -> None:
+    """Already-served Raw is not evidence this interrupted request changed Index."""
+    archive_root, source = await _archive(tmp_path)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with _serving(archive_root) as (harness, _api_server):
+        try:
+            await archive.parse_file(source, source_name="redrive")
+        finally:
+            await harness.close()
+            await archive.close()
+    if interruption in {"changed", "parser", "lowering", "lineage"}:
+
+        def replace_prior_projection() -> None:
+            with sqlite3.connect(ArchiveLocation.resolve(archive_root).active_index_path) as conn:
+                if interruption == "changed":
+                    conn.execute("UPDATE sessions SET content_hash=?", (b"x" * 32,))
+                elif interruption == "parser":
+                    conn.execute("UPDATE sessions SET parser_fingerprint='neutral-stale-parser'")
+                elif interruption == "lowering":
+                    conn.execute("UPDATE sessions SET lowering_fingerprint='neutral-stale-lowering'")
+                else:
+                    session_id, native_id = conn.execute("SELECT session_id,native_id FROM sessions").fetchone()
+                    message_id = conn.execute("SELECT message_id FROM messages LIMIT 1").fetchone()[0]
+                    conn.execute(
+                        "INSERT INTO session_links(src_session_id,dst_origin,dst_native_id,link_type,"
+                        "resolved_dst_session_id,branch_point_message_id,inheritance,observed_at_ms) "
+                        "VALUES (?,'chatgpt-export',?,'fork',?,?,'prefix-sharing',0)",
+                        (session_id, native_id, session_id, message_id),
+                    )
+
+        await run_archive_fixture_write(archive_root, replace_prior_projection)
+    with monkeypatch.context() as patch:
+        if interruption == "unwitnessed":
+            original_payload = AuditRepository._continuity_payload
+
+            def old_protocol(
+                self: AuditRepository, kind: str, args: tuple[object, ...], values: dict[str, object]
+            ) -> dict[str, object]:
+                payload = original_payload(self, kind, args, values)
+                payload.pop("projection_protocol", None)
+                return payload
+
+            patch.setattr(AuditRepository, "_continuity_payload", old_protocol)
+        await _die_after_acceptance(
+            archive_root,
+            source,
+            monkeypatch,
+            after_materialization=interruption in {"unchanged", "changed", "parser", "lowering", "lineage"},
+        )
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        conn.row_factory = sqlite3.Row
+        record = dict(conn.execute("SELECT * FROM machine_requests ORDER BY rowid DESC LIMIT 1").fetchone())
+        operation_id = conn.execute(
+            "SELECT operation_id FROM machine_request_parts WHERE request_id=?", (record["request_id"],)
+        ).fetchone()[0]
+    if interruption in {"tie", "future"}:
+
+        def ambiguous_acquisition() -> None:
+            with sqlite3.connect(archive_root / "source.db") as conn:
+                conn.execute(
+                    "UPDATE raw_sessions SET acquired_at_ms=?",
+                    (int(record["accepted_at_ms"]) + (interruption == "future"),),
+                )
+
+        await run_archive_fixture_write(archive_root, ambiguous_acquisition)
+    source.unlink()
+    from polylogue.core.write_lease import arm_write_lease_enforcement
+
+    with arm_write_lease_enforcement(process_wide=True):
+        await _restart_and_settle(archive_root)
+    audit = AuditRepository.for_archive_root(archive_root)
+    state = machine_request_state(audit, record)
+    if interruption in {"changed", "parser", "lowering", "lineage", "unwitnessed", "tie", "future"}:
+        assert state["outcome"] == "indeterminate", state
+        assert state["stop_reason"] == "refused"
+        return
+    assert state["outcome"] == "completed", state
+    with audit.settled_machine_read():
+        history = audit.historical_machine_receipt(operation_id)
+    assert isinstance(history, IngestHistoricalReceiptV2)
+    assert history.summary.parse_projection_known is True
+    assert history.summary.changed_session_count == history.summary.changed_message_count == 0
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        after = conn.execute(
+            "SELECT request_id,artifact_ref,accepted_deadline_unix_ms,stop_reason FROM machine_requests WHERE request_id=?",
+            (record["request_id"],),
+        ).fetchone()
+        assert after == (record["request_id"], record["artifact_ref"], record["accepted_deadline_unix_ms"], None)
+        assert (
+            conn.execute("SELECT status FROM operation_runs WHERE operation_id=?", (operation_id,)).fetchone()[0]
+            == "completed"
+        )
+        intents = conn.execute(
+            "SELECT operation_id,json_extract(detail_json,'$.scope_digest'),json_type(detail_json,'$.no_change') "
+            "FROM operation_events WHERE event_type='ingest_publication_intent'"
+        ).fetchall()
+        assert intents and len(intents) == len(set(intents))
+
+    assert _session_titles(archive_root) == ["Retained Redrive"]
+
+
+@pytest.mark.timeout(300)
+async def test_ingest_intent_write_failure_prevents_index_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root, source = await _archive(tmp_path)
+
+    def fail_intent(self: AuditRepository, operation_id: str, scope_digest: str, no_change: bool) -> None:
+        raise RuntimeError("neutral durable intent failed")
+
+    monkeypatch.setattr(AuditRepository, "record_ingest_publication_intent", fail_intent)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with _serving(archive_root) as (harness, _api_server):
+        try:
+            with pytest.raises(RuntimeError, match="did not complete"):
+                await archive.parse_file(source, source_name="redrive")
+        finally:
+            await harness.close()
+            await archive.close()
+    assert _session_titles(archive_root) == []
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] > 0
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == 0
 
 
 @pytest.mark.timeout(300)

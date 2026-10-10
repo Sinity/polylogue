@@ -76,6 +76,24 @@ reader outside writer admission. An unstopped request remains with its ingest
 owner, which re-drives the original accepted generation and request identity;
 recovery's durable transitions use the existing writer bridge.
 
+New ingest acceptance records its projection protocol in the same Audit
+transaction as its authority. Every retained publication records the original
+sealed replay's intent through the admitted writer before possible Index
+effects. A re-drive may recover a repeated delivery's zero-change projection
+only when all of its Raw membership predates the accepted stamp and every
+prior intent proves the authoritative publisher would skip every exact prepared
+write, including parser, lowering, aliases and physical lineage. Intent records
+cover potential Index replay, not pure Source census or classification. Audit
+continuity advances Source and Audit, so the owner prepares a fresh seal; the
+next identical scope reuses that durable intent without another write. Admission stamps
+introduced Raw with that request's exact accepted timestamp, so equality,
+future stamps, and missing Raw are not preexistence evidence. The witness is
+about changed-session counts, not the absence of Source or metadata writes.
+Old protocol, possible changed output, append/event-only work, and unresolved
+lineage retain the explicit indeterminate outcome when the original projection
+cannot be proved. Recovery keeps the original request, generation and deadline;
+a fenced request is never reopened.
+
 Recovery resolution events name the resolver: authenticated request recovery uses
 the request principal, while automated startup uses `daemon:recovery`. The
 continuity command retains this identity for crash replay; the original

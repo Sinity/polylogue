@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     from polylogue.operations.assertion_export import AssertionExportImages
     from polylogue.operations.audit import CanonicalAuditLiteral
     from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
-    from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
+    from polylogue.operations.raw_observation_owner import RetainedMaterializationResult, RetainedPublicationIntent
 
 
 class OperationRuntime(Protocol):
@@ -70,6 +70,7 @@ class OperationRuntime(Protocol):
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None],
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None],
         before_publication: Callable[[], None],
+        publication_intent: Callable[[RetainedPublicationIntent], None] | None = None,
     ) -> RetainedMaterializationResult: ...
 
     async def compute_phase(self, work: Callable[[], _T]) -> _T: ...

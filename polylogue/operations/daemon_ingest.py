@@ -75,6 +75,10 @@ from polylogue.operations.mutation_transaction import (
 )
 from polylogue.operations.operation_context import PinnedOperationRead, open_operation_read
 from polylogue.operations.operation_context_types import OperationContext
+from polylogue.operations.raw_observation_owner import (
+    RetainedPublicationIntent,
+    RetainedPublicationIntentCommittedError,
+)
 from polylogue.operations.source_item_settlement import settle_materialized_source_items
 from polylogue.sources.origin_specs import retained_enumeration_fingerprint
 from polylogue.sources.pickle_spool import PickleSpool
@@ -85,7 +89,7 @@ from polylogue.storage.blob_publication import (
     publication_refused,
 )
 from polylogue.storage.source_generation_receipts import iter_source_item_raw_receipts, source_generation_receipt_page
-from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionArm, execute_source_item_admission
+from polylogue.storage.sqlite.archive_tiers.raw_admission import execute_source_item_admission
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     FrozenSourceInput,
     RetainedSourceGeneration,
@@ -971,9 +975,20 @@ class IngestExecution:
                 )
             elif prepared is not None:
                 try:
+                    # A new generation can reuse a retained Raw through a
+                    # pending/classification arm. Only actual insertion is this
+                    # request's acquisition; an arm alone does not prove it.
+                    existed = (
+                        connection.execute(
+                            "SELECT 1 FROM raw_sessions WHERE raw_id=?", (prepared.admission.raw_id,)
+                        ).fetchone()
+                        is not None
+                    )
                     admission = execute_source_item_admission(connection, prepared.admission, prepared.member)
+                    if admission.raw_id != prepared.admission.raw_id:
+                        raise ValueError("captured Source admission changed its prepared Raw identity")
                     admitted_coordinates.append(prepared.member.record_coordinate)
-                    if admission.arm is not RawAdmissionArm.SKIP_DUPLICATE:
+                    if not existed:
                         admitted_raw_ids.append(admission.raw_id)
                 except ContentExcisedError:
                     # The archive forgets on purpose: durably excised bytes are
@@ -1122,6 +1137,7 @@ class IngestExecution:
                     on_dependency_refusal=dependency_refused,
                     on_membership_refusal=membership_refused,
                     before_publication=partial(self.require_publication_identity, expected),
+                    publication_intent=self.record_publication_intent,
                 )
                 if self._materialization_destination_bound:
                     if self._materialization_index_destination != materialization.index_destination:
@@ -1134,7 +1150,7 @@ class IngestExecution:
                     for logical_key, raw_id, decision in publication.membership_refusals:
                         self.record_membership_refusal(logical_key, raw_id, decision.value)
                     for session_id, before_hash, after_hash, message_count in publication.session_outputs:
-                        if before_hash != after_hash:
+                        if before_hash != after_hash or session_id in publication.changed_session_ids:
                             self.record_changed_session(session_id, message_count)
                         elif not self.changed_session_recorded(session_id):
                             self.unchanged_publications += 1
@@ -1596,6 +1612,23 @@ class IngestExecution:
 
             await self.runtime.write_phase("ingest.stop", stop)
 
+    def record_publication_intent(self, intent: RetainedPublicationIntent) -> None:
+        """The admitted publisher must retain its witness before any Index effect."""
+        assert self.started_mutation is not None and self.started_mutation.operation_id is not None
+        operation_id = self.started_mutation.operation_id
+        with self.audit.settled_machine_read():
+            recorded = self.audit.ingest_publication_intent_recorded(
+                operation_id, intent.scope_digest, intent.no_change
+            )
+        if recorded:
+            return
+        self.audit.record_ingest_publication_intent(operation_id, intent.scope_digest, intent.no_change)
+        # Audit continuity advances Source and Audit. Reprepare rather than
+        # advancing or bypassing the original publication seal's observers.
+        raise RetainedPublicationIntentCommittedError(
+            "publication intent committed; prepare against its durable continuity"
+        )
+
 
 class IngestRedrive(IngestExecution):
     """The ingest owner's attempt on an accepted generation left without a terminal checkpoint.
@@ -1634,6 +1667,7 @@ class IngestRedrive(IngestExecution):
         #: first drive -- decided once: a transient retry sees this attempt's
         #: own work, whose projection it still holds.
         self.prior_materialization: bool | None = None
+        self.prior_publications_unchanged: bool | None = None
 
     def stop_reason(self) -> str | None:
         return self._stop_requested() or self.durable_stop_reason(None)
@@ -1644,7 +1678,18 @@ class IngestRedrive(IngestExecution):
         receipt: SourceReceiptSpool,
         profile_parts: tuple[SessionInsightPartReceipt, ...],
     ) -> IngestHistoricalReceiptV2:
-        if self.prior_materialization or self.unchanged_publications:
+        from polylogue.operations.ingest_acceptance import generation_raws_predate_acceptance
+
+        assert self.record is not None
+        accepted_at_ms = _record_int(self.record["accepted_at_ms"], field="accepted timestamp")
+        proved_repeat = self.prior_publications_unchanged and await self.runtime.compute_phase(
+            lambda: generation_raws_predate_acceptance(
+                self.archive_root,
+                generation.source_generation_id,
+                accepted_at_ms,
+            )
+        )
+        if (self.prior_materialization or self.unchanged_publications) and not proved_repeat:
             # The interrupted attempt may have published some of these, and
             # its changed-session projection died with it; an applied receipt
             # would under-report what this request wrote.
@@ -1679,6 +1724,13 @@ class IngestRedrive(IngestExecution):
             return StartedBoundMutation(plan=plan, authorization=authorization, operation_id=self.operation_id)
 
         self.started_mutation = await self.runtime.compute_phase(load_started)
+        if self.prior_publications_unchanged is None:
+
+            def prior_unchanged() -> bool:
+                with self.audit.settled_machine_read():
+                    return self.audit.ingest_prior_publications_proved_unchanged(self.operation_id)
+
+            self.prior_publications_unchanged = await self.runtime.compute_phase(prior_unchanged)
         generation = await self.accepted_generation()
 
         def already_materialized() -> bool:

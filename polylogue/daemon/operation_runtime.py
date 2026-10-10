@@ -73,7 +73,7 @@ if TYPE_CHECKING:
     from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance
     from polylogue.operations.audit import CanonicalAuditLiteral
     from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
-    from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
+    from polylogue.operations.raw_observation_owner import RetainedMaterializationResult, RetainedPublicationIntent
 
 _T = TypeVar("_T")
 
@@ -196,6 +196,7 @@ class DaemonOperationRuntime:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None],
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None],
         before_publication: Callable[[], None],
+        publication_intent: Callable[[RetainedPublicationIntent], None] | None = None,
     ) -> RetainedMaterializationResult:
         owner = self.raw_observation_owner
         if (
@@ -210,6 +211,7 @@ class DaemonOperationRuntime:
             on_dependency_refusal=on_dependency_refusal,
             on_membership_refusal=on_membership_refusal,
             before_publication=before_publication,
+            publication_intent=publication_intent,
         )
 
     def start_accepted_ingest_redrive(self) -> None:
