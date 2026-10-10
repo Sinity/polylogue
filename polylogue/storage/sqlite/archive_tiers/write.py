@@ -1901,11 +1901,13 @@ def validate_prepared_session_lineage(
         raise PreparedSessionWriteRefusedError("prepared replay lineage parent disappeared")
     inherited_count = len(input_session.messages) - len(context.messages)
     source = input_session.messages
-    signatures = (
-        _disk_composed_db_signatures(conn, parent, source.path.parent)
-        if isinstance(source, SqliteMessageSink)
-        else _composed_db_signatures(conn, parent)
-    )
+    if isinstance(source, SqliteMessageSink):
+        signatures: Sequence[tuple[str, str]] = _disk_composed_db_signatures(
+            conn, parent, source.path.parent, prefix_length=inherited_count
+        )
+    else:
+        with closing(_iter_composed_rows(conn, parent)) as rows:
+            signatures = [(message_id, digest) for message_id, digest, _owner in islice(rows, inherited_count)]
     primary: BaseException | None = None
     try:
         if (
@@ -13773,8 +13775,13 @@ def _disk_composed_db_signatures(
     directory: Path,
     *,
     before_input: BeforeIndexInput | None = None,
+    prefix_length: int | None = None,
 ) -> _DiskSignatureSequence:
-    """Compose parent signatures through bounded segment queries."""
+    """Compose signatures, optionally only the declared inherited prefix.
+
+    The current composition plan and branch witnesses are still resolved in
+    full. Only signature consumption and scratch rows stop at the prefix.
+    """
     opened_snapshot = not conn.in_transaction
     if opened_snapshot:
         with connection_cursor(conn, "BEGIN DEFERRED") as _input_cursor:
@@ -13782,8 +13789,9 @@ def _disk_composed_db_signatures(
     result: _DiskSignatureSequence | None = None
     try:
         result = _DiskSignatureSequence(directory)
-        for message_id, digest, _owner in _iter_composed_rows(conn, session_id, before_input):
-            result.append(message_id, digest)
+        with closing(_iter_composed_rows(conn, session_id, before_input)) as rows:
+            for message_id, digest, _owner in islice(rows, prefix_length):
+                result.append(message_id, digest)
         result.finish()
         return result
     except BaseException as primary:
