@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -15,6 +14,8 @@ from polylogue.markers import (
     lower_markers,
     parse_markers,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
+from tests.infra.identity import archive_block_id, fixture_block_content_identity
 
 
 def test_line_inline_escape_markdown_and_malformed_are_observable() -> None:
@@ -129,15 +130,16 @@ def test_candidate_lowering_uses_existing_assertion_service_and_exact_refs(tmp_p
 
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db)
-    candidates = candidates_for_block("message-1", "block-2", "::finding: bad path\n")
+    conn = connect_measured(user_db)
+    block_id = archive_block_id("message-1", content_identity=fixture_block_content_identity("block-2"))
+    candidates = candidates_for_block("message-1", block_id, "::finding: bad path\n")
     ids = lower_markers(conn, candidates, now_ms=123)
     row = conn.execute("SELECT * FROM assertions WHERE assertion_id = ?", ids).fetchone()
     assert row is not None
     assert row[4] == AssertionKind.FINDING.value
     assert row[10] == AssertionStatus.CANDIDATE.value
     assert row[8] == "agent"
-    assert "message:message-1" in row[9] and "block:block-2" in row[9]
+    assert "message:message-1" in row[9] and f"block:{block_id}" in row[9]
     conn.close()
 
 
@@ -165,9 +167,10 @@ def test_objective_posture_assertion_kinds_are_all_agent_authorable(tmp_path: Pa
 
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db)
+    conn = connect_measured(user_db)
     try:
-        candidates = candidates_for_block("message-9", "block-9", "::blocker: waiting on a credential\n")
+        block_id = archive_block_id("message-9", content_identity=fixture_block_content_identity("block-9"))
+        candidates = candidates_for_block("message-9", block_id, "::blocker: waiting on a credential\n")
         assert [candidate.assertion_kind for candidate in candidates] == [AssertionKind.BLOCKER]
         ids = lower_markers(conn, candidates, now_ms=456)
         kinds = [
