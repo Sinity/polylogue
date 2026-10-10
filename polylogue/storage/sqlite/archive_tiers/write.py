@@ -929,7 +929,9 @@ def _prefix_key(native_id: str | None, content_identity: str | None) -> str | No
     by that ID; only an ID-less row is found by its content.
     """
     if native_id is not None:
-        return f"n:{native_id}"
+        from polylogue.core.message_native_identity import message_native_key
+
+        return message_native_key(native_id)
     return None if content_identity is None else f"c:{content_identity}"
 
 
@@ -951,7 +953,7 @@ def _expand_position_runs(runs: Iterable[tuple[int, int]]) -> list[int]:
 def _identity_sequence_digest(identities: Iterable[str]) -> str:
     digest = hashlib.sha256()
     for identity in identities:
-        digest.update(identity.encode("ascii", "replace") + b"\n")
+        digest.update(identity.encode("utf-8", "surrogatepass") + b"\n")
     return digest.hexdigest()
 
 
@@ -1425,7 +1427,7 @@ def _copied_prefix_start(
         # A row stored under its native ID is found by that ID, so a content
         # edit does not lose it; a row stored by content is found by content.
         native = natives[ordinal]
-        return f"n:{native}" if kind == "n" and native is not None else f"c:{digests[ordinal]}" if kind == "c" else ""
+        return native if kind == "n" and native is not None else f"c:{digests[ordinal]}" if kind == "c" else ""
 
     matches = [
         start
@@ -15085,7 +15087,8 @@ def _materialize_inherited_prefix(
     conn.execute(
         f"""CREATE TEMP TABLE {_GUARD_PREFIX}sources (
                ordinal INTEGER PRIMARY KEY, old_id TEXT NOT NULL, session_id TEXT, position INTEGER,
-               variant_index INTEGER, native_id TEXT, content_identity TEXT, content_occurrence INTEGER)"""
+               variant_index INTEGER, native_id TEXT, content_identity TEXT, content_occurrence INTEGER,
+               source_native_id_json TEXT)"""
     )
     conn.execute(
         f"""INSERT INTO temp.{_GUARD_PREFIX}sources
@@ -15094,7 +15097,8 @@ def _materialize_inherited_prefix(
                    COALESCE(s.variant_index, m.variant_index),
                    CASE WHEN s.message_id IS NOT NULL THEN s.native_id ELSE m.native_id END,
                    CASE WHEN s.message_id IS NOT NULL THEN s.content_identity ELSE m.content_identity END,
-                   CASE WHEN s.message_id IS NOT NULL THEN s.content_occurrence ELSE m.content_occurrence END
+                   CASE WHEN s.message_id IS NOT NULL THEN s.content_occurrence ELSE m.content_occurrence END,
+                   CASE WHEN s.message_id IS NOT NULL THEN s.source_native_id_json ELSE m.source_native_id_json END
             FROM temp.{_GUARD_PREFIX}before AS b
             LEFT JOIN {snapshot} AS s ON s.message_id = b.message_id
             LEFT JOIN main.messages AS m ON m.message_id = b.message_id AND s.message_id IS NULL
@@ -15112,10 +15116,14 @@ def _materialize_inherited_prefix(
     # child (or by an earlier copy) and each content identity's next free
     # occurrence live in TEMP tables, never in Python sets.
     conn.execute(f"CREATE TEMP TABLE {_GUARD_PREFIX}taken (native_id TEXT PRIMARY KEY)")
-    conn.execute(
-        f"INSERT OR IGNORE INTO temp.{_GUARD_PREFIX}taken SELECT native_id FROM messages WHERE session_id = ? AND native_id IS NOT NULL",
+    from polylogue.core.message_native_identity import message_native_key
+
+    for stored_native, source_carrier in conn.execute(
+        "SELECT native_id, source_native_id_json FROM messages WHERE session_id = ? AND native_id IS NOT NULL",
         (child,),
-    )
+    ):
+        native_key = message_native_key(native_id_from_storage(str(stored_native), source_carrier))
+        conn.execute(f"INSERT OR IGNORE INTO temp.{_GUARD_PREFIX}taken VALUES (?)", (native_key,))
     conn.execute(
         f"""CREATE TEMP TABLE {_GUARD_PREFIX}occurrences (
                content_identity TEXT PRIMARY KEY, next_occurrence INTEGER NOT NULL, prefix_seen INTEGER NOT NULL)"""
@@ -15143,20 +15151,30 @@ def _materialize_inherited_prefix(
     keyed = True
     source_rows = conn.execute(
         f"""SELECT s.ordinal, s.old_id, s.variant_index, s.native_id, s.content_identity, s.content_occurrence,
-                   p.new_position
+                   p.new_position, s.source_native_id_json
             FROM temp.{_GUARD_PREFIX}sources AS s JOIN temp.{_GUARD_PREFIX}placed AS p ON p.ordinal = s.ordinal
             ORDER BY s.ordinal"""
     )
-    for ordinal, old_id, variant_index, native_id, content_identity, stored_occurrence, position in source_rows:
-        key = _prefix_key(
-            None if native_id is None else str(native_id), None if content_identity is None else str(content_identity)
+    for (
+        ordinal,
+        old_id,
+        variant_index,
+        native_id,
+        content_identity,
+        stored_occurrence,
+        position,
+        native_carrier,
+    ) in source_rows:
+        source_native = native_id_from_storage(
+            None if native_id is None else str(native_id), None if native_carrier is None else str(native_carrier)
         )
+        key = _prefix_key(source_native, None if content_identity is None else str(content_identity))
         if key is None:
             keyed = False
         else:
-            encoded = key.encode("ascii", "replace") + b"\n"
+            encoded = key.encode("utf-8", "surrogatepass") + b"\n"
             keys_digest.update(encoded)
-            kinds.append(key[0])
+            kinds.append("n" if source_native is not None else "c")
             first_key = first_key or key
         identity = None if content_identity is None else str(content_identity)
         ordinal_in_prefix = 0
@@ -15172,12 +15190,14 @@ def _materialize_inherited_prefix(
             )
         if (
             native_id is not None
-            and conn.execute(f"INSERT OR IGNORE INTO temp.{_GUARD_PREFIX}taken VALUES (?)", (str(native_id),)).rowcount
+            and conn.execute(
+                f"INSERT OR IGNORE INTO temp.{_GUARD_PREFIX}taken VALUES (?)", (message_native_key(source_native),)
+            ).rowcount
             == 1
         ):
             new_native: str | None = str(native_id)
             content_occurrence = None if stored_occurrence is None else int(stored_occurrence)
-            new_id = f"{child}:n:{native_id}"
+            new_id = archive_message_id(child, source_native)
             identity_source = "native"
         elif identity is not None:
             next_row = conn.execute(

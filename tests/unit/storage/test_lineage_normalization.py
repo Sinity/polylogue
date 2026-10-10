@@ -4512,6 +4512,32 @@ def test_append_skips_materialized_native_prefix_after_parent_edge_retires(tmp_p
         close_fixture_index_connection(conn)
 
 
+@pytest.mark.parametrize(
+    ("prefix_native", "tail_native"),
+    [
+        ("m1:é", "m1:è"),
+        ("\ud800", "eda080"),
+        ("\ud800\udc00", "\U00010000"),
+        ("n:m1", "s:m1"),
+    ],
+    ids=["unicode", "surrogate-and-literal-hex", "surrogate-pair-and-scalar", "namespace-markers"],
+)
+def test_materialized_native_prefix_uses_exact_source_names(
+    tmp_path: Path, prefix_native: str, tail_native: str
+) -> None:
+    parent = [_msg(prefix_native, Role.USER, "hello", 0), _msg("answer", Role.ASSISTANT, "answer", 1)]
+    child = [*parent, _msg(tail_native, Role.USER, "child tail", 2)]
+    inheriting, materialized, replayed = _materialize_then_replay(tmp_path, parent, child, parent[:1])
+    child_id = "codex-session:child"
+    assert inheriting == [archive_message_id(child_id, tail_native)]
+    assert materialized == [
+        archive_message_id(child_id, prefix_native),
+        archive_message_id(child_id, "answer"),
+        archive_message_id(child_id, tail_native),
+    ]
+    assert replayed == materialized
+
+
 def test_a_materialized_child_keeps_its_ids_for_id_less_duplicates(tmp_path: Path) -> None:
     """ID-less duplicates across prefix and tail keep their content occurrences.
 
