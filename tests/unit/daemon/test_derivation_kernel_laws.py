@@ -972,8 +972,8 @@ def test_bulk_inspection_fallback_deadline_retains_unvisited_keys(
     adapter.output["healthy"] = "b0"
     registry = DerivationRegistry([adapter])
     report = converge(registry, FRAME, budget=Budget(deadline_at=1.0))
-    expected_calls = [("healthy", "later", "last")]
-    pending_keys = ("healthy", "later", "last")
+    expected_calls: list[tuple[str, ...]] = [("healthy", "later", "last")]
+    pending_keys: tuple[str, ...] = ("healthy", "later", "last")
     if deadline_phase == "individual":
         expected_calls.append(("healthy",))
         pending_keys = ("later", "last")
