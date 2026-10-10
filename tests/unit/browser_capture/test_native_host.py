@@ -611,3 +611,21 @@ def test_actual_native_process_streams_large_bytes_or_settles_input_eof(
                 process.stdin.close()
             process.stdout.close()
             process.stderr.close()
+
+
+@pytest.mark.parametrize("field,value", [("method", []), ("method", {}), ("version", True)])
+def test_malformed_native_request_fields_have_a_named_refusal(field: str, value: object) -> None:
+    from polylogue.core.json import JSONValue
+
+    request: dict[str, JSONValue] = {
+        "type": "request",
+        "version": 1,
+        "endpoint": "http://127.0.0.1:8765",
+        "method": "GET",
+        "path": "/v1/status",
+        "receiver_id": None,
+        "headers": {},
+    }
+    request[field] = cast(JSONValue, value)
+    with pytest.raises(native_transport.NativeTransportError, match="^native_request_invalid$"):
+        native_transport._request(request)

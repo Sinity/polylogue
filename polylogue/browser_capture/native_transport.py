@@ -238,7 +238,8 @@ class NativeInput:
 
 
 def _request(frame: dict[str, JSONValue]) -> tuple[str, int, str, str, str | None, dict[str, str]]:
-    if frame.get("type") != "request" or frame.get("version") != 1:
+    version = frame.get("version")
+    if frame.get("type") != "request" or type(version) is not int or version != 1:
         raise NativeTransportError("native_request_invalid")
     endpoint = frame.get("endpoint")
     if not isinstance(endpoint, str):
@@ -256,7 +257,8 @@ def _request(frame: dict[str, JSONValue]) -> tuple[str, int, str, str, str | Non
         raise NativeTransportError("loopback_endpoint_required")
     method, path, expected = frame.get("method"), frame.get("path"), frame.get("receiver_id")
     if (
-        method not in {"GET", "POST", "PUT"}
+        not isinstance(method, str)
+        or method not in {"GET", "POST", "PUT"}
         or not isinstance(path, str)
         or not path.startswith("/v1/")
         or urlparse(path).netloc
