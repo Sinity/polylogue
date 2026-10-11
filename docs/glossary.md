@@ -1,7 +1,7 @@
 # Glossary
 
-Polylogue's docs use a precise internal vocabulary. This page translates it into
-plain language for a first-time reader. For the full system shape see
+This page defines the few project terms that earn a name and translates the
+coined words older code still uses. For the full system shape see
 [architecture.md](architecture.md); for the provider/origin/source split see
 [provider-origin-identity.md](provider-origin-identity.md).
 
@@ -46,4 +46,42 @@ Read only as deep as you need:
 | **Retrieval lane** | Which search engine answers a query: `dialogue` (FTS5 lexical), vector (semantic), or `hybrid` (both fused via Reciprocal Rank Fusion). `--lexical` and `--semantic` force a lane. |
 | **MCP bridge** | The Model Context Protocol server (`polylogue-mcp`) that lets an AI assistant search and read your archive from inside its own session. |
 | **Verb** | A query-first action applied to a matched set: `read`, `select`, `analyze`, `mark`, `delete`, `continue`. Spelled `find QUERY then VERB`. |
-| **Fresh-first schema** | There is no in-place schema upgrade chain. A version mismatch is rejected and the affected tier is rebuilt from source, rather than migrated step-by-step. |
+| **Fresh start** | The current archive format starts every tier at `PRAGMA user_version=1`; state written by earlier Polylogue versions is set aside, never migrated. Later changes to the durable tiers (`source`, `user`, `audit`) are additive numbered migrations; the derived tiers (`index`, `ops`) are rebuilt instead. |
+| **Materialize** | Compute derived rows from stored data and write them to `index.db`. |
+| **Lowering** | Converting parser output into table rows. |
+| **Hydrate** | Load a full domain object (a session with its messages) from rows. |
+| **Derivation** | One derived product's inspect, compute, and publish cycle in the daemon's derivation kernel. |
+| **Index generation** | A complete `index.db` built beside the active one and swapped in when finished. Use "generation" for nothing else. |
+| **Membership** | Which sessions one stored raw file contains. |
+| **Recipe** | For embeddings, every input that changes a vector (model, dimensions, text preparation). |
+
+## Coined words in current code
+
+Older code and docs use invented or overloaded words. New text uses the plain
+term on the right; read existing code with this table.
+
+| Word in code | Usually means |
+|------|------|
+| retained, raw | source bytes stored in `source.db` |
+| receipt | result record of a finished step, or just a row |
+| lease | a lock (`ActiveWriterLease`), a thread's write permission (`WriteLease`), or a claim on a queue item with expiry |
+| custody | the archive write lock (`.archive-write-custody.lock`), an object that must be closed, or (`custody_digest`) a digest of inputs |
+| settle, settlement | finish and record the outcome; also close handles, wait for completion, or commit |
+| admission, admit | accept or reject an input; schedule work on the compute queue; allow a write |
+| seal | a closed scratch file's identity, a snapshot digest, or the check that `user.db`/`audit.db` references survive an index write (`reference_seal.py`) |
+| generation (outside the index sense) | an input snapshot (`source_generations`), or a change counter |
+| frontier | byte offset accepted so far in an append-only file; "raw frontier" = stored raws not yet indexed |
+| census | full inventory, e.g. which sessions each raw contains |
+| carrier | the append-only JSONL spool file a hook writes |
+| witness | an evidence item or example |
+| envelope | a response wrapper |
+| disposition | outcome or status |
+| demand | a pending request to recompute |
+| obligation | a pending outbox row |
+| carry | parse state reused across phases |
+| durable change train, rider, slot | migration plan, migration step, schema version |
+| qualify | measure or test under stated conditions |
+| conservation | a check that nothing was lost |
+| continuity | the audit hash chain |
+| convergence debt | the retry list for daemon stages, in `ops.db` |
+| authority, owner | the component responsible for something, or its source of truth |
