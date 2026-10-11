@@ -723,6 +723,7 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
     """
     population = (manifest.get("parameters") or {}).get("population") or {}
     sampled = manifest.get("by_origin") or {}
+    unknown = (manifest.get("parameters") or {}).get("projection_unknown_origins") or []
     rows: dict[str, Any] = {}
     serial_sample = 0.0
     serial_projected = 0.0
@@ -750,7 +751,9 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
             "s_per_mib": round(rate, 4),
         }
         pop = population.get(origin)
-        if pop and manifest.get("kind") != "selected-real":
+        if origin in unknown:
+            entry["projection_unavailable"] = "full shared assembly metadata has no sampling denominator"
+        if pop and manifest.get("kind") != "selected-real" and origin not in unknown:
             pop_mib = pop["bytes"] / 2**20
             entry["population_mib"] = round(pop_mib, 1)
             entry["projected_s"] = round(rate * pop_mib, 1)
@@ -762,14 +765,15 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
     # projection then covers only part of the census and says so.
     unmeasured = sorted(origin for origin, pop in population.items() if pop.get("bytes") and origin not in rows)
     return {
-        "complete": not unmeasured,
+        "complete": not unmeasured and not unknown,
+        "unknown_denominator_origins": unknown,
         "unmeasured_origins": unmeasured,
         "by_origin": rows,
         "serial_sample_s": round(serial_sample, 1),
         "intake_wall_s": intake_wall_s,
         "wall_scale": round(scale, 4) if scale else None,
         "projected_intake_hours": round(serial_projected * scale / 3600, 2)
-        if scale and serial_projected and not unmeasured
+        if scale and serial_projected and not unmeasured and not unknown
         else None,
         "projected_measured_origins_hours": round(serial_projected * scale / 3600, 2)
         if scale and serial_projected
@@ -1526,6 +1530,12 @@ def render(receipt: dict[str, Any]) -> str:
                 f"    {origin:<12} {row['s_per_mib']:.3f} s/MiB  sample={row['sample_mib']} MiB"
                 f"  population={row.get('population_mib', '-')} MiB  projected={row.get('projected_s', '-')} s"
             )
+    if proj.get("unknown_denominator_origins"):
+        lines.append(
+            "projection unavailable for "
+            + ", ".join(proj["unknown_denominator_origins"])
+            + ": full shared assembly metadata has no sampling denominator"
+        )
     problems = receipt.get("warnings_and_errors") or {}
     if problems:
         lines.append("warnings/errors")
@@ -1795,7 +1805,7 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     manifest = {
         "kind": corpus.get("kind"),
         "by_origin": corpus.get("by_origin"),
-        "parameters": {"population": corpus.get("population")},
+        "parameters": {"population": corpus.get("population"), **(corpus.get("parameters") or {})},
     }
     receipt["projection"] = projection(
         manifest,

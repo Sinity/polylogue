@@ -321,36 +321,162 @@ def default_sample_sources(home: Path) -> tuple[SampleSource, ...]:
     )
 
 
+def _unit_key(source: SampleSource, path: Path) -> str:
+    if not source.session_units:
+        return str(path)
+    relative = path.relative_to(source.root)
+    parts = relative.parts
+    return str(Path(*parts[: source.unit_depth]).with_suffix("")) if len(parts) >= source.unit_depth else str(relative)
+
+
+def _unit_paths(source: SampleSource, named: Path) -> list[Path]:
+    """The existing layout unit, walked without visiting other units."""
+    from polylogue.sources.source_walk import layout_source_paths
+    from polylogue.sources.walk_faults import WalkRefusedError
+
+    relative = named.relative_to(source.root)
+    key = _unit_key(source, named)
+    if not source.session_units:
+        start = named.parent
+
+        def scope(path: Path) -> bool:
+            return path == named
+    else:
+        start = source.root / relative.parts[0]
+
+        # Names of siblings are inspected once; only the same existing unit
+        # key reaches native type/link handling or subtree enumeration.
+        def scope(path: Path) -> bool:
+            return _unit_key(source, path) == key
+
+    try:
+        paths = layout_source_paths(source.origin, source.root, start=start, scope=scope)
+    except WalkRefusedError as exc:
+        raise ValueError(f"a {source.origin} selected source unit was refused ({len(exc.faults)} fault(s))") from exc
+    if named not in paths:
+        raise ValueError("named transcript is not admitted by its native source walk")
+    return paths
+
+
 def _units(source: SampleSource) -> list[tuple[str, list[Path], int]]:
-    """Group a source into sampling units: (key, files, bytes)."""
+    """Group the native watched population into the original sampling units."""
     if not source.root.is_dir():
         return []
-    # Production discovery's own layout-bound walk, so the sample and its
-    # population denominator are exactly the files the daemon would admit,
-    # unit sidecars included. Discovery follows a directory link whose target
-    # stays inside the root and refuses one that escapes it; linked files are
-    # not followed, since discovery does not ingest a linked transcript.
     from polylogue.sources.source_walk import layout_source_paths
     from polylogue.sources.walk_faults import WalkRefusedError
 
     try:
         files = layout_source_paths(source.origin, source.root)
     except WalkRefusedError as exc:
-        # A sample and its population must not lose valid operator input to
-        # an unreadable subtree.
         raise ValueError(f"a {source.origin} source subtree is unreadable ({exc})") from exc
-    if not source.session_units:
-        return [(str(path), [path], path.stat().st_size) for path in files]
     grouped: dict[str, list[Path]] = defaultdict(list)
-    depth = source.unit_depth
     for path in files:
-        relative = path.relative_to(source.root)
-        parts = relative.parts
-        # With depth 2, <project>/<session>.jsonl and <project>/<session>/...
-        # (subagents, tool-results) share the key <project>/<session>.
-        key = str(Path(*parts[:depth]).with_suffix("")) if len(parts) >= depth else str(relative)
-        grouped[key].append(path)
-    return [(key, paths, sum(path.stat().st_size for path in paths)) for key, paths in sorted(grouped.items())]
+        grouped[_unit_key(source, path)].append(path)
+    # Non-session sources retain native discovery order, which owns the seeded draw.
+    items = sorted(grouped.items()) if source.session_units else grouped.items()
+    return [(key, paths, sum(path.stat().st_size for path in paths)) for key, paths in items]
+
+
+def _member_destination(out: Path, source: SampleSource, path: Path) -> Path:
+    return out / source.target / path.relative_to(source.root)
+
+
+def _assembly_closure(source: SampleSource, paths: Sequence[Path], out: Path | None = None) -> dict[Path, Path]:
+    """Existing static inputs paired with their production corpus coordinates.
+
+    Acquisition supplies lexical session coordinates. Resolve both the source
+    and copied session with the same retained-assembly resolver; a resolved
+    history outside a linked watched root must still accompany the copied main.
+    """
+    from polylogue.sources.retained_assembly import claude_code_sidecar_coordinates, codex_sidecar_coordinates
+
+    resolver = {"claude-code": claude_code_sidecar_coordinates, "codex": codex_sidecar_coordinates}.get(source.origin)
+    closure: dict[Path, Path] = {}
+    if resolver is None:
+        return closure
+    members = set(paths)
+    for path in paths:
+        coordinates = resolver(str(path)) or ()
+        if not coordinates:
+            continue  # A generic sampling root has no declared install coordinates.
+        targets = (resolver(str(_member_destination(out, source, path))) or ()) if out is not None else coordinates
+        for coordinate, target in zip(coordinates, targets, strict=True):
+            dependency = Path(coordinate)
+            try:
+                mode = dependency.lstat().st_mode
+            except FileNotFoundError:
+                continue  # Optional absence; the selected closure is checked again.
+            if not stat.S_ISREG(mode):
+                raise ValueError("assembly dependency must be a regular unlinked file")
+            if dependency in members:
+                continue
+            destination = Path(target)
+            if out is not None and out.resolve() not in destination.resolve().parents:
+                raise ValueError("assembly dependency escapes the corpus")
+            prior = closure.get(destination)
+            if prior is not None and prior != dependency and _sha256(prior) != _sha256(dependency):
+                raise ValueError("assembly dependencies collide at a corpus coordinate")
+            closure[destination] = dependency
+    return closure
+
+
+class _CorpusCopy:
+    """One copy per destination, with content and currentness proof."""
+
+    def __init__(self) -> None:
+        self.destinations: dict[Path, str] = {}
+        self.observed: dict[Path, tuple[tuple[int, int, int, int], str]] = {}
+
+    def expect(self, paths: Sequence[Path]) -> None:
+        for path in paths:
+            stamp = _file_observation(path)
+            if path in self.observed:
+                if self.observed[path][0] != stamp:
+                    raise ValueError("source dependency changed between selected units")
+                continue
+            digest = _sha256(path)
+            if _file_observation(path) != stamp:
+                raise ValueError("source dependency changed during observation")
+            self.observed[path] = (stamp, digest)
+
+    def copy(self, path: Path, destination: Path) -> int:
+        before = _file_observation(path)
+        if destination in self.destinations:
+            prior = self.observed.get(path)
+            digest = prior[1] if prior is not None and prior[0] == before else _sha256(path)
+            if digest != self.destinations[destination]:
+                raise ValueError("source files collide at a corpus coordinate")
+            added = 0
+        else:
+            _copy_private(path, destination)
+            digest = _sha256(destination)
+            self.destinations[destination] = digest
+            added = destination.stat().st_size
+        if _file_observation(path) != before:
+            raise ValueError("source closure changed while copying")
+        if path in self.observed and self.observed[path] != (before, digest):
+            raise ValueError("source dependency changed before its copy")
+        self.observed[path] = (before, digest)
+        return added
+
+    def verify(self) -> None:
+        for path, (stamp, digest) in self.observed.items():
+            try:
+                unchanged = _file_observation(path) == stamp and _sha256(path) == digest
+            except OSError:
+                unchanged = False
+            if not unchanged:
+                raise ValueError("a source closure changed after it was copied")
+
+
+def _copy_closure(out: Path, source: SampleSource, paths: Sequence[Path], copier: _CorpusCopy) -> dict[Path, Path]:
+    closure = _assembly_closure(source, paths, out)
+    copier.expect(list(closure.values()))
+    for path in paths:
+        copier.copy(path, _member_destination(out, source, path))
+    for destination, path in closure.items():
+        copier.copy(path, destination)
+    return closure
 
 
 def _size_bucket(size: int) -> int:
@@ -378,12 +504,15 @@ def sample_real(
         raise ValueError(f"corpus directory must be absent or empty: {out}")
     _private_root(out)
     rng = random.Random(seed)
-    observed: dict[Path, str] = {}
+    copier = _CorpusCopy()
+    selected_units = []
+    drawn: dict[str, dict[str, int]] = {}
     population: dict[str, dict[str, int]] = {}
     census: dict[str, list[tuple[str, list[Path], int]]] = {}
     for source in sources:
         units = _units(source)
         census[source.origin] = units
+        drawn[source.origin] = {"units": 0, "bytes": 0, "shared_dependency_bytes": 0}
         population[source.origin] = {"units": len(units), "bytes": sum(unit[2] for unit in units)}
         strata: dict[int, list[tuple[str, list[Path], int]]] = defaultdict(list)
         for unit in units:
@@ -406,16 +535,16 @@ def sample_real(
                 boundary = fraction < 1 and taken + size > goal
                 if boundary and rng.random() > (goal - taken) / size:
                     break
+                closure = _assembly_closure(source, paths, out)
+                copier.expect(list(closure.values()))
                 copied = 0
                 for path in paths:
-                    destination = out / source.target / path.relative_to(source.root)
-                    _copy_private(path, destination)
+                    destination = _member_destination(out, source, path)
+                    copier.copy(path, destination)
                     copied += destination.stat().st_size
-                    # Kept for the end of the sampling interval: a source
-                    # rewritten in place (same size, even within one
-                    # timestamp tick) after its copy is a change neither the
-                    # recount of sizes nor file stamps can see; its content can.
-                    observed[path] = _sha256(destination)
+                selected_units.append((source, paths, closure))
+                drawn[source.origin]["units"] += 1
+                drawn[source.origin]["bytes"] += copied
                 if copied != size:
                     # The census (population and stratum goal) saw other bytes
                     # than the sample now holds: a live transcript grew. Report
@@ -429,19 +558,21 @@ def sample_real(
                 taken += size
                 if boundary:
                     break
+    # Shared static metadata is added after the unchanged probabilistic draws.
+    # Already drawn layout files are not charged a second time.
+    for source, _paths, closure in selected_units:
+        for destination, path in closure.items():
+            drawn[source.origin]["shared_dependency_bytes"] += copier.copy(path, destination)
     # The population is the projection's denominator: a live source that
     # grew, shrank or lost a file while sampling makes it stale.
     for source in sources:
         recount = {key: size for key, _paths, size in _units(source)}
         if recount != {key: size for key, _paths, size in census[source.origin]}:
             raise ValueError(f"{source.origin} sources changed while sampling; sample a quiescent tree")
-    for path, copied_digest in observed.items():
-        try:
-            unchanged = _sha256(path) == copied_digest
-        except OSError:
-            unchanged = False
-        if not unchanged:
-            raise ValueError("a sampled source changed after it was copied; sample a quiescent tree")
+    for source, paths, closure in selected_units:
+        if _assembly_closure(source, paths, out) != closure:
+            raise ValueError("sampled dependency membership changed while copying")
+    copier.verify()
     return seal(
         out,
         kind="sample",
@@ -449,6 +580,10 @@ def sample_real(
             "seed": seed,
             "fraction": fraction,
             "population": population,
+            "drawn_units": drawn,
+            "projection_unknown_origins": sorted(
+                origin for origin, row in drawn.items() if row["shared_dependency_bytes"]
+            ),
         },
     )
 
@@ -459,29 +594,14 @@ def _selection_units(source: SampleSource) -> list[tuple[str, list[Path], list[P
     Coordinate resolvers are the production retained-assembly authority.
     Mutable database sources are separate routes, never copied as page images.
     """
-    from polylogue.sources.retained_assembly import claude_code_sidecar_coordinates, codex_sidecar_coordinates
-
     result = []
     for key, paths, _size in _units(source):
         if source.origin in {"claude-code", "codex"} and not any(
             path.suffix in {".jsonl", ".ndjson"} for path in paths
         ):
             continue
-        dependencies: set[Path] = set()
-        resolver = {"claude-code": claude_code_sidecar_coordinates, "codex": codex_sidecar_coordinates}.get(
-            source.origin
-        )
-        if resolver:
-            for path in paths:
-                coordinates = resolver(str(path.resolve()))
-                for coordinate in coordinates or ():
-                    dependency = Path(coordinate)
-                    if dependency.is_symlink():
-                        raise ValueError("selection dependency must be a regular unlinked file")
-                    if dependency.is_file():
-                        dependencies.add(dependency)
-        dependencies.difference_update(paths)
-        result.append((key, paths, sorted(dependencies)))
+        dependencies = sorted(set(_assembly_closure(source, paths).values()))
+        result.append((key, paths, dependencies))
     return result
 
 
@@ -560,6 +680,7 @@ def select_real(
     total_budget_skips = 0
     selected: list[tuple[SampleSource, tuple[str, list[Path], list[Path]]]] = []
     selected_paths: set[Path] = set()
+    selected_destinations: set[Path] = set()
     total = 0
     while queues and len(selected) < max_units:
         for origin in provider_order:
@@ -574,33 +695,34 @@ def select_real(
             else:
                 del queues[key]
             paths = {*unit[1], *unit[2]}
-            added = sum(stamps[path][1] for path in paths - selected_paths)
+            source = source_by_origin[key[0]]
+            mapped = {_member_destination(out, source, path): path for path in unit[1]}
+            closure = _assembly_closure(source, unit[1], out)
+            if set(closure.values()) != set(unit[2]):
+                raise ValueError("selected dependency membership changed after census")
+            mapped.update(closure)
+            added = sum(
+                stamps[path][1] for destination, path in mapped.items() if destination not in selected_destinations
+            )
             if total + added > max_bytes:
                 strata[key]["total_budget_skips"] += 1
                 total_budget_skips += 1
                 continue
             selected.append((source_by_origin[key[0]], unit))
             selected_paths.update(paths)
+            selected_destinations.update(mapped)
             total += added
             strata[key]["selected_units"] += 1
             strata[key]["selected_bytes"] += added
             if len(selected) == max_units:
                 break
     _private_root(out)
-    observed = {}
+    copier = _CorpusCopy()
+    copied_closures = []
     provenance = []
     for source, (unit_key, unit_paths, dependencies) in selected:
-        for path in [*unit_paths, *dependencies]:
-            if path in observed:
-                continue
-            # Install-global coordinates can sit just above the watched root.
-            # Preserve their relative placement without permitting corpus escape.
-            relative = Path(os.path.relpath(path.resolve(), source.root.resolve()))
-            destination = (out / source.target / relative).resolve()
-            if out.resolve() not in destination.parents:
-                raise ValueError("selection dependency escapes the corpus")
-            _copy_private(path, destination)
-            observed[path] = _sha256(destination)
+        closure = _copy_closure(out, source, unit_paths, copier)
+        copied_closures.append((source, unit_paths, closure))
         provenance.append(
             {
                 "origin": source.origin,
@@ -624,9 +746,10 @@ def select_real(
             raise ValueError(f"{source.origin} selected dependency membership changed while copying")
     if any(_file_observation(path) != stamps[path] for path in selected_paths):
         raise ValueError("selected source closure changed while copying")
-    for path, digest in observed.items():
-        if _sha256(path) != digest:
-            raise ValueError("a selected source changed after its copy")
+    for source, paths, closure in copied_closures:
+        if _assembly_closure(source, paths, out) != closure:
+            raise ValueError("selected dependency coordinates changed while copying")
+    copier.verify()
     return seal(
         out,
         kind="selected-real",
@@ -708,9 +831,8 @@ def corpus_from_files(
     # file there (production does not ingest a linked file).
     home = Path(os.path.abspath(home))
     sources = [(Path(os.path.abspath(source.root)), source) for source in default_sample_sources(home)]
-    #: Each session-unit source's units, read once: ``{file: unit files}``.
-    unit_of: dict[str, dict[Path, list[Path]]] = {}
-    copied: set[Path] = set()
+    copier = _CorpusCopy()
+    selected = {}
     for named in files:
         file = Path(os.path.abspath(named))
         resolved = file.resolve(strict=True)
@@ -730,20 +852,17 @@ def corpus_from_files(
         recognition = recognize_source_class(Provider(admitted[0].origin), resolved)
         if recognition is not None and recognition.source_class != "session":
             raise ValueError(f"{named} is not a session transcript: {recognition.reason}")
-        unit = [file]
-        if admitted[0].session_units:
-            if admitted[0].origin not in unit_of:
-                unit_of[admitted[0].origin] = {
-                    Path(os.path.abspath(path)): [Path(os.path.abspath(member)) for member in members]
-                    for _key, members, _size in _units(admitted[0])
-                    for path in members
-                }
-            unit = unit_of[admitted[0].origin].get(file, unit)
-        for member in unit:
-            if member in copied:
-                continue
-            copied.add(member)
-            _copy_private(member, out / "home" / member.relative_to(home))
+        source = admitted[0]
+        key = (source.origin, _unit_key(source, file))
+        if key in selected:
+            continue
+        unit = _unit_paths(source, file)
+        closure = _copy_closure(out, source, unit, copier)
+        selected[key] = (source, file, unit, closure)
+    for source, named, unit, closure in selected.values():
+        if _unit_paths(source, named) != unit or _assembly_closure(source, unit, out) != closure:
+            raise ValueError("named source dependency membership changed while copying")
+    copier.verify()
     staged: set[str] = set()
     for origin, file in exports:
         if origin not in EXPORT_ORIGINS:

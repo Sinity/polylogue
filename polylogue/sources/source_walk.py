@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import stat
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -139,22 +140,50 @@ def _outside_foreign_archive(path: Path, *, base: Path, destination: Path | None
 
 
 def layout_source_paths(
-    name: str, base: Path, *, destination: Path | None = None, layout: SourceLayout | None = None
+    name: str,
+    base: Path,
+    *,
+    destination: Path | None = None,
+    layout: SourceLayout | None = None,
+    start: Path | None = None,
+    scope: Callable[[Path], bool] | None = None,
 ) -> list[Path]:
-    """Every regular file ``base``'s layout admits, in discovery order.
+    """Regular files admitted by the original root's native layout.
 
-    ``layout`` defaults to the one ``name`` declares.
+    A scoped walk keeps that root and its admission rules. ``scope`` bounds
+    traversal only; it cannot admit a file or directory outside the layout.
+    Scoped faults refuse the requested closure instead of hiding a member.
     """
-
     from polylogue.sources.live.discovery import _source_path_steps
     from polylogue.sources.live.watcher import WatchSource
+    from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 
     source = WatchSource(name=name, root=base, layout=layout if layout is not None else source_layout_for(name))
-    return [
-        path
-        for path in _source_path_steps(source, (source,), after=None)
-        if path is not None and _outside_foreign_archive(path, base=base, destination=destination)
-    ]
+    faults: list[WalkFault] = []
+
+    def record(path: Path, disposition: str, reason: str) -> None:
+        if disposition == "fault":
+            faults.append(WalkFault(path, reason))
+
+    scoped = start is not None or scope is not None
+    paths = []
+    for path in _source_path_steps(
+        source,
+        (source,),
+        after=None,
+        start=start,
+        scope=scope,
+        on_disposition=record if scoped else None,
+    ):
+        if path is None:
+            continue
+        if _outside_foreign_archive(path, base=base, destination=destination):
+            paths.append(path)
+        elif scoped:
+            faults.append(WalkFault(path, "foreign archive member"))
+    if faults:
+        raise WalkRefusedError("scoped source closure was refused", faults)
+    return paths
 
 
 def layout_source_candidates(name: str, base: Path) -> list[Path]:
