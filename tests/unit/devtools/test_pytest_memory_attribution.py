@@ -372,13 +372,15 @@ def test_actual_launch_owns_detached_child_and_excludes_shared_peer(
     command = [sys.executable, "-c", DETACHED_PROGRAM, str(tmp_path)]
     try:
         if route == "held":
+            started = time.monotonic()
             code, receipt = pytest_slot._run_held_admitted(
                 command,
+                execution_started=started,
                 cwd=str(tmp_path),
                 env=environment,
                 stdout=None,
                 on_exit=lambda: None,
-                started=time.monotonic(),
+                started=started,
                 worktree_provenance=None,
                 profile=FOCUSED_CHARGE,
                 sizing=None,
