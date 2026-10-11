@@ -11,6 +11,7 @@ container through acquisition's ZIP admission (polylogue-0y17g).
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import zipfile
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAd
 from polylogue.sources.source_acquisition_components import zip_acquisition_fingerprint
 from polylogue.storage import backup_package as archive_backup
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.source_blob_restoration import stage_blob_from_recorded_source
+from polylogue.storage.source_blob_restoration import retained_source_location, stage_blob_from_recorded_source
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -85,11 +86,13 @@ _CASES = {
 }
 
 
-def _seed(root: Path, case: _Case) -> tuple[str, str, str]:
+def _seed(
+    root: Path, case: _Case, *, sources: Path | None = None, filename: str = "rollout.jsonl"
+) -> tuple[str, str, str]:
     """Seed one raw whose blob is absent and whose recorded source holds it."""
     bootstrap_archive_root(root)
-    sources = root / "sources"
-    sources.mkdir()
+    sources = sources if sources is not None else root / "sources"
+    sources.mkdir(parents=True)
     container: Path | None = None
     if case.zip_member:
         container = sources / "export.zip"
@@ -98,7 +101,7 @@ def _seed(root: Path, case: _Case) -> tuple[str, str, str]:
         source_path = f"{container}:conversation.json"
         capture_mode, origin = "chatgpt", "chatgpt-export"
     else:
-        path = sources / "rollout.jsonl"
+        path = sources / filename
         path.write_bytes(case.source)
         source_path = str(path)
         capture_mode, origin = "codex", "codex-session"
@@ -197,6 +200,63 @@ def test_both_routes_prove_and_restore_the_same_window(tmp_path: Path, name: str
 
     assert [proof["kind"] for proof in proofs] == [case.kind], unproven
     assert (restored, reason) == (True, None)
+
+
+@pytest.mark.parametrize("directory", ["inbox", "browser-capture", "hooks"])
+@pytest.mark.parametrize("name", ["direct_file", "zip_member"])
+@pytest.mark.parametrize("original_present", [True, False])
+def test_recorded_source_precedence_and_absent_source_relocation(
+    tmp_path: Path, directory: str, name: str, original_present: bool
+) -> None:
+    """Both consumers must recover exact bytes from the authoritative location.
+
+    Restoring relocation-first selection fails the present-original cases;
+    removing relocation fails the absent-original cases. A loose ZIP-looking
+    colon filename must stay literal without a captured member receipt.
+    """
+    root = tmp_path / "archive"
+    case = _CASES[name]
+    raw_id, blob_hash, source_path = _seed(
+        root, case, sources=tmp_path / "original" / directory, filename="loose.zip:conversation.json"
+    )
+    original = tmp_path / "original" / directory / ("export.zip" if case.zip_member else "loose.zip:conversation.json")
+    relocated = root / directory / original.name
+    relocated.parent.mkdir()
+    original_bytes = original.read_bytes()
+    if original_present:
+        if case.zip_member:
+            with zipfile.ZipFile(relocated, "w") as bundle:
+                bundle.writestr("conversation.json", dumps_bytes({"id": "wrong", "mapping": {}}))
+        else:
+            relocated.write_bytes(_EARLIER)
+    else:
+        original.replace(relocated)
+    proofs, unproven = _backup_proof(root, blob_hash)
+    assert [proof["kind"] for proof in proofs] == [case.kind], unproven
+    assert _raw_restoration(root, raw_id, blob_hash, source_path) == (True, None)
+    assert (original if original_present else relocated).read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("fault", [PermissionError(13, "denied"), ValueError("invalid path")])
+def test_recorded_source_stat_fault_cannot_authorize_relocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: Exception
+) -> None:
+    original = tmp_path / "original" / "inbox" / "input.jsonl"
+    root = tmp_path / "archive"
+    relocated = root / "inbox" / original.name
+    relocated.parent.mkdir(parents=True)
+    relocated.write_bytes(_RECORD)
+    stat = Path.stat
+
+    def fail_original(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == original:
+            raise fault
+        return stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", fail_original)
+    with pytest.raises(type(fault)) as refused:
+        retained_source_location({"source_path": str(original)}, root)
+    assert refused.value is fault
 
 
 @pytest.mark.parametrize("name", sorted(_CASES))
