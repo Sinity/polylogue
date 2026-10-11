@@ -27,7 +27,7 @@ from typing import IO, Any
 from devtools.pytest_invocation import CLOSED_WORLD_COLLECTION_ARGS, effective_hypothesis_profile
 from devtools.pytest_options import declared_testmon_environment
 from devtools.testmon_provision import testmon_environment
-from devtools.verify_runs import aggregate_pytest_statistics, git_worktree_content_sha256
+from devtools.verify_runs import aggregate_pytest_statistics, git_worktree_content_sha256, wrapper_phase
 
 
 class ExecutionSourceGuard:
@@ -55,22 +55,24 @@ class ExecutionSourceGuard:
                 check=True,
             )
             paths = sorted(set(listed.stdout.split(b"\0")) - {b""})
-            for name in paths:
-                if Path(os.fsdecode(name)).parts[0] in {".git", ".venv", ".cache"}:
-                    raise OSError("declared source overlaps a runtime binding")
-                source, destination = self.root / os.fsdecode(name), self.copy / os.fsdecode(name)
-                try:
-                    mode = source.lstat().st_mode
-                except FileNotFoundError:
-                    continue
-                if not stat.S_ISREG(mode):
-                    raise OSError("declared source is not a regular file")
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                # Copy bytes, never links: writes through original hardlink or
-                # mmap aliases cannot change the executed cohort.
-                shutil.copyfile(source, destination)
-                destination.chmod(stat.S_IMODE(mode))
-            self.digest = git_worktree_content_sha256(self.copy, paths=paths)
+            with wrapper_phase("source.copy"):
+                for name in paths:
+                    if Path(os.fsdecode(name)).parts[0] in {".git", ".venv", ".cache"}:
+                        raise OSError("declared source overlaps a runtime binding")
+                    source, destination = self.root / os.fsdecode(name), self.copy / os.fsdecode(name)
+                    try:
+                        mode = source.lstat().st_mode
+                    except FileNotFoundError:
+                        continue
+                    if not stat.S_ISREG(mode):
+                        raise OSError("declared source is not a regular file")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    # Copy bytes, never links: writes through original hardlink or
+                    # mmap aliases cannot change the executed cohort.
+                    shutil.copyfile(source, destination)
+                    destination.chmod(stat.S_IMODE(mode))
+            with wrapper_phase("source.snapshot_hash"):
+                self.digest = git_worktree_content_sha256(self.copy, paths=paths)
             if self.digest is None:
                 raise OSError("copied source could not be identified")
             # Keep these owners at their declared paths after the root overlay.

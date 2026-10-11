@@ -613,3 +613,21 @@ def test_managed_retired_destination_is_refused_in_an_old_parent_environment() -
     assert verify_history_path(env={"POLYLOGUE_VERIFY_HISTORY_PATH": "/custom/verification/history.jsonl"}) == Path(
         "/custom/verification/history.jsonl"
     )
+
+
+def test_wrapper_phase_records_failure_without_payload_or_masking(tmp_path, monkeypatch):
+    from devtools.verify_runs import wrapper_phase
+
+    monkeypatch.chdir(tmp_path)
+    failure = ValueError("synthetic private detail")
+    with pytest.raises(ValueError) as caught:
+        with wrapper_phase("history.identity_scan"):
+            raise failure
+    assert caught.value is failure
+    files = list((tmp_path / ".cache/verify/wrapper-phases").glob("*.jsonl"))
+    assert len(files) == 1
+    row = json.loads(files[0].read_text())
+    assert row["phase"] == "history.identity_scan" and row["failed"] is True
+    assert row["finished_ns"] >= row["started_ns"]
+    assert row["elapsed_s"] >= 0 and row["process_cpu_s"] >= 0
+    assert "synthetic private detail" not in files[0].read_text()

@@ -94,6 +94,7 @@ from devtools.verify_runs import (
     pytest_command_worker_request,
     reconcile_and_record_verify_runs,
     verify_history_path,
+    wrapper_phase,
 )
 from devtools.verify_test_collection import collect_selection
 from devtools.worker_memory import CHARGE_PROFILE_ENV, CORPUS_MAX_WORKERS
@@ -1181,9 +1182,12 @@ def _finish_and_record_verification(
         workload_receipt=workload_receipt,
     )
     history_path = verify_history_path(root=ROOT)
-    append_verify_history(payload, path=history_path)
-    append_verification_evidence(payload)
-    prune_successful_verify_runs(root=ROOT, history_path=history_path)
+    with wrapper_phase("publication.semantic_history"):
+        append_verify_history(payload, path=history_path)
+    with wrapper_phase("publication.durable_evidence"):
+        append_verification_evidence(payload)
+    with wrapper_phase("publication.retention"):
+        prune_successful_verify_runs(root=ROOT, history_path=history_path)
     if exit_code != 0:
         try:
             from polylogue.context.failure_seed import write_failure_seed

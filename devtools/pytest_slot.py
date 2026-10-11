@@ -54,6 +54,7 @@ from devtools.pytest_memory_admission import (
     admission_not_ready,
     admit_width,
 )
+from devtools.verify_runs import wrapper_phase
 from devtools.worker_memory import ChargeProfile, charge_profile_for, corroborate_profile, resize_worker_argument
 
 __all__ = [
@@ -1144,7 +1145,8 @@ def _run_held(
     evidence is worth the most.
     """
     started = time.monotonic()
-    worktree_provenance = _focused_worktree_provenance(cwd, env)
+    with wrapper_phase("pytest.provenance_before_admission"):
+        worktree_provenance = _focused_worktree_provenance(cwd, env)
     profile, max_workers = charge_profile_for(env)
     ledger = admission_ledger(env)
     try:
@@ -1234,9 +1236,11 @@ def _run_held_admitted(
         _slot_result_path(result_path).unlink(missing_ok=True)
     from devtools.execution_source import complete_execution, finish_execution, start_execution
 
-    guard = start_execution(Path(cwd), env)
+    with wrapper_phase("pytest.readonly_snapshot"):
+        guard = start_execution(Path(cwd), env)
     try:
-        worktree_provenance = _focused_worktree_provenance(cwd, env)
+        with wrapper_phase("pytest.provenance_after_snapshot"):
+            worktree_provenance = _focused_worktree_provenance(cwd, env)
         execution_command = guard.command(command, env, worktree_provenance) if guard is not None else command
         if guard is not None and worktree_provenance is not None:
             worktree_provenance["capture_source"] = "readonly_snapshot"
@@ -1352,7 +1356,8 @@ def _run_held_admitted(
             raise
         finally:
             _stop_execution_process(process, guard)
-            stability = finish_execution(guard, env, complete=complete_execution(command, env, returncode))
+            with wrapper_phase("pytest.physical_settlement"):
+                stability = finish_execution(guard, env, complete=complete_execution(command, env, returncode))
     if stability is not None and stability["status"] != "stable":
         returncode = 125
     return returncode, _slot_receipt(
@@ -1779,7 +1784,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return run_focused_tests(arguments)
     finally:
-        remove_temp_tree(archive_root)
+        with wrapper_phase("pytest.isolated_archive_cleanup"):
+            remove_temp_tree(archive_root)
 
 
 if __name__ == "__main__":  # pragma: no cover - console entry point
