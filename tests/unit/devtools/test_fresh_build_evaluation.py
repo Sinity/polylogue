@@ -92,6 +92,147 @@ def _receipt(seconds: float = 10.0, *, candidate: str = "A") -> dict[str, Any]:
     }
 
 
+def _practical_policy() -> dict[str, Any]:
+    from devtools.fresh_build_bench.acceptance import POLICY_FORMAT
+
+    return {
+        "format": POLICY_FORMAT,
+        "target_metric": "promotion_s",
+        "effect": {"minimum_absolute": 1.0, "minimum_relative": 0.1},
+        "resources": {
+            "scope": "sampled-daemon-tree",
+            "cpu_to_promotion_s": {"absolute_slack": 0.2, "relative_slack": 0.1, "ceiling": 3.0},
+            "rss_sampled_peak_bytes": {"absolute_slack": 100, "relative_slack": 0.1, "ceiling": 2 << 20},
+        },
+        "cleanup": "bound-daemon-shutdown; descendant-external-unclaimed",
+        "confirmation": {
+            "method": "two-abba-all-pairs-v1",
+            "purpose": "held-out-confirmation",
+            "held_out_basis": {
+                "attested_untuned": True,
+                "statement": "Reserved selection before tuning",
+                "discovery": None,
+            },
+        },
+    }
+
+
+def _practical_samples() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    from devtools.fresh_build_bench.acceptance import LAUNCH_FORMAT, SCHEDULE, digest
+
+    samples: list[dict[str, Any]] = [
+        {"arm": arm, "receipt": _receipt(10 if arm == "A" else 5, candidate=arm)} for arm in SCHEDULE
+    ]
+    launch = {
+        "format": LAUNCH_FORMAT,
+        "policy": _practical_policy(),
+        "schedule": SCHEDULE,
+        "candidate": {arm: _receipt(candidate=arm)["candidate"] for arm in "AB"},
+        "corpus_digest": "sealed",
+        "config_digest": "fixed",
+        "environment": {},
+        "benchmark_implementation_sha256": "driver",
+        "held_out_nonoverlap": "unavailable; operator attestation",
+    }
+    for index, sample in enumerate(samples):
+        receipt = sample["receipt"]
+        binding = {
+            "path": "/synthetic/launch.json",
+            "sha256": digest(launch),
+            "ordinal": index + 1,
+            "arm": sample["arm"],
+        }
+        receipt.update(acceptance_binding=binding, acceptance_launch=launch, benchmark_implementation_sha256="driver")
+        receipt["checks"]["acceptance_launch_unchanged"] = True
+        receipt["evidence_sha256"]["acceptance"] = "launch-copy-seal"
+        receipt["effective_compute_policy"]["acceptance_binding"] = {**binding, "state": "bound-before-main"}
+        receipt["effective_compute_policy"]["recipe_binding"] = {
+            "imported_product_content": {"polylogue.work": sample["arm"]}
+        }
+    return samples, launch
+
+
+def test_frozen_practical_policy_accepts_four_predetermined_pairs_without_statistical_claim() -> None:
+    samples, launch = _practical_samples()
+    decision = evaluate_samples(samples, launch=launch)["performance_decision"]
+    assert decision["accepted"] and decision["state"] == "accepted"
+    assert [row["ordinals"] for row in decision["pairs"]] == [[1, 2], [3, 4], [5, 6], [7, 8]]
+    assert decision["claim"] == "selected-route-practical-repeatability"
+    assert decision["method"] == "two-abba-all-pairs-v1"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "absolute-effect",
+        "relative-effect",
+        "cpu",
+        "rss",
+        "missing-cpu",
+        "binding",
+        "posthoc",
+        "outputs",
+        "cleanup",
+        "imports",
+        "commit-only",
+        "partial",
+    ],
+)
+def test_practical_acceptance_refuses_missing_proof_and_one_losing_pair(change: str) -> None:
+    samples, launch = _practical_samples()
+    receipt = samples[5]["receipt"]
+    if change in {"absolute-effect", "relative-effect"}:
+        # The other three pairs still win. A median-only decision is wrong.
+        receipt["timing_s"]["promotion"] = 9.5
+        if change == "relative-effect":
+            samples[4]["receipt"]["timing_s"]["promotion"] = 100.0
+            receipt["timing_s"]["promotion"] = 95.0
+    elif change == "cpu":
+        receipt["process_tree"]["cpu_seconds_to_promotion"] = 2.3
+    elif change == "rss":
+        receipt["process_tree"]["rss_peak_bytes"] = 3 << 20
+    elif change == "missing-cpu":
+        receipt["process_tree"]["cpu_seconds_to_promotion"] = None
+    elif change == "binding":
+        receipt["acceptance_binding"]["ordinal"] = 1
+    elif change == "posthoc":
+        receipt["effective_compute_policy"]["acceptance_binding"] = None
+    elif change == "outputs":
+        receipt["output_fingerprint"]["digest"] = "changed"
+    elif change == "cleanup":
+        receipt["shutdown_evidence"]["state"] = "unknown"
+    elif change == "imports":
+        del receipt["effective_compute_policy"]["recipe_binding"]
+    elif change == "commit-only":
+        for sample in samples:
+            sample["receipt"]["effective_compute_policy"]["recipe_binding"]["imported_product_content"] = {
+                "polylogue.work": "same"
+            }
+    else:
+        samples.pop()
+    decision = evaluate_samples(samples, launch=launch)["performance_decision"]
+    assert not decision["accepted"] and decision["gaps"]
+
+
+@pytest.mark.parametrize("change", ["zero", "nan", "terminal", "hard-resource", "global-cleanup", "tuned"])
+def test_practical_policy_refuses_unsupported_claims_before_launch(change: str) -> None:
+    from devtools.fresh_build_bench.acceptance import validate_policy
+
+    policy = _practical_policy()
+    if change in {"zero", "nan"}:
+        policy["effect"]["minimum_absolute"] = 0 if change == "zero" else float("nan")
+    elif change == "terminal":
+        policy["target_metric"] = "terminal_observation_s"
+    elif change == "hard-resource":
+        policy["resources"]["scope"] = "hard-process-tree"
+    elif change == "global-cleanup":
+        policy["cleanup"] = "all-descendants-and-external"
+    else:
+        policy["confirmation"]["held_out_basis"]["attested_untuned"] = False
+    with pytest.raises(ValueError):
+        validate_policy(policy)
+
+
 @pytest.mark.parametrize("fingerprint,expected", [({"digest": "different", "tables": {}}, "fail"), (None, "unknown")])
 def test_faster_output_difference_or_missing_fingerprint_never_accepts(fingerprint: Any, expected: str) -> None:
     before, after = _receipt(), _receipt(1.0, candidate="B")

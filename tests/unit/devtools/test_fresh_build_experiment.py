@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,140 @@ import pytest
 from devtools.fresh_build_bench.corpus import SampleSource, select_real, verify_manifest
 from devtools.fresh_build_bench.experiment import reduce_experiment, run_experiment
 from devtools.fresh_build_bench.run import RunConfig
+
+
+@pytest.fixture
+def external_practical_scratch() -> Iterator[Path]:
+    from devtools.pytest_slot import ISOLATED_ARCHIVE_PARENT
+
+    ISOLATED_ARCHIVE_PARENT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="practical-cli-", dir=ISOLATED_ARCHIVE_PARENT) as directory:
+        yield Path(directory)
+
+
+def test_cli_practical_experiment_freezes_before_launch_and_report_rechecks_constituents(
+    external_practical_scratch: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from devtools.fresh_build_bench import experiment, report, run
+    from devtools.fresh_build_bench.acceptance import bootstrap_binding, digest
+    from devtools.fresh_build_bench.cli import main
+    from devtools.fresh_build_bench.corpus import seal
+    from tests.unit.devtools.test_fresh_build_evaluation import _practical_policy, _receipt
+
+    tmp_path = external_practical_scratch
+    driver = tmp_path / "driver"
+    driver.mkdir()
+    corpus = tmp_path / "corpus"
+    neutral = corpus / "home" / ".codex" / "sessions" / "neutral.jsonl"
+    neutral.parent.mkdir(parents=True)
+    neutral.write_text("{}\n")
+    seal(corpus, kind="selected-real", parameters={})
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps(_practical_policy()))
+    candidates = {arm: tmp_path / arm for arm in "AB"}
+    for candidate in candidates.values():
+        candidate.mkdir()
+    monkeypatch.setattr(run, "candidate_identity", lambda path: _receipt(candidate=path.name)["candidate"])
+    monkeypatch.setattr(run, "environment", lambda config: {})
+    seen = []
+
+    def build(config: RunConfig, **kwargs: Any) -> dict[str, Any]:
+        binding = config.acceptance_binding
+        assert binding is not None
+        launch_path = Path(binding["path"])
+        launch = json.loads(launch_path.read_text())
+        assert launch["schedule"] == "ABBAABBA" and digest(launch) == binding["sha256"]
+        # Exercise the daemon's before-main policy reader, not a declared flag.
+        monkeypatch.setenv("POLYLOGUE_BENCH_ACCEPTANCE", json.dumps(binding))
+        actual = bootstrap_binding()
+        config.work.mkdir()
+        receipt = _receipt(10 if config.label == "A" else 5, candidate=config.label)
+        receipt.update(
+            acceptance_binding=binding,
+            acceptance_launch=launch,
+            benchmark_implementation_sha256=launch["benchmark_implementation_sha256"],
+        )
+        receipt["corpus"]["digest"] = launch["corpus_digest"]
+        receipt["config"]["digest"] = launch["config_digest"]
+        receipt["checks"]["acceptance_launch_unchanged"] = True
+        receipt["evidence_sha256"]["acceptance"] = "copy-seal"
+        receipt["effective_compute_policy"]["acceptance_binding"] = actual
+        receipt["effective_compute_policy"]["recipe_binding"] = {
+            "imported_product_content": {"polylogue.work": config.label}
+        }
+        (config.work / "receipt.json").write_text(json.dumps(receipt))
+        seen.append(config.work)
+        return receipt
+
+    monkeypatch.setattr(experiment, "run_build", build)
+    work = tmp_path / "experiment"
+    args = [
+        "experiment",
+        "--corpus",
+        str(corpus),
+        "--work",
+        str(work),
+        "--candidate",
+        str(driver),
+        "--before",
+        str(candidates["A"]),
+        "--after",
+        str(candidates["B"]),
+        "--acceptance-policy",
+        str(policy_path),
+        "--accept",
+    ]
+    assert main(args) == 0
+    capsys.readouterr()
+    assert len(seen) == 8 and len(set(seen)) == 8
+    recording = work / "experiment.json"
+    original = recording.read_bytes()
+    # Keep the existing receipt-refresh evidence checks separately covered;
+    # this test discriminates experiment sealing and policy reevaluation.
+    monkeypatch.setattr(report, "refresh", lambda path: json.loads(path.read_text()))
+    assert main(["report", str(recording), "--accept", "--json"]) == 0
+    accepted = json.loads(capsys.readouterr().out)
+    assert accepted["evaluation"]["performance_decision"]["accepted"]
+    assert recording.read_bytes() == original
+    # Editing the stored decision alone cannot cause an acceptance.
+    document = json.loads(original)
+    document["evaluation"]["performance_decision"]["accepted"] = True
+    document["acceptance_launch"]["policy"]["effect"]["minimum_absolute"] = 1000
+    recording.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="frozen launch changed"):
+        main(["report", str(recording), "--accept"])
+
+
+def test_freeze_validates_declared_discovery_and_selected_unit_nonoverlap(tmp_path: Path) -> None:
+    from devtools.fresh_build_bench.acceptance import freeze_launch, selected_unit_hashes
+    from tests.unit.devtools.test_fresh_build_evaluation import _practical_policy
+
+    parameters = {"provenance": [{"origin": "codex", "source_root": "/synthetic/source", "unit": "session-a"}]}
+    recording = tmp_path / "receipt.json"
+    recording.write_text(
+        json.dumps({"corpus": {"digest": "discovery", "selected_unit_sha256": selected_unit_hashes(parameters)}})
+    )
+    discovery = tmp_path / "discovery.json"
+    discovery.write_text(
+        json.dumps(
+            {
+                "format": "polylogue.fresh-build-experiment.v1",
+                "samples": [{"path": str(recording), "sha256": hashlib.sha256(recording.read_bytes()).hexdigest()}],
+            }
+        )
+    )
+    policy = _practical_policy()
+    policy["confirmation"]["held_out_basis"]["discovery"] = {
+        "path": str(discovery),
+        "sha256": hashlib.sha256(discovery.read_bytes()).hexdigest(),
+    }
+    config = RunConfig(tmp_path / "corpus", tmp_path / "work", tmp_path, "python", "A")
+    manifest = {"kind": "selected-real", "digest": "confirmation", "parameters": parameters}
+    with pytest.raises(ValueError, match="session units overlap"):
+        freeze_launch(policy, manifest, config, {"A": tmp_path, "B": tmp_path})
+    discovery.write_text("{}")
+    with pytest.raises(ValueError, match="discovery reference changed"):
+        freeze_launch(policy, manifest, config, {"A": tmp_path, "B": tmp_path})
 
 
 def test_selection_keeps_shared_dependencies_once_and_excludes_whale(tmp_path: Path) -> None:
@@ -83,6 +219,14 @@ def _sample(arm: str, seconds: float, **changes: Any) -> dict[str, Any]:
             "product_binding": {"outcome": "bound"},
         },
         "readiness_probe": {"outcome": "bound"},
+        "diagnostic_capture": {"sha256": "synthetic-stacks"},
+        "evidence_sha256": {"events": "synthetic-events"},
+        "shutdown_evidence": {
+            "format": "polylogue.daemon-shutdown-evidence.v1",
+            "state": "pass",
+            "bound": True,
+            "input_sha256": {"events": "synthetic-events", "stacks": "synthetic-stacks"},
+        },
         "timing_s": {"promotion": seconds, "terminal": seconds + 1},
         "output_fingerprint": {"digest": "same"},
     }

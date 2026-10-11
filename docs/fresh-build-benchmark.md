@@ -126,7 +126,7 @@ Each metric reports its numeric availability separately from qualification for a
 
 The instrumentation axis requires recorded actual sampler coverage and a candidate-bound work-observation handshake whose enabled mode matches the declared mode. Historical absence is unknown, including when the requested mode was off. Different actual modes, including work observation on versus off, prevent qualified speed-metric comparison. Stack capability describes the actual in-daemon sampler coverage: a profile refusal prevents stack attribution, while matched refusals can retain bound timing. Per-thread CPU accounting supplies no native callchains. Refresh validates sealed sampler evidence and never invents historical import or instrumentation proof.
 
-`compare BEFORE AFTER --accept` exits non-zero unless the performance decision accepts the optimization. This increment implements no confirmed acceptance method, so that exit is always non-zero with explicit gaps. `--metric` selects the inspected target (`promotion_s`, `terminal_observation_s`, `cpu_to_promotion_s` or `rss_sampled_peak_bytes`); it cannot create a launch policy. Unplanned single pairs, A/A calibration and separated sample ranges establish no speed improvement. Choosing a budget after inspecting results cannot turn a losing speed claim into acceptance. Future acceptance needs a claim policy frozen before launch, a confirmation method and a resource policy. A clean daemon exit and drained logs leave descendant and external resource cleanup unknown.
+`compare BEFORE AFTER --accept` remains non-zero: a single pair has no launch-frozen confirmation sequence. `--metric` selects the inspected target (`promotion_s`, `terminal_observation_s`, `cpu_to_promotion_s` or `rss_sampled_peak_bytes`); it cannot create a launch policy. Unplanned pairs, A/A calibration and separated descriptive ranges establish no practical decision. Choosing a budget after inspecting results cannot create acceptance. Opt-in experiment acceptance is described below. A clean daemon exit and drained logs leave descendant and external resource cleanup unknown.
 
 ## Owner work observations
 
@@ -229,3 +229,42 @@ Promotion is a product event milestone. Terminal timing is the end of the first 
 Readiness is checked by a read-only subprocess using the measured arm's interpreter, isolated environment and explicit candidate import path. Its imported function path and source hash, interpreter, GIL state after imports, check window and helper CPU/wall cost are recorded in sealed `readiness.json`; the receipt binds the helper's hash. The helper starts no daemon, compute owner or profiler. Its cost is outside daemon resource samples and promotion timing, and it may interfere with product work. The readiness cache includes candidate path, source hash, interpreter, environment and helper hash. Checks start after promotion with zero debt and can expose ready domains while intake cursors remain incomplete. Invalid imports, process failures or an invalid census produce an observation refusal, never readiness. Known transient SQLite read failures retain retryable observation errors and are never cached as ready; binding requires an eventual successful census. Terminal success still requires complete cursors and every required domain.
 
 The receipt's `fts_row_count_equal` check compares indexable row counts. Exact output comparison separately hashes all FTS postings and relation contents. Derived refresh views rename the older count-only `fts_exact` field; historical receipt bytes remain unchanged.
+
+## Opt-in practical repeatability
+
+`experiment --acceptance-policy POLICY.json --accept` freezes an explicit policy, candidate identities, sealed corpus, interpreter/host configuration and schedule in an exclusively created `launch.json` before the first daemon launch. The policy owns the fixed schedule `ABBAABBA`, with fresh state for every run. Each actual daemon binds that launch before its main entry point, each receipt seals its launch copy, and refresh preserves the recordings. Policy-free experiments retain their descriptive behavior.
+
+This method makes an operational repeatability decision on the sealed selected inputs. It supplies **no statistical confidence or attribution error bound**. Host filesystem caches remain uncontrolled. The four predetermined adjacent pairs are ordinals 1/2, 3/4, 5/6 and 7/8. Every pair must meet both the absolute and relative promotion-time improvement thresholds, all sampled CPU/RSS guardrails, equivalent outputs, actual instrumentation and candidate binding, ordinary-route completion, and bound daemon shutdown. A winning median cannot rescue a losing pair.
+
+An example policy uses neutral illustrative thresholds. Choose the actual values before measuring confirmation:
+
+```json
+{
+  "format": "polylogue.fresh-build-practical-policy.v1",
+  "target_metric": "promotion_s",
+  "effect": {"minimum_absolute": 0.5, "minimum_relative": 0.1},
+  "resources": {
+    "scope": "sampled-daemon-tree",
+    "cpu_to_promotion_s": {"absolute_slack": 0.2, "relative_slack": 0.05, "ceiling": 30},
+    "rss_sampled_peak_bytes": {"absolute_slack": 1048576, "relative_slack": 0.05, "ceiling": 536870912}
+  },
+  "cleanup": "bound-daemon-shutdown; descendant-external-unclaimed",
+  "confirmation": {
+    "method": "two-abba-all-pairs-v1",
+    "purpose": "held-out-confirmation",
+    "held_out_basis": {
+      "attested_untuned": true,
+      "statement": "Reserved selection before tuning this candidate or these thresholds",
+      "discovery": null
+    }
+  }
+}
+```
+
+Effect thresholds must be finite and positive. For each pair the improvement must be at least `max(minimum_absolute, minimum_relative * before)`. Resource slack must be finite and nonnegative; each ceiling is mandatory, finite and positive. Each candidate resource value must be at most both its ceiling and `before + max(absolute_slack, relative_slack * before)`. Missing qualified resource evidence leaves the decision unavailable. CPU-to-promotion before the first process sample is unavailable, never a measured zero. RSS and CPU describe sampled daemon-tree observations; they cannot certify hard physical bounds or short-lived child spikes.
+
+The held-out basis is an explicit operator assumption about absence of tuning. When discovery evidence exists, set `discovery` to its private experiment `path` and `sha256`. Launch checks that reference and its immutable constituents, refuses an identical confirmation corpus, and checks session-unit nonoverlap when both selections recorded unit identities. Shared assembly dependencies may overlap. Missing historical unit evidence stays unavailable in the nonoverlap field; the attestation does not become verified proof. Private provenance stays in private artifacts, not published examples.
+
+Actual candidate import binding remains required. The observer also records content hashes of product modules imported in the measured daemon at shutdown. Different Git commits with identical observed imported content cannot create acceptance. An incomplete or unchanged observed treatment inventory leaves treatment difference unproven; it does not classify all unobserved product code as identical. An imported module difference itself does not attribute the measured effect to a particular executed body.
+
+`report EXPERIMENT.json --accept --json` rechecks immutable constituent hashes and evidence through the existing refresh reducer, recomputes the frozen decision, and exits zero only for acceptance. It writes a distinct view and preserves originals. It cannot attach a policy retrospectively or trust a stored accepted boolean. Unsupported policies are refused. Initial acceptance supports only promotion event time. Exact readiness transitions, terminal observation speed, hard resource ceilings, global descendant/external cleanup, installation, serving health and whole-corpus performance remain outside this policy. Terminal polling/scan/cache uncertainty remains visible in inspection.

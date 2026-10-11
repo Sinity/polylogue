@@ -1,7 +1,7 @@
 """Claim-specific reductions of existing receipts, without executing product work.
 
 Inspection, measured scope completion and optimization acceptance are separate.
-This evaluator has no confirmed speed-acceptance method or resource policy yet.
+Opt-in acceptance applies only the recorded practical repeatability policy.
 """
 
 from __future__ import annotations
@@ -232,7 +232,9 @@ def _actual_candidate(receipt: dict[str, Any]) -> str | None:
     )
 
 
-def evaluate_samples(samples: list[dict[str, Any]], *, target_metric: str = "promotion_s") -> dict[str, Any]:
+def evaluate_samples(
+    samples: list[dict[str, Any]], *, target_metric: str = "promotion_s", launch: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Evaluate existing paired evidence; choosing a metric cannot create a policy."""
     if target_metric not in METRICS:
         raise ValueError(f"unsupported target metric: {target_metric}")
@@ -329,7 +331,7 @@ def evaluate_samples(samples: list[dict[str, Any]], *, target_metric: str = "pro
     if equivalence["state"] != "pass":
         gaps.append("required_output_equivalence_not_confirmed")
     rejected = any(axis["state"] == "fail" for axis in (validity, scope, equivalence))
-    return {
+    result = {
         "measurement_validity": validity,
         "scope_completion": scope,
         "equivalence": equivalence,
@@ -347,6 +349,136 @@ def evaluate_samples(samples: list[dict[str, Any]], *, target_metric: str = "pro
             "reason": "descriptive samples and range separation are not optimization acceptance",
         },
     }
+    if launch is not None:
+        result["performance_decision"] = _practical_decision(samples, result, launch)
+    return result
+
+
+def _practical_decision(
+    samples: list[dict[str, Any]], evaluation: dict[str, Any], launch: dict[str, Any]
+) -> dict[str, Any]:
+    from devtools.fresh_build_bench.acceptance import (
+        LAUNCH_FORMAT,
+        RESOURCE_METRICS,
+        SCHEDULE,
+        controlled_environment,
+        digest,
+        validate_policy,
+    )
+
+    decision: dict[str, Any] = {
+        "state": "inconclusive",
+        "accepted": False,
+        "claim": "selected-route-practical-repeatability",
+        "target_metric": "promotion_s",
+        "method": "two-abba-all-pairs-v1",
+        "policy_sha256": digest(launch.get("policy")),
+        "launch_sha256": digest(launch),
+        "gaps": [],
+        "pairs": [],
+        "inference": "operational repeatability only; no statistical confidence or attribution error bound",
+        "assumptions": ["operator attests held-out selection was not used to tune this candidate or thresholds"],
+        "resource_scope": "sampled daemon tree; short-lived child CPU and RSS spikes may be missed",
+        "cleanup_scope": "bound daemon shutdown; descendant and external cleanup unknown and unclaimed",
+    }
+    try:
+        policy = validate_policy(launch["policy"])
+    except (KeyError, ValueError) as exc:
+        decision.update(state="refused", gaps=["unsupported_policy"], reason=str(exc))
+        return decision
+    failed: list[str] = []
+    unavailable: list[str] = []
+    if launch.get("format") != LAUNCH_FORMAT or launch.get("schedule") != SCHEDULE:
+        failed.append("invalid_frozen_launch")
+    if len(samples) != len(SCHEDULE) or "".join(sample.get("arm", "") for sample in samples) != SCHEDULE:
+        unavailable.append("planned_confirmation_incomplete")
+    imported: dict[str, set[str]] = {"A": set(), "B": set()}
+    for i, sample in enumerate(samples):
+        receipt, arm = sample["receipt"], sample["arm"]
+        binding = receipt.get("acceptance_binding")
+        actual_binding = (receipt.get("effective_compute_policy") or {}).get("acceptance_binding")
+        if not binding or not actual_binding:
+            unavailable.append(f"sample_{i + 1}_launch_binding_unavailable")
+            continue
+        if (
+            binding.get("sha256") != digest(launch)
+            or binding.get("ordinal") != i + 1
+            or binding.get("arm") != arm
+            or actual_binding != {**binding, "state": "bound-before-main"}
+            or receipt.get("acceptance_launch") != launch
+            or receipt.get("candidate") != (launch.get("candidate") or {}).get(arm)
+            or (receipt.get("corpus") or {}).get("digest") != launch.get("corpus_digest")
+            or (receipt.get("config") or {}).get("digest") != launch.get("config_digest")
+            or controlled_environment(receipt.get("environment") or {}) != launch.get("environment")
+            or receipt.get("benchmark_implementation_sha256", "").split("+refresh:")[0]
+            != launch.get("benchmark_implementation_sha256")
+            or not (receipt.get("evidence_sha256") or {}).get("acceptance")
+            or (receipt.get("checks") or {}).get("acceptance_launch_unchanged") is not True
+        ):
+            failed.append(f"sample_{i + 1}_frozen_launch_mismatch")
+        inventory = ((receipt.get("effective_compute_policy") or {}).get("recipe_binding") or {}).get(
+            "imported_product_content"
+        )
+        if not inventory or not all(isinstance(value, str) and value for value in inventory.values()):
+            unavailable.append(f"sample_{i + 1}_imported_treatment_content_unavailable")
+        else:
+            imported[arm].add(digest(inventory))
+    for axis in ("measurement_validity", "scope_completion", "equivalence", "instrumentation_comparability"):
+        if evaluation[axis]["state"] == "fail":
+            failed.append(f"{axis}_failed")
+        elif evaluation[axis]["state"] != "pass":
+            unavailable.append(f"{axis}_unknown")
+    if evaluation["experiment_kind"] == "A/A-calibration":
+        failed.append("identical_actual_candidate_calibration")
+    if any(len(values) > 1 for values in imported.values()):
+        unavailable.append("imported_treatment_content_changed_within_arm")
+    if all(len(values) == 1 for values in imported.values()) and imported["A"] == imported["B"]:
+        unavailable.append("no_observed_imported_treatment_difference")
+    for metric in ("promotion_s", *RESOURCE_METRICS):
+        if not evaluation["metrics"][metric]["qualified"]:
+            unavailable.append(f"{metric}_not_qualified")
+    if not failed and not unavailable:
+        for index in range(0, len(SCHEDULE), 2):
+            pair = {samples[j]["arm"]: evaluate_run(samples[j]["receipt"]) for j in (index, index + 1)}
+            a = pair["A"]["metrics"]["promotion_s"]["value"]
+            b = pair["B"]["metrics"]["promotion_s"]["value"]
+            effect = policy["effect"]
+            threshold = max(effect["minimum_absolute"], effect["minimum_relative"] * a)
+            effect_pass = a > 0 and b > 0 and a - b >= threshold
+            guardrails = {}
+            for metric in RESOURCE_METRICS:
+                before = pair["A"]["metrics"][metric]["value"]
+                after = pair["B"]["metrics"][metric]["value"]
+                limits = policy["resources"][metric]
+                relative_limit = before + max(limits["absolute_slack"], limits["relative_slack"] * before)
+                passed = after <= min(relative_limit, limits["ceiling"])
+                guardrails[metric] = {
+                    "before": before,
+                    "after": after,
+                    "limit": min(relative_limit, limits["ceiling"]),
+                    "pass": passed,
+                }
+                if not passed:
+                    failed.append(f"pair_{index // 2 + 1}_{metric}_guardrail_failed")
+            decision["pairs"].append(
+                {
+                    "ordinals": [index + 1, index + 2],
+                    "before": a,
+                    "after": b,
+                    "improvement": a - b,
+                    "required_improvement": threshold,
+                    "effect_pass": effect_pass,
+                    "resources": guardrails,
+                }
+            )
+            if not effect_pass:
+                failed.append(f"pair_{index // 2 + 1}_practical_effect_not_met")
+    decision["gaps"] = failed + unavailable
+    decision["state"] = "rejected" if failed else "unavailable" if unavailable else "accepted"
+    decision["accepted"] = decision["state"] == "accepted"
+    decision["held_out_basis"] = policy["confirmation"]["held_out_basis"]
+    decision["held_out_nonoverlap"] = launch.get("held_out_nonoverlap")
+    return decision
 
 
 def evaluate_comparison(

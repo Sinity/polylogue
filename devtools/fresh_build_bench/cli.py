@@ -125,11 +125,18 @@ def _parser() -> argparse.ArgumentParser:
     experiment.add_argument("--after", type=Path, required=True)
     experiment.add_argument("--order", default="ABBA", help="balanced sequence of A and B")
     experiment.add_argument("--repetitions", type=int, default=1)
+    experiment.add_argument(
+        "--acceptance-policy", type=Path, help="freeze an explicit eight-run practical policy before launch"
+    )
+    experiment.add_argument("--accept", action="store_true", help="exit zero only for accepted practical repeatability")
 
     report = commands.add_parser("report", help="render one receipt")
     report.add_argument("receipt", type=Path)
     report.add_argument("--json", action="store_true")
     report.add_argument("--refresh", action="store_true", help="recompute derived sections from the run directory")
+    report.add_argument(
+        "--accept", action="store_true", help="recheck frozen experiment evidence and require acceptance"
+    )
 
     compare = commands.add_parser(
         "compare", help="inspect receipt comparability and output differences; no speed acceptance"
@@ -313,6 +320,9 @@ def main(argv: list[str] | None = None) -> int:
                 for path in (args.work.resolve(), args.corpus.resolve()):
                     if path == candidate or candidate in path.parents:
                         raise SystemExit("experiment inputs and output must live outside both candidates")
+            if args.accept and args.acceptance_policy is None:
+                raise SystemExit("--accept requires --acceptance-policy frozen before experiment launch")
+            policy = json.loads(args.acceptance_policy.read_text()) if args.acceptance_policy else None
             document = run_experiment(
                 config,
                 before=args.before,
@@ -320,23 +330,35 @@ def main(argv: list[str] | None = None) -> int:
                 order=args.order,
                 repetitions=args.repetitions,
                 progress=lambda line: print(line, flush=True),
+                acceptance_policy=policy,
             )
             print(json.dumps(document, indent=1))
-            return 0 if document["qualified"] else 1
+            return (
+                0
+                if (
+                    document["evaluation"]["performance_decision"]["accepted"] if args.accept else document["qualified"]
+                )
+                else 1
+            )
         receipt = run_build(config, progress=lambda line: print(line, flush=True))
         print(render(receipt))
         return 0 if receipt["qualified"] else 1
     if args.command == "report":
         from devtools.fresh_build_bench.report import render
 
-        if args.refresh:
+        original = json.loads(args.receipt.read_text())
+        if args.accept and original.get("format") != "polylogue.fresh-build-experiment.v1":
+            print(json.dumps({"accepted": False, "state": "refused", "gaps": ["planned_experiment_required"]}))
+            return 1
+        if args.refresh or args.accept:
             from devtools.fresh_build_bench.report import refresh
 
             if json.loads(args.receipt.read_text()).get("format") == "polylogue.fresh-build-experiment.v1":
                 from devtools.fresh_build_bench.experiment import refresh_experiment
 
-                print(json.dumps(refresh_experiment(args.receipt), indent=1, sort_keys=True))
-                return 0
+                document = refresh_experiment(args.receipt)
+                print(json.dumps(document, indent=1, sort_keys=True))
+                return 0 if not args.accept or document["evaluation"]["performance_decision"]["accepted"] else 1
             receipt = refresh(args.receipt)
         else:
             receipt = json.loads(args.receipt.read_text(encoding="utf-8"))
