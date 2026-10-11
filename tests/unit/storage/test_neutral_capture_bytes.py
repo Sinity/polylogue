@@ -153,6 +153,11 @@ def test_neutral_worker_charges_only_its_declared_sidecar_scope(tmp_path: Path) 
             assert dict(page.sidecar_input_bytes) == expected
             jobs = list(page.parser_jobs(ValidationMode.ADVISORY))
             assert len(jobs) == 3
+            physical_inputs = {capture.staged_blob: capture.descriptor[4] for capture in page.captures.values()}
+            assert len(page.sidecar_backings) == 2
+            assert set(page.sidecar_backings).isdisjoint(physical_inputs)
+            assert page.unique_backing_bytes == sum(physical_inputs.values()) + 5000
+            assert page.unique_context_count == 4  # Two schema readers and two exact sidecar witnesses.
             for key, charge, _operation in jobs:
                 parser_identity = key[0]
                 assert isinstance(parser_identity, tuple)

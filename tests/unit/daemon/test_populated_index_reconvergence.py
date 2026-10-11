@@ -827,13 +827,12 @@ def test_actual_startup_independent_preparation_uses_shared_admission(
     import shutil
     import threading
     import time
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from polylogue.core import compute as compute_module
     from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.core.write_lease import coordinator_write_lease_active
     from polylogue.sources.prepared_jsonl import PreparedJsonl
-    from polylogue.sources.sidecar_evidence import RetainedSidecarScope
     from polylogue.storage.derived import raw as raw_module
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
 
@@ -882,7 +881,7 @@ def test_actual_startup_independent_preparation_uses_shared_admission(
         raw_id: str,
         captured: raw_module._CapturedNeutralRaw,
         artifact_key: tuple[object, ...],
-        sidecar_scopes: Mapping[str, RetainedSidecarScope],
+        context: raw_module.NeutralPreparationContext,
         scratch: Path,
     ) -> PreparedJsonl:
         nonlocal active, peak, calls, maximum_bytes, maximum_input_bytes
@@ -903,7 +902,7 @@ def test_actual_startup_independent_preparation_uses_shared_admission(
         try:
             if not control.startswith("cost"):
                 assert release.wait(10), "startup did not admit independent neutral preparation"
-            return original(raw_id, captured, artifact_key, sidecar_scopes, scratch)
+            return original(raw_id, captured, artifact_key, context, scratch)
         finally:
             with lock:
                 active -= 1

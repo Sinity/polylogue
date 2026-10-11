@@ -2071,7 +2071,7 @@ def test_a_full_fraction_sample_takes_zero_byte_units(tmp_path: Path) -> None:
 
 
 def test_a_source_rewritten_after_its_copy_refuses_the_sample(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A same-size in-place rewrite after copying is caught at the end of sampling.
+    """A same-size in-place rewrite during or after copying refuses the sample.
 
     Anti-vacuity (Codex P2, #5678): recount only keys and sizes and the corpus
     seals the old bytes as a sample of the newer population.
@@ -2096,8 +2096,10 @@ def test_a_source_rewritten_after_its_copy_refuses_the_sample(tmp_path: Path, mo
     monkeypatch.setattr(corpus, "_copy_private", copy_then_rewrite_the_first)
     sources = (SampleSource("codex", root, "home/.codex/sessions"),)
 
-    with pytest.raises(ValueError, match="changed after it was copied"):
+    with pytest.raises(ValueError):
         sample_real(tmp_path / "corpus", seed=1, fraction=1.0, sources=sources)
+    assert len(copies) == 2
+    assert first.read_bytes() == b"cccc\n"
 
 
 def test_ops_wal_is_part_of_the_sealed_evidence(tmp_path: Path) -> None:

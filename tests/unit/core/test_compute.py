@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import contextvars
+import gc
 import sqlite3
 import threading
+import weakref
 from builtins import BaseExceptionGroup
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -18,6 +20,7 @@ from polylogue.core.compute import (
     DaemonBackpressureError,
     DaemonOperationCancelled,
     SubmittedOperation,
+    _Task,
     current_cancellation,
 )
 from polylogue.core.compute_cancel import check_compute_cancelled
@@ -796,3 +799,92 @@ async def test_wait_consumes_each_terminal_physical_result_once(
         assert adapter.snapshot().used_units == 0
     finally:
         adapter.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("registration_race", [False, True])
+@pytest.mark.parametrize("prewarmed", [False, True])
+def test_completed_compute_retires_external_cancellation_and_context_custody(
+    monkeypatch: pytest.MonkeyPatch, registration_race: bool, prewarmed: bool
+) -> None:
+    """A live cancellation handle cannot keep completed inputs with cyclic GC off."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    class Input:
+        pass
+
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=4)
+    if prewarmed:
+        adapter.submit(lambda: None).future.result(timeout=5)
+    blocker_started, release_blocker = threading.Event(), threading.Event()
+    registration_started, physical_release = threading.Event(), threading.Event()
+    original_release = adapter._release
+
+    class DelayedCancellation(CancellationHandle):
+        def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+            remove = super().add_listener(listener)
+            if registration_race:
+                registration_started.set()
+                assert physical_release.wait(5)
+            return remove
+
+    handle = DelayedCancellation()
+
+    def observe_release(task: _Task, *, active: bool) -> None:
+        original_release(task, active=active)
+        if task.cancellation is handle:
+            physical_release.set()
+
+    monkeypatch.setattr(adapter, "_release", observe_release)
+    value: contextvars.ContextVar[Input] = contextvars.ContextVar("owned-preparation-input")
+    was_enabled = gc.isenabled()
+    first: SubmittedOperation[None] | None = None
+    gc.disable()
+    try:
+        if registration_race:
+
+            def block() -> None:
+                blocker_started.set()
+                assert release_blocker.wait(5)
+
+            first = adapter.submit(block)
+            assert blocker_started.wait(5)
+
+        def offer() -> tuple[SubmittedOperation[None], weakref.ReferenceType[Input], weakref.ReferenceType[Input]]:
+            argument, context_input = Input(), Input()
+            references = weakref.ref(argument), weakref.ref(context_input)
+            token = value.set(context_input)
+            try:
+
+                def consume(kept: Input = argument) -> None:
+                    assert value.get() is context_input
+                    assert kept is argument
+
+                operation = adapter.submit(consume, cancellation=handle)
+            finally:
+                value.reset(token)
+            return operation, *references
+
+        if registration_race:
+            with ThreadPoolExecutor(max_workers=1) as submitter:
+                submitted = submitter.submit(offer)
+                assert registration_started.wait(5)
+                release_blocker.set()
+                assert first is not None
+                first.future.result(timeout=5)
+                operation, argument_ref, context_ref = submitted.result(timeout=5)
+                del submitted
+        else:
+            operation, argument_ref, context_ref = offer()
+        operation.future.result(timeout=5)
+        del operation
+        # The sole creator has returned from the prior task before this unit
+        # starts; a Future notification alone occurs just before creator return.
+        adapter.submit(lambda: None).future.result(timeout=5)
+        assert argument_ref() is None
+        assert context_ref() is None
+        assert not handle.cancelled
+    finally:
+        release_blocker.set()
+        adapter.shutdown(wait=True)
+        if was_enabled:
+            gc.enable()

@@ -131,6 +131,9 @@ Retained schema validation owns reducer tables once per spill connection and
 reuses each selected-schema validator across its complete record scan. Lazy
 normalized objects and arrays consume the original ordered cursors, checking
 cancellation before loading each value and closing those cursors on early exit.
+Ordered child reads select node kind and scalar metadata through the membership
+edges in the same query. Construction uses the original document's conversion
+and token backing, including projected objects that share child nodes.
 Completed validation samples detach into native dictionaries and lists only
 after tree metadata proves at most 1,024 nodes, depth 64, and 64 KiB of total
 decoded scalar and key bytes. Larger samples retain the same disk-backed view;
@@ -814,3 +817,16 @@ job state. The source database remains unchanged; source-cell provenance is an
 additive envelope observation, excluded from logical capture deduplication.
 Accepted non-object provider metadata stays unchanged; intake reports these
 envelopes as `unbound_provenance` instead of replacing their original value.
+
+
+Ordinary loose JSONL full capture consumes the `JsonlCaptureAction` supplied by
+`classify_pre_acquisition`. It binds the resolved capture provider and mode to
+one physical observation and alias. The executor dispatches that action through
+the existing bound reader and emits the accepted Raw envelope, including the
+exact complete-record frontier. A changed observation returns to the next
+admission pass outside the Source writer; the capture reader still checks the
+opened input and namespace before acceptance. The production baseline projects
+a prospective full-file requirement from the same action. Its hash and byte
+count are observations to retain, never an acquisition publication receipt.
+Declared raw-only carriers keep their precedence. ZIP and native SQLite
+capture remain in their existing families.

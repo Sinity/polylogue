@@ -2271,7 +2271,7 @@ def test_neutral_page_census_restart_keeps_drift_until_page_retirement(
         nonlocal closed_pages
         closed_pages += 1
         memos = tuple(
-            artifact.validation_reuse for artifact in page.artifacts.values() if artifact.validation_reuse is not None
+            backing.validation_reuse for backing in page._backings.values() if backing.validation_reuse is not None
         )
         owned_signatures: list[Path] = []
         for memo in memos:

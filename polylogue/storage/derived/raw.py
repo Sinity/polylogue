@@ -77,7 +77,7 @@ if TYPE_CHECKING:
     from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
     from polylogue.schemas.runtime_registry import ProviderSchemaSnapshot, SchemaRegistry
     from polylogue.sources.parsers.base import ParsedSession
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.sources.prepared_jsonl import PreparedBackingCustody, PreparedJsonl, PreparedJsonlRead
     from polylogue.sources.revision_backfill import (
         PreparedMembershipReplay,
         PreparedRetainedAggregate,
@@ -85,7 +85,7 @@ if TYPE_CHECKING:
         PreparedRevisionReplayResult,
         RevisionCensusResult,
     )
-    from polylogue.sources.sidecar_evidence import RetainedSidecarScope
+    from polylogue.sources.sidecar_evidence import CapturedSidecarResolver, RetainedSidecarScope
     from polylogue.storage.index_generation import IndexGeneration
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead, PreparedSessionWrite
@@ -314,6 +314,18 @@ class _NeutralParserOperand:
     zip_coordinate: CapturedZipMemberCoordinate | None
     append_logical_key: str | None
     sidecar_signature: tuple[object, ...] | None = None
+    sidecar_signature_digest: str | None = None
+    sidecar_signature_bytes: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class NeutralPreparationContext:
+    """Exact page-owned parser context shared until all physical borrowers drain."""
+
+    resolver: CapturedSidecarResolver
+    parser_fingerprint: str | None
+    registry: SchemaRegistry
+    schema_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,7 +333,7 @@ class PreparedNeutralArtifact:
     """One settled parser and complete verdict returned to its page owner."""
 
     raw_id: str
-    artifact: PreparedJsonl
+    artifact: PreparedJsonlRead
 
 
 @dataclass(slots=True)
@@ -339,7 +351,97 @@ class NeutralRawPreparation:
     sidecar_scopes: Mapping[str, RetainedSidecarScope]
     schema_snapshots: Mapping[Provider, ProviderSchemaSnapshot]
     sidecar_input_bytes: Mapping[str, int]
-    artifacts: dict[tuple[object, ...], PreparedJsonl] = dataclasses_field(default_factory=dict)
+    sidecar_backings: Mapping[Path, int] = dataclasses_field(default_factory=dict)
+    artifacts: dict[tuple[object, ...], PreparedJsonlRead] = dataclasses_field(default_factory=dict)
+    _backings: dict[tuple[Path | None, Path | None, Path | None], PreparedBackingCustody] = dataclasses_field(
+        default_factory=dict
+    )
+    _backing_lock: threading.Lock = dataclasses_field(default_factory=threading.Lock)
+    contexts: Mapping[Provider, NeutralPreparationContext] = dataclasses_field(init=False)
+    _observed_custody: bool = dataclasses_field(default=False, init=False)
+
+    def __post_init__(self) -> None:
+        from polylogue.schemas.runtime_registry import SchemaRegistry
+        from polylogue.sources.sidecar_evidence import CapturedSidecarResolver
+
+        resolver = CapturedSidecarResolver(self.sidecar_scopes)
+        fingerprint = raw_authority_parser_fingerprint() if work_observation.ENABLED else None
+        contexts = {}
+        for provider in dict.fromkeys(item.descriptor[0] for item in self.captures.values()):
+            snapshot = self.schema_snapshots.get(provider)
+            contexts[provider] = NeutralPreparationContext(
+                resolver,
+                fingerprint,
+                SchemaRegistry() if snapshot is None else snapshot.reader(),
+                0
+                if snapshot is None
+                else sum(len(payload) for _root, files in snapshot.roots for _name, payload in files),
+            )
+        self.contexts = MappingProxyType(contexts)
+
+    @property
+    def shared_context_bytes(self) -> int:
+        # Snapshot readers borrow the same immutable payload objects. Count
+        # each object once, including roots which offer the same declaration.
+        schemas = {
+            id(payload): len(payload)
+            for snapshot in self.schema_snapshots.values()
+            for _root, files in snapshot.roots
+            for _name, payload in files
+        }
+        witnesses = {
+            id(operand.sidecar_signature): operand.sidecar_signature_bytes
+            for operand in self.operands.values()
+            if operand.sidecar_signature is not None
+        }
+        return sum(schemas.values()) + sum(witnesses.values())
+
+    @property
+    def unique_backing_bytes(self) -> int:
+        backings = dict(self.sidecar_backings)
+        backings.update((capture.staged_blob, capture.descriptor[4]) for capture in self.captures.values())
+        return sum(backings.values())
+
+    @property
+    def unique_context_count(self) -> int:
+        return len(self.contexts) + len(
+            {
+                id(operand.sidecar_signature)
+                for operand in self.operands.values()
+                if operand.sidecar_signature is not None
+            }
+        )
+
+    def observe_custody(self, operation: str) -> None:
+        if operation == "acquire":
+            if not work_observation.ENABLED or self._observed_custody:
+                return
+            self._observed_custody = True
+        elif not self._observed_custody:
+            return
+        else:
+            self._observed_custody = False
+        emit(
+            "storage.raw_observation.neutral_context",
+            operation=operation,
+            outcome="ok",
+            shared_context_bytes=self.shared_context_bytes,
+            unique_backing_bytes=self.unique_backing_bytes,
+            unique_context_count=self.unique_context_count,
+        )
+
+    def retain_backing(self, artifact: PreparedJsonl) -> None:
+        """Register physical custody before its creator transfers sealed data."""
+        if artifact.custody is None:
+            raise RuntimeError("parser creator lost its physical backing custodian")
+        with self._backing_lock:
+            self._backings[(artifact.sessions_path, artifact.shard_path, artifact.attempt_directory)] = artifact.custody
+
+    def publication_attempt(self, result: PreparedJsonlRead) -> PreparedJsonl:
+        from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+        backing = self._backings[(result.sessions_path, result.shard_path, result.attempt_directory)]
+        return PreparedJsonl.from_read_result(result, validation_reuse=backing.validation_reuse)
 
     def parser_jobs(
         self, validation_mode: ValidationMode
@@ -358,50 +460,64 @@ class NeutralRawPreparation:
         for raw_id, captured in self.captures.items():
             if raw_id in selected:
                 provider, _hash, source_path, _kind, raw_size = captured.descriptor
-                snapshot = self.schema_snapshots.get(provider)
-                schema_bytes = (
-                    0
-                    if snapshot is None
-                    else sum(len(payload) for _root, files in snapshot.roots for _name, payload in files)
-                )
+                context = self.contexts[provider]
                 key = _neutral_artifact_key(raw_id, self.operands[raw_id], validation_mode)
                 # Charge this worker's actual offered scope, including sibling
                 # streams. Input accounting is not a resident-memory bound.
                 yield (
                     key,
-                    raw_size + self.sidecar_input_bytes.get(Path(source_path).as_posix(), 0) + schema_bytes,
+                    raw_size + self.sidecar_input_bytes.get(Path(source_path).as_posix(), 0) + context.schema_bytes,
                     partial(
                         _prepare_captured_neutral,
                         raw_id,
                         captured,
                         key,
-                        self.sidecar_scopes,
+                        context,
                         Path(self.scratch_owner.name),
                         validation_mode,
-                        snapshot,
+                        self.retain_backing,
+                        borrowed_context_bytes=context.schema_bytes
+                        + self.sidecar_input_bytes.get(Path(source_path).as_posix(), 0)
+                        + self.operands[raw_id].sidecar_signature_bytes,
                     ),
                 )
 
     def close(self) -> None:
-        _close_prepared_carriers({}, {}, self.artifacts.values())
+        failures: list[BaseException] = []
+        for backing in tuple(self._backings.values()):
+            try:
+                backing.close()
+            except BaseException as failure:
+                failures.append(failure)
+        if failures:
+            raise BaseExceptionGroup("neutral backing retirement failed", failures)
+        self._backings.clear()
         self.artifacts.clear()
         _cleanup_scratch(self.scratch_owner)
+        self.observe_custody("retire")
+        self.contexts = MappingProxyType({})
+        self.captures = MappingProxyType({})
+        self.operands = MappingProxyType({})
+        self.sidecar_scopes = MappingProxyType({})
+        self.schema_snapshots = MappingProxyType({})
+        self.sidecar_input_bytes = MappingProxyType({})
+        self.sidecar_backings = MappingProxyType({})
 
 
 def _parse_captured_neutral(
     raw_id: str,
     captured: _CapturedNeutralRaw,
     artifact_key: tuple[object, ...],
-    sidecar_scopes: Mapping[str, RetainedSidecarScope],
+    context: NeutralPreparationContext,
     scratch: Path,
 ) -> PreparedJsonl:
     """Return sealed files after creator-owned SQLite and decoded state retire."""
     with work_observation.body("raw", "parse") as observed:
-        result = _parse_captured_neutral_body(raw_id, captured, artifact_key, sidecar_scopes, scratch)
+        result = _parse_captured_neutral_body(raw_id, captured, artifact_key, context, scratch)
         if observed is not None:
             # The diagnostic key is scoped to this owner's exact parser
             # operands and recipe. Validation mode is not a parse dependency.
-            key = _neutral_identity_digest(("raw-parse-body-v1", raw_authority_parser_fingerprint(), artifact_key[0]))
+            key = _neutral_identity_digest(("raw-parse-body-v1", context.parser_fingerprint, artifact_key[0]))
             observed.set_work_key(key)
             result = replace(
                 result,
@@ -415,7 +531,7 @@ def _parse_captured_neutral_body(
     raw_id: str,
     captured: _CapturedNeutralRaw,
     artifact_key: tuple[object, ...],
-    sidecar_scopes: Mapping[str, RetainedSidecarScope],
+    context: NeutralPreparationContext,
     scratch: Path,
 ) -> PreparedJsonl:
     from polylogue.sources.dispatch import is_stream_record_provider
@@ -423,7 +539,6 @@ def _parse_captured_neutral_body(
     from polylogue.sources.live.batch_support import jsonl_parse_prefix_size_of_handle
     from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
     from polylogue.sources.prepared_message_sink import discard_decoded_sessions_under
-    from polylogue.sources.sidecar_evidence import CapturedSidecarResolver
 
     provider, blob_hash, source_path, kind, _size = captured.descriptor
     with captured.staged_blob.open("rb") as handle:
@@ -451,7 +566,7 @@ def _parse_captured_neutral_body(
             source_sha256=blob_hash,
             strict_jsonl_records=True,
             parse_prefix_size=parse_prefix_size,
-            sidecar_resolver=CapturedSidecarResolver(sidecar_scopes),
+            sidecar_resolver=context.resolver,
             progress_identity=_neutral_identity_digest(("neutral-parser-work-v1", artifact_key)),
             captured_zip_coordinate=captured.zip_coordinate,
         )
@@ -475,7 +590,6 @@ def _validate_captured_neutral(
     _provider, blob_hash, source_path, _kind, _size = captured.descriptor
     prefix = neutral.parsed_prefix_size if validation_mode is not ValidationMode.OFF else None
     reuse = neutral.validation_reuse or RetainedValidationReuse()
-    owns_validation = neutral._owns_validation or neutral.validation_reuse is None
     try:
         with _retained_validation_input(captured.staged_blob, prefix) as (validation_path, accepted_prefix_size):
             verdict = validate_retained_document(
@@ -500,25 +614,32 @@ def _validate_captured_neutral(
         if decode_failure is None:
             raise
         return dataclasses.replace(neutral, error=f"{type(error).__name__}: {error}", decode_failure=decode_failure)
-    return dataclasses.replace(
-        neutral, validation_verdict=verdict, validation_reuse=reuse, _owns_validation=owns_validation
-    )
+    if neutral.custody is not None:
+        neutral.custody.validation_reuse = reuse
+    return dataclasses.replace(neutral, validation_verdict=verdict, validation_reuse=reuse)
 
 
 def _prepare_captured_neutral(
     raw_id: str,
     captured: _CapturedNeutralRaw,
     artifact_key: tuple[object, ...],
-    sidecar_scopes: Mapping[str, RetainedSidecarScope],
+    context: NeutralPreparationContext,
     scratch: Path,
     validation_mode: ValidationMode,
-    snapshot: ProviderSchemaSnapshot | None,
+    retain_backing: Callable[[PreparedJsonl], None],
+    *,
+    borrowed_context_bytes: int,
 ) -> PreparedNeutralArtifact:
-    from polylogue.schemas.runtime_registry import SchemaRegistry
-
+    if work_observation.ENABLED:
+        emit(
+            "storage.raw_observation.neutral_input",
+            productive_id=raw_id,
+            private_input_bytes=captured.descriptor[4],
+            borrowed_context_bytes=borrowed_context_bytes,
+        )
     wall_started, cpu_started = time.perf_counter(), time.thread_time()
     try:
-        neutral = _parse_captured_neutral(raw_id, captured, artifact_key, sidecar_scopes, scratch)
+        neutral = _parse_captured_neutral(raw_id, captured, artifact_key, context, scratch)
     finally:
         emit(
             "storage.raw_observation.neutral_worker",
@@ -531,9 +652,9 @@ def _prepare_captured_neutral(
         )
     wall_started, cpu_started = time.perf_counter(), time.thread_time()
     try:
-        registry = SchemaRegistry() if snapshot is None else snapshot.reader()
-        neutral = _validate_captured_neutral(raw_id, captured, neutral, validation_mode, registry, scratch)
-        return PreparedNeutralArtifact(raw_id, neutral)
+        neutral = _validate_captured_neutral(raw_id, captured, neutral, validation_mode, context.registry, scratch)
+        retain_backing(neutral)
+        return PreparedNeutralArtifact(raw_id, neutral.read_result())
     except BaseException:
         _close_prepared_carriers({}, {}, (neutral,))
         raise
@@ -556,10 +677,12 @@ def _neutral_artifact_key(
     validation_mode: ValidationMode,
 ) -> tuple[object, ...]:
     """Identify parser output independently of the freshly bound publication cohort."""
-    return (
-        _neutral_parser_cache_identity(raw_id, operand),
-        ("validation-mode", validation_mode.value),
-    )
+    identity = _neutral_parser_cache_identity(raw_id, operand)
+    if operand.sidecar_signature is not None:
+        if operand.sidecar_signature_digest is None:
+            raise RuntimeError("neutral sidecar witness lacks its owned digest")
+        identity = (*identity[:-1], ("sidecar-signature-digest", operand.sidecar_signature_digest))
+    return (identity, ("validation-mode", validation_mode.value))
 
 
 def _neutral_parser_cache_identity(raw_id: str, operand: _NeutralParserOperand) -> tuple[object, ...]:
@@ -602,28 +725,52 @@ def _neutral_identity_digest(recipe: tuple[object, ...]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _neutral_parser_operand(
-    read: PreparedSessionSourceRead,
-    raw_id: str,
-    *,
-    descriptor: tuple[Provider, str, str, RawRevisionKind, int] | None = None,
-) -> _NeutralParserOperand:
-    """Read the exact typed values a detached parser and its enrichment consume."""
-    descriptor = read.raw_revision_descriptor(raw_id) if descriptor is None else descriptor
-    provider, _blob_hash, source_path, kind, _raw_size = descriptor
-    scope_signature: tuple[object, ...] | None = None
-    if provider is Provider.CLAUDE_CODE:
-        scope = read.retained_sidecar_resolver().claude_code_scope(source_path)
-        scope_signature = (scope.scope_key, scope.available, scope.witness)
-    return _NeutralParserOperand(
-        descriptor=descriptor,
-        profile_identity=read.raw_profile_identity(raw_id),
-        fallback_timestamp=read.raw_revision_file_mtime(raw_id),
-        native_id=read.raw_native_id(raw_id) if kind.value == "append" else None,
-        zip_coordinate=read.raw_captured_zip_coordinate(raw_id),
-        append_logical_key=read.raw_append_logical_key(raw_id) if kind.value == "append" else None,
-        sidecar_signature=scope_signature,
-    )
+@dataclass(frozen=True, slots=True)
+class _NeutralSidecarContext:
+    scope: RetainedSidecarScope
+    signature: tuple[object, ...]
+    digest: str
+    encoded_bytes: int
+
+
+class _NeutralOperandRead:
+    """Memoize exact sidecar facts only within this owned Source read scope."""
+
+    def __init__(self, read: PreparedSessionSourceRead) -> None:
+        self.read = read
+        self.resolver = read.retained_sidecar_resolver()
+        self.sidecars: dict[str, _NeutralSidecarContext] = {}
+
+    def sidecar_context(self, source_path: str) -> _NeutralSidecarContext:
+        path = Path(source_path).as_posix()
+        existing = self.sidecars.get(path)
+        if existing is not None:
+            return existing
+        scope = self.resolver.claude_code_scope(path)
+        signature = (scope.scope_key, scope.available, scope.witness)
+        encoded = json.dumps(signature, ensure_ascii=True, separators=(",", ":"), allow_nan=False).encode("ascii")
+        context = _NeutralSidecarContext(scope, signature, hashlib.sha256(encoded).hexdigest(), len(encoded))
+        self.sidecars[path] = context
+        return context
+
+    def operand(
+        self, raw_id: str, *, descriptor: tuple[Provider, str, str, RawRevisionKind, int] | None = None
+    ) -> _NeutralParserOperand:
+        read = self.read
+        descriptor = read.raw_revision_descriptor(raw_id) if descriptor is None else descriptor
+        provider, _blob_hash, source_path, kind, _raw_size = descriptor
+        context = self.sidecar_context(source_path) if provider is Provider.CLAUDE_CODE else None
+        return _NeutralParserOperand(
+            descriptor=descriptor,
+            profile_identity=read.raw_profile_identity(raw_id),
+            fallback_timestamp=read.raw_revision_file_mtime(raw_id),
+            native_id=read.raw_native_id(raw_id) if kind.value == "append" else None,
+            zip_coordinate=read.raw_captured_zip_coordinate(raw_id),
+            append_logical_key=read.raw_append_logical_key(raw_id) if kind.value == "append" else None,
+            sidecar_signature=None if context is None else context.signature,
+            sidecar_signature_digest=None if context is None else context.digest,
+            sidecar_signature_bytes=0 if context is None else context.encoded_bytes,
+        )
 
 
 def _neutral_jsonl_candidate(provider: Provider, source_path: str) -> bool:
@@ -2103,10 +2250,11 @@ class RawObservationDerivation(RawObservationInspection):
 
         blob_store = BlobStore(self.archive_root / "blob")
         captures: dict[str, _CapturedNeutralRaw] = {}
-        sidecar_scope_by_raw: dict[str, RetainedSidecarScope] = {}
         captured_sidecar_scopes: dict[str, RetainedSidecarScope] = {}
         staged_sidecars: dict[tuple[str, str], Path] = {}
+        staged_sidecar_sizes: dict[tuple[str, str], int] = {}
         sidecar_input_bytes: dict[str, int] = {}
+        sidecar_backings: dict[Path, int] = {}
         with seal.original_read_snapshot(), seal.source_producer():
             read = PreparedSessionSourceRead(seal, blob_store=blob_store)
             selected = (key,) if selection is None else tuple(selection(read))
@@ -2123,9 +2271,10 @@ class RawObservationDerivation(RawObservationInspection):
             )
             if not eligible_raw_ids:
                 return None
+            operand_read = _NeutralOperandRead(read)
             operands: dict[str, _NeutralParserOperand] = {}
             for raw_id in eligible_raw_ids:
-                operands[raw_id] = _neutral_parser_operand(read, raw_id, descriptor=descriptors[raw_id])
+                operands[raw_id] = operand_read.operand(raw_id, descriptor=descriptors[raw_id])
 
             if carry.scratch_owner is None:
                 staging = blob_store._ensure_private_staging_root()
@@ -2158,20 +2307,17 @@ class RawObservationDerivation(RawObservationInspection):
                         f"retained Claude sidecar changed while staging raw {raw_id}"
                     )
                 staged_sidecars[identity] = target_path
+                staged_sidecar_sizes[identity] = copied
                 return target_path
 
-            retained_sidecar_resolver = read.retained_sidecar_resolver()
             for raw_id in eligible_raw_ids:
                 descriptor = operands[raw_id].descriptor
                 provider, _hash, source_path, _kind, _size = descriptor
                 if provider is not Provider.CLAUDE_CODE:
                     continue
-                scope = retained_sidecar_resolver.claude_code_scope(source_path)
-                sidecar_scope_by_raw[raw_id] = scope
+                scope = operand_read.sidecar_context(source_path).scope
                 page = carry.neutral_page
-                current_operand = dataclasses.replace(
-                    operands[raw_id], sidecar_signature=(scope.scope_key, scope.available, scope.witness)
-                )
+                current_operand = operands[raw_id]
                 if (
                     page is not None
                     and raw_id in page.operands
@@ -2179,6 +2325,7 @@ class RawObservationDerivation(RawObservationInspection):
                     == _neutral_parser_cache_identity(raw_id, current_operand)
                     and page.captures[raw_id].staged_blob.is_file()
                 ):
+                    sidecar_backings.update(page.sidecar_backings)
                     captured_sidecar_scopes[Path(source_path).as_posix()] = page.sidecar_scopes[
                         Path(source_path).as_posix()
                     ]
@@ -2247,12 +2394,6 @@ class RawObservationDerivation(RawObservationInspection):
                     witness=scope.witness,
                 )
             for raw_id in eligible_raw_ids:
-                maybe_scope = sidecar_scope_by_raw.get(raw_id)
-                signature = (
-                    None if maybe_scope is None else (maybe_scope.scope_key, maybe_scope.available, maybe_scope.witness)
-                )
-                operands[raw_id] = dataclasses.replace(operands[raw_id], sidecar_signature=signature)
-            for raw_id in eligible_raw_ids:
                 operand = operands[raw_id]
                 descriptor = operand.descriptor
                 profile = operand.profile_identity
@@ -2320,6 +2461,12 @@ class RawObservationDerivation(RawObservationInspection):
             MappingProxyType(captured_sidecar_scopes),
             MappingProxyType(schema_snapshots),
             MappingProxyType(sidecar_input_bytes),
+            sidecar_backings=MappingProxyType(
+                {
+                    **sidecar_backings,
+                    **{staged_sidecars[identity]: size for identity, size in staged_sidecar_sizes.items()},
+                }
+            ),
         ), original_selection
 
     def _prepare_neutral_jsonl_then_rebind(
@@ -2347,7 +2494,6 @@ class RawObservationDerivation(RawObservationInspection):
             return seal
         inputs, original_selection = captured
         captures, operands = inputs.captures, inputs.operands
-        captured_sidecar_scopes = inputs.sidecar_scopes
         raw_ids, logical_keys = original_selection
         eligible_raw_ids = tuple(captures)
         blob_store = BlobStore(self.archive_root / "blob")
@@ -2364,9 +2510,9 @@ class RawObservationDerivation(RawObservationInspection):
                 return refreshed_neutral[raw_id]
             cached = carry.neutral_artifacts.get(neutral_keys[raw_id])
             if cached is None and carry.neutral_page is not None:
-                cached = carry.neutral_page.artifacts.get(neutral_keys[raw_id])
-                if cached is not None:
-                    cached = cached.borrow_sealed_files()
+                read_result = carry.neutral_page.artifacts.get(neutral_keys[raw_id])
+                if read_result is not None:
+                    cached = carry.neutral_page.publication_attempt(read_result)
                     carry.neutral_artifacts[neutral_keys[raw_id]] = cached
             captured = captures[raw_id]
             provider, blob_hash, source_path, _kind, _raw_size = captured.descriptor
@@ -2374,7 +2520,7 @@ class RawObservationDerivation(RawObservationInspection):
             neutral_directory = staged_blob.parent
             if cached is None:
                 neutral = _parse_captured_neutral(
-                    raw_id, captured, neutral_keys[raw_id], captured_sidecar_scopes, scratch
+                    raw_id, captured, neutral_keys[raw_id], inputs.contexts[provider], scratch
                 )
                 # Transfer ownership before validation or checkpoint work can fail.
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
@@ -2570,28 +2716,11 @@ class RawObservationDerivation(RawObservationInspection):
                     if _neutral_jsonl_candidate(fresh_descriptors[raw_id][0], fresh_descriptors[raw_id][2])
                 )
                 if fresh_raw_ids == raw_ids and fresh_eligible_raw_ids == eligible_raw_ids:
-                    fresh_sidecar_resolver = fresh_read.retained_sidecar_resolver()
-                    for raw_id in fresh_eligible_raw_ids:
-                        descriptor = fresh_descriptors[raw_id]
-                        fresh_scope_signature: tuple[object, ...] | None = None
-                        if descriptor[0] is Provider.CLAUDE_CODE:
-                            fresh_scope = fresh_sidecar_resolver.claude_code_scope(descriptor[2])
-                            fresh_scope_signature = (
-                                fresh_scope.scope_key,
-                                fresh_scope.available,
-                                fresh_scope.witness,
-                            )
-                        fresh_operands[raw_id] = _NeutralParserOperand(
-                            descriptor=descriptor,
-                            profile_identity=fresh_read.raw_profile_identity(raw_id),
-                            fallback_timestamp=fresh_read.raw_revision_file_mtime(raw_id),
-                            native_id=fresh_read.raw_native_id(raw_id) if descriptor[3].value == "append" else None,
-                            zip_coordinate=fresh_read.raw_captured_zip_coordinate(raw_id),
-                            append_logical_key=(
-                                fresh_read.raw_append_logical_key(raw_id) if descriptor[3].value == "append" else None
-                            ),
-                            sidecar_signature=fresh_scope_signature,
-                        )
+                    operand_read = _NeutralOperandRead(fresh_read)
+                    fresh_operands = {
+                        raw_id: operand_read.operand(raw_id, descriptor=fresh_descriptors[raw_id])
+                        for raw_id in fresh_eligible_raw_ids
+                    }
                 if (fresh_raw_ids, fresh_logical_keys) != original_selection:
                     raise _CarryInvalidatedError("selection_changed")
                 if fresh_eligible_raw_ids != eligible_raw_ids or fresh_operands != operands:
@@ -2727,8 +2856,10 @@ class RawObservationDerivation(RawObservationInspection):
                     if _neutral_jsonl_candidate(descriptors[raw_id][0], descriptors[raw_id][2])
                 )
                 if neutral_raw_ids:
+                    operand_read = _NeutralOperandRead(selection_read)
                     neutral_operands = {
-                        raw_id: _neutral_parser_operand(selection_read, raw_id) for raw_id in neutral_raw_ids
+                        raw_id: operand_read.operand(raw_id, descriptor=descriptors[raw_id])
+                        for raw_id in neutral_raw_ids
                     }
                     neutral_artifact_keys = {
                         raw_id: _neutral_artifact_key(raw_id, neutral_operands[raw_id], self._validation_mode)
@@ -3006,7 +3137,7 @@ class RawObservationDerivation(RawObservationInspection):
                                     if operand is None:
                                         with reference_seal.original_read_snapshot(), reference_seal.source_producer():
                                             read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
-                                            operand = _neutral_parser_operand(read, raw_id)
+                                            operand = _NeutralOperandRead(read).operand(raw_id)
                                     profile = operand.profile_identity
                                     fallback_timestamp = operand.fallback_timestamp
                                     if profile is not None and not isinstance(profile, str):
@@ -4536,7 +4667,7 @@ if TYPE_CHECKING:
     from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
     from polylogue.core.sql_settlement import SQLCustodyOwner
     from polylogue.sources.parsers.base import ParsedSession
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.sources.prepared_jsonl import PreparedBackingCustody, PreparedJsonl, PreparedJsonlRead
     from polylogue.sources.revision_backfill import (
         PreparedMembershipReplay,
         PreparedRetainedAggregate,

@@ -43,6 +43,41 @@ def _count(tier: str, phase: str, inside: bool) -> int:
     )
 
 
+@pytest.mark.parametrize("route", ["cursor", "execute"])
+def test_default_cursor_registers_initialized_native_handle_once_before_sql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection, _MeasuredCursor
+
+    registrations: list[sqlite3.Cursor] = []
+    register = _MeasuredConnection._register_cursor
+
+    def record(connection: _MeasuredConnection, cursor: sqlite3.Cursor) -> None:
+        assert sqlite3.Cursor.connection.__get__(cursor) is connection
+        registrations.append(cursor)
+        register(connection, cursor)
+
+    monkeypatch.setattr(_MeasuredConnection, "_register_cursor", record)
+    connection = connect_measured(tmp_path / "default.db")
+    observed: list[tuple[sqlite3.Cursor, ...]] = []
+
+    def authorize(*arguments: object) -> int:
+        observed.append(live_connection_cursors(connection))
+        return sqlite3.SQLITE_OK
+
+    connection.set_authorizer(authorize)
+    cursor = connection.cursor() if route == "cursor" else connection.execute("SELECT 1")
+    assert type(cursor) is _MeasuredCursor
+    assert registrations == [cursor]
+    if route == "cursor":
+        cursor.execute("SELECT 1")
+    assert observed and all(handles == (cursor,) for handles in observed)
+    assert cursor.fetchone() == (1,)
+    cursor.close()
+    assert live_connection_cursors(connection) == ()
+    connection.close()
+
+
 @pytest.mark.parametrize("route", ["cursor", "execute", "executemany", "executescript"])
 def test_measured_connection_settles_every_cursor_route_before_native_close(tmp_path: Path, route: str) -> None:
     path = tmp_path / "cursor.db"

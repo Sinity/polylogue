@@ -1069,7 +1069,7 @@ def validate_retained_document(
 
     with snapshot as snapshot_identity:
         if snapshot_identity is not None:
-            active_registry = snapshot_identity.reader()
+            active_registry = snapshot_identity.reader(active_registry)
         if reuse is None or ValidationMode.from_string(mode) is ValidationMode.OFF:
             if reuse is not None:
                 reuse._outcome = "disabled"
