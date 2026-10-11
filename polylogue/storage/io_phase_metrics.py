@@ -220,7 +220,11 @@ class _MeasuredConnection(sqlite3.Connection):
     def cursor(self, factory: Callable[[sqlite3.Connection], _CursorT]) -> _CursorT: ...
 
     def cursor(self, factory: Callable[[sqlite3.Connection], sqlite3.Cursor] | None = None) -> sqlite3.Cursor:
-        selected = _MeasuredCursor if factory is None else factory
+        if factory is None:
+            # Our initializer performs native admission and registers once,
+            # without running SQL or invoking a user constructor.
+            return super().cursor(_MeasuredCursor)
+        selected = factory
         if (
             isinstance(selected, type)
             and type(selected) is type
