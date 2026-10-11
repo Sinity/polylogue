@@ -18,6 +18,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
+from typing import cast
 
 import aiosqlite
 import pytest
@@ -815,7 +816,9 @@ def test_profile_work_observation_valid_fast_path_has_no_body(
     with plog.capture() as records:
         _adapter, _frame, report = _converge_session_profile(index_db.parent, index_db, session_id)
     assert report.made_no_publication_attempts
-    assert not [r for r in records if r["event"].startswith("work.") and r.get("component") == "session_profile"]
+    assert not [
+        r for r in records if cast(str, r["event"]).startswith("work.") and r.get("component") == "session_profile"
+    ]
 
 
 def test_profile_work_observation_off_skips_recipe_identity(
@@ -835,7 +838,7 @@ def test_profile_work_observation_off_skips_recipe_identity(
         monkeypatch.setattr(origin_specs, "materializer_fingerprint", unexpected_fingerprint)
         prepared = rebuild.prepare_session_insight_partition(conn, session_id)
     assert prepared.diagnostic_artifact_ref is None
-    assert not [r for r in records if r["event"].startswith("work.")]
+    assert not [r for r in records if cast(str, r["event"]).startswith("work.")]
 
 
 def test_profile_work_observation_retirement_is_a_distinct_body(

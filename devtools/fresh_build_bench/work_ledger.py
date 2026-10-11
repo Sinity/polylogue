@@ -159,7 +159,11 @@ def reduce_work_events(events: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             terminal.get("cpu_scope") == "thread"
             and pid == terminal.get("span_start_pid")
             and tid == terminal.get("span_start_native_thread_id")
-            and all(isinstance(value, int) and not isinstance(value, bool) for value in (left, right, pid, tid))
+            and isinstance(left, int)
+            and isinstance(right, int)
+            and isinstance(pid, int)
+            and isinstance(tid, int)
+            and not any(isinstance(value, bool) for value in (left, right, pid, tid))
             and 0 <= left <= right
         ):
             cpu[(terminal["process_generation_id"], terminal["worker_generation_id"], pid, tid)].append((left, right))

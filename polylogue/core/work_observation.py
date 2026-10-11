@@ -13,6 +13,7 @@ import os
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 from uuid import uuid4
 
 from polylogue import logging as plog
@@ -105,7 +106,7 @@ def consume(
     if not ENABLED:
         return
     process, worker, sequence = _identity()
-    fields: dict[str, object] = {}
+    fields: dict[str, Any] = {}
     if reason is not None:
         fields["reason"] = reason
     plog.emit(

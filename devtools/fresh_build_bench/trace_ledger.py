@@ -440,7 +440,7 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
         "measurement_loss_events",
     ):
         counts.setdefault(field, 0)
-    ledger = {
+    ledger: dict[str, Any] = {
         "format": "polylogue.trace-ledger.v1",
         "coverage": dict(counts),
         "loss_counters": losses or None,

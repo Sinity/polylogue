@@ -148,7 +148,8 @@ def test_body_identity_survives_oversized_optional_context(monkeypatch: pytest.M
     } <= terminal.keys()
     assert terminal["artifact_ref"] == artifact
     assert terminal["required_measurement_fields_omitted"] == 0
-    assert terminal["omitted_fields"] > 0
+    omitted = terminal["omitted_fields"]
+    assert isinstance(omitted, int) and omitted > 0
     assert len(terminal) <= plog.EVENT_MAX_FIELDS
     assert len(json.dumps(terminal).encode()) <= plog.EVENT_MAX_BYTES
     operation = reduce_work_events(events)["operations"][0]
