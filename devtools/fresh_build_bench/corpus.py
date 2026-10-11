@@ -342,7 +342,7 @@ def _unit_paths(source: SampleSource, named: Path) -> list[Path]:
         def scope(path: Path) -> bool:
             return path == named
     else:
-        start = source.root / relative.parts[0]
+        start = source.root if source.unit_depth == 1 else source.root / relative.parts[0]
 
         # Names of siblings are inspected once; only the same existing unit
         # key reaches native type/link handling or subtree enumeration.
@@ -645,7 +645,7 @@ def select_real(
         population[source.origin] = {"units": len(units), "bytes": sum(stamps[path][1] for path in all_paths)}
         for unit in units:
             private = sum(stamps[path][1] for path in unit[1])
-            closure = sum(stamps[path][1] for path in [*unit[1], *unit[2]])
+            closure_bytes = sum(stamps[path][1] for path in [*unit[1], *unit[2]])
             key = (source.origin, _size_bucket(private))
             row = strata.setdefault(
                 key,
@@ -660,7 +660,7 @@ def select_real(
             )
             row["population_units"] += 1
             row["private_bytes"] += private
-            if private > max_unit_bytes or closure > max_bytes:
+            if private > max_unit_bytes or closure_bytes > max_bytes:
                 row["oversized_units"] += 1
             else:
                 queues[key].append(unit)
@@ -746,8 +746,8 @@ def select_real(
             raise ValueError(f"{source.origin} selected dependency membership changed while copying")
     if any(_file_observation(path) != stamps[path] for path in selected_paths):
         raise ValueError("selected source closure changed while copying")
-    for source, paths, closure in copied_closures:
-        if _assembly_closure(source, paths, out) != closure:
+    for source, closure_paths, closure in copied_closures:
+        if _assembly_closure(source, closure_paths, out) != closure:
             raise ValueError("selected dependency coordinates changed while copying")
     copier.verify()
     return seal(

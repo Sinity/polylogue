@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from devtools.fresh_build_bench import corpus
 from devtools.fresh_build_bench.report import projection, render
 from polylogue.sources.live import discovery
+from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.retained_assembly import claude_code_sidecar_coordinates, codex_sidecar_coordinates
 
 SID = "11111111-1111-4111-8111-111111111111"
@@ -45,7 +47,7 @@ def test_named_claude_native_unit_and_full_metadata_without_unrelated_descent(
     visited = []
     original = discovery._ordered_children
 
-    def observe(source, directory, *args, **kwargs):
+    def observe(source: WatchSource, directory: Path, *args: Any, **kwargs: Any) -> list[tuple[str, Path, bool]]:
         visited.append(directory)
         assert directory != unrelated.parent and "-other" not in directory.parts
         return original(source, directory, *args, **kwargs)
@@ -58,7 +60,9 @@ def test_named_claude_native_unit_and_full_metadata_without_unrelated_descent(
     assert copied.is_file()
     assert (copied.parent / SID / "subagents/agent-child.meta.json").is_file()
     assert (copied.parent / SID / "tool-results/toolu_1.txt").stat().st_mtime_ns == 123000000000
-    assert all(Path(path).is_file() for path in claude_code_sidecar_coordinates(str(copied)))
+    coordinates = claude_code_sidecar_coordinates(str(copied))
+    assert coordinates is not None
+    assert all(Path(path).is_file() for path in coordinates)
     assert manifest["file_count"] == 6
     assert set(visited) == {
         main.parent,
@@ -96,12 +100,15 @@ def test_named_alias_coordinates_follow_production_resolver(
     corpus.corpus_from_files(out, [main], home=home)
     copied = out / "home" / main.relative_to(home)
     assert copied.is_file()
+    original_coordinates = resolver(str(main))
+    copied_coordinates = resolver(str(copied))
+    assert original_coordinates is not None and copied_coordinates is not None
     if origin == "claude-code":
         from polylogue.sources import assembly_claude_code
 
         read_coordinates = []
 
-        def observe(path):
+        def observe(path: Path) -> dict[str, Any]:
             read_coordinates.append(path)
             return {}
 
@@ -110,8 +117,8 @@ def test_named_alias_coordinates_follow_production_resolver(
         spec = assembly_claude_code.ClaudeCodeAssemblySpec()
         spec.discover_sidecars([main])
         spec.discover_sidecars([copied])
-        assert read_coordinates == [Path(path) for path in (*resolver(str(main)), *resolver(str(copied)))]
-    for source, target in zip(resolver(str(main)), resolver(str(copied)), strict=True):
+        assert read_coordinates == [Path(path) for path in (*original_coordinates, *copied_coordinates)]
+    for source, target in zip(original_coordinates, copied_coordinates, strict=True):
         assert Path(target).read_bytes() == Path(source).read_bytes()
     assert not (out / "home/.config").exists()
     assert not (out / "home/.codex/sessions/.store").exists()
@@ -157,7 +164,7 @@ def test_selected_dependency_absence_currentness_and_link_refusal(
         history.symlink_to(put(tmp_path / "linked-history"))
     original = corpus._copy_private
 
-    def copy(path, destination):
+    def copy(path: Path, destination: Path) -> None:
         original(path, destination)
         if path == main:
             put(history, "after\n")
@@ -246,7 +253,7 @@ def test_selected_native_fault_refuses_but_unrelated_link_is_not_handled(
     corpus.corpus_from_files(tmp_path / "good", [main], home=home)
     original = discovery._ordered_children
 
-    def unavailable(source, directory, *args, **kwargs):
+    def unavailable(source: WatchSource, directory: Path, *args: Any, **kwargs: Any) -> list[tuple[str, Path, bool]]:
         if directory == main.parent / SID / "subagents":
             from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 
@@ -256,3 +263,31 @@ def test_selected_native_fault_refuses_but_unrelated_link_is_not_handled(
     monkeypatch.setattr(discovery, "_ordered_children", unavailable)
     with pytest.raises(ValueError, match="refused"):
         corpus.corpus_from_files(tmp_path / "bad", [main], home=home)
+
+
+def test_named_gemini_same_key_projects_match_original_unit_without_other_descent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    root = home / ".gemini/tmp"
+    main = put(root / "project/chats/session-neutral.json", json.dumps({"sessionId": "neutral", "messages": []}))
+    sibling = put(root / "project.extra/chats/session-extra.json", json.dumps({"sessionId": "extra", "messages": []}))
+    put(root / "unrelated/chats/session-unrelated.json")
+    source = corpus.default_sample_sources(home)[2]
+    original_unit = next(paths for key, paths, _size in corpus._units(source) if main in paths)
+    assert set(original_unit) == {main, sibling}
+    original = discovery._ordered_children
+    visited: list[Path] = []
+
+    def observe(source: WatchSource, directory: Path, *args: Any, **kwargs: Any) -> list[tuple[str, Path, bool]]:
+        visited.append(directory)
+        assert "unrelated" not in directory.parts
+        return original(source, directory, *args, **kwargs)
+
+    monkeypatch.setattr(discovery, "_ordered_children", observe)
+    out = tmp_path / "corpus"
+    manifest = corpus.corpus_from_files(out, [main], home=home)
+    assert {out / row[0] for row in manifest["files"]} == {
+        out / "home" / path.relative_to(home) for path in original_unit
+    }
+    assert root in visited and root / "project.extra" in visited
