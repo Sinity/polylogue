@@ -1845,17 +1845,21 @@ def _prepare_checkpoint_delta(selection: _FrontierSelection, ops: sqlite3.Connec
 def _publish_frontier_checkpoint(writer: sqlite3.Connection, selection: _FrontierSelection, *, delta: bool) -> None:
     """Publish a full anchor or only prepared changes on the reserved Ops writer."""
     if not delta:
-        for original, target in (
-            ("pending_heads", "raw_frontier_pending_heads"),
-            ("pending_raws", "raw_frontier_pending_raws"),
-            ("membership_inputs", "raw_frontier_membership_inputs"),
-        ):
-            with closing(writer.execute(f"DELETE FROM {target}")):
+        with closing(writer.execute("DELETE FROM raw_frontier_pending_heads")):
+            pass
+        for page in _checkpoint_pages(selection, "pending_heads"):
+            with closing(writer.executemany("INSERT INTO raw_frontier_pending_heads VALUES(?,?,?,?)", page)):
                 pass
-            for page in _checkpoint_pages(selection, original):
-                marks = ",".join("?" for _ in page[0])
-                with closing(writer.executemany(f"INSERT INTO {target} VALUES({marks})", page)):
-                    pass
+        with closing(writer.execute("DELETE FROM raw_frontier_pending_raws")):
+            pass
+        for page in _checkpoint_pages(selection, "pending_raws"):
+            with closing(writer.executemany("INSERT INTO raw_frontier_pending_raws VALUES(?,?)", page)):
+                pass
+        with closing(writer.execute("DELETE FROM raw_frontier_membership_inputs")):
+            pass
+        for page in _checkpoint_pages(selection, "membership_inputs"):
+            with closing(writer.executemany("INSERT INTO raw_frontier_membership_inputs VALUES(?,?,?)", page)):
+                pass
         return
     for page in _checkpoint_pages(selection, "checkpoint_head_deletes"):
         with closing(writer.executemany("DELETE FROM raw_frontier_pending_heads WHERE logical_source_key=?", page)):
