@@ -175,8 +175,9 @@ async def test_deferred_cursor_findings_remain_a_proven_healthy_projection(tmp_p
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(0)
+@pytest.mark.parametrize("observe_work", [False, True])
 async def test_real_retained_head_records_blob_proof_and_current_coverage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observe_work: bool
 ) -> None:
     import hashlib
     import json
@@ -247,16 +248,17 @@ async def test_real_retained_head_records_blob_proof_and_current_coverage(
             outcomes.append(result)
             return result
 
-        def source_authority_state() -> tuple[int, int]:
+        def source_authority_state() -> tuple[int, int, int]:
             with closing(open_readonly_connection(root / "source.db")) as source:
                 row = source.execute("SELECT seq FROM sqlite_sequence WHERE name='raw_existence_changes'").fetchone()
                 blockers = source.execute(
                     "SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL"
                 ).fetchone()
-                return (0 if row is None else int(row[0]), int(blockers[0]))
+                proofs = source.execute("SELECT COUNT(*) FROM verified_blob_receipts").fetchone()
+                return (0 if row is None else int(row[0]), int(blockers[0]), int(proofs[0]))
 
         monkeypatch.setattr(frontier_operation, "inspect_prepared_raw_authority_frontier", observed_inspection)
-        monkeypatch.setattr(work_observation, "ENABLED", True)
+        monkeypatch.setattr(work_observation, "ENABLED", observe_work)
         stage = make_raw_frontier_inspection_stage(root / "index.db", compute_adapter=owner._compute_adapter)
         before = source_authority_state()
         assert not frontier_coverage_for_archive(root)["available"]
@@ -264,7 +266,11 @@ async def test_real_retained_head_records_blob_proof_and_current_coverage(
             assert await owner.run_convergence_sync("fixture.frontier.nonempty", stage.execute, root)
         first = outcomes[0]
         after_first = source_authority_state()
-        assert after_first == before
+        # The owner publishes its first physical blob proof into Source.
+        # Its receipt trigger journals that Raw; observation must preserve this
+        # same authority advance with both the diagnostic off and on.
+        assert before[1:] == (0, 0)
+        assert after_first == (before[0] + 1, 0, 1)
         assert first.healthy and first.accepted_head_checks >= 1
         assert first.mode == "full"
         assert first.blocking_head_checks == first.broken_head_checks == first.cursor_gap_count == 0
@@ -278,8 +284,8 @@ async def test_real_retained_head_records_blob_proof_and_current_coverage(
         assert source_authority_state() == after_first
         assert second.mode == "current" and second.healthy
         records = [row for row in [*diagnostic, *second_diagnostic] if row["event"] == "work.frontier.inspected"]
-        assert len(records) == 2
-        for record, result in zip(records, outcomes, strict=True):
+        assert len(records) == (2 if observe_work else 0)
+        for record, result in zip(records, outcomes if observe_work else [], strict=True):
             assert record["mode"] == result.mode
             assert record["outcome"] == "ok"
             for name in (

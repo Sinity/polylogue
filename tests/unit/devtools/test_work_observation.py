@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 
 import pytest
@@ -120,3 +121,36 @@ def test_sink_loss_withdraws_work_ratios(monkeypatch: pytest.MonkeyPatch) -> Non
     events.append({"event": "log.stats", "dropped": 1})
     _trace, ledger = reduce_events(events)
     assert ledger["work_observations"]["operations"][0]["execution_amplification"] is None
+
+
+def test_body_identity_survives_oversized_optional_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(work, "ENABLED", True)
+    optional = dict.fromkeys(
+        ("session_id", "message_id", "block_id", "raw_id", "blob_hash", "source_id", "run_id", "pass_id"),
+        "\U0001f642" * 240,
+    )
+    with plog.capture() as events, plog.bind(**optional):
+        with work.body("synthetic", "parse", work_key="complete") as body:
+            assert body is not None
+            artifact = body.produced()
+    terminal = next(event for event in events if event["event"] == "work.body.ok")
+    assert {
+        "component",
+        "operation",
+        "attempt_id",
+        "process_generation_id",
+        "worker_generation_id",
+        "producer_seq",
+        "work_key",
+        "artifact_ref",
+        "thread_cpu_start_ns",
+        "thread_cpu_end_ns",
+    } <= terminal.keys()
+    assert terminal["artifact_ref"] == artifact
+    assert terminal["required_measurement_fields_omitted"] == 0
+    assert terminal["omitted_fields"] > 0
+    assert len(terminal) <= plog.EVENT_MAX_FIELDS
+    assert len(json.dumps(terminal).encode()) <= plog.EVENT_MAX_BYTES
+    operation = reduce_work_events(events)["operations"][0]
+    assert operation["completed"] == operation["distinct_complete_work_keys"] == 1
+    assert operation["execution_amplification"] == 1

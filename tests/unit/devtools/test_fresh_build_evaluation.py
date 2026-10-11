@@ -55,6 +55,13 @@ def _receipt(seconds: float = 10.0, *, candidate: str = "A") -> dict[str, Any]:
             True,
         ),
         "timing_s": {"promotion": seconds, "terminal": seconds + 1},
+        "throughput": {
+            "mib_per_s_to_promotion": 100 / 2**20 / seconds,
+            "mib_per_s_to_terminal": 100 / 2**20 / (seconds + 1),
+        },
+        "writer": {},
+        "stages": {},
+        "budgets": {},
         "terminal_measurement": {
             "kind": "readiness-observation",
             "certified_s": seconds + 3,
