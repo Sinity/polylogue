@@ -761,6 +761,9 @@ class _FrontierSelection:
             scratch_directory=scratch_directory,
         )
         conn = self._owner.require_connection()
+        # Original Ops stays on its preparation owner. Only changed raw
+        # inventories enter scratch; untouched pending contributions are counted.
+        self.unselected_pending_heads = 0
         conn.executescript(
             "CREATE TABLE selected_raws(raw_id TEXT PRIMARY KEY, expanded INTEGER NOT NULL DEFAULT 0, membership_expanded INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;"
             "CREATE INDEX selected_raw_pending ON selected_raws(expanded,raw_id);"
@@ -778,6 +781,7 @@ class _FrontierSelection:
             "CREATE INDEX pending_heads_raw ON pending_heads(raw_id,logical_source_key);"
             "CREATE TABLE pending_raws(raw_id TEXT PRIMARY KEY,structural_digest TEXT NOT NULL) WITHOUT ROWID;"
             "CREATE TABLE membership_inputs(raw_id TEXT NOT NULL,logical_source_key TEXT NOT NULL,disposition_json TEXT NOT NULL,PRIMARY KEY(raw_id,logical_source_key)) WITHOUT ROWID;"
+            "CREATE TABLE prior_membership_inputs(raw_id TEXT NOT NULL,logical_source_key TEXT NOT NULL,disposition_json TEXT NOT NULL,PRIMARY KEY(raw_id,logical_source_key)) WITHOUT ROWID;"
             "CREATE TABLE current_raws(raw_id TEXT PRIMARY KEY,structural_digest TEXT NOT NULL) WITHOUT ROWID;"
             "CREATE TABLE current_memberships(raw_id TEXT NOT NULL,logical_source_key TEXT NOT NULL,disposition_json TEXT NOT NULL,PRIMARY KEY(raw_id,logical_source_key)) WITHOUT ROWID;"
             "CREATE TABLE checkpoint_head_writes AS SELECT * FROM pending_heads WHERE 0;"
@@ -1830,25 +1834,18 @@ def _prepare_checkpoint_delta(selection: _FrontierSelection, ops: sqlite3.Connec
                 check_compute_cancelled()
                 with closing(
                     scratch.execute(
-                        "SELECT * FROM membership_inputs WHERE raw_id=? "
-                        + ("" if member_after is None else "AND logical_source_key>? ")
-                        + "ORDER BY logical_source_key LIMIT 256",
+                        "SELECT n.raw_id,n.logical_source_key,n.disposition_json FROM membership_inputs n "
+                        "LEFT JOIN prior_membership_inputs p USING(raw_id,logical_source_key) WHERE n.raw_id=? "
+                        + ("" if member_after is None else "AND n.logical_source_key>? ")
+                        + "AND (p.logical_source_key IS NULL OR n.disposition_json!=p.disposition_json) "
+                        "ORDER BY n.logical_source_key LIMIT 256",
                         (raw_id,) if member_after is None else (raw_id, member_after),
                     )
                 ) as rows:
                     members = tuple(tuple(row) for row in rows)
                 if not members:
                     break
-                for member in members:
-                    with closing(
-                        ops.execute(
-                            "SELECT * FROM raw_frontier_membership_inputs WHERE raw_id=? AND logical_source_key=?",
-                            member[:2],
-                        )
-                    ) as rows:
-                        prior_member = rows.fetchone()
-                    if prior_member is None or member != tuple(prior_member):
-                        scratch.execute("INSERT INTO checkpoint_member_writes VALUES(?,?,?)", member)
+                scratch.executemany("INSERT INTO checkpoint_member_writes VALUES(?,?,?)", members)
                 member_after = str(members[-1][1])
         after = raws[-1]
 
@@ -1903,6 +1900,42 @@ def _publish_frontier_checkpoint(writer: sqlite3.Connection, selection: _Frontie
                 pass
 
 
+def _copy_pending_raw_selection(selection: _FrontierSelection, ops: sqlite3.Connection, raw_id: str) -> int:
+    """Copy one original comparison inventory without unrelated payloads."""
+    scratch = selection._owner.require_connection()
+    heads = 0
+    for target, original, width in (
+        ("pending_heads", "raw_frontier_pending_heads", 4),
+        ("membership_inputs", "raw_frontier_membership_inputs", 3),
+    ):
+        after = None
+        while True:
+            check_compute_cancelled()
+            with closing(
+                ops.execute(
+                    f"SELECT * FROM {original} WHERE raw_id=? "
+                    + ("" if after is None else "AND logical_source_key>? ")
+                    + "ORDER BY logical_source_key LIMIT 256",
+                    (raw_id,) if after is None else (raw_id, after),
+                )
+            ) as rows:
+                page = tuple(tuple(row) for row in rows)
+            if not page:
+                break
+            scratch.executemany(f"INSERT INTO {target} VALUES({','.join('?' for _ in range(width))})", page)
+            if target == "pending_heads":
+                heads += len(page)
+                after = str(page[-1][0])
+            else:
+                after = str(page[-1][1])
+    with closing(ops.execute("SELECT * FROM raw_frontier_pending_raws WHERE raw_id=?", (raw_id,))) as rows:
+        raw = rows.fetchone()
+    if raw is not None:
+        scratch.execute("INSERT INTO pending_raws VALUES(?,?)", tuple(raw))
+    scratch.execute("INSERT INTO prior_membership_inputs SELECT * FROM membership_inputs WHERE raw_id=?", (raw_id,))
+    return heads
+
+
 def _populate_pending_ack_selection(
     source: PreparedFrontierSource,
     selection: _FrontierSelection,
@@ -1921,27 +1954,10 @@ def _populate_pending_ack_selection(
         with closing(ops.execute("SELECT count(*) FROM raw_frontier_pending_heads")) as rows:
             if rows.fetchone()[0] != count:
                 return False
-        for target, original in (
-            ("pending_heads", "raw_frontier_pending_heads"),
-            ("pending_raws", "raw_frontier_pending_raws"),
-            ("membership_inputs", "raw_frontier_membership_inputs"),
-        ):
-            after_row = 0
-            while True:
-                check_compute_cancelled()
-                with closing(
-                    ops.execute(f"SELECT rowid,* FROM {original} WHERE rowid>? ORDER BY rowid LIMIT 256", (after_row,))
-                ) as rows:
-                    page = tuple(tuple(row) for row in rows)
-                if not page:
-                    break
-                marks = ",".join("?" for _ in page[0][1:])
-                selection._owner.require_connection().executemany(
-                    f"INSERT INTO {target} VALUES({marks})", (row[1:] for row in page)
-                )
-                after_row = int(page[-1][0])
+        selection.unselected_pending_heads = count
         for raw_id in source.changed_raw_ids(state, mark):
             check_compute_cancelled()
+            selection.unselected_pending_heads -= _copy_pending_raw_selection(selection, ops, raw_id)
             if not _raw_checkpoint(source, selection, raw_id) or not _ack_raw_transition(selection, raw_id):
                 return False
             _replace_raw_checkpoint(selection, raw_id)
@@ -2066,6 +2082,7 @@ def inspect_prepared_raw_authority_frontier(
                     "pending_heads",
                     "pending_raws",
                     "membership_inputs",
+                    "prior_membership_inputs",
                     "current_raws",
                     "current_memberships",
                 ):
@@ -2144,6 +2161,7 @@ def inspect_prepared_raw_authority_frontier(
                             "pending_heads",
                             "pending_raws",
                             "membership_inputs",
+                            "prior_membership_inputs",
                             "current_raws",
                             "current_memberships",
                             "selected_keys",
@@ -2164,7 +2182,7 @@ def inspect_prepared_raw_authority_frontier(
                     with closing(
                         frame.selection._owner.require_connection().execute("SELECT count(*) FROM pending_heads")
                     ) as rows:
-                        blocking_count = int(rows.fetchone()[0])
+                        blocking_count = frame.selection.unselected_pending_heads + int(rows.fetchone()[0])
                     # Every cursor receives a complete current proof, including
                     # those unrelated to this pass's expensive head selection.
                     with closing(ops.execute("SELECT source_path FROM ingest_cursor ORDER BY source_path")) as rows:

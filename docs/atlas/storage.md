@@ -126,8 +126,14 @@ Unselected pending contributions remain in the aggregate. The checkpoint and mar
 commit together after the original Source permit succeeds; a refused permit
 advances neither. Full anchors replace the checkpoint. Supported ACK successors
 prepare only changed checkpoint rows and healthy contribution removals before
-writer admission; publication preserves unrelated rows. Preparation still reads
-the sparse pending inventory. This checkpoint never acknowledges Source or supplies byte proof.
+writer admission; publication preserves unrelated rows. Preparation copies only
+changed raws' pending heads and comparison inventories from its original Ops
+snapshot. The exact original pending count minus selected originals plus their
+prepared replacements retains blockers outside the selection. Original selected
+dispositions remain in scratch; a paged SQL join emits changed membership rows
+without one Ops point read per member. Complete selected raw inventories and
+shared-raw sibling proofs remain required. This checkpoint never acknowledges
+Source or supplies byte proof.
 Every supported blocked successor still proves all eligible cursors against an
 independent complete current accepted-head inventory. Headed cursor paths need no
 terminal-artifact proof; headless paths still use canonical terminal evidence.
