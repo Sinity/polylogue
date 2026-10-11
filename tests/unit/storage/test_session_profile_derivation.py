@@ -700,6 +700,166 @@ def test_large_profile_preparation_reuses_only_its_pinned_source_binding(
         assert pinned.bundle.profile_record.input_content_hash == pinned.input_binding
 
 
+@pytest.mark.parametrize("heavy", (False, True))
+def test_profile_work_observation_counts_repeated_bodies_not_unique_keys(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, heavy: bool
+) -> None:
+    from dataclasses import replace
+
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
+    from polylogue.storage.derived.session import rebuild
+
+    index_db, session_id = archive
+    monkeypatch.setattr(work_observation, "ENABLED", True)
+    if heavy:
+        monkeypatch.setattr(rebuild, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 2)
+    with plog.capture() as records, closing(_write_connection(index_db)) as conn:
+        conn.execute("BEGIN")
+        first = rebuild.prepare_session_insight_partition(conn, session_id)
+        second = rebuild.prepare_session_insight_partition(conn, session_id)
+    bodies = [r for r in records if r["event"] == "work.body.ok" and r.get("component") == "session_profile"]
+    assert len(bodies) == 2
+    assert {r["operation"] for r in bodies} == {"prepare_heavy" if heavy else "prepare_ordinary"}
+    assert bodies[0]["work_key"] == bodies[1]["work_key"]
+    assert isinstance(bodies[0]["work_key"], str)
+    assert first.diagnostic_artifact_ref != second.diagnostic_artifact_ref
+    assert first.diagnostic_artifact_ref == bodies[0]["artifact_ref"]
+    assert second.diagnostic_artifact_ref == bodies[1]["artifact_ref"]
+    assert "diagnostic_artifact_ref" not in repr(first)
+    assert replace(first, diagnostic_artifact_ref="different-diagnostic-reference") == first
+
+
+def test_profile_work_observation_binds_canonical_usage_and_preserves_refusal(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
+    from polylogue.storage.derived.session import rebuild
+
+    index_db, session_id = archive
+    _mutate(index_db, session_id, "model_name", "'fixture-model'")
+    assert _materialize(index_db, session_id)
+    monkeypatch.setattr(work_observation, "ENABLED", True)
+    with plog.capture() as records:
+        with closing(_write_connection(index_db)) as conn:
+            first = rebuild.prepare_session_insight_partition(conn, session_id)
+        with (
+            write_lease("test.mutate-canonical-usage", archive_root=index_db.parent),
+            closing(_write_connection(index_db)) as conn,
+        ):
+            changed = conn.execute(
+                "UPDATE session_model_usage SET input_tokens = COALESCE(input_tokens, 0) + 19 WHERE session_id = ?",
+                (session_id,),
+            )
+            assert changed.rowcount > 0
+            conn.commit()
+        with closing(_write_connection(index_db)) as conn:
+            second = rebuild.prepare_session_insight_partition(conn, session_id)
+        with (
+            write_lease("test.publish-stale-usage", archive_root=index_db.parent),
+            closing(_write_connection(index_db)) as conn,
+        ):
+            # Isolate the complete-value guard: canonical usage also advances
+            # demand, which independently refuses the old demand revision.
+            current_demand_revision = conn.execute(
+                "SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+            assert current_demand_revision > 0
+            assert (
+                rebuild.publish_prepared_session_insight_partition(
+                    conn, first, expected_demand_revision=current_demand_revision
+                )
+                is False
+            )
+    assert first.input_binding == second.input_binding
+    assert first.compute_binding != second.compute_binding
+    bodies = [r for r in records if r["event"] == "work.body.ok" and r.get("component") == "session_profile"]
+    assert len(bodies) == 2
+    assert bodies[0]["work_key"] != bodies[1]["work_key"]
+    consumers = [r for r in records if r["event"] == "work.artifact.consume"]
+    assert len(consumers) == 1
+    assert consumers[0]["artifact_ref"] == first.diagnostic_artifact_ref
+    assert (consumers[0]["effect"], consumers[0]["reason"]) == ("refused", "canonical_usage_not_current")
+
+
+def test_profile_work_observation_keeps_preparation_when_publication_is_already_current(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
+
+    index_db, session_id = archive
+    adapter, frame, _report = _converge_session_profile(index_db.parent, index_db, session_id)
+    monkeypatch.setattr(work_observation, "ENABLED", True)
+    with plog.capture() as records:
+        replacement = adapter.compute(frame, session_id)
+        assert adapter.publish(frame, replacement)
+    bodies = [r for r in records if r["event"] == "work.body.ok" and r.get("component") == "session_profile"]
+    assert [r["operation"] for r in bodies] == ["prepare_ordinary"]
+    consumers = [r for r in records if r["event"] == "work.artifact.consume"]
+    assert len(consumers) == 1
+    assert consumers[0]["effect"] == "already_current"
+    assert consumers[0]["artifact_ref"] == bodies[0]["artifact_ref"]
+
+
+def test_profile_work_observation_valid_fast_path_has_no_body(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
+
+    index_db, session_id = archive
+    _converge_session_profile(index_db.parent, index_db, session_id)
+    monkeypatch.setattr(work_observation, "ENABLED", True)
+    with plog.capture() as records:
+        _adapter, _frame, report = _converge_session_profile(index_db.parent, index_db, session_id)
+    assert report.made_no_publication_attempts
+    assert not [r for r in records if r["event"].startswith("work.") and r.get("component") == "session_profile"]
+
+
+def test_profile_work_observation_off_skips_recipe_identity(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
+    from polylogue.sources import origin_specs
+    from polylogue.storage.derived.session import rebuild
+
+    def unexpected_fingerprint() -> str:
+        raise AssertionError("disabled work observations constructed recipe identity")
+
+    index_db, session_id = archive
+    monkeypatch.setattr(work_observation, "ENABLED", False)
+    with plog.capture() as records, closing(_write_connection(index_db)) as conn:
+        monkeypatch.setattr(origin_specs, "materializer_fingerprint", unexpected_fingerprint)
+        prepared = rebuild.prepare_session_insight_partition(conn, session_id)
+    assert prepared.diagnostic_artifact_ref is None
+    assert not [r for r in records if r["event"].startswith("work.")]
+
+
+def test_profile_work_observation_retirement_is_a_distinct_body(
+    archive: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
+    from polylogue.storage.derived.session import rebuild
+
+    index_db, _session_id = archive
+    monkeypatch.setattr(work_observation, "ENABLED", True)
+    with plog.capture() as records, closing(_write_connection(index_db)) as conn:
+        prepared = rebuild.prepare_session_insight_partition(conn, "absent-session")
+        assert prepared.bundle is None
+        with write_lease("test.retire-profile", archive_root=index_db.parent):
+            assert rebuild.publish_prepared_session_insight_partition(conn, prepared)
+    bodies = [r for r in records if r["event"] == "work.body.ok" and r.get("component") == "session_profile"]
+    assert [r["operation"] for r in bodies] == ["prepare_retirement", "publish_retirement"]
+    consumers = [r for r in records if r["event"] == "work.artifact.consume"]
+    assert len(consumers) == 1
+    assert consumers[0]["effect"] == "published"
+    assert consumers[0]["artifact_ref"] == prepared.diagnostic_artifact_ref
+
+
 def test_prepared_profile_family_rolls_back_when_latency_write_fails(
     archive: tuple[Path, str],
 ) -> None:

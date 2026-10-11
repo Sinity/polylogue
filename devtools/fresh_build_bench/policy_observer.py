@@ -60,10 +60,23 @@ def product_binding() -> dict[str, Any]:
             "path": str(path),
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
+    work_module = sys.modules.get("polylogue.core.work_observation")
+    work_path = getattr(work_module, "__file__", None)
+    work_mode = getattr(work_module, "ENABLED", None)
+    work_observation: dict[str, Any] = {"state": "unavailable", "enabled": None}
+    if work_path is not None and isinstance(work_mode, bool):
+        actual_work_path = Path(work_path).resolve()
+        work_observation = {
+            "state": "observed",
+            "enabled": work_mode,
+            "bound": actual_work_path == (candidate / "polylogue/core/work_observation.py").resolve(),
+            "sha256": hashlib.sha256(actual_work_path.read_bytes()).hexdigest(),
+        }
     return {
         "outcome": "bound" if all(row["bound"] for row in modules.values()) else "mismatch",
         "candidate": str(candidate),
         "modules": modules,
+        "work_observation": work_observation,
     }
 
 

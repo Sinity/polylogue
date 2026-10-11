@@ -49,6 +49,11 @@ def _run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--candidate", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--profile", action="store_true", help="run the in-daemon stack sampler")
+    parser.add_argument(
+        "--observe-work",
+        action="store_true",
+        help="enable diagnostic work observations (recorded instrumentation mode)",
+    )
     parser.add_argument("--profile-interval", type=_positive_seconds, default=0.01)
     parser.add_argument(
         "--stall-timeout", type=_positive_seconds, default=900.0, help="stop when nothing observable moves"
@@ -131,6 +136,20 @@ def _parser() -> argparse.ArgumentParser:
     )
     compare.add_argument("before", type=Path)
     compare.add_argument("after", type=Path)
+    from devtools.fresh_build_bench.evaluation import METRICS
+
+    compare.add_argument("--json", action="store_true", help="emit independent evaluation axes")
+    compare.add_argument(
+        "--accept",
+        action="store_true",
+        help="require confirmed optimization acceptance; inspection success is insufficient",
+    )
+    compare.add_argument(
+        "--metric",
+        choices=METRICS,
+        default="promotion_s",
+        help="target claim metric; does not create a launch-frozen policy",
+    )
     compare.add_argument(
         "--allow-unqualified",
         action="store_true",
@@ -272,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
             python=args.python,
             label=args.label,
             profile=args.profile,
+            observe_work=args.observe_work,
             profile_interval_s=args.profile_interval,
             stall_timeout_s=args.stall_timeout,
             fingerprint=not args.no_fingerprint,
@@ -327,12 +347,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "compare":
+        from devtools.fresh_build_bench.evaluation import evaluate_comparison
         from devtools.fresh_build_bench.report import compare
 
         before = json.loads(args.before.read_text(encoding="utf-8"))
         after = json.loads(args.after.read_text(encoding="utf-8"))
         admissible, text = compare(before, after, allow_unqualified=args.allow_unqualified)
-        print(text)
+        evaluation = evaluate_comparison(before, after, target_metric=args.metric)
+        evaluation["inspection_admissible"] = admissible
+        if args.json:
+            print(json.dumps(evaluation, indent=1, sort_keys=True))
+        else:
+            print(text)
+            decision = evaluation["performance_decision"]
+            print(f"inspection admissible={admissible}; optimization={decision['state']} metric={args.metric}")
+            print("acceptance gaps: " + ", ".join(decision["gaps"]))
+        if args.accept:
+            return 0 if evaluation["performance_decision"]["accepted"] else 1
         return 0 if admissible else 1
     if args.command == "components":
         from devtools.fresh_build_bench.components import main as components_main

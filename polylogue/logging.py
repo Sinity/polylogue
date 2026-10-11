@@ -417,6 +417,16 @@ _TRACE_FIELDS = frozenset(
         "error_type",
         "reason",
         "error_detail",
+        "attempt_id",
+        "process_generation_id",
+        "worker_generation_id",
+        "producer_seq",
+        "component",
+        "operation",
+        "work_key",
+        "work_key_reason",
+        "artifact_ref",
+        "effect",
     }
 )
 _ENVELOPE_FIELDS = frozenset({"ts", "level", "event", "monotonic_ns", "native_thread_id", "pid"})

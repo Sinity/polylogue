@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, TypedDict, cast
 
 from devtools.fresh_build_bench.corpus import load_manifest, verify_manifest
+from devtools.fresh_build_bench.evaluation import evaluate_run, evaluate_samples
 from devtools.fresh_build_bench.recipe_qualification import output_equivalence
 from devtools.fresh_build_bench.report import comparability_problems
 from devtools.fresh_build_bench.run import RunConfig, run_build
@@ -118,6 +119,7 @@ def reduce_experiment(samples: list[dict[str, Any]]) -> dict[str, Any]:
             else [],
         }
     return {
+        "evaluation": evaluate_samples(samples),
         "qualified": not problems,
         "problems": sorted(set(problems)),
         "exact_output_equivalent": len(fingerprints) == 1 and not any("fingerprint" in p for p in problems),
@@ -173,14 +175,20 @@ def run_experiment(
         )
         # An invalid run is useful evidence, but cannot justify more paired
         # work. Preserve its receipt and emit a partial experiment document.
-        if not receipt.get("qualified"):
+        evaluation = evaluate_run(receipt)
+        if any(evaluation[axis]["state"] != "pass" for axis in ("measurement_validity", "scope_completion")):
             break
     complete = len(samples) == len(order) * repetitions
     # A partial sequence may lack one arm; avoid inventing its statistics.
     reduction = (
         reduce_experiment(samples)
         if {sample["arm"] for sample in samples} == {"A", "B"}
-        else {"qualified": False, "problems": ["paired sequence incomplete"], "metrics": {}}
+        else {
+            "qualified": False,
+            "problems": ["paired sequence incomplete"],
+            "metrics": {},
+            "evaluation": evaluate_samples(samples),
+        }
     )
     document = {
         "format": "polylogue.fresh-build-experiment.v1",
@@ -191,6 +199,7 @@ def run_experiment(
         "samples": [{key: value for key, value in sample.items() if key != "receipt"} for sample in samples],
     }
     document["qualified"] = document["qualified"] and complete
+    _sequence_completion(document)
     (config.work / "experiment.json").write_text(json.dumps(document, indent=1, sort_keys=True) + "\n")
     return document
 
@@ -210,10 +219,16 @@ def refresh_experiment(path: Path) -> dict[str, Any]:
     reduction = (
         reduce_experiment(samples)
         if {sample["arm"] for sample in samples} == {"A", "B"}
-        else {"qualified": False, "problems": ["paired sequence incomplete"], "metrics": {}}
+        else {
+            "qualified": False,
+            "problems": ["paired sequence incomplete"],
+            "metrics": {},
+            "evaluation": evaluate_samples(samples),
+        }
     )
     document.update(reduction)
     document["qualified"] = reduction["qualified"] and document["complete"]
+    _sequence_completion(document)
     document["derived_from"] = {
         "path": str(path.resolve()),
         "sha256": hashlib.sha256(original).hexdigest(),
@@ -223,3 +238,15 @@ def refresh_experiment(path: Path) -> dict[str, Any]:
     view = path.with_name(f"{path.stem}.view-{hashlib.sha256(payload.encode()).hexdigest()}.json")
     view.write_text(payload)
     return document
+
+
+def _sequence_completion(document: dict[str, Any]) -> None:
+    """Completing a run does not complete the manifest's paired sequence."""
+    evaluation = document["evaluation"]
+    evaluation["scope_completion"]["paired_sequence_complete"] = document["complete"]
+    if not document["complete"]:
+        evaluation["scope_completion"]["state"] = "fail"
+        evaluation["scope_completion"]["failed"].append("paired_sequence_incomplete")
+        evaluation["performance_decision"]["state"] = "rejected"
+        if "declared_scope_completion_not_confirmed" not in evaluation["performance_decision"]["gaps"]:
+            evaluation["performance_decision"]["gaps"].append("declared_scope_completion_not_confirmed")

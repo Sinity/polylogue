@@ -717,6 +717,8 @@ class PreparedJsonl:
     resolved_provider: Provider | None = None
     validation_verdict: RetainedValidationVerdict | None = field(default=None, compare=False, repr=False)
     validation_reuse: RetainedValidationReuse | None = field(default=None, compare=False, repr=False)
+    observed_parse_key: str | None = field(default=None, compare=False, repr=False)
+    observed_parse_artifact_ref: str | None = field(default=None, compare=False, repr=False)
     _owns_validation: bool = field(default=False, compare=False, repr=False)
     parser_stage_artifact: PreparedJsonl | None = field(default=None, compare=False, repr=False)
     positive_evidence_filtered: bool = False
@@ -2501,6 +2503,8 @@ def _finalize_prepared_cohort(
         result,
         validation_verdict=original.validation_verdict,
         validation_reuse=original.validation_reuse,
+        observed_parse_key=original.observed_parse_key,
+        observed_parse_artifact_ref=original.observed_parse_artifact_ref,
         _owns_validation=False,
     )
     if not preserve_parser_stage:

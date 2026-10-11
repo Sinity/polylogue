@@ -51,7 +51,29 @@ def _sample(arm: str, seconds: float, **changes: Any) -> dict[str, Any]:
     receipt = {
         "qualified": True,
         "outcome": "terminal",
-        "checks": {},
+        "measurement_scope": "ordinary-daemon-terminal-route",
+        "checks": dict.fromkeys(
+            (
+                "candidate_unchanged",
+                "benchmark_unchanged",
+                "corpus_unchanged",
+                "compute_policy_bound",
+                "candidate_import_bound",
+                "promoted",
+                "intake_complete",
+                "raw_parse_failures_zero",
+                "memberships_settled",
+                "debt_zero",
+                "readiness_complete",
+                "readiness_import_bound",
+                "clean_shutdown",
+                "positive_output",
+                "events_lossless",
+                "milestones_recorded",
+                "wall_clock_steady",
+            ),
+            True,
+        ),
         "corpus": {"digest": "fixed"},
         "config": {"digest": "fixed"},
         "environment": {},
@@ -91,7 +113,10 @@ def test_output_or_policy_changes_refuse_paired_qualification() -> None:
     assert not reduce_experiment([_sample("A", 10), _sample("B", 1, effective_compute_policy=None)])["qualified"]
 
 
-def test_experiment_uses_new_state_and_binds_receipt_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("complete", [True, False])
+def test_experiment_uses_new_state_and_binds_receipt_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, complete: bool
+) -> None:
     from devtools.fresh_build_bench import experiment
     from devtools.fresh_build_bench.corpus import seal
 
@@ -107,15 +132,20 @@ def test_experiment_uses_new_state_and_binds_receipt_bytes(tmp_path: Path, monke
         config.work.mkdir()
         seen.append((config.label, config.candidate, config.work))
         receipt: dict[str, Any] = _sample(config.label, 2)["receipt"]
+        receipt["checks"]["intake_complete"] = complete
         (config.work / "receipt.json").write_text(json.dumps(receipt))
         return receipt
 
     monkeypatch.setattr(experiment, "run_build", build)
     config = RunConfig(corpus, tmp_path / "work", tmp_path / "driver", "python", "test")
     result = run_experiment(config, before=tmp_path / "a", after=tmp_path / "b", repetitions=2)
-    assert result["qualified"] and result["complete"]
-    assert [arm for arm, _candidate, _work in seen] == list("ABBAABBA")
-    assert len({work for _arm, _candidate, work in seen}) == 8
+    assert result["qualified"] is complete and result["complete"] is complete
+    assert [arm for arm, _candidate, _work in seen] == (list("ABBAABBA") if complete else ["A"])
+    assert len({work for _arm, _candidate, work in seen}) == (8 if complete else 1)
+    assert result["evaluation"]["scope_completion"]["paired_sequence_complete"] is complete
+    if not complete:
+        assert result["evaluation"]["scope_completion"]["state"] == "fail"
+        assert "paired_sequence_incomplete" in result["evaluation"]["scope_completion"]["failed"]
     for sample in result["samples"]:
         assert sample["sha256"] == hashlib.sha256(Path(sample["path"]).read_bytes()).hexdigest()
 
@@ -234,6 +264,24 @@ def test_policy_binding_refuses_imported_product_outside_candidate(
     assert binding["outcome"] == "mismatch"
     assert not binding["modules"]["polylogue.core.compute"]["bound"]
     assert binding["modules"]["polylogue.core.compute"]["sha256"]
+
+    import sys
+
+    from polylogue.core import work_observation
+
+    monkeypatch.setenv("POLYLOGUE_BENCH_CANDIDATE", str(Path(commands.__file__).resolve().parents[2]))
+    observed = product_binding()
+    assert observed["outcome"] == "bound"
+    assert observed["work_observation"] == {
+        "state": "observed",
+        "enabled": work_observation.ENABLED,
+        "bound": True,
+        "sha256": hashlib.sha256(Path(work_observation.__file__).read_bytes()).hexdigest(),
+    }
+    monkeypatch.delitem(sys.modules, "polylogue.core.work_observation")
+    legacy = product_binding()
+    assert legacy["outcome"] == "bound"
+    assert legacy["work_observation"] == {"state": "unavailable", "enabled": None}
 
 
 def test_identical_actual_candidate_is_calibration_despite_separated_arms() -> None:
