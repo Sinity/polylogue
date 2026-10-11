@@ -131,6 +131,9 @@ Retained schema validation owns reducer tables once per spill connection and
 reuses each selected-schema validator across its complete record scan. Lazy
 normalized objects and arrays consume the original ordered cursors, checking
 cancellation before loading each value and closing those cursors on early exit.
+Ordered child reads select node kind and scalar metadata through the membership
+edges in the same query. Construction uses the original document's conversion
+and token backing, including projected objects that share child nodes.
 Completed validation samples detach into native dictionaries and lists only
 after tree metadata proves at most 1,024 nodes, depth 64, and 64 KiB of total
 decoded scalar and key bytes. Larger samples retain the same disk-backed view;
