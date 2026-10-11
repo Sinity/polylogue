@@ -185,12 +185,20 @@ def is_recorded_container_member(row: Mapping[str, object]) -> bool:
 def retained_source_location(row: Mapping[str, object], root: Path) -> tuple[str, bool]:
     """Resolve explicit retained coordinates or a literal loose-file path.
 
+    An existing recorded path takes precedence over a same-tail relocation.
+    Relocation is offered only after absence; exact bytes still require proof.
     A member namespace is authority only when its acquisition receipt names it.
     Colons and ZIP-looking suffixes in loose paths remain filename data.
     """
     source = str(row.get("source_path") or "")
 
     def relocate(path: Path) -> Path:
+        try:
+            path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        else:
+            return path
         for directory in ("inbox", "browser-capture", "hooks"):
             if directory in path.parts:
                 candidate = root.joinpath(*path.parts[path.parts.index(directory) :])

@@ -149,6 +149,14 @@ prepares publication on the same admitted creator after intent is durable.
 Recovery uses the same supplied compute owner and short writer admissions; no
 Source capability crosses the preparation lifetime.
 
+Retained blob restoration and backup recoverability prefer an existing recorded
+loose-file or acquired ZIP-container path. Only an absent recorded path offers
+its same-tail relocation under `inbox`, `browser-capture` or `hooks`. Location
+selection preserves non-absence filesystem faults; every selected byte window
+still requires exact size and SHA-256 proof. ZIP member authority comes from its
+captured acquisition coordinate, while loose colons remain filename data
+(`storage/source_blob_restoration.py:retained_source_location`).
+
 ## Backup readability
 
 The archive writer holds cross-tier custody and excludes Source blob publishers
