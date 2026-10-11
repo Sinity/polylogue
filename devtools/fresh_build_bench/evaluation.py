@@ -406,7 +406,11 @@ def _practical_decision(
             or binding.get("arm") != arm
             or actual_binding != {**binding, "state": "bound-before-main"}
             or receipt.get("acceptance_launch") != launch
-            or receipt.get("candidate") != (launch.get("candidate") or {}).get(arm)
+            or any(
+                (receipt.get("candidate") or {}).get(field)
+                != ((launch.get("candidate") or {}).get(arm) or {}).get(field)
+                for field in ("git_sha", "dirty", "tracked_diff_sha256")
+            )
             or (receipt.get("corpus") or {}).get("digest") != launch.get("corpus_digest")
             or (receipt.get("config") or {}).get("digest") != launch.get("config_digest")
             or controlled_environment(receipt.get("environment") or {}) != launch.get("environment")

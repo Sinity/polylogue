@@ -817,7 +817,7 @@ def terminal_measurement(observations: list[Any], terminal_at: float | None, *, 
         lower = min(lower, ready.readiness_checked_s[0])
     return {
         "kind": "readiness-observation",
-        "first_observed_s": terminal_at,
+        "terminal_observed_s": terminal_at,
         "observation_window_s": [lower, ready.scan_finished_s if ready else None],
         "certified_s": observations[-1].scan_finished_s
         if observations and terminal_at is not None and certified
@@ -827,7 +827,7 @@ def terminal_measurement(observations: list[Any], terminal_at: float | None, *, 
         "readiness_binding": ready.readiness_binding if ready else None,
         "readiness_cache_max_age_s": ready.readiness_cache_max_age_s if ready else None,
         "semantics": "non-atomic scans; window describes observation resolution, not an exact completion event; "
-        "stable polls certify repeated observations and may reuse cached readiness",
+        "ordinary polls may reuse cached readiness; terminal certification requires a fresh candidate-bound census",
     }
 
 

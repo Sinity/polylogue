@@ -1100,6 +1100,22 @@ def _measure_and_write_receipt(
                 readiness_probe=readiness_probe,
             )
             observation.work_progress = work_progress.poll()
+            if (
+                observation.terminal
+                and observation.readiness_cached
+                and work_progress.current_daemon_observed
+                and stable + 1 >= config.stable_polls
+            ):
+                # Cached readiness guides ordinary polling, but cannot certify
+                # the current archive at the decision to stop its writer.
+                observations.append(observation)
+                observation = observe(
+                    paths["archive"], started, readiness_max_age_s=0.0, readiness_probe=readiness_probe
+                )
+                observation.work_progress = work_progress.poll()
+                if observation.error is not None or not observation.terminal:
+                    stable = 0
+                    terminal_at = None
             if work_progress.convergence_next_run_at is not None:
                 observation.convergence_next_run_at = work_progress.convergence_next_run_at
             observations.append(observation)
@@ -1158,11 +1174,10 @@ def _measure_and_write_receipt(
                 promoted_at = observation.t
             if observation.terminal and work_progress.current_daemon_observed:
                 stable += 1
-                if stable == 1:
+                if stable >= config.stable_polls:
                     terminal_at = (
                         observation.scan_finished_s if observation.scan_finished_s is not None else observation.t
                     )
-                if stable >= config.stable_polls:
                     outcome = "terminal"
                     break
             else:

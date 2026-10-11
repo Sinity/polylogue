@@ -161,6 +161,25 @@ def test_frozen_practical_policy_accepts_four_predetermined_pairs_without_statis
     assert decision["method"] == "two-abba-all-pairs-v1"
 
 
+def test_frozen_candidate_identity_allows_receipt_unchanged_attestation() -> None:
+    samples, launch = _practical_samples()
+    for sample in samples:
+        sample["receipt"]["candidate"]["unchanged_during_run"] = True
+    decision = evaluate_samples(samples, launch=launch)["performance_decision"]
+    assert decision["accepted"]
+    samples[0]["receipt"]["checks"]["candidate_unchanged"] = False
+    assert not evaluate_samples(samples, launch=launch)["performance_decision"]["accepted"]
+
+
+@pytest.mark.parametrize("field,value", [("git_sha", "changed"), ("dirty", True), ("tracked_diff_sha256", "edited")])
+def test_frozen_candidate_identity_still_rejects_changed_declared_fields(field: str, value: Any) -> None:
+    samples, launch = _practical_samples()
+    samples[0]["receipt"]["candidate"] = {**samples[0]["receipt"]["candidate"], field: value}
+    decision = evaluate_samples(samples, launch=launch)["performance_decision"]
+    assert not decision["accepted"]
+    assert "sample_1_frozen_launch_mismatch" in decision["gaps"]
+
+
 @pytest.mark.parametrize(
     "change",
     [
