@@ -20,7 +20,7 @@ from polylogue.core.json import JSONValue
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.schemas import observation_spill
 from polylogue.schemas.packages import SchemaResolution
-from polylogue.schemas.runtime_registry import SchemaRegistry
+from polylogue.schemas.runtime_registry import ProviderSchemaSnapshot, PublicSchemaDocument, SchemaRegistry
 from polylogue.schemas.validator import RetainedValidationReuse, RetainedValidationVerdict, validate_retained_document
 
 
@@ -274,14 +274,18 @@ def test_owned_reuse_zero_extent_and_cancellation_keep_physical_cleanup(
     _assert_complete_verdict_equal(_validate(path, registry, reuse, prefix=0), first)
 
 
+@pytest.mark.parametrize("fixed", [False, True])
 def test_shared_provider_snapshot_allows_independent_validation_bodies(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fixed: bool
 ) -> None:
     _publish(tmp_path / "schemas", "integer")
     paths = (tmp_path / "first.jsonl", tmp_path / "second.jsonl")
     for path in paths:
         path.write_text('{"type":"message","kind":1}\n')
     registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    if fixed:
+        with registry.current_provider_snapshot(Provider.CLAUDE_CODE) as snapshot:
+            registry = snapshot.reader()
     original = observation_spill.StreamedJSONDocument.__enter__
     lock = threading.Lock()
     both_started = threading.Event()
@@ -636,3 +640,58 @@ def test_direct_validation_leaf_has_explicit_unknown_key_and_off_skips_key_hash(
         assert not any(str(r["event"]).startswith("work.") for r in disabled)
     finally:
         plog.set_level(previous)
+
+
+@pytest.mark.parametrize("fixed", [False, True])
+def test_retained_validation_reuses_only_the_exact_fixed_snapshot_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fixed: bool
+) -> None:
+    """Real validation shares fixed caches; dynamic declarations remain fresh."""
+    root = tmp_path / "schemas"
+    schema_path = _publish(root, "string")
+    registry = SchemaRegistry(storage_root=root)
+    with registry.current_provider_snapshot(Provider.CLAUDE_CODE) as snapshot:
+        fixed_reader = snapshot.reader()
+    active = fixed_reader if fixed else registry
+    readers: list[SchemaRegistry] = []
+    loads: list[SchemaRegistry] = []
+    original_reader = ProviderSchemaSnapshot.reader
+    original_load = SchemaRegistry._load_element_schema
+
+    def reader(owner: ProviderSchemaSnapshot, existing: SchemaRegistry | None = None) -> SchemaRegistry:
+        result = original_reader(owner, existing)
+        readers.append(result)
+        return result
+
+    def load(
+        owner: SchemaRegistry, provider_token: str, *, version: str, element_kind: str | None
+    ) -> PublicSchemaDocument | None:
+        loads.append(owner)
+        return original_load(owner, provider_token, version=version, element_kind=element_kind)
+
+    monkeypatch.setattr(ProviderSchemaSnapshot, "reader", reader)
+    monkeypatch.setattr(SchemaRegistry, "_load_element_schema", load)
+    path = tmp_path / "records.jsonl"
+    path.write_text('{"type":"message","kind":"synthetic"}\n')
+    first = _validate(path, active, RetainedValidationReuse())
+    second = _validate(path, active, RetainedValidationReuse())
+    _assert_complete_verdict_equal(second, first)
+    assert first.sample_count == second.sample_count == 1
+    assert first.invalid_count == 0
+    assert len(readers) == 2
+    assert len(loads) == (1 if fixed else 2)
+    if fixed:
+        assert readers[0] is readers[1] is fixed_reader
+    else:
+        assert readers[0] is not readers[1]
+        assert all(item is not registry for item in readers)
+    # Replacing the live declaration cannot alter a fixed captured reader, but
+    # the dynamic public route must observe it on its next validation body.
+    schema_path.write_bytes(
+        gzip.compress(
+            json.dumps({"type": "object", "properties": {"kind": {"type": "integer"}}, "required": ["kind"]}).encode()
+        )
+    )
+    third = _validate(path, active, RetainedValidationReuse())
+    assert third.sample_count == 1
+    assert third.invalid_count == (0 if fixed else 1)

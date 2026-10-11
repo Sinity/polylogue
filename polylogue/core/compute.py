@@ -496,6 +496,7 @@ class _Task:
         "input_demand_bytes",
         "exclusive_bytes",
         "cancellation",
+        "remove_cancellation_listener",
         "context",
         "creator_thread",
         "function",
@@ -532,6 +533,7 @@ class _Task:
         self.creator_thread: threading.Thread | None = None
         self.future = future
         self.cancellation = cancellation
+        self.remove_cancellation_listener: Callable[[], None] | None = None
         self.admission_class = admission_class
         self.units = units
         self.bytes = estimated_bytes
@@ -918,7 +920,15 @@ class BoundedComputeAdapter:
             task.sql_retry.request()
             self._cancel_before_start(task)
 
-        handle.add_listener(cancel_task)
+        remove_listener = handle.add_listener(cancel_task)
+        with self._lock:
+            # Another submitter may already have dispatched and settled this
+            # task. Registration must not resurrect its completed custody.
+            already_done = task.state == "done"
+            if not already_done:
+                task.remove_cancellation_listener = remove_listener
+        if already_done:
+            remove_listener()
         self._run_all(runnable)
         return SubmittedOperation(future=future, cancellation=handle, _task=task)
 
@@ -1176,7 +1186,10 @@ class BoundedComputeAdapter:
                 task.future.set_exception(DaemonOperationCancelled("daemon compute adapter shut down"))
 
         try:
-            execution = self.executor.submit(task.context.run, run)
+            # A newly created free-threaded Python worker inherits the submit
+            # context. Its persistent base must not retain this task's inputs;
+            # the explicit task context below supplies the actual work context.
+            execution = contextvars.Context().run(self.executor.submit, task.context.run, run)
         except BaseException as submission_failure:
             self._release(task, active=True)
             task.future.set_exception(
@@ -1280,6 +1293,8 @@ class BoundedComputeAdapter:
             if task.state == "done":
                 return
             task.state = "done"
+            remove_listener = task.remove_cancellation_listener
+            task.remove_cancellation_listener = None
             state = self._classes[task.admission_class]
             # ``completed`` is the denominator for work that actually reached
             # dispatch.  A queued cancellation releases an admission
@@ -1307,6 +1322,8 @@ class BoundedComputeAdapter:
             if idle:
                 self._idle.notify_all()
             finish_graceful_shutdown = idle and self._shutdown and not self._cancel_on_shutdown
+        if remove_listener is not None:
+            remove_listener()
         self._run_all(runnable)
         if finish_graceful_shutdown:
             self.executor.shutdown(wait=False, cancel_futures=False)

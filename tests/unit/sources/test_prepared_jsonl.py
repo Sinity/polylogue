@@ -377,13 +377,13 @@ def test_prepared_artifact_refuses_same_count_row_change_and_file_replacement(tm
 
 def _count_message_decodes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     decodes = [0]
-    real = ParsedMessage.model_validate_json
+    real = ParsedMessage.model_validate
 
-    def counting(data: str | bytes, *args: object, **kwargs: object) -> ParsedMessage:
+    def counting(data: object, *args: object, **kwargs: object) -> ParsedMessage:
         decodes[0] += 1
         return real(data, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(ParsedMessage, "model_validate_json", counting)
+    monkeypatch.setattr(ParsedMessage, "model_validate", counting)
     return decodes
 
 

@@ -15,7 +15,6 @@ import sqlite3
 import threading
 import time
 from builtins import BaseExceptionGroup
-from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -472,12 +471,29 @@ class RawObservationArchiveWork:
         Backpressure keeps the next job pending; completed artifacts remain
         disk-backed until the ordered canonical consumer takes their exact key.
         """
-        pending: deque[tuple[tuple[object, ...], SubmittedOperation[PreparedNeutralArtifact]]] = deque()
+        page.observe_custody("acquire")
+        pending: list[tuple[tuple[object, ...], SubmittedOperation[PreparedNeutralArtifact]]] = []
         width = self._compute_adapter.snapshot().by_class("incremental-background").ceiling_slots
         primary: BaseException | None = None
+        ready = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def notify_ready(_future: object) -> None:
+            loop.call_soon_threadsafe(ready.set)
 
         async def receive() -> None:
-            key, submitted = pending[0]
+            # Observe whichever physical creator finishes first. This only
+            # collects sealed read results; canonical publication still walks
+            # its original ordered Raw selection after the page is complete.
+            while (completed := next((item for item in pending if item[1].future.done()), None)) is None:
+                ready.clear()
+                completed = next((item for item in pending if item[1].future.done()), None)
+                if completed is not None:
+                    break
+                # A callback queued by a previously received creator may wake
+                # us too. Notifications are hints; the current futures decide.
+                await ready.wait()
+            key, submitted = completed
             try:
                 prepared = await submitted.wait()
             except Exception as failure:
@@ -492,7 +508,7 @@ class RawObservationArchiveWork:
                     productive_id=prepared.raw_id,
                     wait_ms=submitted.queue_delay_s * 1000,
                 )
-            pending.popleft()
+            pending.remove(completed)
 
         try:
             for key, estimated_bytes, operation in page.parser_jobs(self._validation_mode):
@@ -509,6 +525,7 @@ class RawObservationArchiveWork:
                         await receive()
                     else:
                         pending.append((key, submitted))
+                        submitted.future.add_done_callback(notify_ready)
                         break
                 if len(pending) >= width:
                     await receive()

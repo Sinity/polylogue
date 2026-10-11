@@ -321,7 +321,11 @@ class ProviderSchemaSnapshot:
     storage_root: Path
     roots: tuple[tuple[Path, tuple[tuple[str, bytes], ...]], ...]
 
-    def reader(self) -> SchemaRegistry:
+    def reader(self, existing: SchemaRegistry | None = None) -> SchemaRegistry:
+        # Only the exact immutable snapshot owner can retain decoded caches.
+        # A dynamic registry still needs a fresh reader after capturing bytes.
+        if existing is not None and existing._fixed_snapshot is self:
+            return existing
         registry = SchemaRegistry(storage_root=self.storage_root)
         registry._fixed_snapshot = self
         registry._snapshots = {root: dict(files) for root, files in self.roots}
