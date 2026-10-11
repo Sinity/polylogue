@@ -3108,3 +3108,84 @@ def test_promotion_before_first_tree_sample_has_unavailable_cpu_not_zero() -> No
     assert result["mean_cores_to_promotion"] is None
     observed_zero = _tree_summary([(0.25, 1024, 0.0, 1, 0, 0)], 0.5)
     assert observed_zero["cpu_seconds_to_promotion"] == 0.0
+
+
+@pytest.mark.parametrize("write_during_negative_scan", [False, True])
+def test_negative_readiness_refreshes_on_relevant_wal_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock, write_during_negative_scan: bool
+) -> None:
+    import sqlite3
+
+    from devtools.fresh_build_bench import run
+
+    monkeypatch.setattr(run, "_last_readiness", {})
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    source = tmp_path / "source-tier.db"
+    with sqlite3.connect(source) as conn:
+        conn.execute("CREATE TABLE empty(value INTEGER)")
+    (archive / "source.db").symlink_to(source)
+    with sqlite3.connect(archive / "ops.db") as conn:
+        conn.execute("CREATE TABLE heartbeat(value INTEGER)")
+    index = archive / ".index-generations" / "generation" / "index.db"
+    index.parent.mkdir(parents=True)
+    (archive / "index.db").symlink_to(index)
+    calls = 0
+    started = frozen_clock.monotonic()
+    with sqlite3.connect(index) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("CREATE TABLE flags(ready INTEGER, revision INTEGER)")
+        writer.execute("INSERT INTO flags VALUES(0, 0)")
+        writer.commit()
+
+        def probe(_archive: Path) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            ready = bool(writer.execute("SELECT ready FROM flags").fetchone()[0])
+            if write_during_negative_scan and calls == 1:
+                writer.execute("UPDATE flags SET revision=revision+1")
+                writer.commit()
+            return {
+                "binding": {"path": "synthetic-candidate"},
+                "checked_monotonic_s": [frozen_clock.monotonic(), frozen_clock.monotonic()],
+                "readiness": {
+                    "checked": True,
+                    "surfaces": {
+                        name: {"ready": ready if name in {"session_profiles", "threads"} else True}
+                        for name in REQUIRED_READINESS_DOMAINS
+                    },
+                },
+            }
+
+        first = run.observe(archive, started, readiness_probe=probe)
+        assert first.error is None and not first.readiness_complete and calls == 1
+        frozen_clock.advance(2)
+        next_poll = run.observe(archive, started, readiness_probe=probe)
+        # A write inside the first census must not be hidden by its negative
+        # result. An unchanged census retains the normal cache lifetime.
+        assert next_poll.readiness_cached is not write_during_negative_scan
+        assert calls == (2 if write_during_negative_scan else 1)
+        before_change_calls = calls
+        with sqlite3.connect(archive / "ops.db") as conn:
+            conn.execute("INSERT INTO heartbeat VALUES(1)")
+        frozen_clock.advance(2)
+        assert run.observe(archive, started, readiness_probe=probe).readiness_cached
+        assert calls == before_change_calls
+        before_file = index.stat()
+        before_stamp = run._readiness_change_stamp(archive / "source.db", str(index))
+        writer.execute("UPDATE flags SET ready=1")
+        writer.commit()
+        after_file = index.stat()
+        assert (before_file.st_ino, before_file.st_size, before_file.st_mtime_ns) == (
+            after_file.st_ino,
+            after_file.st_size,
+            after_file.st_mtime_ns,
+        )
+        assert run._readiness_change_stamp(archive / "source.db", str(index)) != before_stamp
+        frozen_clock.advance(2)
+        changed = run.observe(archive, started, readiness_probe=probe)
+        assert changed.error is None and not changed.readiness_cached and changed.readiness_complete
+        assert calls == before_change_calls + 1
+        forced = run.observe(archive, started, readiness_probe=probe, readiness_max_age_s=0.0)
+        assert not forced.readiness_cached and forced.readiness_complete
+        assert calls == before_change_calls + 2

@@ -295,6 +295,30 @@ def _promoted_index(archive: Path) -> str | None:
     return str(target)
 
 
+def _readiness_change_stamp(source: Path, index: str) -> tuple[tuple[str, tuple[int, ...] | None], ...] | None:
+    """Advisory write evidence, never readiness or proof of an unchanged snapshot."""
+    stamp: list[tuple[str, tuple[int, ...] | None]] = []
+    try:
+        # ArchiveLocation.configured_tier("source") resolves this same anchor.
+        # Resolve before selecting sidecars: a split Source tier's WAL is
+        # beside its actual database, not beside the configured symlink.
+        for database in (source.resolve(), Path(index)):
+            for suffix in ("", "-wal", "-journal"):
+                path = Path(str(database) + suffix)
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    metadata = None
+                else:
+                    metadata = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                stamp.append((str(path), metadata))
+    except OSError:
+        return None
+    # SHM reader marks and unrelated Ops/status writes do not change any
+    # of the seven Source/Index readiness domains.
+    return tuple(stamp)
+
+
 def observe(
     archive: Path,
     started: float,
@@ -385,11 +409,18 @@ def observe(
                 raise OSError("candidate-bound readiness probe required")
             now = time.monotonic()
             cached_at = _last_readiness.get("at")
+            change_stamp = _readiness_change_stamp(source_path, observation.promoted_index)
             if (
                 isinstance(cached_at, float)
                 and now - cached_at < (_READINESS_POLL_S if readiness_max_age_s is None else readiness_max_age_s)
                 and _last_readiness.get("archive") == str(archive)
                 and _last_readiness.get("candidate_key") == getattr(readiness_probe, "cache_key", None)
+                and _last_readiness.get("promoted_index") == observation.promoted_index
+                and (
+                    not _last_readiness.get("negative", True)
+                    or change_stamp is not None
+                    and change_stamp == _last_readiness.get("change_stamp")
+                )
             ):
                 observation.readiness = dict(_last_readiness["readiness"])
                 observation.readiness_cached = True
@@ -407,6 +438,11 @@ def observe(
                 observation.readiness_checked_s = [
                     round(value - started, 3) for value in document["checked_monotonic_s"]
                 ]
+                after_stamp = (
+                    _readiness_change_stamp(source_path, observation.promoted_index)
+                    if _promoted_index(archive) == observation.promoted_index
+                    else None
+                )
                 _last_readiness.update(
                     at=now,
                     archive=str(archive),
@@ -414,6 +450,11 @@ def observe(
                     checked_s=observation.readiness_checked_s,
                     binding=observation.readiness_binding,
                     candidate_key=getattr(readiness_probe, "cache_key", None),
+                    promoted_index=observation.promoted_index,
+                    negative=not observation.readiness_complete,
+                    # A write during the census makes the next negative
+                    # poll refresh; no retry loop or filesystem authority.
+                    change_stamp=change_stamp if change_stamp is not None and change_stamp == after_stamp else None,
                 )
     except (OSError, sqlite3.Error) as exc:
         observation.error = f"{type(exc).__name__}: {exc}"
