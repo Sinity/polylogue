@@ -110,6 +110,11 @@ def _fields() -> dict[str, FieldKind]:
         # These are opaque IDs, never source paths or transcript contents.
         "unit_id",
         "productive_id",
+        # Diagnostic body/consumer identities; never reuse or write authority.
+        "work_key",
+        "artifact_ref",
+        "process_generation_id",
+        "worker_generation_id",
     )
 
     # -- subject identity ------------------------------------------------
@@ -171,6 +176,7 @@ def _fields() -> dict[str, FieldKind]:
         "logger",
         "effect",
         "operation",
+        "work_key_reason",
         "thread",
         "method",
         "route",
@@ -240,6 +246,14 @@ def _fields() -> dict[str, FieldKind]:
         "pid",
         "holder_pid",
         "native_thread_id",
+        "producer_seq",
+        "accepted_head_checks",
+        "blocking_head_checks",
+        "broken_head_checks",
+        "cursor_checks",
+        "cursor_ahead_count",
+        "cursor_gap_count",
+        "missing_session_raw_count",
         "monotonic_ns",
         "span_start_ns",
         "span_end_ns",

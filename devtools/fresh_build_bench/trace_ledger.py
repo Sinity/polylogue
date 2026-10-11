@@ -146,7 +146,10 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
     starts: dict[tuple[object, object, object, str], Mapping[str, Any]] = {}
     terminals: list[tuple[tuple[object, object, object, str], Mapping[str, Any]]] = []
     losses: dict[str, int] = {}
+    work_events: list[Mapping[str, Any]] = []
     for event in events:
+        if str(event.get("event", "")).startswith("work."):
+            work_events.append(event)
         counts["events"] += 1
         if _ns(event.get("monotonic_ns")) is None:
             counts["missing_monotonic_timestamps"] += 1
@@ -437,7 +440,7 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
         "measurement_loss_events",
     ):
         counts.setdefault(field, 0)
-    ledger = {
+    ledger: dict[str, Any] = {
         "format": "polylogue.trace-ledger.v1",
         "coverage": dict(counts),
         "loss_counters": losses or None,
@@ -448,6 +451,11 @@ def reduce_events(events: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], 
         "precise_chronology_available": bool(counts["measured_spans"]),
         "spans": [asdict(s) for s in slices],
     }
+    from devtools.fresh_build_bench.work_ledger import mark_capture_gap, reduce_work_events
+
+    ledger["work_observations"] = reduce_work_events(work_events)
+    if any(losses.values()) or counts["measurement_loss_events"]:
+        mark_capture_gap(ledger["work_observations"], "known_logging_capture_loss")
     return {"traceEvents": trace_events, "displayTimeUnit": "ms", "metadata": {"origin_monotonic_ns": origin}}, ledger
 
 
@@ -474,6 +482,10 @@ def main(argv: list[str] | None = None) -> int:
     input_coverage: Counter[str] = Counter()
     trace, ledger = reduce_events(read_events(args.log, input_coverage))
     ledger["input_coverage"] = dict(input_coverage)
+    if input_coverage["malformed_json"] or input_coverage["non_object"]:
+        from devtools.fresh_build_bench.work_ledger import mark_capture_gap
+
+        mark_capture_gap(ledger["work_observations"], "unreadable_input_records")
     args.out.mkdir(parents=True, exist_ok=True)
     for name, data in (("trace.json", trace), ("ledger.json", ledger)):
         (args.out / name).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

@@ -54,7 +54,7 @@ open, and every required readiness domain is ready. Raw rows that were never
 parsed are reported but do not gate: a retained non-session artifact is never
 parsed as a session, and the `raw_artifacts` readiness domain is the daemon's
 own verdict on raw completeness. A receipt is **qualified** when the build is terminal, every check in
-`checks` holds (including zero raw parse failures, exact FTS, a clean daemon
+`checks` holds (including zero raw parse failures, equal FTS row counts, a clean daemon
 shutdown, a lossless event log, a corpus re-verified after the run, and a
 candidate whose commit, tracked edits and untracked files did not change
 during the run), and every asserted budget passes; the command exits non-zero otherwise. A large single
@@ -95,7 +95,7 @@ are unavailable from batch timer names; use the causal trace for interval eviden
 
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:
-same corpus, same run configuration, same benchmark implementation (a digest of the driver and report code, since `--candidate` may name another checkout), interpreter (version, GIL mode, build string and resolved executable) and host (architecture, CPU model, CPU count, memory, the effective CPU and memory limits the daemon sizes itself from, work filesystem), and both qualified.
+same corpus, same run configuration, same benchmark implementation (a digest of the driver and report code, since `--candidate` may name another checkout), interpreter (version, GIL mode, build string and resolved executable) and host (architecture, CPU model, CPU count, memory, the effective CPU and memory limits the daemon sizes itself from, work filesystem), with bound inputs and terminal checks. A matched optional stack-profile refusal or failed asserted budget does not erase otherwise bound timing evidence. Different actual diagnostic modes still prevent a controlled metric comparison.
 
 This command is an inspection operation. Exit zero establishes comparability;
 outputs may still differ or have no fingerprint. Paired `experiment` qualification
@@ -107,6 +107,58 @@ confirmation and resource policy.
 that stalled before promotion), with a warning; it never admits a run whose candidate or corpus changed during the
 build or whose event log lost events. An optimisation claims equivalence only on identical digests from
 comparable receipts.
+
+## Evaluation
+
+`compare BEFORE AFTER --json` exposes independent `measurement_validity`, `scope_completion`, `equivalence`, `instrumentation_comparability`, per-metric `metrics`, diagnostic `capabilities` and `performance_decision` axes. New run receipts and experiment reductions also carry these derived evaluations. An absent proof stays `unknown`; the evaluator does not inherit the older aggregate `qualified` flag. Scope completion covers the sealed selected inputs and the declared ordinary daemon route. It makes no whole-install, serving-health, installed or published claim. A partial experiment also records that its planned paired sequence did not complete.
+
+Each metric reports its numeric availability separately from qualification for a controlled comparison. Promotion uses the event milestone; terminal time is a readiness observation with recorded polling, scan and cache uncertainty. CPU is sampled over the daemon process tree and cut at promotion. RSS is a sampled process-tree peak, so child spikes between polls can be missed. Missing CPU evidence leaves promotion evidence available. Output difference or a missing fingerprint leaves timing observations available while refusing an equivalence claim. Exact comparison hashes relation contents and FTS postings; the receipt's separate FTS row-count check proves only equal counts.
+
+The instrumentation axis requires recorded actual sampler coverage and a candidate-bound work-observation handshake whose enabled mode matches the declared mode. Historical absence is unknown, including when the requested mode was off. Different actual modes, including work observation on versus off, prevent qualified speed-metric comparison. Stack capability describes the actual in-daemon sampler coverage: a profile refusal prevents stack attribution, while matched refusals can retain bound timing. Per-thread CPU accounting supplies no native callchains. Refresh validates sealed sampler evidence and never invents historical import or instrumentation proof.
+
+`compare BEFORE AFTER --accept` exits non-zero unless the performance decision accepts the optimization. This increment implements no confirmed acceptance method, so that exit is always non-zero with explicit gaps. `--metric` selects the inspected target (`promotion_s`, `terminal_observation_s`, `cpu_to_promotion_s` or `rss_sampled_peak_bytes`); it cannot create a launch policy. Unplanned single pairs, A/A calibration and separated sample ranges establish no speed improvement. Choosing a budget after inspecting results cannot turn a losing speed claim into acceptance. Future acceptance needs a claim policy frozen before launch, a confirmation method and a resource policy. A clean daemon exit and drained logs leave descendant and external resource cleanup unknown.
+
+## Owner work observations
+
+Add `--observe-work` to `run` or `experiment` to record actual neutral Raw
+parse, retained validation, and session profile preparation/publication bodies.
+It also retains the Raw frontier inspector's typed mode and counts at the
+existing owner boundary. Observation is off by default. The launcher owns
+`POLYLOGUE_TRACE_WORK`; the imported candidate reports its actual mode and
+module hash. Compare only matching observed modes. This instrumentation has
+not yet been qualified for overhead.
+
+Reduce the run's structured event file with the existing trace command:
+
+```bash
+python -m devtools.fresh_build_bench.trace_ledger EVENTS_JSONL --out PRIVATE_DIR
+```
+
+The ledger's `work_observations` separates body entries, successful and failed
+exits, complete input keys, produced artifact references, and the owner's
+consumer decisions. Two executions of one key remain two bodies. A cache hit
+is a consumer of the original artifact reference, not another body or a
+measurement of avoided CPU. Profile publication includes commit; work that
+prepared a result before the owner finds it already current remains visible.
+These observations change neither reuse guards nor publication authority.
+
+Input keys are conservative: Raw parsing uses the owned artifact and actual
+parser recipe; validation additionally binds the accepted prefix, selection,
+ordered schema snapshot and implementation; profile preparation binds the
+full compute inputs and actual materializer recipe. Direct validation without
+owner input evidence has an explicit unknown key. Different keys alone do not
+establish necessary work. Instrumentation edits can change existing AST recipe
+identities; the benchmark retains its normal recipe certification rather than
+waiving that change.
+
+Transport deduplication uses process generation, worker generation and producer
+sequence, never a work key. Missing identities, internal sequence gaps,
+unmatched bodies and known capture loss retain observed counts but withdraw
+execution-amplification ratios. Ratios describe only paired observed bodies;
+the stream does not certify the full-run work population or artifact cleanup.
+Body CPU uses same-thread intervals united within process and worker lifetimes,
+so nested bodies are not added together. It supplies no async CPU attribution
+or exclusive per-operation partition.
 
 ## Components
 
@@ -152,7 +204,7 @@ agentctl job start polylogue fresh_build_bench --workspace /realm/worktree/drive
 
 `select` copies real whole session units, including subagents and tool sidecars, plus existing static assembly dependencies at the production retained-assembly coordinates. Shared history and index files count once against `--max-bytes`; `--max-unit-bytes` limits each unit's own files. A dependency closure that exceeds the total budget is excluded whole. The manifest records private source provenance, each unit's private and shared bytes, sampled and missing providers, and covered and missing provider/size strata. Its byte budgets select an experiment workload; they do not limit valid product work. Gemini units are complete projects. The separate mutable Codex database source, exports, hooks, embeddings and browser capture are excluded from this initial selected-root route. Synthetic corpora must use `kind="synthetic"`; their timings are repeatability controls. Budgeted selections do not project whole-archive time.
 
-`experiment` runs the existing ordinary-daemon terminal route with a new archive, XDG tree and bytecode directory for every sample. Both arms share the driver, sealed corpus, interpreter and configuration. The host filesystem cache is uncontrolled. Balanced `--order AB` is a single sample per arm; default `ABBA` supplies two per arm. Repetitions repeat that sequence. `experiment.json` references immutable constituent receipts by path and SHA-256, exposes raw timings, medians, median absolute deviations and ranges, and requires qualified runs with exact or narrowly recipe-qualified output equivalence. Overlapping observed ranges are labelled `within-observed-noise`; separated ranges are `observed-arm-difference`. Neither observed range separation nor two samples proves speed improvement. All metrics are descriptive, with sample insufficiency stated. Identical recorded candidate identity and actual imported module hashes label the experiment `A/A-calibration`, with no code-improvement claim. An unqualified run stops the sequence and preserves its receipt.
+`experiment` runs the existing ordinary-daemon terminal route with a new archive, XDG tree and bytecode directory for every sample. Both arms share the driver, sealed corpus, interpreter and configuration. The host filesystem cache is uncontrolled. Balanced `--order AB` is a single sample per arm; default `ABBA` supplies two per arm. Repetitions repeat that sequence. `experiment.json` references immutable constituent receipts by path and SHA-256, exposes raw timings, medians, median absolute deviations and ranges, and requires bound terminal runs with exact or narrowly recipe-qualified output equivalence. Overlapping observed ranges are labelled `within-observed-noise`; separated ranges are `observed-arm-difference`. Neither observed range separation nor two samples proves speed improvement. All metrics are descriptive, with sample insufficiency stated. Identical recorded candidate identity and actual imported module hashes label the experiment `A/A-calibration`, with no code-improvement claim. A run whose input validity or declared scope completion fails or remains unknown stops the sequence and preserves its receipt. Optional stack refusal alone does not stop it.
 
 Each new run binds a read-only diagnostic policy observer by hash in its launcher. The observer reads the existing published compute owner's capacities, per-class reserves and ceilings, and actual GIL mode after product and profiling imports. It records observed policy changes in `policy.json`, sealed by the run receipt. Sampling is periodic at 50 ms and at normal process exit, so transient changes between samples can be missed. The observer never constructs or changes an adapter. Missing binding prevents qualification and comparison. Different effective policies or launcher settings cannot silently compare as one configuration. Python launcher wrappers are refused because their injected behavior cannot be bound by the interpreter identity; pass the real interpreter executable.
 

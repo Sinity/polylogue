@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue import logging as plog
+from polylogue.core import work_observation
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn, StageExecutionResult
 from polylogue.storage.frontier_inspection import (
     inspect_prepared_raw_authority_frontier,
@@ -38,9 +40,23 @@ def make_raw_frontier_inspection_stage(db_path: Path, *, compute_adapter: Bounde
         # The caller's run_convergence_sync supplies the real exclusive worker
         # and original stage bridge. This factory supplies no new kernel.
         try:
-            return inspect_prepared_raw_authority_frontier(
+            inspected = inspect_prepared_raw_authority_frontier(
                 root, input_demand=compute_adapter.amend_current_input_demand
-            ).healthy
+            )
+            if work_observation.ENABLED:
+                plog.emit(
+                    "work.frontier.inspected",
+                    mode=inspected.mode,
+                    outcome="ok" if inspected.healthy else "degraded",
+                    accepted_head_checks=inspected.accepted_head_checks,
+                    blocking_head_checks=inspected.blocking_head_checks,
+                    broken_head_checks=inspected.broken_head_checks,
+                    cursor_checks=inspected.cursor_checks,
+                    cursor_ahead_count=inspected.cursor_ahead_count,
+                    cursor_gap_count=inspected.cursor_gap_count,
+                    missing_session_raw_count=inspected.missing_session_raw_count,
+                )
+            return inspected.healthy
         except ReferenceSealStaleError:
             # Nothing stale is published. The next ordinary pass prepares from
             # current authority rather than backing off a failed operation.

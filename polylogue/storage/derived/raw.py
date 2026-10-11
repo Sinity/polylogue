@@ -37,6 +37,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.session_revision_membership import MembershipClassification
+from polylogue.core import work_observation
 from polylogue.core.compute import (
     BoundedComputeAdapter,
     DaemonBackpressureError,
@@ -395,6 +396,28 @@ def _parse_captured_neutral(
     scratch: Path,
 ) -> PreparedJsonl:
     """Return sealed files after creator-owned SQLite and decoded state retire."""
+    with work_observation.body("raw", "parse") as observed:
+        result = _parse_captured_neutral_body(raw_id, captured, artifact_key, sidecar_scopes, scratch)
+        if observed is not None:
+            # The diagnostic key is scoped to this owner's exact parser
+            # operands and recipe. Validation mode is not a parse dependency.
+            key = _neutral_identity_digest(("raw-parse-body-v1", raw_authority_parser_fingerprint(), artifact_key[0]))
+            observed.set_work_key(key)
+            result = replace(
+                result,
+                observed_parse_key=key,
+                observed_parse_artifact_ref=observed.produced(),
+            )
+        return result
+
+
+def _parse_captured_neutral_body(
+    raw_id: str,
+    captured: _CapturedNeutralRaw,
+    artifact_key: tuple[object, ...],
+    sidecar_scopes: Mapping[str, RetainedSidecarScope],
+    scratch: Path,
+) -> PreparedJsonl:
     from polylogue.sources.dispatch import is_stream_record_provider
     from polylogue.sources.fallback_identity import fallback_session_id
     from polylogue.sources.live.batch_support import jsonl_parse_prefix_size_of_handle
@@ -3285,6 +3308,13 @@ class RawObservationDerivation(RawObservationInspection):
                                     )
                             else:
                                 prepared_artifacts[artifact_key] = artifact
+                            work_observation.consume(
+                                "raw",
+                                "parse",
+                                artifact_ref=artifact.observed_parse_artifact_ref,
+                                work_key=artifact.observed_parse_key,
+                                outcome="reused" if reused_artifact else "consumed",
+                            )
                             prepared[raw_id] = PreparedRetainedInput(
                                 raw_id,
                                 provider,

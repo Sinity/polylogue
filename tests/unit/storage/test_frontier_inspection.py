@@ -1,5 +1,6 @@
 """Current frontier coverage comes from the real admitted inspection owner."""
 
+from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from polylogue.operations.raw_frontier_inspection import (
     frontier_coverage_for_archive,
     make_raw_frontier_inspection_stage,
 )
-from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+from polylogue.storage.frontier_inspection import FrontierInspectionOutcome, inspect_prepared_raw_authority_frontier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection, owned_daemon_connection
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
@@ -17,7 +18,13 @@ from tests.infra.live_ingest import prepared_live_convergence_owner
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(0)
-async def test_empty_frontier_is_measured_once_under_original_owner(tmp_path: Path) -> None:
+async def test_empty_frontier_is_measured_once_under_original_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
+
+    monkeypatch.setattr(work_observation, "ENABLED", False)
     root = tmp_path / "archive"
     await run_archive_fixture_write(root, lambda: bootstrap_archive_root(root))
     source_before = (root / "source.db").read_bytes()
@@ -37,7 +44,9 @@ async def test_empty_frontier_is_measured_once_under_original_owner(tmp_path: Pa
         )
         stage = make_raw_frontier_inspection_stage(root / "index.db", compute_adapter=owner._compute_adapter)
         assert not stage.check(root)
-        assert await owner.run_convergence_sync("fixture.frontier.stage", stage.execute, root)
+        with plog.capture() as records:
+            assert await owner.run_convergence_sync("fixture.frontier.stage", stage.execute, root)
+        assert not any(record["event"] == "work.frontier.inspected" for record in records)
     from polylogue.operations.daemon_status import _frontier_status
     from polylogue.storage.raw_retention import raw_frontier_integrity_projection
     from polylogue.storage.sqlite.connection_profile import attach_readonly_database, readonly_connection_context
@@ -166,13 +175,17 @@ async def test_deferred_cursor_findings_remain_a_proven_healthy_projection(tmp_p
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(0)
+@pytest.mark.parametrize("observe_work", [False, True])
 async def test_real_retained_head_records_blob_proof_and_current_coverage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observe_work: bool
 ) -> None:
     import hashlib
     import json
 
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
     from polylogue.core.enums import Provider
+    from polylogue.operations import raw_frontier_inspection as frontier_operation
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = tmp_path / "archive"
@@ -226,22 +239,65 @@ async def test_real_retained_head_records_blob_proof_and_current_coverage(
             return real_verify(store, digest)
 
         monkeypatch.setattr(BlobStore, "verify", counted_verify)
-        first = await owner.run_convergence_sync(
-            "fixture.frontier.nonempty",
-            inspect_prepared_raw_authority_frontier,
-            root,
-            input_demand=owner._compute_adapter.amend_current_input_demand,
-        )
+        outcomes: list[FrontierInspectionOutcome] = []
+
+        def observed_inspection(
+            archive_root: Path, *, input_demand: Callable[[int], None]
+        ) -> FrontierInspectionOutcome:
+            result = inspect_prepared_raw_authority_frontier(archive_root, input_demand=input_demand)
+            outcomes.append(result)
+            return result
+
+        def source_authority_state() -> tuple[int, int, int]:
+            with closing(open_readonly_connection(root / "source.db")) as source:
+                row = source.execute("SELECT seq FROM sqlite_sequence WHERE name='raw_existence_changes'").fetchone()
+                blockers = source.execute(
+                    "SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL"
+                ).fetchone()
+                proofs = source.execute("SELECT COUNT(*) FROM verified_blob_receipts").fetchone()
+                return (0 if row is None else int(row[0]), int(blockers[0]), int(proofs[0]))
+
+        monkeypatch.setattr(frontier_operation, "inspect_prepared_raw_authority_frontier", observed_inspection)
+        monkeypatch.setattr(work_observation, "ENABLED", observe_work)
+        stage = make_raw_frontier_inspection_stage(root / "index.db", compute_adapter=owner._compute_adapter)
+        before = source_authority_state()
+        assert not frontier_coverage_for_archive(root)["available"]
+        with plog.capture() as diagnostic:
+            assert await owner.run_convergence_sync("fixture.frontier.nonempty", stage.execute, root)
+        first = outcomes[0]
+        after_first = source_authority_state()
+        # The owner publishes its first physical blob proof into Source.
+        # Its receipt trigger journals that Raw; observation must preserve this
+        # same authority advance with both the diagnostic off and on.
+        assert before[1:] == (0, 0)
+        assert after_first == (before[0] + 1, 0, 1)
         assert first.healthy and first.accepted_head_checks >= 1
+        assert first.mode == "full"
+        assert first.blocking_head_checks == first.broken_head_checks == first.cursor_gap_count == 0
+        assert first.missing_session_raw_count == 0
+        assert frontier_coverage_for_archive(root)["current"]
         assert verify_calls == [hashlib.sha256(payload).hexdigest()]
         verify_calls.clear()
-        second = await owner.run_convergence_sync(
-            "fixture.frontier.nonempty",
-            inspect_prepared_raw_authority_frontier,
-            root,
-            input_demand=owner._compute_adapter.amend_current_input_demand,
-        )
+        with plog.capture() as second_diagnostic:
+            assert await owner.run_convergence_sync("fixture.frontier.nonempty", stage.execute, root)
+        second = outcomes[1]
+        assert source_authority_state() == after_first
         assert second.mode == "current" and second.healthy
+        records = [row for row in [*diagnostic, *second_diagnostic] if row["event"] == "work.frontier.inspected"]
+        assert len(records) == (2 if observe_work else 0)
+        for record, result in zip(records, outcomes if observe_work else [], strict=True):
+            assert record["mode"] == result.mode
+            assert record["outcome"] == "ok"
+            for name in (
+                "accepted_head_checks",
+                "blocking_head_checks",
+                "broken_head_checks",
+                "cursor_checks",
+                "cursor_ahead_count",
+                "cursor_gap_count",
+                "missing_session_raw_count",
+            ):
+                assert record[name] == getattr(result, name)
         physical = await owner.run_convergence_sync(
             "fixture.frontier.physical",
             inspect_prepared_raw_authority_frontier,

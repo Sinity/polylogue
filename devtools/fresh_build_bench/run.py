@@ -73,6 +73,7 @@ class RunConfig:
     extra_env: tuple[tuple[str, str], ...] = ()
     #: Asserted budgets, e.g. {"rss_peak_mib": 3072}; see ``report.BUDGETS``.
     budgets: tuple[tuple[str, float], ...] = ()
+    observe_work: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -821,6 +822,7 @@ def _daemon_env(config: RunConfig, paths: dict[str, Path]) -> dict[str, str]:
     }
     # Per-thread CPU is always sampled (cheap); stacks only with --profile.
     env["POLYLOGUE_BENCH_POLICY_OBSERVER"] = str(Path(__file__).with_name("policy_observer.py"))
+    env["POLYLOGUE_TRACE_WORK"] = "1" if config.observe_work else "0"
     env["POLYLOGUE_BENCH_POLICY"] = str(config.work.absolute() / "policy.json")
     env["POLYLOGUE_BENCH_SAMPLER"] = str(_SAMPLER_PATH)
     env["POLYLOGUE_BENCH_STACK_SAMPLES"] = str(paths["stacks"])

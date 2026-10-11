@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, SupportsIndex, cast, overload
 from jsonschema import Draft202012Validator, ValidationError, validators
 
 from polylogue.archive.raw_payload.sampling_buckets import is_record_candidate, take_bucketed_samples
+from polylogue.core import work_observation
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.iterator_lifetime import settled_iterator
@@ -61,6 +62,17 @@ from polylogue.storage.sqlite.connection_profile import scratch_connection_conte
 
 if TYPE_CHECKING:
     pass
+
+
+@dataclass(slots=True)
+class _ValidationBodyWork:
+    """Private diagnostic binding; never a validation or reuse witness."""
+
+    work_key: str | None = None
+    artifact_ref: str | None = None
+
+
+_VALIDATION_BODY_WORK: ContextVar[_ValidationBodyWork | None] = ContextVar("validation_body_work", default=None)
 
 
 _ACTIVE_VALIDATION_CONNECTION: ContextVar[sqlite3.Connection | None] = ContextVar(
@@ -725,70 +737,85 @@ def validate_retained_document(
 
     from polylogue.schemas.observation_spill import StreamedJSONDocument
 
-    document = StreamedJSONDocument(path, jsonl=jsonl, accepted_prefix_size=accepted_prefix_size)
-    with document as payload, _ValidationScratch(document.connection).activate():
-        spill = _active_spill(document)
-        active_registry = registry or SchemaRegistry()
-        resolved: SchemaResolution | None = schema_resolution
-        from polylogue.schemas.validator_resolution import canonical_provider
+    binding = _VALIDATION_BODY_WORK.get() if work_observation.ENABLED else None
+    with work_observation.body(
+        "retained_validation", "validate", work_key=None if binding is None else binding.work_key
+    ) as observed:
+        document = StreamedJSONDocument(path, jsonl=jsonl, accepted_prefix_size=accepted_prefix_size)
+        with document as payload, _ValidationScratch(document.connection).activate():
+            spill = _active_spill(document)
+            active_registry = registry or SchemaRegistry()
+            resolved: SchemaResolution | None = schema_resolution
+            from polylogue.schemas.validator_resolution import canonical_provider
 
-        canonical = canonical_provider(provider)
-        selected_schema: Mapping[str, object] | None = None
-        schema_key: tuple[str, str, str] | None = None
-        accepted_schema: Mapping[str, object] | None = None
+            canonical = canonical_provider(provider)
+            selected_schema: Mapping[str, object] | None = None
+            schema_key: tuple[str, str, str] | None = None
+            accepted_schema: Mapping[str, object] | None = None
 
-        def accepts(candidate: JSONDocument) -> bool:
-            nonlocal accepted_schema
-            accepted = _schema_accepts_document(payload, candidate, canonical, spill.connection)
-            if accepted:
-                accepted_schema = candidate
-            return accepted
+            def accepts(candidate: JSONDocument) -> bool:
+                nonlocal accepted_schema
+                accepted = _schema_accepts_document(payload, candidate, canonical, spill.connection)
+                if accepted:
+                    accepted_schema = candidate
+                return accepted
 
-        try:
-            canonical, selected, schema_key, resolved = resolve_retained_schema(
-                provider,
-                payload,
+            try:
+                canonical, selected, schema_key, resolved = resolve_retained_schema(
+                    provider,
+                    payload,
+                    source_path=source_path,
+                    schema_resolution=schema_resolution,
+                    schema_resolution_is_explicit=schema_resolution_is_explicit,
+                    registry=active_registry,
+                    schema_store=spill.store_schema,
+                    schema_accepts=accepts,
+                )
+                selected_schema = selected
+            except (FileNotFoundError, ImportError):
+                verdict = _verdict(
+                    raw_id,
+                    revision_sha256,
+                    evidence_id,
+                    mode,
+                    ValidationStatus.SKIPPED,
+                    schema_resolution=resolved,
+                )
+                if observed is not None:
+                    reference = observed.produced()
+                    if binding is not None:
+                        binding.artifact_ref = reference
+                return verdict
+
+            assert selected_schema is not None
+            reducer = _SampleValidationReducer(
+                selected_schema,
+                canonical,
+                resolved,
+                spill.connection,
                 source_path=source_path,
-                schema_resolution=schema_resolution,
-                schema_resolution_is_explicit=schema_resolution_is_explicit,
-                registry=active_registry,
-                schema_store=spill.store_schema,
-                schema_accepts=accepts,
+                signature_directory=signature_directory,
+                # This proof belongs only to this completed immutable document and
+                # the exact schema returned by the acceptance pass. Drift is still
+                # reduced from every original sample below.
+                validation_accepted=accepted_schema is selected_schema,
             )
-            selected_schema = selected
-        except (FileNotFoundError, ImportError):
-            return _verdict(
-                raw_id,
-                revision_sha256,
-                evidence_id,
-                mode,
-                ValidationStatus.SKIPPED,
-                schema_resolution=resolved,
+            for sample in _validation_samples(payload, selected_schema, canonical):
+                reducer.observe(sample)
+            verdict = reducer.verdict(
+                raw_id=raw_id,
+                revision_sha256=revision_sha256,
+                evidence_id=evidence_id,
+                mode=mode,
+                resolution=resolved,
+                source_path=source_path,
             )
 
-        assert selected_schema is not None
-        reducer = _SampleValidationReducer(
-            selected_schema,
-            canonical,
-            resolved,
-            spill.connection,
-            source_path=source_path,
-            signature_directory=signature_directory,
-            # This proof belongs only to this completed immutable document and
-            # the exact schema returned by the acceptance pass. Drift is still
-            # reduced from every original sample below.
-            validation_accepted=accepted_schema is selected_schema,
-        )
-        for sample in _validation_samples(payload, selected_schema, canonical):
-            reducer.observe(sample)
-        return reducer.verdict(
-            raw_id=raw_id,
-            revision_sha256=revision_sha256,
-            evidence_id=evidence_id,
-            mode=mode,
-            resolution=resolved,
-            source_path=source_path,
-        )
+            if observed is not None:
+                reference = observed.produced()
+                if binding is not None:
+                    binding.artifact_ref = reference
+            return verdict
 
 
 def _verdict(

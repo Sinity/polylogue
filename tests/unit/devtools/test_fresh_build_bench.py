@@ -2572,6 +2572,12 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
     from devtools.fresh_build_bench import report
 
     document: dict[str, Any] = {
+        "format": "polylogue.fresh-build-stack-samples.v1",
+        "coverage": {
+            "python": "sampled_frames" if samples == "collected" else "unavailable",
+            "native": "thread_cpu_accounting_only",
+            "off_cpu": "unavailable",
+        },
         "clock_ticks_per_s": 100,
         "interval_s": 0.01,
         "elapsed_s": 1.0,
@@ -2596,7 +2602,16 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
     )
     monkeypatch.setattr(report, "archive_census", lambda *args: {"messages_fts_rows": 0, "fts_indexable_rows": 0})
     (tmp_path / "policy.json").write_text(
-        json.dumps({"outcome": "bound", "states": [{"capacity_slots": 12}], "product_binding": {"outcome": "bound"}})
+        json.dumps(
+            {
+                "outcome": "bound",
+                "states": [{"capacity_slots": 12}],
+                "product_binding": {
+                    "outcome": "bound",
+                    "work_observation": {"state": "observed", "enabled": False, "bound": True, "sha256": "work-source"},
+                },
+            }
+        )
     )
     helper_hash = hashlib.sha256(Path(report.__file__).with_name("readiness_probe.py").read_bytes()).hexdigest()
     source = str(tmp_path / "polylogue/storage/archive_readiness.py")
@@ -2663,7 +2678,9 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
         assert "profile outcome=refused reason=" in report.render(receipt)
         for allow in (False, True):
             ok, text = compare(receipt, receipt, allow_unqualified=allow)
-            assert not ok and "profile refused" in text
+            assert ok, text
+        assert receipt["evaluation"]["metrics"]["promotion_s"]["qualified"]
+        assert receipt["evaluation"]["capabilities"]["stacks"]["state"] == "refused"
 
 
 @pytest.mark.parametrize("reason", ["free_threaded_frame_snapshot_unavailable", "profile_samples_unavailable"])

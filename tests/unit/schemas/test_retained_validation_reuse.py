@@ -7,6 +7,7 @@ import json
 import threading
 from dataclasses import replace
 from functools import partial
+from hashlib import sha256
 from pathlib import Path
 from typing import IO, BinaryIO
 
@@ -58,13 +59,14 @@ def _validate(
     resolution: SchemaResolution | None = None,
     explicit: bool = True,
     jsonl: bool = True,
+    revision_sha256: str = "a" * 64,
 ) -> RetainedValidationVerdict:
     return validate_retained_document(
         Provider.CLAUDE_CODE,
         path,
         mode=mode,
         raw_id=raw_id,
-        revision_sha256="a" * 64,
+        revision_sha256=revision_sha256,
         evidence_id=raw_id,
         source_path=source_path,
         jsonl=jsonl,
@@ -516,3 +518,121 @@ def test_alias_certification_settles_readers_and_refuses_changed_evidence(
     assert readers and all(reader.closed for reader in readers)
     assert reuse.outcome != "hit"
     assert len(validation_bodies) == 1
+
+
+def test_work_observation_counts_leaf_bodies_even_after_a_reuse_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, validation_bodies: list[int]
+) -> None:
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
+
+    monkeypatch.setattr(work_observation, "ENABLED", True)
+    _publish(tmp_path / "schemas", "integer")
+    path = tmp_path / "records.jsonl"
+    path.write_bytes(b'{"type":"message","kind":1}\n')
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    reuse = RetainedValidationReuse()
+    previous = plog.set_level("info")
+    try:
+        with plog.capture() as records:
+            first = _validate(path, registry, reuse)
+            second = _validate(path, registry, reuse, raw_id="second")
+            # The real leaf executes again through a fresh owner. A prior
+            # wrapper hit must not hide this duplicated complete body.
+            duplicate = _validate(path, registry, RetainedValidationReuse())
+        _assert_complete_verdict_equal(second, _validate(path, registry, reuse, raw_id="second"))
+        assert first.sample_count == second.sample_count == duplicate.sample_count == 1
+        bodies = [r for r in records if r["event"] == "work.body.ok"]
+        consumed = [r for r in records if r["event"] == "work.artifact.consume"]
+        assert len(validation_bodies) == len(bodies) == 2
+        assert len({r["work_key"] for r in bodies}) == 1
+        assert bodies[0]["work_key"] is not None
+        assert bodies[0]["artifact_ref"] != bodies[1]["artifact_ref"]
+        assert len(consumed) == 3
+        assert [r["effect"] for r in consumed] == ["consumed", "reused", "consumed"]
+        assert consumed[0]["artifact_ref"] == consumed[1]["artifact_ref"] == bodies[0]["artifact_ref"]
+        assert consumed[2]["artifact_ref"] == bodies[1]["artifact_ref"]
+    finally:
+        plog.set_level(previous)
+        reuse.clear()
+
+
+@pytest.mark.parametrize("change", ["prefix", "schema", "input"])
+def test_work_observation_distinguishes_changed_owned_validation_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
+
+    monkeypatch.setattr(work_observation, "ENABLED", True)
+    schema_path = _publish(tmp_path / "schemas", "integer")
+    first_record = b'{"type":"message","kind":1}\n'
+    path = tmp_path / "records.jsonl"
+    path.write_bytes(first_record + b'{"type":"message","kind":2}\n')
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    reuse = RetainedValidationReuse()
+    previous = plog.set_level("info")
+    try:
+        with plog.capture() as records:
+            _validate(path, registry, reuse, revision_sha256=sha256(path.read_bytes()).hexdigest())
+            prefix = None
+            if change == "prefix":
+                prefix = len(first_record)
+            elif change == "schema":
+                schema_path.write_bytes(gzip.compress(json.dumps({"type": "object"}).encode()))
+            else:
+                path.write_bytes(first_record + b'{"type":"message","kind":3}\n')
+            _validate(path, registry, reuse, prefix=prefix, revision_sha256=sha256(path.read_bytes()).hexdigest())
+        bodies = [r for r in records if r["event"] == "work.body.ok"]
+        assert len(bodies) == 2
+        assert all(r["work_key"] is not None for r in bodies)
+        assert bodies[0]["work_key"] != bodies[1]["work_key"]
+    finally:
+        plog.set_level(previous)
+        reuse.clear()
+
+
+def test_direct_validation_leaf_has_explicit_unknown_key_and_off_skips_key_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import logging as plog
+    from polylogue.core import work_observation
+    from polylogue.schemas import validator
+    from polylogue.schemas.retained_validation import validate_retained_document as leaf
+
+    _publish(tmp_path / "schemas", "integer")
+    path = tmp_path / "records.jsonl"
+    path.write_bytes(b'{"type":"message","kind":1}\n')
+    registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    monkeypatch.setattr(work_observation, "ENABLED", True)
+    previous = plog.set_level("info")
+    try:
+        with plog.capture() as records:
+            result = leaf(
+                Provider.CLAUDE_CODE,
+                path,
+                mode=ValidationMode.ADVISORY,
+                raw_id="direct",
+                revision_sha256="a" * 64,
+                evidence_id="direct",
+                source_path="records.jsonl",
+                jsonl=True,
+                registry=registry,
+                signature_directory=tmp_path,
+            )
+        assert result.sample_count == 1
+        terminal = next(r for r in records if r["event"] == "work.body.ok")
+        assert terminal["work_key"] is None
+        assert terminal["work_key_reason"] == "input_identity_unavailable"
+        assert terminal["artifact_ref"] is not None
+        monkeypatch.setattr(work_observation, "ENABLED", False)
+
+        def forbidden(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("disabled diagnostics computed a validation key")
+
+        monkeypatch.setattr(validator, "_validation_observation_key", forbidden)
+        with plog.capture() as disabled:
+            assert _validate(path, registry, RetainedValidationReuse()).sample_count == 1
+        assert not any(str(r["event"]).startswith("work.") for r in disabled)
+    finally:
+        plog.set_level(previous)

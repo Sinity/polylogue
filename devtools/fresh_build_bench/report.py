@@ -982,6 +982,7 @@ def config_digest(config: Any) -> str:
     """What must match, besides the corpus, for two receipts to compare."""
     payload = {
         "profile": config.profile,
+        "observe_work": config.observe_work,
         "profile_interval_s": config.profile_interval_s if config.profile else None,
         # The observation loop decides when an unsettled run stops, so it is
         # part of what two receipts must share.
@@ -1035,6 +1036,9 @@ def _derive_dependents(receipt: dict[str, Any]) -> None:
         and all(receipt["checks"].values())
         and all(row["pass"] for row in budgets.values())
     )
+    from devtools.fresh_build_bench.evaluation import evaluate_run
+
+    receipt["evaluation"] = evaluate_run(receipt)
 
 
 def _observation_errors(observations: list[Any]) -> dict[str, dict[str, object]]:
@@ -1188,6 +1192,7 @@ def build_receipt(
             "digest": config_digest(config),
             "argv": command[3:],
             "profile": config.profile,
+            "observe_work": config.observe_work,
             "poll_s": config.poll_s,
             "stable_polls": config.stable_polls,
             "overrides": sorted(key for key, _value in config.extra_env),
@@ -1281,6 +1286,7 @@ def build_receipt(
     if paths["stacks"].exists():
         document = json.loads(paths["stacks"].read_text(encoding="utf-8"))
         receipt["thread_cpu_s"] = thread_cpu_summary(document)
+    receipt["diagnostic_capture"] = _stack_capture(paths["stacks"])
     if config.profile:
         from devtools.fresh_build_bench.profile_report import profile_refusal_reason, summarise
 
@@ -1304,6 +1310,24 @@ def build_receipt(
     return receipt
 
 
+def _stack_capture(path: Path) -> dict[str, Any]:
+    """Bind actual sampler modes independently of the requested profile flag."""
+    if not path.is_file():
+        return {"state": "unrecorded", "reason": "sampler_evidence_missing"}
+    payload = path.read_bytes()
+    document = json.loads(payload)
+    return {
+        "state": "recorded",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "mode": {
+            "format": document.get("format"),
+            "interval_s": document.get("interval_s"),
+            "coverage": document.get("coverage"),
+            "profile_refusal": document.get("profile_refusal"),
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # rendering and comparison
 
@@ -1319,6 +1343,9 @@ def _fmt(value: Any) -> str:
 
 
 def render(receipt: dict[str, Any]) -> str:
+    from devtools.fresh_build_bench.evaluation import evaluate_run
+
+    evaluation = evaluate_run(receipt)
     lines = [
         f"fresh-build receipt '{receipt['label']}' outcome={receipt['outcome']}"
         f" qualified={receipt.get('qualified')}"
@@ -1326,6 +1353,13 @@ def render(receipt: dict[str, Any]) -> str:
         f"corpus {receipt['corpus']['kind']} {receipt['corpus']['digest'][:12]}"
         f" files={_fmt(receipt['corpus']['file_count'])} bytes={receipt['corpus']['total_bytes'] / 2**20:,.1f} MiB",
     ]
+    lines.append(
+        f"evaluation measurement={evaluation['measurement_validity']['state']}"
+        f" scope={evaluation['scope_completion']['state']} optimization=inconclusive"
+    )
+    lines.append(
+        "metric qualification  " + "  ".join(f"{name}={row['state']}" for name, row in evaluation["metrics"].items())
+    )
     coverage = receipt.get("event_log") or {}
     lines.append(
         "event coverage  "
@@ -1430,6 +1464,16 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
         problems.append("different run configurations (profile, overrides or budgets)")
     if before.get("benchmark_implementation_sha256") != after.get("benchmark_implementation_sha256"):
         problems.append("different benchmark implementation")
+    if before.get("measurement_scope") != after.get("measurement_scope"):
+        problems.append("different measurement scopes")
+    if (
+        (before.get("profile") or {}).get("outcome"),
+        (before.get("profile") or {}).get("reason"),
+    ) != (
+        (after.get("profile") or {}).get("outcome"),
+        (after.get("profile") or {}).get("reason"),
+    ):
+        problems.append("different actual profile overhead modes")
     for side, receipt in (("before", before), ("after", after)):
         policy = receipt.get("effective_compute_policy")
         if not policy or policy.get("outcome") != "bound":
@@ -1467,15 +1511,19 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
         if before["environment"].get(key) != after["environment"].get(key):
             problems.append(f"different host ({key})")
     for side, receipt in (("before", before), ("after", after)):
-        if (receipt.get("profile") or {}).get("outcome") == "refused":
-            problems.append(f"{side} run profile refused ({receipt['profile'].get('reason')})")
         # Integrity failures mean the declared inputs or the measurement
         # evidence are invalid; no waiver makes such a run's numbers or
         # output digests admissible.
         for check in INTEGRITY_CHECKS:
             if (receipt.get("checks") or {}).get(check) is False:
                 problems.append(f"{side} run failed integrity check {check}")
-        if not receipt.get("qualified"):
+        # Requested diagnostic stacks and asserted budgets have their own
+        # verdicts. Their refusal/failure does not erase measured product work.
+        if receipt.get("outcome") != "terminal" or any(
+            value is False
+            for name, value in (receipt.get("checks") or {}).items()
+            if name not in {"profile_collected", "source_timing_recorded", "milestones_recorded"}
+        ):
             problems.append(f"{side} run is not qualified (outcome {receipt.get('outcome')})")
     return problems
 
@@ -1598,6 +1646,14 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     sealed = receipt.get("evidence_sha256")
     receipt.setdefault("checks", {})["evidence_unchanged"] = sealed is not None and evidence_digests(work) == sealed
     receipt["checks"]["events_lossless"] = _events_lossless(events, _log_delivery(work / "stacks.json"))
+    recorded_capture = receipt.get("diagnostic_capture") or {}
+    if recorded_capture.get("sha256"):
+        capture = _stack_capture(work / "stacks.json")
+        expected = recorded_capture.get("expected_sha256", recorded_capture["sha256"])
+        capture["expected_sha256"] = expected
+        if capture.get("sha256") != expected:
+            capture["state"] = "changed"
+        receipt["diagnostic_capture"] = capture
     receipt["readiness_probe"] = readiness_evidence(
         work,
         candidate=(receipt.get("readiness_probe") or {}).get("candidate"),

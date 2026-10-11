@@ -695,7 +695,21 @@ def test_byte_overflow_preserves_terminal_measurements(value: str) -> None:
         with plog.span("fixture") as span:
             span.ok()
     terminal = next(row for row in records if row["event"] == "fixture.ok")
-    assert plog._MEASUREMENT_FIELDS - {"parent_span_id", "task_id", "span_kind"} <= terminal.keys()
+    # A generic span has clock and correlation evidence. Owner observations
+    # add their own protected fields only when that owner supplies them.
+    assert {
+        "trace_id",
+        "span_id",
+        "outcome",
+        "span_start_ns",
+        "span_end_ns",
+        "span_start_native_thread_id",
+        "span_start_pid",
+        "thread_cpu_start_ns",
+        "thread_cpu_end_ns",
+        "cpu_scope",
+        "duration_ms",
+    } <= terminal.keys()
     assert terminal["required_measurement_fields_omitted"] == 0
     omitted = terminal["omitted_fields"]
     assert isinstance(omitted, int)

@@ -12,7 +12,7 @@ import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 import aiosqlite
@@ -31,6 +31,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.semantic.cost_records import ModelUsageTotals, SessionCostSummary
 from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
+from polylogue.core import work_observation
 from polylogue.core.compute import compute_adapter
 from polylogue.core.enums import Origin
 from polylogue.core.memory import release_process_memory
@@ -414,6 +415,8 @@ class PreparedSessionInsightPartition:
     input_binding: str
     compute_binding: str
     bundle: SessionInsightRecordBundle | None
+    # Diagnostic lineage has no publication or physical-lifetime authority.
+    diagnostic_artifact_ref: str | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(slots=True, frozen=True)
@@ -1485,6 +1488,18 @@ def session_insight_compute_binding(
     return digest.hexdigest()
 
 
+def _session_profile_work_key(session_id: str, compute_binding: str, materializer: str) -> str | None:
+    if not work_observation.ENABLED:
+        return None
+    from polylogue.sources.origin_specs import materializer_fingerprint
+
+    identity = _json.dumps(
+        (session_id, compute_binding, materializer, SESSION_INSIGHT_MATERIALIZER_VERSION, materializer_fingerprint()),
+        separators=(",", ":"),
+    )
+    return "session_profile:v1:" + hashlib.blake2b(identity.encode("utf-8"), digest_size=16).hexdigest()
+
+
 def prepare_session_insight_partition(
     conn: sqlite3.Connection,
     session_id: str,
@@ -1499,37 +1514,50 @@ def prepare_session_insight_partition(
     """
     row = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     if row is None:
-        return PreparedSessionInsightPartition(session_id, "", "", None)
+        with work_observation.body(
+            "session_profile",
+            "prepare_retirement",
+            work_key=_session_profile_work_key(session_id, "", "retirement"),
+        ) as observed:
+            artifact_ref = observed.produced() if observed is not None else None
+            return PreparedSessionInsightPartition(session_id, "", "", None, artifact_ref)
 
     input_binding = session_input_bindings(conn, (session_id,))[session_id]
     compute_binding = session_insight_compute_binding(
         conn, session_id, source_binding=input_binding if conn.in_transaction else None
     )
     heavy = session_id in _heavy_session_ids_sync(conn, (session_id,))
-    if heavy:
-        root_id = thread_root_ids_sync(conn, (session_id,)).get(session_id)
-        bundle = build_large_session_insight_record_bundle_sync(
-            conn,
-            session_id,
-            logical_session_id=root_id,
-            source_binding=input_binding if conn.in_transaction else None,
-        )
-    else:
-        batch = load_sync_batch(conn, (session_id,))
-        hydrated = hydrate_sessions(batch)
-        if len(hydrated) != 1:
-            raise KeyError(f"session disappeared from prepared read frame: {session_id}")
-        root_id = thread_root_ids_sync(conn, (session_id,)).get(session_id)
-        bundle = build_session_insight_record_bundles(
-            hydrated,
-            compaction_counts_by_session=batch.compaction_counts_by_session,
-            logical_session_ids_by_session={session_id: root_id} if root_id is not None else {},
-            model_usage_by_session=batch.model_usage_by_session,
-            input_content_hash_by_session={session_id: input_binding},
-        )[0]
+    materializer = "build_large_session_insight_record_bundle_sync" if heavy else "build_session_insight_record_bundles"
+    with work_observation.body(
+        "session_profile",
+        "prepare_heavy" if heavy else "prepare_ordinary",
+        work_key=_session_profile_work_key(session_id, compute_binding, materializer),
+    ) as observed:
+        if heavy:
+            root_id = thread_root_ids_sync(conn, (session_id,)).get(session_id)
+            bundle = build_large_session_insight_record_bundle_sync(
+                conn,
+                session_id,
+                logical_session_id=root_id,
+                source_binding=input_binding if conn.in_transaction else None,
+            )
+        else:
+            batch = load_sync_batch(conn, (session_id,))
+            hydrated = hydrate_sessions(batch)
+            if len(hydrated) != 1:
+                raise KeyError(f"session disappeared from prepared read frame: {session_id}")
+            root_id = thread_root_ids_sync(conn, (session_id,)).get(session_id)
+            bundle = build_session_insight_record_bundles(
+                hydrated,
+                compaction_counts_by_session=batch.compaction_counts_by_session,
+                logical_session_ids_by_session={session_id: root_id} if root_id is not None else {},
+                model_usage_by_session=batch.model_usage_by_session,
+                input_content_hash_by_session={session_id: input_binding},
+            )[0]
+        artifact_ref = observed.produced() if observed is not None else None
     # Accepted marker batches have their own source-owned derivation and must
     # not be rescanned as part of current-state profile preparation.
-    return PreparedSessionInsightPartition(session_id, input_binding, compute_binding, bundle)
+    return PreparedSessionInsightPartition(session_id, input_binding, compute_binding, bundle, artifact_ref)
 
 
 def publish_prepared_session_insight_partition(
@@ -1555,26 +1583,65 @@ def publish_prepared_session_insight_partition(
         current_demand_revision = 0 if demand_row is None else int(demand_row[0])
         if current_demand_revision != expected_demand_revision:
             conn.rollback()
+            work_observation.consume(
+                "session_profile",
+                "publish",
+                artifact_ref=prepared.diagnostic_artifact_ref,
+                outcome="refused",
+                reason="demand_revision_changed",
+            )
             return False
         exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (prepared.session_id,)).fetchone()
         if prepared.bundle is None:
             if exists is not None:
                 conn.rollback()
+                work_observation.consume(
+                    "session_profile",
+                    "publish_retirement",
+                    artifact_ref=prepared.diagnostic_artifact_ref,
+                    outcome="refused",
+                    reason="session_present",
+                )
                 return False
-            for table in ("session_latency_profiles", "session_profiles"):
-                conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (prepared.session_id,))
-            conn.execute(
-                "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
-                (prepared.session_id, expected_demand_revision),
+            with work_observation.body(
+                "session_profile",
+                "publish_retirement",
+                work_key=_session_profile_work_key(prepared.session_id, "", "publish_retirement"),
+            ):
+                for table in ("session_latency_profiles", "session_profiles"):
+                    conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (prepared.session_id,))
+                conn.execute(
+                    "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
+                    (prepared.session_id, expected_demand_revision),
+                )
+                conn.commit()
+            work_observation.consume(
+                "session_profile",
+                "publish_retirement",
+                artifact_ref=prepared.diagnostic_artifact_ref,
+                outcome="published",
             )
-            conn.commit()
             return True
         if exists is None:
             conn.rollback()
+            work_observation.consume(
+                "session_profile",
+                "publish",
+                artifact_ref=prepared.diagnostic_artifact_ref,
+                outcome="refused",
+                reason="session_absent",
+            )
             return False
         current_input = session_input_bindings(conn, (prepared.session_id,)).get(prepared.session_id, "")
         if current_input != prepared.input_binding:
             conn.rollback()
+            work_observation.consume(
+                "session_profile",
+                "publish",
+                artifact_ref=prepared.diagnostic_artifact_ref,
+                outcome="refused",
+                reason="source_binding_changed",
+            )
             return False
         # An unchanged prerequisite is not necessarily a current prerequisite.
         # Check its provenance in this writer transaction. Do not repair or
@@ -1591,23 +1658,38 @@ def publish_prepared_session_insight_partition(
             != prepared.compute_binding
         ):
             conn.rollback()
+            work_observation.consume(
+                "session_profile",
+                "publish",
+                artifact_ref=prepared.diagnostic_artifact_ref,
+                outcome="refused",
+                reason="canonical_usage_not_current",
+            )
             return False
         bundle = prepared.bundle
-        replace_session_profiles_bulk_sync(conn, (bundle.profile_record,))
-        replace_session_latency_profiles_bulk_sync(conn, (bundle.latency_profile_record,))
-        from polylogue.storage.derived.session.repo_observations import refresh_session_repos_sync
+        with work_observation.body(
+            "session_profile",
+            "publish",
+            work_key=_session_profile_work_key(prepared.session_id, prepared.compute_binding, "publish"),
+        ):
+            replace_session_profiles_bulk_sync(conn, (bundle.profile_record,))
+            replace_session_latency_profiles_bulk_sync(conn, (bundle.latency_profile_record,))
+            from polylogue.storage.derived.session.repo_observations import refresh_session_repos_sync
 
-        refresh_session_repos_sync(
-            conn, prepared.session_id, cast("tuple[RepoObservation, ...]", bundle.repo_observations)
-        )
-        conn.execute(
-            "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
-            (prepared.session_id, expected_demand_revision),
-        )
+            refresh_session_repos_sync(
+                conn, prepared.session_id, cast("tuple[RepoObservation, ...]", bundle.repo_observations)
+            )
+            conn.execute(
+                "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
+                (prepared.session_id, expected_demand_revision),
+            )
+            conn.commit()
     except BaseException:
         conn.rollback()
         raise
-    conn.commit()
+    work_observation.consume(
+        "session_profile", "publish", artifact_ref=prepared.diagnostic_artifact_ref, outcome="published"
+    )
     return True
 
 

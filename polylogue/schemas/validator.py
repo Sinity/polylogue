@@ -20,6 +20,8 @@ except ImportError:
     Draft202012Validator = None
 
 from polylogue.archive.raw_payload import extract_payload_samples
+from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
+from polylogue.core import work_observation
 from polylogue.core.compute_cancel import check_compute_cancelled, raise_if_operation_cancelled
 from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document
@@ -42,7 +44,11 @@ from .validator_resolution import (
 if TYPE_CHECKING:
     from polylogue.schemas.observation_spill import SpilledKey
     from polylogue.schemas.packages import SchemaResolution
-    from polylogue.schemas.retained_validation import RetainedValidationBody, RetainedValidationVerdict
+    from polylogue.schemas.retained_validation import (
+        RetainedValidationBody,
+        RetainedValidationVerdict,
+        _ValidationBodyWork,
+    )
 
 ValidationSchema: TypeAlias = Mapping[str, object]
 ValidationSample: TypeAlias = JSONDocument
@@ -58,6 +64,8 @@ class _RetainedValidationEvidence:
     body: RetainedValidationBody
     content_digest: str
     backing_identity: tuple[Path, tuple[int, int, int, int, int]] | None
+    observed_work_key: str | None = field(default=None, compare=False, repr=False)
+    observed_artifact_ref: str | None = field(default=None, compare=False, repr=False)
 
 
 _ReuseOutcome: TypeAlias = Literal[
@@ -925,6 +933,50 @@ def validate_provider_export(
     return validator.validate(data)
 
 
+def _validation_observation_key(
+    recipe: str,
+    revision_sha256: str,
+    accepted_prefix_size: int | None,
+    snapshot: ProviderSchemaSnapshot | None,
+) -> str | None:
+    """Conservative diagnostic identity, not a body-reuse witness.
+
+    The owner supplies the full retained revision and accepted span. Unused
+    trailing bytes can therefore distinguish equal validation bodies. No new
+    input read or claim of avoidable work follows from this observation.
+    """
+    if (
+        snapshot is None
+        or len(revision_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in revision_sha256.lower())
+    ):
+        return None
+    digest = hashlib.sha256()
+
+    def add(payload: bytes) -> None:
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+
+    for value in (
+        "owned-validation-body-v1",
+        raw_authority_parser_fingerprint(),
+        recipe,
+        revision_sha256.lower(),
+        "full" if accepted_prefix_size is None else str(accepted_prefix_size),
+        snapshot.provider,
+        str(snapshot.storage_root),
+        str(len(snapshot.roots)),
+    ):
+        add(value.encode("utf-8", errors="surrogatepass"))
+    for root, files in snapshot.roots:
+        add(str(root).encode("utf-8", errors="surrogatepass"))
+        add(str(len(files)).encode("ascii"))
+        for name, payload in files:
+            add(name.encode("utf-8", errors="surrogatepass"))
+            add(payload)
+    return digest.hexdigest()
+
+
 def validate_retained_document(
     provider: str | Provider,
     path: Path,
@@ -961,23 +1013,59 @@ def validate_retained_document(
         active_registry = registry or SchemaRegistry()
         snapshot = active_registry.current_provider_snapshot(provider)
 
+    body_work: _ValidationBodyWork | None = None
+    recipe: str | None = None
+
     def perform() -> RetainedValidationVerdict:
-        return validate(
-            provider,
-            path,
-            mode=mode,
-            raw_id=raw_id,
-            revision_sha256=revision_sha256,
-            evidence_id=evidence_id,
-            source_path=source_path,
-            jsonl=jsonl,
-            accepted_prefix_size=accepted_prefix_size,
-            captured_zip_coordinate=captured_zip_coordinate,
-            schema_resolution=schema_resolution,
-            schema_resolution_is_explicit=schema_resolution_is_explicit,
-            registry=active_registry,
-            signature_directory=signature_directory,
+        nonlocal body_work
+        from polylogue.schemas.retained_validation import (
+            _VALIDATION_BODY_WORK,
+            _retained_validation_productive_identity,
+            _ValidationBodyWork,
         )
+
+        token = None
+        if work_observation.ENABLED and ValidationMode.from_string(mode) is not ValidationMode.OFF:
+            observed_recipe = recipe or _retained_validation_productive_identity(
+                provider,
+                path,
+                mode=mode,
+                raw_id="",
+                revision_sha256="",
+                evidence_id="",
+                source_path=source_path,
+                jsonl=jsonl,
+                accepted_prefix_size=accepted_prefix_size,
+                captured_zip_coordinate=captured_zip_coordinate,
+                schema_resolution=schema_resolution,
+                schema_resolution_is_explicit=schema_resolution_is_explicit,
+                registry=active_registry,
+                signature_directory=signature_directory,
+            )
+            body_work = _ValidationBodyWork(
+                _validation_observation_key(observed_recipe, revision_sha256, accepted_prefix_size, snapshot_identity)
+            )
+            token = _VALIDATION_BODY_WORK.set(body_work)
+        try:
+            return validate(
+                provider,
+                path,
+                mode=mode,
+                raw_id=raw_id,
+                revision_sha256=revision_sha256,
+                evidence_id=evidence_id,
+                source_path=source_path,
+                jsonl=jsonl,
+                accepted_prefix_size=accepted_prefix_size,
+                captured_zip_coordinate=captured_zip_coordinate,
+                schema_resolution=schema_resolution,
+                schema_resolution_is_explicit=schema_resolution_is_explicit,
+                registry=active_registry,
+                signature_directory=signature_directory,
+            )
+        finally:
+            if token is not None:
+                _VALIDATION_BODY_WORK.reset(token)
 
     with snapshot as snapshot_identity:
         if snapshot_identity is not None:
@@ -987,9 +1075,18 @@ def validate_retained_document(
                 reuse._outcome = "disabled"
             from polylogue.schemas.retained_validation import RetainedValidationBody
 
-            return RetainedValidationBody.from_verdict(perform()).bind(
+            result = RetainedValidationBody.from_verdict(perform()).bind(
                 raw_id=raw_id, revision_sha256=revision_sha256, evidence_id=evidence_id, source_path=source_path
             )
+            if body_work is not None:
+                work_observation.consume(
+                    "retained_validation",
+                    "validate",
+                    artifact_ref=body_work.artifact_ref,
+                    work_key=body_work.work_key,
+                    outcome="consumed",
+                )
+            return result
         from polylogue.schemas.retained_validation import _retained_validation_productive_identity
 
         recipe = _retained_validation_productive_identity(
@@ -1077,9 +1174,18 @@ def validate_retained_document(
             if not current:
                 raise AcceptedPrefixReadError("retained validation evidence retired during binding")
             reuse._outcome = "hit"
-            return body.bind(
+            result = body.bind(
                 raw_id=raw_id, revision_sha256=revision_sha256, evidence_id=evidence_id, source_path=source_path
             )
+            work_observation.consume(
+                "retained_validation",
+                "validate",
+                artifact_ref=entry.observed_artifact_ref,
+                work_key=entry.observed_work_key,
+                outcome="reused",
+                reason="hit",
+            )
+            return result
         assert snapshot_identity is not None and content_digest is not None
         reuse._entry = _RetainedValidationEvidence(
             recipe,
@@ -1090,10 +1196,22 @@ def validate_retained_document(
             body,
             content_digest,
             _validation_backing_identity(body),
+            observed_work_key=None if body_work is None else body_work.work_key,
+            observed_artifact_ref=None if body_work is None else body_work.artifact_ref,
         )
-        return body.bind(
+        result = body.bind(
             raw_id=raw_id, revision_sha256=revision_sha256, evidence_id=evidence_id, source_path=source_path
         )
+        if body_work is not None:
+            work_observation.consume(
+                "retained_validation",
+                "validate",
+                artifact_ref=body_work.artifact_ref,
+                work_key=body_work.work_key,
+                outcome="consumed",
+                reason=reuse.outcome,
+            )
+        return result
 
 
 __all__ = [

@@ -25,6 +25,7 @@ from pathlib import Path
 
 import aiosqlite
 
+from polylogue.core import work_observation
 from polylogue.storage.derived.session.input_binding import (
     SESSION_INPUT_RECIPE_VERSION,
     session_input_bindings,
@@ -544,6 +545,13 @@ def publish_session_profile(
     del page_size  # the prepared replacement is already one bounded session
     prepared = prepare_session_insight_partition(conn, session_id)
     if prepared.input_binding != input_binding:
+        work_observation.consume(
+            "session_profile",
+            "publish",
+            artifact_ref=prepared.diagnostic_artifact_ref,
+            outcome="refused",
+            reason="requested_source_binding_changed",
+        )
         return False
     return publish_prepared_session_insight_partition(
         conn,
@@ -586,6 +594,13 @@ def publish_prepared_session_profile(
     if not isinstance(prepared, PreparedSessionInsightPartition):
         raise TypeError(f"expected PreparedSessionInsightPartition, got {type(prepared).__name__}")
     if generation_is_current is not None and not generation_is_current():
+        work_observation.consume(
+            "session_profile",
+            "publish",
+            artifact_ref=prepared.diagnostic_artifact_ref,
+            outcome="refused",
+            reason="active_generation_changed",
+        )
         return False
     return publish_prepared_session_insight_partition(
         conn,
@@ -876,6 +891,13 @@ class SessionProfileDerivation:
         since at runtime the kernel hands back exactly what ``compute`` made.
         """
         assert isinstance(replacement, SessionProfileReplacement)
+        from polylogue.storage.derived.session.rebuild import PreparedSessionInsightPartition
+
+        artifact_ref = (
+            replacement.payload.diagnostic_artifact_ref
+            if isinstance(replacement.payload, PreparedSessionInsightPartition)
+            else None
+        )
         generation_binding = self._generation_binding
         with write_lease(
             f"derivation.{self.domain}",
@@ -887,6 +909,13 @@ class SessionProfileDerivation:
                 and generation_binding is not None
                 and generation_binding() != replacement.generation_binding
             ):
+                work_observation.consume(
+                    "session_profile",
+                    "publish",
+                    artifact_ref=artifact_ref,
+                    outcome="refused",
+                    reason="active_generation_changed",
+                )
                 return False
             conn = self._write_connection()
             try:
@@ -894,8 +923,22 @@ class SessionProfileDerivation:
                     replacement.generation_binding is not None
                     and _connection_generation(conn) != replacement.generation_binding
                 ):
+                    work_observation.consume(
+                        "session_profile",
+                        "publish",
+                        artifact_ref=artifact_ref,
+                        outcome="refused",
+                        reason="writer_generation_changed",
+                    )
                     return False
                 if _profile_demand_revision(conn, replacement.key) != replacement.demand_revision:
+                    work_observation.consume(
+                        "session_profile",
+                        "publish",
+                        artifact_ref=artifact_ref,
+                        outcome="refused",
+                        reason="demand_revision_changed",
+                    )
                     return False
                 if (
                     inspect_session_profiles(
@@ -906,6 +949,9 @@ class SessionProfileDerivation:
                     == _VALID
                 ):
                     published = True
+                    work_observation.consume(
+                        "session_profile", "publish", artifact_ref=artifact_ref, outcome="already_current"
+                    )
                 else:
                     published = publish_prepared_session_profile(
                         conn,
