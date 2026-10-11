@@ -172,3 +172,99 @@ def test_checkpoint_pagers_and_ack_comparison_visit_members_after_first_page(
         )
         frontier._prepare_checkpoint_delta(selection, ops)
     assert conn.execute("SELECT count(*) FROM checkpoint_member_writes").fetchone()[0] == len(keys)
+
+
+def test_selected_checkpoint_copy_preserves_inventory_without_unrelated_payload_growth(
+    selection: frontier._FrontierSelection, record_property: Any
+) -> None:
+    """Actual copy/delta seams, with no claim to supply Source ACK authority."""
+    import sqlite3
+
+    from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
+
+    scratch = selection._owner.require_connection()
+    selected_keys = _keys(512)
+    measurements = []
+    with sqlite3.connect(":memory:") as ops:
+        ops.executescript(OPS_DDL)
+        for unselected_count in (512, 1024):
+            for table in ("raw_frontier_pending_heads", "raw_frontier_pending_raws", "raw_frontier_membership_inputs"):
+                ops.execute(f"DELETE FROM {table}")
+            for table in (
+                "pending_heads",
+                "pending_raws",
+                "membership_inputs",
+                "prior_membership_inputs",
+                "selected_keys",
+                "selected_raws",
+                "checkpoint_head_deletes",
+                "checkpoint_member_writes",
+            ):
+                scratch.execute(f"DELETE FROM {table}")
+            heads = [(key, "selected", "{}", "{}") for key in selected_keys]
+            members = [("selected", key, "{}") for key in selected_keys]
+            ops.executemany("INSERT INTO raw_frontier_pending_heads VALUES(?,?,?,?)", heads)
+            ops.executemany("INSERT INTO raw_frontier_membership_inputs VALUES(?,?,?)", members)
+            ops.execute("INSERT INTO raw_frontier_pending_raws VALUES('selected','digest')")
+            for number in range(unselected_count):
+                key = f"unselected-{number:08d}"
+                ops.execute("INSERT INTO raw_frontier_pending_heads VALUES(?,?,?,?)", (key, key, "{}", "{}"))
+                ops.execute("INSERT INTO raw_frontier_pending_raws VALUES(?,?)", (key, "digest"))
+                ops.execute("INSERT INTO raw_frontier_membership_inputs VALUES(?,?,?)", (key, key, "{}"))
+            trace: list[str] = []
+            ops.set_trace_callback(trace.append)
+            try:
+                assert frontier._copy_pending_raw_selection(selection, ops, "selected") == len(selected_keys)
+            finally:
+                ops.set_trace_callback(None)
+            assert list(scratch.execute("SELECT * FROM pending_heads ORDER BY logical_source_key")) == heads
+            assert list(scratch.execute("SELECT * FROM membership_inputs ORDER BY logical_source_key")) == members
+            assert list(scratch.execute("SELECT * FROM prior_membership_inputs ORDER BY logical_source_key")) == members
+            assert list(scratch.execute("SELECT * FROM pending_raws")) == [("selected", "digest")]
+            reads = [sql for sql in trace if sql.startswith("SELECT")]
+            assert len(reads) == 7  # Three pages each for 512 heads/members, one raw.
+            assert all("WHERE raw_id='selected'" in sql for sql in reads)
+            for sql in reads:
+                assert "SEARCH" in str(list(ops.execute("EXPLAIN QUERY PLAN " + sql)))
+            # The final-page Unicode member changes. Healthy contribution
+            # removal and membership update stay sparse after the actual join.
+            last = selected_keys[-1]
+            selection.add_key(last)
+            selection.add_raw("selected")
+            scratch.execute("DELETE FROM pending_heads WHERE logical_source_key=?", (last,))
+            scratch.execute(
+                "UPDATE membership_inputs SET disposition_json=? WHERE logical_source_key=?",
+                ('{"decision":"applied"}', last),
+            )
+            ops.set_trace_callback(trace.append)
+            before_delta = len(trace)
+            try:
+                frontier._prepare_checkpoint_delta(selection, ops)
+            finally:
+                ops.set_trace_callback(None)
+            delta_reads = trace[before_delta:]
+            assert not any("raw_frontier_membership_inputs" in sql for sql in delta_reads)
+            assert list(scratch.execute("SELECT * FROM checkpoint_head_deletes")) == [(last,)]
+            assert list(scratch.execute("SELECT * FROM checkpoint_member_writes")) == [
+                ("selected", last, '{"decision":"applied"}')
+            ]
+            frontier._publish_frontier_checkpoint(ops, selection, delta=True)
+            assert (
+                ops.execute("SELECT count(*) FROM raw_frontier_pending_heads").fetchone()[0] == unselected_count + 511
+            )
+            assert (
+                ops.execute("SELECT count(*) FROM raw_frontier_pending_heads WHERE raw_id!='selected'").fetchone()[0]
+                == unselected_count
+            )
+            measurements.append(
+                {
+                    "unselected": unselected_count,
+                    "copied_heads": 512,
+                    "copied_members": 512,
+                    "copy_selects": len(reads),
+                    "delta_ops_selects": len(delta_reads),
+                }
+            )
+    record_property("selected_checkpoint_work", measurements)
+    assert measurements[0]["copy_selects"] == measurements[1]["copy_selects"]
+    assert measurements[0]["delta_ops_selects"] == measurements[1]["delta_ops_selects"]

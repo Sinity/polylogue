@@ -240,6 +240,7 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
         real_checkpoint = inspection_substrate._raw_checkpoint
         real_checkpoint_rows = inspection_substrate._source_checkpoint_rows
         real_publish_checkpoint = inspection_substrate._publish_frontier_checkpoint
+        real_copy_checkpoint = inspection_substrate._copy_pending_raw_selection
         real_terminal_paths = inspection_substrate.PreparedFrontierSource.terminal_artifact_paths
 
         def observed_terminal_paths(source: Any, paths: set[str]) -> Any:
@@ -281,6 +282,12 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
             current_attempt["checkpoint_delta"] = delta
             real_publish_checkpoint(cast(Connection, ObservedCheckpointWriter(writer)), selection, delta=delta)
 
+        def observed_copy_checkpoint(selection: Any, ops: Connection, raw_id: str) -> int:
+            heads = real_copy_checkpoint(selection, ops, raw_id)
+            assert current_attempt is not None
+            current_attempt["checkpoint_copied_heads"] += heads
+            return heads
+
         def observed_checkpoint(*args: Any, **kwargs: Any) -> Any:
             if current_attempt is not None:
                 current_attempt["raw_snapshots"] += 1
@@ -318,6 +325,7 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
                 "snapshot_source_bytes": 0,
                 "proof_states": [],
                 "checkpoint_mutated_rows": 0,
+                "checkpoint_copied_heads": 0,
                 "checkpoint_bound_bytes": 0,
                 "checkpoint_head_keys": [],
                 "checkpoint_sql": [],
@@ -343,6 +351,7 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
         monkeypatch.setattr(inspection_substrate, "_raw_checkpoint", observed_checkpoint)
         monkeypatch.setattr(inspection_substrate, "_source_checkpoint_rows", observed_checkpoint_rows)
         monkeypatch.setattr(inspection_substrate, "_publish_frontier_checkpoint", observed_publish_checkpoint)
+        monkeypatch.setattr(inspection_substrate, "_copy_pending_raw_selection", observed_copy_checkpoint)
         monkeypatch.setattr(
             inspection_substrate.PreparedFrontierSource, "terminal_artifact_paths", observed_terminal_paths
         )
@@ -471,6 +480,10 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
             assert body["actual_head_proofs"] == (cohort_size if key is not None else 1)
             assert body["raw_snapshots"] <= 2
             assert body["checkpoint_delta"]
+            assert body["checkpoint_copied_heads"] == sum(row[1] == raw for row in before["pending"])
+            assert [row for row in measured["pending"] if row[1] != raw] == [
+                row for row in before["pending"] if row[1] != raw
+            ]
             assert body["terminal_proof_paths"] == ["deferred.jsonl"]
             assert len(body["checkpoint_head_keys"]) == 1
             if key is not None:
