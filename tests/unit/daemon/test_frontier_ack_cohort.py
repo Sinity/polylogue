@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import traceback
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -243,6 +243,65 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
         real_copy_checkpoint = inspection_substrate._copy_pending_raw_selection
         real_terminal_paths = inspection_substrate.PreparedFrontierSource.terminal_artifact_paths
 
+        real_complete_heads = inspection_substrate._populate_complete_cursor_heads
+        real_cursor_heads = inspection_substrate.PreparedFrontierSource.cursor_heads
+        real_source_input = PreparedIndexMutation.before_source_input
+        real_load_inputs = revision_governance._PreparedSourceProducer._load_artifact_inputs
+        metadata_active = False
+
+        real_index_input = PreparedIndexMutation.before_index_input
+        real_original_rows = PreparedIndexMutation.original_rows
+        charged_checkpoint_pages: set[tuple[int, tuple[Any, ...]]] = set()
+
+        def observed_index_input(seal: Any, table: str, columns: Any, sql: str, parameters: Any) -> None:
+            real_index_input(seal, table, columns, sql, parameters)
+            if table == "sessions" and columns == ("session_id", "origin", "raw_id", "content_hash", "message_count"):
+                assert sql.startswith("SELECT rowid FROM sessions WHERE raw_id=? ")
+                charged_checkpoint_pages.add((id(seal), tuple(parameters)))
+                if current_attempt is not None:
+                    current_attempt["checkpoint_session_page_charges"] += 1
+
+        @contextmanager
+        def observed_original_rows(seal: Any, tier: str, sql: str, parameters: Any = ()) -> Any:
+            if tier == "index" and sql.startswith(
+                "SELECT session_id,origin,raw_id,hex(content_hash),message_count FROM sessions WHERE raw_id=? "
+            ):
+                # Includes the first original checkpoint before complete H
+                # metadata, so prior reference reads cannot hide late charging.
+                assert (id(seal), tuple(parameters)) in charged_checkpoint_pages
+                if current_attempt is not None:
+                    current_attempt["checkpoint_session_page_reads"] += 1
+            with real_original_rows(seal, tier, sql, parameters) as rows:
+                yield rows
+
+        def observed_complete_heads(*args: Any, **kwargs: Any) -> bool:
+            nonlocal metadata_active
+            metadata_active = True
+            try:
+                return real_complete_heads(*args, **kwargs)
+            finally:
+                metadata_active = False
+
+        def observed_cursor_heads(source: Any) -> Any:
+            for head, path in real_cursor_heads(source):
+                assert current_attempt is not None
+                current_attempt["metadata_heads"] += 1
+                yield head, path
+
+        def observed_source_input(seal: Any, table: str, columns: Any, *args: Any) -> None:
+            if metadata_active:
+                assert current_attempt is not None
+                assert table == "raw_sessions"
+                assert columns == ("raw_id", "source_path", "canonical_source_path")
+                current_attempt["metadata_source_columns"].append(columns)
+            real_source_input(seal, table, columns, *args)
+
+        def observed_load_inputs(producer: Any, table: str, *args: Any) -> None:
+            # The real owner must not stage unrelated complete acquisition
+            # images merely to certify current cursor metadata.
+            assert not metadata_active
+            real_load_inputs(producer, table, *args)
+
         def observed_terminal_paths(source: Any, paths: set[str]) -> Any:
             if current_attempt is not None:
                 current_attempt["terminal_proof_paths"].extend(sorted(paths))
@@ -330,6 +389,10 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
                 "checkpoint_head_keys": [],
                 "checkpoint_sql": [],
                 "terminal_proof_paths": [],
+                "metadata_heads": 0,
+                "checkpoint_session_page_charges": 0,
+                "checkpoint_session_page_reads": 0,
+                "metadata_source_columns": [],
             }
             report["inspection_bodies"].append(body)
             current_attempt = body
@@ -347,6 +410,12 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
 
         monkeypatch.setattr(raw_frontier_inspection, "inspect_prepared_raw_authority_frontier", observed_inspect)
         monkeypatch.setattr(inspection_substrate, "frontier_inspection_mode", observed_mode)
+        monkeypatch.setattr(inspection_substrate, "_populate_complete_cursor_heads", observed_complete_heads)
+        monkeypatch.setattr(inspection_substrate.PreparedFrontierSource, "cursor_heads", observed_cursor_heads)
+        monkeypatch.setattr(PreparedIndexMutation, "before_source_input", observed_source_input)
+        monkeypatch.setattr(PreparedIndexMutation, "before_index_input", observed_index_input)
+        monkeypatch.setattr(PreparedIndexMutation, "original_rows", observed_original_rows)
+        monkeypatch.setattr(revision_governance._PreparedSourceProducer, "_load_artifact_inputs", observed_load_inputs)
         monkeypatch.setattr(inspection_substrate, "_iter_selected_frontier_proofs", observed_proofs)
         monkeypatch.setattr(inspection_substrate, "_raw_checkpoint", observed_checkpoint)
         monkeypatch.setattr(inspection_substrate, "_source_checkpoint_rows", observed_checkpoint_rows)
@@ -477,6 +546,10 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
             assert measured["coverage"]["healthy"] is (start == len(steps) - 1)
             body = report["inspection_bodies"][-1]
             assert body["settlement"] == "published" and body["mode"] == "delta"
+            assert body["metadata_heads"] == 2 * cohort_size
+            assert body["checkpoint_session_page_reads"] > 0
+            assert body["checkpoint_session_page_reads"] == body["checkpoint_session_page_charges"]
+            assert body["metadata_source_columns"] == [("raw_id", "source_path", "canonical_source_path")]
             assert body["actual_head_proofs"] == (cohort_size if key is not None else 1)
             assert body["raw_snapshots"] <= 2
             assert body["checkpoint_delta"]

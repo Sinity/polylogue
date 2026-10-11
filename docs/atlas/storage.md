@@ -122,6 +122,8 @@ membership acknowledgement; unrelated or unsupported changes take full inspectio
 Raw-wide structural inputs are streamed once into one digest per retained raw;
 member dispositions are separate paged rows, including already healthy siblings.
 Per-head checkpoint contributions contain only that head's classifier inputs.
+Checkpoint session pages charge all five projected original fields, including
+the generated session identity, before hydration from the same pinned window.
 Unselected pending contributions remain in the aggregate. The checkpoint and mark
 commit together after the original Source permit succeeds; a refused permit
 advances neither. Full anchors replace the checkpoint. Supported ACK successors
@@ -135,8 +137,13 @@ without one Ops point read per member. Complete selected raw inventories and
 shared-raw sibling proofs remain required. This checkpoint never acknowledges
 Source or supplies byte proof.
 Every supported blocked successor still proves all eligible cursors against an
-independent complete current accepted-head inventory. Headed cursor paths need no
-terminal-artifact proof; headless paths still use canonical terminal evidence.
+independent complete current accepted-head inventory. Its 256-head pages read
+only original cursor operands, the session Raw fallback and Source paths,
+charging their exact consumed fields before hydration. Unrelated Raw acquisition
+images are not staged for this metadata inventory. Selected canonical proofs
+and cursor existence checks retain their own complete producer inputs. Missing
+Source paths still reject the sparse successor and take full inspection.
+Headed cursor paths need no terminal-artifact proof; headless paths still use canonical terminal evidence.
 Scratch key, path, raw and membership pagers use a separate first-page query and
 strict indexed ranges on subsequent pages. Complete accepted-head and cursor
 inventories use the same range shape on their existing key indexes. Empty and

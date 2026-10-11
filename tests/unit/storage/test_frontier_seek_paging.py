@@ -268,3 +268,51 @@ def test_selected_checkpoint_copy_preserves_inventory_without_unrelated_payload_
     record_property("selected_checkpoint_work", measurements)
     assert measurements[0]["copy_selects"] == measurements[1]["copy_selects"]
     assert measurements[0]["delta_ops_selects"] == measurements[1]["delta_ops_selects"]
+
+
+def test_cursor_metadata_pages_preserve_raw_fallback_paths_and_late_missing_input(
+    selection: frontier._FrontierSelection,
+) -> None:
+    """Native query parity only; the real owner cohort qualifies authority."""
+    import sqlite3
+    from contextlib import closing, contextmanager
+
+    keys = _keys(260)
+    with sqlite3.connect(":memory:") as index, sqlite3.connect(":memory:") as source:
+        index.executescript(
+            "CREATE TABLE raw_revision_heads(logical_source_key TEXT PRIMARY KEY,session_id,accepted_raw_id,"
+            "accepted_source_revision,accepted_frontier_kind,accepted_frontier,acquisition_generation,append_end_offset);"
+            "CREATE TABLE sessions(session_id TEXT PRIMARY KEY,raw_id);"
+        )
+        source.execute("CREATE TABLE raw_sessions(raw_id TEXT PRIMARY KEY,source_path,canonical_source_path)")
+        expected = []
+        for number, key in enumerate(keys):
+            raw = f"raw-{number}"
+            # Session divergence and session absence must preserve the distinct
+            # head Raw owner while choosing the current Source path operand.
+            current = f"session-raw-{number}" if number % 2 else raw
+            index.execute("INSERT INTO raw_revision_heads VALUES(?,?,?,'revision','byte',5,0,5)", (key, key, raw))
+            if number % 2:
+                index.execute("INSERT INTO sessions VALUES(?,?)", (key, current))
+            source.execute("INSERT INTO raw_sessions VALUES(?,?,'canonical')", (current, "acquired"))
+            expected.append((_IndexRawRevisionHead(key, raw, "revision", "byte", 5, 0, 5), "canonical"))
+
+        class NativeQueryInputs:
+            @contextmanager
+            def original_rows(self, tier: str, sql: str, args: Any) -> Any:
+                with closing((index if tier == "index" else source).execute(sql, args)) as rows:
+                    yield rows
+
+            def before_index_input(self, *args: Any) -> None:
+                pass
+
+            def before_source_input(self, *args: Any) -> None:
+                pass
+
+        prepared = object.__new__(frontier.PreparedFrontierSource)
+        prepared._seal = cast(PreparedIndexMutation, NativeQueryInputs())
+        assert list(prepared.cursor_heads()) == expected
+        assert frontier._populate_complete_cursor_heads(prepared, selection)
+        assert list(selection.byte_heads_for_path("canonical")) == [head for head, _path in expected]
+        source.execute("DELETE FROM raw_sessions WHERE raw_id=?", ("session-raw-259",))
+        assert not frontier._populate_complete_cursor_heads(prepared, selection)
