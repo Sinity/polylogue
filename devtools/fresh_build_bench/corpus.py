@@ -25,7 +25,7 @@ import random
 import shutil
 import stat
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -505,6 +505,7 @@ def select_real(
         raise ValueError("selection source origins must be unique")
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"corpus directory must be absent or empty: {out}")
+    sources = tuple(sorted(sources, key=lambda source: source.origin))
     rng = random.Random(seed)
     census_started = time.time()
     census = {source.origin: _selection_units(source) for source in sources}
@@ -534,6 +535,7 @@ def select_real(
                     "oversized_units": 0,
                     "selected_units": 0,
                     "selected_bytes": 0,
+                    "total_budget_skips": 0,
                 },
             )
             row["population_units"] += 1
@@ -542,21 +544,40 @@ def select_real(
                 row["oversized_units"] += 1
             else:
                 queues[key].append(unit)
-    for members in queues.values():
+    for key in sorted(queues):
+        members = queues[key]
+        members.sort(key=lambda unit: unit[0])
         rng.shuffle(members)
     source_by_origin = {source.origin: source for source in sources}
+    provider_order = sorted({origin for origin, _bucket in queues})
+    rng.shuffle(provider_order)
+    bucket_order: dict[str, list[int]] = {}
+    for origin in sorted(provider_order):
+        buckets = sorted(bucket for queued_origin, bucket in queues if queued_origin == origin)
+        rng.shuffle(buckets)
+        bucket_order[origin] = buckets
+    provider_buckets = {origin: deque(buckets) for origin, buckets in bucket_order.items()}
+    total_budget_skips = 0
     selected: list[tuple[SampleSource, tuple[str, list[Path], list[Path]]]] = []
     selected_paths: set[Path] = set()
     total = 0
     while queues and len(selected) < max_units:
-        for key in sorted(queues):
+        for origin in provider_order:
+            bucket_queue = provider_buckets[origin]
+            if not bucket_queue:
+                continue
+            key = (origin, bucket_queue.popleft())
             members = queues[key]
             unit = members.pop()
-            if not members:
+            if members:
+                bucket_queue.append(key[1])
+            else:
                 del queues[key]
             paths = {*unit[1], *unit[2]}
             added = sum(stamps[path][1] for path in paths - selected_paths)
             if total + added > max_bytes:
+                strata[key]["total_budget_skips"] += 1
+                total_budget_skips += 1
                 continue
             selected.append((source_by_origin[key[0]], unit))
             selected_paths.update(paths)
@@ -574,7 +595,7 @@ def select_real(
                 continue
             # Install-global coordinates can sit just above the watched root.
             # Preserve their relative placement without permitting corpus escape.
-            relative = Path(os.path.relpath(path, source.root))
+            relative = Path(os.path.relpath(path.resolve(), source.root.resolve()))
             destination = (out / source.target / relative).resolve()
             if out.resolve() not in destination.parents:
                 raise ValueError("selection dependency escapes the corpus")
@@ -614,6 +635,10 @@ def select_real(
             "max_bytes": max_bytes,
             "max_unit_bytes": max_unit_bytes,
             "max_units": max_units,
+            "selection_strategy": "seeded provider round-robin with seeded size-bucket round-robin",
+            "selection_order": {"providers": provider_order, "size_buckets": bucket_order},
+            "selection_semantics": "diagnostic coverage; not a probability sample or population estimator",
+            "total_budget_skips": total_budget_skips,
             "population": population,
             "selected_units": len(selected),
             "provenance": provenance,
@@ -628,7 +653,7 @@ def select_real(
             ],
             "sampled_providers": sorted({source.origin for source, _unit in selected}),
             "missing_providers": sorted(
-                ({origin for _prefix, origin in ORIGIN_PREFIXES} | {"codex-state"})
+                ({origin for _prefix, origin in ORIGIN_PREFIXES} | {"codex-state"} | set(source_by_origin))
                 - {source.origin for source, _unit in selected}
             ),
             "route": "ordinary-daemon-cold-build-selected-static-roots",

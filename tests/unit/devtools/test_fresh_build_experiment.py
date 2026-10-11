@@ -183,6 +183,115 @@ def test_selection_keeps_shared_dependencies_once_and_excludes_whale(tmp_path: P
     verify_manifest(tmp_path / "selected", first)
 
 
+def _selection_sources(
+    tmp_path: Path, claude_sizes: tuple[int, ...], codex_sizes: tuple[int, ...]
+) -> tuple[SampleSource, ...]:
+    claude = tmp_path / "input" / ".claude" / "projects"
+    codex = tmp_path / "input" / ".codex" / "sessions"
+    (claude / "-synthetic").mkdir(parents=True)
+    codex_day = codex / "2026" / "10" / "11"
+    codex_day.mkdir(parents=True)
+    for index, size in enumerate(claude_sizes):
+        (claude / "-synthetic" / f"session-{index}.jsonl").write_bytes(b"c" * size)
+    for index, size in enumerate(codex_sizes):
+        (codex_day / f"rollout-{index}.jsonl").write_bytes(b"x" * size)
+    return (
+        SampleSource("claude-code", claude, "home/.claude/projects", True),
+        SampleSource("codex", codex, "home/.codex/sessions"),
+    )
+
+
+def test_small_selection_visits_each_provider_before_more_size_buckets(tmp_path: Path) -> None:
+    sources = _selection_sources(tmp_path, (3, 1024, 2048, 4096), (3,))
+    manifest = select_real(
+        tmp_path / "selected", seed=1, max_bytes=16384, max_unit_bytes=8192, max_units=2, sources=sources
+    )
+    assert {origin: row["units"] for origin, row in manifest["parameters"]["population"].items()} == {
+        "claude-code": 4,
+        "codex": 1,
+    }
+    assert manifest["parameters"]["sampled_providers"] == ["claude-code", "codex"]
+    assert [row["origin"] for row in manifest["parameters"]["provenance"]] == manifest["parameters"]["selection_order"][
+        "providers"
+    ]
+    assert manifest["parameters"]["selected_units"] == 2
+    verify_manifest(tmp_path / "selected", manifest)
+
+
+def test_selection_order_and_units_are_independent_of_source_enumeration(tmp_path: Path) -> None:
+    sources = _selection_sources(tmp_path, (3, 4, 1024, 2048), (3, 4, 1024))
+    first = select_real(tmp_path / "first", seed=7, max_bytes=16384, max_unit_bytes=8192, max_units=4, sources=sources)
+    reversed_sources = select_real(
+        tmp_path / "reversed",
+        seed=7,
+        max_bytes=16384,
+        max_unit_bytes=8192,
+        max_units=4,
+        sources=tuple(reversed(sources)),
+    )
+    assert first["files"] == reversed_sources["files"]
+    for name in ("selection_strategy", "selection_order", "provenance", "strata", "total_budget_skips"):
+        assert first["parameters"][name] == reversed_sources["parameters"][name]
+
+
+def test_seeded_bucket_order_can_visit_larger_bucket_first(tmp_path: Path) -> None:
+    sources = _selection_sources(tmp_path, (3, 1024, 2048), ())[:1]
+    manifest = select_real(
+        tmp_path / "selected", seed=1, max_bytes=8192, max_unit_bytes=4096, max_units=1, sources=sources
+    )
+    buckets = manifest["parameters"]["selection_order"]["size_buckets"]["claude-code"]
+    assert sorted(buckets) == [0, 1, 2] and buckets[0] != 0
+    selected = [row for row in manifest["parameters"]["strata"] if row["selected_units"]]
+    assert selected[0]["size_bucket"] == buckets[0]
+
+
+def test_selection_records_closure_budget_conflict_without_partial_units(tmp_path: Path) -> None:
+    sources = _selection_sources(tmp_path, (6,), (6,))
+    for source in sources:
+        (source.root.parent / "history.jsonl").write_bytes(b"dep")
+    manifest = select_real(tmp_path / "selected", seed=3, max_bytes=12, max_unit_bytes=6, max_units=2, sources=sources)
+    parameters = manifest["parameters"]
+    assert all(row["units"] == 1 for row in parameters["population"].values())
+    assert parameters["selected_units"] == 1 and manifest["total_bytes"] == 9
+    assert sorted(row[1] for row in manifest["files"]) == [3, 6]
+    assert parameters["total_budget_skips"] == 1
+    skipped_stratum = next(row for row in parameters["strata"] if row["total_budget_skips"])
+    assert skipped_stratum["origin"] in parameters["missing_providers"]
+    assert skipped_stratum["missing"] and skipped_stratum["total_budget_skips"] == 1
+    assert skipped_stratum["oversized_units"] == 0
+    verify_manifest(tmp_path / "selected", manifest)
+
+
+def test_selection_preserves_dependency_coordinates_through_symlink_source_root(tmp_path: Path) -> None:
+    from polylogue.sources.retained_assembly import claude_code_sidecar_coordinates
+
+    install = tmp_path / "input" / ".config" / "claude"
+    project = install / "projects" / "-synthetic"
+    project.mkdir(parents=True)
+    for name in ("first", "second"):
+        (project / f"{name}.jsonl").write_bytes(b"{}\n")
+    (install / "history.jsonl").write_bytes(b"shared-history")
+    (project / "sessions-index.json").write_bytes(b"shared-index")
+    lexical = tmp_path / "input" / ".claude"
+    lexical.symlink_to(install, target_is_directory=True)
+    source = SampleSource("claude-code", lexical / "projects", "home/.claude/projects", True)
+    out = tmp_path / "selected"
+    manifest = select_real(out, seed=1, max_bytes=128, max_unit_bytes=3, max_units=2, sources=(source,))
+    assert manifest["parameters"]["selected_units"] == 2
+    assert manifest["total_bytes"] == 6 + len(b"shared-history") + len(b"shared-index")
+    assert manifest["file_count"] == 4
+    for name in ("first", "second"):
+        main = out / "home" / ".claude" / "projects" / "-synthetic" / f"{name}.jsonl"
+        assert main.read_bytes() == b"{}\n"
+        coordinates = claude_code_sidecar_coordinates(str(main.resolve()))
+        assert coordinates is not None
+        index, history = (Path(path) for path in coordinates)
+        assert index.read_bytes() == b"shared-index"
+        assert history.read_bytes() == b"shared-history"
+    assert not (out / "home" / ".config").exists()
+    verify_manifest(out, manifest)
+
+
 def _sample(arm: str, seconds: float, **changes: Any) -> dict[str, Any]:
     receipt = {
         "qualified": True,
