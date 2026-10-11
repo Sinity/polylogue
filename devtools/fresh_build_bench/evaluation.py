@@ -122,6 +122,9 @@ def _instrumentation_mode(receipt: dict[str, Any]) -> str | None:
 def evaluate_run(receipt: dict[str, Any]) -> dict[str, Any]:
     """Missing evidence stays unknown, independently of the old aggregate flag."""
     validity = _checks(receipt, _INPUT_CHECKS)
+    if receipt.get("product_tree") is not None:
+        content = _checks(receipt, ("product_content_bound",))
+        validity = _axis(validity["failed"] + content["failed"], validity["unknown"] + content["unknown"])
     if "derived_from" in receipt or "evidence_unchanged" in (receipt.get("checks") or {}):
         seal = _checks(receipt, ("evidence_unchanged",))
         validity = _axis(validity["failed"] + seal["failed"], validity["unknown"] + seal["unknown"])

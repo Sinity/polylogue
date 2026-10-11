@@ -464,7 +464,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "bench fresh-build",
         "benchmarking",
-        "Build a fresh archive from a sealed corpus, compare receipts, or require frozen practical repeatability.",
+        "Measure bound daemon or retained components, export work traces and estimate bounded workloads.",
         "devtools.fresh_build_bench.cli",
         use_when=(
             "Measure the ordinary cold build end to end (stage timings, writer share, RSS, per-origin cost, time "
@@ -475,7 +475,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "`experiment` pairs fresh-state runs in balanced ABBA order; opt-in `--acceptance-policy` freezes "
             "two ABBA blocks for practical repeatability with explicit effects and sampled-resource limits. "
             "`experiment --accept` and `report --accept` require that decision, with no statistical confidence claim. "
-            "`components` times one production stage. "
+            "`components` observes blob acquisition, retained validation/preparation or a declared synthetic selected page; "
+            "component experiments use matched ABBA. Direct validation diagnostic captures remain separate. "
+            "`ledger` exports bounded recorded work events, and `denominator` owns private inventory/calibration. "
             "Start `run` and `experiment` through the declared "
             "fresh_build_bench AgentCTL operation."
         ),

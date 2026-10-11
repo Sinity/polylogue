@@ -1011,6 +1011,8 @@ def evidence_digests(work: Path) -> dict[str, str | None]:
         "policy": digest(work / "policy.json"),
         **({"acceptance": digest(work / "acceptance.json")} if (work / "acceptance.json").is_file() else {}),
         **({"readiness": digest(work / "readiness.json")} if (work / "readiness.json").is_file() else {}),
+        **({"product_tree": digest(work / "product-tree.json")} if (work / "product-tree.json").is_file() else {}),
+        **({"prepared_seed": digest(work / "seed.json")} if (work / "seed.json").is_file() else {}),
     }
 
 
@@ -1059,9 +1061,25 @@ def config_digest(config: Any) -> str:
         "poll_s": config.poll_s,
         "stable_polls": config.stable_polls,
         "extra_env": sorted(config.extra_env),
-        "daemon_argv": ["run", "--no-browser-capture", "--no-api", "--cold-build-index"],
+        "daemon_argv": [
+            "run",
+            "--no-browser-capture",
+            "--no-api",
+            *(["--cold-build-index"] if getattr(config, "route", "installation") == "installation" else []),
+        ],
+        "route": getattr(config, "route", "installation"),
+        "seed_receipt_sha256": getattr(config, "seed_receipt_sha256", None),
+        "seed_manifest_id": getattr(config, "seed_manifest_id", None),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def product_content_bound(work: Path, expected: str) -> bool:
+    """Check the original prelaunch content identity, without retrofitting it."""
+    try:
+        return json.loads((work / "product-tree.json").read_text()).get("product_tree") == expected
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def _derive_dependents(receipt: dict[str, Any]) -> None:
@@ -1100,9 +1118,26 @@ def _derive_dependents(receipt: dict[str, Any]) -> None:
     receipt["budgets"] = budgets
     # A qualified build finished, satisfied every terminal check and stayed
     # inside every asserted budget.
+    seeded = (receipt.get("config") or {}).get("route") in {"restart", "upgrade"} and bool(receipt.get("prepared_seed"))
+    receipt["unavailable_route_metrics"] = (
+        [
+            name
+            for name, absent in (
+                ("new-source-intake-timing", not receipt["checks"].get("source_timing_recorded")),
+                ("new-promotion-event", promoted is None),
+            )
+            if absent
+        ]
+        if seeded
+        else []
+    )
     receipt["qualified"] = (
         receipt["outcome"] == "terminal"
-        and all(receipt["checks"].values())
+        and all(
+            value
+            for key, value in receipt["checks"].items()
+            if not seeded or key not in {"milestones_recorded", "source_timing_recorded"}
+        )
         and all(row["pass"] for row in budgets.values())
     )
     from devtools.fresh_build_bench.evaluation import evaluate_run
@@ -1270,6 +1305,7 @@ def build_receipt(
         "benchmark_implementation_sha256": driver_now,
         "config": {
             "digest": config_digest(config),
+            "route": getattr(config, "route", "installation"),
             "argv": command[3:],
             "profile": config.profile,
             "observe_work": config.observe_work,
@@ -1734,6 +1770,10 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     """
     receipt: dict[str, Any] = json.loads(receipt_path.read_text(encoding="utf-8"))
     work = receipt_path.parent
+    if receipt.get("product_tree") is not None:
+        receipt["checks"]["product_content_bound"] = product_content_bound(work, receipt["product_tree"])
+    if (work / "seed.json").is_file():
+        receipt["prepared_seed"] = json.loads((work / "seed.json").read_text())
     if "fts_exact" in receipt.get("checks", {}):
         receipt["checks"]["fts_row_count_equal"] = receipt["checks"].pop("fts_exact")
     events = analyse_events(work / "events.jsonl", origin_unix=receipt["started_at_unix"])

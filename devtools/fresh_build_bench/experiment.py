@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import statistics
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -14,7 +14,7 @@ from devtools.fresh_build_bench.corpus import load_manifest, verify_manifest
 from devtools.fresh_build_bench.evaluation import evaluate_run, evaluate_samples
 from devtools.fresh_build_bench.recipe_qualification import output_equivalence
 from devtools.fresh_build_bench.report import comparability_problems
-from devtools.fresh_build_bench.run import RunConfig, run_build
+from devtools.fresh_build_bench.run import RunConfig, bind_seed, run_build
 
 
 class _ArmMetric(TypedDict):
@@ -136,6 +136,49 @@ def reduce_experiment(samples: list[dict[str, Any]], *, launch: dict[str, Any] |
     }
 
 
+def matched_schedule(order: str, repetitions: int) -> Iterator[tuple[int, str]]:
+    """One declared balanced order shared by daemon and component callers."""
+    if repetitions < 1 or not order or set(order) != {"A", "B"} or order.count("A") != order.count("B"):
+        raise ValueError("order must contain equal positive counts of A and B; repetitions must be positive")
+    return iter(enumerate(order * repetitions, start=1))
+
+
+def run_matched_sequence(
+    *,
+    order: str,
+    repetitions: int,
+    invoke: Callable[[int, str], Path | None],
+    valid: Callable[[dict[str, Any]], bool],
+    progress: Callable[[str], None] = print,
+) -> list[dict[str, Any]]:
+    """Run the frozen order once; retain originals, stop after failed work.
+
+    Each adapter owns launch bindings and reduction, while this owner records
+    the actual immutable constituent bytes and their order for both routes.
+    """
+    samples: list[dict[str, Any]] = []
+    for ordinal, arm in matched_schedule(order, repetitions):
+        progress(f"experiment {ordinal}/{len(order) * repetitions} arm {arm}")
+        path = invoke(ordinal, arm)
+        if path is None:
+            samples.append({"ordinal": ordinal, "arm": arm, "unavailable": "component subprocess failed"})
+            break
+        content = path.read_bytes()
+        receipt = json.loads(content)
+        samples.append(
+            {
+                "arm": arm,
+                "ordinal": ordinal,
+                "path": str(path),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "receipt": receipt,
+            }
+        )
+        if not valid(receipt):
+            break
+    return samples
+
+
 def run_experiment(
     config: RunConfig,
     *,
@@ -150,6 +193,7 @@ def run_experiment(
         raise ValueError("order must contain equal positive counts of A and B; repetitions must be positive")
     if not config.fingerprint:
         raise ValueError("paired experiments require exact output fingerprints")
+    config = bind_seed(config)
     manifest = load_manifest(config.corpus)
     verify_manifest(config.corpus, manifest)
     if not manifest["file_count"]:
@@ -158,7 +202,6 @@ def run_experiment(
         raise ValueError("experiment work directory must be absent or empty")
     config.work.mkdir(parents=True, exist_ok=True, mode=0o700)
     config.work.chmod(0o700)
-    samples = []
     candidates = {"A": before.resolve(), "B": after.resolve()}
     launch = None
     if acceptance_policy is not None:
@@ -168,33 +211,25 @@ def run_experiment(
             raise ValueError("acceptance policy owns two ABBA blocks; conflicting order/repetitions refused")
         launch = freeze_launch(acceptance_policy, manifest, config, candidates)
         order, repetitions = SCHEDULE[:4], 2
-    for index, arm in enumerate(order * repetitions):
-        work = config.work / f"{index + 1:03d}-{arm}"
-        progress(f"experiment {index + 1}/{len(order) * repetitions} arm {arm}")
+
+    def invoke(ordinal: int, arm: str) -> Path:
+        work = config.work / f"{ordinal:03d}-{arm}"
         binding = None
         if launch is not None:
             from devtools.fresh_build_bench.acceptance import launch_binding
 
-            binding = launch_binding(config.work / "launch.json", launch, index + 1, arm)
-        receipt = run_build(
+            binding = launch_binding(config.work / "launch.json", launch, ordinal, arm)
+        run_build(
             replace(config, candidate=candidates[arm], work=work, label=arm, acceptance_binding=binding),
             progress=progress,
         )
-        path = work / "receipt.json"
-        samples.append(
-            {
-                "arm": arm,
-                "ordinal": index + 1,
-                "path": str(path),
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                "receipt": receipt,
-            }
-        )
-        # An invalid run is useful evidence, but cannot justify more paired
-        # work. Preserve its receipt and emit a partial experiment document.
+        return work / "receipt.json"
+
+    def valid(receipt: dict[str, Any]) -> bool:
         evaluation = evaluate_run(receipt)
-        if any(evaluation[axis]["state"] != "pass" for axis in ("measurement_validity", "scope_completion")):
-            break
+        return all(evaluation[axis]["state"] == "pass" for axis in ("measurement_validity", "scope_completion"))
+
+    samples = run_matched_sequence(order=order, repetitions=repetitions, invoke=invoke, valid=valid, progress=progress)
     complete = len(samples) == len(order) * repetitions
     # A partial sequence may lack one arm; avoid inventing its statistics.
     reduction = (

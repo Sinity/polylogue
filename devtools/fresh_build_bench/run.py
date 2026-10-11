@@ -75,6 +75,10 @@ class RunConfig:
     budgets: tuple[tuple[str, float], ...] = ()
     observe_work: bool = False
     acceptance_binding: dict[str, Any] | None = None
+    route: str = "installation"
+    seed_receipt: Path | None = None
+    seed_receipt_sha256: str | None = None
+    seed_manifest_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -832,7 +836,7 @@ def _daemon_command(config: RunConfig) -> list[str]:
         "run",
         "--no-browser-capture",
         "--no-api",
-        "--cold-build-index",
+        *(["--cold-build-index"] if config.route == "installation" else []),
     ]
 
 
@@ -883,10 +887,86 @@ def _daemon_env(config: RunConfig, paths: dict[str, Path]) -> dict[str, str]:
     return env
 
 
+def _seed_artifact(config: RunConfig) -> tuple[Any, dict[str, Any]]:
+    """Adopt bounded closed benchmark state through the shared clone owner."""
+    from devtools.fresh_build_bench.corpus import refuse_inside_checkout
+    from devtools.fresh_build_bench.evaluation import evaluate_run
+    from devtools.fresh_build_bench.report import output_fingerprint, refresh
+    from tests.infra.workload_artifacts import ImmutableTreeArtifact
+
+    if config.seed_receipt is None or config.route not in {"restart", "upgrade"}:
+        raise ValueError("prepared state requires an explicit restart or upgrade route")
+    refuse_inside_checkout(config.seed_receipt, "--seed-receipt")
+    raw = config.seed_receipt.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if config.seed_receipt_sha256 is not None and digest != config.seed_receipt_sha256:
+        raise ValueError("prepared seed receipt changed after launch")
+    receipt = refresh(config.seed_receipt)
+    verdict = evaluate_run(receipt)
+    if any(verdict[axis]["state"] != "pass" for axis in ("measurement_validity", "scope_completion")):
+        raise ValueError("prepared seed has no complete bound ordinary-route evidence")
+    if receipt["corpus"]["digest"] != load_manifest(config.corpus)["digest"]:
+        raise ValueError("restart/upgrade must retain the exact sealed input corpus")
+    tree_path = config.seed_receipt.parent / "product-tree.json"
+    previous_tree = json.loads(tree_path.read_text()).get("product_tree") if tree_path.is_file() else None
+    if (
+        previous_tree != receipt.get("product_tree")
+        or receipt["candidate"].get("dirty") is not False
+        or (receipt.get("checks") or {}).get("product_content_bound") is not True
+    ):
+        raise ValueError("prepared seed product content was not bound to a clean original candidate")
+    current_tree = _git(config.candidate, "rev-parse", "HEAD:polylogue")
+    if previous_tree is None or candidate_identity(config.candidate)["dirty"]:
+        raise ValueError("lifecycle route requires clean product content identities")
+    if (previous_tree == current_tree) != (config.route == "restart"):
+        raise ValueError("restart requires the same product contents; upgrade requires different contents")
+    archive = config.seed_receipt.parent / "archive"
+    # Adopt only closed benchmark state through the common workload owner.
+    # Record its size; the seed declaration supplies scope, not fixture caps.
+    count = size = 0
+    for directory, directories, files in os.walk(archive, followlinks=False):
+        for name in (*directories, *files):
+            path = Path(directory) / name
+            count += 1
+            if path.is_symlink():
+                raise ValueError("prepared seed contains links")
+            if path.is_file():
+                size += path.stat().st_size
+    artifact = ImmutableTreeArtifact.adopt(archive, key="benchmark-seed:" + digest)
+    if config.seed_manifest_id is not None and artifact.manifest_id != config.seed_manifest_id:
+        raise ValueError("prepared seed contents changed after launch")
+    # Current physical bytes are frozen now; no historical byte-image claim
+    # is inferred from the old receipt's logical fingerprint.
+    config.work.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(prefix="seed-check-", dir=config.work.parent) as directory:
+        current = output_fingerprint(archive, receipt["final"]["promoted_index"], Path(directory))
+    if current.get("digest") != (receipt.get("output_fingerprint") or {}).get("digest"):
+        raise ValueError("prepared seed no longer has its recorded exact semantic output")
+    return artifact, {
+        "receipt_sha256": digest,
+        "manifest_id": artifact.manifest_id,
+        "product_tree": previous_tree,
+        "logical_output_digest": current["digest"],
+        "bytes": size,
+        "entries": count,
+        "physical_binding": "current closed prepared state; historical bytes unclaimed",
+    }
+
+
+def bind_seed(config: RunConfig) -> RunConfig:
+    if config.seed_receipt is None:
+        if config.route != "installation":
+            raise ValueError("restart/upgrade requires --seed-receipt")
+        return config
+    artifact, binding = _seed_artifact(config)
+    return replace(config, seed_receipt_sha256=binding["receipt_sha256"], seed_manifest_id=artifact.manifest_id)
+
+
 def _prepare_paths(config: RunConfig) -> dict[str, Path]:
     work = config.work.absolute()
     if work.exists() and any(work.iterdir()):
         raise ValueError(f"work directory must be absent or empty: {work}")
+    seed = _seed_artifact(config) if config.seed_receipt is not None else None
     home = (config.corpus / "home").resolve(strict=True)
     paths = {
         "work": work,
@@ -905,6 +985,15 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
     work.chmod(0o700)
     for name in ("archive", "tmp"):
         paths[name].mkdir(parents=True, mode=0o700)
+    if seed is not None:
+        from tests.infra.workload_artifacts import clone_immutable_tree
+
+        artifact, binding = seed
+        with clone_immutable_tree(artifact, paths["archive"]):
+            pass
+        paths["seed"] = work / "seed.json"
+        with paths["seed"].open("x") as stream:
+            stream.write(json.dumps(binding, sort_keys=True) + "\n")
     for name in ("config", "data", "state", "cache", "runtime"):
         (paths["xdg"] / name).mkdir(parents=True)
     (paths["xdg"] / "runtime").chmod(0o700)
@@ -914,7 +1003,7 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
     # export file there before the daemon starts, as a copy (a hard link would
     # move the sealed file's ctime and read as a corpus write).
     exports = config.corpus / "exports"
-    if exports.is_dir():
+    if exports.is_dir() and seed is None:
         inbox = paths["archive"] / "inbox"
         for path in sorted(exports.iterdir()):
             # Only sealed, real export directories are sources: a symlink
@@ -935,7 +1024,7 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
     # so stage their sealed corpus copy into this run's isolated archive before
     # the daemon starts. No live operator spool is ever opened by the daemon.
     hook_spool = paths["home"] / ".polylogue-hook-spool"
-    if hook_spool.is_dir():
+    if hook_spool.is_dir() and seed is None:
         shutil.copytree(hook_spool, paths["archive"] / "hooks", copy_function=shutil.copy2)
     config_path = paths["xdg"] / "config" / "polylogue" / "polylogue.toml"
     config_path.parent.mkdir(parents=True)
@@ -1017,6 +1106,7 @@ def _stop(
 
 
 def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> dict[str, Any]:
+    config = bind_seed(config) if config.seed_manifest_id is None else config
     manifest = load_manifest(config.corpus)
     paths = _prepare_paths(config)
     hook_preparation = _prepare_hook_spool(paths, progress=progress)
@@ -1024,7 +1114,10 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
     # still a changed stamp at the end.
     candidate_files = candidate_stamp(config.candidate)
     identity = candidate_identity(config.candidate)
+    product_tree = _git(config.candidate, "rev-parse", "HEAD:polylogue")
     env_summary = environment(config)
+    with (config.work / "product-tree.json").open("x") as stream:
+        stream.write(json.dumps({"product_tree": product_tree}) + "\n")
     command = _daemon_command(config)
     daemon_env = _daemon_env(config, paths)
     interrupted: list[int] = []
@@ -1048,6 +1141,7 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
             interrupted=interrupted,
             progress=progress,
             hook_preparation=hook_preparation,
+            product_tree=product_tree,
         )
     finally:
         for sig, handler in previous_handlers.items():
@@ -1067,6 +1161,7 @@ def _measure_and_write_receipt(
     interrupted: list[int],
     progress: Callable[[str], None],
     hook_preparation: dict[str, Any] | None,
+    product_tree: str | None = None,
 ) -> dict[str, Any]:
     from devtools.fresh_build_bench.readiness_probe import CandidateReadinessProbe
     from devtools.fresh_build_bench.report import benchmark_implementation_sha256, build_receipt
@@ -1309,6 +1404,17 @@ def _measure_and_write_receipt(
         cancelled=lambda: bool(interrupted),
         driver_at_launch=driver_at_launch,
     )
+    if product_tree is not None:
+        from devtools.fresh_build_bench.report import product_content_bound
+
+        receipt["product_tree"] = product_tree
+        receipt["checks"]["product_content_bound"] = product_content_bound(config.work, product_tree)
+    if "seed" in paths:
+        receipt["prepared_seed"] = json.loads(paths["seed"].read_text())
+    if product_tree is not None:
+        from devtools.fresh_build_bench.report import _derive_dependents
+
+        _derive_dependents(receipt)
     if hook_preparation is not None:
         receipt["hook_preparation"] = hook_preparation
         receipt["hook_end_to_end_s"] = float(receipt["timing_s"]["wall"]) + hook_preparation["compaction_s"]
