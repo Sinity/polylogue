@@ -83,6 +83,18 @@ cache = "none"
 # sample.
 timeout_seconds = 28800
 
+[operations.fresh_build_probe]
+description = "Run one explicitly selected small, already-sealed diagnostic through the ordinary daemon"
+exec = ["devtools", "bench", "fresh-build", "run"]
+pool = "normal"
+result = "exit"
+arguments = "required"
+cache = "none"
+# Recorded expectation only; the normal pool owns resource limits and backpressure.
+admission = { memory_mib = 2048 }
+# AgentCTL owns cancellation; the driver detects loss of useful progress.
+timeout_seconds = 0
+
 [operations.verify_quick]
 description = "Run Polylogue's static fast verification gates"
 exec = ["devtools", "verify", "--quick"]

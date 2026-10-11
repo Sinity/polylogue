@@ -37,9 +37,29 @@ devtools bench fresh-build run --corpus DIR --work EMPTY_DIR [--profile] \
     [--max-rss-mib N] [--max-promotion-s N] [--max-terminal-s N]
 ```
 
-Start runs through the declared AgentCTL operation
-(`agentctl job start polylogue fresh_build_bench -- run ...`). The driver
-isolates `HOME`, every XDG root and `POLYLOGUE_ARCHIVE_ROOT` inside the work
+Corpus discovery and preparation, full or larger runs, and multiple-run
+experiments use the bulk operations `scratch` or `fresh_build_bench`
+(`agentctl job start polylogue fresh_build_bench -- run ...`). One explicitly
+selected small diagnostic over an already-sealed corpus uses the normal-pool
+`fresh_build_probe` operation:
+
+```bash
+agentctl job start OPERATION_CHECKOUT fresh_build_probe -- \
+    --corpus DIR --work EMPTY_DIR --candidate FROZEN_CANDIDATE
+```
+
+`OPERATION_CHECKOUT` is a Polylogue checkout defining this operation;
+`FROZEN_CANDIDATE` identifies the product candidate. The command already fixes
+the canonical `run` subcommand. It records a
+2,048 MiB memory expectation, which reserves no capacity and enforces no
+per-job limit. The normal pool's resource policy and host backpressure apply;
+normal and bulk have different resource policies, so compare candidate and
+control runs through the same operation. The probe has no AgentCTL elapsed-time
+deadline: AgentCTL owns cancellation and the canonical driver detects loss
+of useful progress. Selection remains explicit; the operation adds no input
+truncation or automatic corpus selection.
+
+The driver isolates `HOME`, every XDG root and `POLYLOGUE_ARCHIVE_ROOT` inside the work
 directory, writes structured events as JSON lines, samples the daemon's whole
 process tree once a second, and polls the archive read-only until the build is
 terminal or stops making progress (`--stall-timeout`); a build that keeps

@@ -13,8 +13,9 @@ Subcommands::
     compare BEFORE AFTER                            deltas and output equivalence
     profile SAMPLES [--thread PREFIX]               stack-sample tables
 
-``run`` and ``experiment`` are heavy: start it through the declared ``fresh_build_bench``
-AgentCTL operation, not in an interactive shell.
+Start one explicitly selected small diagnostic over an already-sealed corpus through
+the normal-pool ``fresh_build_probe`` AgentCTL operation. Other ``run`` invocations
+and ``experiment`` use the bulk ``fresh_build_bench`` operation.
 """
 
 from __future__ import annotations
