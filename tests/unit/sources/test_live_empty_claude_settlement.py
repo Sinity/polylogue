@@ -77,7 +77,9 @@ async def test_empty_claude_sibling_settles_before_productive_cold_promotion(
             outcomes = await adapter.admit_page(await adapter.discover(limit=8))
             assert outcomes[f"file:{empty}"].outcome is AdmissionOutcome.EXCLUDED, outcomes
             assert outcomes[f"file:{positive}"].outcome is AdmissionOutcome.ADMITTED, outcomes
-            assert cursor.get_record(empty).failure_count == 0
+            empty_cursor = cursor.get_record(empty)
+            assert empty_cursor is not None
+            assert empty_cursor.failure_count == 0
             with sqlite3.connect(root / "source.db") as conn:
                 raws = dict(conn.execute("SELECT source_path,raw_id FROM raw_sessions"))
                 assert conn.execute(
