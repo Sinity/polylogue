@@ -1460,6 +1460,81 @@ def test_bounded_validation_sample_preserves_exact_decoder_values(tmp_path: Path
     assert sample["nested"] == [True, None, {"value": "exact"}]
 
 
+@pytest.mark.parametrize("view", ["original", "projection", "schema"])
+def test_bounded_sample_reads_child_metadata_with_ordered_members(tmp_path: Path, view: str) -> None:
+    expected: JSONDocument = {
+        "\u00e9": 9007199254740993,
+        "e\u0301": -0.0,
+        "rows": [{"value": "first"}, {"value": [None, True, "last"]}],
+    }
+    path = tmp_path / "ordered-members.json"
+    path.write_text(json.dumps(expected), encoding="utf-8")
+    owner = observation_spill.StreamedJSONDocument(path)
+    with owner as payload:
+        assert isinstance(payload, observation_spill.SpilledObject)
+        if view == "projection":
+            payload = payload.key_union(set())
+        elif view == "schema":
+            payload = owner.store_schema(expected)
+        assert isinstance(payload, observation_spill.SpilledObject)
+        statements: list[str] = []
+        owner.connection.set_trace_callback(statements.append)
+        sample = payload.validation_sample()
+        owner.connection.set_trace_callback(None)
+        assert type(sample) is dict
+        assert sample == expected
+        assert json.dumps(sample) == json.dumps(expected)
+        # One ordered read per container, rather than one node lookup per edge.
+        assert sum("LEFT JOIN json_nodes" in statement for statement in statements) == 5
+        assert not any("FROM json_nodes WHERE id" in statement for statement in statements)
+
+
+@pytest.mark.parametrize("boundary", ["bytes", "nodes"])
+@pytest.mark.parametrize("eligible", [True, False])
+def test_bounded_sample_join_preserves_allocation_boundary(tmp_path: Path, boundary: str, eligible: bool) -> None:
+    expected: JSONDocument
+    if boundary == "bytes":
+        # Five key bytes plus the scalar reach the aggregate byte boundary.
+        expected = {"value": "x" * (65531 if eligible else 65532)}
+    else:
+        # Root and array contribute two nodes before their scalar children.
+        expected = {"items": [None] * (1022 if eligible else 1023)}
+    path = tmp_path / "boundary.json"
+    path.write_text(json.dumps(expected), encoding="utf-8")
+    owner = observation_spill.StreamedJSONDocument(path)
+    with owner as payload:
+        assert isinstance(payload, observation_spill.SpilledObject)
+        statements: list[str] = []
+        owner.connection.set_trace_callback(statements.append)
+        sample = payload.validation_sample()
+        owner.connection.set_trace_callback(None)
+        if eligible:
+            assert type(sample) is dict
+            assert sample == expected
+            assert sum("LEFT JOIN json_nodes" in statement for statement in statements) == (
+                1 if boundary == "bytes" else 2
+            )
+        else:
+            assert sample is payload
+            assert not any("LEFT JOIN json_nodes" in statement for statement in statements)
+        assert not any("FROM json_nodes WHERE id" in statement for statement in statements)
+
+
+def test_spilled_array_slice_reads_selected_node_metadata_once(tmp_path: Path) -> None:
+    path = tmp_path / "array-slice.json"
+    expected: list[JSONValue] = [None, 9007199254740993, "exact", False]
+    path.write_text(json.dumps(expected), encoding="utf-8")
+    owner = observation_spill.StreamedJSONDocument(path)
+    with owner as payload:
+        assert isinstance(payload, observation_spill.SpilledArray)
+        statements: list[str] = []
+        owner.connection.set_trace_callback(statements.append)
+        assert payload[1:3] == expected[1:3]
+        owner.connection.set_trace_callback(None)
+        assert sum("LEFT JOIN json_nodes" in statement for statement in statements) == 1
+        assert not any("FROM json_nodes WHERE id" in statement for statement in statements)
+
+
 @pytest.mark.parametrize("shape", ["token", "aggregate", "key", "nodes", "depth"])
 def test_bounded_validation_fallback_precedes_scalar_reconstruction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str

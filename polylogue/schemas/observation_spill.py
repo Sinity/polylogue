@@ -661,12 +661,14 @@ class SpilledArray(list[JSONValue], Sequence[JSONValue], _ValidatedJSONContainer
         with closing(
             _read_rows(
                 self._connection,
-                "SELECT child_id FROM json_array_items WHERE parent_id = ? ORDER BY ordinal",
+                "SELECT items.child_id,node.kind,node.scalar_json,node.token FROM json_array_items items "
+                "LEFT JOIN json_nodes node ON node.id=items.child_id WHERE items.parent_id=? ORDER BY items.ordinal",
                 (self._node_id,),
             )
         ) as cursor:
-            for (child_id,) in cursor:
-                yield _load_node(self._connection, int(child_id))
+            for child_id, kind, scalar_json, token in cursor:
+                check_compute_cancelled()
+                yield _node_value(self._connection, int(child_id), kind, scalar_json, token)
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -703,11 +705,17 @@ class SpilledArray(list[JSONValue], Sequence[JSONValue], _ValidatedJSONContainer
                 with closing(
                     _read_rows(
                         self._connection,
-                        "SELECT child_id FROM json_array_items WHERE parent_id = ? AND ordinal >= ? AND ordinal < ? ORDER BY ordinal",
+                        "SELECT items.child_id,node.kind,node.scalar_json,node.token FROM json_array_items items "
+                        "LEFT JOIN json_nodes node ON node.id=items.child_id "
+                        "WHERE items.parent_id=? AND items.ordinal>=? AND items.ordinal<? ORDER BY items.ordinal",
                         (self._node_id, start, stop),
                     )
                 ) as cursor:
-                    return [_load_node(self._connection, int(row[0])) for row in cursor]
+                    values: list[JSONValue] = []
+                    for child_id, kind, scalar_json, token in cursor:
+                        check_compute_cancelled()
+                        values.append(_node_value(self._connection, int(child_id), kind, scalar_json, token))
+                    return values
             return list(self)[index]
         index = index.__index__()
         item_index = index if index >= 0 else len(self) + index
@@ -888,7 +896,19 @@ def _load_node(connection: sqlite3.Connection, node_id: int) -> JSONValue:
     row = _read_row(connection, "SELECT kind, scalar_json, token FROM json_nodes WHERE id = ?", (node_id,))
     if row is None:
         raise ValueError("streamed JSON tree lost a referenced node")
-    kind, scalar_json, token = row
+    return _node_value(connection, node_id, *row)
+
+
+def _node_value(
+    connection: sqlite3.Connection,
+    node_id: int,
+    kind: str | None,
+    scalar_json: str | bytes | None,
+    token: int | None,
+) -> JSONValue:
+    """Construct from selected metadata, borrowing this same document owner."""
+    if kind is None:
+        raise ValueError("streamed JSON tree lost a referenced node")
     if kind == "object":
         return SpilledObject(connection, node_id)
     if kind == "array":
@@ -896,17 +916,30 @@ def _load_node(connection: sqlite3.Connection, node_id: int) -> JSONValue:
     if token is not None:
         return _ScalarTokenStore(connection).read(kind, int(token))
     if kind == "string":
-        return bytes(scalar_json).decode("utf-8", "surrogatepass")
+        return bytes(cast(bytes, scalar_json)).decode("utf-8", "surrogatepass")
     return cast(JSONValue, json.loads(str(scalar_json)))
 
 
 def _detached_validation_value(value: JSONValue) -> JSONValue:
     check_compute_cancelled()
     if isinstance(value, SpilledObject):
-        with closing(value.key_entries()) as entries:
-            return {
-                key.read(): _detached_validation_value(_load_node(value._connection, child)) for key, child in entries
-            }
+        with closing(
+            _read_rows(
+                value._connection,
+                "SELECT members.key_token,members.child_id,node.kind,node.scalar_json,node.token "
+                "FROM json_object_members members LEFT JOIN json_nodes node ON node.id=members.child_id "
+                "WHERE members.parent_id=? ORDER BY members.ordinal",
+                (value._node_id,),
+            )
+        ) as entries:
+            result: dict[str, JSONValue] = {}
+            for key_token, child_id, kind, scalar_json, token in entries:
+                check_compute_cancelled()
+                key = SpilledKey(value._connection, int(key_token)).read()
+                result[key] = _detached_validation_value(
+                    _node_value(value._connection, int(child_id), kind, scalar_json, token)
+                )
+            return result
     if isinstance(value, SpilledArray):
         with closing(value.__iter__()) as entries:
             return [_detached_validation_value(child) for child in entries]
