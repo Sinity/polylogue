@@ -93,6 +93,8 @@ def freeze_launch(
     from devtools.fresh_build_bench.report import benchmark_implementation_sha256, config_digest
     from devtools.fresh_build_bench.run import candidate_identity, environment
 
+    if getattr(config, "route", "installation") != "installation" or getattr(config, "seed_receipt", None) is not None:
+        raise ValueError("practical acceptance currently requires a fresh installation route")
     validate_policy(policy)
     policy = json.loads(json.dumps(policy))
     if manifest["kind"] != "selected-real":

@@ -105,7 +105,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools bench baseline` | List or record committed measurement receipts under tests/benchmarks/baselines/. |
 | `devtools bench collection` | Measure what a pytest selection costs to collect, before any test runs. |
-| `devtools bench fresh-build` | Build a fresh archive from a sealed corpus, compare receipts, or require frozen practical repeatability. |
+| `devtools bench fresh-build` | Measure bound daemon or retained components, export work traces and estimate bounded workloads. |
 | `devtools bench ingest-throughput` | Measure ingest throughput against synthetic source records. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench parser-census` | Parse a recorded source denominator with no archive and diff the result against the last census. |
@@ -233,3 +233,5 @@ operator-specific retirements; it cannot enable the established old addresses.
 Unrelated custom destinations remain supported. Preexisting checkouts that
 precede this guard must enter the current managed environment to inherit the
 current destination.
+
+Managed verification records wrapper phase intervals under `.cache/verify/wrapper-phases/<pid>.jsonl`. These diagnostic sidecars contain fixed phase names, PID, monotonic boundaries, process CPU and elapsed seconds, with no invocation, transcript or configuration payloads. They distinguish source provenance/copy work, physical settlement and synchronous result publication, including history lock wait, identity scan, append and fsync. Failed diagnostic writes never change canonical verification or custody results. Sidecars are diagnostic observations, not acceptance receipts.

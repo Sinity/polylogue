@@ -39,6 +39,39 @@ from devtools.testmon_provision import TESTMON_DATA_RELPATH
 from devtools.verification_result import INTERRUPTED_DIAGNOSES
 
 
+@contextlib.contextmanager
+def wrapper_phase(phase: str, *, started_ns: int | None = None, started_cpu_ns: int | None = None) -> Iterator[None]:
+    """Record fixed-label wrapper work without invocation or config payloads."""
+    started = time.perf_counter_ns() if started_ns is None else started_ns
+    cpu = time.process_time_ns() if started_cpu_ns is None else started_cpu_ns
+    failed = False
+    try:
+        yield
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        finished = time.perf_counter_ns()
+        row = {
+            "phase": phase,
+            "pid": os.getpid(),
+            "started_ns": started,
+            "finished_ns": finished,
+            "elapsed_s": (finished - started) / 1e9,
+            "process_cpu_s": (time.process_time_ns() - cpu) / 1e9,
+            "failed": failed,
+        }
+        # Diagnostic sidecars cannot override the canonical result or durability.
+        with contextlib.suppress(OSError):
+            directory = Path.cwd() / ".cache/verify/wrapper-phases"
+            directory.mkdir(parents=True, exist_ok=True)
+            fd = os.open(directory / f"{os.getpid()}.jsonl", os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, (json.dumps(row, sort_keys=True) + "\n").encode())
+            finally:
+                os.close(fd)
+
+
 def environment_fingerprint(*, root: Path | None = None, env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """Identity that separates a product failure from a poisoned environment."""
     root = root or Path.cwd()
@@ -922,25 +955,31 @@ def _append_jsonl_batch(entries: Iterable[Mapping[str, Any]], *, path: Path) -> 
     # flock is process-scoped on some Unix implementations and is therefore
     # insufficient to serialize threads in one verifier process. Keep both
     # guards around the identity scan and every append in this batch.
+    started = time.perf_counter_ns()
+    cpu = time.process_time_ns()
     with _APPEND_LOCK:
+        with wrapper_phase("history.thread_lock_wait", started_ns=started, started_cpu_ns=cpu):
+            pass
         _append_jsonl_batch_locked(entries, path=path)
 
 
 def _append_jsonl_batch_locked(entries: Iterable[Mapping[str, Any]], *, path: Path) -> None:
     path = _validate_history_write_path(_absolute_path(path))
     _mkdir_pinned(path.parent)
-    lock_fd = _open_retention_lock(path.parent, nonblocking=False)
+    with wrapper_phase("history.process_lock_wait"):
+        lock_fd = _open_retention_lock(path.parent, nonblocking=False)
     if lock_fd is None:
         raise RuntimeError("verification retention lock is busy")
     parent_fd = _open_pinned_dir(path.parent)
     try:
         # One scan per batch: a recovery backlog must not rescan the growing
         # lane for every missing receipt. Full receipt payloads stay streamed.
-        published = {
-            (row["run_id"], row.get("kind"))
-            for row in _iter_history_pinned(path)
-            if isinstance(row.get("run_id"), str) and (row.get("kind") is None or isinstance(row.get("kind"), str))
-        }
+        with wrapper_phase("history.identity_scan"):
+            published = {
+                (row["run_id"], row.get("kind"))
+                for row in _iter_history_pinned(path)
+                if isinstance(row.get("run_id"), str) and (row.get("kind") is None or isinstance(row.get("kind"), str))
+            }
         for entry in entries:
             run_id = entry.get("run_id")
             identity = (run_id, entry.get("kind"))
@@ -949,12 +988,15 @@ def _append_jsonl_batch_locked(entries: Iterable[Mapping[str, Any]], *, path: Pa
             fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW, 0o600, dir_fd=parent_fd)
             try:
                 with os.fdopen(fd, "a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
+                    with wrapper_phase("history.append_flush"):
+                        handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
+                        handle.flush()
+                    with wrapper_phase("history.file_fsync"):
+                        os.fsync(handle.fileno())
                 # Persist every row and directory entry before advancing the
                 # batch: interruption leaves a durable prefix for recovery.
-                os.fsync(parent_fd)
+                with wrapper_phase("history.directory_fsync"):
+                    os.fsync(parent_fd)
             finally:
                 with contextlib.suppress(OSError):
                     os.close(fd)

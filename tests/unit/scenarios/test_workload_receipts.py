@@ -82,6 +82,7 @@ def test_named_measurement_paths_have_receipt_or_explicit_adapter() -> None:
         "ingest/source-observation",
         "verify-run",
         "slo-catalog",
+        "fresh-build-components",
         "route-observation",
     }
     assert all(declaration.evidence for declaration in declarations)

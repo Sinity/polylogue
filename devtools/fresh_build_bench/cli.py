@@ -49,6 +49,10 @@ def _run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--label", default="run")
     parser.add_argument("--candidate", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--route", choices=("installation", "restart", "upgrade"), default="installation")
+    parser.add_argument(
+        "--seed-receipt", type=Path, help="original completed small benchmark receipt for a lifecycle route"
+    )
     parser.add_argument("--profile", action="store_true", help="run the in-daemon stack sampler")
     parser.add_argument(
         "--observe-work",
@@ -164,6 +168,12 @@ def _parser() -> argparse.ArgumentParser:
         help="compare runs that did not qualify (e.g. promoted but derived phase unsettled)",
     )
 
+    commands.add_parser("capabilities", help="probe builtin diagnostic tools on the actual runtime")
+    ledger = commands.add_parser("ledger", help="export bounded recorded work events as an offline causal trace")
+    ledger.add_argument("input", type=Path)
+    ledger.add_argument("--out", type=Path, required=True, help="new private output directory")
+    denominator = commands.add_parser("denominator", help="bounded private population inventory and calibration")
+    denominator.add_argument("rest", nargs=argparse.REMAINDER)
     components = commands.add_parser("components", help="time one production stage over a corpus", add_help=False)
     components.add_argument("rest", nargs=argparse.REMAINDER)
 
@@ -299,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
             python=args.python,
             label=args.label,
             profile=args.profile,
+            route=args.route,
+            seed_receipt=args.seed_receipt,
             observe_work=args.observe_work,
             profile_interval_s=args.profile_interval,
             stall_timeout_s=args.stall_timeout,
@@ -348,6 +360,15 @@ def main(argv: list[str] | None = None) -> int:
         from devtools.fresh_build_bench.report import render
 
         original = json.loads(args.receipt.read_text())
+        if original.get("format") == "polylogue.component-experiment.v1":
+            from devtools.fresh_build_bench.components import refresh_component_experiment
+
+            if args.accept:
+                print(json.dumps({"accepted": False, "state": "refused", "gaps": ["component_is_descriptive_only"]}))
+                return 1
+            document = refresh_component_experiment(args.receipt)
+            print(json.dumps(document, indent=1, sort_keys=True))
+            return 0 if document["complete"] and document["equivalent_outputs"] else 1
         if args.accept and original.get("format") != "polylogue.fresh-build-experiment.v1":
             print(json.dumps({"accepted": False, "state": "refused", "gaps": ["planned_experiment_required"]}))
             return 1
@@ -388,6 +409,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.accept:
             return 0 if evaluation["performance_decision"]["accepted"] else 1
         return 0 if admissible else 1
+    if args.command == "capabilities":
+        from devtools.fresh_build_bench.components import diagnostic_capabilities
+
+        print(json.dumps(diagnostic_capabilities(), indent=1, sort_keys=True))
+        return 0
+    if args.command == "ledger":
+        from devtools.fresh_build_bench.work_ledger import export_work_ledger
+
+        print(json.dumps(export_work_ledger(args.input, args.out), indent=1, sort_keys=True))
+        return 0
+    if args.command == "denominator":
+        from devtools.fresh_build_bench.denominator import main as denominator_main
+
+        return denominator_main(args.rest)
     if args.command == "components":
         from devtools.fresh_build_bench.components import main as components_main
 

@@ -116,6 +116,9 @@ WORKLOAD_ADAPTER_DECLARATIONS: tuple[WorkloadAdapterDeclaration, ...] = (
         "explicit-adapter",
         "RouteObservationReceipt.to_workload_receipt",
     ),
+    WorkloadAdapterDeclaration(
+        "fresh-build-components", "devtools.fresh_build_bench.components", "shared-receipt", "bench_validation"
+    ),
     WorkloadAdapterDeclaration("slo-catalog", "devtools.verify_slos", "shared-receipt", "_slo_workload_receipt"),
 )
 

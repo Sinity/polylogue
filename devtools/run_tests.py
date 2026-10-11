@@ -103,6 +103,7 @@ from devtools.verify_runs import (
     prune_successful_verify_runs,
     pytest_command_worker_request,
     verify_history_path,
+    wrapper_phase,
 )
 from devtools.worker_memory import CHARGE_PROFILE_ENV, FOCUSED_MAX_WORKERS
 
@@ -1259,7 +1260,8 @@ def main(argv: list[str] | None = None) -> int:
         if refusal is not None:
             sys.stderr.write(refusal + "\n")
             return REFUSAL_EXIT
-        digest = git_worktree_content_sha256(ROOT)
+        with wrapper_phase("pytest.reuse_identity"):
+            digest = git_worktree_content_sha256(ROOT)
         environment_key = _reuse_environment_key()
         reused = reusable_green_receipt(
             selection,
@@ -1431,9 +1433,11 @@ def main(argv: list[str] | None = None) -> int:
         # pytest may import files at any point of its run: content that moved
         # after the slot identified it means no single tree was tested.
         finished = checkout_identity(ROOT)
-        if (finished.branch, finished.head) != (identity.branch, identity.head) or git_worktree_content_sha256(
-            ROOT
-        ) != provenance.get("git_worktree_content_sha256"):
+        with wrapper_phase("pytest.final_source_identity"):
+            final_content = git_worktree_content_sha256(ROOT)
+        if (finished.branch, finished.head) != (identity.branch, identity.head) or final_content != provenance.get(
+            "git_worktree_content_sha256"
+        ):
             sys.stderr.write(
                 f"devtools test: the checkout moved during the run (tested {identity.describe()}, "
                 f"finished {finished.describe()}); the result is void\n"
@@ -1479,9 +1483,12 @@ def main(argv: list[str] | None = None) -> int:
             ),
         },
     )
-    append_verify_history(payload)
-    append_verification_evidence(payload)
-    prune_successful_verify_runs(root=ROOT)
+    with wrapper_phase("publication.semantic_history"):
+        append_verify_history(payload)
+    with wrapper_phase("publication.durable_evidence"):
+        append_verification_evidence(payload)
+    with wrapper_phase("publication.retention"):
+        prune_successful_verify_runs(root=ROOT)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     # The verdict is the last thing written, on every run. A pipeline exits with

@@ -198,6 +198,91 @@ no file fails. Any worker error, or a corpus file that changed during the
 timed work, exits non-zero. It iterates in seconds; the end-to-end run proves
 the total.
 
+`components validation --candidate CHECKOUT --input FILE --recipe JSON
+--schema-root DIR --scratch DIR` runs complete retained JSONL validation in a
+fresh process. `components experiment --before A --after B` with the same
+input arguments uses the shared matched experiment runner in declared ABBA
+order; `--repetitions N` repeats that order. Each invocation gets fresh scratch
+and validation reuse, a fixed schema reader, and isolated configuration and
+archive paths. It validates the complete production accepted prefix; no record
+or session cap is applied.
+
+The private recipe binds `input_sha256`, `accepted_prefix_size`, `raw_id`,
+`evidence_id`, `source_path`, `expected_python`, `config_path`, `config_sha256`,
+and `current_schema_snapshot_roots` (ordered `files` entries with `name`, `size`,
+`sha256`). `provider` defaults to `codex` for validation. `route` must explicitly
+equal `{"domain":"complete-loose-jsonl","validation_mode":"advisory","jsonl":true,
+"captured_zip_coordinate":null,"schema_resolution":null,
+"schema_resolution_is_explicit":false}`. Other modes, ZIP members and explicit
+schema-resolution domains refuse. The declared interpreter and current
+schema bytes must match exactly. Source coordinates affect validation, and
+remain in private recipes and receipts. Candidates must be clean checkouts.
+The launch freezes candidate, input, recipe, runtime and runner identities
+before work; each child binds that launch before importing product code and
+records actual imported product module hashes. Candidate and input changes
+fail rather than producing a timing for different work.
+
+Receipts include the shared process-scoped WorkloadReceipt, raw wall, thread
+CPU and process CPU, host load, exact validation result and schema inventory.
+ABBA reduction compares all semantic outputs exactly and reports raw order,
+median, median absolute deviation and observed ranges. `report` verifies
+original launch and constituent hashes and recomputes equivalence. Original
+receipts and launch files are never overwritten. These are descriptive
+component observations: ranges are not confidence intervals, fresh scratch
+is not cold OS cache, and process lifetime RSS high-water is not an invocation
+peak. External descendant cleanup, SQL VM steps and hard resource bounds stay
+unavailable. Component `report --accept` refuses daemon acceptance.
+
+`components preparation` accepts the same bound arguments, with explicit
+`provider: "codex"` and `sidecar_context: "absent"`. It calls production
+`prepare_jsonl_blob` with a captured resolver that cannot fall back to ambient
+files. Other dependency morphologies refuse. Producer timing excludes independent
+validation, complete artifact read consumption and backing retirement. The original
+publication attempt keeps custody until readers settle, and its normal `discard()`
+retires backing. Output comparison includes complete session content hashes and
+canonical lowered shard message/block counts. Events are counted during complete
+session reads. Revisions and jobs remain unknown. The same matched runner accepts
+`components experiment --stage preparation`.
+
+Prepared counts carry `count_basis: "production-preparation-before-lineage"`.
+They describe service demand before archive lineage resolution, deduplication
+and materialization; inherited prefixes can amplify these counts relative to
+the final Index population.
+
+`components page` uses the same binding arguments for a declared synthetic
+acquired Codex page. The input is JSON with positive `count`, `messages`,
+`text_size` and a nonempty `namespace`, consumed by the existing independent
+Raw fixture owner. Its recipe declares `provider: "codex"`,
+`route: {"domain":"synthetic-retained-page","validation_mode":"advisory"}`,
+and positive `workers`, `queue_units`, `queue_bytes`. The candidate creates a
+closed acquired archive, cloned through the shared immutable-tree owner before
+timing. The actual `RawObservationConvergenceOwner.materialize_retained_raw_ids`
+call includes selected capture, preparation, validation and retained publication,
+with real compute admission and daemon writer owners. No destination callback
+or convergence loop is reproduced. Complete output uses the existing canonical
+fingerprint reducer, with an archive census and generator source hash.
+Owned compute/writer shutdown must physically settle; external cleanup is unknown.
+`components experiment --stage page` uses the same ABBA runner. These synthetic
+independent transcripts do not qualify inherited, remote or hook morphologies.
+
+`run --route restart|upgrade --seed-receipt RECEIPT` clones closed benchmark
+state through the shared immutable-tree workload owner and uses ordinary daemon
+startup without `--cold-build-index`. Seed adoption requires complete original
+bound evidence, the same sealed corpus, exact current semantic output and clean
+product contents. Restart requires identical product contents; upgrade requires
+different contents. That distinction alone does not prove a schema rebuild.
+Physical contents are frozen before launch and checked on each matched invocation.
+The manifest records entry and byte counts, and refuses symlinks. Historical
+physical bytes are unclaimed.
+A restart may have no new promotion event, so promotion latency stays unavailable.
+Practical acceptance currently refuses seeded routes.
+
+`capabilities` probes builtin cProfile and tracemalloc on the actual interpreter
+and GIL state. It reports callback/allocation roundtrip availability and provider
+limits. Capability availability does not qualify a profiled performance comparison.
+Python traced allocations do not account for complete RSS or native allocator
+residence.
+
 ## Reading the numbers
 
 Missing or null batch metrics stay unknown: their totals are `null`, with
@@ -288,6 +373,33 @@ The held-out basis is an explicit operator assumption about absence of tuning. W
 Actual candidate import binding remains required. The observer also records content hashes of product modules imported in the measured daemon at shutdown. Different Git commits with identical observed imported content cannot create acceptance. An incomplete or unchanged observed treatment inventory leaves treatment difference unproven; it does not classify all unobserved product code as identical. An imported module difference itself does not attribute the measured effect to a particular executed body.
 
 `report EXPERIMENT.json --accept --json` rechecks immutable constituent hashes and evidence through the existing refresh reducer, recomputes the frozen decision, and exits zero only for acceptance. It writes a distinct view and preserves originals. It cannot attach a policy retrospectively or trust a stored accepted boolean. Unsupported policies are refused. Initial acceptance supports only promotion event time. Exact readiness transitions, terminal observation speed, hard resource ceilings, global descendant/external cleanup, installation, serving health and whole-corpus performance remain outside this policy. Terminal polling/scan/cache uncertainty remains visible in inspection.
+
+
+## Route coverage and remaining qualification
+
+The existing run and component owners provide the routes below. A route declaration does not prove a candidate completed it; original receipts carry that evidence.
+
+| Route | Existing owner and declared morphology | Qualification limits |
+| --- | --- | --- |
+| Normal installation | `run`, complete sealed native source units, fresh archive | Ordinary daemon checks and original receipts required |
+| Capture | `components blob`, complete sealed payloads | Acquisition copy/hash/publication only |
+| Retained validation | `components validation`, complete advisory loose JSONL | Small actual invocation qualified; explicit ZIP or schema resolution refuses |
+| Retained preparation | `components preparation`, Codex loose JSONL with declared absent context | Small actual invocation qualified; native-context calibration remains unavailable |
+| Retained publication | `components page`, declared independent synthetic Codex inputs | Actual selected owner; current smoke refused before measurement and operational qualification remains open |
+| Append | No dedicated matched adapter | Unsupported benchmark morphology |
+| Rewrite | No dedicated matched adapter | Unsupported benchmark morphology |
+| Retained replay | No dedicated matched adapter | Materialization is not replay evidence |
+| Restart | `run --route restart --seed-receipt`, identical product contents | Seed closure and output bound; actual lifecycle qualification remains open |
+| Upgrade | `run --route upgrade --seed-receipt`, different product contents | Code difference alone does not prove schema rebuild; actual lifecycle qualification remains open |
+| Remote completion | No dedicated matched adapter | Remote input/completion authority remains unsupported |
+| Exceptional hooks | Explicit corpus hook spool, separate workload population | Separate backlog evidence; no normal-population extrapolation |
+
+`denominator inventory` and `denominator project` forward to the [bounded denominator owner](fresh-build-denominator.md). Partial native metadata inventory is not a population estimate. Calibration requires complete-unit closure, production preparation receipts and their explicit count basis. Observed native sidecar context outside the supported preparation domain remains unavailable.
+
+`ledger INPUT --out NEWDIR` forwards to the [offline work-ledger owner](fresh-build-work-ledger.md). Recorded spans and duration-only writer facts retain their different coverage; absent body observations cannot produce body CPU attribution.
+
+Direct `components validation --diagnostic cprofile|tracemalloc` uses the [diagnostic capture owner](fresh-build-diagnostics.md) around the same production validation body. It binds candidate, runtime, schema inputs and loaded source authority, and places the immutable manifest reference outside semantic output. Preparation, page and matched diagnostic modes refuse. cProfile reports runtime call elapsed without TID attribution; concurrent nesting and elapsed remain unqualified. Independent caller-thread CPU boundaries are separate. Tracemalloc covers Python traced allocations, with point RSS observations rather than interval peaks. These captures establish no unprofiled speed comparison.
+
 
 Named Claude units use one project-parent listing and only the selected session subtree; Gemini lists its project root and keeps every project with the existing unit key (including same-stem names), and named Codex walks only its containing directory for the exact rollout. Every selected entry still passes the original native layout, source ownership and link/fault rules. Unrelated sibling names are inspected, but their types, links and subtrees are not visited. Named input is diagnostic selection, not probability sampling.
 
