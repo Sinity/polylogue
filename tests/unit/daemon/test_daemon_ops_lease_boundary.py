@@ -183,17 +183,8 @@ def test_convergence_debt_drain_runs_under_its_stage_admission(
 
 
 def test_claude_workflow_stage_event_is_recorded_under_its_stage_admission(tmp_path: Path) -> None:
-    """The bridged workflow stage records its readiness snapshot when armed.
-
-    The convergence-debt retry runs the stage off the writer lease. Anti-
-    vacuity: open the ops connection outside ``admit_stage_write`` and the
-    armed boundary refuses it; the failure is swallowed into a warning, so no
-    ``claude_workflow`` row is written and the assertion below is red.
-    """
-    from types import SimpleNamespace
-
     from polylogue.core.stage_admission import stage_write_admission
-    from polylogue.operations.claude_workflow_convergence import record_claude_workflow_stage_event
+    from polylogue.operations.claude_workflow_convergence import make_claude_workflow_stage
 
     root = _bootstrapped_root(tmp_path)
     admitted: list[str] = []
@@ -203,13 +194,14 @@ def test_claude_workflow_stage_event_is_recorded_under_its_stage_admission(tmp_p
         with write_lease(actor, archive_root=root):
             return work()
 
+    stage = make_claude_workflow_stage(root / "index.db")
     with arm_write_lease_enforcement(), stage_write_admission(admission):
-        record_claude_workflow_stage_event(root, SimpleNamespace(gaps=("gap",)))
-
-    assert admitted == ["stage.claude_workflow.record"]
+        assert stage.execute(root / "index.db")
+    assert "stage.claude_workflow.retry" in admitted
     with sqlite3.connect(root / "ops.db") as conn:
-        rows = conn.execute("SELECT status FROM daemon_stage_events WHERE stage = 'claude_workflow'").fetchall()
-    assert rows == [("gaps",)]
+        assert conn.execute("SELECT status FROM daemon_stage_events WHERE stage='claude_workflow'").fetchall() == [
+            ("clean",)
+        ]
 
 
 def test_cold_build_generation_binds_source_writes_to_the_declared_root(

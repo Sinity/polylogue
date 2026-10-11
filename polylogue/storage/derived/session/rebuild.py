@@ -12,7 +12,7 @@ import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 import aiosqlite
@@ -840,7 +840,11 @@ def _insight_input_bytes(session: Session, usage: list[ModelUsageTotals] | None)
     separately. Models are inspected through stored fields, without evaluating
     computed properties or opening storage handles.
     """
-    pending: list[object] = [session, usage]
+    return _insight_input_graph_bytes(session, usage)
+
+
+def _insight_input_graph_bytes(*inputs: object) -> int:
+    pending: list[object] = list(inputs)
     seen: set[int] = set()
     total = 0
     while pending:
@@ -852,6 +856,8 @@ def _insight_input_bytes(session: Session, usage: list[ModelUsageTotals] | None)
         total += sys.getsizeof(value)
         if isinstance(value, (BaseModel, MessageCollection)):
             pending.append(vars(value))
+        elif is_dataclass(value) and not isinstance(value, type):
+            pending.extend(getattr(value, item.name) for item in fields(value))
         elif isinstance(value, dict):
             pending.extend(value.keys())
             pending.extend(value.values())
@@ -1503,6 +1509,8 @@ def _session_profile_work_key(session_id: str, compute_binding: str, materialize
 def prepare_session_insight_partition(
     conn: sqlite3.Connection,
     session_id: str,
+    *,
+    input_demand: Callable[[int], None] | None = None,
 ) -> PreparedSessionInsightPartition:
     """Build one complete session family from a read-only frame.
 
@@ -1543,9 +1551,13 @@ def prepare_session_insight_partition(
             )
         else:
             batch = load_sync_batch(conn, (session_id,))
+            if input_demand is not None:
+                input_demand(_insight_input_graph_bytes(batch))
             hydrated = hydrate_sessions(batch)
             if len(hydrated) != 1:
                 raise KeyError(f"session disappeared from prepared read frame: {session_id}")
+            if input_demand is not None:
+                input_demand(_insight_input_bytes(hydrated[0], batch.model_usage_by_session.get(session_id)))
             root_id = thread_root_ids_sync(conn, (session_id,)).get(session_id)
             bundle = build_session_insight_record_bundles(
                 hydrated,

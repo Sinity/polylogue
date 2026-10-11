@@ -48,6 +48,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Protocol
 
+from polylogue.core.compute_cancel import raise_if_operation_cancelled
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind, RetainedRawDecodeRefusalError
 from polylogue.logging import WARNING, emit
 
@@ -975,6 +976,7 @@ class _Pass:
             try:
                 replacement = adapter.compute(self.frame, key)
             except Exception as exc:
+                raise_if_operation_cancelled(exc)
                 emit(
                     "daemon.derivation.key_failed",
                     level=WARNING,
@@ -1039,6 +1041,7 @@ class _Pass:
                     if not publication_started:
                         replacement.close()
             except Exception as exc:
+                raise_if_operation_cancelled(exc)
                 emit(
                     "daemon.derivation.key_failed",
                     level=WARNING,

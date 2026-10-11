@@ -157,7 +157,16 @@ _CONVERGENCE_DEBT_DRAIN_BUDGET_SECONDS = 45.0
 #: refusals are also retried by that pass, which rechecks the source path and
 #: clears its debt after successful convergence.
 _OWNED_DEBT_STAGES = frozenset(
-    {"derived", "fts", "fts_readiness", "raw_parse_recovery", "embed", "raw_retention", "live_ingest_admission"}
+    {
+        "derived",
+        "fts",
+        "fts_readiness",
+        "raw_parse_recovery",
+        "embed",
+        "raw_retention",
+        "live_ingest_admission",
+        "claude_workflow",
+    }
 )
 
 T = TypeVar("T")
@@ -1229,7 +1238,7 @@ def _drain_convergence_debt_and_archive(db: Path, *, compute_adapter: BoundedCom
     retried = _drain_convergence_debt_backlog(db, compute_adapter=compute_adapter)
     for stage in stages:
         check_compute_cancelled()
-        if stage.name in recorded or cursor.list_convergence_debt(stage=stage.name, limit=1):
+        if not stage.owns_retry and (stage.name in recorded or cursor.list_convergence_debt(stage=stage.name, limit=1)):
             continue
         try:
             if not stage.check(db):
@@ -1240,6 +1249,8 @@ def _drain_convergence_debt_and_archive(db: Path, *, compute_adapter: BoundedCom
             raise
         except Exception as exc:
             check_compute_cancelled()
+            if stage.owns_retry:
+                raise
             admit_stage_write(
                 "maintenance.convergence_debt.discovery",
                 partial(
@@ -1251,7 +1262,7 @@ def _drain_convergence_debt_and_archive(db: Path, *, compute_adapter: BoundedCom
                 ),
             )
             raise
-        if not healthy:
+        if not healthy and not stage.owns_retry:
             check_compute_cancelled()
             admit_stage_write(
                 "maintenance.convergence_debt.discovery",

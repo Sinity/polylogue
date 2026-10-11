@@ -46,7 +46,8 @@ async def test_working_dir_edits_refresh_profile_through_composed_demand(tmp_pat
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
             now=lambda: 0.0,
         )
-        assert (await composed.callback((session_id,))).done
+        assert (await composed.callback((session_id,))).pending
+        assert (await composed.callback(None)).done
         with sqlite3.connect(recovered.index_db) as conn:
             original_session = conn.execute(
                 "SELECT content_hash, updated_at_ms, message_count FROM sessions WHERE session_id = ?", (session_id,)
@@ -79,7 +80,8 @@ async def test_working_dir_edits_refresh_profile_through_composed_demand(tmp_pat
                     conn.execute("SELECT 1 FROM session_profile_demand WHERE session_id = ?", (session_id,)).fetchone()
                     is not None
                 )
-            report = await composed.callback((session_id,))
+            assert (await composed.callback((session_id,))).pending
+            report = await composed.callback(None)
             assert any(
                 item.key.domain == SESSION_PROFILE_DOMAIN and item.outcome is Outcome.DONE for item in report.outcomes
             )
@@ -152,10 +154,13 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
             now=lambda: 0.0,
         )
-        report = await composed.callback((recovered.target_session_id,))
+        assert (await composed.callback((recovered.target_session_id,))).pending
+        report = await composed.callback(None)
         # The declared run order, all of it. Naming only two domains let this
         # pass while a third already ran (inherited red at 9ef655cb8).
-        assert [(item.key.domain, item.outcome) for item in report.outcomes] == [
+        assert [
+            (item.key.domain, item.outcome) for item in report.outcomes if item.key.key == recovered.target_session_id
+        ] == [
             (SESSION_SUMMARY_DOMAIN, Outcome.DONE),
             (SESSION_USAGE_ROLLUP_DOMAIN, Outcome.DONE),
             (SESSION_PROFILE_DOMAIN, Outcome.DONE),
@@ -181,9 +186,14 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
         assert scoped_unchanged.made_no_publication_attempts
         assert scoped_unchanged.work.inspected == 0
 
-        # The periodic archive sweep advances through prerequisite domains.
+        # The no-hint owner serves unrelated demand during this or a later
+        # bounded pass; it is not restricted to the acknowledged subject.
         periodic = [await composed.callback(None) for _ in range(3)]
-        assert any(item.key.key == recovered.unrelated_session_id for report in periodic for item in report.outcomes)
+        assert any(
+            item.key.key == recovered.unrelated_session_id
+            for demand_report in (report, *periodic)
+            for item in demand_report.outcomes
+        )
         periodic_unchanged = await composed.callback(None)
         assert periodic_unchanged.made_no_publication_attempts
 
@@ -193,7 +203,8 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
                 (recovered.target_session_id,),
             )
             conn.commit()
-        changed = await composed.callback((recovered.target_session_id,))
+        assert (await composed.callback((recovered.target_session_id,))).pending
+        changed = await composed.callback(None)
         assert any(
             item.key.domain == SESSION_PROFILE_DOMAIN and item.outcome is Outcome.DONE for item in changed.outcomes
         )
@@ -446,9 +457,10 @@ async def test_marker_lowering_sees_a_user_db_created_after_composition(tmp_path
             initialize_archive_tier(conn, ArchiveTier.USER)
             conn.commit()
 
-        report = await composed.callback((recovered.target_session_id,))
-        assert report.outcomes
-        assert all(item.outcome is Outcome.DONE for item in report.outcomes), report.outcomes
+        assert (await composed.callback((recovered.target_session_id,))).pending
+        report = await composed.converge_backlog(600.0)
+        assert not report.failed
+        assert not composed.audit_pending()
 
         with sqlite3.connect(user_db) as conn:
             lowered = conn.execute("SELECT COUNT(*) FROM assertions").fetchone()
@@ -459,6 +471,7 @@ async def test_marker_lowering_sees_a_user_db_created_after_composition(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(300)
 async def test_backlog_call_sweeps_every_domain_in_bounded_passes(tmp_path: Path) -> None:
     """One periodic tick drains the audit sweep instead of one pass of it.
 
@@ -832,3 +845,146 @@ def test_promotion_report_retains_each_domains_consumed_unsettled_evidence() -> 
     assert _merge_reports(first, second).cursor_unsettled_domains == frozenset(
         {SESSION_SUMMARY_DOMAIN, SESSION_MARKER_DOMAIN}
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("complete drain comparison measures actual elapsed work")
+async def test_revisions_coalesce_through_actual_owner_with_complete_drain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_property: Any,
+) -> None:
+    """Compare complete eager scheduling with final coalesced certification."""
+    import polylogue.storage.derived.session.rebuild as rebuild
+
+    original = rebuild.prepare_session_insight_partition
+    prepared: list[str] = []
+    reservations: list[int] = []
+    active: list[BoundedComputeAdapter] = []
+
+    def inspect(*args: Any, **kwargs: Any) -> Any:
+        result = original(*args, **kwargs)
+        prepared.append(str(args[1]))
+        reservations.append(active[0].snapshot().active_input_bytes)
+        return result
+
+    monkeypatch.setattr(rebuild, "prepare_session_insight_partition", inspect)
+    measurements = []
+    for eager in (True, False):
+        recovered = seed_partial_convergence_archive(tmp_path / ("eager" if eager else "coalesced"), target_hot=False)
+        compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+        active[:] = [compute]
+        coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
+        prepared.clear()
+        try:
+            composed = compose_session_profile_callback(
+                recovered.root,
+                compute_adapter=compute,
+                write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+                now=lambda: 0.0,
+            )
+            started = time.perf_counter()
+            for revision in range(8):
+                with sqlite3.connect(recovered.index_db) as conn:
+                    conn.execute(
+                        "UPDATE messages SET input_tokens=? WHERE session_id=?",
+                        (revision + 1, recovered.target_session_id),
+                    )
+                acknowledged = await composed((recovered.target_session_id,))
+                assert acknowledged.pending and acknowledged.work.computed == 0
+                if eager:
+                    await composed.converge_backlog(600.0)
+            # A new composition recovers demand from storage, without a callback queue.
+            composed = compose_session_profile_callback(
+                recovered.root,
+                compute_adapter=compute,
+                write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+                now=lambda: 0.0,
+            )
+            await composed.converge_backlog(600.0)
+            elapsed = time.perf_counter() - started
+            with sqlite3.connect(recovered.index_db) as conn:
+                exact = session_input_bindings(conn, (recovered.target_session_id,))[recovered.target_session_id]
+                assert conn.execute(
+                    "SELECT input_content_hash FROM session_profiles WHERE session_id=?", (recovered.target_session_id,)
+                ).fetchone() == (exact,)
+                assert conn.execute("SELECT COUNT(*) FROM session_profile_demand").fetchone() == (0,)
+                assert conn.execute(
+                    "SELECT 1 FROM session_profiles WHERE session_id=?", (recovered.unrelated_session_id,)
+                ).fetchone()
+            assert compute.snapshot().active_input_bytes == 0
+            measurements.append(
+                {
+                    "schedule": "eager" if eager else "coalesced",
+                    "revisions": 8,
+                    "target_computations": prepared.count(recovered.target_session_id),
+                    "complete_drain_seconds": elapsed,
+                }
+            )
+        finally:
+            compute.shutdown(wait=True)
+            await coordinator.shutdown(timeout=1.0)
+    assert measurements[0]["target_computations"] == 8
+    assert measurements[1]["target_computations"] == 1
+    assert reservations and min(reservations) > 0
+    record_property("complete_profile_drain_comparison", json.dumps(measurements, sort_keys=True))
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("native cancellation waits observe physical worker settlement")
+async def test_profile_inputs_remain_accounted_until_cancelled_native_settlement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    import polylogue.storage.derived.session.rebuild as rebuild
+
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
+    entered, release, cancel_seen = threading.Event(), threading.Event(), threading.Event()
+    original = rebuild.prepare_session_insight_partition
+
+    def held(*args: Any, **kwargs: Any) -> Any:
+        from polylogue.core.compute_cancel import compute_cancel_requested
+
+        result = original(*args, **kwargs)
+        entered.set()
+        deadline = time.monotonic() + 10.0
+        while not release.wait(0.01):
+            if compute_cancel_requested():
+                cancel_seen.set()
+            assert time.monotonic() < deadline
+        return result
+
+    monkeypatch.setattr(rebuild, "prepare_session_insight_partition", held)
+    task = None
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        await composed((recovered.target_session_id,))
+        task = asyncio.create_task(composed(None))
+        assert await asyncio.to_thread(entered.wait, 10.0)
+        assert compute.snapshot().active_input_bytes > 0
+        assert task.cancel()
+        assert await asyncio.to_thread(cancel_seen.wait, 10.0)
+        assert compute.snapshot().active_input_bytes > 0
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert compute.snapshot().active_input_bytes == 0
+        with sqlite3.connect(recovered.index_db) as conn:
+            assert conn.execute(
+                "SELECT 1 FROM session_profile_demand WHERE session_id=?", (recovered.target_session_id,)
+            ).fetchone()
+    finally:
+        release.set()
+        if task is not None and not task.done():
+            task.cancel()
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)

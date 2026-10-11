@@ -37,7 +37,7 @@ def settled_convergence_stages(state: object) -> tuple[ConvergenceDebtSettlement
     return tuple(
         ConvergenceDebtSettlement(subject_type, subject_id, str(stage))
         for stage, status in stages.items()
-        if stage_state_value(status) == "done"
+        if stage_state_value(status) == "done" and stage not in getattr(state, "owned_retry_stages", frozenset())
     )
 
 

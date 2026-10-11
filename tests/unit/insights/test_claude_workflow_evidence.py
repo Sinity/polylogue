@@ -382,8 +382,8 @@ def test_claude_workflow_stage_reads_without_daemon_writer_lease(tmp_path) -> No
         with pytest.raises(UnleasedWriteError):
             open_isolated_write_connection(tmp_path / "source.db", purpose="test.unadmitted", archive_root=tmp_path)
         with stage_write_admission(admit):
-            assert stage.check(subject) is False
-            assert stage.execute(subject) is True
+            assert stage.check(subject) is True
+            assert stage.execute(subject)
 
 
 @pytest.mark.parametrize("conventional_path", ["missing", "stale-shadow"])
@@ -414,7 +414,7 @@ def test_claude_workflow_stage_projects_the_active_index_generation(tmp_path, co
 
     stage = make_claude_workflow_stage(tmp_path / "index.db")
     subject = tmp_path / "project" / "session" / "subagents" / "workflows" / RUN_ID / "journal.jsonl"
-    assert stage.execute(subject) is True
+    assert stage.execute(subject)
     assert stage.check(subject) is False
     with closing(sqlite3.connect(generation / "index.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM work_evidence_graphs").fetchone()[0] == 0

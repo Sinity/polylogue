@@ -650,6 +650,7 @@ class SessionProfileDerivation:
         quiet_keys: Callable[[object], frozenset[str]] | None = None,
         quiet_key: Callable[[object, str], bool] | None = None,
         generation_binding: Callable[[], str] | None = None,
+        input_demand: Callable[[int], None] | None = None,
     ) -> None:
         self._read_connection = read_connection
         self._write_connection = write_connection
@@ -660,6 +661,22 @@ class SessionProfileDerivation:
         self._quiet_keys = quiet_keys
         self._quiet_key = quiet_key
         self._generation_binding = generation_binding
+        self._input_demand = input_demand
+
+    def pending_demand_count(self, keys: Sequence[str]) -> int:
+        """Count selected owed identities without preparing profile bodies."""
+        from polylogue.core.json import dumps
+
+        conn = self._read_connection()
+        try:
+            return int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM session_profile_demand WHERE session_id IN (SELECT value FROM json_each(?))",
+                    (dumps(tuple(dict.fromkeys(keys))),),
+                ).fetchone()[0]
+            )
+        finally:
+            conn.close()
 
     def required_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
         """Keyset-page archive work; bounded incremental scopes stay bounded too."""
@@ -870,7 +887,7 @@ class SessionProfileDerivation:
             # query in this preparation to the same observed generation.
             conn.execute("BEGIN")
             demand_revision = _profile_demand_revision(conn, key)
-            prepared = prepare_session_insight_partition(conn, key)
+            prepared = prepare_session_insight_partition(conn, key, input_demand=self._input_demand)
         finally:
             conn.close()
         if generation is not None and self._generation_binding is not None and self._generation_binding() != generation:

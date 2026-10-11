@@ -167,6 +167,7 @@ def make_session_profile_derivation(
     archive_root: Path,
     materializer_version: int | None = None,
     now: Callable[[], float],
+    input_demand: Callable[[int], None] | None = None,
 ) -> SessionProfileDerivation:
     """Build the storage adapter that the daemon owner drives for one generation."""
     del index_db_path
@@ -185,6 +186,7 @@ def make_session_profile_derivation(
         archive_root=archive_root,
         quiet_key=quiet_key,
         generation_binding=generation_binding,
+        input_demand=input_demand,
     )
 
 
