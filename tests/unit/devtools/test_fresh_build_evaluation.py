@@ -120,7 +120,9 @@ def _practical_policy() -> dict[str, Any]:
 def _practical_samples() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     from devtools.fresh_build_bench.acceptance import LAUNCH_FORMAT, SCHEDULE, digest
 
-    samples = [{"arm": arm, "receipt": _receipt(10 if arm == "A" else 5, candidate=arm)} for arm in SCHEDULE]
+    samples: list[dict[str, Any]] = [
+        {"arm": arm, "receipt": _receipt(10 if arm == "A" else 5, candidate=arm)} for arm in SCHEDULE
+    ]
     launch = {
         "format": LAUNCH_FORMAT,
         "policy": _practical_policy(),

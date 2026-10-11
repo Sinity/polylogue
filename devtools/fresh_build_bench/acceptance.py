@@ -47,22 +47,22 @@ def _finite(value: Any, *, positive: bool = False) -> bool:
 
 
 def validate_policy(policy: Any) -> dict[str, Any]:
-    policy = _fields(policy, {"format", "target_metric", "effect", "resources", "cleanup", "confirmation"}, "policy")
-    if policy["format"] != POLICY_FORMAT or policy["target_metric"] != "promotion_s":
+    validated = _fields(policy, {"format", "target_metric", "effect", "resources", "cleanup", "confirmation"}, "policy")
+    if validated["format"] != POLICY_FORMAT or validated["target_metric"] != "promotion_s":
         raise ValueError("unsupported policy: only promotion_s practical repeatability is implemented")
-    effect = _fields(policy["effect"], {"minimum_absolute", "minimum_relative"}, "effect")
+    effect = _fields(validated["effect"], {"minimum_absolute", "minimum_relative"}, "effect")
     if not all(_finite(value, positive=True) for value in effect.values()):
         raise ValueError("effect thresholds must be positive finite numbers")
-    resources = _fields(policy["resources"], {"scope", *RESOURCE_METRICS}, "resources")
+    resources = _fields(validated["resources"], {"scope", *RESOURCE_METRICS}, "resources")
     if resources["scope"] != "sampled-daemon-tree":
         raise ValueError("unsupported resource scope: hard physical bounds are unavailable")
     for metric in RESOURCE_METRICS:
         limits = _fields(resources[metric], {"absolute_slack", "relative_slack", "ceiling"}, metric)
         if not all(_finite(value) for value in limits.values()) or not _finite(limits["ceiling"], positive=True):
             raise ValueError("resource slack must be finite nonnegative and ceilings finite positive")
-    if policy["cleanup"] != "bound-daemon-shutdown; descendant-external-unclaimed":
+    if validated["cleanup"] != "bound-daemon-shutdown; descendant-external-unclaimed":
         raise ValueError("unsupported cleanup policy: descendant and external cleanup is unknown")
-    confirmation = _fields(policy["confirmation"], {"method", "purpose", "held_out_basis"}, "confirmation")
+    confirmation = _fields(validated["confirmation"], {"method", "purpose", "held_out_basis"}, "confirmation")
     if confirmation["method"] != "two-abba-all-pairs-v1" or confirmation["purpose"] != "held-out-confirmation":
         raise ValueError("unsupported confirmation method or purpose")
     basis = _fields(confirmation["held_out_basis"], {"attested_untuned", "statement", "discovery"}, "held_out_basis")
@@ -76,7 +76,7 @@ def validate_policy(policy: Any) -> dict[str, Any]:
         reference = _fields(basis["discovery"], {"path", "sha256"}, "discovery reference")
         if not all(isinstance(value, str) and value for value in reference.values()):
             raise ValueError("discovery reference requires path and sha256")
-    return policy
+    return validated
 
 
 def _units(parameters: dict[str, Any]) -> set[tuple[str, str, str]]:
@@ -145,7 +145,7 @@ def launch_binding(path: Path, launch: dict[str, Any], ordinal: int, arm: str) -
 
 
 def read_bound_launch(binding: dict[str, Any]) -> dict[str, Any]:
-    launch = json.loads(Path(binding["path"]).read_text())
+    launch: dict[str, Any] = json.loads(Path(binding["path"]).read_text())
     if launch.get("format") != LAUNCH_FORMAT or digest(launch) != binding["sha256"]:
         raise ValueError("frozen launch changed")
     validate_policy(launch["policy"])
