@@ -112,6 +112,9 @@ maintenance inspection also checks physical blob fingerprints through the
 existing verified-byte cache, because external blob changes have no SQLite
 journal entry. Relocating an archive invalidates the path-bound runtime mark;
 retained artifact completeness is checked from its census and physical inputs.
+Prepared frontier obligations retain both their blocker-ID row and any unresolved
+row with the same plan digest. The unique open-plan constraint can suppress a new
+pass's INSERT, so that conflict is an original Source dependency of publication.
 
 Blocker acknowledgement prepares and validates the operator-visible facts
 before audited intent begins, physically closes that preparation, then
