@@ -79,7 +79,7 @@ def convergence_debt_from_state(path: Path, state: object) -> list[ConvergenceDe
     if not isinstance(stages, dict) or not stages:
         return [ConvergenceDebt(path=path, stage="convergence", error=optional_error(last_error))]
     debts: list[ConvergenceDebt] = []
-    owned = getattr(state, "owned_retry_stages", frozenset())
+    owned: frozenset[str] = getattr(state, "owned_retry_stages", frozenset())
     for stage_name, stage_state in stages.items():
         if stage_name in owned:
             continue

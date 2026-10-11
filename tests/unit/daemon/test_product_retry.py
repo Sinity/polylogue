@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from polylogue.analysis.claude_workflow_materializer import (
+    ClaudeWorkflowAuthority,
+    ClaudeWorkflowMaterializationSummary,
+)
 from polylogue.core.compute import DaemonOperationCancelled
-from polylogue.core.product_retry import ProductObservation, ProductOutcome
+from polylogue.core.product_retry import ProductAttempt, ProductObservation, ProductOutcome
+from polylogue.daemon.convergence import StageExecutionResult
 from polylogue.operations.claude_workflow_convergence import make_claude_workflow_stage
 from polylogue.storage.sqlite.archive_tiers.product_retry import (
     admit_product_retry,
@@ -33,7 +39,7 @@ def test_clock_observations_failures_duplicates_and_late_identity(tmp_path: Path
                 now_ms=clock,
             )
 
-        def admit(identity: str, clock: int):
+        def admit(identity: str, clock: int) -> ProductAttempt | None:
             return admit_product_retry(
                 conn, product="claude_workflow", target="current", demand_identity=identity, owner="owner", now_ms=clock
             )
@@ -87,7 +93,7 @@ def test_global_product_empty_discovery_and_actual_failure_clock(
         conn.execute("DELETE FROM daemon_stage_events")
     starts = []
 
-    def fail(_root: Path, **_kwargs: object):
+    def fail(_root: Path, **_kwargs: object) -> None:
         starts.append(clock[0])
         raise RuntimeError("same failure")
 
@@ -104,7 +110,8 @@ def test_global_product_empty_discovery_and_actual_failure_clock(
         assert conn.execute(
             "SELECT target_type,target_id,attempts,failure_streak FROM convergence_debt"
         ).fetchall() == [("archive", "current", 2, 2)]
-    assert claude_workflow_materialization_status(tmp_path / "ops.db")["status"] == "failed"
+    failed_status = claude_workflow_materialization_status(tmp_path / "ops.db")
+    assert failed_status is not None and failed_status["status"] == "failed"
 
 
 def test_actual_product_late_result_and_cancel_cannot_certify(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -114,18 +121,24 @@ def test_actual_product_late_result_and_cancel_cannot_certify(tmp_path: Path, mo
     stage = make_claude_workflow_stage(tmp_path / "index.db", now_ms=lambda: 0, owner="old")
     original = materializer.materialize_claude_workflow_archive
 
-    def supersede(root: Path, **kwargs: object):
+    def supersede(
+        root: Path,
+        *,
+        publication_guard: Callable[[str], None] | None = None,
+        authority: ClaudeWorkflowAuthority | None = None,
+    ) -> ClaudeWorkflowMaterializationSummary:
         with sqlite3.connect(root / "ops.db") as conn:
             conn.execute("UPDATE product_retry_incarnation SET incarnation='new'")
-        return original(root, **kwargs)
+        return original(root, publication_guard=publication_guard, authority=authority)
 
     monkeypatch.setattr(materializer, "materialize_claude_workflow_archive", supersede)
     result = stage.execute(tmp_path)
+    assert isinstance(result, StageExecutionResult)
     assert not result and result.stale_preparation
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM daemon_stage_events").fetchone() == (0,)
 
-    def cancelled(_root: Path, **_kwargs: object):
+    def cancelled(_root: Path, **_kwargs: object) -> None:
         raise DaemonOperationCancelled("cancelled")
 
     monkeypatch.setattr(materializer, "materialize_claude_workflow_archive", cancelled)

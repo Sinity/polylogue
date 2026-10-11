@@ -33,6 +33,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_templates import run_off_event_loop
@@ -486,7 +487,7 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
 
         return observe
 
-    monkeypatch.setattr(materializer.BlobStore, "read_all", off_writer("blob", materializer.BlobStore.read_all))
+    monkeypatch.setattr(BlobStore, "read_all", off_writer("blob", BlobStore.read_all))
     monkeypatch.setattr(
         materializer, "_count_retained_revisions", off_writer("history", materializer._count_retained_revisions)
     )
@@ -638,7 +639,7 @@ async def test_small_configured_workflow_owner_revision_guard_and_readiness(
 
         return observe
 
-    monkeypatch.setattr(materializer.BlobStore, "read_all", off_writer("blob", materializer.BlobStore.read_all))
+    monkeypatch.setattr(BlobStore, "read_all", off_writer("blob", BlobStore.read_all))
     monkeypatch.setattr(
         materializer, "_count_retained_revisions", off_writer("history", materializer._count_retained_revisions)
     )

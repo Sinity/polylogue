@@ -1,5 +1,7 @@
 """Typed retry transitions on the existing convergence-debt owner.
 
+Writer module: ops.
+
 Callers supply the admitted original Ops connection and clock. Observations
 never count attempts; only an exact admitted identity may settle a result.
 """
