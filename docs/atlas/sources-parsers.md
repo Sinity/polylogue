@@ -88,6 +88,11 @@ inputs use `prepare_retained_jsonl_artifact` and
 The storage writer lowers their prepared sessions through
 `write_parsed_session_to_archive`.
 
+A complete zero-byte Claude JSONL capture keeps byte-prefix cursor authority.
+It has no header or accepted body to certify as a Claude semantic frontier.
+The retained owner still publishes its non-session census. Later growth goes
+through full capture because append admission has no semantic frontier to borrow.
+
 Accepted-marker selected-write preparation filters canonical session IDs before constructing complete content bindings. Its independent request iterator still binds the whole retained cohort, and selected duplicates must agree before one write is emitted. Missing selected sessions remain retryable refusals; the filter adds no binding cache (`sources/revision_backfill.py:_prepared_accepted_marker_sessions`).
 
 Canonical replay owns one schema registry for its preparation lifetime. Each

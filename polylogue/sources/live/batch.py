@@ -2417,6 +2417,7 @@ class LiveBatchProcessor:
             frontier_kind_for_origin(origin_from_provider(cursor_provider)) == "claude-header-body"
             and path.suffix.lower() in {".jsonl", ".ndjson"}
             and not path_declaration_refuses_session(cursor_provider, path)
+            and byte_size > 0
         ):
             semantic_authority = claude_semantic_frontier_for_prefix(
                 path, frontier_byte_size if frontier_byte_size is not None else byte_size
@@ -2436,6 +2437,9 @@ class LiveBatchProcessor:
             # the cursor keeps its byte-prefix authority, and that evidence
             # forces a full replay when the file changes. Refusing here left
             # the unchanged capture retried on every pass (polylogue-xf8qp).
+        # A zero-byte capture has no Claude header or accepted body to rebase.
+        # Keep its proven byte-prefix authority; later growth requires a full
+        # capture because append admission has no Claude semantic frontier.
         final_prefix_proof = self._full_capture_still_matches(
             path,
             stat=stat,
