@@ -253,14 +253,15 @@ class _RearmSignal:
     """The ``stop_event`` handed to one ``awatch`` arming.
 
     It reports set when the watcher stops or when the watched directory set
-    has to change; ``watchfiles`` polls ``is_set`` between steps.
+    has to change; ``watchfiles`` polls ``is_set`` between steps and calls
+    ``set`` on cancellation. Setting this arming never stops the shared watcher.
     """
 
     def __init__(self, stop: asyncio.Event) -> None:
         self._stop = stop
         self._requested = False
 
-    def request(self) -> None:
+    def set(self) -> None:
         self._requested = True
 
     def is_set(self) -> bool:
@@ -760,10 +761,10 @@ class LiveWatcher:
                         path = Path(raw_path)
                         if change is Change.deleted:
                             if path in watched:
-                                rearm.request()
+                                rearm.set()
                             continue
                         if path not in watched and path.is_dir() and self._source_for_directory(path) is not None:
-                            rearm.request()
+                            rearm.set()
                         self._note_intake_hint(path)
             except FileNotFoundError:
                 # A directory vanished between listing and watching: list

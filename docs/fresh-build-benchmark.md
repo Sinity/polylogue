@@ -80,6 +80,7 @@ does not attribute a busy thread to a particular preparation function.
 | `stages` | ops `ingestion_batch` rows | inclusive stage timers summed over batches, grouped by category; parent and child timers may overlap |
 | `writer` | `daemon.writer.released` events | busy share to promotion, queue depth, holds per actor |
 | `event_log` | complete event file scan | valid events and malformed JSON, non-object or invalid event records; missing files remain unavailable |
+| `shutdown_evidence` | sealed event and sampler inputs | exit status, explicit service/asyncio shutdown failures and input completeness; missing evidence stays unknown |
 | `progress` | driver observations | accepted material, reduced required work and readiness/publication changes, separately from retry activity and declared next retry times |
 | `by_source`, `projection` | `live.ingest.source_group` events, corpus population | seconds per MiB per origin and the intake projection for the sampled population |
 | `thread_cpu_s` | in-daemon sampler | CPU seconds per writer actor and per other thread group |
@@ -92,6 +93,15 @@ does not attribute a busy thread to a particular preparation function.
 they are not a partition of elapsed time. `stage_timing_coverage` reports each
 stage's observed and missing batches. Exclusive time and interval relationships
 are unavailable from batch timer names; use the causal trace for interval evidence.
+
+Clean daemon shutdown requires exit zero and complete, hash-bound captured
+evidence without shutdown errors. Exit zero alone cannot qualify a historical
+receipt. `refresh` rechecks retained evidence into a distinct view and leaves
+the original receipt unchanged. Known failed services or asyncio shutdown errors
+fail cleanup even when the process exits zero. Missing, malformed or undrained
+inputs leave cleanup unknown. Terminal readiness timing retains its separate
+qualification and observation uncertainty; daemon exit and event drain do not
+prove descendant, native or external resource cleanup.
 
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:

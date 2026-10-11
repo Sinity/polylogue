@@ -274,6 +274,68 @@ async def test_live_watcher_refuses_ahead_cursor_before_append_or_full_write(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(10)
+@pytest.mark.uses_real_clock("watchfiles cancellation joins its native watcher through AnyIO")
+async def test_real_awatch_cancellation_sets_only_the_arming_signal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import watchfiles.main as watchfiles_main
+
+    shared_stop = asyncio.Event()
+    signal = live_watcher._RearmSignal(shared_stop)
+    entered = asyncio.Event()
+    closed: list[bool] = []
+    loop = asyncio.get_running_loop()
+    native_factory = vars(watchfiles_main)["RustNotify"]
+
+    class ObservedNativeWatch:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.native = native_factory(*args, **kwargs)
+
+        def __enter__(self) -> ObservedNativeWatch:
+            self.native.__enter__()
+            return self
+
+        def __exit__(self, *args: Any) -> Any:
+            result = self.native.__exit__(*args)
+            closed.append(True)
+            return result
+
+        def watch(self, *args: Any) -> Any:
+            loop.call_soon_threadsafe(entered.set)
+            return self.native.watch(*args)
+
+    monkeypatch.setattr(watchfiles_main, "RustNotify", ObservedNativeWatch)
+    stream = watchfiles_main.awatch(tmp_path, stop_event=signal, rust_timeout=1000)
+    task = asyncio.create_task(anext(stream))
+    try:
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert signal.is_set()
+        assert not shared_stop.is_set()
+        assert closed == [True]
+    finally:
+        signal.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await stream.aclose()
+
+
+def test_arming_rearm_set_preserves_shared_stop_independence() -> None:
+    shared_stop = asyncio.Event()
+    first = live_watcher._RearmSignal(shared_stop)
+    first.set()
+    assert first.is_set() and not shared_stop.is_set()
+    second = live_watcher._RearmSignal(shared_stop)
+    assert not second.is_set()
+    shared_stop.set()
+    assert first.is_set() and second.is_set()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("force_full_fallback", [False, True], ids=["append-route", "full-fallback-route"])
 async def test_page_admission_refuses_an_ahead_cursor_before_touching_cursor_state(
     tmp_path: Path,

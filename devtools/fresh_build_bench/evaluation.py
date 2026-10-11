@@ -45,6 +45,34 @@ def _checks(receipt: dict[str, Any], names: tuple[str, ...]) -> dict[str, Any]:
     )
 
 
+def _daemon_shutdown(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Historical exit-only checks cannot certify captured shutdown behavior."""
+    proof = receipt.get("shutdown_evidence")
+    if not isinstance(proof, dict) or proof.get("format") != "polylogue.daemon-shutdown-evidence.v1":
+        exit_code = receipt.get("daemon_exit_code")
+        if type(exit_code) is int and exit_code != 0:
+            return _axis(["daemon_exit_nonzero"], ["shutdown_evidence_unrecorded"])
+        return _axis([], ["shutdown_evidence_unrecorded"])
+    failed, unknown = list(proof.get("failed") or []), list(proof.get("unknown") or [])
+    if proof.get("state") == "fail" and not failed:
+        failed.append("daemon_shutdown_failed")
+    elif proof.get("state") != "pass" and not failed and not unknown:
+        unknown.append("daemon_shutdown_unproven")
+    binding = proof.get("input_sha256") or {}
+    capture = receipt.get("diagnostic_capture") or {}
+    expected_stacks = capture.get("expected_sha256", capture.get("sha256"))
+    if not (
+        proof.get("bound") is True
+        and binding.get("events")
+        and binding.get("stacks")
+        and binding.get("events") == (receipt.get("evidence_sha256") or {}).get("events")
+        and binding.get("stacks") == expected_stacks
+    ):
+        unknown.append("shutdown_inputs_unbound")
+    check = _checks(receipt, ("clean_shutdown",))
+    return _axis(list(dict.fromkeys(failed + check["failed"])), list(dict.fromkeys(unknown + check["unknown"])))
+
+
 def _number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
 
@@ -97,7 +125,12 @@ def evaluate_run(receipt: dict[str, Any]) -> dict[str, Any]:
     if "derived_from" in receipt or "evidence_unchanged" in (receipt.get("checks") or {}):
         seal = _checks(receipt, ("evidence_unchanged",))
         validity = _axis(validity["failed"] + seal["failed"], validity["unknown"] + seal["unknown"])
-    scope = _checks(receipt, _SCOPE_CHECKS)
+    shutdown = _daemon_shutdown(receipt)
+    scope_checks = _checks(receipt, _SCOPE_CHECKS)
+    scope = _axis(
+        list(dict.fromkeys(scope_checks["failed"] + shutdown["failed"])),
+        list(dict.fromkeys(scope_checks["unknown"] + shutdown["unknown"])),
+    )
     if receipt.get("outcome") is None:
         scope["unknown"].append("terminal_outcome")
         if scope["state"] != "fail":
@@ -180,7 +213,7 @@ def evaluate_run(receipt: dict[str, Any]) -> dict[str, Any]:
             },
             "cleanup": {
                 "daemon_exit_code": receipt.get("daemon_exit_code"),
-                "daemon_shutdown": _checks(receipt, ("clean_shutdown",)),
+                "daemon_shutdown": shutdown,
                 "descendant_and_external_resource_cleanup": "unknown",
                 "reason": "daemon exit and log drain do not prove descendant or external resource cleanup",
             },

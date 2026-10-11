@@ -2323,6 +2323,109 @@ def test_refresh_rechecks_event_coverage_and_terminal_delivery(tmp_path: Path) -
     assert result["qualified"] is False
 
 
+@pytest.mark.parametrize(
+    "scenario,state",
+    [
+        ("clean", "pass"),
+        ("service", "fail"),
+        ("asyncio", "fail"),
+        ("orphan", "fail"),
+        ("earlier_retry", "pass"),
+        ("missing", "unknown"),
+        ("truncated", "unknown"),
+        ("unsealed", "unknown"),
+        ("missing_delivery", "unknown"),
+        ("bad_sampler", "unknown"),
+        ("nonzero_exit", "fail"),
+        ("failure_and_truncation", "fail"),
+    ],
+)
+def test_shutdown_proof_requires_complete_bound_inputs(tmp_path: Path, scenario: str, state: str) -> None:
+    from devtools.fresh_build_bench.report import (
+        _log_delivery,
+        _record_shutdown_evidence,
+        _stack_capture,
+        evidence_digests,
+    )
+
+    events_path = tmp_path / "events.jsonl"
+    lines = [_event("01.000", "daemon.writer.released", outcome="ok")]
+    if scenario in {"service", "failure_and_truncation"}:
+        lines.append(_event("02.000", "daemon.shutdown.services_failed", outcome="error", services=1))
+    elif scenario == "asyncio":
+        lines.append(
+            _event(
+                "02.000",
+                "stdlib.record",
+                level="error",
+                logger="asyncio",
+                error_detail="unhandled exception during asyncio.run() shutdown",
+                error_type="ExceptionGroup",
+            )
+        )
+    elif scenario == "orphan":
+        lines.append(_event("02.000", "daemon.shutdown.services_orphaned", orphaned=1))
+    elif scenario == "earlier_retry":
+        lines.append(_event("02.000", "daemon.intake.item_retryable", level="warning", outcome="degraded"))
+    if scenario in {"truncated", "failure_and_truncation"}:
+        lines.append('{"unfinished":')
+    if scenario != "missing":
+        events_path.write_text("\n".join(lines) + "\n")
+    stacks = tmp_path / "stacks.json"
+    stacks.write_text(json.dumps({"log_delivery": {"dropped": 0, "failures": 0, "undrained": 0}}))
+    if scenario == "missing_delivery":
+        stacks.write_text("{}")
+    elif scenario == "bad_sampler":
+        stacks.write_text('{"unfinished":')
+    sealed = evidence_digests(tmp_path)
+    receipt = _receipt(
+        daemon_exit_code=1 if scenario == "nonzero_exit" else 0,
+        evidence_sha256=sealed,
+        diagnostic_capture=_stack_capture(stacks),
+    )
+    if scenario == "unsealed":
+        receipt["evidence_sha256"] = {}
+    _record_shutdown_evidence(
+        receipt,
+        analyse_events(events_path),
+        _log_delivery(stacks),
+        events_digest=sealed["events"],
+        stacks_digest=_stack_capture(stacks).get("sha256"),
+    )
+    assert receipt["shutdown_evidence"]["state"] == state
+    assert receipt["checks"]["clean_shutdown"] is (None if state == "unknown" else state == "pass")
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_refresh_binds_shutdown_proof_without_mutating_historical_receipt(tmp_path: Path, failure: bool) -> None:
+    from devtools.fresh_build_bench.report import _stack_capture, evidence_digests, refresh
+
+    events = [_event("09.000", "daemon.cold_build.generation_promoted")]
+    if failure:
+        events.append(_event("21.000", "daemon.shutdown.services_failed", services=1, outcome="error"))
+    (tmp_path / "events.jsonl").write_text("\n".join(events) + "\n")
+    stacks = tmp_path / "stacks.json"
+    stacks.write_text(json.dumps({"log_delivery": {"dropped": 0, "failures": 0, "undrained": 0}}))
+    receipt = _receipt(
+        daemon_exit_code=0,
+        started_at_unix=_ts("2026-09-27T10:00:00.000000Z"),
+        evidence_sha256=evidence_digests(tmp_path),
+        diagnostic_capture=_stack_capture(stacks),
+    )
+    receipt["checks"]["clean_shutdown"] = True  # historical exit-only check
+    path = tmp_path / "receipt.json"
+    original = json.dumps(receipt).encode()
+    path.write_bytes(original)
+    result = refresh(path)
+    assert path.read_bytes() == original
+    assert result["shutdown_evidence"]["state"] == ("fail" if failure else "pass")
+    assert result["checks"]["clean_shutdown"] is not failure
+    assert result["timing_s"]["terminal"] == 20.0
+    views = list(tmp_path.glob("receipt.view-*.json"))
+    assert len(views) == 1
+    assert json.loads(views[0].read_text())["derived_from"]["path"] == str(path.resolve())
+
+
 @pytest.mark.parametrize("origin", [None, _ts("2026-09-27T10:00:00.000000Z")])
 def test_event_log_without_any_usable_record_has_incomplete_coverage(tmp_path: Path, origin: float | None) -> None:
     path = tmp_path / "events.jsonl"
