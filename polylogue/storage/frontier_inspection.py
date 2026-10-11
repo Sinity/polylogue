@@ -290,10 +290,14 @@ class PreparedFrontierSource:
         if item.state not in _OBLIGATION_STATES:
             return None
         blocker_id = self.frontier_blocker_identity(pass_id=pass_id, plan_id=item.plan_id)
+        # A changed pass can mint a new ID for an unchanged open plan. Both
+        # unique conflicts must be present on the prepared Source tape so
+        # its INSERT ... ON CONFLICT DO NOTHING matches the original tier.
         self._producer._load_artifact_inputs(
             "raw_authority_blockers",
-            "SELECT rowid FROM raw_authority_blockers WHERE blocker_id=?",
-            (blocker_id,),
+            "SELECT rowid FROM raw_authority_blockers WHERE blocker_id=? "
+            "OR (plan_input_digest=? AND resolved_at_ms IS NULL)",
+            (blocker_id, item.evidence_digest),
         )
         self._seal.source_allocation_dependencies("raw_authority_blockers")
         key = self._seal.retain_literal_scalar(blocker_id)
