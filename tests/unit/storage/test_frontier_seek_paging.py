@@ -87,7 +87,7 @@ def test_real_keyset_pagers_preserve_output_and_seek_work_growth(
         conn.set_progress_handler(step, 100)
         try:
             after = None
-            reference = []
+            reference: list[str] = []
             while True:
                 page = list(
                     conn.execute(
