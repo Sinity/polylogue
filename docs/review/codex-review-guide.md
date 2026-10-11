@@ -71,9 +71,16 @@ correcting that code, is P2.
 
 Use the relevant items to inspect changed behavior. No item-by-item narration,
 15+6 report, or full-list restart is required for each result or small fix.
-Area rules live in the `## Code Review Rules` section of
-the nested `AGENTS.md` beside the code (`polylogue/storage/`,
-`polylogue/sources/`, `polylogue/daemon/`, `devtools/`).
+
+Parser and detection changes also get these checks:
+
+- A parser that takes a truncated or display field when a complete one
+  exists, reads only one of the top-level and nested placements the provider
+  emits, or emits the same content from two fields. A dropped field needs a
+  declared reason in the hash partition or origin spec.
+- A detector declaration in `origin_specs.py` whose `detector_tightness` or
+  `mode_rank` is looser than its shape; an earlier parser then claims its
+  records.
 
 1. **Siblings and owners.** Where else does the rule this diff adds or fixes
    apply: every route, caller, branch, and record it governs (live and

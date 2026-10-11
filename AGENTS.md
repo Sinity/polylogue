@@ -130,8 +130,9 @@ the bad state happen; it does not add a checker, proof, census, receipt, or
 compensating pass beside that code. A request to show that an invariant holds
 is met by making the violating path impossible, not by a gate, baseline,
 ratchet, census, or generated report that watches for it. A replacement and
-the deletion of its predecessor land in the same change. The PR body states
-the net change in product lines; growth needs a reason a reader would accept.
+the deletion of its predecessor land in the same change. A bead's acceptance
+criteria name the behavior that must hold, never a census, gate, receipt, or
+report that would prove it.
 
 An arbitrary limit that changes an outcome is a defect: a size or count cap
 that refuses, truncates, or drops valid input, and a timeout that turns slow
@@ -225,8 +226,7 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
 
 ## Code Review Rules
 
-Use `docs/review/codex-review-guide.md` for relevant invariants, severity and noise
-and the nested `AGENTS.md` beside each changed file.
+Use `docs/review/codex-review-guide.md` for relevant invariants, severity and noise.
 - A change to an interface, command, config key, schema, route, or file format
   updates every consumer (callers, CLI/MCP, tests, docs, generated references,
   configs, hooks) and deletes the predecessor in the same change; name a
