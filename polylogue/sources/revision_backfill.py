@@ -1002,9 +1002,9 @@ def _attach_retained_validation_verdict(
                     signature_directory=directory,
                     reuse=reuse,
                 )
-            return dataclasses.replace(
-                artifact, validation_verdict=verdict, validation_reuse=reuse, _owns_validation=True
-            )
+            if artifact.custody is not None:
+                artifact.custody.validation_reuse = reuse
+            return dataclasses.replace(artifact, validation_verdict=verdict, validation_reuse=reuse)
         except BaseException as primary:
             try:
                 artifact.discard()

@@ -13,7 +13,7 @@ import uuid
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, closing, contextmanager, suppress
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from enum import StrEnum
 from functools import partial
 from itertools import islice
@@ -638,7 +638,7 @@ def _stream_claude_ai_object(
 
 @dataclass(frozen=True, slots=True)
 class _PreparedCodexThreads:
-    artifact: PreparedJsonl
+    artifact: PreparedJsonlRead
 
     def __iter__(self) -> Generator[codex_state.CodexThreadRecord, None, None]:
         with closing(self.artifact._iter_codex_records("prepared_codex_thread")) as rows:
@@ -659,7 +659,7 @@ class _PreparedCodexThreads:
 
 @dataclass(frozen=True, slots=True)
 class _PreparedCodexSpawnEdges:
-    artifact: PreparedJsonl
+    artifact: PreparedJsonlRead
 
     def __iter__(self) -> Generator[codex_state.CodexSpawnEdge, None, None]:
         with closing(self.artifact._iter_codex_records("prepared_codex_spawn")) as rows:
@@ -700,8 +700,8 @@ class _ArtifactThreadProjection:
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedJsonl:
-    """A disposable artifact tied to one retained JSON source revision."""
+class PreparedJsonlRead:
+    """Sealed parser data: no publication, mutation or retirement capability."""
 
     blob_hash: str | None
     sessions_path: Path | None
@@ -712,25 +712,14 @@ class PreparedJsonl:
     enrichment_index_path: str | None = None
     sessions_seal: PreparedFileSeal | None = None
     shard_seal: PreparedFileSeal | None = None
-    prepared_writes: tuple[PreparedSessionWrite, ...] = ()
     parsed_prefix_size: int | None = None
     resolved_provider: Provider | None = None
     validation_verdict: RetainedValidationVerdict | None = field(default=None, compare=False, repr=False)
-    validation_reuse: RetainedValidationReuse | None = field(default=None, compare=False, repr=False)
     observed_parse_key: str | None = field(default=None, compare=False, repr=False)
     observed_parse_artifact_ref: str | None = field(default=None, compare=False, repr=False)
-    _owns_validation: bool = field(default=False, compare=False, repr=False)
-    parser_stage_artifact: PreparedJsonl | None = field(default=None, compare=False, repr=False)
     positive_evidence_filtered: bool = False
     attempt_directory: Path | None = None
-    _owns_files: bool = field(default=True, compare=False, repr=False)
-    #: For a terminal failure that never read bytes into a blob (a worker
-    #: lost on this file), the source's (size, mtime_ns, inode) when the
-    #: failing preparation began. Publication must not apply the failure to a
-    #: capture of any other revision.
     failed_observation: tuple[int, int, int] | None = None
-    #: For a terminal failure, which decode boundary refused the bytes, or
-    #: ``None`` when the failure was not a decode failure.
     decode_failure: DecodeFailure | None = None
     missing_profile_identity: bool = False
     retained_zip_membership_unproved: bool = False
@@ -738,6 +727,359 @@ class PreparedJsonl:
     captured_profile_key: str | None = None
     codex_state_kind: str | None = None
     codex_state_text_chars: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS
+
+    def verify_files(self, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
+        """Scan bytes before admission; recheck inode identity at publication.
+
+        ``stop`` is polled between digest chunks; when it returns true the
+        scan raises :class:`polylogue.core.prepared_file.VerificationCancelledError`.
+        """
+        if (
+            self.sessions_path is None
+            or self.shard_path is None
+            or self.sessions_seal is None
+            or self.shard_seal is None
+        ):
+            raise ValueError("JSONL preparation lacks closed-file seals")
+        self.sessions_seal.verify(self.sessions_path, full=full, stop=stop)
+        self.shard_seal.verify(self.shard_path, full=full, stop=stop)
+
+    def iter_provider_session_ids(self) -> Iterator[str]:
+        """Read the complete original native-ID scope without hydrating transcripts."""
+        if self.sessions_path is None:
+            raise RuntimeError("prepared cohort has no header artifact")
+        self.verify_files(full=False)
+        for (metadata_json,) in _prepared_ordinal_rows(
+            self.sessions_path,
+            table="prepared_session",
+            ordinal="ordinal",
+            session=None,
+            columns="metadata_json",
+        ):
+            check_compute_cancelled()
+            if not isinstance(metadata_json, str):
+                raise ValueError("prepared session metadata is not text")
+            identity = json.loads(metadata_json)["provider_session_id"]
+            if identity is not None and not isinstance(identity, str):
+                raise ValueError("prepared provider identity is not text")
+            if identity:
+                yield identity
+
+    def iter_sessions(self) -> Generator[ParsedSession]:
+        if self.sessions_path is None or self.blob_hash is None:
+            raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
+        if self.shard_path is None:
+            raise ValueError("JSONL preparation has no row shard")
+        self.verify_files(full=False)
+        shard = open_session_shard(self.shard_path)
+        with _prepared_reader(self.sessions_path) as conn:
+            seal = conn.execute(
+                "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
+                "FROM artifact_seal"
+            ).fetchall()
+            if seal != [
+                (
+                    _ARTIFACT_VERSION,
+                    self.blob_hash,
+                    len(shard.sessions),
+                    self.enrichment_digest,
+                    self.enrichment_index_path,
+                )
+            ]:
+                raise ValueError("JSONL preparation seal or source dependency changed")
+            session_count = conn.execute("SELECT COUNT(*) FROM prepared_session").fetchone()[0]
+            if session_count != len(shard.sessions):
+                raise ValueError("JSONL preparation session count disagrees with row shard")
+        for row in _prepared_ordinal_rows(
+            self.sessions_path,
+            table="prepared_session",
+            ordinal="ordinal",
+            session=None,
+            columns=(
+                "ordinal, session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count, "
+                "attachment_ordinal, attachment_count, "
+                "(SELECT COUNT(*) FROM prepared_message WHERE session_ordinal = prepared_session.message_ordinal), "
+                "(SELECT COUNT(*) FROM prepared_event WHERE session_ordinal = prepared_session.event_ordinal), "
+                "(SELECT COUNT(*) FROM prepared_attachment WHERE session_ordinal = prepared_session.attachment_ordinal)"
+            ),
+        ):
+            if not isinstance(row[0], int):
+                raise ValueError("prepared ordinal is not an integer")
+            ordinal = row[0]
+            session_id = str(row[1])
+            metadata_json = str(row[2])
+            message_ordinal, message_count, event_ordinal, event_count, attachment_ordinal, attachment_count = (
+                int(cast(int, value)) for value in row[3:9]
+            )
+            physical_count, physical_events, physical_attachments = (int(cast(int, value)) for value in row[9:])
+            shard_entry = shard.sessions[ordinal]
+            if shard_entry.session_id != session_id:
+                raise ValueError("JSONL preparation session identity disagrees with row shard")
+            metadata = json.loads(metadata_json)
+            if physical_count != message_count or physical_count != shard_entry.message_row_count:
+                raise ValueError("JSONL preparation message count disagrees with row shard")
+            if physical_events != event_count:
+                raise ValueError("JSONL preparation event count changed")
+            if physical_attachments != attachment_count:
+                raise ValueError("JSONL preparation attachment count changed")
+            metadata["messages"] = []
+            metadata["session_events"] = []
+            metadata["attachments"] = []
+            _restore_spilled_accounting(metadata, self.sessions_path)
+            session = ParsedSession.model_validate(metadata)
+            yield session.model_copy(
+                update={
+                    "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
+                    "session_events": SqliteSessionEventSink(self.sessions_path, event_ordinal, count=event_count),
+                    "attachments": SqliteAttachmentSink(self.sessions_path, attachment_ordinal, count=attachment_count),
+                }
+            )
+
+    @property
+    def codex_state_snapshot(self) -> codex_state.CodexStateSnapshot | None:
+        if self.codex_state_kind != "thread_state":
+            return None
+        return codex_state.CodexStateSnapshot(
+            threads=_PreparedCodexThreads(self),
+            spawn_edges=_PreparedCodexSpawnEdges(self),
+        )
+
+    def _iter_codex_records(
+        self, table: Literal["prepared_codex_thread", "prepared_codex_spawn"]
+    ) -> Generator[dict[str, object], None, None]:
+        from polylogue.sources.prepared_message_sink import _prepared_reader
+
+        if self.sessions_path is None or self.codex_state_kind != "thread_state":
+            raise ValueError("prepared artifact has no thread state")
+        self.verify_files(full=False)
+        ordinal = -1
+        while True:
+            check_compute_cancelled()
+            with _prepared_reader(self.sessions_path) as conn:
+                with connection_cursor(conn, "SELECT kind FROM prepared_codex_state") as cursor:
+                    kind = cursor.fetchall()
+                if kind != [("thread_state",)]:
+                    raise ValueError("prepared state kind changed")
+                with connection_cursor(
+                    conn,
+                    f"SELECT ordinal, metadata_json FROM {table} WHERE ordinal > ? ORDER BY ordinal LIMIT 256",
+                    (ordinal,),
+                ) as cursor:
+                    rows = cursor.fetchall()
+            if not rows:
+                return
+            ordinal = int(rows[-1][0])
+            for _ordinal, metadata in rows:
+                check_compute_cancelled()
+                yield json.loads(metadata)
+
+    def stream_classification(self) -> ArtifactStreamClassification | None:
+        """Read the complete original-input proof from this sealed artifact."""
+        if self.sessions_path is None:
+            return None
+        self.verify_files(full=False)
+        with _prepared_reader(self.sessions_path) as connection:
+            row = connection.execute(
+                "SELECT provider, kind, parse_as_session, schema_eligible, priority, reason, "
+                "proved_non_session, record_count FROM prepared_classification"
+            ).fetchone()
+        if row is None:
+            return None
+        return ArtifactStreamClassification(
+            ArtifactClassification(
+                provider=Provider.from_string(row[0]),
+                kind=ArtifactKind(row[1]),
+                parse_as_session=bool(row[2]),
+                schema_eligible=bool(row[3]),
+                default_priority=int(row[4]),
+                reason=str(row[5]),
+            ),
+            proved_non_session=bool(row[6]),
+            record_count=int(row[7]),
+        )
+
+    def session_sequence(self) -> PreparedSessionSequence:
+        """Expose a sealed cohort without retaining its parsed sessions in Python."""
+        if self.sessions_path is None:
+            raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
+        self.verify_files(full=False)
+        with _prepared_reader(self.sessions_path) as conn:
+            seal = conn.execute(
+                "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
+                "FROM artifact_seal"
+            ).fetchall()
+            if len(seal) != 1 or (
+                seal[0][0],
+                seal[0][1],
+                seal[0][3],
+                seal[0][4],
+            ) != (
+                _ARTIFACT_VERSION,
+                self.blob_hash,
+                self.enrichment_digest,
+                self.enrichment_index_path,
+            ):
+                raise ValueError("JSONL preparation seal or source dependency changed")
+            count = int(seal[0][2])
+            actual_count = int(conn.execute("SELECT COUNT(*) FROM prepared_session").fetchone()[0])
+        if actual_count != count:
+            raise ValueError("JSONL preparation session count changed")
+        return PreparedSessionSequence(self, count)
+
+    def session_by_id(self, session_id: str, *, _shard: SessionShard | None = None) -> ParsedSession:
+        """Read exactly one identity; ambiguous parser outputs remain in the ordinal cohort."""
+        if self.sessions_path is None:
+            raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
+        self.verify_files(full=False)
+        with _prepared_reader(self.sessions_path) as conn:
+            rows = conn.execute(
+                "SELECT ordinal FROM prepared_session WHERE session_id = ? LIMIT 2", (session_id,)
+            ).fetchall()
+        if len(rows) != 1:
+            raise KeyError(session_id)
+        return self._session_by_ordinal(int(rows[0][0]), _shard=_shard)
+
+    def _session_by_ordinal(self, ordinal: int, *, _shard: SessionShard | None = None) -> ParsedSession:
+        """Read the original parser output and shard range at the same ordinal."""
+        if self.sessions_path is None or self.blob_hash is None or self.shard_path is None:
+            raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
+        self.verify_files(full=False)
+        shard = _shard if _shard is not None else open_session_shard(self.shard_path)
+        with _prepared_reader(self.sessions_path) as conn:
+            seal = conn.execute(
+                "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
+                "FROM artifact_seal"
+            ).fetchall()
+            if seal != [
+                (
+                    _ARTIFACT_VERSION,
+                    self.blob_hash,
+                    len(shard.sessions),
+                    self.enrichment_digest,
+                    self.enrichment_index_path,
+                )
+            ]:
+                raise ValueError("JSONL preparation seal or source dependency changed")
+            rows = conn.execute(
+                "SELECT session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count, attachment_ordinal, attachment_count "
+                "FROM prepared_session WHERE ordinal = ?",
+                (ordinal,),
+            ).fetchall()
+            if len(rows) != 1:
+                raise IndexError(ordinal)
+            (
+                stored_id,
+                metadata_json,
+                message_ordinal,
+                message_count,
+                event_ordinal,
+                event_count,
+                attachment_ordinal,
+                attachment_count,
+            ) = rows[0]
+            shard_entry = shard.sessions[ordinal]
+            if shard_entry.session_id != stored_id:
+                raise ValueError("JSONL preparation session identity disagrees with row shard")
+            physical_count = conn.execute(
+                "SELECT COUNT(*) FROM prepared_message WHERE session_ordinal = ?", (message_ordinal,)
+            ).fetchone()[0]
+            if physical_count != message_count or physical_count != shard_entry.message_row_count:
+                raise ValueError("JSONL preparation message count disagrees with row shard")
+            physical_events = conn.execute(
+                "SELECT COUNT(*) FROM prepared_event WHERE session_ordinal = ?", (event_ordinal,)
+            ).fetchone()[0]
+            if physical_events != event_count:
+                raise ValueError("JSONL preparation event count changed")
+            physical_attachments = conn.execute(
+                "SELECT COUNT(*) FROM prepared_attachment WHERE session_ordinal = ?", (attachment_ordinal,)
+            ).fetchone()[0]
+            if physical_attachments != attachment_count:
+                raise ValueError("JSONL preparation attachment count changed")
+            metadata = json.loads(metadata_json)
+            metadata["messages"] = []
+            metadata["session_events"] = []
+            metadata["attachments"] = []
+            _restore_spilled_accounting(metadata, self.sessions_path)
+            session = ParsedSession.model_validate(metadata)
+            return session.model_copy(
+                update={
+                    "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
+                    "session_events": SqliteSessionEventSink(self.sessions_path, event_ordinal, count=event_count),
+                    "attachments": SqliteAttachmentSink(self.sessions_path, attachment_ordinal, count=attachment_count),
+                }
+            )
+
+
+def _require_backing_drained(
+    sessions_path: Path | None, shard_path: Path | None, attempt_directory: Path | None
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeConnectionSettlementError,
+        retained_native_sql_owners_for_lifetime,
+    )
+
+    for dependency in (sessions_path, shard_path, attempt_directory):
+        pending = retained_native_sql_owners_for_lifetime(dependency) if dependency is not None else ()
+        if pending:
+            raise NativeConnectionSettlementError(pending[0], RuntimeError("artifact cleanup requires native drain"))
+
+
+@dataclass(slots=True)
+class PreparedBackingCustody:
+    """Physical scratch owner; retirement follows every native borrower."""
+
+    sessions_path: Path | None = None
+    shard_path: Path | None = None
+    attempt_directory: Path | None = None
+    validation_reuse: RetainedValidationReuse | None = None
+    retired: bool = False
+
+    def bind(self, result: PreparedJsonlRead) -> None:
+        coordinates = (result.sessions_path, result.shard_path, result.attempt_directory)
+        current = (self.sessions_path, self.shard_path, self.attempt_directory)
+        if current != (None, None, None) and current != coordinates:
+            raise ValueError("prepared backing custody cannot change its original coordinates")
+        self.sessions_path, self.shard_path, self.attempt_directory = coordinates
+
+    def close(self) -> None:
+        if self.retired:
+            return
+        _require_backing_drained(self.sessions_path, self.shard_path, self.attempt_directory)
+        if self.sessions_path is not None:
+            discard_decoded_sessions(self.sessions_path)
+        if self.validation_reuse is not None:
+            self.validation_reuse.clear()
+        if self.attempt_directory is not None:
+            try:
+                shutil.rmtree(self.attempt_directory)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                emit(
+                    "live.parse_prefetch.cleanup_blocked",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="sealed attempt scratch removal failed",
+                )
+                raise
+            self.retired = True
+            return
+        if self.sessions_path is not None:
+            self.sessions_path.unlink(missing_ok=True)
+            self.sessions_path.with_name(self.sessions_path.name + "-journal").unlink(missing_ok=True)
+        if self.shard_path is not None:
+            discard_session_shard(self.shard_path)
+
+        self.retired = True
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedJsonl(PreparedJsonlRead):
+    """One publication attempt over sealed data and explicitly owned backing."""
+
+    validation_reuse: RetainedValidationReuse | None = field(default=None, compare=False, repr=False)
+    prepared_writes: tuple[PreparedSessionWrite, ...] = ()
+    parser_stage_artifact: PreparedJsonl | None = field(default=None, compare=False, repr=False)
     publication_publisher: ArchiveBlobPublisher | None = None
     _blob_publication: _ArtifactBlobPublication = field(
         default_factory=_ArtifactBlobPublication, compare=False, repr=False
@@ -745,6 +1087,34 @@ class PreparedJsonl:
     _thread_projection: _ArtifactThreadProjection = field(
         default_factory=_ArtifactThreadProjection, compare=False, repr=False
     )
+    custody: PreparedBackingCustody | None = field(default_factory=PreparedBackingCustody, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.custody is not None:
+            self.custody.bind(self)
+
+    def read_result(self) -> PreparedJsonlRead:
+        """Transfer only sealed data; the existing custodian stays with its owner."""
+        if (
+            self.prepared_writes
+            or self.parser_stage_artifact is not None
+            or self.publication_publisher is not None
+            or self._blob_publication != _ArtifactBlobPublication()
+            or self._thread_projection != _ArtifactThreadProjection()
+        ):
+            raise ValueError("sealed parser transfer cannot carry publication work")
+        return PreparedJsonlRead(**{item.name: getattr(self, item.name) for item in fields(PreparedJsonlRead)})
+
+    @classmethod
+    def from_read_result(
+        cls, result: PreparedJsonlRead, *, validation_reuse: RetainedValidationReuse | None = None
+    ) -> PreparedJsonl:
+        """Start a fresh attempt while the page custodian retains the backing."""
+        return cls(
+            **{item.name: getattr(result, item.name) for item in fields(PreparedJsonlRead)},
+            custody=None,
+            validation_reuse=validation_reuse,
+        )
 
     def prepare_thread_projection(
         self,
@@ -960,48 +1330,6 @@ class PreparedJsonl:
             publication_publisher=publication_publisher,
         )
 
-    def verify_files(self, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
-        """Scan bytes before admission; recheck inode identity at publication.
-
-        ``stop`` is polled between digest chunks; when it returns true the
-        scan raises :class:`polylogue.core.prepared_file.VerificationCancelledError`.
-        """
-        if (
-            self.sessions_path is None
-            or self.shard_path is None
-            or self.sessions_seal is None
-            or self.shard_seal is None
-        ):
-            raise ValueError("JSONL preparation lacks closed-file seals")
-        self.sessions_seal.verify(self.sessions_path, full=full, stop=stop)
-        self.shard_seal.verify(self.shard_path, full=full, stop=stop)
-
-    def borrow_sealed_files(self) -> PreparedJsonl:
-        """Borrow immutable parser files; their page owner retains retirement.
-
-        No writer, material continuation or projection may cross this boundary.
-        Each borrower opens its own readers and still drains their native state.
-        """
-        if (
-            self.prepared_writes
-            or self.parser_stage_artifact is not None
-            or self._thread_projection.projection is not None
-        ):
-            raise ValueError("only closed neutral parser files can be borrowed")
-        if (
-            self.publication_publisher is not None
-            or self._blob_publication != _ArtifactBlobPublication()
-            or self._thread_projection != _ArtifactThreadProjection()
-        ):
-            raise ValueError("neutral parser borrow cannot carry publication work")
-        return replace(
-            self,
-            _owns_files=False,
-            _owns_validation=False,
-            _blob_publication=_ArtifactBlobPublication(),
-            _thread_projection=_ArtifactThreadProjection(),
-        )
-
     def discard(self) -> None:
         if self._thread_projection.projection is not None:
             self._thread_projection.projection.close()
@@ -1022,184 +1350,24 @@ class PreparedJsonl:
         state.material_page = ()
         state.retired = True
         failures: list[BaseException] = []
-        if self.parser_stage_artifact is not None:
-            try:
-                self.parser_stage_artifact.discard()
-            except BaseException as exc:
-                failures.append(exc)
-            object.__setattr__(self, "parser_stage_artifact", None)
         for prepared in self.prepared_writes:
             try:
                 prepared.close()
             except BaseException as exc:
                 failures.append(exc)
+        if self.parser_stage_artifact is not None:
+            try:
+                self.parser_stage_artifact.discard()
+            except BaseException as exc:
+                failures.append(exc)
+            else:
+                object.__setattr__(self, "parser_stage_artifact", None)
         if failures:
             raise BaseExceptionGroup("prepared write cleanup failed", failures)
-        from polylogue.storage.sqlite.connection_profile import (
-            NativeConnectionSettlementError,
-            retained_native_sql_owners_for_lifetime,
-        )
-
-        for dependency in (self.sessions_path, self.shard_path, self.attempt_directory):
-            pending = retained_native_sql_owners_for_lifetime(dependency) if dependency is not None else ()
-            if pending:
-                raise NativeConnectionSettlementError(
-                    pending[0], RuntimeError("artifact cleanup requires native drain")
-                )
-        if self.sessions_path is not None:
-            discard_decoded_sessions(self.sessions_path)
-        if self._owns_validation and self.validation_reuse is not None:
-            self.validation_reuse.clear()
-        if not self._owns_files:
-            return
-        if self.attempt_directory is not None:
-            try:
-                shutil.rmtree(self.attempt_directory)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                emit(
-                    "live.parse_prefetch.cleanup_blocked",
-                    level=WARNING,
-                    outcome="degraded",
-                    reason="sealed attempt scratch removal failed",
-                )
-                raise
-            return
-        if self.sessions_path is not None:
-            self.sessions_path.unlink(missing_ok=True)
-            self.sessions_path.with_name(self.sessions_path.name + "-journal").unlink(missing_ok=True)
-        if self.shard_path is not None:
-            discard_session_shard(self.shard_path)
-
-    def iter_provider_session_ids(self) -> Iterator[str]:
-        """Read the complete original native-ID scope without hydrating transcripts."""
-        if self.sessions_path is None:
-            raise RuntimeError("prepared cohort has no header artifact")
-        self.verify_files(full=False)
-        for (metadata_json,) in _prepared_ordinal_rows(
-            self.sessions_path,
-            table="prepared_session",
-            ordinal="ordinal",
-            session=None,
-            columns="metadata_json",
-        ):
-            check_compute_cancelled()
-            if not isinstance(metadata_json, str):
-                raise ValueError("prepared session metadata is not text")
-            identity = json.loads(metadata_json)["provider_session_id"]
-            if identity is not None and not isinstance(identity, str):
-                raise ValueError("prepared provider identity is not text")
-            if identity:
-                yield identity
-
-    def iter_sessions(self) -> Generator[ParsedSession]:
-        if self.sessions_path is None or self.blob_hash is None:
-            raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
-        if self.shard_path is None:
-            raise ValueError("JSONL preparation has no row shard")
-        self.verify_files(full=False)
-        shard = open_session_shard(self.shard_path)
-        with _prepared_reader(self.sessions_path) as conn:
-            seal = conn.execute(
-                "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
-                "FROM artifact_seal"
-            ).fetchall()
-            if seal != [
-                (
-                    _ARTIFACT_VERSION,
-                    self.blob_hash,
-                    len(shard.sessions),
-                    self.enrichment_digest,
-                    self.enrichment_index_path,
-                )
-            ]:
-                raise ValueError("JSONL preparation seal or source dependency changed")
-            session_count = conn.execute("SELECT COUNT(*) FROM prepared_session").fetchone()[0]
-            if session_count != len(shard.sessions):
-                raise ValueError("JSONL preparation session count disagrees with row shard")
-        for row in _prepared_ordinal_rows(
-            self.sessions_path,
-            table="prepared_session",
-            ordinal="ordinal",
-            session=None,
-            columns=(
-                "ordinal, session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count, "
-                "attachment_ordinal, attachment_count, "
-                "(SELECT COUNT(*) FROM prepared_message WHERE session_ordinal = prepared_session.message_ordinal), "
-                "(SELECT COUNT(*) FROM prepared_event WHERE session_ordinal = prepared_session.event_ordinal), "
-                "(SELECT COUNT(*) FROM prepared_attachment WHERE session_ordinal = prepared_session.attachment_ordinal)"
-            ),
-        ):
-            if not isinstance(row[0], int):
-                raise ValueError("prepared ordinal is not an integer")
-            ordinal = row[0]
-            session_id = str(row[1])
-            metadata_json = str(row[2])
-            message_ordinal, message_count, event_ordinal, event_count, attachment_ordinal, attachment_count = (
-                int(cast(int, value)) for value in row[3:9]
-            )
-            physical_count, physical_events, physical_attachments = (int(cast(int, value)) for value in row[9:])
-            shard_entry = shard.sessions[ordinal]
-            if shard_entry.session_id != session_id:
-                raise ValueError("JSONL preparation session identity disagrees with row shard")
-            metadata = json.loads(metadata_json)
-            if physical_count != message_count or physical_count != shard_entry.message_row_count:
-                raise ValueError("JSONL preparation message count disagrees with row shard")
-            if physical_events != event_count:
-                raise ValueError("JSONL preparation event count changed")
-            if physical_attachments != attachment_count:
-                raise ValueError("JSONL preparation attachment count changed")
-            metadata["messages"] = []
-            metadata["session_events"] = []
-            metadata["attachments"] = []
-            _restore_spilled_accounting(metadata, self.sessions_path)
-            session = ParsedSession.model_validate(metadata)
-            yield session.model_copy(
-                update={
-                    "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
-                    "session_events": SqliteSessionEventSink(self.sessions_path, event_ordinal, count=event_count),
-                    "attachments": SqliteAttachmentSink(self.sessions_path, attachment_ordinal, count=attachment_count),
-                }
-            )
-
-    @property
-    def codex_state_snapshot(self) -> codex_state.CodexStateSnapshot | None:
-        if self.codex_state_kind != "thread_state":
-            return None
-        return codex_state.CodexStateSnapshot(
-            threads=_PreparedCodexThreads(self),
-            spawn_edges=_PreparedCodexSpawnEdges(self),
-        )
-
-    def _iter_codex_records(
-        self, table: Literal["prepared_codex_thread", "prepared_codex_spawn"]
-    ) -> Generator[dict[str, object], None, None]:
-        from polylogue.sources.prepared_message_sink import _prepared_reader
-
-        if self.sessions_path is None or self.codex_state_kind != "thread_state":
-            raise ValueError("prepared artifact has no thread state")
-        self.verify_files(full=False)
-        ordinal = -1
-        while True:
-            check_compute_cancelled()
-            with _prepared_reader(self.sessions_path) as conn:
-                with connection_cursor(conn, "SELECT kind FROM prepared_codex_state") as cursor:
-                    kind = cursor.fetchall()
-                if kind != [("thread_state",)]:
-                    raise ValueError("prepared state kind changed")
-                with connection_cursor(
-                    conn,
-                    f"SELECT ordinal, metadata_json FROM {table} WHERE ordinal > ? ORDER BY ordinal LIMIT 256",
-                    (ordinal,),
-                ) as cursor:
-                    rows = cursor.fetchall()
-            if not rows:
-                return
-            ordinal = int(rows[-1][0])
-            for _ordinal, metadata in rows:
-                check_compute_cancelled()
-                yield json.loads(metadata)
+        if self.custody is not None:
+            self.custody.close()
+        else:
+            _require_backing_drained(self.sessions_path, self.shard_path, self.attempt_directory)
 
     def _codex_state_material_page(
         self,
@@ -1511,142 +1679,6 @@ class PreparedJsonl:
             state.prepared = True
             flush_page()
 
-    def stream_classification(self) -> ArtifactStreamClassification | None:
-        """Read the complete original-input proof from this sealed artifact."""
-        if self.sessions_path is None:
-            return None
-        self.verify_files(full=False)
-        with _prepared_reader(self.sessions_path) as connection:
-            row = connection.execute(
-                "SELECT provider, kind, parse_as_session, schema_eligible, priority, reason, "
-                "proved_non_session, record_count FROM prepared_classification"
-            ).fetchone()
-        if row is None:
-            return None
-        return ArtifactStreamClassification(
-            ArtifactClassification(
-                provider=Provider.from_string(row[0]),
-                kind=ArtifactKind(row[1]),
-                parse_as_session=bool(row[2]),
-                schema_eligible=bool(row[3]),
-                default_priority=int(row[4]),
-                reason=str(row[5]),
-            ),
-            proved_non_session=bool(row[6]),
-            record_count=int(row[7]),
-        )
-
-    def session_sequence(self) -> PreparedSessionSequence:
-        """Expose a sealed cohort without retaining its parsed sessions in Python."""
-        if self.sessions_path is None:
-            raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
-        self.verify_files(full=False)
-        with _prepared_reader(self.sessions_path) as conn:
-            seal = conn.execute(
-                "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
-                "FROM artifact_seal"
-            ).fetchall()
-            if len(seal) != 1 or (
-                seal[0][0],
-                seal[0][1],
-                seal[0][3],
-                seal[0][4],
-            ) != (
-                _ARTIFACT_VERSION,
-                self.blob_hash,
-                self.enrichment_digest,
-                self.enrichment_index_path,
-            ):
-                raise ValueError("JSONL preparation seal or source dependency changed")
-            count = int(seal[0][2])
-            actual_count = int(conn.execute("SELECT COUNT(*) FROM prepared_session").fetchone()[0])
-        if actual_count != count:
-            raise ValueError("JSONL preparation session count changed")
-        return PreparedSessionSequence(self, count)
-
-    def session_by_id(self, session_id: str, *, _shard: SessionShard | None = None) -> ParsedSession:
-        """Read exactly one identity; ambiguous parser outputs remain in the ordinal cohort."""
-        if self.sessions_path is None:
-            raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
-        self.verify_files(full=False)
-        with _prepared_reader(self.sessions_path) as conn:
-            rows = conn.execute(
-                "SELECT ordinal FROM prepared_session WHERE session_id = ? LIMIT 2", (session_id,)
-            ).fetchall()
-        if len(rows) != 1:
-            raise KeyError(session_id)
-        return self._session_by_ordinal(int(rows[0][0]), _shard=_shard)
-
-    def _session_by_ordinal(self, ordinal: int, *, _shard: SessionShard | None = None) -> ParsedSession:
-        """Read the original parser output and shard range at the same ordinal."""
-        if self.sessions_path is None or self.blob_hash is None or self.shard_path is None:
-            raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
-        self.verify_files(full=False)
-        shard = _shard if _shard is not None else open_session_shard(self.shard_path)
-        with _prepared_reader(self.sessions_path) as conn:
-            seal = conn.execute(
-                "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
-                "FROM artifact_seal"
-            ).fetchall()
-            if seal != [
-                (
-                    _ARTIFACT_VERSION,
-                    self.blob_hash,
-                    len(shard.sessions),
-                    self.enrichment_digest,
-                    self.enrichment_index_path,
-                )
-            ]:
-                raise ValueError("JSONL preparation seal or source dependency changed")
-            rows = conn.execute(
-                "SELECT session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count, attachment_ordinal, attachment_count "
-                "FROM prepared_session WHERE ordinal = ?",
-                (ordinal,),
-            ).fetchall()
-            if len(rows) != 1:
-                raise IndexError(ordinal)
-            (
-                stored_id,
-                metadata_json,
-                message_ordinal,
-                message_count,
-                event_ordinal,
-                event_count,
-                attachment_ordinal,
-                attachment_count,
-            ) = rows[0]
-            shard_entry = shard.sessions[ordinal]
-            if shard_entry.session_id != stored_id:
-                raise ValueError("JSONL preparation session identity disagrees with row shard")
-            physical_count = conn.execute(
-                "SELECT COUNT(*) FROM prepared_message WHERE session_ordinal = ?", (message_ordinal,)
-            ).fetchone()[0]
-            if physical_count != message_count or physical_count != shard_entry.message_row_count:
-                raise ValueError("JSONL preparation message count disagrees with row shard")
-            physical_events = conn.execute(
-                "SELECT COUNT(*) FROM prepared_event WHERE session_ordinal = ?", (event_ordinal,)
-            ).fetchone()[0]
-            if physical_events != event_count:
-                raise ValueError("JSONL preparation event count changed")
-            physical_attachments = conn.execute(
-                "SELECT COUNT(*) FROM prepared_attachment WHERE session_ordinal = ?", (attachment_ordinal,)
-            ).fetchone()[0]
-            if physical_attachments != attachment_count:
-                raise ValueError("JSONL preparation attachment count changed")
-            metadata = json.loads(metadata_json)
-            metadata["messages"] = []
-            metadata["session_events"] = []
-            metadata["attachments"] = []
-            _restore_spilled_accounting(metadata, self.sessions_path)
-            session = ParsedSession.model_validate(metadata)
-            return session.model_copy(
-                update={
-                    "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
-                    "session_events": SqliteSessionEventSink(self.sessions_path, event_ordinal, count=event_count),
-                    "attachments": SqliteAttachmentSink(self.sessions_path, attachment_ordinal, count=attachment_count),
-                }
-            )
-
 
 def complete_thread_projection_cohort(
     artifacts: Iterable[PreparedJsonl], seal: PreparedIndexMutation, *, source_read: SessionSourceRead
@@ -1889,7 +1921,7 @@ class PreparedSidecarLocators(Mapping[str, Mapping[str, str]]):
 class PreparedSessionSequence(Sequence[ParsedSession]):
     """A reusable session view over the sealed worker artifact."""
 
-    def __init__(self, artifact: PreparedJsonl, count: int) -> None:
+    def __init__(self, artifact: PreparedJsonlRead, count: int) -> None:
         self.artifact = artifact
         self._count = count
         if artifact.shard_path is None:
@@ -2436,7 +2468,7 @@ def _empty_parsed_sessions() -> Generator[ParsedSession, None, None]:
 
 
 def _finalize_prepared_cohort(
-    original: PreparedJsonl,
+    original: PreparedJsonlRead,
     finalize: Callable[[PreparedSessionSequence], Iterable[ParsedSession]],
     *,
     artifact_directory: Path,
@@ -2496,20 +2528,24 @@ def _finalize_prepared_cohort(
             captured_profile_key=original.captured_profile_key,
             preparation_dependency=preparation_dependency,
         )
-    # Preserve the neutral parser-stage carrier for exact per-revision
-    # checkpoints. The finalized carrier owns its shared attempt directory;
-    # the child owns only its sealed file paths and is discarded with parent.
+    # Preserve the neutral parser-stage attempt for exact per-revision
+    # checkpoints. Its original custodian remains explicit; a page-backed
+    # attempt only borrows files and cannot retire that page's backing.
     result = replace(
         result,
         validation_verdict=original.validation_verdict,
-        validation_reuse=original.validation_reuse,
+        validation_reuse=original.validation_reuse if isinstance(original, PreparedJsonl) else None,
         observed_parse_key=original.observed_parse_key,
         observed_parse_artifact_ref=original.observed_parse_artifact_ref,
-        _owns_validation=False,
     )
     if not preserve_parser_stage:
         return result
-    return replace(result, parser_stage_artifact=replace(original, attempt_directory=None))
+    return replace(
+        result,
+        parser_stage_artifact=original
+        if isinstance(original, PreparedJsonl)
+        else PreparedJsonl.from_read_result(original),
+    )
 
 
 def _prepared_jsonl_productive_identity(
