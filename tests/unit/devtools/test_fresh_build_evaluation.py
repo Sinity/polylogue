@@ -80,6 +80,15 @@ def _receipt(seconds: float = 10.0, *, candidate: str = "A") -> dict[str, Any]:
         },
         "output_fingerprint": {"digest": "same", "tables": {}},
         "daemon_exit_code": 0,
+        "evidence_sha256": {"events": "events-seal"},
+        "shutdown_evidence": {
+            "format": "polylogue.daemon-shutdown-evidence.v1",
+            "state": "pass",
+            "failed": [],
+            "unknown": [],
+            "bound": True,
+            "input_sha256": {"events": "events-seal", "stacks": "sampler-receipt"},
+        },
     }
 
 
@@ -132,6 +141,27 @@ def test_missing_confirming_evidence_does_not_inherit_aggregate_qualification() 
     assert receipt["qualified"]
     assert evaluation["measurement_validity"]["state"] == "unknown"
     assert not evaluation["metrics"]["promotion_s"]["qualified"]
+
+
+@pytest.mark.parametrize("evidence", ["historical", "failed", "unbound", "clean"])
+def test_shutdown_capability_keeps_terminal_readiness_independent(evidence: str) -> None:
+    receipt = _receipt()
+    if evidence == "historical":
+        del receipt["shutdown_evidence"]
+    elif evidence == "failed":
+        receipt["shutdown_evidence"].update(state="fail", failed=["daemon.shutdown.services_failed"])
+        receipt["checks"]["clean_shutdown"] = False
+    elif evidence == "unbound":
+        receipt["shutdown_evidence"]["input_sha256"]["events"] = "changed"
+    evaluation = evaluate_run(receipt)
+    shutdown = evaluation["capabilities"]["cleanup"]["daemon_shutdown"]
+    assert (
+        shutdown["state"]
+        == {"historical": "unknown", "failed": "fail", "unbound": "unknown", "clean": "pass"}[evidence]
+    )
+    assert evaluation["capabilities"]["cleanup"]["descendant_and_external_resource_cleanup"] == "unknown"
+    assert evaluation["metrics"]["terminal_observation_s"]["qualified"] is True
+    assert evaluation["metrics"]["terminal_observation_s"]["value"] == receipt["timing_s"]["terminal"]
 
 
 @pytest.mark.parametrize("value", [None, float("nan"), float("inf"), True])

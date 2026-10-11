@@ -142,6 +142,47 @@ def _events_lossless(events: dict[str, Any], delivery: dict[str, int] | None) ->
     )
 
 
+def _record_shutdown_evidence(
+    receipt: dict[str, Any],
+    events: dict[str, Any],
+    delivery: dict[str, int] | None,
+    *,
+    events_digest: str | None,
+    stacks_digest: str | None,
+) -> None:
+    """Bind daemon shutdown to the complete captured inputs, not exit alone."""
+    counts = events.get("shutdown_failures", {})
+    failed = [name for name, count in counts.items() if count]
+    exit_code = receipt.get("daemon_exit_code")
+    if type(exit_code) is int and exit_code != 0:
+        failed.append("daemon_exit_nonzero")
+    unknown = []
+    if type(exit_code) is not int:
+        unknown.append("daemon_exit_unrecorded")
+    if not _events_lossless(events, delivery) or not events.get("event_count"):
+        unknown.append("shutdown_events_incomplete")
+    expected_events = (receipt.get("evidence_sha256") or {}).get("events")
+    capture = receipt.get("diagnostic_capture") or {}
+    expected_stacks = capture.get("expected_sha256", capture.get("sha256"))
+    bound = bool(
+        events_digest and stacks_digest and events_digest == expected_events and stacks_digest == expected_stacks
+    )
+    if not bound:
+        unknown.append("shutdown_inputs_unbound")
+    state = "fail" if failed else "unknown" if unknown else "pass"
+    receipt["shutdown_evidence"] = {
+        "format": "polylogue.daemon-shutdown-evidence.v1",
+        "state": state,
+        "failed": failed,
+        "unknown": unknown,
+        "input_sha256": {"events": events_digest, "stacks": stacks_digest},
+        "bound": bound,
+        "failure_records": counts,
+        "scope": "daemon exit and captured shutdown errors; descendant/external cleanup unproven",
+    }
+    receipt.setdefault("checks", {})["clean_shutdown"] = None if state == "unknown" else state == "pass"
+
+
 def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str, Any]:
     """Reduce the daemon's event log in one streaming pass.
 
@@ -183,6 +224,7 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
     pages: dict[str, dict[str, float]] = defaultdict(lambda: {"pages": 0, "files": 0, "bytes": 0, "seconds": 0.0})
     by_source: dict[str, dict[str, float]] = defaultdict(lambda: {"groups": 0, "files": 0, "seconds": 0.0})
     problems: Counter[str] = Counter()
+    shutdown_failures: Counter[str] = Counter()
     milestones: dict[str, float] = {}
     preparation_done: float | None = None
     event_count = 0
@@ -245,6 +287,23 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
             milestones["promoted_s"] = last
         if event.get("level") in {"warning", "error"}:
             problems[f"{name}:{event.get('reason')}"] += 1
+        if name in {
+            "daemon.shutdown.services_failed",
+            "daemon.shutdown.services_orphaned",
+            "daemon.shutdown.compute_threads_orphaned",
+            "daemon.shutdown.lifecycle_stop_failed",
+            "daemon.shutdown.ingest_recovery_timeout",
+            "daemon.service.orphaned",
+            "daemon.server_shutdown.timeout",
+        }:
+            shutdown_failures[name] += 1
+        elif (
+            name == "stdlib.record"
+            and event.get("logger") == "asyncio"
+            and event.get("level") == "error"
+            and str(event.get("error_detail", "")).startswith("unhandled exception during asyncio.run() shutdown")
+        ):
+            shutdown_failures["asyncio_shutdown_error"] += 1
     if event_count == 0:
         return {"event_count": 0, "coverage": _event_coverage(path, coverage)}
     if preparation_done is not None:
@@ -262,6 +321,7 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
     chunk_seconds = [chunk[3] for chunk in chunks]
     return {
         "event_count": event_count,
+        "shutdown_failures": dict(shutdown_failures),
         "coverage": _event_coverage(path, coverage),
         "milestones_s": milestones,
         "writer": {
@@ -602,7 +662,11 @@ def _log_delivery(stacks_path: Path) -> dict[str, int] | None:
     """The daemon's event-sink delivery counters, as the sampler saw them at exit."""
     if not stacks_path.exists():
         return None
-    delivery = json.loads(stacks_path.read_text(encoding="utf-8")).get("log_delivery")
+    try:
+        document = json.loads(stacks_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    delivery = document.get("log_delivery") if isinstance(document, dict) else None
     return delivery if isinstance(delivery, dict) else None
 
 
@@ -1123,9 +1187,6 @@ def build_receipt(
         and census.get("messages_fts_rows") == census.get("fts_indexable_rows"),
         "candidate_unchanged": identity["unchanged_during_run"],
         "benchmark_unchanged": driver_at_launch is not None and driver_now == driver_at_launch,
-        # A daemon that reached terminal but had to be killed on shutdown is
-        # not a finished build.
-        "clean_shutdown": exit_code == 0,
         # The receipt's timings are reductions of the event log; a promoted
         # pointer without the promotion event leaves them unmeasured.
         "milestones_recorded": promoted is not None,
@@ -1283,14 +1344,26 @@ def build_receipt(
         "started_at_unix": started_wall,
         "clock_step_s": round(clock_step_s, 3),
     }
+    document: dict[str, Any] = {}
     if paths["stacks"].exists():
-        document = json.loads(paths["stacks"].read_text(encoding="utf-8"))
+        try:
+            parsed = json.loads(paths["stacks"].read_text(encoding="utf-8"))
+            document = parsed if isinstance(parsed, dict) else {}
+        except (OSError, ValueError):
+            pass
+    if document:
         receipt["thread_cpu_s"] = thread_cpu_summary(document)
     receipt["diagnostic_capture"] = _stack_capture(paths["stacks"])
+    _record_shutdown_evidence(
+        receipt,
+        events,
+        delivery,
+        events_digest=receipt["evidence_sha256"].get("events"),
+        stacks_digest=receipt["diagnostic_capture"].get("sha256"),
+    )
     if config.profile:
         from devtools.fresh_build_bench.profile_report import profile_refusal_reason, summarise
 
-        document = json.loads(paths["stacks"].read_text(encoding="utf-8")) if paths["stacks"].exists() else {}
         refusal = profile_refusal_reason(document)
         if refusal:
             receipt["profile"] = {"outcome": "refused", "reason": refusal}
@@ -1315,7 +1388,16 @@ def _stack_capture(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {"state": "unrecorded", "reason": "sampler_evidence_missing"}
     payload = path.read_bytes()
-    document = json.loads(payload)
+    try:
+        document = json.loads(payload)
+    except ValueError:
+        document = None
+    if not isinstance(document, dict):
+        return {
+            "state": "unrecorded",
+            "reason": "sampler_evidence_invalid",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
     return {
         "state": "recorded",
         "sha256": hashlib.sha256(payload).hexdigest(),
@@ -1644,16 +1726,25 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     # Truncated or edited evidence re-reduces to different timings under the
     # original qualification; the run then no longer qualifies.
     sealed = receipt.get("evidence_sha256")
-    receipt.setdefault("checks", {})["evidence_unchanged"] = sealed is not None and evidence_digests(work) == sealed
-    receipt["checks"]["events_lossless"] = _events_lossless(events, _log_delivery(work / "stacks.json"))
+    current_evidence = evidence_digests(work)
+    receipt.setdefault("checks", {})["evidence_unchanged"] = sealed is not None and current_evidence == sealed
+    delivery = _log_delivery(work / "stacks.json")
+    receipt["checks"]["events_lossless"] = _events_lossless(events, delivery)
     recorded_capture = receipt.get("diagnostic_capture") or {}
+    capture = _stack_capture(work / "stacks.json")
     if recorded_capture.get("sha256"):
-        capture = _stack_capture(work / "stacks.json")
         expected = recorded_capture.get("expected_sha256", recorded_capture["sha256"])
         capture["expected_sha256"] = expected
         if capture.get("sha256") != expected:
             capture["state"] = "changed"
         receipt["diagnostic_capture"] = capture
+    _record_shutdown_evidence(
+        receipt,
+        events,
+        delivery,
+        events_digest=current_evidence.get("events"),
+        stacks_digest=capture.get("sha256"),
+    )
     receipt["readiness_probe"] = readiness_evidence(
         work,
         candidate=(receipt.get("readiness_probe") or {}).get("candidate"),
