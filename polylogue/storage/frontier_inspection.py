@@ -628,11 +628,12 @@ def _iter_selected_cursor_proofs(
                     (path, comparison_path),
                 ) as retained:
                     retained_path = retained.fetchone() is not None
-                terminal_paths = source.terminal_artifact_paths({path})
+                has_head = selection.has_head_path(comparison_path)
+                terminal_paths = set() if has_head else source.terminal_artifact_paths({path})
                 comparison = _classify_cursor_frontier_input(
                     cursor,
                     selection.byte_heads_for_path(comparison_path),
-                    has_any_head=selection.has_head_path(comparison_path),
+                    has_any_head=has_head,
                     terminal_artifact=path in terminal_paths,
                 )
                 yield cursor, comparison, retained_path
@@ -778,6 +779,11 @@ class _FrontierSelection:
             "CREATE TABLE membership_inputs(raw_id TEXT NOT NULL,logical_source_key TEXT NOT NULL,disposition_json TEXT NOT NULL,PRIMARY KEY(raw_id,logical_source_key)) WITHOUT ROWID;"
             "CREATE TABLE current_raws(raw_id TEXT PRIMARY KEY,structural_digest TEXT NOT NULL) WITHOUT ROWID;"
             "CREATE TABLE current_memberships(raw_id TEXT NOT NULL,logical_source_key TEXT NOT NULL,disposition_json TEXT NOT NULL,PRIMARY KEY(raw_id,logical_source_key)) WITHOUT ROWID;"
+            "CREATE TABLE checkpoint_head_writes AS SELECT * FROM pending_heads WHERE 0;"
+            "CREATE TABLE checkpoint_raw_writes AS SELECT * FROM pending_raws WHERE 0;"
+            "CREATE TABLE checkpoint_member_writes AS SELECT * FROM membership_inputs WHERE 0;"
+            "CREATE TABLE checkpoint_head_deletes(logical_source_key TEXT PRIMARY KEY) WITHOUT ROWID;"
+            "CREATE TABLE checkpoint_raw_deletes(raw_id TEXT PRIMARY KEY) WITHOUT ROWID;"
         )
 
     def add_raw(self, raw_id: str) -> None:
@@ -1359,6 +1365,7 @@ def publish_frontier_inspection_mark(
     observed_at_ms: int,
     detail: str,
     pending_selection: _FrontierSelection,
+    checkpoint_delta: bool,
 ) -> None:
     """Commit the prepared Source proof before its disposable coverage mark.
 
@@ -1397,17 +1404,7 @@ def publish_frontier_inspection_mark(
                 seal.validate_observers_current()
                 return
             publish_prepared_revision_source(seal, permit)
-            for original, target in (
-                ("pending_heads", "raw_frontier_pending_heads"),
-                ("pending_raws", "raw_frontier_pending_raws"),
-                ("membership_inputs", "raw_frontier_membership_inputs"),
-            ):
-                with closing(writer.execute(f"DELETE FROM {target}")):
-                    pass
-                for page in _checkpoint_pages(pending_selection, original):
-                    marks = ",".join("?" for _ in page[0])
-                    with closing(writer.executemany(f"INSERT INTO {target} VALUES({marks})", page)):
-                        pass
+            _publish_frontier_checkpoint(writer, pending_selection, delta=checkpoint_delta)
             with closing(
                 writer.execute(
                     "INSERT INTO raw_frontier_inspection(singleton,authority_identity,source_watermark,"
@@ -1771,6 +1768,126 @@ def _checkpoint_pages(selection: _FrontierSelection, table: str) -> Iterator[tup
             yield page
 
 
+def _prepare_checkpoint_delta(selection: _FrontierSelection, ops: sqlite3.Connection) -> None:
+    """Retain only changed disposable rows before entering writer admission.
+
+    Accepted-key/dependency equality was already qualified. A disappearing
+    selected contribution is therefore a proved healthy head, and a raw with
+    no remaining pending head can retire its complete comparison inventory.
+    The reserved original Ops version also protects these comparisons.
+    """
+    scratch = selection._owner.require_connection()
+    keys = selection.keys()
+    for key in keys:
+        check_compute_cancelled()
+        with closing(scratch.execute("SELECT * FROM pending_heads WHERE logical_source_key=?", (key,))) as rows:
+            current = rows.fetchone()
+        with closing(
+            ops.execute("SELECT * FROM raw_frontier_pending_heads WHERE logical_source_key=?", (key,))
+        ) as rows:
+            prior = rows.fetchone()
+        if current is None:
+            if prior is not None:
+                scratch.execute("INSERT INTO checkpoint_head_deletes VALUES(?)", (key,))
+        elif prior is None or tuple(current) != tuple(prior):
+            scratch.execute("INSERT INTO checkpoint_head_writes VALUES(?,?,?,?)", tuple(current))
+    after = None
+    while True:
+        check_compute_cancelled()
+        with closing(
+            scratch.execute(
+                "SELECT raw_id FROM selected_raws WHERE (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
+                (after, after),
+            )
+        ) as rows:
+            raws = tuple(str(row[0]) for row in rows)
+        if not raws:
+            return
+        for raw_id in raws:
+            check_compute_cancelled()
+            with closing(scratch.execute("SELECT * FROM pending_raws WHERE raw_id=?", (raw_id,))) as rows:
+                current = rows.fetchone()
+            with closing(ops.execute("SELECT * FROM raw_frontier_pending_raws WHERE raw_id=?", (raw_id,))) as rows:
+                prior = rows.fetchone()
+            if current is None:
+                if prior is not None:
+                    scratch.execute("INSERT INTO checkpoint_raw_deletes VALUES(?)", (raw_id,))
+                continue
+            if prior is None or tuple(current) != tuple(prior):
+                scratch.execute("INSERT INTO checkpoint_raw_writes VALUES(?,?)", tuple(current))
+            member_after = None
+            while True:
+                check_compute_cancelled()
+                with closing(
+                    scratch.execute(
+                        "SELECT * FROM membership_inputs WHERE raw_id=? AND (? IS NULL OR logical_source_key>?) "
+                        "ORDER BY logical_source_key LIMIT 256",
+                        (raw_id, member_after, member_after),
+                    )
+                ) as rows:
+                    members = tuple(tuple(row) for row in rows)
+                if not members:
+                    break
+                for member in members:
+                    with closing(
+                        ops.execute(
+                            "SELECT * FROM raw_frontier_membership_inputs WHERE raw_id=? AND logical_source_key=?",
+                            member[:2],
+                        )
+                    ) as rows:
+                        prior_member = rows.fetchone()
+                    if prior_member is None or member != tuple(prior_member):
+                        scratch.execute("INSERT INTO checkpoint_member_writes VALUES(?,?,?)", member)
+                member_after = str(members[-1][1])
+        after = raws[-1]
+
+
+def _publish_frontier_checkpoint(writer: sqlite3.Connection, selection: _FrontierSelection, *, delta: bool) -> None:
+    """Publish a full anchor or only prepared changes on the reserved Ops writer."""
+    if not delta:
+        for original, target in (
+            ("pending_heads", "raw_frontier_pending_heads"),
+            ("pending_raws", "raw_frontier_pending_raws"),
+            ("membership_inputs", "raw_frontier_membership_inputs"),
+        ):
+            with closing(writer.execute(f"DELETE FROM {target}")):
+                pass
+            for page in _checkpoint_pages(selection, original):
+                marks = ",".join("?" for _ in page[0])
+                with closing(writer.executemany(f"INSERT INTO {target} VALUES({marks})", page)):
+                    pass
+        return
+    for page in _checkpoint_pages(selection, "checkpoint_head_deletes"):
+        with closing(writer.executemany("DELETE FROM raw_frontier_pending_heads WHERE logical_source_key=?", page)):
+            pass
+    for page in _checkpoint_pages(selection, "checkpoint_raw_deletes"):
+        with closing(writer.executemany("DELETE FROM raw_frontier_membership_inputs WHERE raw_id=?", page)):
+            pass
+        with closing(writer.executemany("DELETE FROM raw_frontier_pending_raws WHERE raw_id=?", page)):
+            pass
+    for table, sql in (
+        (
+            "checkpoint_head_writes",
+            "INSERT INTO raw_frontier_pending_heads VALUES(?,?,?,?) "
+            "ON CONFLICT(logical_source_key) DO UPDATE SET raw_id=excluded.raw_id,inputs_json=excluded.inputs_json,"
+            "contribution_json=excluded.contribution_json",
+        ),
+        (
+            "checkpoint_raw_writes",
+            "INSERT INTO raw_frontier_pending_raws VALUES(?,?) "
+            "ON CONFLICT(raw_id) DO UPDATE SET structural_digest=excluded.structural_digest",
+        ),
+        (
+            "checkpoint_member_writes",
+            "INSERT INTO raw_frontier_membership_inputs VALUES(?,?,?) "
+            "ON CONFLICT(raw_id,logical_source_key) DO UPDATE SET disposition_json=excluded.disposition_json",
+        ),
+    ):
+        for page in _checkpoint_pages(selection, table):
+            with closing(writer.executemany(sql, page)):
+                pass
+
+
 def _populate_pending_ack_selection(
     source: PreparedFrontierSource,
     selection: _FrontierSelection,
@@ -2084,6 +2201,8 @@ def inspect_prepared_raw_authority_frontier(
                                 _replace_raw_checkpoint(frame.selection, raw_id)
                     conn.execute("DELETE FROM pending_raws WHERE raw_id NOT IN (SELECT raw_id FROM pending_heads)")
                     conn.execute("DELETE FROM membership_inputs WHERE raw_id NOT IN (SELECT raw_id FROM pending_raws)")
+                if pending_delta:
+                    _prepare_checkpoint_delta(frame.selection, ops)
                 pass_id = "raw-authority-frontier-pass:" + frame.selection.proof_inventory_digest()
                 for payload in frame.selection.proof_payloads(obligations_only=True):
                     source.publish_obligation_input(
@@ -2156,6 +2275,7 @@ def inspect_prepared_raw_authority_frontier(
                     missing_session_raws=missing_refs,
                 ).to_document(),
                 pending_selection=frame.selection,
+                checkpoint_delta=pending_delta,
             )
     except BaseException as primary:
         _settle_frontier_inspection_frame(frame, exclusion, lifetime_bound=lifetime_bound, primary=primary)

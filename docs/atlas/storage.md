@@ -124,9 +124,14 @@ member dispositions are separate paged rows, including already healthy siblings.
 Per-head checkpoint contributions contain only that head's classifier inputs.
 Unselected pending contributions remain in the aggregate. The checkpoint and mark
 commit together after the original Source permit succeeds; a refused permit
-advances neither. This checkpoint never acknowledges Source or supplies byte proof.
+advances neither. Full anchors replace the checkpoint. Supported ACK successors
+prepare only changed checkpoint rows and healthy contribution removals before
+writer admission; publication preserves unrelated rows. Preparation still reads
+the sparse pending inventory. This checkpoint never acknowledges Source or supplies byte proof.
 Every supported blocked successor still proves all eligible cursors against an
-independent complete current accepted-head inventory. Work remains linear in head
+independent complete current accepted-head inventory. Headed cursor paths need no
+terminal-artifact proof; headless paths still use canonical terminal evidence.
+Work remains linear in head
 metadata, cursor paths and comparisons, plus terminal-coordinate query work.
 The outcome and `work.frontier.inspected` event distinguish `eligible_cursor_checks`
 from `comparable_cursor_checks`; persisted findings retain `cursor_checks` for

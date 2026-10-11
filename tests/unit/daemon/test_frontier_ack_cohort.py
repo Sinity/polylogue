@@ -238,6 +238,47 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
         real_proofs = inspection_substrate._iter_selected_frontier_proofs
         real_checkpoint = inspection_substrate._raw_checkpoint
         real_checkpoint_rows = inspection_substrate._source_checkpoint_rows
+        real_publish_checkpoint = inspection_substrate._publish_frontier_checkpoint
+        real_terminal_paths = inspection_substrate.PreparedFrontierSource.terminal_artifact_paths
+
+        def observed_terminal_paths(source: Any, paths: set[str]) -> Any:
+            if current_attempt is not None:
+                current_attempt["terminal_proof_paths"].extend(sorted(paths))
+            return real_terminal_paths(source, paths)
+
+        class ObservedCheckpointWriter:
+            """Forward real SQL and count its actual mutations and bound bytes."""
+
+            def __init__(self, writer: Any) -> None:
+                self.writer = writer
+
+            def record(self, sql: str, page: tuple[tuple[Any, ...], ...], cursor: Any) -> None:
+                assert current_attempt is not None
+                current_attempt["checkpoint_mutated_rows"] += cursor.rowcount
+                current_attempt["checkpoint_bound_bytes"] += sum(
+                    len(cell) if isinstance(cell, bytes) else len(str(cell).encode()) for row in page for cell in row
+                )
+                if "raw_frontier_pending_heads" in sql and cursor.rowcount:
+                    current_attempt["checkpoint_head_keys"].extend(str(row[0]) for row in page)
+                current_attempt["checkpoint_sql"].append(
+                    {"sql": sql, "rows": cursor.rowcount, "parameter_rows": len(page)}
+                )
+
+            def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> Any:
+                cursor = self.writer.execute(sql, parameters)
+                self.record(sql, (parameters,) if parameters else (), cursor)
+                return cursor
+
+            def executemany(self, sql: str, page: Any) -> Any:
+                retained = tuple(page)
+                cursor = self.writer.executemany(sql, retained)
+                self.record(sql, retained, cursor)
+                return cursor
+
+        def observed_publish_checkpoint(writer: Any, selection: Any, *, delta: bool) -> None:
+            assert current_attempt is not None
+            current_attempt["checkpoint_delta"] = delta
+            real_publish_checkpoint(ObservedCheckpointWriter(writer), selection, delta=delta)
 
         def observed_checkpoint(*args: Any, **kwargs: Any) -> Any:
             if current_attempt is not None:
@@ -275,6 +316,11 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
                 "snapshot_source_rows": 0,
                 "snapshot_source_bytes": 0,
                 "proof_states": [],
+                "checkpoint_mutated_rows": 0,
+                "checkpoint_bound_bytes": 0,
+                "checkpoint_head_keys": [],
+                "checkpoint_sql": [],
+                "terminal_proof_paths": [],
             }
             report["inspection_bodies"].append(body)
             current_attempt = body
@@ -295,6 +341,10 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
         monkeypatch.setattr(inspection_substrate, "_iter_selected_frontier_proofs", observed_proofs)
         monkeypatch.setattr(inspection_substrate, "_raw_checkpoint", observed_checkpoint)
         monkeypatch.setattr(inspection_substrate, "_source_checkpoint_rows", observed_checkpoint_rows)
+        monkeypatch.setattr(inspection_substrate, "_publish_frontier_checkpoint", observed_publish_checkpoint)
+        monkeypatch.setattr(
+            inspection_substrate.PreparedFrontierSource, "terminal_artifact_paths", observed_terminal_paths
+        )
         monkeypatch.setattr(
             "polylogue.daemon.convergence_stages.make_default_convergence_stages",
             lambda db, *, compute_adapter: (
@@ -406,6 +456,7 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
                         "fixture.cohort.refusal",
                         lambda compute: observed_inspect(root, input_demand=compute.amend_current_input_demand),
                     )
+                assert report["inspection_bodies"][-1]["checkpoint_mutated_rows"] == 0
                 refused = _snapshot(root)
                 for field in ("mark", "pending", "pending_raws", "membership_inputs"):
                     assert refused[field] == prior[field]
@@ -417,6 +468,15 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
             assert body["settlement"] == "published" and body["mode"] == "delta"
             assert body["actual_head_proofs"] == (cohort_size if key is not None else 1)
             assert body["raw_snapshots"] <= 2
+            assert body["checkpoint_delta"]
+            assert body["terminal_proof_paths"] == ["deferred.jsonl"]
+            assert len(body["checkpoint_head_keys"]) == 1
+            if key is not None:
+                assert body["checkpoint_head_keys"] == [key]
+                assert body["checkpoint_mutated_rows"] == (cohort_size + 2 if start == cohort_size - 1 else 2)
+            else:
+                assert body["checkpoint_mutated_rows"] == 3
+                assert body["checkpoint_bound_bytes"] < 256
             assert body["blocking_head_checks"] == len(steps) - start - 1
             assert body["eligible_cursor_checks"] == cohort_size + 2
             assert body["comparable_cursor_checks"] == 1
