@@ -2042,6 +2042,7 @@ def inspect_prepared_raw_authority_frontier(
             )
             if pending_delta:
                 pending_delta = _populate_complete_cursor_heads(source, frame.selection)
+            mode: Literal["full", "delta", "current"]
             if pending_delta:
                 mode = "delta"
             else:
@@ -2190,6 +2191,7 @@ def inspect_prepared_raw_authority_frontier(
                     # Bind the post-proof receipt state once per changed raw,
                     # including siblings that have already become healthy.
                     if pending_delta:
+                        assert mark is not None  # A qualified blocked successor has its original anchor.
                         for raw_id in source.changed_raw_ids(state, mark):
                             with closing(
                                 conn.execute("SELECT 1 FROM pending_heads WHERE raw_id=? LIMIT 1", (raw_id,))

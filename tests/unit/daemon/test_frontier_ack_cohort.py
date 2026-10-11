@@ -9,7 +9,8 @@ from contextlib import closing
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from sqlite3 import Connection
+from typing import Any, cast
 
 import pytest
 
@@ -278,7 +279,7 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
         def observed_publish_checkpoint(writer: Any, selection: Any, *, delta: bool) -> None:
             assert current_attempt is not None
             current_attempt["checkpoint_delta"] = delta
-            real_publish_checkpoint(ObservedCheckpointWriter(writer), selection, delta=delta)
+            real_publish_checkpoint(cast(Connection, ObservedCheckpointWriter(writer)), selection, delta=delta)
 
         def observed_checkpoint(*args: Any, **kwargs: Any) -> Any:
             if current_attempt is not None:
@@ -393,6 +394,7 @@ def test_partial_acknowledgements_publish_current_frontier_and_suppress_unchange
                     raw_observation_frame(root, raw_ids=(raw_ids[0],)), raw_ids[0], replay_current=True
                 )
                 try:
+                    assert prepared.prepared_membership_plans is not None
                     plan = prepared.prepared_membership_plans[key]
                     assert plan.head_plan is not None
                     decisions = revision_governance.membership_decisions_for_head_plan(
