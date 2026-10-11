@@ -131,8 +131,14 @@ the sparse pending inventory. This checkpoint never acknowledges Source or suppl
 Every supported blocked successor still proves all eligible cursors against an
 independent complete current accepted-head inventory. Headed cursor paths need no
 terminal-artifact proof; headless paths still use canonical terminal evidence.
-Work remains linear in head
-metadata, cursor paths and comparisons, plus terminal-coordinate query work.
+Scratch key, path, raw and membership pagers use a separate first-page query and
+strict indexed ranges on subsequent pages. Complete accepted-head and cursor
+inventories use the same range shape on their existing key indexes. Empty and
+Unicode keys retain SQLite ordering; None means only the initial page. Journal
+sequence windows, Source dependency/path filters and raw-filtered Index sorts
+retain their existing query shapes. Work remains linear in head metadata, cursor
+paths and comparisons, plus terminal-coordinate query work; improving these
+pagers does not reduce canonical shared-raw proof fan-out.
 The outcome and `work.frontier.inspected` event distinguish `eligible_cursor_checks`
 from `comparable_cursor_checks`; persisted findings retain `cursor_checks` for
 comparable cursors. Explicit physical maintenance remains full.

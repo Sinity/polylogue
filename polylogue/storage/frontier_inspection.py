@@ -498,8 +498,9 @@ class PreparedFrontierSource:
             with self._seal.original_rows(
                 "index",
                 "SELECT logical_source_key FROM raw_revision_heads "
-                "WHERE (? IS NULL OR logical_source_key>?) ORDER BY logical_source_key LIMIT 256",
-                (after, after),
+                + ("" if after is None else "WHERE logical_source_key>? ")
+                + "ORDER BY logical_source_key LIMIT 256",
+                () if after is None else (after,),
             ) as rows:
                 page = tuple(str(row[0]) for row in rows)
             if not page:
@@ -854,9 +855,10 @@ class _FrontierSelection:
         while True:
             with closing(
                 self._owner.require_connection().execute(
-                    "SELECT logical_key FROM selected_keys WHERE (? IS NULL OR logical_key>?) "
-                    "ORDER BY logical_key LIMIT 256",
-                    (after, after),
+                    "SELECT logical_key FROM selected_keys "
+                    + ("" if after is None else "WHERE logical_key>? ")
+                    + "ORDER BY logical_key LIMIT 256",
+                    () if after is None else (after,),
                 )
             ) as rows:
                 page = tuple(str(row[0]) for row in rows)
@@ -870,9 +872,10 @@ class _FrontierSelection:
         while True:
             with closing(
                 self._owner.require_connection().execute(
-                    "SELECT source_path FROM selected_paths WHERE (? IS NULL OR source_path>?) "
-                    "ORDER BY source_path LIMIT 256",
-                    (after, after),
+                    "SELECT source_path FROM selected_paths "
+                    + ("" if after is None else "WHERE source_path>? ")
+                    + "ORDER BY source_path LIMIT 256",
+                    () if after is None else (after,),
                 )
             ) as rows:
                 page = tuple(str(row[0]) for row in rows)
@@ -917,8 +920,9 @@ class _FrontierSelection:
                 self._owner.require_connection().execute(
                     "SELECT logical_key,raw_id,source_revision,kind,frontier,generation,append_end "
                     "FROM frontier_heads WHERE comparison_path=? AND kind='byte' "
-                    "AND (? IS NULL OR logical_key>?) ORDER BY logical_key LIMIT 256",
-                    (path, after, after),
+                    + ("" if after is None else "AND logical_key>? ")
+                    + "ORDER BY logical_key LIMIT 256",
+                    (path,) if after is None else (path, after),
                 )
             ) as rows:
                 page = tuple(tuple(row) for row in rows)
@@ -1225,9 +1229,10 @@ def populate_frontier_selection(
     while True:
         with closing(
             ops.execute(
-                "SELECT source_path FROM ingest_cursor WHERE (? IS NULL OR source_path>?) "
-                "ORDER BY source_path LIMIT 256",
-                (after, after),
+                "SELECT source_path FROM ingest_cursor "
+                + ("" if after is None else "WHERE source_path>? ")
+                + "ORDER BY source_path LIMIT 256",
+                () if after is None else (after,),
             )
         ) as rows:
             page = tuple(str(row[0]) for row in rows)
@@ -1712,8 +1717,9 @@ def _ack_raw_transition(selection: _FrontierSelection, raw_id: str) -> bool:
             conn.execute(
                 "SELECT n.logical_source_key,n.disposition_json,p.disposition_json FROM current_memberships n "
                 "LEFT JOIN membership_inputs p USING(raw_id,logical_source_key) WHERE n.raw_id=? "
-                "AND (? IS NULL OR n.logical_source_key>?) ORDER BY n.logical_source_key LIMIT 256",
-                (raw_id, after, after),
+                + ("" if after is None else "AND n.logical_source_key>? ")
+                + "ORDER BY n.logical_source_key LIMIT 256",
+                (raw_id,) if after is None else (raw_id, after),
             )
         ) as rows:
             page = tuple(tuple(row) for row in rows)
@@ -1746,8 +1752,10 @@ def _pending_raw_ids(selection: _FrontierSelection) -> Iterator[str]:
         check_compute_cancelled()
         with closing(
             selection._owner.require_connection().execute(
-                "SELECT DISTINCT raw_id FROM pending_heads WHERE (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
-                (after, after),
+                "SELECT DISTINCT raw_id FROM pending_heads "
+                + ("" if after is None else "WHERE raw_id>? ")
+                + "ORDER BY raw_id LIMIT 256",
+                () if after is None else (after,),
             )
         ) as rows:
             page = tuple(str(row[0]) for row in rows)
@@ -1796,8 +1804,10 @@ def _prepare_checkpoint_delta(selection: _FrontierSelection, ops: sqlite3.Connec
         check_compute_cancelled()
         with closing(
             scratch.execute(
-                "SELECT raw_id FROM selected_raws WHERE (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
-                (after, after),
+                "SELECT raw_id FROM selected_raws "
+                + ("" if after is None else "WHERE raw_id>? ")
+                + "ORDER BY raw_id LIMIT 256",
+                () if after is None else (after,),
             )
         ) as rows:
             raws = tuple(str(row[0]) for row in rows)
@@ -1820,9 +1830,10 @@ def _prepare_checkpoint_delta(selection: _FrontierSelection, ops: sqlite3.Connec
                 check_compute_cancelled()
                 with closing(
                     scratch.execute(
-                        "SELECT * FROM membership_inputs WHERE raw_id=? AND (? IS NULL OR logical_source_key>?) "
-                        "ORDER BY logical_source_key LIMIT 256",
-                        (raw_id, member_after, member_after),
+                        "SELECT * FROM membership_inputs WHERE raw_id=? "
+                        + ("" if member_after is None else "AND logical_source_key>? ")
+                        + "ORDER BY logical_source_key LIMIT 256",
+                        (raw_id,) if member_after is None else (raw_id, member_after),
                     )
                 ) as rows:
                     members = tuple(tuple(row) for row in rows)
