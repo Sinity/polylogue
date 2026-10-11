@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
+from polylogue.core.compute_cancel import check_compute_cancelled
+
 if TYPE_CHECKING:
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.index_generation import ActiveWriterLease
@@ -89,6 +91,15 @@ def frontier_inspection_mode(
     mark: FrontierInspectionMark | None,
 ) -> Literal["full", "delta", "current"]:
     if mark is None or mark.state != "healthy" or mark.authority_identity != state.authority_identity:
+        return "full"
+    return _journal_inspection_mode(state, mark)
+
+
+def _journal_inspection_mode(
+    state: FrontierJournalState, mark: FrontierInspectionMark
+) -> Literal["full", "delta", "current"]:
+    """Coverage alone selects inputs; it never grants health or ACK eligibility."""
+    if mark.authority_identity != state.authority_identity:
         return "full"
     previous = (mark.source_watermark, mark.index_watermark, mark.cursor_watermark)
     highs = (state.source_high, state.index_high, state.cursor_high)
@@ -350,7 +361,7 @@ class PreparedFrontierSource:
         ):
             pass
 
-    def frontier_input(self, logical_key: str) -> dict[str, object] | None:
+    def frontier_input(self, logical_key: str, *, include_source: bool = True) -> dict[str, object] | None:
         """Read one head and its exact original Source dependencies."""
         from polylogue.storage.raw_reconciler import _FRONTIER_INDEX_INPUT_SQL, _FRONTIER_SOURCE_INPUT_SQL
 
@@ -384,6 +395,8 @@ class PreparedFrontierSource:
             head = None if row is None else dict(zip(names, row, strict=True))
         if head is None:
             return None
+        if not include_source:
+            return head
         raw_id = head["accepted_raw_id"]
         for table in (
             "raw_sessions",
@@ -391,11 +404,9 @@ class PreparedFrontierSource:
             "raw_membership_census",
             "raw_authority_parser_census",
         ):
-            self._producer._load_artifact_inputs(
-                table,
-                f"SELECT rowid FROM {table} WHERE raw_id=?",
-                (raw_id,),
-            )
+            predicate = "raw_id=? AND logical_source_key=?" if table == "raw_session_memberships" else "raw_id=?"
+            parameters = (raw_id, logical_key) if table == "raw_session_memberships" else (raw_id,)
+            self._producer._load_artifact_inputs(table, f"SELECT rowid FROM {table} WHERE {predicate}", parameters)
         with self._seal.source_rows(_FRONTIER_SOURCE_INPUT_SQL, (logical_key, logical_key, raw_id)) as rows:
             names = tuple(column[0] for column in rows.description or ())
             row = rows.fetchone()
@@ -451,9 +462,7 @@ class PreparedFrontierSource:
     def changed_raw_ids(self, state: FrontierJournalState, mark: FrontierInspectionMark) -> Iterator[str]:
         from heapq import merge
 
-        from polylogue.core.compute_cancel import check_compute_cancelled
-
-        if frontier_inspection_mode(state, mark) != "delta":
+        if _journal_inspection_mode(state, mark) != "delta":
             raise ValueError("changed-key inspection requires complete retained journal coverage")
 
         def keys(tier: str, low: int, high: int) -> Iterator[str]:
@@ -483,7 +492,6 @@ class PreparedFrontierSource:
 
     def frontier_keys(self) -> Iterator[str]:
         """Page original head identities, closing each cursor before hydration."""
-        from polylogue.core.compute_cancel import check_compute_cancelled
 
         after: str | None = None
         while True:
@@ -531,7 +539,6 @@ def _iter_selected_frontier_proofs(
     observed_at_ms: int,
 ) -> Iterator[tuple[RawAuthorityFrontierItem, tuple[object, ...]]]:
     """Classify selected original heads with the canonical byte-chain reducer."""
-    from polylogue.core.compute_cancel import check_compute_cancelled
     from polylogue.storage.raw_reconciler import _classify_frontier_row
     from polylogue.storage.raw_retention import _check_broken_active_chain_inputs, _IndexRawRevisionHead
 
@@ -582,7 +589,6 @@ def _iter_selected_cursor_proofs(
     ops: sqlite3.Connection,
 ) -> Iterator[tuple[_OpsCursorAuthority, _CursorFrontierComparison, bool]]:
     """Consume all selected original cursor rows through the shared decision."""
-    from polylogue.core.compute_cancel import check_compute_cancelled
     from polylogue.storage.raw_retention import _classify_cursor_frontier_input, _OpsCursorAuthority
 
     for selected_path in selection.paths():
@@ -765,6 +771,13 @@ class _FrontierSelection:
             "generation INTEGER NOT NULL,append_end INTEGER,comparison_path TEXT) WITHOUT ROWID;"
             "CREATE INDEX frontier_heads_by_path ON frontier_heads(comparison_path,logical_key);"
             "CREATE TABLE checked_cursor_paths(source_path TEXT PRIMARY KEY) WITHOUT ROWID;"
+            "CREATE TABLE pending_heads(logical_source_key TEXT PRIMARY KEY,raw_id TEXT NOT NULL,"
+            "inputs_json TEXT NOT NULL,contribution_json TEXT NOT NULL) WITHOUT ROWID;"
+            "CREATE INDEX pending_heads_raw ON pending_heads(raw_id,logical_source_key);"
+            "CREATE TABLE pending_raws(raw_id TEXT PRIMARY KEY,structural_digest TEXT NOT NULL) WITHOUT ROWID;"
+            "CREATE TABLE membership_inputs(raw_id TEXT NOT NULL,logical_source_key TEXT NOT NULL,disposition_json TEXT NOT NULL,PRIMARY KEY(raw_id,logical_source_key)) WITHOUT ROWID;"
+            "CREATE TABLE current_raws(raw_id TEXT PRIMARY KEY,structural_digest TEXT NOT NULL) WITHOUT ROWID;"
+            "CREATE TABLE current_memberships(raw_id TEXT NOT NULL,logical_source_key TEXT NOT NULL,disposition_json TEXT NOT NULL,PRIMARY KEY(raw_id,logical_source_key)) WITHOUT ROWID;"
         )
 
     def add_raw(self, raw_id: str) -> None:
@@ -865,7 +878,7 @@ class _FrontierSelection:
     def retain_head(self, head: _IndexRawRevisionHead, comparison_path: str | None) -> None:
         with closing(
             self._owner.require_connection().execute(
-                "INSERT INTO frontier_heads VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO frontier_heads VALUES(?,?,?,?,?,?,?,?)",
                 (
                     head.logical_source_key,
                     head.accepted_raw_id,
@@ -1089,7 +1102,6 @@ def populate_changed_frontier_selection(
     closure chooses which original operands to inspect and makes no new
     revision or acceptance decision.
     """
-    from polylogue.core.compute_cancel import check_compute_cancelled
 
     for changed_raw_id in source.changed_raw_ids(state, mark):
         selection.add_raw(changed_raw_id)
@@ -1346,6 +1358,7 @@ def publish_frontier_inspection_mark(
     healthy: bool,
     observed_at_ms: int,
     detail: str,
+    pending_selection: _FrontierSelection,
 ) -> None:
     """Commit the prepared Source proof before its disposable coverage mark.
 
@@ -1384,6 +1397,17 @@ def publish_frontier_inspection_mark(
                 seal.validate_observers_current()
                 return
             publish_prepared_revision_source(seal, permit)
+            for original, target in (
+                ("pending_heads", "raw_frontier_pending_heads"),
+                ("pending_raws", "raw_frontier_pending_raws"),
+                ("membership_inputs", "raw_frontier_membership_inputs"),
+            ):
+                with closing(writer.execute(f"DELETE FROM {target}")):
+                    pass
+                for page in _checkpoint_pages(pending_selection, original):
+                    marks = ",".join("?" for _ in page[0])
+                    with closing(writer.executemany(f"INSERT INTO {target} VALUES({marks})", page)):
+                        pass
             with closing(
                 writer.execute(
                     "INSERT INTO raw_frontier_inspection(singleton,authority_identity,source_watermark,"
@@ -1416,7 +1440,8 @@ class FrontierInspectionOutcome:
     accepted_head_checks: int
     blocking_head_checks: int
     broken_head_checks: int
-    cursor_checks: int
+    eligible_cursor_checks: int
+    comparable_cursor_checks: int
     cursor_ahead_count: int
     cursor_gap_count: int
     missing_session_raw_count: int
@@ -1494,6 +1519,355 @@ def _missing_session_raw_references(source: PreparedFrontierSource) -> int:
             after = session_id
 
 
+def _pending_ack_row(row: dict[str, object]) -> bool:
+    """The complete semantic matrix whose sole missing input is disposition."""
+    from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
+
+    fingerprint = raw_authority_parser_fingerprint()
+    raw_id = row.get("accepted_raw_id")
+    return bool(
+        row.get("accepted_frontier_kind") == "semantic"
+        and row.get("raw_origin") is not None
+        and row.get("session_origin") == row.get("raw_origin")
+        and row.get("session_id") is not None
+        and row.get("session_raw_id") == row.get("head_accepted_raw_id") == raw_id
+        and row.get("session_content_hash") == row.get("accepted_content_hash")
+        and row.get("membership_decision") is None
+        and row.get("membership_authority") == "quarantined"
+        and row.get("membership_source_revision") == row.get("accepted_source_revision")
+        and str(row.get("membership_content_hash") or "").lower()
+        == str(row.get("membership_source_revision") or "").lower()
+        and row.get("membership_census_status") == row.get("parser_census_status") == "complete"
+        and row.get("membership_parser_fingerprint") == row.get("authority_parser_fingerprint") == fingerprint
+        and row.get("parser_names_key")
+    )
+
+
+def _source_checkpoint_rows(
+    source: PreparedFrontierSource,
+    table: str,
+    predicate: str,
+    parameters: tuple[object, ...],
+) -> Iterator[dict[str, object]]:
+    """Hydrate complete original pages, then stream their staged post-image."""
+    after = 0
+    while True:
+        check_compute_cancelled()
+        with source._seal.original_rows(
+            "source",
+            f"SELECT rowid FROM {table} WHERE {predicate} AND rowid>? ORDER BY rowid LIMIT 256",
+            (*parameters, after),
+        ) as rows:
+            ids = tuple(int(row[0]) for row in rows)
+        if not ids:
+            break
+        marks = ",".join("?" for _ in ids)
+        source._producer._load_artifact_inputs(table, f"SELECT rowid FROM {table} WHERE rowid IN ({marks})", ids)
+        after = ids[-1]
+    after = 0
+    while True:
+        check_compute_cancelled()
+        with source._seal.source_rows(
+            f"SELECT rowid AS checkpoint_rowid,* FROM {table} WHERE {predicate} AND rowid>? ORDER BY rowid LIMIT 256",
+            (*parameters, after),
+        ) as rows:
+            names = tuple(column[0] for column in rows.description or ())
+            page = tuple(tuple(cells) for cells in rows)
+        if not page:
+            return
+        for cells in page:
+            yield {
+                name: value.hex() if isinstance(value, (bytes, memoryview)) else value
+                for name, value in zip(names, cells, strict=True)
+            }
+        after = int(page[-1][0])
+
+
+def _raw_checkpoint(
+    source: PreparedFrontierSource,
+    selection: _FrontierSelection,
+    raw_id: str,
+) -> bool:
+    """One streamed structural digest and disposition inventory per raw."""
+    check_compute_cancelled()
+    digest = hashlib.sha256()
+    scratch = selection._owner.require_connection()
+    scratch.execute("DELETE FROM current_raws WHERE raw_id=?", (raw_id,))
+    scratch.execute("DELETE FROM current_memberships WHERE raw_id=?", (raw_id,))
+    blob_hash = None
+    found = False
+    for table in (
+        "raw_sessions",
+        "raw_session_memberships",
+        "raw_membership_census",
+        "raw_authority_parser_census",
+        "raw_artifacts",
+        "blob_refs",
+    ):
+        digest.update(table.encode())
+        predicate = "ref_type='raw_payload' AND ref_id=?" if table == "blob_refs" else "raw_id=?"
+        for row in _source_checkpoint_rows(source, table, predicate, (raw_id,)):
+            if table == "raw_sessions":
+                found = True
+                blob_hash = bytes.fromhex(str(row["blob_hash"]))
+                for column in ("parsed_at_ms", "validated_at_ms"):
+                    row.pop(column)
+            if table == "raw_session_memberships":
+                state = {
+                    column: row.pop(column)
+                    for column in ("decision", "revision_authority", "decided_at_ms", "acquisition_generation")
+                }
+                scratch.execute(
+                    "INSERT INTO current_memberships VALUES(?,?,?)",
+                    (raw_id, row["logical_source_key"], json.dumps(state, sort_keys=True)),
+                )
+            digest.update(json.dumps(row, sort_keys=True, separators=(",", ":")).encode())
+    if not found:
+        return False
+    for table in ("verified_blob_receipts", "gc_generation_members"):
+        digest.update(table.encode())
+        for row in _source_checkpoint_rows(source, table, "blob_hash=?", (blob_hash,)):
+            digest.update(json.dumps(row, sort_keys=True, separators=(",", ":")).encode())
+    # Retain accepted-key meaning independently from remaining pending keys.
+    after = None
+    while True:
+        check_compute_cancelled()
+        with source._seal.original_rows(
+            "index",
+            "SELECT logical_source_key FROM raw_revision_heads WHERE accepted_raw_id=? "
+            "AND (? IS NULL OR logical_source_key>?) ORDER BY logical_source_key LIMIT 256",
+            (raw_id, after, after),
+        ) as rows:
+            keys = tuple(str(row[0]) for row in rows)
+        if not keys:
+            break
+        for key in keys:
+            head = source.frontier_input(key, include_source=False)
+            if head is None:
+                return False
+            head.pop("head_decided_at_ms", None)
+            digest.update(json.dumps(head, sort_keys=True, separators=(",", ":")).encode())
+        after = keys[-1]
+    after = None
+    while True:
+        check_compute_cancelled()
+        with source._seal.original_rows(
+            "index",
+            "SELECT session_id,origin,raw_id,hex(content_hash),message_count FROM sessions WHERE raw_id=? "
+            "AND (? IS NULL OR session_id>?) ORDER BY session_id LIMIT 256",
+            (raw_id, after, after),
+        ) as rows:
+            page = tuple(tuple(cells) for cells in rows)
+        if not page:
+            break
+        for cells in page:
+            source._seal.before_index_input(
+                "sessions",
+                ("session_id", "origin", "raw_id", "content_hash", "message_count"),
+                "SELECT rowid FROM sessions WHERE session_id=?",
+                (cells[0],),
+            )
+            digest.update(json.dumps(cells, separators=(",", ":")).encode())
+        after = str(page[-1][0])
+    # json_each keeps an arbitrarily large canonical census in its SQL owner.
+    with source._seal.source_rows(
+        "WITH parsed AS MATERIALIZED (SELECT value,type FROM json_each("
+        "(SELECT logical_keys_json FROM raw_authority_parser_census WHERE raw_id=?))) "
+        "SELECT 1 FROM raw_membership_census c WHERE c.raw_id=? "
+        "AND c.member_count=(SELECT count(*) FROM raw_session_memberships WHERE raw_id=c.raw_id) "
+        "AND (SELECT count(*) FROM parsed)=c.member_count "
+        "AND NOT EXISTS(SELECT 1 FROM parsed WHERE type!='text') "
+        "AND NOT EXISTS(SELECT value FROM parsed EXCEPT SELECT logical_source_key "
+        "FROM raw_session_memberships WHERE raw_id=c.raw_id) "
+        "AND NOT EXISTS(SELECT logical_source_key FROM raw_session_memberships WHERE raw_id=c.raw_id "
+        "EXCEPT SELECT value FROM parsed)",
+        (raw_id, raw_id),
+    ) as rows:
+        exact = rows.fetchone() is not None
+    if exact:
+        scratch.execute("INSERT OR REPLACE INTO current_raws VALUES(?,?)", (raw_id, digest.hexdigest()))
+    return exact
+
+
+def _replace_raw_checkpoint(selection: _FrontierSelection, raw_id: str) -> None:
+    conn = selection._owner.require_connection()
+    conn.execute("INSERT OR REPLACE INTO pending_raws SELECT * FROM current_raws WHERE raw_id=?", (raw_id,))
+    conn.execute("DELETE FROM membership_inputs WHERE raw_id=?", (raw_id,))
+    conn.execute("INSERT INTO membership_inputs SELECT * FROM current_memberships WHERE raw_id=?", (raw_id,))
+
+
+def _ack_raw_transition(selection: _FrontierSelection, raw_id: str) -> bool:
+    conn = selection._owner.require_connection()
+    with closing(
+        conn.execute(
+            "SELECT 1 FROM pending_raws p JOIN current_raws c USING(raw_id) "
+            "WHERE p.raw_id=? AND p.structural_digest=c.structural_digest",
+            (raw_id,),
+        )
+    ) as rows:
+        if rows.fetchone() is None:
+            return False
+    acknowledged = False
+    after = None
+    while True:
+        check_compute_cancelled()
+        with closing(
+            conn.execute(
+                "SELECT n.logical_source_key,n.disposition_json,p.disposition_json FROM current_memberships n "
+                "LEFT JOIN membership_inputs p USING(raw_id,logical_source_key) WHERE n.raw_id=? "
+                "AND (? IS NULL OR n.logical_source_key>?) ORDER BY n.logical_source_key LIMIT 256",
+                (raw_id, after, after),
+            )
+        ) as rows:
+            page = tuple(tuple(row) for row in rows)
+        if not page:
+            break
+        for _key, current, prior in page:
+            if prior is None:
+                return False
+            before, now = json.loads(str(prior)), json.loads(str(current))
+            if before != now:
+                if not (
+                    before["decision"] is None
+                    and before["revision_authority"] == "quarantined"
+                    and now["decision"] == "applied"
+                    and now["revision_authority"] == "byte_proven"
+                    and type(now["decided_at_ms"]) is int
+                    and now["decided_at_ms"] >= 0
+                    and type(now["acquisition_generation"]) is int
+                    and now["acquisition_generation"] >= 0
+                ):
+                    return False
+                acknowledged = True
+        after = str(page[-1][0])
+    return acknowledged
+
+
+def _pending_raw_ids(selection: _FrontierSelection) -> Iterator[str]:
+    after = None
+    while True:
+        check_compute_cancelled()
+        with closing(
+            selection._owner.require_connection().execute(
+                "SELECT DISTINCT raw_id FROM pending_heads WHERE (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
+                (after, after),
+            )
+        ) as rows:
+            page = tuple(str(row[0]) for row in rows)
+        if not page:
+            return
+        yield from page
+        after = page[-1]
+
+
+def _checkpoint_pages(selection: _FrontierSelection, table: str) -> Iterator[tuple[tuple[object, ...], ...]]:
+    """Stream the disposable checkpoint into its atomic Ops publication."""
+    with closing(selection._owner.require_connection().execute(f"SELECT * FROM {table}")) as rows:
+        while True:
+            check_compute_cancelled()
+            page = tuple(tuple(row) for row in rows.fetchmany(256))
+            if not page:
+                return
+            yield page
+
+
+def _populate_pending_ack_selection(
+    source: PreparedFrontierSource,
+    selection: _FrontierSelection,
+    ops: sqlite3.Connection,
+    state: FrontierJournalState,
+    mark: FrontierInspectionMark | None,
+) -> bool:
+    """Qualify a sparse blocked frame before choosing any successor proofs."""
+    if mark is None or mark.state != "blocked" or _journal_inspection_mode(state, mark) != "delta":
+        return False
+    try:
+        findings = json.loads(mark.findings_document or "{}")
+        count = int(findings["blocking_heads"])
+        if count <= 0 or any(findings[name] for name in ("broken_heads", "missing_session_raws")):
+            return False
+        with closing(ops.execute("SELECT count(*) FROM raw_frontier_pending_heads")) as rows:
+            if rows.fetchone()[0] != count:
+                return False
+        for target, original in (
+            ("pending_heads", "raw_frontier_pending_heads"),
+            ("pending_raws", "raw_frontier_pending_raws"),
+            ("membership_inputs", "raw_frontier_membership_inputs"),
+        ):
+            after_row = 0
+            while True:
+                check_compute_cancelled()
+                with closing(
+                    ops.execute(f"SELECT rowid,* FROM {original} WHERE rowid>? ORDER BY rowid LIMIT 256", (after_row,))
+                ) as rows:
+                    page = tuple(tuple(row) for row in rows)
+                if not page:
+                    break
+                marks = ",".join("?" for _ in page[0][1:])
+                selection._owner.require_connection().executemany(
+                    f"INSERT INTO {target} VALUES({marks})", (row[1:] for row in page)
+                )
+                after_row = int(page[-1][0])
+        for raw_id in source.changed_raw_ids(state, mark):
+            check_compute_cancelled()
+            if not _raw_checkpoint(source, selection, raw_id) or not _ack_raw_transition(selection, raw_id):
+                return False
+            _replace_raw_checkpoint(selection, raw_id)
+            selection.add_raw(raw_id)
+            after = None
+            while True:
+                check_compute_cancelled()
+                with source._seal.original_rows(
+                    "index",
+                    "SELECT logical_source_key FROM raw_revision_heads WHERE accepted_raw_id=? "
+                    "AND (? IS NULL OR logical_source_key>?) ORDER BY logical_source_key LIMIT 256",
+                    (raw_id, after, after),
+                ) as rows:
+                    keys = tuple(str(row[0]) for row in rows)
+                if not keys:
+                    break
+                for key in keys:
+                    selection.add_key(key)
+                after = keys[-1]
+        return True
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _populate_complete_cursor_heads(source: PreparedFrontierSource, selection: _FrontierSelection) -> bool:
+    """Current cursor operands are independent of expensive selected proofs."""
+    from polylogue.storage.raw_retention import _IndexRawRevisionHead
+
+    selection._owner.require_connection().execute("DELETE FROM frontier_heads")
+    for key in source.frontier_keys():
+        # Head/session and raw acquisition inputs remain on the original seal.
+        row = source.frontier_input(key, include_source=False)
+        if row is None:
+            return False
+        source._producer._load_artifact_inputs(
+            "raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (row["accepted_raw_id"],)
+        )
+        with source._seal.source_rows(
+            "SELECT source_path,canonical_source_path FROM raw_sessions WHERE raw_id=?", (row["accepted_raw_id"],)
+        ) as rows:
+            path = rows.fetchone()
+        if path is None:
+            return False
+        selection.retain_head(
+            _IndexRawRevisionHead(
+                str(row["logical_source_key"]),
+                str(row["head_accepted_raw_id"]),
+                str(row["accepted_source_revision"]),
+                str(row["accepted_frontier_kind"]),
+                int(cast(int, row["accepted_frontier"])),
+                int(cast(int, row["head_acquisition_generation"])),
+                cast(int | None, row["head_append_end_offset"]),
+            ),
+            str(path[1] or path[0]),
+        )
+    return True
+
+
 def inspect_prepared_raw_authority_frontier(
     archive_root: Path,
     *,
@@ -1501,7 +1875,6 @@ def inspect_prepared_raw_authority_frontier(
     check_physical_dependencies: bool = False,
 ) -> FrontierInspectionOutcome:
     """Inspect and publish through the caller's supplied exclusive creator/bridge."""
-    from polylogue.core.compute_cancel import check_compute_cancelled
     from polylogue.core.sql_settlement import retain_native_sql_lifetimes
     from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.blob_store import BlobStore
@@ -1511,6 +1884,7 @@ def inspect_prepared_raw_authority_frontier(
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
     from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
 
     frame = _prepare_frontier_inspection_frame(archive_root, input_demand=input_demand)
     exclusion = None
@@ -1542,14 +1916,36 @@ def inspect_prepared_raw_authority_frontier(
             # Filesystem changes have no relational journal key. Explicit
             # maintenance checks the complete physical dependency inventory;
             # unchanged blobs still reuse their exact fingerprint receipts.
-            mode = populate_frontier_selection(
+            pending_delta = not check_physical_dependencies and _populate_pending_ack_selection(
                 source,
                 frame.selection,
-                selected_read,
                 ops,
                 state,
-                None if check_physical_dependencies else mark,
+                mark,
             )
+            if pending_delta:
+                pending_delta = _populate_complete_cursor_heads(source, frame.selection)
+            if pending_delta:
+                mode = "delta"
+            else:
+                frame.selection._owner.require_connection().execute("DELETE FROM frontier_heads")
+                for table in (
+                    "pending_heads",
+                    "pending_raws",
+                    "membership_inputs",
+                    "current_raws",
+                    "current_memberships",
+                ):
+                    frame.selection._owner.require_connection().execute(f"DELETE FROM {table}")
+                frame.selection._owner.require_connection().execute("DELETE FROM selected_keys")
+                mode = populate_frontier_selection(
+                    source,
+                    frame.selection,
+                    selected_read,
+                    ops,
+                    state,
+                    None if check_physical_dependencies else mark,
+                )
             from polylogue.storage.raw_retention import (
                 BrokenAppendHeadSample,
                 CursorAheadSample,
@@ -1565,21 +1961,82 @@ def inspect_prepared_raw_authority_frontier(
             ahead_samples: list[CursorAheadSample] = []
             gap_samples: list[CursorAuthorityGapSample] = []
             if mode != "current":
-                for item, chain in _iter_selected_frontier_proofs(
-                    source,
-                    frame.selection,
-                    BlobStore(archive_root / "blob"),
-                    observed_at_ms=observed_at_ms,
-                ):
-                    check_compute_cancelled()
-                    frame.selection.retain_proof(item)
-                    head_count += 1
-                    blocking_count += int(item.state in _OBLIGATION_STATES)
-                    if chain[0] != "healthy":
-                        broken_count += 1
-                        # A bounded sample for the operator; the count stays exact.
-                        if len(broken_samples) < _FINDINGS_SAMPLE_LIMIT:
-                            broken_samples.extend(cast(tuple[BrokenAppendHeadSample, ...], chain[3])[:1])
+                checkpoint_eligible = mode == "full" or pending_delta
+                while True:
+                    unsupported = False
+                    for item, chain in _iter_selected_frontier_proofs(
+                        source,
+                        frame.selection,
+                        BlobStore(archive_root / "blob"),
+                        observed_at_ms=observed_at_ms,
+                    ):
+                        check_compute_cancelled()
+                        frame.selection.retain_proof(item)
+                        head_count += 1
+                        blocking_count += int(item.state in _OBLIGATION_STATES)
+                        key = item.logical_source_key
+                        if key is not None:
+                            frame.selection._owner.require_connection().execute(
+                                "DELETE FROM pending_heads WHERE logical_source_key=?", (key,)
+                            )
+                        if item.state in _OBLIGATION_STATES:
+                            inputs = None if key is None else source.frontier_input(key)
+                            if (
+                                item.state.value == "unresolved_provenance"
+                                and chain[0] == "healthy"
+                                and inputs is not None
+                                and _pending_ack_row(inputs)
+                            ):
+                                frame.selection._owner.require_connection().execute(
+                                    "INSERT INTO pending_heads VALUES(?,?,?,?)",
+                                    (
+                                        key,
+                                        item.raw_id,
+                                        json.dumps(inputs, sort_keys=True),
+                                        json.dumps(item.to_dict(), sort_keys=True),
+                                    ),
+                                )
+                            else:
+                                unsupported = True
+                        if chain[0] != "healthy":
+                            unsupported = True
+                            broken_count += 1
+                            if len(broken_samples) < _FINDINGS_SAMPLE_LIMIT:
+                                broken_samples.extend(cast(tuple[BrokenAppendHeadSample, ...], chain[3])[:1])
+                    if pending_delta and unsupported:
+                        # No obligation publication has happened. Staged receipt
+                        # writes stay on the same original tape while full proof
+                        # replaces the failed incremental selection.
+                        for table in (
+                            "pending_heads",
+                            "pending_raws",
+                            "membership_inputs",
+                            "current_raws",
+                            "current_memberships",
+                            "selected_keys",
+                            "frontier_proofs",
+                            "frontier_heads",
+                            "selected_paths",
+                        ):
+                            frame.selection._owner.require_connection().execute(f"DELETE FROM {table}")
+                        head_count = blocking_count = broken_count = 0
+                        broken_samples.clear()
+                        mode = populate_frontier_selection(source, frame.selection, selected_read, ops, state, None)
+                        pending_delta = False
+                        checkpoint_eligible = True
+                        continue
+                    checkpoint_eligible = checkpoint_eligible and not unsupported
+                    break
+                if pending_delta:
+                    with closing(
+                        frame.selection._owner.require_connection().execute("SELECT count(*) FROM pending_heads")
+                    ) as rows:
+                        blocking_count = int(rows.fetchone()[0])
+                    # Every cursor receives a complete current proof, including
+                    # those unrelated to this pass's expensive head selection.
+                    with closing(ops.execute("SELECT source_path FROM ingest_cursor ORDER BY source_path")) as rows:
+                        for row in rows:
+                            frame.selection.add_path(str(row[0]))
                 for cursor, comparison, retained_path in _iter_selected_cursor_proofs(source, frame.selection, ops):
                     cursor_count += 1
                     # The findings carry the canonical comparable-cursor count, the same
@@ -1600,6 +2057,33 @@ def inspect_prepared_raw_authority_frontier(
                         )
                 if mode == "full":
                     missing_refs = _missing_session_raw_references(source)
+                if mode == "full" and checkpoint_eligible and not missing_refs and not broken_count:
+                    # Later sibling proofs can insert or refresh a shared receipt.
+                    # Anchor each raw once, after every selected proof has settled.
+                    for raw_id in _pending_raw_ids(frame.selection):
+                        if not _raw_checkpoint(source, frame.selection, raw_id):
+                            checkpoint_eligible = False
+                            break
+                        _replace_raw_checkpoint(frame.selection, raw_id)
+                if not checkpoint_eligible or missing_refs or broken_count:
+                    for table in ("pending_heads", "pending_raws", "membership_inputs"):
+                        frame.selection._owner.require_connection().execute(f"DELETE FROM {table}")
+                else:
+                    conn = frame.selection._owner.require_connection()
+                    # Bind the post-proof receipt state once per changed raw,
+                    # including siblings that have already become healthy.
+                    if pending_delta:
+                        for raw_id in source.changed_raw_ids(state, mark):
+                            with closing(
+                                conn.execute("SELECT 1 FROM pending_heads WHERE raw_id=? LIMIT 1", (raw_id,))
+                            ) as rows:
+                                remains = rows.fetchone() is not None
+                            if remains:
+                                if not _raw_checkpoint(source, frame.selection, raw_id):
+                                    raise ReferenceSealStaleError("frontier checkpoint lost a proven Source operand")
+                                _replace_raw_checkpoint(frame.selection, raw_id)
+                    conn.execute("DELETE FROM pending_raws WHERE raw_id NOT IN (SELECT raw_id FROM pending_heads)")
+                    conn.execute("DELETE FROM membership_inputs WHERE raw_id NOT IN (SELECT raw_id FROM pending_raws)")
                 pass_id = "raw-authority-frontier-pass:" + frame.selection.proof_inventory_digest()
                 for payload in frame.selection.proof_payloads(obligations_only=True):
                     source.publish_obligation_input(
@@ -1632,6 +2116,7 @@ def inspect_prepared_raw_authority_frontier(
             blocking_count,
             broken_count,
             cursor_count,
+            comparable_cursor_count,
             ahead_count,
             gap_count,
             missing_refs,
@@ -1670,6 +2155,7 @@ def inspect_prepared_raw_authority_frontier(
                     cursor_deferred=deferred_count,
                     missing_session_raws=missing_refs,
                 ).to_document(),
+                pending_selection=frame.selection,
             )
     except BaseException as primary:
         _settle_frontier_inspection_frame(frame, exclusion, lifetime_bound=lifetime_bound, primary=primary)

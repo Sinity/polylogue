@@ -226,7 +226,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
                 input_demand=owner._compute_adapter.amend_current_input_demand,
             )
             assert inspection.mode == "full" and inspection.healthy
-            assert inspection.accepted_head_checks == inspection.cursor_checks == 0
+            assert inspection.accepted_head_checks == inspection.eligible_cursor_checks == 0
 
     asyncio.run(inspect_fixture())
 

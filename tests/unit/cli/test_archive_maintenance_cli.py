@@ -1196,7 +1196,7 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
         assert payload["mode"] == "full"
         assert payload["healthy"]
         assert payload["accepted_head_checks"] == payload["blocking_head_checks"] == 0
-        assert payload["cursor_checks"] == payload["cursor_ahead_count"] == payload["cursor_gap_count"] == 0
+        assert payload["eligible_cursor_checks"] == payload["cursor_ahead_count"] == payload["cursor_gap_count"] == 0
         assert payload["pass_id"].startswith("raw-authority-frontier-pass:")
         # Coverage reports observations, not executable plans or client query handles.
         assert "executable_plan_count" not in payload
@@ -1204,7 +1204,7 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
         assert "query_handle" not in payload
     else:
         assert "Frontier full: healthy=True heads=0 blocked=0" in result.stdout
-        assert "Cursors: checked=0 ahead=0 gaps=0" in result.stdout
+        assert "Cursors: eligible=0 comparable=0 ahead=0 gaps=0" in result.stdout
 
     help_result = cli_runner.invoke(cli, ["--plain", "ops", "maintenance", "--help"])
     assert help_result.exit_code == 0
