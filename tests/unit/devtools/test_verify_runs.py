@@ -615,7 +615,9 @@ def test_managed_retired_destination_is_refused_in_an_old_parent_environment() -
     )
 
 
-def test_wrapper_phase_records_failure_without_payload_or_masking(tmp_path, monkeypatch):
+def test_wrapper_phase_records_failure_without_payload_or_masking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from devtools.verify_runs import wrapper_phase
 
     monkeypatch.chdir(tmp_path)

@@ -467,6 +467,7 @@ def bench_validation(
     product_tree = _product_tree(candidate)
     expected_runtime = _runtime_identity()
     launch_binding = None
+    launch: dict[str, Any] = {}
     if launch_path is not None:
         launch = json.loads(launch_path.read_text())
         if arm not in {"A", "B"} or ordinal is None or ordinal < 1 or ordinal > 4 * launch["repetitions"]:
@@ -1026,7 +1027,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(arguments)
     if args.diagnostic is not None and args.component != "validation":
         parser.error("--diagnostic supports direct validation only; matched experiments remain unprofiled")
-    required = ("corpus",) if args.component == "blob" else ("input", "recipe", "schema_root")
+    required: tuple[str, ...] = ("corpus",) if args.component == "blob" else ("input", "recipe", "schema_root")
     required += (
         ("candidate",)
         if args.component in {"validation", "preparation", "page"}

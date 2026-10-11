@@ -201,8 +201,9 @@ def inventory(
     cursor: dict[str, Any] = {"root": 0, "after": None}
     prior_observations: dict[str, dict[str, Any]] = {}
     if previous is not None:
+        last: dict[str, Any] = {}
         for stage in _chain(previous):
-            last: dict[str, Any] = {}
+            last = {}
             for row in _rows(stage):
                 if row["kind"] == "header" and row["plan"] != plan_ref:
                     raise ValueError("continuation belongs to another plan")
@@ -572,7 +573,10 @@ def _project(stage: Path, calibration_path: Path, output: Path, ledger: sqlite3.
         root = next(root for root in roots.values() if root["stratum"] == stratum)
         population = ledger.execute("SELECT COUNT(*) FROM units WHERE stratum=?", (stratum,)).fetchone()[0]
         rows = samples[stratum]
-        estimates, uncertainty, errors, unknown = {}, {}, {}, []
+        estimates: dict[str, float | None] = {}
+        uncertainty: dict[str, Any] = {}
+        errors: dict[str, Any] = {}
+        unknown: list[str] = []
         for metric in METRICS:
             if not rows or any(metric not in values for _, values in rows):
                 estimates[metric] = None

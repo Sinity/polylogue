@@ -7,7 +7,7 @@ import json
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, cast
 
 import pytest
 
@@ -171,7 +171,7 @@ def test_native_stages_preserve_units_shared_metadata_and_stat_only_default(
     def no_transcript_read(path: Path, *args: Any, **kwargs: Any) -> IO[Any]:
         if root in path.parents or path.name == "history.jsonl":
             raise AssertionError("stat-only inventory read a transcript or metadata body")
-        return original_open(path, *args, **kwargs)
+        return cast(IO[Any], original_open(path, *args, **kwargs))
 
     monkeypatch.setattr(Path, "open", no_transcript_read)
     final = _stages(tmp_path, plan)

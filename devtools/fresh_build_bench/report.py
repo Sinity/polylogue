@@ -1077,7 +1077,7 @@ def config_digest(config: Any) -> str:
 def product_content_bound(work: Path, expected: str) -> bool:
     """Check the original prelaunch content identity, without retrofitting it."""
     try:
-        return json.loads((work / "product-tree.json").read_text()).get("product_tree") == expected
+        return bool(json.loads((work / "product-tree.json").read_text()).get("product_tree") == expected)
     except (OSError, ValueError, AttributeError):
         return False
 

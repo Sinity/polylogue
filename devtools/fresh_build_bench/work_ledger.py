@@ -15,7 +15,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from devtools.fresh_build_bench.trace_ledger import interval_union
 
@@ -304,7 +304,7 @@ def _sanitize(event: Mapping[str, Any]) -> dict[str, Any] | None:
     result: dict[str, Any] = {}
     for field in _NUMERIC_FIELDS:
         value = event.get(field)
-        if type(value) in (int, float) and math.isfinite(value) and value >= 0:
+        if type(value) in (int, float) and math.isfinite(cast(int | float, value)) and cast(int | float, value) >= 0:
             result[field] = value
     for field in _TOKEN_FIELDS:
         value = event.get(field)
@@ -557,8 +557,8 @@ def export_work_ledger(
     artifacts: dict[str, str] = {}
     for name, value in (("trace.json", trace), ("ledger.json", ledger)):
         content = (json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n").encode()
-        with (destination / name).open("xb") as handle:
-            handle.write(content)
+        with (destination / name).open("xb") as artifact_writer:
+            artifact_writer.write(content)
         artifacts[name] = _digest(content)
     manifest = {
         "format": "polylogue.work-ledger-export.v1",
@@ -576,9 +576,9 @@ def export_work_ledger(
         "coverage": ledger["coverage"],
     }
     temporary_manifest = destination / ".manifest.pending"
-    with temporary_manifest.open("x") as handle:
-        json.dump(manifest, handle, sort_keys=True, indent=2, allow_nan=False)
-        handle.write("\n")
+    with temporary_manifest.open("x") as manifest_writer:
+        json.dump(manifest, manifest_writer, sort_keys=True, indent=2, allow_nan=False)
+        manifest_writer.write("\n")
     # Hard-link publication is atomic and refuses any existing final name.
     os.link(temporary_manifest, destination / "manifest.json")
     temporary_manifest.unlink()

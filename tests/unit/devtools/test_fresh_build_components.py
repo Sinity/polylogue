@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -77,13 +78,13 @@ def test_preparation_consumers_close_before_backing_retirement_and_no_ambient_si
         error = deferred = unsupported_shape = missing_profile_identity = False
         codex_state_kind = shard_path = resolved_provider = parsed_prefix_size = None
 
-        def iter_sessions(self):
+        def iter_sessions(self) -> Iterator[SimpleNamespace]:
             try:
                 yield SimpleNamespace(session_events=[])
             finally:
                 events.append("reader-closed")
 
-        def discard(self):
+        def discard(self) -> None:
             events.append("retired")
 
     def prepare(*args: Any, **kwargs: Any) -> Attempt:
@@ -127,7 +128,7 @@ def test_matched_sequence_preserves_actual_bytes_and_stops_on_invalid_work(tmp_p
 
 
 def test_component_report_recomputes_equivalence_and_refuses_changed_original(tmp_path: Path) -> None:
-    launch = {
+    launch: dict[str, Any] = {
         "order": "ABBA",
         "repetitions": 1,
         "candidates": {"A": {"git_sha": "a"}, "B": {"git_sha": "b"}},
@@ -139,7 +140,7 @@ def test_component_report_recomputes_equivalence_and_refuses_changed_original(tm
     launch_path = tmp_path / "launch.json"
     launch_path.write_text(json.dumps(launch))
     launch_digest = hashlib.sha256(launch_path.read_bytes()).hexdigest()
-    samples = []
+    samples: list[dict[str, Any]] = []
     for ordinal, arm in matched_schedule("ABBA", 1):
         work = tmp_path / f"{ordinal:03d}-{arm}"
         work.mkdir()
@@ -273,7 +274,7 @@ def test_direct_validation_cli_launches_clean_child_before_product_binding(monke
         assert not check
         return SimpleNamespace(returncode=7)
 
-    monkeypatch.setattr(components.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
     assert components.main(["validation", "--candidate", "/neutral/candidate"]) == 7
     assert seen[0][1] == "-B" and seen[0][3:] == ["validation", "--candidate", "/neutral/candidate"]
 
@@ -375,7 +376,7 @@ def test_page_owner_construction_failure_still_settles_compute_and_writer(
 def test_component_output_equivalence_excludes_descriptive_physical_resources() -> None:
     from devtools.fresh_build_bench.components import _reduce_components
 
-    samples = [
+    samples: list[dict[str, Any]] = [
         {
             "arm": arm,
             "receipt": {
