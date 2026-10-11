@@ -1189,7 +1189,10 @@ class BoundedComputeAdapter:
             # A newly created free-threaded Python worker inherits the submit
             # context. Its persistent base must not retain this task's inputs;
             # the explicit task context below supplies the actual work context.
-            execution = contextvars.Context().run(self.executor.submit, task.context.run, run)
+            def submit_execution() -> Future[None]:
+                return self.executor.submit(task.context.run, run)
+
+            execution = contextvars.Context().run(submit_execution)
         except BaseException as submission_failure:
             self._release(task, active=True)
             task.future.set_exception(

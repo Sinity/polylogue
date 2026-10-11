@@ -837,6 +837,7 @@ def test_completed_compute_retires_external_cancellation_and_context_custody(
     monkeypatch.setattr(adapter, "_release", observe_release)
     value: contextvars.ContextVar[Input] = contextvars.ContextVar("owned-preparation-input")
     was_enabled = gc.isenabled()
+    first: SubmittedOperation[None] | None = None
     gc.disable()
     try:
         if registration_race:
@@ -868,6 +869,7 @@ def test_completed_compute_retires_external_cancellation_and_context_custody(
                 submitted = submitter.submit(offer)
                 assert registration_started.wait(5)
                 release_blocker.set()
+                assert first is not None
                 first.future.result(timeout=5)
                 operation, argument_ref, context_ref = submitted.result(timeout=5)
                 del submitted

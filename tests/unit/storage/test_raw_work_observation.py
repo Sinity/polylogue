@@ -10,7 +10,7 @@ from typing import cast
 import pytest
 
 from polylogue import logging as plog
-from polylogue.archive.revision_authority import RawRevisionKind
+from polylogue.archive.revision_authority import RawRevisionKind, raw_authority_parser_fingerprint
 from polylogue.core import work_observation
 from polylogue.core.enums import Provider, ValidationMode
 from polylogue.schemas.runtime_registry import SchemaRegistry
@@ -50,7 +50,7 @@ def test_neutral_parse_body_refs_are_distinct_but_validation_mode_does_not_chang
                     captured,
                     key,
                     raw.NeutralPreparationContext(
-                        CapturedSidecarResolver({}), raw.raw_authority_parser_fingerprint(), SchemaRegistry(), 0
+                        CapturedSidecarResolver({}), raw_authority_parser_fingerprint(), SchemaRegistry(), 0
                     ),
                     tmp_path,
                 )
@@ -153,6 +153,7 @@ def test_exact_sidecar_context_amortizes_only_within_owned_read(changed: str) ->
     assert first.sidecar_signature_digest is second.sidecar_signature_digest
     assert first.sidecar_signature_bytes > 0
     key = raw._neutral_artifact_key("one", first, ValidationMode.ADVISORY)
+    assert isinstance(key[0], tuple)
     assert key[0][-1] == ("sidecar-signature-digest", first.sidecar_signature_digest)
     changed_scope = (
         RetainedSidecarScope(scope_key="owned")
