@@ -563,14 +563,14 @@ def select_real(
     total = 0
     while queues and len(selected) < max_units:
         for origin in provider_order:
-            buckets = provider_buckets[origin]
-            if not buckets:
+            bucket_queue = provider_buckets[origin]
+            if not bucket_queue:
                 continue
-            key = (origin, buckets.popleft())
+            key = (origin, bucket_queue.popleft())
             members = queues[key]
             unit = members.pop()
             if members:
-                buckets.append(key[1])
+                bucket_queue.append(key[1])
             else:
                 del queues[key]
             paths = {*unit[1], *unit[2]}
