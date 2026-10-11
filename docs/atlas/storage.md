@@ -115,6 +115,27 @@ retained artifact completeness is checked from its census and physical inputs.
 Prepared frontier obligations retain both their blocker-ID row and any unresolved
 row with the same plan digest. The unique open-plan constraint can suppress a new
 pass's INSERT, so that conflict is an original Source dependency of publication.
+An accepted full pass can retain sparse pending semantic membership findings in
+Ops. A blocked successor proves changed heads only when exact retained raw,
+census, head and projection inputs admit the canonical unchanged-projection
+membership acknowledgement; unrelated or unsupported changes take full inspection.
+Raw-wide structural inputs are streamed once into one digest per retained raw;
+member dispositions are separate paged rows, including already healthy siblings.
+Per-head checkpoint contributions contain only that head's classifier inputs.
+Unselected pending contributions remain in the aggregate. The checkpoint and mark
+commit together after the original Source permit succeeds; a refused permit
+advances neither. Full anchors replace the checkpoint. Supported ACK successors
+prepare only changed checkpoint rows and healthy contribution removals before
+writer admission; publication preserves unrelated rows. Preparation still reads
+the sparse pending inventory. This checkpoint never acknowledges Source or supplies byte proof.
+Every supported blocked successor still proves all eligible cursors against an
+independent complete current accepted-head inventory. Headed cursor paths need no
+terminal-artifact proof; headless paths still use canonical terminal evidence.
+Work remains linear in head
+metadata, cursor paths and comparisons, plus terminal-coordinate query work.
+The outcome and `work.frontier.inspected` event distinguish `eligible_cursor_checks`
+from `comparable_cursor_checks`; persisted findings retain `cursor_checks` for
+comparable cursors. Explicit physical maintenance remains full.
 
 Blocker acknowledgement prepares and validates the operator-visible facts
 before audited intent begins, physically closes that preparation, then

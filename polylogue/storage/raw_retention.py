@@ -871,9 +871,9 @@ class FrontierInspectionFindings:
 
     The inspection records this document in its Ops mark, so status renders
     the certificate's categories instead of repeating the corpus inspection.
-    ``mode`` says what the pass covered: a ``delta`` pass starts from a
-    healthy certificate, so its violation counts and samples are complete
-    while its checked counts cover only the changed keys.
+    ``mode`` says what the pass covered: a ``delta`` starts from healthy
+    coverage or qualified sparse pending findings. Violation counts remain
+    complete while head checked counts cover this pass's actual proofs.
     """
 
     mode: str

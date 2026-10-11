@@ -45,7 +45,8 @@ def raw_authority_frontier_command(
         f"heads={payload['accepted_head_checks']} blocked={payload['blocking_head_checks']}"
     )
     click.echo(
-        f"Cursors: checked={payload['cursor_checks']} ahead={payload['cursor_ahead_count']} "
+        f"Cursors: eligible={payload['eligible_cursor_checks']} comparable={payload['comparable_cursor_checks']} "
+        f"ahead={payload['cursor_ahead_count']} "
         f"gaps={payload['cursor_gap_count']}"
     )
     click.echo("Blocking items are published as durable blockers; list them with raw-authority-blockers.")

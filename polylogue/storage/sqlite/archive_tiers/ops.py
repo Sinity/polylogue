@@ -535,6 +535,26 @@ CREATE TABLE IF NOT EXISTS raw_frontier_inspection (
     inspected_at_ms INTEGER NOT NULL CHECK(inspected_at_ms>=0),
     detail TEXT
 ) STRICT;
+-- Sparse pending membership findings belong to the same accepted mark. They
+-- are disposable proof inputs, never authority to acknowledge Source.
+CREATE TABLE IF NOT EXISTS raw_frontier_pending_heads (
+    logical_source_key TEXT PRIMARY KEY,
+    raw_id TEXT NOT NULL,
+    inputs_json TEXT NOT NULL CHECK(json_valid(inputs_json)),
+    contribution_json TEXT NOT NULL CHECK(json_valid(contribution_json))
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_raw_frontier_pending_raw
+ON raw_frontier_pending_heads(raw_id,logical_source_key);
+CREATE TABLE IF NOT EXISTS raw_frontier_pending_raws (
+    raw_id TEXT PRIMARY KEY,
+    structural_digest TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS raw_frontier_membership_inputs (
+    raw_id TEXT NOT NULL,
+    logical_source_key TEXT NOT NULL,
+    disposition_json TEXT NOT NULL CHECK(json_valid(disposition_json)),
+    PRIMARY KEY(raw_id,logical_source_key)
+) STRICT;
 CREATE TRIGGER IF NOT EXISTS raw_frontier_cursor_insert AFTER INSERT ON ingest_cursor
 BEGIN INSERT INTO raw_frontier_cursor_changes(source_path) VALUES (NEW.source_path);
 INSERT INTO raw_frontier_cursor_changes(source_path) SELECT NEW.canonical_source_path WHERE NEW.canonical_source_path IS NOT NULL; END;

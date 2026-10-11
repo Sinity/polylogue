@@ -22,6 +22,81 @@ runtime_tables:
     table: "selected_raws"
     disposition: disposable_scratch
     reason: "_FrontierSelection creates selected_raws only on its open_scratch_connection owner, with the supplied TemporaryDirectory retained by the original PreparedIndexMutation parent; expanded flags track one inspection worklist, never archive rows."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "selected_keys"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates selected_keys only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it deduplicates logical heads selected for this inspection or a canonical full fallback. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "selected_paths"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates selected_paths only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it deduplicates paths selected for this inspection's cursor comparisons. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "frontier_proofs"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates frontier_proofs only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it retains actual selected proof contributions and their bounded publication inventory. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "frontier_heads"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates frontier_heads only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it retains complete accepted-head/path cursor operands independently of selected expensive proofs. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "checked_cursor_paths"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates checked_cursor_paths only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it deduplicates cursor rows visited through overlapping path selections. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "pending_heads"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates pending_heads only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it holds the sparse unresolved head contributions being prepared for this coverage mark. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "pending_raws"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates pending_raws only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it holds one exact structural digest per raw with a remaining unresolved contribution. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "membership_inputs"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates membership_inputs only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it holds the raw-wide membership disposition comparison operands, including healthy siblings. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "current_raws"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates current_raws only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it holds streamed current raw structural digests while qualifying an ACK transition. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "current_memberships"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates current_memberships only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it holds current member dispositions while comparing an ACK transition with its retained operands. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "checkpoint_head_writes"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates checkpoint_head_writes only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it holds only changed head checkpoint rows prepared before reserved Ops writer admission. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "checkpoint_raw_writes"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates checkpoint_raw_writes only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it holds only changed raw digest checkpoint rows prepared before reserved Ops writer admission. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "checkpoint_member_writes"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates checkpoint_member_writes only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it holds only changed member disposition rows prepared before reserved Ops writer admission. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "checkpoint_head_deletes"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates checkpoint_head_deletes only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it holds proved healthy head contribution keys prepared for removal from the Ops checkpoint. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
+  - file: "polylogue/storage/frontier_inspection.py"
+    function: "_FrontierSelection.__init__"
+    table: "checkpoint_raw_deletes"
+    disposition: disposable_scratch
+    reason: "_FrontierSelection creates checkpoint_raw_deletes only on its open_scratch_connection owner under the supplied TemporaryDirectory, retained by the original PreparedIndexMutation parent through physical settlement; it holds raw comparison inventory keys retired after their last pending contribution becomes healthy. This private relation never belongs to an archive tier; checkpoint publication uses the separately reserved Ops writer after actual Source acceptance."
   - file: "polylogue/storage/sqlite/agent_thread_state.py"
     function: "prepare_thread_state_graph"
     table: "graph_prior"

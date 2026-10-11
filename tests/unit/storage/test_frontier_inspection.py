@@ -69,7 +69,7 @@ async def test_empty_frontier_is_measured_once_under_original_owner(
     assert coverage["current"] and coverage["healthy"]
     assert first.mode == "full" and first.healthy
     assert second.mode == "current" and second.healthy
-    assert first.accepted_head_checks == first.cursor_checks == 0
+    assert first.accepted_head_checks == first.eligible_cursor_checks == 0
     assert second.pass_id is None
     assert (root / "source.db").read_bytes() == source_before
     with closing(open_readonly_connection(root / "ops.db")) as conn:
@@ -122,7 +122,7 @@ async def test_changed_cursor_without_source_is_not_a_healthy_frontier(tmp_path:
     assert coverage["current"] and not coverage["healthy"] and coverage["state"] == "blocked"
     assert changed.mode == "delta"
     assert not changed.healthy
-    assert changed.cursor_checks == changed.cursor_gap_count == 1
+    assert changed.eligible_cursor_checks == changed.cursor_gap_count == 1
     with closing(open_readonly_connection(root / "ops.db")) as conn:
         with closing(conn.execute("SELECT state FROM raw_frontier_inspection WHERE singleton=1")) as rows:
             assert rows.fetchone()[0] == "blocked"
@@ -134,7 +134,7 @@ async def test_deferred_cursor_findings_remain_a_proven_healthy_projection(tmp_p
     """An inspected cursor that compares against no head is not a checked cursor.
 
     Anti-vacuity: count every inspected cursor as ``cursor_checks`` in the
-    findings and the readiness validator sees one checked cursor with zero
+    persisted findings and the readiness validator sees one checked cursor with zero
     comparisons, refuses the projection, and source selection blocks on a
     frontier whose every status is healthy.
     """
@@ -164,7 +164,8 @@ async def test_deferred_cursor_findings_remain_a_proven_healthy_projection(tmp_p
             input_demand=owner._compute_adapter.amend_current_input_demand,
         )
     assert inspected.healthy
-    assert inspected.cursor_checks == 1
+    assert inspected.eligible_cursor_checks == 1
+    assert inspected.comparable_cursor_checks == 0
     materialization = {"available": True, "lost_source_evidence_count": 0, "lost_source_evidence_samples": []}
     projected = raw_frontier_integrity_projection(root, materialization).to_dict()
     assert projected["overall_status"] == "healthy"
@@ -292,7 +293,8 @@ async def test_real_retained_head_records_blob_proof_and_current_coverage(
                 "accepted_head_checks",
                 "blocking_head_checks",
                 "broken_head_checks",
-                "cursor_checks",
+                "eligible_cursor_checks",
+                "comparable_cursor_checks",
                 "cursor_ahead_count",
                 "cursor_gap_count",
                 "missing_session_raw_count",
