@@ -12,6 +12,7 @@ import pytest
 from polylogue.daemon import cli as daemon_cli
 from polylogue.operations import raw_frontier_inspection
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
 from polylogue.storage.sqlite.connection_profile import owned_daemon_connection
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
@@ -41,7 +42,7 @@ async def test_changed_frontier_releases_only_its_deferred_eligibility(
     root = tmp_path / "archive"
     await run_archive_fixture_write(root, lambda: bootstrap_archive_root(root))
     calls = 0
-    real_inspect = raw_frontier_inspection.inspect_prepared_raw_authority_frontier
+    real_inspect = inspect_prepared_raw_authority_frontier
 
     def inspect(*args: Any, **kwargs: Any) -> Any:
         nonlocal calls
