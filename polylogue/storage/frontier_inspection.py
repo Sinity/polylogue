@@ -510,6 +510,87 @@ class PreparedFrontierSource:
                 yield key
             after = page[-1]
 
+    def cursor_heads(self) -> Iterator[tuple[_IndexRawRevisionHead, str | None]]:
+        """Page complete cursor operands from the same original pinned inputs.
+
+        These reads supply no Source mutation image. Selected canonical proofs
+        and cursor existence checks retain their own original producer inputs.
+        """
+        from polylogue.storage.raw_retention import _IndexRawRevisionHead
+
+        after: str | None = None
+        while True:
+            check_compute_cancelled()
+            window = ("" if after is None else "WHERE h.logical_source_key>? ") + (
+                "ORDER BY h.logical_source_key LIMIT 256"
+            )
+            parameters: tuple[object, ...] = () if after is None else (after,)
+            # LIMIT selects the identical head window in each charging query.
+            # An absent session still supplies the accepted-head Raw fallback.
+            self._seal.before_index_input(
+                "raw_revision_heads",
+                (
+                    "logical_source_key",
+                    "session_id",
+                    "accepted_raw_id",
+                    "accepted_source_revision",
+                    "accepted_frontier_kind",
+                    "accepted_frontier",
+                    "acquisition_generation",
+                    "append_end_offset",
+                ),
+                "SELECT h.rowid FROM raw_revision_heads h " + window,
+                parameters,
+            )
+            self._seal.before_index_input(
+                "sessions",
+                ("session_id", "raw_id"),
+                "SELECT s.rowid FROM sessions s JOIN (SELECT h.session_id FROM raw_revision_heads h "
+                + window
+                + ") p ON p.session_id=s.session_id",
+                parameters,
+            )
+            with self._seal.original_rows(
+                "index",
+                "SELECT h.logical_source_key,COALESCE(s.raw_id,h.accepted_raw_id),h.accepted_raw_id,"
+                "h.accepted_source_revision,h.accepted_frontier_kind,h.accepted_frontier,"
+                "h.acquisition_generation,h.append_end_offset FROM raw_revision_heads h "
+                "LEFT JOIN sessions s ON s.session_id=h.session_id " + window,
+                parameters,
+            ) as rows:
+                page = tuple(tuple(row) for row in rows)
+            if not page:
+                return
+            raw_ids = tuple(sorted({str(row[1]) for row in page}))
+            marks = ",".join("?" for _ in raw_ids)
+            self._seal.before_source_input(
+                "raw_sessions",
+                ("raw_id", "source_path", "canonical_source_path"),
+                f"SELECT rowid FROM raw_sessions WHERE raw_id IN ({marks})",
+                raw_ids,
+            )
+            with self._seal.original_rows(
+                "source",
+                f"SELECT raw_id,source_path,canonical_source_path FROM raw_sessions WHERE raw_id IN ({marks})",
+                raw_ids,
+            ) as rows:
+                paths = {str(row[0]): str(row[2] or row[1]) for row in rows}
+            for row in page:
+                check_compute_cancelled()
+                yield (
+                    _IndexRawRevisionHead(
+                        str(row[0]),
+                        str(row[2]),
+                        str(row[3]),
+                        str(row[4]),
+                        int(row[5]),
+                        int(row[6]),
+                        cast(int | None, row[7]),
+                    ),
+                    paths.get(str(row[1])),
+                )
+            after = str(page[-1][0])
+
     def verify_frontier_bytes(self, blob_store: BlobStore, row: dict[str, object], *, observed_at_ms: int) -> bool:
         from polylogue.storage.raw_reconciler import _verify_blob_bytes
 
@@ -1657,6 +1738,12 @@ def _raw_checkpoint(
     after = None
     while True:
         check_compute_cancelled()
+        source._seal.before_index_input(
+            "sessions",
+            ("session_id", "origin", "raw_id", "content_hash", "message_count"),
+            "SELECT rowid FROM sessions WHERE raw_id=? AND (? IS NULL OR session_id>?) ORDER BY session_id LIMIT 256",
+            (raw_id, after, after),
+        )
         with source._seal.original_rows(
             "index",
             "SELECT session_id,origin,raw_id,hex(content_hash),message_count FROM sessions WHERE raw_id=? "
@@ -1667,12 +1754,6 @@ def _raw_checkpoint(
         if not page:
             break
         for cells in page:
-            source._seal.before_index_input(
-                "sessions",
-                ("session_id", "origin", "raw_id", "content_hash", "message_count"),
-                "SELECT rowid FROM sessions WHERE session_id=?",
-                (cells[0],),
-            )
             digest.update(json.dumps(cells, separators=(",", ":")).encode())
         after = str(page[-1][0])
     # json_each keeps an arbitrarily large canonical census in its SQL owner.
@@ -1984,35 +2065,11 @@ def _populate_pending_ack_selection(
 
 def _populate_complete_cursor_heads(source: PreparedFrontierSource, selection: _FrontierSelection) -> bool:
     """Current cursor operands are independent of expensive selected proofs."""
-    from polylogue.storage.raw_retention import _IndexRawRevisionHead
-
     selection._owner.require_connection().execute("DELETE FROM frontier_heads")
-    for key in source.frontier_keys():
-        # Head/session and raw acquisition inputs remain on the original seal.
-        row = source.frontier_input(key, include_source=False)
-        if row is None:
-            return False
-        source._producer._load_artifact_inputs(
-            "raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (row["accepted_raw_id"],)
-        )
-        with source._seal.source_rows(
-            "SELECT source_path,canonical_source_path FROM raw_sessions WHERE raw_id=?", (row["accepted_raw_id"],)
-        ) as rows:
-            path = rows.fetchone()
+    for head, path in source.cursor_heads():
         if path is None:
             return False
-        selection.retain_head(
-            _IndexRawRevisionHead(
-                str(row["logical_source_key"]),
-                str(row["head_accepted_raw_id"]),
-                str(row["accepted_source_revision"]),
-                str(row["accepted_frontier_kind"]),
-                int(cast(int, row["accepted_frontier"])),
-                int(cast(int, row["head_acquisition_generation"])),
-                cast(int | None, row["head_append_end_offset"]),
-            ),
-            str(path[1] or path[0]),
-        )
+        selection.retain_head(head, path)
     return True
 
 

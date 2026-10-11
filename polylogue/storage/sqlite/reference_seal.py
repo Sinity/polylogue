@@ -4853,17 +4853,28 @@ class PreparedIndexMutation:
         Canonical read owners provide their exact selected physical rowids,
         never SQL rewriting or a borrowed-current-generation connection.
         """
-        self._require_capability("index")
+        self._before_tier_input("index", table, columns, rowid_sql, parameters)
+
+    def before_source_input(
+        self, table: str, columns: tuple[str, ...], rowid_sql: str, parameters: tuple[object, ...]
+    ) -> None:
+        """Charge original Source read fields without staging a mutation image."""
+        self._before_tier_input("source", table, columns, rowid_sql, parameters)
+
+    def _before_tier_input(
+        self, tier: str, table: str, columns: tuple[str, ...], rowid_sql: str, parameters: tuple[object, ...]
+    ) -> None:
+        self._require_capability(tier)
         self._require_new_work()
         if self._original_input_demand is None:
             return
-        observer = self.observer("index")
+        observer = self.observer(tier)
         if not observer.in_transaction:
-            raise ReferenceSealError("Index input demand requires its same original pinned observer")
+            raise ReferenceSealError(f"{tier.title()} input demand requires its same original pinned observer")
         with self._owned_cursor(observer, rowid_sql, parameters) as cursor:
             for (rowid,) in cursor:
                 _check_reference_cancellation()
-                self._amend_original_input_fields("index", table, rowid, columns)
+                self._amend_original_input_fields(tier, table, rowid, columns)
 
     def _original_blob_input(self, raw_id: str) -> tuple[bytes, int]:
         if not self._original_reads_active:
