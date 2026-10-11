@@ -1397,6 +1397,23 @@ def test_a_refresh_over_changed_evidence_does_not_qualify(tmp_path: Path) -> Non
     assert refreshed["qualified"] is False
 
 
+def test_refresh_preserves_historical_first_terminal_observation(tmp_path: Path) -> None:
+    from devtools.fresh_build_bench.report import refresh
+
+    historical = {
+        "kind": "readiness-observation",
+        "first_observed_s": 20.0,
+        "certified_s": 22.0,
+        "readiness_cached": True,
+        "semantics": "stable polls may reuse cached readiness",
+    }
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(_receipt(terminal_measurement=historical, started_at_unix=0.0)))
+    original = path.read_bytes()
+    assert refresh(path)["terminal_measurement"] == historical
+    assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize("value", ["nan", "-5", "0"])
 def test_the_stall_timeout_must_be_a_positive_finite_duration(value: str) -> None:
     """Anti-vacuity (Codex P2, #5678): accept any float and ``nan`` never stalls."""
@@ -1520,6 +1537,39 @@ def test_a_cancellation_after_the_loop_marks_the_receipt_interrupted(
     captured = _scripted_run(tmp_path, monkeypatch, [_terminal_frame()], stall_timeout_s=7200.0, interrupt_at_stop=True)
 
     assert captured["outcome"] == "interrupted"
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_cached_readiness_cannot_certify_terminal_after_fresh_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refused: bool
+) -> None:
+    cached = {**_terminal_frame(), "readiness_cached": True}
+    blocked = {
+        **_terminal_frame(),
+        "readiness": {**dict.fromkeys(REQUIRED_READINESS_DOMAINS, True), "session_profiles": False},
+    }
+    if refused:
+        blocked.update(error="OSError: retryable readiness refusal", error_retryable=True)
+    certified = {**_terminal_frame(), "scan_finished_s": 4201.0}
+    captured = _scripted_run(
+        tmp_path,
+        monkeypatch,
+        [_terminal_frame(), cached, blocked, blocked, _terminal_frame(), cached, certified],
+        stall_timeout_s=7200.0,
+    )
+    assert captured["outcome"] == "terminal"
+    assert captured["terminal_at"] == 4201.0
+    assert [frame.readiness_cached for frame in captured["observations"]] == [
+        False,
+        True,
+        False,
+        False,
+        False,
+        True,
+        False,
+    ]
+    ages = [call["readiness_max_age_s"] for call in captured["observe_kwargs"]]
+    assert ages == [60.0, 60.0, 0.0, 60.0, 60.0, 60.0, 0.0, 0.0]
 
 
 def test_the_fingerprint_reports_tables_an_older_candidate_lacks(tmp_path: Path) -> None:

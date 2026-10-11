@@ -446,7 +446,7 @@ def test_identical_actual_candidate_is_calibration_despite_separated_arms() -> N
     assert reduce_experiment(samples)["experiment_kind"] == "candidate-comparison"
 
 
-def test_terminal_window_includes_scan_cache_and_later_certification() -> None:
+def test_terminal_window_uses_fresh_certification_after_tentative_cached_readiness() -> None:
     from devtools.fresh_build_bench.report import terminal_measurement
     from devtools.fresh_build_bench.run import REQUIRED_READINESS_DOMAINS, Observation
 
@@ -462,18 +462,26 @@ def test_terminal_window_includes_scan_cache_and_later_certification() -> None:
             readiness_checked_s=[20, 21],
             readiness_cached=True,
         ),
-        Observation(27, scan_finished_s=28),
+        Observation(
+            27,
+            cursor_rows=1,
+            cursor_complete=1,
+            promoted_index="index",
+            scan_finished_s=28,
+            readiness=dict.fromkeys(REQUIRED_READINESS_DOMAINS, True),
+            readiness_checked_s=[27, 28],
+        ),
     ]
-    result = terminal_measurement(observations, 25, certified=True)
-    assert result["observation_window_s"] == [20, 25]
-    assert result["first_observed_s"] == 25
+    result = terminal_measurement(observations, 28, certified=True)
+    assert result["observation_window_s"] == [24, 28]
+    assert result["terminal_observed_s"] == 28
+    assert "first_observed_s" not in result
     assert result["certified_s"] == 28
-    assert result["readiness_cached"]
-    assert result["readiness_check_window_s"] == [20, 21]
-    assert terminal_measurement(observations, 25, certified=False)["certified_s"] is None
-    observations[0].readiness_checked_s = [10, 11]
-    observations[0].readiness_cached = True
-    assert terminal_measurement(observations, 25, certified=True)["observation_window_s"] == [10, 25]
+    assert not result["readiness_cached"]
+    assert result["readiness_check_window_s"] == [27, 28]
+    assert terminal_measurement(observations, 28, certified=False)["certified_s"] is None
+    observations[1].readiness["session_profiles"] = False
+    assert terminal_measurement(observations, 28, certified=True)["observation_window_s"] == [20, 28]
 
 
 def _recipe_binding(parser: str, lowering: str) -> dict[str, Any]:
