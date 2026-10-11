@@ -133,6 +133,7 @@ def _ordered_children(
     visited_real_paths: set[str] | None = None,
     on_disposition: Callable[[Path, str, str], None] | None = None,
     on_inspected: Callable[[], None] | None = None,
+    scope: Callable[[Path], bool] | None = None,
 ) -> list[tuple[str, Path, bool]]:
     """Siblings of ``directory``, reverse-sorted so a stack pops them in order.
 
@@ -164,6 +165,8 @@ def _ordered_children(
             if on_inspected is not None:
                 on_inspected()
             path = Path(entry.path)
+            if scope is not None and not scope(path):
+                continue
             try:
                 is_link = entry.is_symlink()
                 if entry.is_dir(follow_symlinks=False) or (is_link and entry.is_dir()):
@@ -307,6 +310,8 @@ def _source_path_steps(
     scandir: Callable[[Path], Any] = os.scandir,
     on_disposition: Callable[[Path, str, str], None] | None = None,
     on_inspected: Callable[[], None] | None = None,
+    start: Path | None = None,
+    scope: Callable[[Path], bool] | None = None,
 ) -> Iterator[Path | None]:
     """Yield one step per entry so a caller can resume after rejected files."""
     try:
@@ -327,15 +332,34 @@ def _source_path_steps(
         )
     ownership = SourceSelection(all_sources)
     visited_real_paths: set[str] = {_real_path(source.root)}
+    directory = source.root if start is None else start
+    if directory != source.root:
+        try:
+            relative = directory.relative_to(source.root)
+        except ValueError as exc:
+            raise ValueError("scoped discovery must remain below its original source root") from exc
+        ancestor = source.root
+        for part in relative.parts:
+            ancestor /= part
+            if not source.admits_directory(ancestor):
+                raise ValueError("scoped discovery is outside the declared layout")
+            if ancestor.is_symlink() and not _admit_linked_directory(
+                source, ancestor, visited_real_paths=visited_real_paths, on_disposition=on_disposition
+            ):
+                raise WalkRefusedError(
+                    "scoped discovery refused a linked ancestor", [WalkFault(ancestor, "linked ancestor refused")]
+                )
+            visited_real_paths.add(_real_path(ancestor))
     stack: list[list[tuple[str, Path, bool]]] = [
         _ordered_children(
             source,
-            source.root,
+            directory,
             after,
             scandir,
             visited_real_paths=visited_real_paths,
             on_disposition=on_disposition,
             on_inspected=on_inspected,
+            scope=scope,
         )
     ]
     while stack:
@@ -355,6 +379,7 @@ def _source_path_steps(
                     visited_real_paths=visited_real_paths,
                     on_disposition=on_disposition,
                     on_inspected=on_inspected,
+                    scope=scope,
                 )
             )
             yield None
