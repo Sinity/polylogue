@@ -1986,8 +1986,8 @@ class CursorStore:
                 is not None
             )
 
-    def release_deferred_convergence_debt(self) -> int:
-        """Make every deferred debt row due now; failed rows keep their backoff.
+    def release_deferred_convergence_debt(self, *, stage: str | None = None) -> int:
+        """Make deferred debt due, optionally for one stage; keep failure backoff.
 
         A deferral is backpressure, not a failure. When the condition it waited
         on ends (a cold build's promotion), the exponential backoff it accrued
@@ -1998,9 +1998,11 @@ class CursorStore:
         def write() -> None:
             nonlocal released
             with self._connect_ops() as conn:
+                stage_filter = " AND stage = ?" if stage is not None else ""
                 cursor = conn.execute(
                     "UPDATE convergence_debt SET next_retry_at = NULL "
-                    "WHERE status = 'deferred' AND next_retry_at IS NOT NULL"
+                    "WHERE status = 'deferred' AND next_retry_at IS NOT NULL" + stage_filter,
+                    (stage,) if stage is not None else (),
                 )
                 released = int(cursor.rowcount or 0)
                 conn.commit()

@@ -1213,6 +1213,19 @@ def _drain_convergence_debt_and_archive(db: Path, *, compute_adapter: BoundedCom
         if stage.whole_archive and stage.subject_independent
     )
     recorded = {stage.name for stage in stages if cursor.list_convergence_debt(stage=stage.name, limit=1)}
+    if "raw_frontier_inspection" in recorded:
+        from polylogue.operations.raw_frontier_inspection import frontier_coverage_for_archive
+
+        coverage = frontier_coverage_for_archive(db.parent)
+        if coverage.get("available") is True and coverage.get("current") is False:
+            # The canonical mark no longer covers its Source/Index/cursor
+            # frame. Reinspect that relevant committed change, rather than
+            # waiting out backoff from a condition the old frame established.
+            # The mark remains authority; the release is only eligibility.
+            admit_stage_write(
+                "maintenance.convergence_debt.frontier_changed",
+                partial(cursor.release_deferred_convergence_debt, stage="raw_frontier_inspection"),
+            )
     retried = _drain_convergence_debt_backlog(db, compute_adapter=compute_adapter)
     for stage in stages:
         check_compute_cancelled()
