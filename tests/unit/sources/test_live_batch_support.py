@@ -10478,7 +10478,9 @@ def test_jsonl_action_releases_capture_when_observation_changes_before_envelope(
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
-    capture = batch.capture_bound_path
+    from polylogue.sources.acquisition_boundary import capture_bound_path
+
+    capture = capture_bound_path
 
     def change_after_capture(*args: Any, **kwargs: Any) -> Any:
         result = capture(*args, **kwargs)
@@ -10542,6 +10544,7 @@ def test_jsonl_action_preserves_cancellation_and_releases_capture(
     with pytest.raises(BaseExceptionGroup if cleanup_failure else DaemonOperationCancelled) as caught:
         _full_paths_sync(processor, [path], source_name="codex")
     if cleanup_failure:
+        assert isinstance(caught.value, BaseExceptionGroup)
         assert caught.value.exceptions == (cancellation, cleanup)
     else:
         assert caught.value is cancellation
