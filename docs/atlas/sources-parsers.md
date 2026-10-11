@@ -817,3 +817,16 @@ job state. The source database remains unchanged; source-cell provenance is an
 additive envelope observation, excluded from logical capture deduplication.
 Accepted non-object provider metadata stays unchanged; intake reports these
 envelopes as `unbound_provenance` instead of replacing their original value.
+
+
+Ordinary loose JSONL full capture consumes the `JsonlCaptureAction` supplied by
+`classify_pre_acquisition`. It binds the resolved capture provider and mode to
+one physical observation and alias. The executor dispatches that action through
+the existing bound reader and emits the accepted Raw envelope, including the
+exact complete-record frontier. A changed observation returns to the next
+admission pass outside the Source writer; the capture reader still checks the
+opened input and namespace before acceptance. The production baseline projects
+a prospective full-file requirement from the same action. Its hash and byte
+count are observations to retain, never an acquisition publication receipt.
+Declared raw-only carriers keep their precedence. ZIP and native SQLite
+capture remain in their existing families.

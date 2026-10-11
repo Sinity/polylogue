@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import re
 import sqlite3
@@ -101,7 +102,6 @@ from polylogue.sources.decoders import _ZipEntryValidator
 from polylogue.sources.dispatch import (
     ForeignOriginContentError,
     bound_location_provider,
-    is_jsonl_source_path,
 )
 from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_observability import (
@@ -110,8 +110,7 @@ from polylogue.sources.live.batch_observability import (
 from polylogue.sources.live.batch_support import (
     _DEFER_APPEND,
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
-    JsonlBoundary,
-    JsonlFrontier,
+    JsonlCaptureAction,
     LiveRetainedRunner,
     PreAcquisitionDecision,
     _accumulate_stage_timings,
@@ -140,7 +139,6 @@ from polylogue.sources.live.batch_support import (
     file_prefix_sha256,
     fingerprint_file,
     foreign_origin_exclusion,
-    jsonl_complete_prefix,
     jsonl_complete_prefix_path,
     jsonl_prefix_record_count,
     last_complete_newline_from_tail,
@@ -3364,6 +3362,85 @@ class LiveBatchProcessor:
                 for captured_input in zip_inputs.values():
                     cleanup.callback(captured_input.close)
 
+    def _capture_jsonl_action(
+        self,
+        action: JsonlCaptureAction,
+        *,
+        blob_store: ArchiveBlobPublisher,
+        byte_page: Any,
+        observed_at_ns: int,
+        heartbeat: Callable[[], None] | None,
+    ) -> RawSessionRecord:
+        """Execute the supplied family action through the existing capture owner."""
+        from polylogue.sources.acquisition_boundary import release_refused_capture
+        from polylogue.sources.source_staging import bind_source_input
+
+        if not action.current():
+            raise OSError(errno.ESTALE, "source changed before capture dispatch", str(action.path))
+        with bind_source_input(action.path, byte_page=byte_page) as binding:
+            capture = capture_bound_path(
+                blob_store,
+                action.path,
+                action.provider,
+                source_binding=binding,
+                byte_page=byte_page,
+                heartbeat=heartbeat,
+            )
+        receipt_id = blob_store.receipt_id(capture.blob_hash)
+        try:
+            if capture.file_observation != action.file_observation or not action.current():
+                raise OSError(errno.ESTALE, "source changed after admission", str(action.path))
+            boundary = jsonl_complete_prefix_path(blob_store.blob_path(capture.blob_hash))
+            prefix_count = None
+            if (
+                boundary.incomplete_tail
+                and not boundary.malformed_record
+                and 0 < boundary.prefix_size < capture.blob_size
+            ):
+                with blob_store.open(capture.blob_hash) as stream:
+                    prefix_count = jsonl_prefix_record_count(stream, boundary.prefix_size, stop=self._stop_requested)
+            raw_id = capture.blob_hash
+            if action.provider is Provider.HERMES:
+                from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
+
+                if capture.captured_profile_key is None or capture.captured_profile_source_path is None:
+                    raise MissingProfileIdentityError("Hermes capture has no bound profile namespace")
+                raw_id = hermes_profile_raw_id(
+                    str(action.path),
+                    0,
+                    capture.blob_hash,
+                    identity_path=Path(capture.captured_profile_source_path),
+                    profile_identity=capture.captured_profile_key,
+                )
+            return RawSessionRecord(
+                raw_id=raw_id,
+                blob_hash=capture.blob_hash if action.provider is Provider.HERMES else None,
+                payload_provider=action.provider,
+                capture_mode=action.capture_mode,
+                source_name=action.provider.value,
+                source_path=str(action.path),
+                canonical_source_path=capture.canonical_source_path,
+                captured_profile_key=capture.captured_profile_key
+                if action.provider in {Provider.HERMES, Provider.UNKNOWN}
+                else None,
+                source_index=0,
+                blob_size=capture.blob_size,
+                blob_publication_receipt_id=receipt_id,
+                acquired_at=datetime.fromtimestamp(observed_at_ns / 1000000000, UTC).isoformat(),
+                file_mtime=datetime.fromtimestamp(action.file_observation[3] / 1000000000, UTC).isoformat(),
+                captured_source_revision=capture.blob_hash,
+                requires_complete_record_boundary=True,
+                complete_prefix_size=boundary.prefix_size if not boundary.malformed_record else None,
+                complete_prefix_record_count=prefix_count,
+                captured_file_observation=capture.file_observation,
+            )
+        except BaseException as primary:
+            try:
+                release_refused_capture(blob_store, capture.blob_hash, receipt_id)
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("JSONL capture and receipt release failed", [primary, cleanup]) from primary
+            raise
+
     def _ingest_full_paths_sync_staged(
         self,
         paths: list[Path],
@@ -3569,6 +3646,19 @@ class LiveBatchProcessor:
                 captured_observation_times_ns[path] = observed_at_ns
                 admission = captured_sqlite.admission if captured_sqlite is not None else prepared
                 assert isinstance(admission, PreAcquisitionDecision)
+                if admission.action is not None:
+                    try:
+                        if not admission.action.current():
+                            # A new observation returns to the existing off-writer
+                            # admission pass; never rescan its stream under Source.
+                            source_read_deferred_paths.append(path)
+                            continue
+                    except OSError as exc:
+                        if retryable_read_fault(exc):
+                            source_read_deferred_paths.append(path)
+                        else:
+                            failed.append(path)
+                        continue
                 if admission.refused:
                     assert admission.excluded_reason is not None
                     self._mark_refused_cursor(
@@ -3595,6 +3685,64 @@ class LiveBatchProcessor:
                         reason=admission.excluded_reason,
                         excluded=excluded_paths,
                     )
+                    continue
+                if admission.action is not None:
+                    if admission.detection_crash is not None:
+                        detection_fallbacks[path] = admission.detection_crash
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_file_scan", current_path=path, source_payload_read_bytes=source_payload_read_bytes
+                        )
+                    try:
+                        record = self._capture_jsonl_action(
+                            admission.action,
+                            blob_store=blob_store,
+                            byte_page=byte_pages.page(),
+                            observed_at_ns=observed_at_ns,
+                            heartbeat=_blob_copy_heartbeat(
+                                heartbeat, path=path, source_payload_read_bytes=source_payload_read_bytes
+                            ),
+                        )
+                    except ForeignOriginContentError as exc:
+                        self._mark_refused_cursor(
+                            path,
+                            stat,
+                            source_name=admission.action.provider.value,
+                            reason=foreign_origin_exclusion(exc),
+                            excluded=excluded_paths,
+                        )
+                        continue
+                    except OSError as exc:
+                        raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
+                        emit(
+                            "live.source_capture.failed",
+                            level=WARNING,
+                            outcome="degraded",
+                            path=str(path),
+                            error_type=type(exc).__name__,
+                            error_detail=str(exc),
+                        )
+                        if retryable_read_fault(exc):
+                            source_read_deferred_paths.append(path)
+                        else:
+                            failed.append(path)
+                        continue
+                    raw_records.append(record)
+                    raw_by_record[_full_record_key(record)] = path
+                    raw_byte_sizes[path] = record.blob_size
+                    raw_frontier_sizes[path] = (
+                        record.complete_prefix_size if record.complete_prefix_size is not None else record.blob_size
+                    )
+                    raw_source_names[path] = admission.action.provider.value
+                    raw_source_revisions[path] = record.captured_source_revision or record.raw_id
+                    raw_canonical_source_paths[path] = record.frozen_canonical_source_path()
+                    if record.captured_profile_key is not None:
+                        raw_profile_keys[path] = record.captured_profile_key
+                    assert record.captured_file_observation is not None
+                    captured_file_observations[path] = record.captured_file_observation
+                    captured_content_hashes[path] = record.captured_source_revision or record.raw_id
+                    source_payload_read_bytes += record.blob_size
+                    ingested.append(path)
                     continue
                 hermes_database_capability = database_capability_for_provider(Provider.HERMES)
                 hermes_member = (
@@ -3837,29 +3985,6 @@ class LiveBatchProcessor:
                 ingested.append(path)
                 acquired_via_sqlite_snapshot = path in raw_source_revisions
                 raw_byte_sizes[path] = stat.st_size if acquired_via_sqlite_snapshot else blob_size
-                jsonl_boundary: JsonlBoundary | JsonlFrontier | None = None
-                if is_jsonl_source_path(str(path)):
-                    jsonl_boundary = (
-                        jsonl_complete_prefix(raw_payloads[raw_id])
-                        if raw_id in raw_payloads
-                        else jsonl_complete_prefix_path(blob_store.blob_path(raw_id))
-                    )
-                if jsonl_boundary is not None:
-                    raw_frontier_sizes[path] = jsonl_boundary.prefix_size
-                complete_prefix_record_count: int | None = None
-                if (
-                    jsonl_boundary is not None
-                    and jsonl_boundary.incomplete_tail
-                    and (not jsonl_boundary.malformed_record)
-                    and (0 < jsonl_boundary.prefix_size < blob_size)
-                ):
-                    if isinstance(jsonl_boundary, JsonlBoundary):
-                        complete_prefix_record_count = jsonl_boundary.record_count
-                    else:
-                        with blob_store.open(raw_id) as prefix_handle:
-                            complete_prefix_record_count = jsonl_prefix_record_count(
-                                prefix_handle, jsonl_boundary.prefix_size, stop=self._stop_requested
-                            )
                 raw_source_names[path] = source_name
                 if not acquired_via_sqlite_snapshot:
                     captured_content_hashes[path] = raw_id
@@ -3905,11 +4030,6 @@ class LiveBatchProcessor:
                         acquired_at=datetime.fromtimestamp(observed_at_ns / 1000000000, UTC).isoformat(),
                         file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1000000000, UTC).isoformat(),
                         captured_source_revision=raw_source_revisions.get(path, raw_id),
-                        requires_complete_record_boundary=is_jsonl_source_path(str(path)),
-                        complete_prefix_size=jsonl_boundary.prefix_size
-                        if jsonl_boundary is not None and (not jsonl_boundary.malformed_record)
-                        else None,
-                        complete_prefix_record_count=complete_prefix_record_count,
                         captured_file_observation=captured_file_observations.get(path),
                     )
                 )

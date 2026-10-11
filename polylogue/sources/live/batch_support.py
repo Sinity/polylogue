@@ -1318,13 +1318,53 @@ def retryable_read_fault(exc: BaseException) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
+class JsonlBaselineRequirement:
+    """Prospective full-file evidence to observe, never a captured Raw receipt."""
+
+    path: Path
+    provider: Provider
+    file_observation: tuple[int, int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class JsonlCaptureAction:
+    """The admitted ordinary JSONL family on one exact physical observation.
+
+    Capture provider/defaults are resolved by admission, not guessed again by
+    the executor. Physical aliases remain revalidated; semantic namespace and
+    profile authority are still frozen by the existing bound reader.
+    """
+
+    path: Path
+    physical_path: Path
+    file_observation: tuple[int, int, int, int, int]
+    provider: Provider
+    capture_mode: Provider | None
+
+    def current(self) -> bool:
+        observed = self.path.stat()
+        return self.physical_path == self.path.resolve() and self.file_observation == (
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_size,
+            observed.st_mtime_ns,
+            observed.st_ctime_ns,
+        )
+
+    def prospective_requirement(self) -> JsonlBaselineRequirement:
+        return JsonlBaselineRequirement(self.path, self.provider, self.file_observation)
+
+
+@dataclass(frozen=True, slots=True)
 class PreAcquisitionDecision:
     """Whether full intake retains a discovered file, and the sniff it used.
 
     ``excluded_reason`` is the typed cursor-exclusion reason, or ``None`` when
     intake retains the file's bytes. ``detected_provider`` and
     ``detection_crash`` carry the content sniff this decision already paid
-    for, so the retaining branch does not sniff again.
+    for, so the retaining branch does not sniff again. An admitted ordinary
+    JSONL supplies its execution action; other families keep their own capture
+    authority.
     """
 
     excluded_reason: str | None
@@ -1332,6 +1372,7 @@ class PreAcquisitionDecision:
     detection_crash: str | None = None
     #: The exclusion is a foreign-origin refusal, recorded as refused.
     refused: bool = False
+    action: JsonlCaptureAction | None = None
 
 
 def foreign_origin_exclusion(exc: ForeignOriginContentError) -> str:
@@ -1366,6 +1407,14 @@ def classify_pre_acquisition(
     read faults propagate before exclusion; invalid database bytes retain the
     ordinary unsupported classification.
     """
+    try:
+        ordinary_jsonl = is_jsonl_source_path(str(path)) and path.suffix.lower() != ".zip" and not is_sqlite_path(path)
+        jsonl_observation = path.stat() if ordinary_jsonl else None
+        jsonl_physical_path = path.resolve() if jsonl_observation is not None else None
+    except OSError as exc:
+        if retryable_read_fault(exc):
+            raise RetryableSourceReadError(path, exc) from exc
+        raise
     sqlite_classification = None
     if is_sqlite_path(path):
         from polylogue.sources.source_staging import bind_source_input
@@ -1417,6 +1466,33 @@ def classify_pre_acquisition(
         if retryable_read_fault(exc):
             raise RetryableSourceReadError(path, exc) from exc
         raise
+    if jsonl_observation is not None:
+        observation = (
+            jsonl_observation.st_dev,
+            jsonl_observation.st_ino,
+            jsonl_observation.st_size,
+            jsonl_observation.st_mtime_ns,
+            jsonl_observation.st_ctime_ns,
+        )
+        assert jsonl_physical_path is not None
+        action = JsonlCaptureAction(
+            path,
+            jsonl_physical_path,
+            observation,
+            fallback_provider,
+            None if fallback_provider is Provider.UNKNOWN else fallback_provider,
+        )
+        try:
+            if not action.current():
+                raise OSError(errno.ESTALE, "source changed during admission", str(path))
+        except OSError as exc:
+            if retryable_read_fault(exc):
+                raise RetryableSourceReadError(path, exc) from exc
+            raise
+        if decision.excluded_reason is None:
+            from dataclasses import replace
+
+            decision = replace(decision, action=action)
     return decision
 
 
