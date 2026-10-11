@@ -81,6 +81,11 @@ def product_binding() -> dict[str, Any]:
 
 
 def start_from_environment() -> None:
+    import runpy
+
+    acceptance_binding = None
+    if os.environ.get("POLYLOGUE_BENCH_ACCEPTANCE"):
+        acceptance_binding = runpy.run_path(os.environ["POLYLOGUE_BENCH_ACCEPTANCE_HELPER"])["bootstrap_binding"]()
     path = Path(os.environ["POLYLOGUE_BENCH_POLICY"])
     stop = threading.Event()
     states: list[dict[str, Any]] = []
@@ -114,6 +119,7 @@ def start_from_environment() -> None:
                 "recipe_binding": recipe_binding,
                 "source": "live published compute adapter snapshot",
                 "coverage": "periodic 50ms and normal process exit; transient policies may be missed",
+                "acceptance_binding": acceptance_binding,
             }
         staging = path.with_suffix(".tmp")
         staging.write_text(json.dumps(document, sort_keys=True) + "\n", encoding="utf-8")
@@ -142,6 +148,20 @@ def start_from_environment() -> None:
             )
         except Exception as exc:
             recipe_binding.update(outcome="unavailable", error=type(exc).__name__)
+        # These are imports actually present in the measured process, not a
+        # claim that each imported body executed. Candidate identity remains
+        # the complete source-change guard; this inventory establishes only
+        # an observed treatment-content difference.
+        candidate = Path(os.environ["POLYLOGUE_BENCH_CANDIDATE"]).resolve()
+        imported: dict[str, str] = {}
+        for name, module in list(sys.modules.items()):
+            if name == "polylogue" or name.startswith("polylogue."):
+                filename = getattr(module, "__file__", None)
+                if filename:
+                    source = Path(filename).resolve()
+                    if candidate in source.parents and source.is_file():
+                        imported[name] = hashlib.sha256(source.read_bytes()).hexdigest()
+        recipe_binding["imported_product_content"] = imported
         write()
 
     atexit.register(finish)

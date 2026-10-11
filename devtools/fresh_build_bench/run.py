@@ -74,6 +74,7 @@ class RunConfig:
     #: Asserted budgets, e.g. {"rss_peak_mib": 3072}; see ``report.BUDGETS``.
     budgets: tuple[tuple[str, float], ...] = ()
     observe_work: bool = False
+    acceptance_binding: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +825,8 @@ def _daemon_env(config: RunConfig, paths: dict[str, Path]) -> dict[str, str]:
     env["POLYLOGUE_BENCH_POLICY_OBSERVER"] = str(Path(__file__).with_name("policy_observer.py"))
     env["POLYLOGUE_TRACE_WORK"] = "1" if config.observe_work else "0"
     env["POLYLOGUE_BENCH_POLICY"] = str(config.work.absolute() / "policy.json")
+    env["POLYLOGUE_BENCH_ACCEPTANCE_HELPER"] = str(Path(__file__).with_name("acceptance.py"))
+    env["POLYLOGUE_BENCH_ACCEPTANCE"] = json.dumps(config.acceptance_binding) if config.acceptance_binding else ""
     env["POLYLOGUE_BENCH_SAMPLER"] = str(_SAMPLER_PATH)
     env["POLYLOGUE_BENCH_STACK_SAMPLES"] = str(paths["stacks"])
     if config.profile:
@@ -1031,6 +1034,21 @@ def _measure_and_write_receipt(
         candidate=config.candidate, python=config.python, environment=daemon_env, work=config.work.absolute()
     )
     driver_at_launch = benchmark_implementation_sha256()
+    if config.acceptance_binding:
+        from devtools.fresh_build_bench.acceptance import controlled_environment, read_bound_launch
+        from devtools.fresh_build_bench.report import config_digest
+
+        launch = read_bound_launch(config.acceptance_binding)
+        if (
+            launch["candidate"][config.label] != identity
+            or launch["corpus_digest"] != manifest["digest"]
+            or launch["config_digest"] != config_digest(config)
+            or launch["environment"] != controlled_environment(env_summary)
+            or launch["benchmark_implementation_sha256"] != driver_at_launch
+        ):
+            raise ValueError("measured inputs differ from frozen acceptance launch")
+        with (paths["work"] / "acceptance.json").open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(launch, sort_keys=True) + "\n")
     log_stream = paths["daemon_log"].open("wb")
     corpus_stamp = change_stamp(config.corpus)
     started_wall = time.time()

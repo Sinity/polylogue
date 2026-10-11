@@ -73,7 +73,7 @@ cache = "none"
 timeout_seconds = 28800
 
 [operations.fresh_build_bench]
-description = "Run one measured fresh archive build through polylogued run (devtools bench fresh-build run) in the bulk pool"
+description = "Run measured fresh archive builds or paired experiments through polylogued run in the bulk pool"
 exec = ["devtools", "bench", "fresh-build"]
 pool = "bulk"
 result = "exit"

@@ -3048,3 +3048,13 @@ def test_ready_archive_waits_for_new_daemon_before_finishing(tmp_path: Path, mon
     )
     assert captured["outcome"] == "terminal"
     assert len(captured["observations"]) >= 4
+
+
+def test_promotion_before_first_tree_sample_has_unavailable_cpu_not_zero() -> None:
+    from devtools.fresh_build_bench.report import _tree_summary
+
+    result = _tree_summary([(1.0, 1024, 0.2, 1, 0, 0)], 0.5)
+    assert result["cpu_seconds_to_promotion"] is None
+    assert result["mean_cores_to_promotion"] is None
+    observed_zero = _tree_summary([(0.25, 1024, 0.0, 1, 0, 0)], 0.5)
+    assert observed_zero["cpu_seconds_to_promotion"] == 0.0

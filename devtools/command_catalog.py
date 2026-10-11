@@ -464,7 +464,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "bench fresh-build",
         "benchmarking",
-        "Build a fresh archive from a sealed corpus through polylogued run and write a comparable receipt.",
+        "Build a fresh archive from a sealed corpus, compare receipts, or require frozen practical repeatability.",
         "devtools.fresh_build_bench.cli",
         use_when=(
             "Measure the ordinary cold build end to end (stage timings, writer share, RSS, per-origin cost, time "
@@ -472,7 +472,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "`corpus select` (budgeted complete static source units), `corpus sample` (a private stratified "
             "sample of real sources) or `corpus files` (named files "
             "and optional hook-spool fraction); `--max-rss-mib` and the other budgets make a run a qualification. "
-            "`experiment` pairs fresh-state runs in balanced ABBA order; `components` times one production stage. "
+            "`experiment` pairs fresh-state runs in balanced ABBA order; opt-in `--acceptance-policy` freezes "
+            "two ABBA blocks for practical repeatability with explicit effects and sampled-resource limits. "
+            "`experiment --accept` and `report --accept` require that decision, with no statistical confidence claim. "
+            "`components` times one production stage. "
             "Start `run` and `experiment` through the declared "
             "fresh_build_bench AgentCTL operation."
         ),

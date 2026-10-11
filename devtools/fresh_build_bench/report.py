@@ -678,7 +678,7 @@ def _tree_summary(samples: list[tuple[float, int, float, int, int, int]], build_
     # A run that never promoted has no promotion-scoped CPU: the whole run's
     # CPU is ``cpu_seconds_total``, never a milestone measurement.
     to_end = [sample for sample in samples if build_end_s is not None and sample[0] <= build_end_s]
-    cpu_to_end = (to_end[-1][2] if to_end else 0.0) if build_end_s is not None else None
+    cpu_to_end = to_end[-1][2] if to_end else None
     return {
         "rss_peak_bytes": max(rss),
         "rss_p95_bytes": int(_percentile([float(value) for value in rss], 0.95)),
@@ -1005,6 +1005,7 @@ def evidence_digests(work: Path) -> dict[str, str | None]:
         "ops": digest(work / "archive" / "ops.db"),
         "ops_wal": digest(work / "archive" / "ops.db-wal"),
         "policy": digest(work / "policy.json"),
+        **({"acceptance": digest(work / "acceptance.json")} if (work / "acceptance.json").is_file() else {}),
         **({"readiness": digest(work / "readiness.json")} if (work / "readiness.json").is_file() else {}),
     }
 
@@ -1230,7 +1231,21 @@ def build_receipt(
         helper_hash=helper_hash,
     )
     checks["readiness_import_bound"] = readiness["outcome"] == "bound"
+    if config.acceptance_binding:
+        from devtools.fresh_build_bench.acceptance import read_bound_launch
+
+        try:
+            read_bound_launch(config.acceptance_binding)
+            checks["acceptance_launch_unchanged"] = True
+        except (OSError, ValueError, KeyError):
+            checks["acceptance_launch_unchanged"] = False
+    from devtools.fresh_build_bench.acceptance import selected_unit_hashes
+
     receipt: dict[str, Any] = {
+        "acceptance_binding": config.acceptance_binding,
+        "acceptance_launch": json.loads((paths["work"] / "acceptance.json").read_text())
+        if config.acceptance_binding
+        else None,
         "effective_compute_policy": policy,
         "readiness_probe": readiness,
         "measurement_scope": "ordinary-daemon-terminal-route",
@@ -1269,6 +1284,7 @@ def build_receipt(
                 k: v for k, v in manifest.get("parameters", {}).items() if k not in {"population", "provenance"}
             },
             "population": manifest.get("parameters", {}).get("population"),
+            "selected_unit_sha256": selected_unit_hashes(manifest.get("parameters") or {}),
         },
         "terminal_measurement": terminal_measurement(observations, terminal_at, certified=outcome == "terminal"),
         "timing_s": {

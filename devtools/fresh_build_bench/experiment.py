@@ -24,7 +24,7 @@ class _ArmMetric(TypedDict):
     range_s: list[float] | None
 
 
-def reduce_experiment(samples: list[dict[str, Any]]) -> dict[str, Any]:
+def reduce_experiment(samples: list[dict[str, Any]], *, launch: dict[str, Any] | None = None) -> dict[str, Any]:
     """Descriptive arm differences; neither range separation nor A/A proves speed."""
     problems: list[str] = []
     reference = samples[0]["receipt"]
@@ -119,7 +119,7 @@ def reduce_experiment(samples: list[dict[str, Any]]) -> dict[str, Any]:
             else [],
         }
     return {
-        "evaluation": evaluate_samples(samples),
+        "evaluation": evaluate_samples(samples, launch=launch),
         "qualified": not problems,
         "problems": sorted(set(problems)),
         "exact_output_equivalent": len(fingerprints) == 1 and not any("fingerprint" in p for p in problems),
@@ -144,6 +144,7 @@ def run_experiment(
     order: str = "ABBA",
     repetitions: int = 1,
     progress: Callable[[str], None] = print,
+    acceptance_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if repetitions < 1 or not order or set(order) != {"A", "B"} or order.count("A") != order.count("B"):
         raise ValueError("order must contain equal positive counts of A and B; repetitions must be positive")
@@ -159,10 +160,26 @@ def run_experiment(
     config.work.chmod(0o700)
     samples = []
     candidates = {"A": before.resolve(), "B": after.resolve()}
+    launch = None
+    if acceptance_policy is not None:
+        from devtools.fresh_build_bench.acceptance import SCHEDULE, freeze_launch
+
+        if order != "ABBA" or repetitions not in {1, 2}:
+            raise ValueError("acceptance policy owns two ABBA blocks; conflicting order/repetitions refused")
+        launch = freeze_launch(acceptance_policy, manifest, config, candidates)
+        order, repetitions = SCHEDULE[:4], 2
     for index, arm in enumerate(order * repetitions):
         work = config.work / f"{index + 1:03d}-{arm}"
         progress(f"experiment {index + 1}/{len(order) * repetitions} arm {arm}")
-        receipt = run_build(replace(config, candidate=candidates[arm], work=work, label=arm), progress=progress)
+        binding = None
+        if launch is not None:
+            from devtools.fresh_build_bench.acceptance import launch_binding
+
+            binding = launch_binding(config.work / "launch.json", launch, index + 1, arm)
+        receipt = run_build(
+            replace(config, candidate=candidates[arm], work=work, label=arm, acceptance_binding=binding),
+            progress=progress,
+        )
         path = work / "receipt.json"
         samples.append(
             {
@@ -181,13 +198,13 @@ def run_experiment(
     complete = len(samples) == len(order) * repetitions
     # A partial sequence may lack one arm; avoid inventing its statistics.
     reduction = (
-        reduce_experiment(samples)
+        reduce_experiment(samples, launch=launch)
         if {sample["arm"] for sample in samples} == {"A", "B"}
         else {
             "qualified": False,
             "problems": ["paired sequence incomplete"],
             "metrics": {},
-            "evaluation": evaluate_samples(samples),
+            "evaluation": evaluate_samples(samples, launch=launch),
         }
     )
     document = {
@@ -195,6 +212,7 @@ def run_experiment(
         "order": order,
         "repetitions": repetitions,
         "complete": complete,
+        "acceptance_launch": launch,
         **reduction,
         "samples": [{key: value for key, value in sample.items() if key != "receipt"} for sample in samples],
     }
@@ -210,6 +228,12 @@ def refresh_experiment(path: Path) -> dict[str, Any]:
 
     original = path.read_bytes()
     document: dict[str, Any] = json.loads(original)
+    if document.get("acceptance_launch") is not None:
+        from devtools.fresh_build_bench.acceptance import digest
+
+        recorded_launch = json.loads(path.with_name("launch.json").read_text())
+        if digest(recorded_launch) != digest(document["acceptance_launch"]):
+            raise ValueError("experiment frozen launch changed")
     samples = []
     for sample in document["samples"]:
         recording = Path(sample["path"])
@@ -217,13 +241,13 @@ def refresh_experiment(path: Path) -> dict[str, Any]:
             raise ValueError("experiment constituent receipt changed")
         samples.append({**sample, "receipt": refresh(recording)})
     reduction = (
-        reduce_experiment(samples)
+        reduce_experiment(samples, launch=document.get("acceptance_launch"))
         if {sample["arm"] for sample in samples} == {"A", "B"}
         else {
             "qualified": False,
             "problems": ["paired sequence incomplete"],
             "metrics": {},
-            "evaluation": evaluate_samples(samples),
+            "evaluation": evaluate_samples(samples, launch=document.get("acceptance_launch")),
         }
     )
     document.update(reduction)
@@ -248,5 +272,6 @@ def _sequence_completion(document: dict[str, Any]) -> None:
         evaluation["scope_completion"]["state"] = "fail"
         evaluation["scope_completion"]["failed"].append("paired_sequence_incomplete")
         evaluation["performance_decision"]["state"] = "rejected"
+        evaluation["performance_decision"]["accepted"] = False
         if "declared_scope_completion_not_confirmed" not in evaluation["performance_decision"]["gaps"]:
             evaluation["performance_decision"]["gaps"].append("declared_scope_completion_not_confirmed")
