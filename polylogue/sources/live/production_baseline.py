@@ -813,13 +813,16 @@ def _prepare_file_decision(
             return SourceDecision(
                 source_name, retained_path, "excluded", f"intake_excluded:{admission.excluded_reason}"
             )
+        requirement = admission.action.prospective_requirement() if admission.action is not None else None
         try:
             revision, material_bytes = _revision(
-                path,
+                requirement.path if requirement is not None else path,
                 cancelled=cancelled,
-                location=bound_location_provider(provider),
+                location=bound_location_provider(requirement.provider if requirement is not None else provider),
                 source_binding=source_binding,
-                expected_observation=expected_observation,
+                expected_observation=(
+                    requirement.file_observation if requirement is not None else expected_observation
+                ),
             )
         except ForeignOriginContentError as exc:
             return SourceDecision(

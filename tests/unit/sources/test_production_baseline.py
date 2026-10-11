@@ -1263,3 +1263,29 @@ def test_malformed_sqlite_classification_stays_a_per_file_baseline_fault(
     assert row.disposition == "fault"
     assert row.reason.startswith("revision_unreadable:")
     assert not baseline.accepted
+
+
+def test_jsonl_baseline_hashes_the_supplied_action_requirement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.sources.live import production_baseline
+    from polylogue.sources.live.batch_support import JsonlBaselineRequirement, JsonlCaptureAction
+
+    path = tmp_path / "input.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"action"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"neutral"}]}}\n'
+    )
+    observed = []
+    project = JsonlCaptureAction.prospective_requirement
+
+    def requirement(action: JsonlCaptureAction) -> JsonlBaselineRequirement:
+        result = project(action)
+        observed.append(result)
+        return result
+
+    monkeypatch.setattr(JsonlCaptureAction, "prospective_requirement", requirement)
+    decision = production_baseline._prepare_file_decision(("codex", path, "accepted", "declared"))
+    assert decision.disposition == "accepted"
+    assert decision.revision == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert len(observed) == 1 and observed[0].path == path
+    assert decision.material_bytes == observed[0].file_observation[2]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import os
@@ -10387,3 +10388,163 @@ def test_live_zip_crc_failure_preserves_pending_input_without_prefix_publication
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM source_items WHERE blob_hash IS NOT NULL").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_supplied_jsonl_action_dispatches_and_revalidates_changed_observations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alias: bool
+) -> None:
+    from polylogue.sources.live import batch
+    from polylogue.sources.live.batch_support import JsonlCaptureAction, PreAcquisitionDecision
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    original = root / "original.jsonl"
+    original.write_bytes(_codex_shaped_bytes("first"))
+    path = root / "input.jsonl"
+    if alias:
+        path.symlink_to(original)
+    else:
+        path.write_bytes(original.read_bytes())
+    bootstrap_archive_root(tmp_path)
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    admission = classify_pre_writer_admissions([path], fallback_provider=Provider.CODEX)
+    decision = admission[path]
+    assert isinstance(decision, PreAcquisitionDecision)
+    action = decision.action
+    assert isinstance(action, JsonlCaptureAction)
+    requirement = action.prospective_requirement()
+    assert requirement.path == path and requirement.provider is Provider.CODEX
+    assert not hasattr(requirement, "blob_publication_receipt_id")
+    executed = []
+    handler = batch.LiveBatchProcessor._capture_jsonl_action
+
+    def track(self: LiveBatchProcessor, supplied: JsonlCaptureAction, **kwargs: Any) -> Any:
+        executed.append(supplied)
+        return handler(self, supplied, **kwargs)
+
+    monkeypatch.setattr(batch.LiveBatchProcessor, "_capture_jsonl_action", track)
+    changed = _codex_shaped_bytes("later")
+    assert len(changed) == len(original.read_bytes())
+    if alias:
+        successor = root / "successor.jsonl"
+        successor.write_bytes(changed)
+        path.unlink()
+        path.symlink_to(successor)
+    else:
+        path.write_bytes(changed)
+    with monkeypatch.context() as stale:
+        stale.setitem(
+            _full_paths_sync.__globals__, "classify_pre_writer_admissions", lambda *_args, **_kwargs: admission
+        )
+        result = _full_paths_sync(processor, [path], source_name="codex")
+    assert executed == []
+    assert path in result.source_read_deferred
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+    result = _full_paths_sync(processor, [path], source_name="codex")
+    assert result.succeeded == [path] and result.failed == []
+    assert len(executed) == 1
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        raw = source.execute(
+            "SELECT blob_hash, blob_size, canonical_source_path FROM raw_sessions WHERE source_path=?", (str(path),)
+        ).fetchone()
+    assert raw is not None
+    assert bytes(raw[0]).hex() == hashlib.sha256(changed).hexdigest()
+    assert raw[1] == len(changed)
+    assert raw[2] == str(path.resolve())
+
+
+def test_jsonl_action_releases_capture_when_observation_changes_before_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.live import batch
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "input.jsonl"
+    path.write_bytes(_codex_shaped_bytes("first"))
+    bootstrap_archive_root(tmp_path)
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    capture = batch.capture_bound_path
+
+    def change_after_capture(*args: Any, **kwargs: Any) -> Any:
+        result = capture(*args, **kwargs)
+        path.write_bytes(_codex_shaped_bytes("later"))
+        return result
+
+    monkeypatch.setattr(batch, "capture_bound_path", change_after_capture)
+    result = _full_paths_sync(processor, [path], source_name="codex")
+    assert path in result.source_read_deferred
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+
+
+def test_jsonl_looking_zip_keeps_its_container_admission(tmp_path: Path) -> None:
+    from polylogue.sources.live.batch_support import PreAcquisitionDecision
+
+    path = tmp_path / "export.jsonl.zip"
+    with zipfile.ZipFile(path, "w") as bundle:
+        bundle.writestr("input.jsonl", _codex_shaped_bytes("container"))
+    admission = classify_pre_writer_admissions([path], fallback_provider=Provider.UNKNOWN)[path]
+    assert isinstance(admission, PreAcquisitionDecision)
+    assert admission.excluded_reason is None
+    assert admission.action is None
+
+
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_jsonl_action_preserves_cancellation_and_releases_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup_failure: bool
+) -> None:
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.sources import acquisition_boundary
+    from polylogue.sources.live import batch
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "input.jsonl"
+    path.write_bytes(_codex_shaped_bytes("cancel"))
+    bootstrap_archive_root(tmp_path)
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    cancellation = DaemonOperationCancelled("synthetic prefix cancellation")
+    cleanup = RuntimeError("synthetic release failure")
+    release = acquisition_boundary.release_refused_capture
+
+    def cancel(*_args: Any, **_kwargs: Any) -> Any:
+        raise cancellation
+
+    def release_then_fail(*args: Any, **kwargs: Any) -> None:
+        release(*args, **kwargs)
+        if cleanup_failure:
+            raise cleanup
+
+    monkeypatch.setattr(batch, "jsonl_complete_prefix_path", cancel)
+    monkeypatch.setattr(acquisition_boundary, "release_refused_capture", release_then_fail)
+    with pytest.raises(BaseExceptionGroup if cleanup_failure else DaemonOperationCancelled) as caught:
+        _full_paths_sync(processor, [path], source_name="codex")
+    if cleanup_failure:
+        assert caught.value.exceptions == (cancellation, cleanup)
+    else:
+        assert caught.value is cancellation
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)

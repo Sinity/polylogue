@@ -433,6 +433,9 @@ _SOURCE_BYTE_SINKS = frozenset(
 #: acquisition of bound session material. A new route is not added here: it
 #: reads through ``acquisition_boundary``.
 _DECLARED_NON_ACQUISITION_SITES: dict[tuple[str, str], str] = {
+    ("polylogue/pipeline/services/acquisition_records.py", "make_raw_record"): (
+        "copies sealed acquisition bytes; verifies the existing capture hash and size before publication"
+    ),
     ("polylogue/sources/drive/__init__.py", "iter_drive_raw_data"): (
         "stages provider downloads or cache copies privately; the exact stage is fully read through "
         "the acquisition boundary before cache, CAS, or raw publication"
