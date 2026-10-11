@@ -858,3 +858,5 @@ missing required Source tier raises `ArchiveTierUnavailableError`. The shared
 lookup retains the caller connection's attachment policy (profiled query-only
 readers attach Source read-only) and returns empty only for a successful
 zero-row join (`storage/source_sessions.py`; `operations/embedding_derivation.py`).
+
+The Ops `product_retry_incarnation` singleton provides a disposable UUID combined with the open database file's physical identity for exact product attempts. The existing `convergence_debt` row retains demand identity, admitted and settled attempt UUIDs, process ownership, observation count, and actual failure streak. These fields are not durable Source authority. Claude workflow is the first global archive/current consumer; its graphs and receipt are rejected when current canonical input or the exact admitted attempt changed.

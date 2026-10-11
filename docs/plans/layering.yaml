@@ -172,6 +172,12 @@ writer_modules:
         record_daemon_lifecycle_stop, record_daemon_termination_receipt, record_judgment_scheduler_receipt,
         record_mcp_call, upsert_embedding_catchup_run,
         upsert_ingest_cursor]
+    - path: polylogue/storage/sqlite/archive_tiers/product_retry.py
+      surfaces:
+        - tier: ops
+          durability: disposable
+          interruption: restartable
+      entrypoints: [observe_product_retry, admit_product_retry, settle_product_retry]
     - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
       surfaces:
         - tier: index

@@ -1093,6 +1093,8 @@ class FileIntakeAdapter(IntakeAdapter):
             converge_embeddings = getattr(self.context.watcher, "_converge_embeddings_off_writer", None)
             if callable(converge_embeddings):
                 await converge_embeddings(admitted_paths)
+            # Index triggers already retained the latest profile demand. The
+            # scoped callback acknowledges it; the fair backlog owner computes.
             converge_profiles = getattr(self.context.watcher, "_converge_session_profiles_off_writer", None)
             if callable(converge_profiles):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))

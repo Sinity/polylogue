@@ -121,6 +121,7 @@ def compose_session_profile_callback(
         index_path,
         archive_root=archive_root,
         now=now,
+        input_demand=compute_adapter.amend_current_input_demand,
     )
     # Ordered after the profile: marker lowering reads the same session
     # evidence, and the edge is one-way -- a user-tier marker failure leaves
@@ -176,6 +177,7 @@ def compose_session_profile_callback(
         audit_binding = binding
         report = await owner.converge(
             frame,
+            exclusive_bytes=True,
             budget=audit_budget if deadline_at is None else replace(audit_budget, deadline_at=deadline_at),
             domains=(domain,),
             resume=not audit_reset,
@@ -226,12 +228,17 @@ def compose_session_profile_callback(
             frame = make_session_profile_frame(
                 index_path, archive_root=archive_root, scope=scope, profile_demand_only=True
             )
-            return await owner.converge(frame)
+            # Index publication already committed each changed input's latest
+            # revision into session_profile_demand. This callback acknowledges
+            # that obligation, not its derived completion. The fair no-hint
+            # owner consumes the coalesced latest revision after intake yields.
+            owed = profile.pending_demand_count(scope)
+            return DerivationReport(frame, counts={Outcome.PENDING: owed} if owed else {})
         async with audit_lock:
             frame = make_session_profile_frame(
                 index_path, archive_root=archive_root, scope=None, profile_demand_only=True
             )
-            report = await owner.converge(frame, resume=not demand_reset)
+            report = await owner.converge(frame, resume=not demand_reset, exclusive_bytes=True)
             demand_reset = False
             return report
 

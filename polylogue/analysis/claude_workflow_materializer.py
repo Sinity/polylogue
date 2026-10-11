@@ -12,7 +12,7 @@ import hashlib
 import json
 import sqlite3
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
@@ -27,6 +27,7 @@ from polylogue.analysis.claude_workflow_evidence import (
 )
 from polylogue.analysis.work_evidence import WorkEvidenceGraph
 from polylogue.archive.revision_authority import raw_receipt_order_sql
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.core.stage_admission import admit_stage_write
@@ -81,6 +82,7 @@ class ClaudeWorkflowMaterializationSummary:
     generated_prompt_count: int
     human_prompt_count: int
     gaps: tuple[str, ...]
+    graph_ids: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -120,6 +122,18 @@ class _RawArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class ClaudeWorkflowAuthority:
+    """Value-only canonical input frame; no blob bodies or SQLite owners."""
+
+    raw_artifacts: tuple[_RawArtifact, ...]
+    coordinator_invocations: tuple[ClaudeWorkflowCoordinatorInvocation, ...]
+    session_evidence: tuple[ClaudeWorkflowSessionEvidence, ...]
+    coordinator_prompts: tuple[ClaudeWorkflowPromptEvidence, ...]
+    corpus_snapshot_ref: ObjectRef
+    existing_graph_refs: dict[str, str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedInputs:
     raw_artifacts: tuple[_RawArtifact, ...]
     parsed_artifacts: tuple[ClaudeOrchestrationArtifact, ...]
@@ -133,13 +147,20 @@ class _PreparedInputs:
     existing_graph_refs: dict[str, str]
 
 
-def materialize_claude_workflow_archive(archive_root: Path) -> ClaudeWorkflowMaterializationSummary:
+def materialize_claude_workflow_archive(
+    archive_root: Path,
+    *,
+    publication_guard: Callable[[str], None] | None = None,
+    authority: ClaudeWorkflowAuthority | None = None,
+) -> ClaudeWorkflowMaterializationSummary:
     """Rebuild all Claude Workflow graphs from current retained authority."""
 
     archive_root = Path(archive_root)
-    prepared = _prepare_inputs(archive_root)
+    check_compute_cancelled()
+    prepared = _prepare_inputs(archive_root, authority=authority)
     graphs: list[WorkEvidenceGraph] = []
     for run_id in prepared.run_ids:
+        check_compute_cancelled()
         run_artifacts = claude_workflow_artifacts_for_run(run_id, prepared.parsed_artifacts)
         graph = project_claude_workflow_evidence(
             graph_id=f"{_GRAPH_PREFIX}{run_id}",
@@ -155,16 +176,52 @@ def materialize_claude_workflow_archive(archive_root: Path) -> ClaudeWorkflowMat
 
     # The projection above is archive-wide compute; only this replacement is
     # a write, so it is the only part that enters the daemon writer.
-    admit_stage_write("convergence.stage.claude_workflow.publish", lambda: _replace_graph_family(archive_root, graphs))
+    def publish() -> None:
+        check_compute_cancelled()
+        if publication_guard is not None:
+            publication_guard(prepared.corpus_snapshot_ref.format())
+        _replace_graph_family(archive_root, graphs)
+
+    admit_stage_write("convergence.stage.claude_workflow.publish", publish)
     return _summarize(prepared, graphs)
 
 
 def claude_workflow_materialization_needed(archive_root: Path) -> bool:
-    """Return whether current source/index evidence differs from stored graphs."""
-
+    """Inspect complete expected coverage for standalone callers without a receipt."""
     prepared = _prepare_inputs(Path(archive_root))
     expected = {f"{_GRAPH_PREFIX}{run_id}": prepared.corpus_snapshot_ref.format() for run_id in prepared.run_ids}
     return expected != prepared.existing_graph_refs
+
+
+def read_claude_workflow_authority(
+    archive_root: Path,
+    *,
+    include_graph_refs: bool = False,
+) -> ClaudeWorkflowAuthority:
+    """Read exactly the canonical fingerprint inputs, without materializing facts."""
+    source_db = archive_root / "source.db"
+    index_db = resolve_active_index_path(archive_root)
+    if not source_db.exists() or not index_db.exists():
+        raise FileNotFoundError("Claude Workflow materialization requires source.db and index.db")
+    with closing(open_readonly_connection(source_db, timeout_class="background-read")) as source_conn:
+        source_conn.row_factory = sqlite3.Row
+        source_conn.execute("BEGIN")
+        raw_artifacts = _load_current_artifacts(source_conn)
+    with closing(open_readonly_connection(index_db, timeout_class="background-read")) as index_conn:
+        index_conn.row_factory = sqlite3.Row
+        index_conn.execute("BEGIN")
+        invocations = _load_coordinator_invocations(index_conn, raw_artifacts)
+        sessions = _load_session_evidence(index_conn, raw_artifacts)
+        prompts = _load_coordinator_prompts(index_conn, invocations)
+        graph_refs = _load_existing_graph_refs(index_conn) if include_graph_refs else None
+    return ClaudeWorkflowAuthority(
+        raw_artifacts,
+        invocations,
+        sessions,
+        prompts,
+        _corpus_snapshot(raw_artifacts, invocations, sessions, prompts),
+        graph_refs,
+    )
 
 
 def claude_workflow_reparse_plan(archive_root: Path) -> ClaudeWorkflowReparsePlan:
@@ -186,19 +243,17 @@ def claude_workflow_reparse_plan(archive_root: Path) -> ClaudeWorkflowReparsePla
     )
 
 
-def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
-    source_db = archive_root / "source.db"
-    index_db = resolve_active_index_path(archive_root)
-    if not source_db.exists() or not index_db.exists():
-        raise FileNotFoundError("Claude Workflow materialization requires source.db and index.db")
-
+def _prepare_inputs(
+    archive_root: Path,
+    *,
+    authority: ClaudeWorkflowAuthority | None = None,
+) -> _PreparedInputs:
+    authority = authority or read_claude_workflow_authority(archive_root, include_graph_refs=True)
+    raw_artifacts = authority.raw_artifacts
     blob_store = BlobStore(archive_root / "blob")
-    # Both reads run on the stage check, outside writer admission. Publication
-    # keeps its own admitted write.
-    with closing(open_readonly_connection(source_db, timeout_class="background-read")) as source_conn:
-        source_conn.row_factory = sqlite3.Row
-        raw_artifacts = _load_current_artifacts(source_conn)
-        retained_revisions = _count_retained_revisions(source_conn)
+    with closing(open_readonly_connection(archive_root / "source.db", timeout_class="background-read")) as conn:
+        conn.row_factory = sqlite3.Row
+        retained_revisions = _count_retained_revisions(conn)
 
     parsed: list[ClaudeOrchestrationArtifact] = []
     artifact_evidence: dict[str, ObjectRef] = {}
@@ -233,20 +288,12 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
             )
         parsed.append(value)
 
-    with closing(open_readonly_connection(index_db, timeout_class="background-read")) as index_conn:
-        index_conn.row_factory = sqlite3.Row
-        coordinator_invocations = _load_coordinator_invocations(index_conn, raw_artifacts)
-        sessions = _load_session_evidence(index_conn, raw_artifacts)
-        coordinator_prompts = _load_coordinator_prompts(index_conn, coordinator_invocations)
-        existing_graph_refs = _load_existing_graph_refs(index_conn)
-
+    coordinator_invocations = authority.coordinator_invocations
+    sessions = authority.session_evidence
+    coordinator_prompts = authority.coordinator_prompts
+    existing_graph_refs = authority.existing_graph_refs or {}
     run_ids = _run_ids(parsed, coordinator_invocations)
-    corpus_snapshot_ref = _corpus_snapshot(
-        raw_artifacts,
-        coordinator_invocations,
-        sessions,
-        coordinator_prompts,
-    )
+    corpus_snapshot_ref = authority.corpus_snapshot_ref
     return _PreparedInputs(
         raw_artifacts=raw_artifacts,
         parsed_artifacts=tuple(parsed),
@@ -684,6 +731,7 @@ def _summarize(
         ),
         human_prompt_count=sum(prompt.material_origin == "human_authored" for prompt in prepared.coordinator_prompts),
         gaps=gaps,
+        graph_ids=tuple(graph.graph_id for graph in graphs),
     )
 
 
@@ -722,6 +770,8 @@ def _string(payload: Mapping[str, object], *keys: str) -> str | None:
 
 
 __all__ = [
+    "ClaudeWorkflowAuthority",
+    "read_claude_workflow_authority",
     "CLAUDE_WORKFLOW_MATERIALIZER_VERSION",
     "ClaudeWorkflowMaterializationSummary",
     "ClaudeWorkflowReparsePlan",

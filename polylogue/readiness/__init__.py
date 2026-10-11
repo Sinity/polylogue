@@ -566,6 +566,14 @@ def _claude_workflow_materialization_check(archive_root: Path) -> ReadinessCheck
             VerifyStatus.ERROR,
             summary=f"Claude Workflow rematerialization failed and its graph is stale: {detail}",
         )
+    from polylogue.operations.claude_workflow_convergence import claude_workflow_receipt_current
+
+    if not claude_workflow_receipt_current(archive_root, status):
+        return ReadinessCheck(
+            "claude_workflow_materialization",
+            VerifyStatus.WARNING,
+            summary="Current Claude Workflow authority still owes certification",
+        )
     gap_count = _payload_int(status.get("gap_count"))
     raw_gaps = status.get("gaps")
     gaps = [str(gap) for gap in raw_gaps] if isinstance(raw_gaps, list) else []

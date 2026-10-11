@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, TypeVar, ca
 
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.product_retry import ProductOutcome
 from polylogue.daemon.derivation import (
     Budget,
     DerivationAdapter,
@@ -119,12 +120,14 @@ class _DerivationAdmission:
         # Preparation observers remain on their creator. The joined cleanup
         # boundary preserves those entry handles and settles publication's new
         # native owners before the delegated writer gate can be released.
+        check_compute_cancelled()
         settle_publication = capture_compute_bridge()
         with (
             self._bridge.hold(f"derivation.{domain}") as delegation,
             adopt_write_lease(delegation),
             settle_publication(),
         ):
+            check_compute_cancelled()
             return publish()
 
     def stage_write(self, actor: str, work: Callable[[], T]) -> T:
@@ -329,6 +332,7 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
                 )
             ),
             admission_class="incremental-background",
+            exclusive_bytes=True,
         )
         return await submitted.wait()
 
@@ -901,6 +905,7 @@ class StageExecutionResult:
     success: bool
     stage_timings_s: dict[str, float] = field(default_factory=dict)
     stale_preparation: bool = False
+    product_outcome: ProductOutcome | None = None
 
     def __bool__(self) -> bool:
         return self.success
@@ -951,6 +956,9 @@ class ConvergenceStage:
     # relevant) must leave this false: a verdict on an irrelevant subject says
     # nothing about the relevant ones.
     subject_independent: bool = False
+    # The product owns one typed global debt row; generic per-subject mirrors
+    # must never create aliases or reinterpret its attempts.
+    owns_retry: bool = False
     # How this stage reaches the daemon's sole writer. The engine itself runs
     # off the writer lease, so ``bridged`` -- the stage brackets its own short
     # publication with ``admit_stage_write`` and computes, downloads and drains
@@ -969,6 +977,7 @@ class FileState:
     stages: dict[str, StageState] = field(default_factory=dict)
     stage_times: dict[str, float] = field(default_factory=dict)
     last_stage_times: dict[str, float] = field(default_factory=dict)
+    owned_retry_stages: frozenset[str] = frozenset()
     error_count: int = 0
     last_error: str | None = None
 
@@ -989,6 +998,7 @@ class SessionState:
     stages: dict[str, StageState] = field(default_factory=dict)
     stage_times: dict[str, float] = field(default_factory=dict)
     last_stage_times: dict[str, float] = field(default_factory=dict)
+    owned_retry_stages: frozenset[str] = frozenset()
     error_count: int = 0
     last_error: str | None = None
 
@@ -1006,6 +1016,18 @@ def _record_execute_result(
     scope: str,
     execute_result: StageExecuteReturn,
 ) -> None:
+    if isinstance(execute_result, StageExecutionResult) and execute_result.product_outcome is not None:
+        outcome = execute_result.product_outcome
+        if outcome in {ProductOutcome.CURRENT, ProductOutcome.VALID_EMPTY}:
+            state.stages[stage_name] = StageState.DONE
+        elif outcome is ProductOutcome.FAILED:
+            state.stages[stage_name] = StageState.FAILED
+            state.error_count += 1
+        elif outcome is ProductOutcome.STALE:
+            state.stages[stage_name] = StageState.STALE
+        else:
+            state.stages[stage_name] = StageState.PENDING
+        return
     if isinstance(execute_result, StageExecutionResult) and execute_result.stale_preparation:
         state.stages[stage_name] = StageState.STALE
         return
@@ -1291,7 +1313,10 @@ class DaemonConverger:
 
     def _converge_file_stages(self, path: Path) -> FileState:
         if path not in self._file_states:
-            self._file_states[path] = FileState(path=path)
+            self._file_states[path] = FileState(
+                path=path,
+                owned_retry_stages=frozenset(stage.name for stage in self._stages.values() if stage.owns_retry),
+            )
         state = self._file_states[path]
         state.last_stage_times.clear()
         downstream_blocked = False
@@ -1419,7 +1444,10 @@ class DaemonConverger:
 
         for path in paths:
             if path not in self._file_states:
-                self._file_states[path] = FileState(path=path)
+                self._file_states[path] = FileState(
+                    path=path,
+                    owned_retry_stages=frozenset(stage.name for stage in self._stages.values() if stage.owns_retry),
+                )
             state = self._file_states[path]
             state.stages.clear()
             state.last_stage_times.clear()
@@ -1640,7 +1668,10 @@ class DaemonConverger:
 
         for session_id in ids:
             if session_id not in self._session_states:
-                self._session_states[session_id] = SessionState(session_id=session_id)
+                self._session_states[session_id] = SessionState(
+                    session_id=session_id,
+                    owned_retry_stages=frozenset(stage.name for stage in self._stages.values() if stage.owns_retry),
+                )
             state = self._session_states[session_id]
             state.stages.clear()
             state.last_stage_times.clear()

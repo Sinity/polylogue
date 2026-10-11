@@ -45,6 +45,7 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
     "ingest_cursor": OpsTableDisposition("live ingest", "one cursor per source path", True, "retain"),
     "ingest_attempts": OpsTableDisposition("ingest", "one row per ingest attempt", True, "retain"),
     "convergence_debt": OpsTableDisposition("daemon converger", "one retryable debt row per target", True, "retain"),
+    "product_retry_incarnation": OpsTableDisposition("derived retry", "one Ops incarnation identity", True, "retain"),
     "attachment_convergence_cursor": OpsTableDisposition(
         "attachment convergence", "one fair archive sweep position", True, "retain"
     ),
@@ -265,10 +266,23 @@ CREATE TABLE IF NOT EXISTS convergence_debt (
     last_error     TEXT,
     next_retry_at  TEXT,
     materializer_version TEXT,
+    demand_identity TEXT,
+    admitted_attempt_id TEXT,
+    settled_attempt_id TEXT,
+    attempt_owner TEXT,
+    failure_streak INTEGER NOT NULL DEFAULT 0 CHECK(failure_streak >= 0),
+    observation_count INTEGER NOT NULL DEFAULT 0 CHECK(observation_count >= 0),
+    last_outcome TEXT,
     created_at_ms  INTEGER NOT NULL,
     updated_at_ms  INTEGER NOT NULL,
     UNIQUE(stage, target_type, target_id)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS product_retry_incarnation (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    incarnation TEXT NOT NULL
+) STRICT;
+INSERT OR IGNORE INTO product_retry_incarnation VALUES(1,lower(hex(randomblob(16))));
 
 CREATE INDEX IF NOT EXISTS idx_convergence_debt_stage
 ON convergence_debt(stage, priority DESC, updated_at_ms);

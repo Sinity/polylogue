@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -31,6 +33,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_templates import run_off_event_loop
@@ -448,7 +451,7 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
     what ``polylogue doctor`` reads) — rather than asserting against the
     materializer's summary struct in isolation.
 
-    Anti-vacuity: removing the ``record_claude_workflow_stage_event`` call
+    Anti-vacuity: removing the exact admitted receipt settlement
     from ``execute()``, or removing the
     ``_claude_workflow_materialization_check`` registration in
     ``run_archive_readiness``, makes the degraded-report assertions below fail
@@ -469,8 +472,46 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
     )
     assert result.parse_failures == 0
 
+    import polylogue.analysis.claude_workflow_materializer as materializer
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.core.write_lease import current_write_lease
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    body_reads: list[str] = []
+
+    def off_writer(name: str, original: Callable[..., Any]) -> Callable[..., Any]:
+        def observe(*args: Any, **kwargs: Any) -> Any:
+            assert current_write_lease() is None, name
+            body_reads.append(name)
+            return original(*args, **kwargs)
+
+        return observe
+
+    monkeypatch.setattr(BlobStore, "read_all", off_writer("blob", BlobStore.read_all))
+    monkeypatch.setattr(
+        materializer, "_count_retained_revisions", off_writer("history", materializer._count_retained_revisions)
+    )
+    monkeypatch.setattr(
+        materializer, "_load_existing_graph_refs", off_writer("graphs", materializer._load_existing_graph_refs)
+    )
+
+    def admission(actor: str, work: Callable[[], Any]) -> Any:
+        with write_lease(actor, archive_root=archive_root):
+            return work()
+
+    # Force no-debt receipt discovery after the canonical one-shot admission.
+    with sqlite3.connect(archive_root / "ops.db") as conn:
+        conn.execute("DELETE FROM daemon_stage_events WHERE stage='claude_workflow'")
+
     stage = make_claude_workflow_stage(archive_root / "index.db")
-    assert stage.execute(run_path) is True
+    with stage_write_admission(admission):
+        assert stage.execute(run_path)
+
+    assert body_reads.count("blob") > 0
+    assert body_reads.count("history") == 1
+    before_current_check = body_reads.count("blob")
+    assert not stage.check(run_path)
+    assert body_reads.count("blob") == before_current_check
 
     # The fixture bakes in one deliberately unresolved call (ATTEMPT_COUNT-1
     # attempts are clean; see the module docstring / summary.unresolved_call_count
@@ -499,7 +540,8 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
         source_conn.execute("DELETE FROM raw_sessions WHERE source_path = ?", (str(first_meta_path),))
         source_conn.commit()
 
-    assert stage.execute(run_path) is True
+    with stage_write_admission(admission):
+        assert stage.execute(run_path)
 
     degraded_status = claude_workflow_materialization_status(archive_root / "ops.db")
     assert degraded_status is not None
@@ -515,6 +557,174 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
     assert degraded_check.status == VerifyStatus.WARNING
     assert degraded_check.count >= 1
     assert any("missing paired agent metadata sidecar" in detail for detail in degraded_check.details)
+
+
+@pytest.mark.asyncio
+async def test_small_configured_workflow_owner_revision_guard_and_readiness(
+    one_shot_workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Five actual admitted artifacts qualify revision, publication and reader truth."""
+    import asyncio
+
+    import polylogue.analysis.claude_workflow_materializer as materializer
+    from polylogue.config import Config
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.core.write_lease import current_write_lease
+    from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+    from polylogue.operations.claude_workflow_convergence import make_claude_workflow_stage
+    from polylogue.readiness import VerifyStatus, get_readiness
+    from polylogue.storage.archive_readiness import claude_workflow_materialization_status
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    root = one_shot_workspace_env["archive_root"]
+    projects = one_shot_workspace_env["data_root"] / ".claude" / "projects"
+    coordinator_path = projects / "-small-project" / "coordinator-session.jsonl"
+    session_dir = coordinator_path.parent / "coordinator-session"
+    subagents = session_dir / "subagents"
+    transcript = subagents / "agent-one.jsonl"
+    metadata = subagents / "agent-one.meta.json"
+    run_path = session_dir / "workflows" / f"{RUN_ID}.json"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "type": "user",
+                "uuid": "worker-prompt",
+                "sessionId": "worker",
+                "message": {"role": "user", "content": "Neutral generated work."},
+            }
+        ],
+    )
+    metadata.write_text(json.dumps({"attemptId": "one", "transcriptPath": str(transcript)}))
+    _write_jsonl(
+        subagents / "workflows" / RUN_ID / "journal.jsonl",
+        [{"runId": RUN_ID, "contentKey": "one", "attemptId": "one", "metaPath": str(metadata), "result": "complete"}],
+    )
+    run_path.parent.mkdir(parents=True)
+    run_path.write_text(json.dumps({"runId": RUN_ID, "finalResult": "revision one"}))
+    _write_jsonl(
+        coordinator_path,
+        [
+            {
+                "type": "assistant",
+                "uuid": "invocation",
+                "sessionId": "coordinator",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "name": "Workflow", "id": "workflow-one", "input": {"runId": RUN_ID}}
+                    ],
+                },
+            }
+        ],
+    )
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
+    result = await ingest_one_shot_archive(root, [Source(name=Provider.CLAUDE_CODE.value, path=projects)])
+    assert result.parse_failures == 0
+    with sqlite3.connect(root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (5,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (5,)
+    with sqlite3.connect(root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
+
+    reads: list[str] = []
+
+    def off_writer(name: str, original: Callable[..., Any]) -> Callable[..., Any]:
+        def observe(*args: Any, **kwargs: Any) -> Any:
+            assert current_write_lease() is None, name
+            reads.append(name)
+            return original(*args, **kwargs)
+
+        return observe
+
+    monkeypatch.setattr(BlobStore, "read_all", off_writer("blob", BlobStore.read_all))
+    monkeypatch.setattr(
+        materializer, "_count_retained_revisions", off_writer("history", materializer._count_retained_revisions)
+    )
+    monkeypatch.setattr(
+        materializer, "_load_existing_graph_refs", off_writer("graphs", materializer._load_existing_graph_refs)
+    )
+
+    def admission(actor: str, work: Callable[[], Any]) -> Any:
+        with write_lease(actor, archive_root=root):
+            return work()
+
+    with sqlite3.connect(root / "ops.db") as conn:
+        conn.execute("DELETE FROM daemon_stage_events WHERE stage='claude_workflow'")
+    stage = make_claude_workflow_stage(root / "index.db")
+    with stage_write_admission(admission):
+        assert stage.execute(run_path)
+    assert reads.count("blob") > 0 and reads.count("history") == 1
+    before = reads.count("blob")
+    assert not stage.check(run_path)
+    assert reads.count("blob") == before
+    first = materialize_claude_workflow_archive(root)
+    assert first.current_artifact_count == first.retained_raw_revision_count == 5
+    assert first.graph_count == first.run_count == first.coordinator_invocation_count == 1
+    assert first.linked_session_count == first.metadata_sidecar_count == 1
+
+    def retain_revision() -> str:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=json.dumps({"runId": RUN_ID, "finalResult": "revision two"}).encode(),
+                source_path=str(run_path),
+                canonical_source_path=str(run_path),
+                source_index=0,
+                acquired_at_ms=2_000_000_000_000,
+            )
+
+    revised_raw_id = run_off_event_loop(retain_revision)
+    run_off_event_loop(lambda: replay_retained_components(root, selected_raw_ids=[revised_raw_id]))
+    with stage_write_admission(admission):
+        assert stage.execute(run_path)
+    revised = materialize_claude_workflow_archive(root)
+    assert revised.current_artifact_count == 5 and revised.retained_raw_revision_count == 6
+    assert revised.graph_count == revised.final_result_count == 1
+    assert revised.corpus_snapshot_ref != first.corpus_snapshot_ref
+    with sqlite3.connect(root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE source_path=?", (str(run_path),)).fetchone() == (
+            2,
+        )
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    try:
+        profiles = compose_session_profile_callback(
+            root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        assert not (await profiles.converge_backlog(60.0)).failed
+        assert not profiles.audit_pending()
+        with sqlite3.connect(root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone() == (2,)
+            assert conn.execute("SELECT COUNT(*) FROM session_profile_demand").fetchone() == (0,)
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+    baseline = claude_workflow_materialization_status(root / "ops.db")
+    assert baseline is not None
+    config = Config(archive_root=root, render_root=root, sources=[])
+    check = next(c for c in get_readiness(config).checks if c.name == "claude_workflow_materialization")
+    assert check.count == _status_gap_count(baseline)
+    assert check.status == (VerifyStatus.WARNING if _status_gap_count(baseline) else VerifyStatus.OK)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("DELETE FROM raw_artifacts WHERE source_path=?", (str(metadata),))
+        conn.execute("DELETE FROM raw_sessions WHERE source_path=?", (str(metadata),))
+    with stage_write_admission(admission):
+        assert stage.execute(run_path)
+    degraded = claude_workflow_materialization_status(root / "ops.db")
+    assert degraded is not None and degraded["status"] == "gaps"
+    assert _status_gap_count(degraded) > _status_gap_count(baseline)
+    assert any("missing paired agent metadata sidecar" in gap for gap in _status_gaps(degraded))
+    check = next(c for c in get_readiness(config).checks if c.name == "claude_workflow_materialization")
+    assert check.status == VerifyStatus.WARNING and check.count >= 1
+    assert any("missing paired agent metadata sidecar" in detail for detail in check.details)
 
 
 def _write_fixture(claude_root: Path) -> tuple[Path, Path, Path]:
