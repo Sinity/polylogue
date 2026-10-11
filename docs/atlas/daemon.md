@@ -204,6 +204,13 @@ owner after releasing deferred rows and converging promoted session profiles.
 The wake coalesces through the periodic runner; due times, retry backoff and
 the ordinary periodic fallback still govern debt retries.
 
+A deferred frontier retry is eligible again when the canonical inspection
+mark is available but no longer covers its current Source/Index/cursor frame.
+The existing debt pass releases only that stage's deferred deadlines before
+fresh owner inspection. An unchanged blocked mark, unavailable frame, failed
+row or another stage retains its schedule. This is a scheduling hint, not
+permission to publish or a healthy frontier verdict.
+
 Health notifications use the resident backend on the daemon's bounded compute
 adapter. Blocking delivery yields the event loop and its original admitted
 call physically settles before cancellation or shutdown can retire the service.
