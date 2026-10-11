@@ -3,13 +3,17 @@
 import os
 import signal
 import socket
+import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NoReturn
 
 import pytest
 
 from devtools import pytest_slot
+from devtools.pytest_memory_admission import EX_TEMPFAIL, RESOURCE_NOT_READY
 
 
 @pytest.mark.parametrize("abstract", [False, True])
@@ -21,7 +25,7 @@ def test_native_readiness_datagram(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         target = "@pytest-ready-" + uuid.uuid4().hex if abstract else f"/proc/self/fd/{directory}/notify.socket"
         monkeypatch.setenv("AGENTCTL_EXECUTION_READINESS", "notify")
         monkeypatch.setenv("NOTIFY_SOCKET", target)
-        monkeypatch.setattr(pytest_slot.time, "monotonic", lambda: 17.5)
+        monkeypatch.setattr(time, "monotonic", lambda: 17.5)
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as receiver:
             receiver.bind("\0" + target[1:] if abstract else target)
             receiver.settimeout(1)
@@ -43,15 +47,15 @@ def test_ready_follows_admission_and_reservation_is_released(monkeypatch: pytest
     ledger = SimpleNamespace(release=lambda: trace.append("release"))
     monkeypatch.setattr(pytest_slot, "admission_ledger", lambda env: ledger)
 
-    def admit(argv, **kwargs):
+    def admit(argv: Sequence[str], **kwargs: object) -> tuple[list[str], None]:
         trace.append("admit")
         return list(argv), None
 
-    def ready():
+    def ready() -> float:
         trace.append("ready")
         return 100.0
 
-    def execute(command, **kwargs):
+    def execute(command: Sequence[str], **kwargs: object) -> tuple[int, dict[str, str]]:
         trace.append("execute")
         assert kwargs["execution_started"] == 100.0
         return 0, {"status": "success"}
@@ -98,16 +102,16 @@ def test_deferred_admission_neither_signals_ready_nor_executes(monkeypatch: pyte
     monkeypatch.setattr(
         pytest_slot,
         "admit_width",
-        lambda argv, **kwargs: (list(argv), {"admission": pytest_slot.RESOURCE_NOT_READY}),
+        lambda argv, **kwargs: (list(argv), {"admission": RESOURCE_NOT_READY}),
     )
 
-    def unexpected(*args, **kwargs):
+    def unexpected(*args: object, **kwargs: object) -> NoReturn:
         pytest.fail("deferred admission entered execution")
 
     monkeypatch.setattr(pytest_slot, "_notify_admission_complete", unexpected)
     monkeypatch.setattr(pytest_slot, "_run_held_admitted", unexpected)
     code, receipt = pytest_slot._run_held(["must-not-run"], cwd="/", env={}, stdout=None, on_exit=lambda: None)
-    assert code == pytest_slot.EX_TEMPFAIL
+    assert code == EX_TEMPFAIL
     assert receipt["status"] == "deferred"
     assert receipt["execution_elapsed_s"] is None
     assert released == [True]
@@ -117,7 +121,7 @@ def test_deferred_admission_neither_signals_ready_nor_executes(monkeypatch: pyte
 def test_interrupted_receipt_preserves_execution_phase(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, execution_started: float | None, expected: float | None
 ) -> None:
-    monkeypatch.setattr(pytest_slot.time, "monotonic", lambda: 20.0)
+    monkeypatch.setattr(time, "monotonic", lambda: 20.0)
     receipt = pytest_slot._write_interrupted_result(
         tmp_path / "run.log",
         environment={},
