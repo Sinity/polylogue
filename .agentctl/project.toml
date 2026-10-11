@@ -128,6 +128,7 @@ pool = "pytest-heavy"
 result = "pytest"
 cache = "tree+environment"
 timeout_seconds = 14400
+execution_readiness = "notify"
 
 [operations.dev_loop_proof]
 description = "Run the bounded browser-capture dev-loop proof through AgentCTL"

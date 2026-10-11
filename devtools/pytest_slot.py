@@ -991,6 +991,7 @@ def _slot_receipt(
     *,
     status: str,
     elapsed_s: float,
+    execution_elapsed_s: float | None = None,
     sizing: Mapping[str, Any] | None,
     memory: Mapping[str, Any] | None,
     exit_code: int | None = None,
@@ -1017,6 +1018,8 @@ def _slot_receipt(
         "kind": "polylogue.pytest-slot-result",
         "status": status,
         "elapsed_s": round(elapsed_s, 3),
+        "execution_elapsed_s": round(execution_elapsed_s, 3) if execution_elapsed_s is not None else None,
+        "admission_wait_s": ((sizing or {}).get("admission_ledger") or {}).get("waited_s"),
     }
     if exit_code is not None:
         receipt["exit_code"] = exit_code
@@ -1093,10 +1096,12 @@ def _write_interrupted_result(
     memory: Mapping[str, Any] | None = None,
     profile: ChargeProfile | None = None,
     execution_source: Mapping[str, Any] | None = None,
+    execution_started: float | None = None,
 ) -> dict[str, Any]:
     """Atomically preserve an interruption result before the worker dies."""
     receipt = _slot_receipt(
         status="interrupted",
+        execution_elapsed_s=time.monotonic() - execution_started if execution_started is not None else None,
         elapsed_s=time.monotonic() - started,
         sizing=sizing,
         memory=memory,
@@ -1111,6 +1116,21 @@ def _write_interrupted_result(
     )
     _persist_slot_result(log_path, receipt)
     return receipt
+
+
+def _notify_admission_complete() -> float:
+    """Start the managed execution budget only after owning the reservation."""
+    if os.environ.get("AGENTCTL_EXECUTION_READINESS") == "notify":
+        import socket
+
+        target = os.environ.get("NOTIFY_SOCKET")
+        if not target:
+            raise RuntimeError("managed pytest admission has no systemd readiness receiver")
+        address = "\0" + target[1:] if target.startswith("@") else target
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sender:
+            sender.connect(address)
+            sender.sendall(b"READY=1\nSTATUS=pytest memory admission complete")
+    return time.monotonic()
 
 
 def _report_admission_wait(message: str) -> None:
@@ -1171,8 +1191,10 @@ def _run_held(
             if result_path is not None:
                 _persist_slot_result(result_path, receipt)
             return EX_TEMPFAIL, receipt
+        execution_started = _notify_admission_complete()
         return _run_held_admitted(
             command,
+            execution_started=execution_started,
             cwd=cwd,
             env=env,
             stdout=stdout,
@@ -1210,6 +1232,7 @@ def _stop_execution_process(process: subprocess.Popen[Any], source_guard: Any = 
 def _run_held_admitted(
     command: Sequence[str],
     *,
+    execution_started: float,
     cwd: str,
     env: Mapping[str, str],
     stdout: IO[Any] | None,
@@ -1326,6 +1349,7 @@ def _run_held_admitted(
                 result_path,
                 environment=env,
                 started=started,
+                execution_started=execution_started,
                 signal_number=signal_number,
                 worktree_provenance=worktree_provenance if guard is None else None,
                 execution_source={"status": "unavailable", "reason": "execution interrupted"}
@@ -1365,6 +1389,7 @@ def _run_held_admitted(
         profile=profile,
         exit_code=returncode,
         elapsed_s=time.monotonic() - started,
+        execution_elapsed_s=time.monotonic() - execution_started,
         sizing=sizing,
         memory=memory,
         extra={
@@ -1586,6 +1611,7 @@ def _run_launch(launch_path: Path) -> int:
     progress = _ProgressSnapshot(environment)
     telemetry_path = _telemetry_path(log_path)
     started = time.monotonic()
+    execution_started: float | None = None
     terminating = False
     terminal_status = "running"
 
@@ -1614,6 +1640,7 @@ def _run_launch(launch_path: Path) -> int:
                 log_path,
                 environment=environment,
                 started=started,
+                execution_started=execution_started,
                 signal_number=signal_number,
                 worktree_provenance=worktree_provenance if guard is None else None,
                 execution_source=stability,
@@ -1655,6 +1682,7 @@ def _run_launch(launch_path: Path) -> int:
             _persist_slot_result(log_path, receipt)
             _print_result(receipt)
             return EX_TEMPFAIL
+        execution_started = _notify_admission_complete()
         _persist_telemetry_seed(telemetry_path, sizing=sizing, progress=progress)
         note = _sizing_note(sizing)
         with open(log_path, "wb") as log:
@@ -1720,6 +1748,7 @@ def _run_launch(launch_path: Path) -> int:
             profile=profile,
             exit_code=returncode,
             elapsed_s=time.monotonic() - started,
+            execution_elapsed_s=time.monotonic() - execution_started,
             sizing=sizing,
             memory=memory,
             log_path=log_path,
