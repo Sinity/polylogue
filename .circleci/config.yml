@@ -1,5 +1,10 @@
 version: 2.1
 
+parameters:
+  run_full_suite:
+    type: boolean
+    default: false
+
 # CircleCI free-tier CI while GitHub Actions is billing-locked. Design keeps
 # the per-push cost low:
 #   - quick-gate (PRs + master pushes): `devtools verify --quick` itself (not a
@@ -15,6 +20,8 @@ version: 2.1
 #     verification; this job is the publication gate. The standalone
 #     `devtools gate test-collection` diagnoses import/collection failures;
 #     an explicit complete-corpus run collects tests during execution.
+#   - complete-verification: explicitly trigger a pipeline with
+#     run_full_suite=true; no automatic or scheduled corpus run.
 #   - dependency-audit (scheduled pipeline named "nightly"): dependency
 #     security maintenance.
 #   - release-verify (v* tags): build artifacts and store them.
@@ -41,6 +48,17 @@ commands:
           key: uv-v1-{{ checksum "uv.lock" }}
           paths:
             - ~/.cache/uv
+  prepare-history:
+    steps:
+      - run:
+          name: Fetch the schema comparison history
+          # The schema gate requires a merge base with master (or its first
+          # parent on master), including on fresh isolated checkouts.
+          command: |
+            if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+              git fetch --no-tags --unshallow origin
+            fi
+            git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
 
 jobs:
   quick-gate:
@@ -55,16 +73,7 @@ jobs:
       POLYLOGUE_PYTEST_WORKERS: "2"
     steps:
       - bootstrap
-      - run:
-          name: Fetch the schema comparison history
-          # The schema-manifest gate compares against the merge base with
-          # master (or HEAD's first parent on master) and refuses when that
-          # history is missing, so make it present rather than implicit.
-          command: |
-            if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-              git fetch --no-tags --unshallow origin
-            fi
-            git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
+      - prepare-history
       - restore_cache:
           keys:
             - mypy-v2-{{ .Branch }}
@@ -81,6 +90,40 @@ jobs:
             - .cache/mypy
             # Rendered base-commit schema states; see verify_schema_manifest.
             - .cache/verify/schema-state
+  verify-complete:
+    docker:
+      - image: cimg/python:3.14
+    resource_class: medium
+    environment: *polylogue_ci_env
+    steps:
+      - bootstrap
+      - prepare-history
+      - run:
+          name: Verify complete corpus in the isolated runner
+          command: ~/.local/bin/uv run devtools verify --runner isolated --all --on-default-branch
+      - run:
+          name: Require candidate-bound test evidence
+          command: ~/.local/bin/uv run python -m devtools.verify_receipt_check --candidate "$CIRCLE_SHA1"
+      - run:
+          name: Preserve only the verification receipt
+          when: always
+          command: |
+            mkdir -p /tmp/verification-receipts
+            ~/.local/bin/uv run python -c '
+            from pathlib import Path
+            import shutil
+            from devtools.verify_receipt_check import current_run_id, run_receipt_path
+            root = Path.cwd()
+            pointer = root / ".cache/verify/current-run.json"
+            if pointer.is_file():
+                receipt = run_receipt_path(root, current_run_id(root))
+                shutil.copyfile(pointer, "/tmp/verification-receipts/current-run.json")
+                if receipt.is_file():
+                    shutil.copyfile(receipt, "/tmp/verification-receipts/run.json")
+            '
+      - store_artifacts:
+          path: /tmp/verification-receipts
+          destination: verification-receipts
   dependency-audit:
     docker:
       - image: cimg/python:3.14
@@ -109,6 +152,14 @@ jobs:
           destination: dist
 
 workflows:
+  complete-verification:
+    when:
+      and:
+        - << pipeline.parameters.run_full_suite >>
+        - not:
+            equal: [scheduled_pipeline, << pipeline.trigger_source >>]
+    jobs:
+      - verify-complete
   gate:
     when:
       not:
