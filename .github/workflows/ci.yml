@@ -80,10 +80,31 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --extra dev --group audit --frozen
-      - run: uv run devtools verify --runner isolated --all --on-default-branch
+      - name: Verify complete corpus
+        id: verify
+        run: |
+          uv run devtools verify --runner isolated --all --on-default-branch
+          echo "run_id=$(jq --raw-output .run_id .cache/verify/current-run.json)" >> "$GITHUB_OUTPUT"
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
           HYPOTHESIS_PROFILE: ci
+      - name: Require candidate-bound test evidence
+        env:
+          VERIFY_RUN_ID: ${{ steps.verify.outputs.run_id }}
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          uv run python -m devtools.verify_receipt_check \
+            --run-id "$VERIFY_RUN_ID" --candidate "$CANDIDATE_SHA"
+      - name: Retain verification receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-receipts-${{ github.run_id }}
+          path: |
+            .cache/verify/current-run.json
+            .cache/verify/runs/*/run.json
+          include-hidden-files: true
+          if-no-files-found: ignore
 
   typecheck:
     # Strict mypy over the clean subset of polylogue/*. The list of
