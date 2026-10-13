@@ -416,9 +416,8 @@ def _detect_bind_mounts(archive: Path, out: list[dict[str, object]]) -> None:
         )
 
     # Also check for same-device-different-path via stat.
-    # If archive_root() = /realm/data/captures/polylogue and
-    # default (= ~/.local/share/polylogue) resolves to a different path
-    # but same device/inode, flag it as a bind mount.
+    # If the configured archive and default data home resolve to different
+    # paths with the same device/inode, flag the alias as a bind mount.
     from polylogue.paths import data_home as _data_home
 
     default_root = _data_home().resolve()
