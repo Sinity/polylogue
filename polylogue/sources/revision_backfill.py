@@ -30,6 +30,7 @@ import ijson
 
 from polylogue import logging as _polylogue_logging
 from polylogue.archive.artifact_taxonomy import (
+    CLASSIFIED_ARTIFACT_KINDS,
     ArtifactClassification,
     ArtifactKind,
     ArtifactStreamClassification,
@@ -979,17 +980,29 @@ def _attach_retained_validation_verdict(
     schema_registry: SchemaRegistry | None,
 ) -> PreparedJsonl:
     """Bind schema evidence to the exact retained bytes the parser consumed."""
-    if (
-        artifact.error is None
-        and artifact.resolved_provider is not None
-        and not path_declaration_refuses_session(provider, source_path)
-        and not (jsonl and artifact.parsed_prefix_size == 0)
-    ):
-        from polylogue.schemas import RetainedValidationReuse, validate_retained_document
+    try:
+        classification = artifact.stream_classification() if artifact.error is None else None
+        schema_exempt = (
+            classification is not None
+            and classification.proved_non_session
+            and not classification.classification.parse_as_session
+            and classification.classification.cohort in CLASSIFIED_ARTIFACT_KINDS
+            and classification.classification.provider is artifact.resolved_provider
+            and not classification.classification.schema_eligible
+        )
+        if (
+            artifact.error is None
+            and artifact.resolved_provider is not None
+            and not schema_exempt
+            and not path_declaration_refuses_session(provider, source_path)
+            and not (jsonl and artifact.parsed_prefix_size == 0)
+        ):
+            from polylogue.schemas import RetainedValidationReuse, validate_retained_document
 
-        reuse = artifact.validation_reuse or RetainedValidationReuse()
-        validation_prefix = artifact.parsed_prefix_size if jsonl and validation_mode is not ValidationMode.OFF else None
-        try:
+            reuse = artifact.validation_reuse or RetainedValidationReuse()
+            validation_prefix = (
+                artifact.parsed_prefix_size if jsonl and validation_mode is not ValidationMode.OFF else None
+            )
             with _retained_validation_input(blob_path, validation_prefix) as (validation_path, accepted_prefix_size):
                 verdict = validate_retained_document(
                     artifact.resolved_provider,
@@ -1009,15 +1022,13 @@ def _attach_retained_validation_verdict(
             if artifact.custody is not None:
                 artifact.custody.validation_reuse = reuse
             return dataclasses.replace(artifact, validation_verdict=verdict, validation_reuse=reuse)
-        except BaseException as primary:
-            try:
-                artifact.discard()
-            except BaseException as cleanup:
-                raise BaseExceptionGroup(
-                    "retained validation and artifact cleanup failed", [primary, cleanup]
-                ) from None
-            raise
-    return artifact
+        return artifact
+    except BaseException as primary:
+        try:
+            artifact.discard()
+        except BaseException as cleanup:
+            raise BaseExceptionGroup("retained validation and artifact cleanup failed", [primary, cleanup]) from None
+        raise
 
 
 def prepare_retained_non_json_artifact(
@@ -1048,61 +1059,71 @@ def prepare_retained_non_json_artifact(
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 
     provider, blob_hash, source_path, _kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
-    # Complete export grammars retain their original source path while the
-    # streamed parser chooses the object or array shape from the bytes. A
-    # neutral extension cannot send these documents to the record collector.
-    if provider in BUNDLE_PROVIDERS and not is_jsonl_source_path(source_path):
-        return prepare_retained_jsonl_artifact(
-            evidence_reader,
-            raw_id,
-            directory=directory,
-            allow_generic_object_alias=True,
-            validation_mode=validation_mode,
-            schema_registry=schema_registry,
-            prepare_blob_publications=prepare_blob_publications,
-        )
-    if provider in {Provider.DRIVE, Provider.GEMINI} and not (
-        is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"
-    ):
-        from polylogue.sources.decoder_json import generic_message_object_envelope
-
-        blob_path = evidence_reader.raw_revision_blob_path(raw_id)
-        if blob_path is not None:
-            with blob_path.open("rb") as handle:
-                generic_envelope = generic_message_object_envelope(handle)
-            if generic_envelope is not None:
-                return prepare_retained_jsonl_artifact(
-                    evidence_reader,
-                    raw_id,
-                    directory=directory,
-                    allow_generic_object_alias=True,
-                    validation_mode=validation_mode,
-                    schema_registry=schema_registry,
-                    prepare_blob_publications=prepare_blob_publications,
-                )
-    if path_declaration_refuses_session(provider, source_path):
-        # A raw-only member (an export's binary asset) is evidence whatever its
-        # suffix: the sealed preparation records its path classification
-        # without decoding the bytes, exactly as for a JSON-suffixed member.
-        return prepare_retained_jsonl_artifact(
-            evidence_reader,
-            raw_id,
-            directory=directory,
-            validation_mode=validation_mode,
-            schema_registry=schema_registry,
-            prepare_blob_publications=prepare_blob_publications,
-        )
-    publisher = (
-        ArchiveBlobPublisher(evidence_reader.archive_root / "source.db", evidence_reader.archive_root / "blob")
-        if prepare_blob_publications
-        else None
-    )
+    publisher: ArchiveBlobPublisher | None = None
     sessions_path = Path(directory) / f"prepared-{uuid.uuid4().hex}.db"
     shard_path: Path | None = None
     store: SqliteMessageStore | None = None
     sealed = False
     parsed = False
     try:
+        # Complete export grammars retain their original source path while the
+        # streamed parser chooses the object or array shape from the bytes. A
+        # neutral extension cannot send these documents to the record collector.
+        if provider in BUNDLE_PROVIDERS and not is_jsonl_source_path(source_path):
+            parsed = True
+            artifact = prepare_retained_jsonl_artifact(
+                evidence_reader,
+                raw_id,
+                directory=directory,
+                allow_generic_object_alias=True,
+                validation_mode=validation_mode,
+                schema_registry=schema_registry,
+                prepare_blob_publications=prepare_blob_publications,
+            )
+            sealed = True
+            return artifact
+        if provider in {Provider.DRIVE, Provider.GEMINI} and not (
+            is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"
+        ):
+            from polylogue.sources.decoder_json import generic_message_object_envelope
+
+            blob_path = evidence_reader.raw_revision_blob_path(raw_id)
+            if blob_path is not None:
+                with blob_path.open("rb") as handle:
+                    generic_envelope = generic_message_object_envelope(handle)
+                if generic_envelope is not None:
+                    parsed = True
+                    artifact = prepare_retained_jsonl_artifact(
+                        evidence_reader,
+                        raw_id,
+                        directory=directory,
+                        allow_generic_object_alias=True,
+                        validation_mode=validation_mode,
+                        schema_registry=schema_registry,
+                        prepare_blob_publications=prepare_blob_publications,
+                    )
+                    sealed = True
+                    return artifact
+        if path_declaration_refuses_session(provider, source_path):
+            # A raw-only member (an export's binary asset) is evidence whatever its
+            # suffix: the sealed preparation records its path classification
+            # without decoding the bytes, exactly as for a JSON-suffixed member.
+            parsed = True
+            artifact = prepare_retained_jsonl_artifact(
+                evidence_reader,
+                raw_id,
+                directory=directory,
+                validation_mode=validation_mode,
+                schema_registry=schema_registry,
+                prepare_blob_publications=prepare_blob_publications,
+            )
+            sealed = True
+            return artifact
+        publisher = (
+            ArchiveBlobPublisher(evidence_reader.archive_root / "source.db", evidence_reader.archive_root / "blob")
+            if prepare_blob_publications
+            else None
+        )
         state_descriptor = _retained_codex_state_descriptor(evidence_reader, raw_id)
         if not BlobStore(evidence_reader.archive_root / "blob").verify(blob_hash, stop=compute_cancel_requested):
             raise RetainedPreparationRetryableError(f"retained blob changed for raw {raw_id}")
@@ -1256,6 +1277,15 @@ def prepare_retained_non_json_artifact(
         # A declared raw-only evidence path is terminal by its declaration:
         # its bytes are retained, never decoded as a session grammar.
         declared = declared_evidence_classification(source_path, provider=provider)
+        if declared is None and is_sqlite_page_image(sqlite_path):
+            declared = ArtifactClassification(
+                provider=provider,
+                kind=ArtifactKind.BINARY_DATABASE,
+                parse_as_session=False,
+                schema_eligible=False,
+                default_priority=0,
+                reason="retained SQLite page image is recognized unparsed binary evidence",
+            )
         sessions = (
             []
             if declared is not None

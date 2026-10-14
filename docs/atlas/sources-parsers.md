@@ -88,6 +88,13 @@ inputs use `prepare_retained_jsonl_artifact` and
 The storage writer lowers their prepared sessions through
 `write_parsed_session_to_archive`.
 
+A retained SQLite page image seals its proven binary classification before
+schema validation. Complete classified non-session evidence may exempt its
+exact resolved provider from schema decoding when its policy is schema-ineligible.
+Unknown shapes and empty parser output do not establish that exemption;
+an explicitly classified empty metadata array follows its own policy. The
+exemption does not replace Source census or grant page images session authority.
+
 A complete zero-byte Claude JSONL capture keeps byte-prefix cursor authority.
 It has no header or accepted body to certify as a Claude semantic frontier.
 The retained owner still publishes its non-session census. Later growth goes
