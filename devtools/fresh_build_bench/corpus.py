@@ -26,13 +26,15 @@ import shutil
 import stat
 import time
 from collections import defaultdict, deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Generator, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
     from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.schemas.synthetic.composition import SyntheticComposition
+    from polylogue.schemas.synthetic.models import SyntheticSessionChunks
 
 MANIFEST_FORMAT: Final = "polylogue.fresh-build-corpus.v1"
 MANIFEST_NAME: Final = "manifest.json"
@@ -952,7 +954,12 @@ def _copy_hook_tree(source_root: Path, destination_root: Path, *, fraction: floa
 
 
 def corpus_from_synthetic(
-    out: Path, *, corpus: SyntheticCorpus, seed: int, count: int | None = None, target_bytes: int | None = None
+    out: Path,
+    *,
+    corpus: SyntheticCorpus | SyntheticComposition,
+    seed: int,
+    count: int | None = None,
+    target_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Seal the original package driver's bytes for a fresh-build benchmark.
 
@@ -965,34 +972,68 @@ def corpus_from_synthetic(
         raise ValueError("synthetic session count must be a nonnegative exact integer")
     if target_bytes is not None and (type(target_bytes) is not int or target_bytes < 0):
         raise ValueError("synthetic byte target must be a nonnegative exact integer")
-    profile = corpus.workload_profile
-    if profile is None:
-        raise ValueError("package workload_profile_file is missing; re-infer and publish the package")
+    from polylogue.schemas.synthetic.composition import SyntheticComposition
+
+    if isinstance(corpus, SyntheticComposition):
+        composition: SyntheticComposition | None = corpus
+        corpora = corpus.corpora
+    else:
+        composition = None
+        corpora = (corpus,)
+    for selected in corpora:
+        if selected.workload_profile is None:
+            raise ValueError("package workload_profile_file is missing; re-infer and publish the package")
     layouts = {
         "claude-code": ("home/.claude/projects/schema", ".jsonl"),
         "codex": ("home/.codex/sessions/schema", ".jsonl"),
         "chatgpt": ("exports/chatgpt", ".json"),
         "claude-ai": ("exports/claude-ai", ".json"),
     }
-    if corpus.provider not in layouts:
+    if any(selected.provider not in layouts for selected in corpora):
         raise ValueError("provider has no declared fresh-build synthetic source layout")
-    directory, suffix = layouts[corpus.provider]
     refuse_inside_checkout(out, "synthetic corpus")
     if out.exists() and any(out.iterdir()):
         raise ValueError("synthetic corpus directory must be absent or empty")
     _private_root(out)
-    destination = out / directory
-    destination.mkdir(parents=True, mode=0o700)
-    sessions = corpus.iter_sessions(count=count, target_bytes=target_bytes, seed=seed)
+    written_bytes = 0
+    selection_counts: dict[str, int] = {}
+
+    def selected_sessions() -> Generator[tuple[SyntheticCorpus, SyntheticSessionChunks], None, None]:
+        if composition is None:
+            original = corpora[0]
+            sessions = original.iter_sessions(count=count, target_bytes=target_bytes, seed=seed)
+            try:
+                for session in sessions:
+                    yield original, session
+            finally:
+                sessions.close()
+        else:
+            for selected, selected_seed in composition.iter_choices(count=count, seed=seed):
+                if target_bytes is not None and written_bytes >= target_bytes:
+                    break
+                sessions = selected.iter_sessions(count=1, seed=selected_seed)
+                try:
+                    for session in sessions:
+                        yield selected, session
+                finally:
+                    sessions.close()
+
+    sessions = selected_sessions()
     session_count = 0
     try:
-        for session in sessions:
+        for selected, session in sessions:
             session_count += 1
-            path = destination / f"session-{session.index:06d}{suffix}"
+            selection_counts[selected.provider] = selection_counts.get(selected.provider, 0) + 1
+            directory, suffix = layouts[selected.provider]
+            destination = out / directory
+            destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+            index = session.index if composition is None else session_count - 1
+            path = destination / f"session-{index:06d}{suffix}"
             with path.open("xb") as handle:
                 path.chmod(0o600)
                 for chunk in session.chunks:
                     handle.write(chunk)
+                    written_bytes += len(chunk)
             for adjunct in session.adjuncts:
                 adjunct_path = path.parent / path.stem / adjunct.directory / adjunct.name
                 adjunct_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1000,18 +1041,29 @@ def corpus_from_synthetic(
                     adjunct_path.chmod(0o600)
                     for chunk in adjunct.chunks:
                         handle.write(chunk)
+                        written_bytes += len(chunk)
     finally:
         sessions.close()
-    return seal(
-        out,
-        kind="synthetic",
-        parameters={
-            "provider": corpus.provider,
-            "package_version": corpus.package_version,
-            "element_kind": corpus.element_kind,
-            "profile_id": profile.get("profile_id"),
-            "seed": seed,
-            "sessions": session_count,
-            "target_bytes": target_bytes,
-        },
-    )
+    parameters: dict[str, Any] = {
+        "seed": seed,
+        "sessions": session_count,
+        "target_bytes": target_bytes,
+    }
+    if composition is None:
+        original = corpora[0]
+        assert original.workload_profile is not None
+        parameters.update(
+            provider=original.provider,
+            package_version=original.package_version,
+            element_kind=original.element_kind,
+            profile_id=original.workload_profile.get("profile_id"),
+        )
+    else:
+        parameters.update(
+            provider_populations=composition.populations,
+            provider_weights=composition.weights,
+            provider_profile_ids=composition.profile_ids,
+            provider_selection_counts=selection_counts,
+            population="retained-original-main-session-revisions-or-neutral-scopes",
+        )
+    return seal(out, kind="synthetic", parameters=parameters)

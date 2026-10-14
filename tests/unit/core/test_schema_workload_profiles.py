@@ -13,7 +13,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.scenarios import (
     WorkloadPhaseObservation,
     WorkloadReceipt,
@@ -1881,7 +1881,6 @@ def test_original_result_shapes_bind_before_draw_and_preserve_prior_reference() 
 
 def test_physical_streams_keep_bundle_children_out_of_the_parent_timeline(tmp_path: Path) -> None:
     """Joining files by bundle invents a parent transition and timestamp gap."""
-    from polylogue.core.json import json_document
     from polylogue.schemas.generation.observation_journal import ObservationJournal
     from polylogue.schemas.generation.workload_profiles import PhysicalScopeCounts
 
@@ -1998,7 +1997,6 @@ def test_selection_enrolls_each_declared_element_from_the_same_original_package(
 
 
 def test_original_session_headers_prove_exact_prefix_and_preserve_ambiguous_parents(tmp_path: Path) -> None:
-    from polylogue.core.json import json_document
     from polylogue.schemas.generation.observation_journal import ObservationJournal
     from polylogue.schemas.generation.workload_profiles import SessionPrefixCounts
 
@@ -2103,6 +2101,11 @@ def test_original_session_headers_prove_exact_prefix_and_preserve_ambiguous_pare
             element_schemas={"session_record_stream": {"type": "object"}},
             privacy_policy="standard",
         )
+        provenance = json_document(profile["provenance"])
+        assert provenance["main_session_count"] == 4
+        exclusions = json_document(provenance["main_session_exclusions"])
+        assert exclusions["unretained_parent"] == exclusions["ambiguous_parent"] == 1
+        assert sum(value for value in exclusions.values() if isinstance(value, int)) == 4
         lineage = json_document(profile["session_lineage"])
         assert lineage["outcomes"] == {
             "no_explicit_parent": 4,
@@ -2428,7 +2431,6 @@ def test_dispatcher_carrier_forms_constrain_original_schema_before_field_draws()
 
 
 def test_original_dispatch_child_counts_keep_missing_and_ambiguous_associations(tmp_path: Path) -> None:
-    from polylogue.core.json import json_document
     from polylogue.schemas.generation.observation_journal import ObservationJournal
     from polylogue.schemas.generation.workload_profiles import AgentChildCounts
 
@@ -2631,6 +2633,9 @@ def test_original_dispatch_transcript_is_emitted_by_collector_writer_and_fresh_b
         ),
     ]
     profile = inferred_physical_profile("claude-code", schemas, units)
+    provenance = json_document(profile["provenance"])
+    assert provenance["main_session_count"] == 1
+    assert provenance["main_session_exclusions"] == {"agent_transcript": 1}
     selection = SyntheticSchemaSelection(
         "claude-code", "v1", "session_record_stream", parent, WireFormat(encoding="jsonl"), profile, schemas
     )
@@ -3268,7 +3273,6 @@ def test_depth_profile_reference_codec_preserves_original_row_keys_and_wire_labe
     import io
 
     from polylogue.core.digest import RECEIPT, REFERENCE, canonical_bytes
-    from polylogue.core.json import json_document
     from polylogue.schemas.workload_profile_rows import read_workload_profile
 
     grammar = json_document({"record_kinds": {"neutral-n\u0303": 1}, "wire_label": "n\u0303"})

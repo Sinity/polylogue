@@ -426,14 +426,15 @@ class SyntheticCorpus:
                 )
                 file_path = output_dir / canonical_session_position(corpus.provider, cascade_id, ".pb")
                 file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_bytes(b"fake-protobuf-bytes-" + cascade_id.encode("utf-8"))
+                with file_path.open("xb") as handle:
+                    handle.write(b"fake-protobuf-bytes-" + cascade_id.encode("utf-8"))
                 for chunk in chunks:
                     hasher.update(chunk)
             else:
                 stem = f"{prefix}-{idx:0{index_width}d}"
                 file_path = output_dir / canonical_session_position(corpus.provider, stem, ext)
                 file_path.parent.mkdir(parents=True, exist_ok=True)
-                with file_path.open("wb") as handle:
+                with file_path.open("xb") as handle:
                     for chunk in chunks:
                         handle.write(chunk)
                         hasher.update(chunk)

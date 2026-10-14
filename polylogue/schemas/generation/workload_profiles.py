@@ -1489,6 +1489,23 @@ def build_package_workload_profile(
         physical_scopes = _physical_scope_profile(memberships)
         session_lineage = _session_lineage_profile(provider, memberships)
         total_samples = memberships.sample_count
+        # This population counts retained original physical main-session
+        # revisions, not distinct conversations or all files in a bundle.
+        main_session_exclusions: JSONDocument
+        if provider == "codex":
+            outcomes = session_lineage["outcomes"]
+            assert isinstance(outcomes, dict)
+            main_session_count = outcomes.get("no_explicit_parent", 0)
+            assert type(main_session_count) is int
+            main_session_exclusions = {key: value for key, value in outcomes.items() if key != "no_explicit_parent"}
+        else:
+            main_session_count = 0
+            child_count = 0
+            with closing(memberships.iter_scope_file_counts()) as scopes:
+                for _scope, documents, streams, agents, _metadata, _other, _opaque in scopes:
+                    main_session_count += documents + streams
+                    child_count += agents
+            main_session_exclusions = {"agent_transcript": child_count}
 
     profile = WorkloadProfile(
         {
@@ -1504,6 +1521,9 @@ def build_package_workload_profile(
                 "last_seen": package.last_seen,
                 "bundle_scope_count": _package_bundle_scope_count(package),
                 "sample_count": total_samples,
+                "main_session_count": main_session_count,
+                "main_session_population": "retained-original-main-session-revisions-or-neutral-scopes",
+                "main_session_exclusions": main_session_exclusions,
                 "observation_window": {
                     "start": package.first_seen,
                     "end": package.last_seen,
