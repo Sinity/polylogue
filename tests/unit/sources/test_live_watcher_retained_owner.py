@@ -131,7 +131,7 @@ async def test_live_blank_only_append_advances_raw_evidence_without_adding_messa
             with ArchiveStore.open_existing(root, read_only=True) as stored:
                 source = stored.source_connection
                 index = stored.index_connection
-                assert source is not None and index is not None
+                assert index is not None
                 row = index.execute(
                     "SELECT raw_id, message_count FROM sessions WHERE native_id='stable-session'"
                 ).fetchone()

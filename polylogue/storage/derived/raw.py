@@ -2907,6 +2907,7 @@ class RawObservationDerivation(RawObservationInspection):
                 )
                 from polylogue.sources.revision_backfill import (
                     PreparedRetainedAggregate,
+                    is_separator_only_append,
                     prepare_membership_replay,
                     prepare_retained_replay_source,
                 )
@@ -3541,7 +3542,6 @@ class RawObservationDerivation(RawObservationInspection):
                         if not needs_source_census:
                             from polylogue.sources.revision_backfill import (
                                 _prepared_retained_outcome,
-                                is_separator_only_append,
                                 prepared_session_for_revision_key,
                             )
 
