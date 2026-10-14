@@ -3220,17 +3220,12 @@ def _index_parsed_for_retained_raw(
         raise
     except Exception as exc:
         from polylogue.core.compute import DaemonBackpressureError
-        from polylogue.core.sqlite_locking import is_transient_sqlite_lock
         from polylogue.core.storage_faults import storage_fault_kind
 
-        if (
-            isinstance(exc, DaemonBackpressureError)
-            or is_transient_sqlite_lock(exc)
-            or storage_fault_kind(exc) is not None
-        ):
-            # Compute admission pressure, writer contention, or a storage
-            # fault says nothing about retained bytes: the raw stays pending
-            # for retry instead of carrying a parse failure for valid input.
+        if isinstance(exc, DaemonBackpressureError | sqlite3.Error) or storage_fault_kind(exc) is not None:
+            # Parsing and validation already settled before this Index write.
+            # A SQLite failure says nothing about those retained bytes, so it
+            # must not replace Source authority with parser-failure evidence.
             raise
         if not _is_frozen_candidate(store):
             if isinstance(exc, RawCASFrontierError):
