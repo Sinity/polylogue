@@ -633,3 +633,34 @@ def test_wrapper_phase_records_failure_without_payload_or_masking(
     assert row["finished_ns"] >= row["started_ns"]
     assert row["elapsed_s"] >= 0 and row["process_cpu_s"] >= 0
     assert "synthetic private detail" not in files[0].read_text()
+
+
+@pytest.mark.parametrize("relative_history", [False, True])
+def test_abandoned_normal_checkout_publishes_to_both_shared_lanes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative_history: bool
+) -> None:
+    """The old cache.parent check misclassified a normal checkout as relocated."""
+    monkeypatch.setattr(verify_runs, "__file__", str(tmp_path / "devtools" / "verify_runs.py"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    if relative_history:
+        monkeypatch.setenv(verify_runs.VERIFY_HISTORY_PATH_ENV, "configured-history.jsonl")
+    else:
+        monkeypatch.delenv(verify_runs.VERIFY_HISTORY_PATH_ENV, raising=False)
+    monkeypatch.delenv(verify_runs.VERIFY_EVIDENCE_PATH_ENV, raising=False)
+    state_root = tmp_path / "agentctl-jobs"
+    state_root.mkdir()
+    path = _running_run(tmp_path, pid=_dead_pid())
+    runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
+
+    reconciled = verify_runs.reconcile_and_record_verify_runs(runs_root=runs_root, state_root=state_root)
+    assert [row["run_id"] for row in reconciled] == [path.parent.name]
+    history = verify_runs.verify_history_path(root=tmp_path)
+    evidence = verify_runs.verification_evidence_path()
+    assert [row["run_id"] for row in verify_runs._iter_history_pinned(history)] == [path.parent.name]
+    assert [row["run_id"] for row in verify_runs.read_verification_evidence(evidence)] == [path.parent.name]
+    assert not (tmp_path / verify_runs.VERIFY_HISTORY_PATH).exists()
+    assert not (tmp_path / verify_runs.VERIFY_EVIDENCE_PATH).exists()
+
+    verify_runs.reconcile_and_record_verify_runs(runs_root=runs_root, state_root=state_root)
+    assert len(list(verify_runs._iter_history_pinned(history))) == 1
+    assert len(verify_runs.read_verification_evidence(evidence)) == 1
