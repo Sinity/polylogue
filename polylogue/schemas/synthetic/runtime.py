@@ -723,6 +723,57 @@ def _generate_string(
 ) -> str | SampledText | JoinedText:
     plan_path = _record_plan_path(self, path)
     plan = self._public_record_plan
+    if plan is not None and plan_path in plan.tool_syntax:
+        syntax_value = plan.tool_syntax[plan_path]
+        newline_count = 0
+        ascii_only = True
+        pending = [syntax_value]
+        while pending:
+            part = pending.pop()
+            if isinstance(part, str):
+                newline_count += part.count("\n")
+                ascii_only = ascii_only and part.isascii()
+            elif isinstance(part, SampledText):
+                newline_count += part.newlines
+                ascii_only = ascii_only and part.pool.isascii()
+            else:
+                pending.extend(part.parts)
+        formats = measured_string_formats(schema)
+        generic_shape = formats.get("")
+        if not generic_shape:
+            raise ValueError("measured tool syntax contradicts the original string format")
+        observation_count = _schema_record(generic_shape.get("string_length")).get("count")
+        if type(observation_count) is not int:
+            raise ValueError("measured tool syntax has no original character evidence")
+        character_shapes = measured_character_shapes(generic_shape, observation_count)
+        character_shape = character_shapes.get("ascii" if ascii_only else "non_ascii")
+        if character_shape is None:
+            raise ValueError("measured tool syntax contradicts the original character class")
+        for metric, count in (("string_length", len(syntax_value)), ("newline_count", newline_count)):
+            observed = _schema_record(character_shape.get(metric))
+            histogram = observed.get("histogram")
+            if (
+                isinstance(histogram, list)
+                and histogram
+                and not any(
+                    isinstance(row, list)
+                    and len(row) == 2
+                    and row[0] == _bucket_index(float(count))
+                    and isinstance(row[1], int)
+                    and row[1] > 0
+                    for row in histogram
+                )
+            ):
+                raise ValueError("measured tool syntax contradicts the original field shape")
+            minimum, maximum = observed.get("min"), observed.get("max")
+            if (
+                isinstance(minimum, int | float)
+                and count < minimum
+                or isinstance(maximum, int | float)
+                and count > maximum
+            ):
+                raise ValueError("measured tool syntax leaves the original field range")
+        return syntax_value
     excluded = plan.string_exclusions.get(plan_path, frozenset()) if plan is not None else frozenset()
     agent_prefix = plan.agent_identity_prefix if plan is not None and plan_path == "$.toolUseResult.agentId" else None
     fresh_tool = plan is not None and plan_path in plan.tool_fields and plan.tool_fields[plan_path][1] == "new"

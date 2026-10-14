@@ -49,6 +49,7 @@ from polylogue.schemas.record_structure import (
     tool_identity_operand,
     tool_result_content_mode,
 )
+from polylogue.schemas.tool_input_syntax import measured_tool_syntax
 from polylogue.schemas.workload_profile_rows import DepthGrammars, WorkloadProfile, workload_profile_digest
 from polylogue.sources.live.tool_result_sidecars import ToolResultIndexAccumulator
 
@@ -770,7 +771,7 @@ class _ContentStructure:
     kinds: Counter[str] = field(default_factory=Counter)
     discriminator_fields: dict[str, Counter[str]] = field(default_factory=dict)
     body_field_forms: dict[str, Counter[tuple[str, ...]]] = field(default_factory=dict)
-    native_tool_field_forms: dict[str, Counter[tuple[str, tuple[str, ...]]]] = field(default_factory=dict)
+    native_tool_field_forms: dict[str, Counter[tuple[str, tuple[str, ...], str]]] = field(default_factory=dict)
     starts: Counter[tuple[str, str]] = field(default_factory=Counter)
     ends: Counter[tuple[str, str]] = field(default_factory=Counter)
     transitions: Counter[tuple[str, str, str, str]] = field(default_factory=Counter)
@@ -841,7 +842,8 @@ class _ContentStructure:
             }:
                 fields = tuple(field for field in NATIVE_CODEX_TOOL_VALUE_FIELDS if field in tool)
                 mode = tool_result_content_mode(tool) if kind.endswith("_output") else ""
-                self.native_tool_field_forms.setdefault(kind, Counter())[(mode, fields)] += 1
+                syntax = measured_tool_syntax(tool) if not kind.endswith("_output") else ""
+                self.native_tool_field_forms.setdefault(kind, Counter())[(mode, fields, syntax)] += 1
             presence = (
                 "absent"
                 if field_name not in tool
@@ -980,8 +982,13 @@ class _ContentStructure:
             "block_kinds": dict(sorted(self.kinds.items())),
             "native_tool_field_forms": {
                 kind: [
-                    {"result_mode": mode, "fields": list(fields), "count": count}
-                    for (mode, fields), count in sorted(forms.items())
+                    {
+                        "result_mode": mode,
+                        "fields": list(fields),
+                        "syntax": json.loads(syntax) if syntax else {},
+                        "count": count,
+                    }
+                    for (mode, fields, syntax), count in sorted(forms.items())
                 ]
                 for kind, forms in sorted(self.native_tool_field_forms.items())
             },
