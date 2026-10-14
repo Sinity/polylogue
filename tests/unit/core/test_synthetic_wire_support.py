@@ -442,17 +442,16 @@ def test_support_receipt_counts_a_missing_route_before_skipping_unsupported_elem
     assert not receipt.complete
 
 
-def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> None:
-    receipt = shared_wire_support_receipt()
+def test_supported_routes_validate_selected_schema_and_parser_entry_point(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    receipt = shared_wire_support_receipt(storage_root=qualified_schema_registry.storage_root)
 
     supported = [entry for entry in receipt.entries if entry.status == "supported"]
     assert supported
     assert all(entry.schema_valid is True for entry in supported)
     assert all(entry.parsed_session_count > 0 for entry in supported)
     assert all(entry.parsed_message_count > 0 for entry in supported)
-    complete_supported = [
-        entry for entry in supported if not (entry.provider == "chatgpt" and entry.package_version == "v1")
-    ]
     incomplete = [
         (
             entry.provider,
@@ -460,7 +459,7 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
             entry.element_kind,
             entry.construct_coverage.missing_keywords if entry.construct_coverage else None,
         )
-        for entry in complete_supported
+        for entry in supported
         if entry.construct_coverage is None or not entry.construct_coverage.complete
     ]
     assert not incomplete, incomplete
@@ -469,10 +468,7 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
         for entry in supported
     )
     assert all(all(witness.artifact_evidence for witness in entry.parser_witnesses) for entry in supported)
-    assert not receipt.complete
-    chatgpt_v1 = next(entry for entry in supported if entry.provider == "chatgpt" and entry.package_version == "v1")
-    assert chatgpt_v1.construct_coverage is not None
-    assert not chatgpt_v1.construct_coverage.complete
+    assert receipt.complete
 
 
 def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(
@@ -1864,14 +1860,10 @@ def test_shared_wire_generation_observes_implicit_filesystem_sidecars(
         )
 
 
-def test_claude_ai_v2_witnesses_render_one_coherent_shape_the_parser_reads() -> None:
-    """The v2 package unions the export, a capture envelope, and Claude Design.
-
-    Anti-vacuity: generate coverage witnesses without the root exclusion filter
-    and a witness carries ``uuid``/``chat_messages`` beside
-    ``raw_provider_payload``; the parser then reads the top-level messages
-    while message coverage reads the envelope's, and they disagree.
-    """
+def test_claude_ai_witnesses_render_one_coherent_shape_the_parser_reads(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    """Keep catalogue exclusions distinct from genuinely measured native generation."""
     registry = SchemaRegistry()
     schema = registry.get_element_schema("claude-ai", version="v2", element_kind="session_document")
     assert schema is not None
@@ -1883,22 +1875,24 @@ def test_claude_ai_v2_witnesses_render_one_coherent_shape_the_parser_reads() -> 
         if isinstance(group, dict) and group["parent"] == "$" and isinstance(group["fields"], list)
     ]
     assert exclusions
-    corpus = SyntheticCorpus(
-        schema,
-        wire_formats.PROVIDER_WIRE_FORMATS["claude-ai"],
-        "claude-ai",
-        package_version="v2",
-    )
-    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=7)
-    assert raw_items
-    for index, raw in enumerate(raw_items):
-        payload = json.loads(raw)
-        assert all(not group <= set(payload) for group in exclusions), sorted(payload)
-        assert "chat_messages" in payload and "raw_provider_payload" not in payload
-        sessions = dispatch_module.parse_payload("claude-ai", payload, f"coherent-{index}")
-        assert wire_formats._parser_artifact_has_complete_message_coverage(
-            sessions, "claude-ai", payload, f"coherent-{index}"
-        )
+    assert registry.get_workload_profile("claude-ai", version="v2") is None
+    selection = select_synthetic_schema("claude-ai", registry_factory=lambda: qualified_schema_registry)
+    corpus = SyntheticCorpus.from_selection(selection)
+    witnessed = 0
+    try:
+        raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=7)
+        for index, raw in enumerate(raw_items):
+            witnessed += 1
+            payload = json.loads(raw)
+            assert all(not group <= set(payload) for group in exclusions), sorted(payload)
+            assert "chat_messages" in payload and "raw_provider_payload" not in payload
+            sessions = dispatch_module.parse_payload("claude-ai", payload, f"coherent-{index}")
+            assert wire_formats._parser_artifact_has_complete_message_coverage(
+                sessions, "claude-ai", payload, f"coherent-{index}"
+            )
+    finally:
+        corpus._relation_solver.close()
+    assert witnessed > 0
 
 
 @pytest.mark.parametrize("enveloped", (False, True))

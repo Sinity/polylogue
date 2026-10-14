@@ -552,15 +552,19 @@ def test_receipt_payload_carries_the_findings_it_measured(
 
 
 @pytest.mark.parametrize("version", ["v2", "v3"])
-def test_chatgpt_capture_receipt_keeps_parser_owned_content_in_denominator(version: str) -> None:
-    """The capture envelope's mapping and title reach the parser, so they are measured.
+def test_chatgpt_capture_catalog_retains_parser_owned_mapping_and_title(version: str) -> None:
+    registry = SchemaRegistry()
+    schema = registry.get_element_schema("chatgpt", version=version, element_kind="session_document")
+    assert schema is not None
+    assert {"mapping", "title"} <= schema["properties"].keys()
+    assert registry.get_workload_profile("chatgpt", version=version) is None
+    assert not any(path == "$.title" or path.startswith("$.mapping") for path in excluded_paths_from_pins("chatgpt"))
 
-    Anti-vacuity: excluding ``$.mapping`` and ``$.title`` for capture envelopes
-    moves every planted message body and the title out of the denominator, so
-    the excluded paths name them and the baseline plants nothing.
-    """
-    receipt = shared_wire_support_receipt()
-    entries = [entry for entry in receipt.entries if entry.provider == "chatgpt" and entry.package_version == version]
+
+def test_chatgpt_receipt_keeps_parser_owned_content_in_denominator(qualified_schema_registry: SchemaRegistry) -> None:
+    """Actual neutral mapping/title evidence remains in the measured denominator."""
+    receipt = shared_wire_support_receipt(storage_root=qualified_schema_registry.storage_root, providers=("chatgpt",))
+    entries = [entry for entry in receipt.entries if entry.provider == "chatgpt"]
     assert entries
     witnesses = [witness for entry in entries for witness in entry.parser_witnesses]
     assert witnesses
@@ -573,6 +577,7 @@ def test_chatgpt_capture_receipt_keeps_parser_owned_content_in_denominator(versi
             if path == "$.title" or path.startswith(("$.mapping.", "$.mapping["))
         ]
         assert not leaked, f"parser-owned paths excluded from conservation: {leaked}"
+        assert conservation.conserved
     baseline = [witness for witness in witnesses if witness.artifact_kind == "baseline"]
     assert baseline
     assert all(witness.conservation is not None and witness.conservation.planted_count > 0 for witness in baseline)
