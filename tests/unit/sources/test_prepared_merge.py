@@ -793,6 +793,7 @@ def test_separator_append_keeps_all_aggregate_dependencies_without_a_session(tmp
         "broken-parent",
         "unknown",
         "wrong-native",
+        "stale-source-hash",
     ],
 )
 def test_zero_output_append_requires_complete_separator_and_byte_chain_proof(tmp_path: Path, case: str) -> None:
@@ -850,7 +851,7 @@ def test_zero_output_append_requires_complete_separator_and_byte_chain_proof(tmp
         item = PreparedRetainedInput(
             "tail",
             Provider.UNKNOWN if case == "unknown" else Provider.CODEX,
-            artifact.blob_hash or "b" * 64,
+            "0" * 64 if case == "stale-source-hash" else artifact.blob_hash or "b" * 64,
             "same.jsonl",
             RawRevisionKind.FULL if case == "full" else RawRevisionKind.APPEND,
             len(body),
