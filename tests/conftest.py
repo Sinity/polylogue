@@ -1266,6 +1266,25 @@ def qualified_schema_registry(tmp_path_factory: pytest.TempPathFactory) -> Schem
     return build_qualified_schema_registry(tmp_path_factory.mktemp("qualified-schemas"))
 
 
+@pytest.fixture(scope="session")
+def qualified_schema_catalog(
+    qualified_schema_registry: SchemaRegistry, tmp_path_factory: pytest.TempPathFactory
+) -> SchemaRegistry:
+    """One snapshot: freshly observed supported routes and declared unsupported metadata."""
+    from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
+    from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_ROUTES
+
+    root = tmp_path_factory.mktemp("qualified-catalog")
+    for provider in qualified_schema_registry.list_providers():
+        route = PROVIDER_WIRE_ROUTES[provider]
+        source = (
+            qualified_schema_registry.storage_root / provider if route.status == "supported" else SCHEMA_DIR / provider
+        )
+        assert source.is_dir(), provider
+        shutil.copytree(source, root / provider)
+    return SchemaRegistry(storage_root=root)
+
+
 @pytest.fixture
 def qualified_provider_defaults(qualified_schema_registry: SchemaRegistry, monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise ordinary spec APIs against explicitly selected neutral evidence."""

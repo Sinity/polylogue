@@ -65,7 +65,13 @@ class _RegistryProxy:
     def load_package_catalog(self, provider: str) -> object:
         return self.catalog_overrides.get(provider, self.base.load_package_catalog(provider))
 
-    def get_element_schema(self, provider: str, *, version: str = "default", element_kind: str | None = None) -> object:
+    def get_element_schema(
+        self,
+        provider: str,
+        *,
+        version: str = "default",
+        element_kind: str | None = None,
+    ) -> object:
         assert element_kind is not None
         package = self.base.get_package(provider, version=version)
         assert package is not None
@@ -94,7 +100,9 @@ def test_manifest_covers_every_persisted_package_version_element() -> None:
     assert len(manifest.payload_sha256) == 64
 
 
-def test_persisted_manifest_round_trip_validates_identity_and_integrity(tmp_path: Path) -> None:
+def test_persisted_manifest_round_trip_validates_identity_and_integrity(
+    tmp_path: Path,
+) -> None:
     manifest = compile_inferred_corpus_manifest(registry=_registry())
     path = tmp_path / "inferred-manifest.json"
 
@@ -176,8 +184,10 @@ def test_wire_support_receipt_rejects_conflicting_duplicate_identity_at_all_boun
         InferredCorpusManifest.from_payload(persisted_manifest.to_payload())
 
 
-def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(tmp_path: Path) -> None:
-    registry = _registry()
+def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(
+    tmp_path: Path, qualified_schema_catalog: SchemaRegistry
+) -> None:
+    registry = qualified_schema_catalog
     input_digest = "a" * 64
     package_receipts = [
         build_schema_inference_receipt(cast(Any, registry), provider=provider, input_manifest_digest=input_digest)
@@ -186,7 +196,7 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
     package_receipt = package_receipts[0]
     for other in package_receipts[1:]:
         package_receipt = package_receipt.merged_with(other)
-    wire_support = shared_wire_support_receipt(storage_root=SCHEMA_DIR)
+    wire_support = shared_wire_support_receipt(storage_root=qualified_schema_catalog.storage_root)
 
     manifest = compile_inferred_corpus_manifest(
         registry=cast(Any, registry),
@@ -212,8 +222,10 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
     assert restored.wire_support_receipt == wire_support.to_dict()
 
 
-def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidation(tmp_path: Path) -> None:
-    base_registry = _registry()
+def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidation(
+    tmp_path: Path, qualified_schema_catalog: SchemaRegistry
+) -> None:
+    base_registry = qualified_schema_catalog
     registry = _RegistryProxy(base_registry)
     registry.provider_order = ["codex"]
     input_digest = "a" * 64
@@ -239,7 +251,10 @@ def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidati
 
     registry.provider_order = ["codex", "new-unrouted-provider"]
 
-    with pytest.raises(ValueError, match=r"wire-support receipt changed.*catalog_providers.*missing_routes"):
+    with pytest.raises(
+        ValueError,
+        match=r"wire-support receipt changed.*catalog_providers.*missing_routes",
+    ):
         read_inferred_corpus_manifest(
             path,
             campaign_mode=True,
@@ -247,8 +262,10 @@ def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidati
         )
 
 
-def test_explicit_scope_campaign_does_not_re_census_unselected_provider(tmp_path: Path) -> None:
-    base_registry = _registry()
+def test_explicit_scope_campaign_does_not_re_census_unselected_provider(
+    tmp_path: Path, qualified_schema_catalog: SchemaRegistry
+) -> None:
+    base_registry = qualified_schema_catalog
     registry = _RegistryProxy(base_registry)
     input_digest = "a" * 64
     package_receipt = build_schema_inference_receipt(
@@ -316,8 +333,9 @@ def test_campaign_rejects_a_bound_receipt_with_a_missing_catalog_route(
 def test_campaign_indexes_persisted_wire_support_entries_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    qualified_schema_catalog: SchemaRegistry,
 ) -> None:
-    registry = _registry()
+    registry = qualified_schema_catalog
     input_digest = "a" * 64
     package_receipt = build_schema_inference_receipt(
         registry,
@@ -358,8 +376,12 @@ def test_campaign_indexes_persisted_wire_support_entries_once(
     assert payload_calls == len(wire_support.entries)
 
 
-def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    registry = _registry()
+def test_campaign_read_rejects_wire_route_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    qualified_schema_catalog: SchemaRegistry,
+) -> None:
+    registry = qualified_schema_catalog
     input_digest = "a" * 64
     package_receipt = build_schema_inference_receipt(
         registry,
@@ -399,8 +421,9 @@ def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pyt
 def test_path_campaign_handoff_replays_current_wire_route_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    qualified_schema_catalog: SchemaRegistry,
 ) -> None:
-    registry = _registry()
+    registry = qualified_schema_catalog
     input_digest = "a" * 64
     package_receipt = build_schema_inference_receipt(
         registry,
@@ -472,8 +495,10 @@ def test_manifest_refuses_a_selection_missing_from_bound_wire_support_receipt() 
     assert target.unsupported.reason == "wire_support_selection_unwitnessed"
 
 
-def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) -> None:
-    registry = _registry()
+def test_campaign_read_revalidates_live_schema_and_classifier(
+    tmp_path: Path, qualified_schema_catalog: SchemaRegistry
+) -> None:
+    registry = qualified_schema_catalog
     provider = "codex"
     input_digest = "a" * 64
     receipt = build_schema_inference_receipt(registry, provider=provider, input_manifest_digest=input_digest)
@@ -534,8 +559,10 @@ def test_campaign_mode_rejects_catalog_only_manifest(tmp_path: Path) -> None:
         compile_inferred_corpus_manifest(registry=_registry(), campaign_mode=True)
 
 
-def test_campaign_receipt_rejects_tampered_package_hashes(tmp_path: Path) -> None:
-    registry = _registry()
+def test_campaign_receipt_rejects_tampered_package_hashes(
+    tmp_path: Path, qualified_schema_catalog: SchemaRegistry
+) -> None:
+    registry = qualified_schema_catalog
     provider = "codex"
     input_digest = "a" * 64
     receipt = build_schema_inference_receipt(
@@ -552,7 +579,10 @@ def test_campaign_receipt_rejects_tampered_package_hashes(tmp_path: Path) -> Non
 
     tampered_package = replace(
         receipt,
-        packages=(replace(receipt.packages[0], package_hash="b" * 64), *receipt.packages[1:]),
+        packages=(
+            replace(receipt.packages[0], package_hash="b" * 64),
+            *receipt.packages[1:],
+        ),
     )
     with pytest.raises(ValueError, match="package/version/element hashes"):
         compile_inferred_corpus_manifest(
@@ -563,7 +593,9 @@ def test_campaign_receipt_rejects_tampered_package_hashes(tmp_path: Path) -> Non
         )
 
 
-def test_bundled_registry_relation_annotations_share_one_receipt_classification(tmp_path: Path) -> None:
+def test_bundled_registry_relation_annotations_share_one_receipt_classification(
+    tmp_path: Path,
+) -> None:
     registry = _registry()
     provider = "chatgpt"
     input_digest = "a" * 64
@@ -588,7 +620,14 @@ def test_bundled_registry_relation_annotations_share_one_receipt_classification(
     }
     assert observed == expected_annotations
     receipt_decisions = {
-        (item.provider, item.package_version, item.element_kind, item.decision, item.reason, item.details)
+        (
+            item.provider,
+            item.package_version,
+            item.element_kind,
+            item.decision,
+            item.reason,
+            item.details,
+        )
         for item in receipt.unsupported_decisions
         if item.provider == provider
     }
@@ -619,7 +658,10 @@ def test_bundled_registry_relation_annotations_share_one_receipt_classification(
     package = receipt.packages[0]
     if receipt.unsupported_decisions:
         first = receipt.unsupported_decisions[0]
-        changed = replace(first, decision="unsupported" if first.decision == "nonrepresentable" else "nonrepresentable")
+        changed = replace(
+            first,
+            decision="unsupported" if first.decision == "nonrepresentable" else "nonrepresentable",
+        )
         tampered_decisions = (changed, *receipt.unsupported_decisions[1:])
     else:
         changed = SchemaInferenceUnsupportedDecision(
@@ -693,8 +735,10 @@ def test_persisted_manifest_rejects_unhashed_extra_fields(tmp_path: Path) -> Non
         read_inferred_corpus_manifest(path)
 
 
-def test_persisted_manifest_rejects_spec_identity_tampering(tmp_path: Path) -> None:
-    manifest = compile_inferred_corpus_manifest(registry=_registry())
+def test_persisted_manifest_rejects_spec_identity_tampering(
+    tmp_path: Path, qualified_schema_catalog: SchemaRegistry
+) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=qualified_schema_catalog)
     path = tmp_path / "inferred-manifest.json"
     write_inferred_corpus_manifest(manifest, path)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -706,8 +750,10 @@ def test_persisted_manifest_rejects_spec_identity_tampering(tmp_path: Path) -> N
         read_inferred_corpus_manifest(path)
 
 
-def test_persisted_selection_preserves_workload_profile(tmp_path: Path) -> None:
-    base = compile_inferred_corpus_manifest(registry=_registry())
+def test_persisted_selection_preserves_workload_profile(
+    tmp_path: Path, qualified_schema_catalog: SchemaRegistry
+) -> None:
+    base = compile_inferred_corpus_manifest(registry=qualified_schema_catalog)
     supported = next(entry for entry in base.entries if entry.spec is not None)
     profile: SchemaRecord = {"elements": {supported.key.element_kind: {"record_structure": {}}}}
     profiled = InferredCorpusManifest(
@@ -727,8 +773,10 @@ def test_persisted_selection_preserves_workload_profile(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("extra_field", ["workload_profile", "spec"])
-def test_persisted_manifest_rejects_noncanonical_optional_entry_fields(tmp_path: Path, extra_field: str) -> None:
-    manifest = compile_inferred_corpus_manifest(registry=_registry())
+def test_persisted_manifest_rejects_noncanonical_optional_entry_fields(
+    tmp_path: Path, extra_field: str, qualified_schema_catalog: SchemaRegistry
+) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=qualified_schema_catalog)
     path = tmp_path / "noncanonical-manifest.json"
     write_inferred_corpus_manifest(manifest, path)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -967,7 +1015,10 @@ def test_unhandled_standard_constraints_are_typed_unsupported_records(keyword: s
     raw_properties = mutated.get("properties")
     assert isinstance(raw_properties, dict)
     properties: dict[str, JSONValue] = dict(raw_properties)
-    properties["unhandled_constraint"] = {"type": "string", keyword: cast(JSONValue, value)}
+    properties["unhandled_constraint"] = {
+        "type": "string",
+        keyword: cast(JSONValue, value),
+    }
     mutated["properties"] = properties
     proxy.schema_overrides[(provider, package.version, element.element_kind)] = mutated
 
@@ -1035,7 +1086,15 @@ def test_annotation_wrong_node_shape_or_path_fails_closed(
         ("x-polylogue-range", [3, 2]),
         (
             "x-polylogue-time-deltas",
-            [{"field_a": "$.a", "field_b": "$.b", "min_delta": 5, "max_delta": 2, "avg_delta": 3}],
+            [
+                {
+                    "field_a": "$.a",
+                    "field_b": "$.b",
+                    "min_delta": 5,
+                    "max_delta": 2,
+                    "avg_delta": 3,
+                }
+            ],
         ),
         (
             "x-polylogue-observed-distribution",
@@ -1050,7 +1109,15 @@ def test_annotation_wrong_node_shape_or_path_fails_closed(
         ),
         (
             "x-polylogue-observed-distribution",
-            {"numeric": {"histogram": [[1, 2]], "log_base": 1.1, "min": 0, "max": 10, "p50": 100}},
+            {
+                "numeric": {
+                    "histogram": [[1, 2]],
+                    "log_base": 1.1,
+                    "min": 0,
+                    "max": 10,
+                    "p50": 100,
+                }
+            },
         ),
         (
             "x-polylogue-observed-distribution",
@@ -1106,7 +1173,15 @@ def test_invalid_numeric_relation_or_partial_distribution_fails_closed(
         ),
         (
             "x-polylogue-time-deltas",
-            [{"field_a": "$.missing_a", "field_b": "$.missing_b", "min_delta": 1, "max_delta": 2, "avg_delta": 1.5}],
+            [
+                {
+                    "field_a": "$.missing_a",
+                    "field_b": "$.missing_b",
+                    "min_delta": 1,
+                    "max_delta": 2,
+                    "avg_delta": 1.5,
+                }
+            ],
         ),
     ],
 )
@@ -1174,8 +1249,10 @@ def test_time_delta_paths_must_have_compatible_types() -> None:
     assert "x-polylogue-time-deltas" in target.unsupported.details
 
 
-def test_convergence_handoff_rejects_an_omitted_supported_spec() -> None:
-    manifest = compile_inferred_corpus_manifest(registry=_registry())
+def test_convergence_handoff_rejects_an_omitted_supported_spec(
+    qualified_schema_catalog: SchemaRegistry,
+) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=qualified_schema_catalog)
     handoff = build_inferred_corpus_convergence_handoff(manifest)
     assert handoff.specs == manifest.supported_specs
     assert handoff.specs
@@ -1196,10 +1273,19 @@ def _first_wired_catalog_entry(registry: SchemaRegistry) -> tuple[str, str, str]
     raise AssertionError("expected a persisted provider with a wire format")
 
 
-def test_persisted_codex_package_route_is_nonempty_and_uses_catalog_artifact() -> None:
-    schema_path = SCHEMA_DIR / "codex" / "versions" / "v1" / "elements" / "session_record_stream.schema.json.gz"
+def test_persisted_codex_package_route_is_nonempty_and_uses_catalog_artifact(
+    qualified_schema_catalog: SchemaRegistry,
+) -> None:
+    schema_path = (
+        qualified_schema_catalog.storage_root
+        / "codex"
+        / "versions"
+        / "v1"
+        / "elements"
+        / "session_record_stream.schema.json.gz"
+    )
     assert schema_path.is_file()
-    manifest = compile_inferred_corpus_manifest(registry=_registry())
+    manifest = compile_inferred_corpus_manifest(registry=qualified_schema_catalog)
 
     assert manifest.supported_specs
     entry = next(entry for entry in manifest.entries if entry.key.provider == "codex")
@@ -1209,7 +1295,7 @@ def test_persisted_codex_package_route_is_nonempty_and_uses_catalog_artifact() -
         "session_record_stream",
     )
     assert entry.generator_schema is not None
-    assert entry.generator_schema == _registry().get_element_schema(
+    assert entry.generator_schema == qualified_schema_catalog.get_element_schema(
         "codex", version="v1", element_kind="session_record_stream"
     )
     handoff = build_inferred_corpus_convergence_handoff(manifest)
@@ -1284,7 +1370,10 @@ def test_known_generator_annotation_remains_supported_and_is_keyed() -> None:
         ("x-polylogue-format", "markdown"),
         ("x-polylogue-semantic-role", "identifier"),
         ("x-polylogue-foreign-keys", [{"source": "", "target": "$.id"}]),
-        ("x-polylogue-time-deltas", [{"field_a": "$.a", "field_b": "$.b", "min_delta": "bad"}]),
+        (
+            "x-polylogue-time-deltas",
+            [{"field_a": "$.a", "field_b": "$.b", "min_delta": "bad"}],
+        ),
     ],
 )
 def test_unenforced_annotation_values_are_typed_unsupported_records(annotation: str, value: JSONValue) -> None:
@@ -1321,7 +1410,9 @@ def test_unenforced_annotation_values_are_typed_unsupported_records(annotation: 
         "x-third-party-constraint",
     ],
 )
-def test_unenforced_x_annotation_becomes_a_typed_unsupported_record(annotation: str) -> None:
+def test_unenforced_x_annotation_becomes_a_typed_unsupported_record(
+    annotation: str,
+) -> None:
     registry = _registry()
     proxy = _RegistryProxy(registry)
     provider, package_version, element_kind = _first_wired_catalog_entry(registry)
@@ -1348,8 +1439,10 @@ def test_unenforced_x_annotation_becomes_a_typed_unsupported_record(annotation: 
     assert (annotation, "unsupported") in {(item.construct, item.state) for item in target.key.construct_support}
 
 
-def test_live_catalog_provenance_annotations_are_not_generator_constraints() -> None:
-    manifest = compile_inferred_corpus_manifest(registry=_registry())
+def test_live_catalog_provenance_annotations_are_not_generator_constraints(
+    qualified_schema_catalog: SchemaRegistry,
+) -> None:
+    manifest = compile_inferred_corpus_manifest(registry=qualified_schema_catalog)
 
     score_entries = [
         entry
