@@ -1963,3 +1963,63 @@ class _CostProbeArchive:
 
     def raw_revision_descriptor(self, raw_id: str) -> Any:
         return self._descriptors[raw_id]
+
+
+def test_restart_census_refuses_multisession_append_without_membership_conversion(tmp_path: Path) -> None:
+    """Real exported sessions cannot convert one retained append into a full bundle."""
+    import hashlib
+
+    from polylogue.archive.revision_authority import append_source_revision
+
+    bootstrap_archive_root(tmp_path)
+    payload = _bundle(_chatgpt_session("append-a", "question a"), _chatgpt_session("append-b", "question b"))
+    revision = RawRevisionEnvelope(
+        logical_source_key="chatgpt-export:append-a",
+        kind=RawRevisionKind.APPEND,
+        source_revision=append_source_revision("declared-predecessor", hashlib.sha256(payload).hexdigest()),
+        predecessor_source_revision="declared-predecessor",
+        append_start_offset=123,
+        append_end_offset=123 + len(payload),
+        acquisition_generation=0,
+        authority=RawRevisionAuthority.QUARANTINED,
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=payload,
+            source_path="synthetic/append-bundle.json",
+            canonical_source_path="synthetic/append-bundle.json",
+            source_index=-1,
+            acquired_at_ms=1,
+            capture_mode=Provider.CHATGPT,
+            post_parse=True,
+            append_revision=revision,
+        )
+        before = tuple(
+            archive._ensure_source_conn()
+            .execute(
+                "SELECT logical_source_key, revision_kind, source_revision, predecessor_source_revision, "
+                "append_start_offset, append_end_offset FROM raw_sessions WHERE raw_id=?",
+                (raw_id,),
+            )
+            .fetchone()
+        )
+    with pytest.raises(revision_backfill.RetainedPreparationNoProgressError):
+        replay_retained_components(tmp_path, selected_raw_ids=[raw_id])
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        conn = archive.source_connection
+        assert (
+            tuple(
+                conn.execute(
+                    "SELECT logical_source_key, revision_kind, source_revision, predecessor_source_revision, "
+                    "append_start_offset, append_end_offset FROM raw_sessions WHERE raw_id=?",
+                    (raw_id,),
+                ).fetchone()
+            )
+            == before
+        )
+        assert conn.execute("SELECT count(*) FROM raw_session_memberships WHERE raw_id=?", (raw_id,)).fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT status FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone()[0] == "failed"
+        )
+        assert archive.raw_revision_descriptor(raw_id)[4] == len(payload)

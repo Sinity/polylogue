@@ -40,6 +40,7 @@ class PreparedFileSeal:
 
     @classmethod
     def capture(cls, path: Path) -> PreparedFileSeal:
+        check_compute_cancelled()
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):

@@ -10606,3 +10606,43 @@ def test_committed_append_capture_replays_after_intake_interruption(
         ).fetchone() == ("complete",)
     with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
         assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 2
+
+
+def test_matching_then_foreign_claude_tail_materializes_both_full_sessions(tmp_path: Path) -> None:
+    """An ANY-match append guard consumes only a prefix or fails the whole tail."""
+    matched = (
+        b'{"type":"assistant","sessionId":"matching-chain","uuid":"matching-message",'
+        b'"message":{"role":"assistant","content":"matching tail"}}\n'
+    )
+    path, _plan, _owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="matching-chain",
+        append=matched,
+    )
+    foreign = (
+        b'{"type":"user","sessionId":"second-chain","uuid":"second-message",'
+        b'"message":{"role":"user","content":"second session"}}\n'
+    )
+    with path.open("ab") as handle:
+        handle.write(foreign)
+    assert processor._append_plan(path) is None
+    metrics = run_ingest_files(processor, [path], emit_event=False)
+    assert metrics.succeeded_file_count == 1
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute(
+            "SELECT native_id FROM sessions WHERE origin = 'claude-code-session' ORDER BY native_id"
+        ).fetchall() == [("matching-chain",), ("second-chain",)]
+        assert index.execute(
+            "SELECT b.text FROM blocks AS b JOIN messages AS m USING(message_id) "
+            "WHERE m.session_id = 'claude-code-session:second-chain' ORDER BY b.position"
+        ).fetchall() == [("second session",)]
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        source = archive._ensure_source_conn()
+        expected_hash = hashlib.sha256(path.read_bytes()).digest()
+        assert (
+            source.execute(
+                "SELECT COUNT(*) FROM raw_sessions WHERE source_path = ? AND blob_hash = ? AND blob_size = ?",
+                (str(path), expected_hash, path.stat().st_size),
+            ).fetchone()[0]
+            == 1
+        )

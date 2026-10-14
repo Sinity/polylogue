@@ -5797,7 +5797,7 @@ class LiveBatchProcessor:
     ) -> bool:
         if existing_id is None:
             return False
-        session_ids: set[str] = set()
+        saw_session_id = False
         for line in payload.splitlines():
             if not line.strip():
                 continue
@@ -5809,10 +5809,10 @@ class LiveBatchProcessor:
                 return False
             session_id = record.get("sessionId")
             if isinstance(session_id, str) and session_id.strip():
-                session_ids.add(session_id)
-        if not session_ids:
-            return existing_id == path.stem
-        return any(existing_id == session_id or existing_id.startswith(f"{session_id}:") for session_id in session_ids)
+                saw_session_id = True
+                if existing_id != session_id and not existing_id.startswith(f"{session_id}:"):
+                    return False
+        return saw_session_id or existing_id == path.stem
 
     def _raw_retention_backlog_paths(self, *, exclude: set[Path]) -> list[Path]:
         """Return retry-due raw-retention backlog this pass should also drain.

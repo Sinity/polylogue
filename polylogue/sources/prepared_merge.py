@@ -42,6 +42,7 @@ def prepared_cohort_source_hash(ordered: Sequence[tuple[str, PreparedJsonl]]) ->
         raise ValueError("retained cohort is empty")
     digest = hashlib.sha256(b"polylogue-prepared-cohort-v1\x00")
     for raw_id, artifact in ordered:
+        check_compute_cancelled()
         if not raw_id or artifact.blob_hash is None:
             raise ValueError("retained cohort has an unbound raw dependency")
         for value in (raw_id, artifact.blob_hash):
@@ -61,6 +62,7 @@ def _count_claude_summary(
         if not isinstance(values, dict):
             continue
         for name, count in values.items():
+            check_compute_cancelled()
             if not isinstance(name, str) or not isinstance(count, int) or isinstance(count, bool):
                 continue
             name_key = pickle.dumps(name, protocol=pickle.HIGHEST_PROTOCOL)
@@ -93,13 +95,13 @@ def _append_claude_summaries(
             continue
         payload: dict[str, object] = {}
         for payload_key in payload_keys:
-            totals = {
-                pickle.loads(name): int(total)
-                for name, total in store.conn.execute(
-                    "SELECT name, total FROM temp.prepared_merge_count WHERE event_type = ? AND payload_key = ?",
-                    (event_type, payload_key),
-                )
-            }
+            totals = {}
+            for name, total in store.conn.execute(
+                "SELECT name, total FROM temp.prepared_merge_count WHERE event_type = ? AND payload_key = ?",
+                (event_type, payload_key),
+            ):
+                check_compute_cancelled()
+                totals[pickle.loads(name)] = int(total)
             if totals or keep_empty_keys:
                 payload[payload_key] = dict(sorted(totals.items()))
         events.append(ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=payload))

@@ -6,6 +6,7 @@ import sqlite3
 from collections.abc import Sequence
 from dataclasses import replace
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSessionEvent
 
@@ -34,6 +35,7 @@ class ChunkPositions:
             )
             conn.execute("DELETE FROM temp.chunk_positions")
         for ordinal, message in enumerate(messages):
+            check_compute_cancelled()
             position = message.position if message.position is not None else ordinal
             self._end = max(self._end, position + 1)
             keys = {(position, message.variant_index or 0)}

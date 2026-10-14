@@ -131,7 +131,6 @@ from polylogue.storage.blob_store import PreparedBlob
 from polylogue.storage.io_phase_metrics import connection_cursor
 from polylogue.storage.materials import PreparedMaterial
 from polylogue.storage.sqlite.archive_tiers.write import (
-    PreparedSessionWrite,
     append_session_to_shard,
     prepare_session_shard,
 )
@@ -1080,7 +1079,6 @@ class PreparedJsonl(PreparedJsonlRead):
     """One publication attempt over sealed data and explicitly owned backing."""
 
     validation_reuse: RetainedValidationReuse | None = field(default=None, compare=False, repr=False)
-    prepared_writes: tuple[PreparedSessionWrite, ...] = ()
     parser_stage_artifact: PreparedJsonl | None = field(default=None, compare=False, repr=False)
     publication_publisher: ArchiveBlobPublisher | None = None
     _blob_publication: _ArtifactBlobPublication = field(
@@ -1098,8 +1096,7 @@ class PreparedJsonl(PreparedJsonlRead):
     def read_result(self) -> PreparedJsonlRead:
         """Transfer only sealed data; the existing custodian stays with its owner."""
         if (
-            self.prepared_writes
-            or self.parser_stage_artifact is not None
+            self.parser_stage_artifact is not None
             or self.publication_publisher is not None
             or self._blob_publication != _ArtifactBlobPublication()
             or self._thread_projection != _ArtifactThreadProjection()
@@ -1352,11 +1349,6 @@ class PreparedJsonl(PreparedJsonlRead):
         state.material_page = ()
         state.retired = True
         failures: list[BaseException] = []
-        for prepared in self.prepared_writes:
-            try:
-                prepared.close()
-            except BaseException as exc:
-                failures.append(exc)
         if self.parser_stage_artifact is not None:
             try:
                 self.parser_stage_artifact.discard()

@@ -798,8 +798,6 @@ def write_source_raw_session(
         source_index,
         blob_hash,
         native_id,
-        append_revision=revision if revision is not None and revision.kind is RawRevisionKind.APPEND else None,
-        capture_mode=capture_mode,
     )
 
     with conn if manage_transaction else nullcontext():
@@ -1263,8 +1261,6 @@ def write_source_raw_session_blob_ref(
         source_index,
         blob_hash,
         native_id,
-        append_revision=revision if revision is not None and revision.kind is RawRevisionKind.APPEND else None,
-        capture_mode=capture_mode,
     )
     with conn if manage_transaction else nullcontext():
         raw_inserted = _insert_raw_session(

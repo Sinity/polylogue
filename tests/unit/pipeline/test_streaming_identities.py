@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -506,3 +506,31 @@ def test_disk_revision_relation_pairs_remeasured_event_anchor(tmp_path: Path) ->
     finally:
         for store in stores:
             store.close()
+
+
+def test_identity_preparation_looks_up_only_incoming_digest_frontiers(tmp_path: Path) -> None:
+    """Historical keys cannot be enumerated into a tail's preparation memory."""
+    message = ParsedMessage(provider_message_id="", role=Role.USER, text="repeated")
+    digest = ids.message_content_identity(message)
+
+    class Frontiers(Mapping[str, int]):
+        def __getitem__(self, key: str) -> int:
+            assert key == digest
+            return 7
+
+        def __iter__(self) -> Iterator[str]:
+            raise AssertionError("tail preparation enumerated historical digests")
+
+        def __len__(self) -> int:
+            raise AssertionError("tail preparation counted historical digests")
+
+    expected = ((digest, 7), (digest, 8))
+    assert ids.message_content_identities([message, message], occurrence_offsets=Frontiers()) == expected
+    store = SqliteMessageStore(tmp_path / "tail.db")
+    try:
+        messages = store.new_sink()
+        messages.extend([message, message])
+        with ids.disk_message_content_identities(messages, occurrence_offsets=Frontiers()) as prepared:
+            assert tuple(prepared) == expected
+    finally:
+        store.close()

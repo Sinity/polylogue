@@ -1547,12 +1547,12 @@ def message_content_identities(
     restarting it and colliding with a row already written.
     """
     counts: Counter[str] = Counter()
-    if occurrence_offsets:
-        counts.update(dict(occurrence_offsets))
     identities: list[MessageContentIdentity] = []
     with settled_iterator(messages) as _original_messages:
         for message in _original_messages:
             digest = message_content_identity(message)
+            if digest not in counts and occurrence_offsets is not None:
+                counts[digest] = occurrence_offsets.get(digest, 0)
             identities.append((digest, counts[digest]))
             counts[digest] += 1
     return tuple(identities)
@@ -1609,13 +1609,15 @@ def disk_message_content_identities(
         conn.execute(
             "CREATE TABLE identity (ordinal INTEGER PRIMARY KEY, digest TEXT NOT NULL, occurrence INTEGER NOT NULL)"
         )
-        if occurrence_offsets:
-            conn.executemany("INSERT INTO count VALUES (?, ?)", occurrence_offsets.items())
         count = 0
         for count, message in enumerate(messages, start=1):
             digest = message_content_identity(message)
             row = conn.execute("SELECT value FROM count WHERE digest = ?", (digest,)).fetchone()
-            occurrence = int(row[0]) if row is not None else 0
+            occurrence = (
+                int(row[0])
+                if row is not None
+                else (0 if occurrence_offsets is None else occurrence_offsets.get(digest, 0))
+            )
             conn.execute(
                 "INSERT INTO count (digest, value) VALUES (?, ?) "
                 "ON CONFLICT(digest) DO UPDATE SET value = excluded.value",

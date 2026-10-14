@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationStatus
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -1246,3 +1247,60 @@ def test_raw_writers_refuse_a_raw_without_its_canonical_source_path(
             acquired_at_ms=1,
         )
     assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("published_blob", [False, True])
+def test_complete_file_with_append_relationship_keeps_ordinary_acquisition_identity(
+    tmp_path: Path,
+    published_blob: bool,
+) -> None:
+    conn = _connect(tmp_path / "source.db")
+    body = b"old record\nnew record\n"
+    blob_hash = deterministic_blob_hash(body)
+    expected = deterministic_raw_session_id(Origin.CLAUDE_CODE_SESSION, "complete.jsonl", 0, blob_hash)
+    prior = b"old record\n"
+    predecessor = write_source_raw_session(
+        conn,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        source_path="complete.jsonl",
+        canonical_source_path="complete.jsonl",
+        source_index=0,
+        payload=prior,
+        acquired_at_ms=0,
+    )
+    revision = RawRevisionEnvelope(
+        logical_source_key="claude-code-session:complete",
+        kind=RawRevisionKind.APPEND,
+        source_revision=blob_hash.hex(),
+        predecessor_source_revision=deterministic_blob_hash(prior).hex(),
+        predecessor_raw_id=predecessor,
+        baseline_raw_id=predecessor,
+        append_start_offset=len(b"old record\n"),
+        append_end_offset=len(body),
+        acquisition_generation=1,
+    )
+    if published_blob:
+        actual = write_source_raw_session_blob_ref(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="complete.jsonl",
+            canonical_source_path="complete.jsonl",
+            source_index=0,
+            acquired_at_ms=1,
+            revision=revision,
+            blob_hash=blob_hash,
+            blob_size=len(body),
+        )
+    else:
+        actual = write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="complete.jsonl",
+            canonical_source_path="complete.jsonl",
+            source_index=0,
+            acquired_at_ms=1,
+            revision=revision,
+            payload=body,
+        )
+    assert actual == expected
+    conn.close()
