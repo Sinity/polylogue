@@ -1626,7 +1626,9 @@ def _chatgpt_mapping_nodes(
     from polylogue.sources.parsers.chatgpt import _mapping_message_id
 
     for key, node in mapping.items():
-        message = node.get("message") if isinstance(node, Mapping) else None
+        if not isinstance(node, Mapping):
+            continue
+        message = node.get("message")
         author = message.get("author") if isinstance(message, Mapping) else None
         if isinstance(message, Mapping) and isinstance(author, Mapping) and isinstance(message.get("content"), Mapping):
             yield str(key), node, _mapping_message_id(str(key), node, message)
