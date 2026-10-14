@@ -47,7 +47,7 @@ def pointer_width_relation(identity_width: int, basename_width: int) -> str:
     )
 
 
-_Identity = TypeVar("_Identity", covariant=True, default=str)
+_Identity = TypeVar("_Identity", default=str)
 
 
 @dataclass(frozen=True, slots=True)
