@@ -41,6 +41,8 @@ from polylogue.core.enums import (
     SourceFidelityStatus,
 )
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
+from polylogue.core.payload_model import SurfacePayloadModel as _SurfacePayloadModel
+from polylogue.core.payload_model import model_json_document as _model_json_document
 from polylogue.core.refs import delegation_edge_object_id, normalize_object_ref_text, normalize_public_ref_text
 from polylogue.surfaces.action_affordances import (
     ActionAffordancePayload,
@@ -129,58 +131,6 @@ if TYPE_CHECKING:
     )
 
 
-def serialize_surface_payload(payload: BaseModel, *, exclude_none: bool = False) -> str:
-    """Serialize a surface payload model with stable JSON formatting."""
-    return payload.model_dump_json(indent=2, exclude_none=exclude_none)
-
-
-def model_json_document(payload: BaseModel, *, exclude_none: bool = False) -> JSONDocument:
-    """Return a model dump constrained to the shared JSON document type."""
-    return require_json_document(
-        payload.model_dump(mode="json", exclude_none=exclude_none),
-        context=f"{payload.__class__.__name__} JSON payload",
-    )
-
-
-class SurfacePayloadModel(BaseModel):
-    """Shared base for immutable JSON payload models exposed by surfaces."""
-
-    # Surface fields such as ``model_name`` and ``model_ref`` are payload data,
-    # not pydantic API; generated projection models inherit this setting.
-    model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
-
-    def to_json(self, *, exclude_none: bool = False) -> str:
-        return serialize_surface_payload(self, exclude_none=exclude_none)
-
-    @classmethod
-    def _from_row_generic(cls, row: object, **field_overrides: object) -> Self:
-        """Generic from_row implementation: copy matching fields from row, allow overrides.
-
-        This implements the pattern used across 70+ simple field assignments in payloads:
-        - For each model field, try to get the value from row if it exists
-        - Allow explicit overrides for fields that need transformations or renames
-        - Ignore row fields that don't exist on the model
-
-        Args:
-            row: A row object (dataclass, namedtuple, or similar) with field attributes
-            **field_overrides: Explicit field assignments to override defaults
-
-        Returns:
-            Instance of cls with fields populated from row + overrides
-
-        Example:
-            return cls._from_row_generic(row, kind=AssertionKind.from_string(row.kind))
-        """
-        # Collect all fields from row that match model fields
-        payload_fields = {}
-        for field_name in cls.model_fields:
-            if hasattr(row, field_name):
-                payload_fields[field_name] = getattr(row, field_name)
-        # Apply overrides
-        payload_fields.update(field_overrides)
-        return cls(**payload_fields)
-
-
 PageItemT = TypeVar("PageItemT")
 
 
@@ -236,7 +186,7 @@ class MachineSuccessEnvelope(TypedDict):
     result: JSONDocument
 
 
-class MachineErrorPayload(SurfacePayloadModel):
+class MachineErrorPayload(_SurfacePayloadModel):
     """Structured error payload for machine-readable CLI surfaces."""
 
     status: Literal["error"] = "error"
@@ -274,7 +224,7 @@ class MachineErrorPayload(SurfacePayloadModel):
         raise SystemExit(exit_code)
 
 
-class MachineSuccessPayload(SurfacePayloadModel):
+class MachineSuccessPayload(_SurfacePayloadModel):
     """Structured success payload for machine-readable CLI surfaces."""
 
     status: Literal["ok"] = "ok"
@@ -287,7 +237,7 @@ class MachineSuccessPayload(SurfacePayloadModel):
         }
 
 
-class ImportDetectorEvidencePayload(SurfacePayloadModel):
+class ImportDetectorEvidencePayload(_SurfacePayloadModel):
     """One bounded detector/classifier observation for an import explain row."""
 
     check: str
@@ -295,7 +245,7 @@ class ImportDetectorEvidencePayload(SurfacePayloadModel):
     reason: str | None = None
 
 
-class ImportProducedRowsPayload(SurfacePayloadModel):
+class ImportProducedRowsPayload(_SurfacePayloadModel):
     """Counts of archive rows that parsing a raw artifact would produce."""
 
     sessions: int = 0
@@ -306,7 +256,7 @@ class ImportProducedRowsPayload(SurfacePayloadModel):
     session_refs: tuple[str, ...] = ()
 
 
-class ImportSkippedRowPayload(SurfacePayloadModel):
+class ImportSkippedRowPayload(_SurfacePayloadModel):
     """Bounded explanation for an artifact or payload skipped during import explain."""
 
     reason: str
@@ -314,7 +264,7 @@ class ImportSkippedRowPayload(SurfacePayloadModel):
     raw_ref: str | None = None
 
 
-class ImportFidelityCapabilityPayload(SurfacePayloadModel):
+class ImportFidelityCapabilityPayload(_SurfacePayloadModel):
     """Coverage and fidelity for one source capability."""
 
     status: SourceFidelityStatus
@@ -324,7 +274,7 @@ class ImportFidelityCapabilityPayload(SurfacePayloadModel):
     detail: str
 
 
-class ImportFidelityDeclarationPayload(SurfacePayloadModel):
+class ImportFidelityDeclarationPayload(_SurfacePayloadModel):
     """Per-source declaration of retained import evidence and known gaps."""
 
     producer: str
@@ -339,7 +289,7 @@ class ImportFidelityDeclarationPayload(SurfacePayloadModel):
 CaptureModeResolutionStatus = Literal["unknown", "unambiguous", "ambiguous"]
 
 
-class ImportExplainEntryPayload(SurfacePayloadModel):
+class ImportExplainEntryPayload(_SurfacePayloadModel):
     """Explanation for one raw artifact or archive entry inspected by import explain."""
 
     raw_ref: str | None = None
@@ -371,7 +321,7 @@ class ImportExplainEntryPayload(SurfacePayloadModel):
     fidelity: ImportFidelityDeclarationPayload | None = None
 
 
-class ImportExplainPayload(SurfacePayloadModel):
+class ImportExplainPayload(_SurfacePayloadModel):
     """Finite machine-readable explanation for `polylogue import --explain`."""
 
     mode: Literal["import-explain"] = "import-explain"
@@ -387,7 +337,7 @@ ContextTrustClass: TypeAlias = AssertionContextTrustClass
 CompletenessItemStatus = Literal["complete", "partial", "missing", "not_applicable"]
 
 
-class ProviderCompletenessItemPayload(SurfacePayloadModel):
+class ProviderCompletenessItemPayload(_SurfacePayloadModel):
     """Evidence-backed status for one provider-package capability."""
 
     status: CompletenessItemStatus
@@ -396,7 +346,7 @@ class ProviderCompletenessItemPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
 
 
-class ProviderPackageCompletenessRowPayload(SurfacePayloadModel):
+class ProviderPackageCompletenessRowPayload(_SurfacePayloadModel):
     """Completeness row for one origin/capture-mode package."""
 
     package_ref: str
@@ -421,7 +371,7 @@ class ProviderPackageCompletenessRowPayload(SurfacePayloadModel):
     evidence_refs: tuple[str, ...] = ()
 
 
-class ProviderPackageCompletenessTotalsPayload(SurfacePayloadModel):
+class ProviderPackageCompletenessTotalsPayload(_SurfacePayloadModel):
     """Aggregate counts for provider-package completeness rows."""
 
     total: int = 0
@@ -434,7 +384,7 @@ class ProviderPackageCompletenessTotalsPayload(SurfacePayloadModel):
     accepted_blocked: int = 0
 
 
-class ProviderPackageCompletenessPayload(SurfacePayloadModel):
+class ProviderPackageCompletenessPayload(_SurfacePayloadModel):
     """Finite readiness report for provider/importer package modes."""
 
     mode: Literal["provider-package-completeness"] = "provider-package-completeness"
@@ -457,7 +407,7 @@ ArchiveDebtSeverity = Literal["info", "warning", "critical"]
 ArchiveDebtStatus = Literal["open", "actionable", "blocked", "classified"]
 
 
-class ArchiveDebtActionPayload(SurfacePayloadModel):
+class ArchiveDebtActionPayload(_SurfacePayloadModel):
     """Operator action that can resolve or inspect one archive debt row."""
 
     label: str
@@ -465,7 +415,7 @@ class ArchiveDebtActionPayload(SurfacePayloadModel):
     description: str | None = None
 
 
-class ArchiveDebtRowPayload(SurfacePayloadModel):
+class ArchiveDebtRowPayload(_SurfacePayloadModel):
     """One archive debt/readiness row from an operational provider."""
 
     debt_ref: str
@@ -487,7 +437,7 @@ class ArchiveDebtRowPayload(SurfacePayloadModel):
     actions: tuple[ArchiveDebtActionPayload, ...] = ()
 
 
-class ArchiveDebtTotalsPayload(SurfacePayloadModel):
+class ArchiveDebtTotalsPayload(_SurfacePayloadModel):
     """Aggregate counts for archive debt rows."""
 
     total: int = 0
@@ -507,7 +457,7 @@ class ArchiveDebtTotalsPayload(SurfacePayloadModel):
     affected_classified: int = 0
 
 
-class ArchiveDebtListPayload(SurfacePayloadModel):
+class ArchiveDebtListPayload(_SurfacePayloadModel):
     """Unified operational debt report across archive readiness providers."""
 
     mode: Literal["archive-debt-list"] = "archive-debt-list"
@@ -527,7 +477,7 @@ ToolCountDetailLevel = Literal[
 ]
 
 
-class ToolCountFiltersPayload(SurfacePayloadModel):
+class ToolCountFiltersPayload(_SurfacePayloadModel):
     """Filters applied to `polylogue analyze tools --format json`."""
 
     origin: str | None = None
@@ -541,7 +491,7 @@ class ToolCountFiltersPayload(SurfacePayloadModel):
     limit: int
 
 
-class ToolCountRowPayload(SurfacePayloadModel):
+class ToolCountRowPayload(_SurfacePayloadModel):
     """One grouped tool count row from a declared archive projection basis."""
 
     origin: str
@@ -557,7 +507,7 @@ class ToolCountRowPayload(SurfacePayloadModel):
     event_count: int | None = None
 
 
-class ToolCountPayload(SurfacePayloadModel):
+class ToolCountPayload(_SurfacePayloadModel):
     """Structured output for `polylogue analyze tools --format json`."""
 
     kind: ToolCountKind
@@ -567,7 +517,7 @@ class ToolCountPayload(SurfacePayloadModel):
     items: tuple[ToolCountRowPayload, ...]
 
 
-class ToolFamilyComparisonPayload(SurfacePayloadModel):
+class ToolFamilyComparisonPayload(_SurfacePayloadModel):
     """Multi-basis evidence comparison for one tool/affordance family."""
 
     kind: Literal["tool_family_evidence_comparison"]
@@ -589,7 +539,7 @@ def role_label(role: object) -> str:
 _ANCHOR_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
-class TargetRefPayload(SurfacePayloadModel):
+class TargetRefPayload(_SurfacePayloadModel):
     """Stable reader target reference for selectable archive objects."""
 
     target_type: Literal["session", "message"]
@@ -677,7 +627,7 @@ READER_ACTION_IDS: tuple[str, ...] = (
 )
 
 
-class ReaderActionAvailabilityPayload(SurfacePayloadModel):
+class ReaderActionAvailabilityPayload(_SurfacePayloadModel):
     """Per-target reader action availability with explicit disabled reason.
 
     Reader actions surface seven distinct states (see :data:`ReaderActionState`)
@@ -723,7 +673,7 @@ def reader_message_actions() -> dict[str, ReaderActionAvailabilityPayload]:
     }
 
 
-class SessionFlagsPayload(SurfacePayloadModel):
+class SessionFlagsPayload(_SurfacePayloadModel):
     """Boolean flags summarizing session content characteristics."""
 
     has_tool_use: bool = False
@@ -828,7 +778,7 @@ def _create_projection_model(
     annotation_overrides: Mapping[str, object] = {},
     default_overrides: Mapping[str, object] = {},
     field_order: Sequence[str] | None = None,
-) -> type[SurfacePayloadModel]:
+) -> type[_SurfacePayloadModel]:
     fields: dict[str, tuple[Any, Any]] = _projection_field_definitions(
         domain_model,
         mask,
@@ -839,8 +789,8 @@ def _create_projection_model(
     if field_order is not None:
         fields = {field_name: fields[field_name] for field_name in field_order}
     return cast(
-        type[SurfacePayloadModel],
-        create_model(name, __base__=SurfacePayloadModel, __module__=__name__, **fields),  # type: ignore[call-overload]
+        type[_SurfacePayloadModel],
+        create_model(name, __base__=_SurfacePayloadModel, __module__=__name__, **fields),  # type: ignore[call-overload]
     )
 
 
@@ -1139,7 +1089,7 @@ class SessionListEnvelope(_SessionListEnvelopeBase):  # type: ignore[valid-type,
     """Session list-row envelope derived from ``Session``."""
 
     def selected(self, fields: Container[str] | None = None) -> JSONDocument:
-        data = model_json_document(self, exclude_none=True)
+        data = _model_json_document(self, exclude_none=True)
         if fields is None:
             return data
         return {key: value for key, value in data.items() if key in fields}
@@ -1436,7 +1386,7 @@ SessionDetailPayload = SessionDetailEnvelope
 SessionListRowPayload = SessionListEnvelope
 
 
-class SessionSearchMatchPayload(SurfacePayloadModel):
+class SessionSearchMatchPayload(_SurfacePayloadModel):
     """Evidence explaining why a session appeared in search results.
 
     ``score_kind`` describes the meaning of ``score`` so consumers don't
@@ -1472,7 +1422,7 @@ class SessionSearchMatchPayload(SurfacePayloadModel):
     raw_score: float | None = Field(default=None, description="Backend-native score before public interpretation.")
 
 
-class SessionSearchHitPayload(SurfacePayloadModel):
+class SessionSearchHitPayload(_SurfacePayloadModel):
     """Search-hit payload with summary identity and match evidence."""
 
     session: SessionSummaryPayload
@@ -1519,7 +1469,7 @@ class SessionSearchHitPayload(SurfacePayloadModel):
         )
 
 
-class SessionNeighborReasonPayload(SurfacePayloadModel):
+class SessionNeighborReasonPayload(_SurfacePayloadModel):
     """Evidence explaining one neighboring-candidate reason."""
 
     kind: str
@@ -1537,7 +1487,7 @@ class SessionNeighborReasonPayload(SurfacePayloadModel):
         )
 
 
-class SessionNeighborCandidatePayload(SurfacePayloadModel):
+class SessionNeighborCandidatePayload(_SurfacePayloadModel):
     """Machine-readable neighboring-session candidate payload."""
 
     session: SessionSummaryPayload
@@ -1582,7 +1532,7 @@ RouteReadinessState: TypeAlias = Literal[
 ]
 
 
-class RouteReadinessPayload(SurfacePayloadModel):
+class RouteReadinessPayload(_SurfacePayloadModel):
     """Route-visible readiness state for a web reader panel.
 
     ``total=0`` can mean an empty archive, a scoped no-result query, or a
@@ -1599,7 +1549,7 @@ class RouteReadinessPayload(SurfacePayloadModel):
     stale_available: bool = False
 
 
-class QueryErrorPayload(SurfacePayloadModel):
+class QueryErrorPayload(_SurfacePayloadModel):
     """Shared error payload for daemon HTTP, MCP, and other surfaces.
 
     Compatible with daemon HTTP's ``{"ok": False, "error": ..., "detail": ...}``
@@ -1622,7 +1572,7 @@ class QueryFailurePayload(QueryErrorPayload):
     outcome: OutcomeEnvelope
 
 
-class QueryMissReasonPayload(SurfacePayloadModel):
+class QueryMissReasonPayload(_SurfacePayloadModel):
     """Shared reason entry explaining why a query produced no results."""
 
     code: str
@@ -1642,7 +1592,7 @@ class QueryMissReasonPayload(SurfacePayloadModel):
         )
 
 
-class QueryMissDiagnosticsPayload(SurfacePayloadModel):
+class QueryMissDiagnosticsPayload(_SurfacePayloadModel):
     """Shared diagnostics payload for zero-result queries."""
 
     message: str
@@ -1662,7 +1612,7 @@ class QueryMissDiagnosticsPayload(SurfacePayloadModel):
         )
 
 
-class SessionListResponse(SurfacePayloadModel):
+class SessionListResponse(_SurfacePayloadModel):
     """Shared response envelope for list and search results.
 
     All read surfaces (daemon HTTP, MCP, CLI JSON output) adapt this shape.
@@ -1697,7 +1647,7 @@ RANKING_POLICY_MIXED: Literal["mixed-bm25-rrf-vector"] = "mixed-bm25-rrf-vector"
 RANKING_POLICY_VERSION: Literal["1"] = "1"
 
 
-class SearchEnvelope(SurfacePayloadModel):
+class SearchEnvelope(_SurfacePayloadModel):
     """Typed ranked-result envelope shared across CLI, MCP, API, and daemon HTTP.
 
     This is the canonical search response shape (#1266). The same envelope
@@ -1801,7 +1751,7 @@ QueryUnitKind: TypeAlias = Literal[
 """Terminal query source unit exposed by query-unit envelopes."""
 
 
-class MessageQueryRowPayload(SurfacePayloadModel):
+class MessageQueryRowPayload(_SurfacePayloadModel):
     """Shared terminal-query row for archive messages."""
 
     unit: Literal["message"] = "message"
@@ -1827,7 +1777,7 @@ class MessageQueryRowPayload(SurfacePayloadModel):
         return cls._from_row_generic(row)
 
 
-class ActionQueryRowPayload(SurfacePayloadModel):
+class ActionQueryRowPayload(_SurfacePayloadModel):
     """Shared terminal-query row for normalized tool/action evidence."""
 
     unit: Literal["action"] = "action"
@@ -1888,7 +1838,7 @@ def _delegation_preview(value: str | None, *, limit: int = 240) -> tuple[str | N
     return value[:limit], digest, True
 
 
-class DelegationQueryRowPayload(SurfacePayloadModel):
+class DelegationQueryRowPayload(_SurfacePayloadModel):
     """Bounded terminal-query row for one delegation attempt."""
 
     unit: Literal["delegation"] = "delegation"
@@ -1945,7 +1895,7 @@ class DelegationQueryRowPayload(SurfacePayloadModel):
         )
 
 
-class BlockQueryRowPayload(SurfacePayloadModel):
+class BlockQueryRowPayload(_SurfacePayloadModel):
     """Shared terminal-query row for archive content blocks."""
 
     unit: Literal["block"] = "block"
@@ -1967,7 +1917,7 @@ class BlockQueryRowPayload(SurfacePayloadModel):
         return cls._from_row_generic(row)
 
 
-class FileQueryRowPayload(SurfacePayloadModel):
+class FileQueryRowPayload(_SurfacePayloadModel):
     """Shared terminal-query row for affected file-path evidence."""
 
     unit: Literal["file"] = "file"
@@ -1987,7 +1937,7 @@ class FileQueryRowPayload(SurfacePayloadModel):
         return cls._from_row_generic(row)
 
 
-class AssertionQueryRowPayload(SurfacePayloadModel):
+class AssertionQueryRowPayload(_SurfacePayloadModel):
     """Shared terminal-query row for user-tier assertions."""
 
     unit: Literal["assertion"] = "assertion"
@@ -2033,7 +1983,7 @@ class AssertionQueryRowPayload(SurfacePayloadModel):
         )
 
 
-class AssertionClaimPayload(SurfacePayloadModel):
+class AssertionClaimPayload(_SurfacePayloadModel):
     """Shared payload for assertion-backed lifecycle claims."""
 
     assertion_id: str
@@ -2094,7 +2044,7 @@ class AssertionClaimPayload(SurfacePayloadModel):
         )
 
 
-class FindingEvidenceRefState(SurfacePayloadModel):
+class FindingEvidenceRefState(_SurfacePayloadModel):
     """Live resolution state for one evidence ref cited by a finding."""
 
     ref: str
@@ -2102,7 +2052,7 @@ class FindingEvidenceRefState(SurfacePayloadModel):
     reason: str | None = None
 
 
-class FindingProvenancePayload(SurfacePayloadModel):
+class FindingProvenancePayload(_SurfacePayloadModel):
     """Queryable provenance projection over one ``AssertionKind.FINDING`` claim.
 
     Surfaces the evidence-ancestry fields the finding-provenance doctrine
@@ -2132,7 +2082,7 @@ class FindingProvenancePayload(SurfacePayloadModel):
     updated_at_ms: int
 
 
-class AssertionClaimListPayload(SurfacePayloadModel):
+class AssertionClaimListPayload(_SurfacePayloadModel):
     """Shared list envelope for assertion-backed lifecycle claims."""
 
     items: tuple[AssertionClaimPayload, ...]
@@ -2160,7 +2110,7 @@ class AssertionClaimListPayload(SurfacePayloadModel):
         )
 
 
-class AssertionJudgmentPayload(SurfacePayloadModel):
+class AssertionJudgmentPayload(_SurfacePayloadModel):
     """Shared payload for explicit candidate-assertion judgments."""
 
     judgment_id: str
@@ -2203,7 +2153,7 @@ class AssertionJudgmentPayload(SurfacePayloadModel):
         )
 
 
-class AssertionJudgmentResultPayload(SurfacePayloadModel):
+class AssertionJudgmentResultPayload(_SurfacePayloadModel):
     """Shared result envelope for candidate-assertion judgment workflows."""
 
     candidate: AssertionClaimPayload
@@ -2223,14 +2173,14 @@ class AssertionJudgmentResultPayload(SurfacePayloadModel):
         )
 
 
-class AssertionBulkJudgmentItemPayload(SurfacePayloadModel):
+class AssertionBulkJudgmentItemPayload(_SurfacePayloadModel):
     candidate_ref: str
     outcome: Literal["applied", "idempotent", "failed"]
     result: AssertionJudgmentResultPayload | None = None
     error: str | None = None
 
 
-class AssertionBulkJudgmentPayload(SurfacePayloadModel):
+class AssertionBulkJudgmentPayload(_SurfacePayloadModel):
     items: tuple[AssertionBulkJudgmentItemPayload, ...]
     applied_count: int
     idempotent_count: int
@@ -2272,7 +2222,7 @@ AssertionEvidenceResolutionState: TypeAlias = Literal[
 ]
 
 
-class AssertionEvidencePreviewPayload(SurfacePayloadModel):
+class AssertionEvidencePreviewPayload(_SurfacePayloadModel):
     """Bounded resolution preview for one ref presented during judgment."""
 
     ref: str
@@ -2290,7 +2240,7 @@ class AssertionEvidencePreviewPayload(SurfacePayloadModel):
         return normalize_public_ref_text(value)
 
 
-class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
+class AssertionCandidateReviewItemPayload(_SurfacePayloadModel):
     """One candidate assertion row with explicit review action state."""
 
     candidate_ref: str
@@ -2360,7 +2310,7 @@ class AssertionCandidateReviewItemPayload(SurfacePayloadModel):
         )
 
 
-class AssertionCandidateReviewListPayload(SurfacePayloadModel):
+class AssertionCandidateReviewListPayload(_SurfacePayloadModel):
     """Review-list envelope for assertion candidates, not active assertions."""
 
     mode: Literal["assertion-candidate-review-list"] = "assertion-candidate-review-list"
@@ -2425,7 +2375,7 @@ AssertionCandidateQueueState: TypeAlias = Literal[
 ]
 
 
-class AssertionCandidateQueueHealthPayload(SurfacePayloadModel):
+class AssertionCandidateQueueHealthPayload(_SurfacePayloadModel):
     """Read-only health projection for the durable judgment queue."""
 
     mode: Literal["assertion-candidate-queue-health"] = "assertion-candidate-queue-health"
@@ -2512,7 +2462,7 @@ def _candidate_review_disabled_reasons(
     }
 
 
-class RefResolutionActionPayload(SurfacePayloadModel):
+class RefResolutionActionPayload(_SurfacePayloadModel):
     """One affordance a client can offer after resolving a public ref."""
 
     label: str
@@ -2521,7 +2471,7 @@ class RefResolutionActionPayload(SurfacePayloadModel):
     enabled: bool = True
 
 
-class PublicRefResolutionPayload(SurfacePayloadModel):
+class PublicRefResolutionPayload(_SurfacePayloadModel):
     """Bounded shared payload for resolving public object/evidence refs."""
 
     mode: Literal["ref-resolution"] = "ref-resolution"
@@ -2559,7 +2509,7 @@ ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT = 96
 ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT = 256
 
 
-class AnnotationBatchRefDigestPayload(SurfacePayloadModel):
+class AnnotationBatchRefDigestPayload(_SurfacePayloadModel):
     """Identity-only descriptor for an oversized public annotation-batch ref.
 
     The original ref is intentionally absent. This keeps missing and malformed
@@ -2583,7 +2533,7 @@ class AnnotationBatchRefDigestPayload(SurfacePayloadModel):
         )
 
 
-class InvalidUnicodeRefDigestPayload(SurfacePayloadModel):
+class InvalidUnicodeRefDigestPayload(_SurfacePayloadModel):
     """Identity-only descriptor for a public ref that is not valid UTF-8.
 
     ``surrogatepass`` gives Python's otherwise-unencodable code-point sequence
@@ -2611,7 +2561,7 @@ class InvalidUnicodeRefDigestPayload(SurfacePayloadModel):
         )
 
 
-class AnnotationBatchTextPreviewPayload(SurfacePayloadModel):
+class AnnotationBatchTextPreviewPayload(_SurfacePayloadModel):
     """Serialization-bounded text prefix with exact UTF-8 identity metadata."""
 
     text_prefix: str
@@ -2652,7 +2602,7 @@ class AnnotationBatchTextPreviewPayload(SurfacePayloadModel):
         return self
 
 
-class AnnotationBatchJSONPreviewPayload(SurfacePayloadModel):
+class AnnotationBatchJSONPreviewPayload(_SurfacePayloadModel):
     """Byte-bounded canonical JSON prefix with exact identity metadata."""
 
     json_prefix: str
@@ -2692,13 +2642,13 @@ class AnnotationBatchJSONPreviewPayload(SurfacePayloadModel):
         return self
 
 
-class AnnotationBatchAssertionItemPayload(SurfacePayloadModel):
+class AnnotationBatchAssertionItemPayload(_SurfacePayloadModel):
     kind: Literal["assertion"] = "assertion"
     ordinal: int = Field(ge=0)
     assertion_ref: str
 
 
-class AnnotationBatchValidationErrorItemPayload(SurfacePayloadModel):
+class AnnotationBatchValidationErrorItemPayload(_SurfacePayloadModel):
     kind: Literal["validation-error"] = "validation-error"
     failure_ordinal: int = Field(ge=0)
     error_ordinal: int = Field(ge=0)
@@ -2706,13 +2656,13 @@ class AnnotationBatchValidationErrorItemPayload(SurfacePayloadModel):
     error: PydanticJsonValue
 
 
-class AnnotationBatchValidationFailureItemPayload(SurfacePayloadModel):
+class AnnotationBatchValidationFailureItemPayload(_SurfacePayloadModel):
     kind: Literal["validation-failure"] = "validation-failure"
     failure_ordinal: int = Field(ge=0)
     failure: dict[str, PydanticJsonValue]
 
 
-class AnnotationBatchPayload(SurfacePayloadModel):
+class AnnotationBatchPayload(_SurfacePayloadModel):
     """Immutable provenance and a pageable exact assertion/error collection."""
 
     unit: Literal["annotation-batch"] = "annotation-batch"
@@ -2799,7 +2749,7 @@ class AnnotationBatchPayload(SurfacePayloadModel):
         return tuple(caveats)
 
 
-class PendingObjectRefPayload(SurfacePayloadModel):
+class PendingObjectRefPayload(_SurfacePayloadModel):
     """Typed placeholder embedded in ``PublicRefResolutionPayload.payload``.
 
     Some ``ObjectRefKind`` values (the polylogue-rxdo analysis-provenance
@@ -2827,7 +2777,7 @@ def _bounded_delegation_text(value: str | None) -> str | None:
     return value[:_DELEGATION_TEXT_BOUND] + "…[truncated]"
 
 
-class DelegationAttemptPayload(SurfacePayloadModel):
+class DelegationAttemptPayload(_SurfacePayloadModel):
     """Bounded read payload for one delegation attempt (polylogue-y964
     `delegation_facts`, polylogue-lph4 ObjectRef normalization).
 
@@ -2890,7 +2840,7 @@ class DelegationAttemptPayload(SurfacePayloadModel):
         )
 
 
-class DelegationContextRowPayload(SurfacePayloadModel):
+class DelegationContextRowPayload(_SurfacePayloadModel):
     """One bounded parent-context or follow-up message excerpt."""
 
     message_id: str
@@ -2900,7 +2850,7 @@ class DelegationContextRowPayload(SurfacePayloadModel):
     truncated: bool
 
 
-class DelegationCardPayload(SurfacePayloadModel):
+class DelegationCardPayload(_SurfacePayloadModel):
     """Explicit delegation evidence card; instruction is complete, windows are bounded."""
 
     unit: Literal["delegation-card"] = "delegation-card"
@@ -2986,7 +2936,7 @@ if set(DELEGATION_STATE_CAVEATS) != set(get_args(DelegationMappingState)) - {"re
     raise RuntimeError("every non-resolved delegation mapping state requires a public caveat")
 
 
-class DelegationAncestryNodePayload(SurfacePayloadModel):
+class DelegationAncestryNodePayload(_SurfacePayloadModel):
     """One node in a depth-annotated delegation ancestry chain (polylogue-qsb4).
 
     ``depth`` is 0 at the queried session and increases toward the root.
@@ -3009,7 +2959,7 @@ class DelegationAncestryNodePayload(SurfacePayloadModel):
         return cls._from_row_generic(row)
 
 
-class DelegationSubtreeNodePayload(SurfacePayloadModel):
+class DelegationSubtreeNodePayload(_SurfacePayloadModel):
     """One node in a depth-annotated delegation subtree (polylogue-qsb4).
 
     ``depth`` is 0 at the queried session (the subtree root) and increases
@@ -3033,7 +2983,7 @@ class DelegationSubtreeNodePayload(SurfacePayloadModel):
         return cls._from_row_generic(row)
 
 
-class DelegationAncestryPayload(SurfacePayloadModel):
+class DelegationAncestryPayload(_SurfacePayloadModel):
     """Root-to-node delegation ancestry chain for one session (polylogue-qsb4)."""
 
     unit: Literal["delegation-ancestry"] = "delegation-ancestry"
@@ -3047,7 +2997,7 @@ class DelegationAncestryPayload(SurfacePayloadModel):
         return cls(session_id=session_id, max_depth=max((node.depth for node in nodes), default=0), nodes=nodes)
 
 
-class DelegationSubtreePayload(SurfacePayloadModel):
+class DelegationSubtreePayload(_SurfacePayloadModel):
     """One page of the dispatch subtree rooted at one session."""
 
     unit: Literal["delegation-subtree"] = "delegation-subtree"
@@ -3078,7 +3028,7 @@ class DelegationSubtreePayload(SurfacePayloadModel):
         )
 
 
-class SessionReadViewEnvelope(SurfacePayloadModel):
+class SessionReadViewEnvelope(_SurfacePayloadModel):
     """Stable daemon envelope for one executed session read-view."""
 
     session_id: str
@@ -3429,7 +3379,7 @@ _QUERY_UNIT_PIPELINE_STAGE_SCHEMA: Any = {
 }
 
 
-class QueryUnitAggregateRowPayload(SurfacePayloadModel):
+class QueryUnitAggregateRowPayload(_SurfacePayloadModel):
     """Grouped aggregate row over a terminal query-unit result set."""
 
     unit: QueryUnitKind
@@ -3449,7 +3399,7 @@ class QueryUnitAggregateRowPayload(SurfacePayloadModel):
         return cls._from_row_generic(row, unit=cast(QueryUnitKind, row.unit))
 
 
-class QueryUnitEnvelope(SurfacePayloadModel):
+class QueryUnitEnvelope(_SurfacePayloadModel):
     """Shared envelope for explicit terminal unit-source query results.
 
     ``items`` contains full typed rows by default. A message ``select`` route
@@ -3482,7 +3432,7 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     outcome: OutcomeEnvelope
 
 
-class QueryUnitAggregateEnvelope(SurfacePayloadModel):
+class QueryUnitAggregateEnvelope(_SurfacePayloadModel):
     """Shared envelope for terminal query-unit aggregate results."""
 
     mode: Literal["query-unit-aggregate"] = "query-unit-aggregate"
@@ -3512,7 +3462,7 @@ class QueryUnitAggregateEnvelope(SurfacePayloadModel):
 QueryUnitResultEnvelope: TypeAlias = QueryUnitEnvelope | QueryUnitAggregateEnvelope
 
 
-class OtelSpanPayload(SurfacePayloadModel):
+class OtelSpanPayload(_SurfacePayloadModel):
     """OTel-like span projection over Polylogue archive evidence.
 
     This is intentionally an export shape, not archive identity. Span and trace
@@ -3535,7 +3485,7 @@ class OtelSpanPayload(SurfacePayloadModel):
         return tuple(normalize_public_ref_text(ref) for ref in value)
 
 
-class OtelLogRecordPayload(SurfacePayloadModel):
+class OtelLogRecordPayload(_SurfacePayloadModel):
     """OTel-like log/event projection over non-span archive evidence."""
 
     trace_id: str
@@ -3550,7 +3500,7 @@ class OtelLogRecordPayload(SurfacePayloadModel):
         return tuple(normalize_public_ref_text(ref) for ref in value)
 
 
-class OtelProjectionPayload(SurfacePayloadModel):
+class OtelProjectionPayload(_SurfacePayloadModel):
     """Bounded outbound OTel-style projection for one Polylogue evidence set."""
 
     mode: Literal["otel-projection"] = "otel-projection"
@@ -3730,7 +3680,7 @@ TagMutationOutcome: TypeAlias = Literal["added", "no_op", "removed", "not_presen
 """Tag idempotency outcome exposed by all mutation surfaces."""
 
 
-class TagMutationResult(SurfacePayloadModel):
+class TagMutationResult(_SurfacePayloadModel):
     """Shared mutation-result contract returned by the archive facade.
 
     Every surface (CLI, MCP, API, daemon) adapts this same result so the
@@ -3753,7 +3703,7 @@ MetadataMutationOutcome: TypeAlias = Literal["set", "unchanged", "deleted", "not
 """Metadata idempotency outcome exposed by all mutation surfaces."""
 
 
-class MetadataMutationResult(SurfacePayloadModel):
+class MetadataMutationResult(_SurfacePayloadModel):
     """Typed result for metadata set/delete mutations.
 
     ``outcome``:
@@ -3776,7 +3726,7 @@ DeleteSessionOutcome: TypeAlias = Literal["deleted", "not_found"]
 """Session delete idempotency outcome exposed by all surfaces."""
 
 
-class DeleteSessionResult(SurfacePayloadModel):
+class DeleteSessionResult(_SurfacePayloadModel):
     """Typed result for a single session delete."""
 
     outcome: DeleteSessionOutcome
@@ -3790,7 +3740,7 @@ class DeleteSessionResult(SurfacePayloadModel):
 DeleteSessionPreviewOutcome: TypeAlias = Literal["prepared", "not_found"]
 
 
-class DeleteSessionPreview(SurfacePayloadModel):
+class DeleteSessionPreview(_SurfacePayloadModel):
     """A prepared single-session delete its caller presents to apply it.
 
     ``preview_ref`` is set only when ``outcome="prepared"``; it is bound to
@@ -3804,7 +3754,7 @@ class DeleteSessionPreview(SurfacePayloadModel):
     expires_at_ms: int | None = None
 
 
-class BulkTagMutationResult(SurfacePayloadModel):
+class BulkTagMutationResult(_SurfacePayloadModel):
     """Typed result for bulk tag mutations.
 
     Carries the same counts the MCP/CLI/daemon surfaces expose: how many
@@ -3820,14 +3770,14 @@ class BulkTagMutationResult(SurfacePayloadModel):
     skipped_count: int
 
 
-class SessionDetailResponse(SurfacePayloadModel):
+class SessionDetailResponse(_SurfacePayloadModel):
     """Shared response envelope for a single session detail."""
 
     session: SessionDetailPayload
     authority: AuthorityEnvelope | None = None
 
 
-class SessionMessagesResponsePayload(SurfacePayloadModel):
+class SessionMessagesResponsePayload(_SurfacePayloadModel):
     """Finite `read --view messages --format json` response."""
 
     _transaction_request: object | None = PrivateAttr(default=None)
@@ -3871,7 +3821,7 @@ explicit reason and remediation rather than an opaque null or empty result.
 """
 
 
-class ProjectionPrerequisitePayload(SurfacePayloadModel):
+class ProjectionPrerequisitePayload(_SurfacePayloadModel):
     """One declared prerequisite a default analysis projection checked."""
 
     name: str
@@ -3880,7 +3830,7 @@ class ProjectionPrerequisitePayload(SurfacePayloadModel):
     remediation: str | None = None
 
 
-class ProjectionAvailabilityPayload(SurfacePayloadModel):
+class ProjectionAvailabilityPayload(_SurfacePayloadModel):
     """Declared readiness/cost/degraded outcome for a default analysis projection.
 
     Every default analysis projection (``analyze --facets``, ``analyze
@@ -3903,14 +3853,14 @@ class ProjectionAvailabilityPayload(SurfacePayloadModel):
     prerequisites: tuple[ProjectionPrerequisitePayload, ...] = ()
 
 
-class FacetTimeRange(SurfacePayloadModel):
+class FacetTimeRange(_SurfacePayloadModel):
     """Time range boundary for facet results."""
 
     min: str | None = None
     max: str | None = None
 
 
-class FacetBucketsPayload(SurfacePayloadModel):
+class FacetBucketsPayload(_SurfacePayloadModel):
     """Bucket counts for one facet scope (scoped or global).
 
     Carries the same shape as the top-level facet fields on
@@ -3935,7 +3885,7 @@ class FacetBucketsPayload(SurfacePayloadModel):
 FacetFamilyRouteState = Literal["complete", "deferred", "error"]
 
 
-class FacetFamilyStatusPayload(SurfacePayloadModel):
+class FacetFamilyStatusPayload(_SurfacePayloadModel):
     """Route-visible status for one facet family.
 
     The web workbench consumes this metadata to keep cheap first paint
@@ -3956,7 +3906,7 @@ class FacetFamilyStatusPayload(SurfacePayloadModel):
     expensive: bool = False
 
 
-class FacetsResponse(SurfacePayloadModel):
+class FacetsResponse(_SurfacePayloadModel):
     """Shared facets response envelope with scope semantics.
 
     Top-level fields (``origins``, ``tags`` etc.) carry the *active*
@@ -4006,7 +3956,7 @@ class FacetsResponse(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
 
-class ContextPreambleQuotedEvidence(SurfacePayloadModel):
+class ContextPreambleQuotedEvidence(_SurfacePayloadModel):
     """Inert assertion content with an explicit data boundary."""
 
     format: Literal["quoted-assertion-evidence"] = "quoted-assertion-evidence"
@@ -4015,7 +3965,7 @@ class ContextPreambleQuotedEvidence(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ContextPreambleAssertionGuidance(SurfacePayloadModel):
+class ContextPreambleAssertionGuidance(_SurfacePayloadModel):
     """Assertion guidance eligible for explicit context injection."""
 
     kind: str
@@ -4039,7 +3989,7 @@ class ContextPreambleAssertionGuidance(SurfacePayloadModel):
         return self
 
 
-class ContextPreambleGuidance(SurfacePayloadModel):
+class ContextPreambleGuidance(_SurfacePayloadModel):
     """Structured guidance carried by context preamble payloads."""
 
     assertions: list[ContextPreambleAssertionGuidance] = Field(default_factory=list)
@@ -4047,7 +3997,7 @@ class ContextPreambleGuidance(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ContextPreamble(SurfacePayloadModel):
+class ContextPreamble(_SurfacePayloadModel):
     """Typed delivery envelope for SessionStart context injection (#1696).
 
     Assembled by polylogue MCP tools and delivered via SessionStart hook
@@ -4074,7 +4024,7 @@ class ContextPreamble(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ContextPreambleLineage(SurfacePayloadModel):
+class ContextPreambleLineage(_SurfacePayloadModel):
     """Session lineage for the context preamble."""
 
     logical_session_root: str | None = None
@@ -4085,7 +4035,7 @@ class ContextPreambleLineage(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ContextPreamblePathOverlap(SurfacePayloadModel):
+class ContextPreamblePathOverlap(_SurfacePayloadModel):
     """One candidate-to-current path match used by resume ranking."""
 
     candidate_path: str
@@ -4094,7 +4044,7 @@ class ContextPreamblePathOverlap(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ContextPreambleOverlapBasis(SurfacePayloadModel):
+class ContextPreambleOverlapBasis(_SurfacePayloadModel):
     """Explainable file evidence behind a related-session ranking."""
 
     exact: list[ContextPreamblePathOverlap] = Field(default_factory=list)
@@ -4104,7 +4054,7 @@ class ContextPreambleOverlapBasis(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ContextPreambleSession(SurfacePayloadModel):
+class ContextPreambleSession(_SurfacePayloadModel):
     """A recent related session for the context preamble."""
 
     session_id: str
@@ -4123,7 +4073,7 @@ class ContextPreambleSession(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ContextPreambleIssue(SurfacePayloadModel):
+class ContextPreambleIssue(_SurfacePayloadModel):
     """A GitHub issue for the context preamble."""
 
     number: int
@@ -4136,7 +4086,7 @@ class ContextPreambleIssue(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ContextPreambleProjectState(SurfacePayloadModel):
+class ContextPreambleProjectState(_SurfacePayloadModel):
     """Current project state for the context preamble."""
 
     repo: str | None = None
@@ -4148,7 +4098,7 @@ class ContextPreambleProjectState(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ContextPreambleBlackboardNote(SurfacePayloadModel):
+class ContextPreambleBlackboardNote(_SurfacePayloadModel):
     """A blackboard note for the context preamble."""
 
     key: str
@@ -4159,7 +4109,7 @@ class ContextPreambleBlackboardNote(SurfacePayloadModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class MutationResultPayload(SurfacePayloadModel):
+class MutationResultPayload(_SurfacePayloadModel):
     domain_receipt: dict[str, object] | None = None
     """Shared result envelope for user-visible mutation surfaces.
 
@@ -4376,7 +4326,6 @@ __all__ = [
     "SearchEnvelope",
     "MessageQueryRowPayload",
     "AssertionQueryRowPayload",
-    "SurfacePayloadModel",
     "TagMutationOutcome",
     "TagMutationResult",
     "TargetRefPayload",
@@ -4385,11 +4334,9 @@ __all__ = [
     "build_search_envelope",
     "build_query_unit_aggregate_envelope",
     "build_query_unit_envelope",
-    "model_json_document",
     "role_label",
     "reader_anchor",
     "reader_session_actions",
     "reader_message_actions",
-    "serialize_surface_payload",
     "validate_metadata_key",
 ]

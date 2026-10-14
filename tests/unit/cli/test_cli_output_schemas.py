@@ -276,11 +276,8 @@ def test_ndjson_list_output_validates_against_schema() -> None:
     import jsonschema
 
     from polylogue.cli.query_output_contracts import StructuredRowsDocument
-    from polylogue.surfaces.payloads import (
-        SessionListRowPayload,
-        TargetRefPayload,
-        model_json_document,
-    )
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import SessionListRowPayload, TargetRefPayload
 
     schema = _load_published_schema("session-list-row")
     rows = tuple(

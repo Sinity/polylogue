@@ -18,13 +18,14 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.semantic_transcript import SemanticTranscriptRecords, semantic_transcript_records
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.core.payload_model import model_json_document
 from polylogue.operations.authority import authority_for_config
 from polylogue.rendering.semantic_card_models import LineageDescriptor
 from polylogue.rendering.semantic_cards import lineage_descriptor_from_session
 from polylogue.rendering.semantic_markdown import semantic_transcript_markdown_chunks
 from polylogue.rendering.transcript import message_document_chunks
 from polylogue.surfaces.outcome import OutcomeEnvelope, lineage_page_outcome, render_outcome_line
-from polylogue.surfaces.payloads import SessionMessagesResponsePayload, model_json_document
+from polylogue.surfaces.payloads import SessionMessagesResponsePayload
 
 #: One ``session.read`` messages window.  A whole transcript can exceed the
 #: bounded operation result, so a wider request is composed from a sequence of

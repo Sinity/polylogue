@@ -1351,7 +1351,8 @@ def _message_row_projection(
     """
 
     from polylogue.archive.hydration import archive_message_to_domain
-    from polylogue.surfaces.payloads import message_row_envelope_from_domain, model_json_document
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import message_row_envelope_from_domain
 
     rows: list[dict[str, object]] = []
     for message in envelope.messages:

@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, ClassVar
 from pydantic import ConfigDict
 
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.payload_model import SurfacePayloadModel
 from polylogue.operations.specs import OperationKind
-from polylogue.surfaces.payloads import SurfacePayloadModel
 
 if TYPE_CHECKING:
     from polylogue.sources.import_preflight import ImportPreflightResult

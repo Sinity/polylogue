@@ -67,7 +67,7 @@ def _deliver_content(env: AppEnv, content: str, *, destination: str, out_path: s
 def serialize_surface_payload(payload: Any, *, exclude_none: bool = False) -> str:
     """Serialize surface payloads without importing payload models at module load."""
 
-    from polylogue.surfaces.payloads import serialize_surface_payload as _serialize_surface_payload
+    from polylogue.core.payload_model import serialize_surface_payload as _serialize_surface_payload
 
     return _serialize_surface_payload(payload, exclude_none=exclude_none)
 
@@ -2152,8 +2152,8 @@ def analyze_verb(
             render_postmortem_plain,
         )
         from polylogue.cli.shared.machine_errors import success
+        from polylogue.core.payload_model import model_json_document
         from polylogue.surfaces.outcome import outcome_exit_code
-        from polylogue.surfaces.payloads import model_json_document
 
         spec = request.query_spec()
         bundle = run_coroutine_sync(env.polylogue.postmortem_bundle(spec, limit=limit))
@@ -2181,8 +2181,8 @@ def analyze_verb(
             raise click.UsageError("`analyze --portfolio` only supports terminal text, --format json, or markdown")
         from polylogue.analysis.portfolio import portfolio_outcome, render_portfolio_markdown, render_portfolio_plain
         from polylogue.cli.shared.machine_errors import success
+        from polylogue.core.payload_model import model_json_document
         from polylogue.surfaces.outcome import outcome_exit_code
-        from polylogue.surfaces.payloads import model_json_document
 
         spec = request.query_spec()
         portfolio = run_coroutine_sync(env.polylogue.portfolio_bundle(spec, limit=limit))
@@ -2228,7 +2228,7 @@ def analyze_verb(
         import time as _time
 
         from polylogue.analysis.projection_contracts import cost_outlook_availability
-        from polylogue.surfaces.payloads import model_json_document
+        from polylogue.core.payload_model import model_json_document
 
         projection_method = ProjectionMethod(method)
         started_at = _time.perf_counter()

@@ -122,7 +122,7 @@ def test_named_postmortem_uses_inherited_json_renderer() -> None:
     runner = CliRunner()
     with (
         patch("polylogue.api.archive.PolylogueArchiveMixin.postmortem_bundle", new=AsyncMock(return_value={})),
-        patch("polylogue.surfaces.payloads.model_json_document", return_value={"fixture": True}),
+        patch("polylogue.core.payload_model.model_json_document", return_value={"fixture": True}),
         patch("polylogue.analysis.postmortem.postmortem_outcome", return_value=decide_outcome(matched=1)),
     ):
         result = runner.invoke(cli, ["--format", "json", "find", "repo:polylogue", "then", "analyze", "postmortem"])

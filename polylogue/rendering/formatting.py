@@ -21,10 +21,10 @@ from typing import TYPE_CHECKING, TextIO
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.localtime import format_local_datetime
+from polylogue.core.payload_model import model_json_document
 from polylogue.surfaces.payloads import (
     JSONDocument,
     message_render_envelope_from_domain,
-    model_json_document,
     session_list_envelope_from_domain,
 )
 

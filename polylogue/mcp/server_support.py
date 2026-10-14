@@ -29,13 +29,13 @@ from polylogue.core.errors import (
     SchemaSkewError,
     SchemaVersionMismatchError,
 )
+from polylogue.core.payload_model import serialize_surface_payload
 from polylogue.logging import get_logger
 from polylogue.mcp.archive_support import clip_with_marker
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
 from polylogue.mcp.query_contracts import PERSONAL_STATE_PROJECTIONS
 from polylogue.services import RuntimeServices
-from polylogue.surfaces.payloads import serialize_surface_payload
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue

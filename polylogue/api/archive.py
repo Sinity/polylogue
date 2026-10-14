@@ -5497,7 +5497,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     ) -> list[JSONDocument]:
         """Return neighboring-session candidates as shared surface payloads."""
 
-        from polylogue.surfaces.payloads import SessionNeighborCandidatePayload, model_json_document
+        from polylogue.core.payload_model import model_json_document
+        from polylogue.surfaces.payloads import SessionNeighborCandidatePayload
 
         candidates = await self.neighbor_candidates(
             session_id=session_id,

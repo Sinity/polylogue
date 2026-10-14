@@ -149,6 +149,15 @@ def test_daemon_served_query_does_not_import_heavy_local_execution_stack(
     "probe,forbidden",
     [
         pytest.param(
+            "from polylogue.coordination.payloads import CoordinationProvenancePayload; "
+            "payload = CoordinationProvenancePayload(source='synthetic', confidence=1.0, freshness='current'); "
+            "assert payload.model_dump(mode='json', exclude_none=True) == "
+            "{'source': 'synthetic', 'command': [], 'confidence': 1.0, 'freshness': 'current'}; "
+            'assert \'"source": "synthetic"\' in payload.to_json(exclude_none=True)',
+            ("polylogue.surfaces.payloads", "polylogue.sources.origin_specs", "polylogue.analysis.run_projection"),
+            id="coordination-without-unrelated-surface-models",
+        ),
+        pytest.param(
             "from polylogue.cli.commands.status import normalize_raw_frontier_status_payload; "
             "payload = {'ok': False, 'status_snapshot': {'state': 'unavailable'}, 'marker': {'nested': [1, None, 'synthetic']}}; "
             "result = normalize_raw_frontier_status_payload(payload, require_fresh_snapshot=True); "

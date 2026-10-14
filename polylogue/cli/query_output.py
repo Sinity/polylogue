@@ -23,6 +23,7 @@ from polylogue.cli.query_output_contracts import QueryOutputDocument, Structured
 from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, emit_no_results
 from polylogue.core.json import JSONDocument
 from polylogue.core.localtime import format_local_datetime
+from polylogue.core.payload_model import model_json_document
 from polylogue.logging import get_logger
 from polylogue.operations.authority import authority_for_config
 from polylogue.rendering.identity import IdentityFrame, identity_frame
@@ -30,7 +31,6 @@ from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.payloads import (
     SessionSearchHitPayload,
     build_search_envelope,
-    model_json_document,
     session_list_envelope_from_summary,
 )
 from polylogue.surfaces.projection_spec import RenderDestination

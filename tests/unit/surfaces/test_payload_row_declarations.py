@@ -10,6 +10,7 @@ import pytest
 
 from polylogue.analysis.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.core.enums import DelegationMappingState
+from polylogue.core.payload_model import SurfacePayloadModel
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveActionQueryRow,
@@ -48,7 +49,6 @@ from polylogue.surfaces.payloads import (
     ObservedEventQueryRowPayload,
     QueryUnitAggregateRowPayload,
     RunQueryRowPayload,
-    SurfacePayloadModel,
 )
 
 _GENERIC_ROW_DECLARATIONS: tuple[tuple[type[SurfacePayloadModel], type[Any], frozenset[str], frozenset[str]], ...] = (

@@ -24,7 +24,7 @@ def test_named_analysis_renders_inherited_json(projection: str) -> None:
     with (
         patch.object(Polylogue, f"{projection}_bundle", new_callable=AsyncMock, return_value=object()),
         patch(f"polylogue.analysis.{projection}.{projection}_outcome", return_value=_COMPLETED),
-        patch("polylogue.surfaces.payloads.model_json_document", return_value={"fixture": "w12"}),
+        patch("polylogue.core.payload_model.model_json_document", return_value={"fixture": "w12"}),
     ):
         result = CliRunner().invoke(cli, ["--format", "json", "find", "repo:w12", "then", "analyze", projection])
     assert result.exit_code == 0, result.output

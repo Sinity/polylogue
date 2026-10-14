@@ -15,8 +15,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, Field
 
+from polylogue.core.payload_model import SurfacePayloadModel
 from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
-from polylogue.surfaces.payloads import SurfacePayloadModel
 
 
 def _canonical_public_instant(value: datetime) -> datetime:
