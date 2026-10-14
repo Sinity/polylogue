@@ -47,8 +47,8 @@ P1 (merge blocker):
 - input silently dropped, truncated, or duplicated while the run reports
   success or complete enumeration;
 - a writable open or mutation of a live archive that bypasses the daemon
-  writer route without archive-bound custody or the exact owned offline
-  destination authority;
+  writer route without holding the archive write lock, unless it writes only
+  a file the process created itself, such as an inactive index generation;
 - operator archives, transcripts, private exports, local databases, or
   receipts committed in any diff, including a docs-only or test-only one;
 - a build, promotion, or convergence loop that can never finish (livelock,
@@ -62,15 +62,25 @@ P1 (merge blocker):
 P2, when no P1 item applies: devtools and test-harness defects, status, progress and metric accuracy,
 docs drift, performance that does not grow with archive size, and test
 weakness where the gate still runs. A test-only or docs-only diff is P2 unless
-it makes a required gate vacuous or crosses the public boundary.
+it makes a required gate vacuous or crosses the public boundary. A diff that
+answers a defect by adding a checker, census, baseline, ratchet, or
+compensating pass beside the code that produces the bad state, instead of
+correcting that code, is P2.
 
 ## Invariant reference
 
 Use the relevant items to inspect changed behavior. No item-by-item narration,
 15+6 report, or full-list restart is required for each result or small fix.
-Area rules live in the `## Code Review Rules` section of
-the nested `AGENTS.md` beside the code (`polylogue/storage/`,
-`polylogue/sources/`, `polylogue/daemon/`, `devtools/`).
+
+Parser and detection changes also get these checks:
+
+- A parser that takes a truncated or display field when a complete one
+  exists, reads only one of the top-level and nested placements the provider
+  emits, or emits the same content from two fields. A dropped field needs a
+  declared reason in the hash partition or origin spec.
+- A detector declaration in `origin_specs.py` whose `detector_tightness` or
+  `mode_rank` is looser than its shape; an earlier parser then claims its
+  records.
 
 1. **Siblings and owners.** Where else does the rule this diff adds or fixes
    apply: every route, caller, branch, and record it governs (live and
@@ -210,6 +220,8 @@ physical limit is acceptable, and its refusal is typed.
   or `_PARSER_FINGERPRINT` in `sources/live/watcher.py`) that a change
   requires but leaves unchanged is a finding.
 - New caps, smaller timeouts, or truncation as a remedy.
+- A new gate, baseline, ratchet, census, receipt, or self-check as a remedy;
+  name the producing code and its fix instead.
 - Filesystem enumeration (installed trees, example databases, executables) as
   a cache or receipt key, in devtools or test infrastructure; receipts and
   caches are keyed on declared inputs.

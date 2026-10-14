@@ -16,6 +16,20 @@ Tracked content, commits, CI logs, and PR and review text are public. Never
 commit operator archives, transcripts, private exports, local databases,
 receipts, or scratch state. Tests use neutral synthetic fixtures.
 
+## Plain language
+
+Name things by what they are in ordinary programming terms: lock, permission,
+result, response, offset, queue item, outbox row, migration, inventory,
+finish, close, commit, wait. Prefer the ordinary term even when it is longer.
+One word has one meaning; `docs/glossary.md` lists the project terms that
+earn a name and translates the coined words current code still uses. A new
+term is allowed only when no ordinary term fits, and it gets its glossary
+line in the same change. Commit titles, PR text, and bead titles say what
+behavior changed ("re-parse at once when input changes during a parse"), not
+which mechanism words were touched. Code comments state constraints; bead
+IDs, incident history, and review breadcrumbs belong in Beads and commit
+bodies.
+
 ## Orientation
 
 ```text
@@ -27,8 +41,9 @@ sources/ ─detect→ pipeline/ ─hash+write→ storage/{6 tiers} ─materializ
 
 New semantics go into the substrate (`storage`, `analysis`) or the product
 layer first; surfaces adapt through `analysis`, `operations`, or `api`.
-Surface-to-substrate imports are a ratchet (`devtools gate layering`: the
-baseline may shrink, never grow); substrate-to-surface imports are forbidden.
+Substrate code never imports a surface. Keep the layout right by putting code
+where it belongs and moving code that is misplaced; a declared rule, baseline
+or exemption list does not make a layout correct.
 
 Before a storage, daemon, MCP, source, or query change, read its
 `docs/atlas/` sheet and confirm the claims you rely on against current code.
@@ -106,7 +121,18 @@ refusal. When a broken state appears, find the code that produces it: remove
 a repair or maintenance path whose producer is gone, and enforce the missing
 invariant at the write boundary where the producer remains. Compatibility,
 legacy, deprecated, and transitional shapes are removal targets: enumerate
-their readers and writers and give each a replacement path.
+their readers and writers and give each a replacement path. Old provider
+wire formats are not legacy: the archive holds sessions in every format a
+provider ever emitted, and their parsers stay.
+
+Fix by subtraction. A correctness fix corrects or deletes the code that let
+the bad state happen; it does not add a checker, proof, census, receipt, or
+compensating pass beside that code. A request to show that an invariant holds
+is met by making the violating path impossible, not by a gate, baseline,
+ratchet, census, or generated report that watches for it. A replacement and
+the deletion of its predecessor land in the same change. A bead's acceptance
+criteria name the behavior that must hold, never a census, gate, receipt, or
+report that would prove it.
 
 An arbitrary limit that changes an outcome is a defect: a size or count cap
 that refuses, truncates, or drops valid input, and a timeout that turns slow
@@ -132,9 +158,11 @@ OriginSpec for declared artifact kinds and unbound import classification.
 coordinating mutations. A process-local write lease does not exclude external
 CLI or API writers; inspect the actual route before claiming a surface writes
 only through the daemon. Ingest runs acquire, parse, materialize, index.
-`DaemonConverger` drives ordered recovery and derivation stages
-(`make_default_convergence_stages`); hot-file deferral and `convergence_debt`
-hold retryable backlog.
+Derived products belong to the derivation kernel (`daemon/derivation.py`):
+it finds what is missing or stale by inspecting the output itself, so
+required work never depends on a retry ledger. The older ordered stages
+(`make_default_convergence_stages`) and `convergence_debt` are a predecessor
+to migrate into the kernel and delete, not a pattern to extend.
 
 ## Surfaces
 
@@ -153,10 +181,13 @@ hold retryable backlog.
 `docs/devtools.md` describe it (catalog in `devtools/command_catalog.py`; a new
 command needs its `CommandSpec` and `devtools render devtools-reference`).
 
-- Match verification to the changed behavior and consequence. For an ordinary
-  well-understood fix, use a brief delta review, imports/basic static checks,
-  or one discriminating behavioral check when useful. Batch broader regression
-  at meaningful integration milestones, not after every patch. Record known
+- Match verification to the changed behavior and consequence. A test that
+  stays wrongly red for a while costs almost nothing, because anyone can run
+  it later; agent time spent re-running suites is the expensive failure. For
+  an ordinary well-understood fix, use a brief delta review, imports/basic
+  static checks, or one discriminating behavioral check when useful. Batch
+  broader regression at meaningful integration milestones, not after every
+  patch, and never re-run a suite only to reconfirm a result. Record known
   failures and untested areas; unrelated fixture failures need not block a
   product fix. Preserve assertions and report the original run's outcome.
   Destructive changes, durable data-loss boundaries, and purchased-vector
@@ -164,8 +195,7 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
 - `devtools test <selection>` runs focused tests through the managed host
   pool; never run bare `pytest`. Workers use an explicit selection:
   `agentctl job start polylogue pytest_focused --workspace <checkout> -- <selection>`.
-  A bare worker `verify` wrapper supplies no selector and cannot run the
-  required-argument focused profile. The pre-push hook runs
+  The pre-push hook runs
   `devtools verify --quick` on the pushed HEAD; required hooks and hosted
   merge checks remain enforced. Reuse existing results while their relevant
   code is unchanged; task `verification_commands` are examples to reconcile
@@ -196,8 +226,7 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
 
 ## Code Review Rules
 
-Use `docs/review/codex-review-guide.md` for relevant invariants, severity and noise
-and the nested `AGENTS.md` beside each changed file.
+Use `docs/review/codex-review-guide.md` for relevant invariants, severity and noise.
 - A change to an interface, command, config key, schema, route, or file format
   updates every consumer (callers, CLI/MCP, tests, docs, generated references,
   configs, hooks) and deletes the predecessor in the same change; name a
@@ -205,8 +234,6 @@ and the nested `AGENTS.md` beside each changed file.
 - A compatibility path in a diff (shim, alias, fallback, dual read/write,
   deprecated wrapper) is a defect. A finding whose remedy keeps the old path,
   or migrates prior archive state into fresh v1, is noise.
-- A cap, timeout, or truncation that refuses or cuts valid input is a defect;
-  ask for paging or streaming, never a new limit.
 - A finding names a concrete input at the reviewed head and the wrong
   observable outcome; environment corruption below its integrity contract is
   out of scope.
@@ -220,10 +247,8 @@ protected `master`. The PR title is the conventional squash subject (72
 characters or fewer, imperative). The body has Summary, Problem (with
 evidence), Solution, Verification (exact commands and the line that matters),
 Self-review, and honest residuals. Before pushing, review the changed delta
-and its affected contracts; reuse the review of unchanged code. Report
-concrete findings and residuals briefly. The guide's checklist is a reference,
-not a required item-by-item narration or repeated review ceremony. Required
-repository review and merge protections still apply. Put no
-resolver keywords beside issue numbers unless the operator asks.
+and its affected contracts once; the guide's checklist is a reference, not a
+narration. Put no resolver keywords beside issue numbers unless the operator
+asks.
 release-please owns the version and changelog. Before writing "unified" or
 "complete", grep the diff and check both paths.
