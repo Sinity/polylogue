@@ -12,6 +12,7 @@ import pytest
 from devtools.measurement_receipts import emit_receipt
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import ValidationMode
+from polylogue.core.sql_settlement import retain_native_sql_lifetimes
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.runtime import require_free_threaded_runtime
 from polylogue.storage.derived.raw import NeutralRawPreparation, RawObservationDerivation, _parse_captured_neutral
@@ -44,20 +45,21 @@ async def _time_parse(
             # Source operands and immutable sidecar/schema context of its owner.
             from polylogue.storage.derived.raw import _neutral_artifact_key
 
-            artifact = _parse_captured_neutral(
-                raw_id,
-                captured,
-                _neutral_artifact_key(raw_id, page.operands[raw_id], ValidationMode.ADVISORY),
-                page.contexts[provider],
-                Path(page.scratch_owner.name),
-            )
-            try:
-                assert artifact.error is None and not artifact.deferred
-                return raw_id, tuple(
-                    session_revision_projection(session).session_hash.hex() for session in artifact.iter_sessions()
+            with retain_native_sql_lifetimes(Path(page.scratch_owner.name)):
+                artifact = _parse_captured_neutral(
+                    raw_id,
+                    captured,
+                    _neutral_artifact_key(raw_id, page.operands[raw_id], ValidationMode.ADVISORY),
+                    page.contexts[provider],
+                    Path(page.scratch_owner.name),
                 )
-            finally:
-                artifact.discard()
+                try:
+                    assert artifact.error is None and not artifact.deferred
+                    return raw_id, tuple(
+                        session_revision_projection(session).session_hash.hex() for session in artifact.iter_sessions()
+                    )
+                finally:
+                    artifact.discard()
 
         def measure() -> tuple[float, dict[str, tuple[str, ...]], int]:
             started = perf_counter()

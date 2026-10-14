@@ -145,6 +145,7 @@ def _merged_publication_ledger(receipts: tuple[object, ...]) -> tuple[dict[str, 
 def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Arm) -> _ArmRun:
     """Complete one replay configuration over an isolated clone of the sealed input."""
     archive_root = clone_sealed_arm(template, destination, sealed)
+    probe = FinishedBuildResourceProbe.start()
     cold_build: ColdBuildGeneration | None = None
     if arm.owned_inactive_generation:
         # The owned generation is the registered cold-build destination, as the
@@ -172,7 +173,6 @@ def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Ar
         ):
             pass
 
-    probe = FinishedBuildResourceProbe.start()
     try:
         run = replay_retained_components(archive_root, owned_generation=generation)
         if cold_build is not None:
@@ -294,7 +294,7 @@ def test_four_independent_arms_preserve_schema_census_and_shared_prefix_lineage(
             )
             assert (
                 conn.execute(
-                    "SELECT count(*) FROM session_links WHERE inheritance_mode = 'prefix-sharing' AND status = 'resolved'"
+                    "SELECT count(*) FROM session_links WHERE inheritance = 'prefix-sharing' AND resolved_dst_session_id IS NOT NULL"
                 ).fetchone()[0]
                 == 8
             )
