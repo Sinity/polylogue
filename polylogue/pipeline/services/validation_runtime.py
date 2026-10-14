@@ -7,6 +7,7 @@ from pathlib import Path
 
 from polylogue.archive.raw_payload import RawPayloadEnvelope, build_raw_payload_envelope
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
+from polylogue.core.compute_cancel import check_compute_cancelled, raise_if_operation_cancelled
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.logging import get_logger
 from polylogue.schemas.validator import PayloadValidation, SchemaValidator
@@ -122,6 +123,7 @@ def _validate_record_sync(
     raw_source = blob_store.blob_path(blob_ref)
 
     try:
+        check_compute_cancelled()
         envelope = _build_validation_envelope(
             raw_source,
             raw_record=raw_record,
@@ -131,6 +133,7 @@ def _validate_record_sync(
         malformed_detail = envelope.malformed_jsonl_detail
         payload_provider = envelope.provider
     except Exception as exc:
+        raise_if_operation_cancelled(exc)
         counts_delta["errors"] += 1
         return _ValidationOutcome(
             validation_status=ValidationStatus.FAILED,
@@ -215,6 +218,7 @@ def _validate_record_sync(
             if validation_results:
                 invalid_count = 0
                 for _sample, sample_result in validation_results:
+                    check_compute_cancelled()
                     if not sample_result.is_valid:
                         invalid_count += 1
                         collected_errors.extend(sample_result.errors[:2])
