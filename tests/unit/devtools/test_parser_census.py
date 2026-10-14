@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from devtools.parser_census import (
     OUTCOME_NO_SESSIONS,
     OUTCOME_PARSED,
     Census,
+    DenominatorMember,
     MemberCensus,
     ParserCensusError,
     build_census,
@@ -297,3 +299,128 @@ def test_member_payloads_round_trip_without_loss(corpus: Path) -> None:
 
     for member in census.members:
         assert MemberCensus.from_payload(member.to_payload()) == member
+
+
+def test_width_one_uses_the_thread_compute_owner(corpus: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import devtools.parser_census as parser_census
+
+    members, denominator = source_denominator(_sources(corpus))
+    owner_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    original = parser_census.census_member
+
+    def record_worker(member: DenominatorMember, *, max_member_bytes: int) -> MemberCensus:
+        worker_threads.append(threading.get_ident())
+        return original(member, max_member_bytes=max_member_bytes)
+
+    monkeypatch.setattr(parser_census, "census_member", record_worker)
+    build_census(members, denominator, workers=1)
+
+    assert worker_threads
+    assert all(thread_id != owner_thread for thread_id in worker_threads)
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_requested_width_bounds_ordered_shared_compute(
+    corpus: Path, monkeypatch: pytest.MonkeyPatch, workers: int
+) -> None:
+    import devtools.parser_census as parser_census
+    from polylogue.core import compute
+
+    members, denominator = source_denominator(_sources(corpus))
+    members = members[:4]
+    expected = [parser_census.census_member(member) for member in members]
+    adapter = compute.BoundedComputeAdapter(max_workers=3)
+    monkeypatch.setattr(compute, "compute_adapter", lambda: adapter)
+    original = parser_census.census_member
+    gate = threading.Barrier(workers)
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def collect(member: DenominatorMember, *, max_member_bytes: int) -> MemberCensus:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            gate.wait(timeout=5)
+            return original(member, max_member_bytes=max_member_bytes)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(parser_census, "census_member", collect)
+    try:
+        census = build_census(members, denominator, workers=workers)
+        assert census.members == tuple(expected)
+        assert census.workers == workers
+        assert peak == workers
+        assert adapter.snapshot().used_units == 0
+        assert adapter.submit(lambda: "still usable").future.result() == "still usable"
+    finally:
+        adapter.shutdown(wait=True)
+
+
+def test_census_failure_cancels_and_drains_its_admitted_sibling(corpus: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import devtools.parser_census as parser_census
+    from polylogue.core import compute
+
+    members, denominator = source_denominator(_sources(corpus))
+    members = members[:2]
+    adapter = compute.BoundedComputeAdapter(max_workers=3)
+    monkeypatch.setattr(compute, "compute_adapter", lambda: adapter)
+    gate = threading.Barrier(2)
+    drained = threading.Event()
+
+    def collect(member: DenominatorMember, *, max_member_bytes: int) -> MemberCensus:
+        del max_member_bytes
+        handle = compute.current_cancellation()
+        assert handle is not None
+        cancelled = threading.Event()
+        remove_listener = handle.add_listener(cancelled.set)
+        try:
+            gate.wait(timeout=5)
+            if member == members[0]:
+                raise RuntimeError("synthetic census failure")
+            assert cancelled.wait(5)
+            drained.set()
+            raise compute.DaemonOperationCancelled("sibling cancelled")
+        finally:
+            remove_listener()
+
+    monkeypatch.setattr(parser_census, "census_member", collect)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic census failure"):
+            build_census(members, denominator, workers=2)
+        assert drained.is_set()
+        assert adapter.snapshot().used_units == 0
+        assert adapter.snapshot().used_bytes == 0
+    finally:
+        adapter.shutdown(wait=True)
+
+
+def test_census_parent_cancellation_propagates_without_recording_a_parse_failure(
+    corpus: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import devtools.parser_census as parser_census
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel
+    from polylogue.sources import dispatch
+
+    members, denominator = source_denominator(_sources(corpus))
+    member = next(member for member in members if member.relative.endswith(".jsonl"))
+    cancellation = threading.Event()
+
+    def cancel_during_parse(*args: object, **kwargs: object) -> object:
+        cancellation.set()
+        check_compute_cancelled()
+        raise AssertionError("cancelled parser resumed")
+
+    monkeypatch.setattr(dispatch, "parse_stream_payload", cancel_during_parse)
+    token = compute_cancel.set(cancellation)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            parser_census.build_census((member,), denominator, workers=1)
+    finally:
+        compute_cancel.reset(token)

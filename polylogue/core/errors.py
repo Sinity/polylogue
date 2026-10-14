@@ -176,9 +176,9 @@ class SchemaSkewError(SchemaRefusalError):
         super().__init__(message)
 
     def __reduce__(self) -> tuple[type[SchemaSkewError], tuple[str, object, object, str | None]]:
-        # A worker process raises this across a process-pool boundary; the
-        # default exception pickling replays only ``args`` (the message) and
-        # the unpickle then fails, which the pool reports as a dead worker.
+        # Reconstruct the declared fields and optional remedy when serialized.
+        # BaseException.args contains only the rendered message, which cannot
+        # supply this exception's required constructor arguments.
         return (type(self), (self.tier, self.expected, self.found, self._explicit_remedy))
 
 

@@ -503,9 +503,8 @@ def carry_context(function: Callable[_P, _R]) -> Callable[_P, _R]:
     """Wrap ``function`` so it runs with the submitter's correlation fields only.
 
     Unlike :func:`propagate`, this carries no other context variable (write
-    authority stays with its owner) and the wrapper pickles, so it crosses a
-    process-pool boundary. The worker's own correlation is *replaced* for the
-    call: a reused executor thread that inherited an earlier submitter's
+    authority stays with its owner). The worker's own correlation is
+    *replaced* for the call: a reused executor thread that inherited an earlier submitter's
     context (``thread_inherit_context`` on the free-threaded build) cannot
     report that submitter's span.
     """
