@@ -305,7 +305,7 @@ def emit_empty_page(
     # the local ``empty`` state merely because this adapter has no rows to
     # render.  Local builders still decide ``empty`` when no outcome exists.
     outcome = envelope_outcome(envelope)
-    empty = {**envelope, "items": [], "total": 0, "outcome": outcome.to_dict()}
+    empty = {**envelope, "items": [], "total": envelope.get("total", 0), "outcome": outcome.to_dict()}
     if convergence_warning is not None:
         empty["archive_converging"] = True
         empty["convergence_warning"] = convergence_warning

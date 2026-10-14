@@ -1828,3 +1828,68 @@ def test_partial_mutation_count_is_not_inferred_from_the_part_page(remaining: in
     assert refusal.not_attempted == (1, 2)
     assert refusal.not_attempted_count == remaining
     assert refusal.affected_count == 1
+
+
+@pytest.mark.parametrize("selection", ["page", "reference", "exact"])
+def test_open_result_preserves_supplied_degraded_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selection: str
+) -> None:
+    from polylogue.cli import archive_query
+    from polylogue.surfaces.outcome import decide_outcome
+
+    config = Config(archive_root=tmp_path, db_path=tmp_path / "index.db", render_root=tmp_path, sources=[])
+    supplied = decide_outcome(matched=1, degraded=("archive_not_converged",))
+    session_id = "synthetic-session"
+    monkeypatch.setattr(archive_query, "load_effective_config", lambda _env: config)
+    monkeypatch.setattr(archive_query, "daemon_route_disabled", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        archive_query,
+        "dispatch_read",
+        lambda *_args, **_kwargs: ({"items": [{"id": session_id}], "total": 1, "outcome": supplied.to_dict()}, None),
+    )
+    monkeypatch.setattr(
+        archive_query,
+        "_transcript_or_page",
+        lambda *_args, **_kwargs: {"session_id": session_id, "outcome": supplied.to_dict()},
+    )
+    monkeypatch.setattr(archive_query, "_single_query_token_looks_like_ref", lambda _value: selection == "reference")
+    opened = []
+    monkeypatch.setattr(archive_query, "_open_session", lambda _env, selected, **_kwargs: opened.append(selected))
+    params = {"open_result": True, "output_format": "json"}
+    if selection == "reference":
+        params["query"] = ("synthetic-session",)
+    elif selection == "exact":
+        params["conv_id"] = session_id
+    with pytest.raises(SystemExit) as terminal:
+        _execute_archive_query_stdout(AppEnv(plain=True), RootModeRequest.from_params(params))
+    assert terminal.value.code == 1
+    assert opened == [session_id]
+
+
+@pytest.mark.parametrize("action", ["open_result", "stream"])
+def test_empty_open_and_stream_preserve_supplied_gap_and_unknown_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], action: str
+) -> None:
+    from polylogue.cli import archive_query
+    from polylogue.surfaces.outcome import decide_outcome
+
+    config = Config(archive_root=tmp_path, db_path=tmp_path / "index.db", render_root=tmp_path, sources=[])
+    supplied = decide_outcome(matched=0, degraded=("archive_not_converged",))
+    monkeypatch.setattr(archive_query, "load_effective_config", lambda _env: config)
+    monkeypatch.setattr(archive_query, "daemon_route_disabled", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        archive_query,
+        "dispatch_read",
+        lambda *_args, **_kwargs: ({"items": [], "total": None, "outcome": supplied.to_dict()}, None),
+    )
+    launcher = MagicMock(side_effect=AssertionError("empty selection reached launcher"))
+    monkeypatch.setattr(archive_query, "_open_session", launcher)
+    with pytest.raises(SystemExit) as terminal:
+        _execute_archive_query_stdout(
+            AppEnv(plain=True), RootModeRequest.from_params({action: True, "output_format": "json"})
+        )
+    assert terminal.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == supplied.to_dict()
+    assert payload["total"] is None
+    launcher.assert_not_called()

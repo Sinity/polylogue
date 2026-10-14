@@ -35,7 +35,7 @@ from polylogue.cli.lowering import aggregate_mode
 from polylogue.cli.query_contracts import QueryOutputSpec
 from polylogue.cli.query_output_contracts import QueryOutputDocument
 from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
-from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, OutcomeExit, emit_empty_page, maybe_subcommand_typo_hint
+from polylogue.cli.render.outcome import OutcomeExit, emit_empty_page, maybe_subcommand_typo_hint
 from polylogue.cli.render.rows import (
     TIMING_ENV,
     emit_rows,
@@ -47,7 +47,6 @@ from polylogue.cli.render.rows import (
 )
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.helpers import load_effective_config, mutation_refusal
-from polylogue.cli.shared.machine_errors import error_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.errors import FIRST_RUN_INDEX_GUIDANCE, ArchiveTierUnavailableError
@@ -628,6 +627,8 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     adapter chooses the operation, projects argv onto its payload (Seam A,
     :mod:`polylogue.cli.lowering`), and renders the result.
     """
+    from polylogue.cli.render.outcome import finish_supplied_outcome
+
     params = dict(request.params)
     _reject_unsupported_params(params)
     _validate_retrieval_params(params)
@@ -911,12 +912,15 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         opened = _transcript_or_page(
             config, transcript_ref, daemon_disabled=daemon_disabled, message_limit=1, certain=True
         )
+        if opened is None:
+            _fail(f"Session not found: {transcript_ref}")
         _open_session(
             env,
-            str((opened or {}).get("session_id") or transcript_ref),
+            str(opened.get("session_id") or transcript_ref),
             output_format=output_format,
             print_url=bool(params.get("print_url")),
         )
+        finish_supplied_outcome(OutcomeEnvelope.model_validate(opened["outcome"]))
         return
     if transcript_ref is not None:
         session = _transcript_or_page(
@@ -934,6 +938,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 return
             if params.get("open_result"):
                 _open_session(env, session_id, output_format=output_format, print_url=bool(params.get("print_url")))
+                finish_supplied_outcome(OutcomeEnvelope.model_validate(session["outcome"]))
                 return
             _emit_session_result(session, output_format=output_format, fields=fields, view=read_view)
             return
@@ -995,7 +1000,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
 
     if stream:
         if not matched_session_ids:
-            _fail("Stream found no matching session.")
+            emit_empty_page(dict(payload), output_format=output_format)
         _emit_stream(
             _read_session_windows(
                 config,
@@ -1008,15 +1013,14 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         return
     if params.get("open_result"):
         if not matched_session_ids:
-            if searching:
-                _fail("Open found no matching session.")
-            _emit_open_no_results(output_format=output_format, origin=origin)
+            emit_empty_page(dict(payload), output_format=output_format)
         _open_session(
             env,
             matched_session_ids[0],
             output_format=output_format,
             print_url=bool(params.get("print_url")),
         )
+        finish_supplied_outcome(OutcomeEnvelope.model_validate(payload["outcome"]))
         return
 
     if ranked:
@@ -1701,20 +1705,6 @@ def _emit_list_miss_if_field_syntax(
         output_format=output_format,
         typo_hint=typo_hint,
         diagnostics=_search_miss_diagnostics(env, compiled_spec, why=why),
-    )
-
-
-def _emit_open_no_results(*, output_format: str, origin: str | None) -> NoReturn:
-    if output_format == "json":
-        error_no_results("No sessions matched.").emit(exit_code=EMPTY_EXIT_CODE)
-    emit_empty_page(
-        {
-            "mode": "open",
-            "origin": origin,
-            "items": [],
-            "total": 0,
-        },
-        output_format=output_format,
     )
 
 
