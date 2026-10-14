@@ -344,7 +344,9 @@ def test_backup_verifier_refuses_artifact_source_fingerprint_mismatch(
     def copy_with_wrong_fingerprint(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[int, dict[str, object]]:
         size, fingerprint = original_backup(src, dst, archive_root_path=archive_root_path)
         if src.name == "user.db":
-            fingerprint = backup_mod._sqlite_source_fingerprint(other_db, snapshot_path=other_db, user_version=3)
+            fingerprint = backup_mod._sqlite_source_fingerprint(
+                other_db, snapshot_path=other_db, user_version=3, selected_metadata=other_db.stat()
+            )
         return size, fingerprint
 
     monkeypatch.setattr(backup_mod, "_backup_sqlite", copy_with_wrong_fingerprint)

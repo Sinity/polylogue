@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
+import shutil
 import sqlite3
 import stat
 import threading
@@ -25,6 +28,54 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.migration_runner import MigrationError, validate_migration_backup_manifest
 from tests.infra.storage_records import db_setup
+
+
+@pytest.mark.parametrize("replacement_point", ["open", "copy"])
+def test_public_backup_refuses_replacement_of_its_selected_physical_tier(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replacement_point: str
+) -> None:
+    db_setup(workspace_env)
+    source = workspace_env["archive_root"] / "user.db"
+    original_open = backup._open_backup_readonly_connection
+    readers: list[sqlite3.Connection] = []
+    selected_inode = source.stat().st_ino
+    replaced = False
+
+    def replace_selected() -> None:
+        nonlocal replaced
+        replacement = source.with_name("replacement.db")
+        shutil.copy2(source, replacement)
+        os.replace(replacement, source)
+        assert source.stat().st_ino != selected_inode
+        replaced = True
+
+    def open_snapshot(path: Path, **kwargs: Any) -> sqlite3.Connection:
+        selected_copy = path == source.resolve() and kwargs["timeout_class"] == "offline-bulk"
+        if selected_copy and replacement_point == "open":
+            replace_selected()
+        connection = original_open(path, **kwargs)
+        readers.append(connection)
+        if selected_copy and replacement_point == "copy":
+            original_backup = connection.backup
+
+            def replace_after_copy(target: sqlite3.Connection, **options: Any) -> None:
+                original_backup(target, **options)
+                replace_selected()
+
+            monkeypatch.setattr(connection, "backup", replace_after_copy)
+        return connection
+
+    monkeypatch.setattr(backup, "_open_backup_readonly_connection", open_snapshot)
+    with pytest.raises(OSError) as refused:
+        backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=True)
+    assert refused.value.errno == errno.ESTALE
+    assert replaced
+    assert not list((tmp_path / "backups").rglob("manifest.json"))
+    assert not list((tmp_path / "backups").rglob("verification-receipt.json"))
+    for reader in readers:
+        with pytest.raises(sqlite3.ProgrammingError):
+            reader.execute("SELECT 1")
+    assert not retained_native_sql_owners_on_current_thread()
 
 
 @pytest.mark.parametrize("later_commit", [False, True])
