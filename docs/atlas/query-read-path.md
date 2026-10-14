@@ -128,6 +128,16 @@ Session-level existential DSL filters stay independent of the semantic witness. 
 
 Exact root transcript reads preserve every bounded `session.read` page's outcome and lineage verdict in the `root-session` JSON document. A missing inherited prefix remains degraded after subsequent successful pages; root message streams report that supplied verdict on stderr and use its exit status. Document exports deliver to named file destinations before reporting an empty or degraded terminal status. `read --all --view summary` always selects the summary-list projection, including when its selection names one exact session ID.
 
+The CLI messages view stages its selected message windows in a private
+descriptor before emitting any format. Semantic cards share the explicit
+full-value builder's extraction algorithm; a private SQLite index pairs tool
+occurrences by FIFO coordinates and retains contiguous empty-thinking notices
+without collecting their sources in Python. Notice and entry cursors borrow
+that read's lifetime and close on cancellation or completed rendering. JSON,
+NDJSON and Markdown finish in a private output descriptor before delivery.
+The explicit full-value semantic transcript and placement APIs still return
+their complete values.
+
 Complete CLI transcripts stage each bounded message page in a private descriptor
 before reading the next page. Their header and repeatable message iterator feed
 the same semantic projection, terminal classifier, and renderer used by the

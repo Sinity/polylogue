@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable, Iterator
 
 from polylogue.rendering.semantic_card_models import (
     CardOutcomeState,
@@ -11,6 +11,7 @@ from polylogue.rendering.semantic_card_models import (
     SemanticCardPreview,
     SemanticNoticeKind,
     SemanticTranscript,
+    SemanticTranscriptEntry,
     TranscriptNotice,
     TranscriptProse,
 )
@@ -32,20 +33,40 @@ def _printable(text: str) -> str:
     )
 
 
-def render_semantic_transcript_markdown(transcript: SemanticTranscript) -> str:
-    """Render one ordered semantic transcript without reclassification."""
+def semantic_transcript_markdown_chunks(entries: Iterable[SemanticTranscriptEntry]) -> Generator[str, None, None]:
+    """Stream completed entries, including disk-backed contiguous notices."""
 
-    rendered: list[str] = []
-    for entry in transcript.entries:
-        if entry.card is not None:
-            rendered.append(render_semantic_card_markdown(entry.card))
-        elif entry.prose is not None:
-            rendered.append(_render_prose(entry.prose))
-        elif entry.notice is not None:
-            rendered.append(_render_notice(entry.notice))
-    if not rendered:
-        return ""
-    return _printable("\n\n---\n\n".join(rendered).rstrip() + "\n")
+    def chunks(entry: SemanticTranscriptEntry, *, final: bool) -> Iterator[str]:
+        if entry.notice is not None:
+            yield from _notice_chunks(entry.notice)
+        else:
+            if entry.card is not None:
+                rendered = render_semantic_card_markdown(entry.card)
+            else:
+                assert entry.prose is not None
+                rendered = _render_prose(entry.prose)
+            yield _printable(rendered.rstrip() if final else rendered)
+
+    iterator = iter(entries)
+    try:
+        pending = next(iterator, None)
+        if pending is None:
+            return
+        for entry in iterator:
+            yield from chunks(pending, final=False)
+            yield "\n\n---\n\n"
+            pending = entry
+        yield from chunks(pending, final=True)
+        yield "\n"
+    finally:
+        close = getattr(iterator, "close", None)
+        if callable(close):
+            close()
+
+
+def render_semantic_transcript_markdown(transcript: SemanticTranscript) -> str:
+    """Render the explicit full-input document through the shared chunk owner."""
+    return "".join(semantic_transcript_markdown_chunks(transcript.entries))
 
 
 def render_semantic_card_markdown(card: SemanticCard) -> str:
@@ -136,20 +157,29 @@ def _render_prose(prose: TranscriptProse) -> str:
     return f"{label} · {rendered_refs}\n\n{body}"
 
 
-def _render_notice(notice: TranscriptNotice) -> str:
+def _notice_chunks(notice: TranscriptNotice) -> Iterator[str]:
     if notice.kind is SemanticNoticeKind.EMPTY_THINKING:
         noun = "typed block" if notice.count == 1 else "typed blocks"
         heading = f"**thinking absent · {notice.count} {noun}**"
     else:  # pragma: no cover - closed enum keeps this defensive branch honest
         heading = f"**{notice.kind.value} · {notice.count} sources**"
-    refs: list[str] = []
-    for source in notice.sources:
-        coordinate = source.block_id or f"index:{source.block_index}"
-        ref = f"message:{source.message_id}/block:{coordinate}/type:{source.block_type}"
-        if source.inherited_prefix is not None:
-            ref += f"/inherited:{str(source.inherited_prefix).lower()}"
-        refs.append(ref)
-    return heading + "\n\n- evidence: " + ", ".join(_inline_code(ref) for ref in refs)
+    yield _printable(heading + "\n\n- evidence: ")
+    first = True
+    sources = iter(notice.sources)
+    try:
+        for source in sources:
+            coordinate = source.block_id or f"index:{source.block_index}"
+            ref = f"message:{source.message_id}/block:{coordinate}/type:{source.block_type}"
+            if source.inherited_prefix is not None:
+                ref += f"/inherited:{str(source.inherited_prefix).lower()}"
+            if not first:
+                yield ", "
+            yield _printable(_inline_code(ref))
+            first = False
+    finally:
+        close = getattr(sources, "close", None)
+        if callable(close):
+            close()
 
 
 def _append_source_bit(bits: list[str], label: str, value: str | None) -> None:
@@ -222,4 +252,5 @@ __all__ = [
     "render_semantic_card_markdown",
     "render_semantic_cards_markdown",
     "render_semantic_transcript_markdown",
+    "semantic_transcript_markdown_chunks",
 ]

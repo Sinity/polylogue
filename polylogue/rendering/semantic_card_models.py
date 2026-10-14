@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
@@ -348,7 +349,7 @@ class TranscriptNotice:
     """Compact operator presentation that retains every source coordinate."""
 
     kind: SemanticNoticeKind
-    sources: tuple[TranscriptNoticeSource, ...]
+    sources: Sequence[TranscriptNoticeSource]
 
     def __post_init__(self) -> None:
         if not self.sources:

@@ -12,17 +12,17 @@ import click
 
 from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
 from polylogue.cli.operation_kernel import OperationFailedError, OperationKernelError
+from polylogue.cli.output_stream import output_chunks, output_stream
 from polylogue.cli.read_dispatch import ServedBy, daemon_route_disabled, dispatch_read
 from polylogue.cli.root_request import RootModeRequest
+from polylogue.cli.semantic_transcript import SemanticTranscriptRecords, semantic_transcript_records
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.operations.authority import authority_for_config
 from polylogue.rendering.semantic_card_models import LineageDescriptor
-from polylogue.rendering.semantic_cards import (
-    build_semantic_transcript,
-    lineage_descriptor_from_session,
-)
-from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
+from polylogue.rendering.semantic_cards import lineage_descriptor_from_session
+from polylogue.rendering.semantic_markdown import semantic_transcript_markdown_chunks
+from polylogue.rendering.transcript import message_document_chunks
 from polylogue.surfaces.outcome import OutcomeEnvelope, lineage_page_outcome, render_outcome_line
 from polylogue.surfaces.payloads import SessionMessagesResponsePayload, model_json_document
 
@@ -217,58 +217,87 @@ def run_messages(
     config = cast(Config, request.config())
     daemon_disabled = daemon_route_disabled(flag=bool(request.params.get("no_daemon")))
 
-    windows: list[_MessageWindow] = []
-    executor_identity: str | None = None
-    try:
-        for window in read_message_windows(
-            config,
-            session_id,
+    with semantic_transcript_records() as records:
+        first: _MessageWindow | None = None
+        last: _MessageWindow | None = None
+        executor_identity: str | None = None
+        try:
+            for window in read_message_windows(
+                config,
+                session_id,
+                limit=limit,
+                offset=offset,
+                full=full,
+                continuation=continuation,
+                daemon_disabled=daemon_disabled,
+                around=around,
+                selection_epoch=request.selection_epoch,
+            ):
+                if executor_identity is not None and window.served_by.identity != executor_identity:
+                    raise OperationFailedError(
+                        "executor_changed", "The read executor changed while composing message windows; retry the read."
+                    )
+                executor_identity = window.served_by.identity
+                if first is None:
+                    first = dataclasses.replace(window, rows=[])
+                last = dataclasses.replace(window, rows=[])
+                for row in window.rows:
+                    records.append(row)
+        except OperationKernelError as exc:
+            message_read_failure(env, exc, session_id=session_id)
+            return None
+        if first is None or last is None:
+            return None
+        return _render_message_records(
+            env,
+            request,
+            config=config,
+            session_id=session_id,
+            records=records,
+            first=first,
+            last=last,
             limit=limit,
-            offset=offset,
             full=full,
-            continuation=continuation,
-            daemon_disabled=daemon_disabled,
-            around=around,
-            selection_epoch=request.selection_epoch,
-        ):
-            if executor_identity is not None and window.served_by.identity != executor_identity:
-                raise OperationFailedError(
-                    "executor_changed",
-                    "The read executor changed while composing message windows; retry the read.",
-                )
-            executor_identity = window.served_by.identity
-            windows.append(window)
-    except OperationKernelError as exc:
-        message_read_failure(env, exc, session_id=session_id)
-        return None
-    if not windows:
-        return None
+            output_format=output_format,
+            started_at=started_at,
+        )
 
-    last = windows[-1]
-    messages: list[Mapping[str, object]] = [row for window in windows for row in window.rows]
-    session = windows[0].session
+
+def _render_message_records(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    config: Config,
+    session_id: str,
+    records: SemanticTranscriptRecords,
+    first: _MessageWindow,
+    last: _MessageWindow,
+    limit: int,
+    full: bool,
+    output_format: str | None,
+    started_at: float,
+) -> OutcomeEnvelope:
+    session = first.session
     # A composed read delivers exactly the rows it gathered; a bounded page
     # delivers the window it asked for.  Reporting the request's own bound for
     # a composed read would name a window nobody asked for.
-    effective_limit = len(messages) if full else limit
+    effective_limit = records.count if full else limit
     outcome = message_page_outcome(
-        matched=len(messages), complete=last.lineage_complete, truncation_reason=last.lineage_truncation_reason
+        matched=records.count, complete=last.lineage_complete, truncation_reason=last.lineage_truncation_reason
     )
     if bool(request.params.get("verbose")):
         click.echo(f"served-by: {last.served_by.line()}", err=True)
 
     fmt = output_format or "markdown"
     if fmt == "json":
-        import json as _json
-
         # Finite machine-output contract (#1818): one JSON value.
         payload = model_json_document(
             SessionMessagesResponsePayload(
                 session_id=session_id,
-                messages=tuple(cast("Any", row) for row in messages),
+                messages=(),
                 total=last.total,
                 limit=effective_limit,
-                offset=windows[0].offset,
+                offset=first.offset,
                 next_offset=last.next_offset,
                 continuation=last.continuation,
                 lineage_complete=last.lineage_complete,
@@ -284,7 +313,12 @@ def run_messages(
         # env.ui.print: the Rich console defaults markup=True and would
         # interpret/strip bracket sequences like "[bold]" inside message
         # text, corrupting the exact bytes json.dumps produced (#1818).
-        click.echo(_json.dumps(payload, indent=2))
+        with output_stream() as output:
+            for chunk in message_document_chunks(payload, records.records(), "json"):
+                output.write(chunk)
+            output.write("\n")
+            for chunk in output_chunks(output):
+                click.echo(chunk, nl=False)
         return outcome
     if fmt == "ndjson":
         import json as _json
@@ -294,23 +328,34 @@ def run_messages(
         # downstream consumers do not need an out-of-band envelope.
         # Raw click.echo (not env.ui.print) so Rich markup never mangles
         # message text inside the JSON document.
-        for row in messages:
-            click.echo(_json.dumps({"session_id": session_id, **dict(row)}))
+        with output_stream() as output:
+            for row in records.records():
+                for chunk in _json.JSONEncoder().iterencode({"session_id": session_id, **row}):
+                    output.write(chunk)
+                output.write("\n")
+            for chunk in output_chunks(output):
+                click.echo(chunk, nl=False)
         return outcome
 
-    rendered = render_semantic_transcript_markdown(
-        build_semantic_transcript(
-            messages,
-            session_id=session_id,
-            lineage=_message_lineage(session, complete=last.lineage_complete, reason=last.lineage_truncation_reason),
-            provider_family=cast("str | None", session.get("origin")) or None,
-        )
-    )
-    if rendered:
-        # ``read --view messages --to file|clipboard`` captures click.echo at
-        # the existing destination adapter. Rich output would bypass that
-        # contract and reinterpret markup.
-        click.echo(rendered, nl=False)
+    from contextlib import closing
+
+    with (
+        output_stream() as output,
+        closing(
+            records.entries(
+                session_id=session_id,
+                lineage=_message_lineage(
+                    session, complete=last.lineage_complete, reason=last.lineage_truncation_reason
+                ),
+                provider_family=cast("str | None", session.get("origin")) or None,
+            )
+        ) as entries,
+    ):
+        with closing(semantic_transcript_markdown_chunks(entries)) as chunks:
+            for chunk in chunks:
+                output.write(chunk)
+        for chunk in output_chunks(output):
+            click.echo(chunk, nl=False)
     return outcome
 
 

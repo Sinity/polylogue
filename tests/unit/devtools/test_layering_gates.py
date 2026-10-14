@@ -1439,3 +1439,25 @@ def sql_scope_reader(conn):
     assert "class_sql_reader" not in observed
     assert "bare_module_reader" not in observed
     assert not any("." in name for name in observed)
+
+
+def test_semantic_transcript_census_admits_only_scratch_writes(tmp_path: Path) -> None:
+    """The actual CLI scratch owner cannot acquire an archive write permission."""
+    rel = "polylogue/cli/semantic_transcript.py"
+    declarations = json.loads((_REPO_ROOT / "docs/plans/writer-module-census-baseline.json").read_text())
+    declaration = next(item for item in declarations if item["file"] == rel)
+    assert declaration == {"file": rel, "tiers": [], "authority": "scratch"}
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    source = (_REPO_ROOT / rel).read_text()
+    path.write_text(source)
+    policy = _census_policy(tmp_path, [declaration])
+    assert verify_layering._collect_writer_module_census_violations(tmp_path, policy) == []
+    path.write_text(
+        source
+        + '\n\ndef unexpected_archive_write(connection):\n    connection.execute("INSERT INTO sessions (native_id) VALUES (?)")\n'
+    )
+    violations = verify_layering._collect_writer_module_census_violations(tmp_path, policy)
+    assert [(item["file"], item["rule"], item["tiers"]) for item in violations] == [
+        (rel, "writer_module_scratch_archive_tier_mutation", ["index"])
+    ]
