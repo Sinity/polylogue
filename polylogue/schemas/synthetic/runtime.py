@@ -508,11 +508,13 @@ def _walk_object(
     if skip_keys:
         candidate_keys -= skip_keys
 
-    if self._relation_solver.mutual_exclusions and not self._coverage_witness_mode:
+    if self._relation_solver.mutual_exclusions and (not self._coverage_witness_mode or plan is not None):
         required = schema_required | {
             key for key in candidate_keys if plan is not None and plan.requires_field(plan_path + "." + key)
         }
-        candidate_keys = self._relation_solver.filter_mutually_exclusive(path, candidate_keys, rng, required=required)
+        candidate_keys = self._relation_solver.filter_mutually_exclusive(
+            plan_path, candidate_keys, rng, required=required
+        )
 
     ordered_keys = list(chain(properties, sorted(candidate_keys - properties.keys())))
     if plan is not None:

@@ -814,7 +814,8 @@ def generate_coverage_witnesses(
         plan_index: _type_choice_witness_groups(choices) for plan_index, choices in choices_by_plan.items()
     }
     prepared_schema = cast("SchemaRecord", clone_finite_json(corpus.schema))
-    _force_coverage_frequencies(prepared_schema)
+    if corpus.workload_profile is None:
+        _force_coverage_frequencies(prepared_schema)
     plan_type_choices = {
         index: {
             key: value
