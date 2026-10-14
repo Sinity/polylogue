@@ -792,10 +792,11 @@ def _raw_materialization_debt_row(
         severity = "warning"
         status = "actionable"
         stage = "raw-authority"
-        summary = f"{count} {origin} selected representative(s) need materialization and retain conflict"
+        summary = f"{count} {origin} raw artifact(s) need representative materialization and retain conflict"
         details = (
             "Source retained a selected semantic representative and conflicting original observations. "
-            "The active Index has no session from this raw. Convergence must publish the representative; "
+            "The active Index does not match every selected membership's raw, identity and content. "
+            "Convergence must publish the missing representatives; "
             "the unresolved alternatives remain conflict debt afterwards."
         )
         actions = (ArchiveDebtActionPayload(label="Run daemon convergence", command=("polylogued", "run")),)
