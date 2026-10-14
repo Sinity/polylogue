@@ -13,6 +13,9 @@ from polylogue.schemas.field_stats.models import FilenameWidthStats, PointerShap
 from polylogue.schemas.record_structure import (
     CODEX_PUBLIC_MESSAGE_ROLES,
     NATIVE_CODEX_TOOL_VALUE_FIELDS,
+    PUBLIC_CLAUDE_TOOL_INPUT_FIELDS,
+    PUBLIC_CLAUDE_TOOL_NAMES,
+    PUBLIC_CLAUDE_TOOL_RESULT_FIELDS,
     PUBLIC_CONTENT_BODY_FIELDS,
     content_prefix_kind,
     initial_content_prefix,
@@ -492,6 +495,8 @@ class PublicRecordPlan:
         self.graph_values: dict[str, str | None] = {}
         self.string_exclusions: dict[str, frozenset[str]] = {}
         self.tool_syntax: dict[str, GeneratedString] = {}
+        self.tool_classes: dict[str, str] = {}
+        self.record_tool_class: str | None = None
         self.tool_content_types: dict[str, frozenset[str]] = {}
         self.tool_pointer_fields: dict[str, bool] = {}
         self.tool_widths: dict[str, int] = {}
@@ -749,12 +754,36 @@ class PublicRecordPlan:
         if not isinstance(rows, list) or not rows:
             raise ValueError("original dispatcher field forms are missing; re-infer the package")
         weights: list[int] = []
+        eligible: list[SchemaRecord] = []
+        operands = self.content.get("tool_operands")
+        result_rows = operands.get("tool_result") if isinstance(operands, dict) else None
         for row in rows:
             if not isinstance(row, dict) or not isinstance(row.get("fields"), dict):
                 raise ValueError("original dispatcher field form is malformed")
+            tool_class = row.get("tool_class")
+            if not isinstance(tool_class, str) or tool_class and tool_class not in PUBLIC_CLAUDE_TOOL_NAMES | {"mixed"}:
+                raise ValueError("dispatcher tool class contains an undeclared public name")
+            if isinstance(result_rows, list) and result_rows:
+                supported = False
+                for operand in result_rows:
+                    if not isinstance(operand, dict):
+                        raise ValueError("tool relation evidence is malformed")
+                    _, _, _, relation, prior_mode, prior_count = _tool_operand_coordinates(operand, "tool_result")
+                    if relation in {"new", "missing"} or self.owner.tool_identity_count(
+                        relation, prior_mode, prior_count, tool_class=None if tool_class == "mixed" else tool_class
+                    ):
+                        supported = True
+                        break
+                if not supported:
+                    continue
+            eligible.append(row)
             weights.append(_count(row.get("count")))
-        selected = rng.choices(rows, weights=weights, k=1)[0]
+        if not eligible:
+            raise ValueError("dispatcher form has no matching original generated call class")
+        selected = rng.choices(eligible, weights=weights, k=1)[0]
         assert isinstance(selected, dict)
+        selected_class = str(selected["tool_class"])
+        self.record_tool_class = selected_class if result_rows and selected_class != "mixed" else None
         from polylogue.schemas.generation.workload_profiles import AgentChildCounts
 
         counts = AgentChildCounts.from_payload(selected.get("child_count_joint"))
@@ -1110,6 +1139,7 @@ class PublicRecordPlan:
                 prior_mode if self.provider == "claude-code" else None,
                 prior_count if self.provider == "claude-code" else None,
                 None if width_support is None else tuple(width_support),
+                self.record_tool_class if kind == "tool_result" else None,
             ):
                 continue
             if relation == "new" and not self._new_tool_field_is_supported(path + "." + str(field)):
@@ -1167,6 +1197,7 @@ class PublicRecordPlan:
         elif mode:
             raise ValueError("opaque content shape belongs to its declared tool-result wire")
         native_forms = self.content.get("native_tool_field_forms")
+        result_class_filter = self.record_tool_class
         if (
             self.provider == "codex"
             and kind in {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
@@ -1229,7 +1260,114 @@ class PublicRecordPlan:
                     self.required_body_fields.add(target)
                 else:
                     self.absent.add(target)
+        elif self.provider == "claude-code" and kind == "tool_use":
+            forms = native_forms.get(kind) if isinstance(native_forms, dict) else None
+            if not isinstance(forms, list) or not forms or any(not isinstance(form, dict) for form in forms):
+                raise ValueError("Claude tool input forms are missing; re-infer the package")
+            input_forms = [form for form in forms if isinstance(form, dict)]
+            selected = rng.choices(input_forms, weights=[_count(form.get("count")) for form in input_forms], k=1)[0]
+            syntax, fields = selected.get("syntax"), selected.get("fields")
+            if (
+                not isinstance(syntax, dict)
+                or not isinstance(fields, list)
+                or any(not isinstance(field, str) or field not in PUBLIC_CLAUDE_TOOL_INPUT_FIELDS for field in fields)
+                or len(fields) != len(set(fields))
+            ):
+                raise ValueError("Claude tool input form contains an undeclared field")
+            if syntax:
+                name = syntax.get("name")
+                input_mode = syntax.get("input_mode")
+                if (
+                    not isinstance(name, str)
+                    or name not in PUBLIC_CLAUDE_TOOL_NAMES
+                    or set(syntax) != {"name", "input_mode"}
+                    or not isinstance(input_mode, str)
+                    or input_mode not in {"absent", "null", "object", "array", "string", "other"}
+                ):
+                    raise ValueError("Claude tool input form contains undeclared public syntax")
+                self.tool_syntax[path + ".name"] = name
+                self.tool_classes[path + ".id"] = name
+                self.required_body_fields.add(path + ".name")
+                input_path = path + ".input"
+                if input_mode == "absent":
+                    self.absent.add(input_path)
+                elif input_mode == "null":
+                    self.scalars[input_path] = None
+                else:
+                    self.tool_content_types[input_path] = frozenset(
+                        {"boolean", "integer", "number"} if input_mode == "other" else {str(input_mode)}
+                    )
+                    if input_mode == "object":
+                        for input_field in PUBLIC_CLAUDE_TOOL_INPUT_FIELDS:
+                            target = input_path + "." + input_field
+                            if input_field in fields:
+                                self.required_body_fields.add(target)
+                            else:
+                                self.absent.add(target)
+        elif self.provider == "claude-code" and kind == "tool_result":
+            forms = native_forms.get(kind) if isinstance(native_forms, dict) else None
+            if not isinstance(forms, list) or not forms:
+                raise ValueError("Claude tool result forms are missing; re-infer the package")
+            result_forms: list[SchemaRecord] = []
+            result_weights: list[int] = []
+            for form in forms:
+                if not isinstance(form, dict) or not isinstance(form.get("syntax"), dict):
+                    raise ValueError("Claude result form is malformed")
+                syntax = form["syntax"]
+                assert isinstance(syntax, dict)
+                name = syntax.get("name")
+                if not isinstance(name, str) or name and name not in PUBLIC_CLAUDE_TOOL_NAMES:
+                    raise ValueError("Claude result form contains an undeclared public call class")
+                if (
+                    form.get("result_mode") == mode
+                    and (self.record_tool_class is None or name == self.record_tool_class)
+                    and (
+                        relation not in {"call", "result", "both"}
+                        or self.owner.tool_identity_count(
+                            relation,
+                            str(row["prior_result_mode"]),
+                            selected_count,
+                            None if width_support is None else tuple(width_support),
+                            name,
+                        )
+                    )
+                ):
+                    result_forms.append(form)
+                    result_weights.append(_count(form.get("count")))
+            if not result_forms:
+                raise ValueError("Claude result form has no original matching call class")
+            selected = rng.choices(result_forms, weights=result_weights, k=1)[0]
+            syntax, fields = selected["syntax"], selected.get("fields")
+            assert isinstance(syntax, dict)
+            result_class_filter = str(syntax["name"])
+            envelope_mode = syntax.get("envelope_mode")
+            if (
+                set(syntax) != {"name", "envelope_mode"}
+                or not isinstance(envelope_mode, str)
+                or envelope_mode not in {"absent", "null", "object", "array", "string", "other"}
+                or not isinstance(fields, list)
+                or any(not isinstance(field, str) or field not in PUBLIC_CLAUDE_TOOL_RESULT_FIELDS for field in fields)
+                or len(fields) != len(set(fields))
+            ):
+                raise ValueError("Claude result form contains undeclared syntax")
+            if envelope_mode == "absent":
+                self.absent.add("$.toolUseResult")
+            elif envelope_mode == "null":
+                self.scalars["$.toolUseResult"] = None
+            else:
+                self.tool_content_types["$.toolUseResult"] = frozenset(
+                    {"boolean", "integer", "number"} if envelope_mode == "other" else {envelope_mode}
+                )
+                if envelope_mode == "object":
+                    for result_field in PUBLIC_CLAUDE_TOOL_RESULT_FIELDS:
+                        target = "$.toolUseResult." + result_field
+                        if result_field in fields:
+                            self.required_body_fields.add(target)
+                        else:
+                            self.absent.add(target)
         coordinate = path + "." + field
+        if self.provider == "claude-code" and coordinate not in self.tool_classes:
+            self.tool_classes[coordinate] = result_class_filter or ""
         if relation == "missing":
             self.owner.observe_missing_tool_identity(event)
         if presence == "absent":
@@ -1248,6 +1386,7 @@ class PublicRecordPlan:
                     str(row["prior_result_mode"]) if self.provider == "claude-code" else None,
                     selected_count if self.provider == "claude-code" else None,
                     None if width_support is None else tuple(width_support),
+                    result_class_filter if kind == "tool_result" else None,
                 )
                 if relation != "new"
                 else (None, None)
@@ -1284,6 +1423,8 @@ class PublicRecordPlan:
             coordinate for coordinate in tuple(self.required_body_fields) if coordinate.startswith(path + ".")
         )
         for mapping in (
+            self.tool_syntax,
+            self.tool_classes,
             self.tool_content_types,
             self.tool_pointer_fields,
             self.tool_widths,
@@ -1329,7 +1470,9 @@ class PublicRecordPlan:
             return
         if not isinstance(value, str | SampledText | JoinedText) or not len(value):
             raise ValueError("tool relation requires its measured nonempty identity")
-        self.owner.observe_tool_identity(value, selected[0], selected[1], schema, selected[5])
+        self.owner.observe_tool_identity(
+            value, selected[0], selected[1], schema, selected[5], self.tool_classes.get(path)
+        )
         self.tool_fields[path] = selected[0], selected[1], selected[2], value, schema, selected[5]
 
     def requires_field(self, path: str) -> bool:

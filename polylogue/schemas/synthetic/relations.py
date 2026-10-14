@@ -124,7 +124,7 @@ class ForeignKeyGraph:
                     "tool_use_id TEXT NOT NULL) STRICT, WITHOUT ROWID"
                 )
                 connection.execute(
-                    "CREATE TABLE generated_tool_identities(value_json TEXT PRIMARY KEY,calls INTEGER NOT NULL,results INTEGER NOT NULL,schema_json TEXT NOT NULL,first_event TEXT NOT NULL,result_mode TEXT NOT NULL) STRICT, WITHOUT ROWID"
+                    "CREATE TABLE generated_tool_identities(value_json TEXT PRIMARY KEY,calls INTEGER NOT NULL,results INTEGER NOT NULL,schema_json TEXT NOT NULL,first_event TEXT NOT NULL,result_mode TEXT NOT NULL,tool_class TEXT NOT NULL) STRICT, WITHOUT ROWID"
                 )
                 # Keep inventory eligibility on a covering native index. The
                 # original table also retains schema payloads; repeated count
@@ -132,7 +132,7 @@ class ForeignKeyGraph:
                 for relation, predicate in _TOOL_RELATION_PREDICATES.items():
                     connection.execute(
                         f"CREATE INDEX generated_tool_inventory_{relation} ON generated_tool_identities("
-                        "value_json,result_mode,calls,results,generated_count_bucket(results),"
+                        "value_json,result_mode,tool_class,calls,results,generated_count_bucket(results),"
                         "generated_string_length(value_json)) WHERE " + predicate
                     ).close()
                 connection.execute(
@@ -287,12 +287,14 @@ class ForeignKeyGraph:
         prior_result_mode: str | None = None,
         prior_count_bucket: int | None = None,
         widths: tuple[int, ...] | None = None,
+        tool_class: str | None = None,
     ) -> int:
         predicate = _TOOL_RELATION_PREDICATES[relation]
         cursor = self._live_tool_owner().execute(
             "SELECT count(*) FROM generated_tool_identities WHERE "
             + predicate
             + (" AND result_mode=?" if prior_result_mode is not None else "")
+            + (" AND tool_class=?" if tool_class is not None else "")
             + (" AND generated_count_bucket(results)=?" if prior_count_bucket is not None else "")
             + (
                 " AND generated_string_length(value_json) IN (SELECT value FROM json_each(?))"
@@ -300,6 +302,7 @@ class ForeignKeyGraph:
                 else ""
             ),
             (() if prior_result_mode is None else (prior_result_mode,))
+            + (() if tool_class is None else (tool_class,))
             + (() if prior_count_bucket is None else (prior_count_bucket,))
             + (() if widths is None else (json.dumps(widths),)),
         )
@@ -317,15 +320,17 @@ class ForeignKeyGraph:
         prior_result_mode: str | None = None,
         prior_count_bucket: int | None = None,
         widths: tuple[int, ...] | None = None,
+        tool_class: str | None = None,
     ) -> tuple[GeneratedString, SchemaRecord]:
         predicate = _TOOL_RELATION_PREDICATES[relation]
-        count = self.tool_identity_count(relation, prior_result_mode, prior_count_bucket, widths)
+        count = self.tool_identity_count(relation, prior_result_mode, prior_count_bucket, widths, tool_class)
         if not count:
             raise ValueError("tool relation has no original eligible identity")
         cursor = self._live_tool_owner().execute(
             "SELECT value_json FROM generated_tool_identities WHERE "
             + predicate
             + (" AND result_mode=?" if prior_result_mode is not None else "")
+            + (" AND tool_class=?" if tool_class is not None else "")
             + (" AND generated_count_bucket(results)=?" if prior_count_bucket is not None else "")
             + (
                 " AND generated_string_length(value_json) IN (SELECT value FROM json_each(?))"
@@ -334,6 +339,7 @@ class ForeignKeyGraph:
             )
             + " ORDER BY value_json LIMIT 1 OFFSET ?",
             (() if prior_result_mode is None else (prior_result_mode,))
+            + (() if tool_class is None else (tool_class,))
             + (() if prior_count_bucket is None else (prior_count_bucket,))
             + (() if widths is None else (json.dumps(widths),))
             + (rng.randrange(count),),
@@ -358,22 +364,28 @@ class ForeignKeyGraph:
         return _string_from_state(json.loads(selected)), json.loads(row[0])
 
     def observe_tool_identity(
-        self, value: GeneratedString, event: str, relation: str, schema: SchemaRecord, result_mode: str = ""
+        self,
+        value: GeneratedString,
+        event: str,
+        relation: str,
+        schema: SchemaRecord,
+        result_mode: str = "",
+        tool_class: str | None = None,
     ) -> None:
         state = json.dumps(_string_state(value), separators=(",", ":"), ensure_ascii=True)
         cursor = self._live_tool_owner().execute(
-            "SELECT calls,results,result_mode FROM generated_tool_identities WHERE value_json=?", (state,)
+            "SELECT calls,results,result_mode,tool_class FROM generated_tool_identities WHERE value_json=?", (state,)
         )
         try:
             before = cursor.fetchone()
         finally:
             cursor.close()
-        calls, results, prior_mode = (0, 0, "") if before is None else before
+        calls, results, prior_mode, prior_class = (0, 0, "", "") if before is None else before
         actual = "both" if calls and results else "call" if calls else "result" if results else "new"
         if actual != relation:
             raise ValueError("sampled tool identity contradicts the selected original relation")
         self._live_tool_owner().execute(
-            "INSERT INTO generated_tool_identities VALUES (?,?,?,?,?,?) ON CONFLICT(value_json) DO UPDATE SET calls=excluded.calls,results=excluded.results,result_mode=excluded.result_mode",
+            "INSERT INTO generated_tool_identities VALUES (?,?,?,?,?,?,?) ON CONFLICT(value_json) DO UPDATE SET calls=excluded.calls,results=excluded.results,result_mode=excluded.result_mode,tool_class=excluded.tool_class",
             (
                 state,
                 calls + (event == "call"),
@@ -381,6 +393,7 @@ class ForeignKeyGraph:
                 json.dumps(schema, ensure_ascii=True, separators=(",", ":")),
                 event,
                 result_mode if event == "result" else prior_mode,
+                prior_class if tool_class is None else tool_class,
             ),
         ).close()
 

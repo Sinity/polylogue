@@ -20,6 +20,34 @@ IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,47}$")
 
 PUBLIC_CONTENT_BODY_FIELDS = ("text", "thinking", "content", "input")
 NATIVE_CODEX_TOOL_VALUE_FIELDS = ("name", "execution", "arguments", "input", "action", "output", "tools", "result")
+PUBLIC_CLAUDE_TOOL_NAMES = frozenset({"Read", "Edit", "Write", "TodoWrite", "Bash", "Agent"})
+PUBLIC_CLAUDE_TOOL_INPUT_FIELDS = (
+    "file_path",
+    "old_string",
+    "new_string",
+    "content",
+    "todos",
+    "command",
+    "run_in_background",
+    "prompt",
+    "subagent_type",
+)
+PUBLIC_CLAUDE_TOOL_RESULT_FIELDS = (
+    "filePath",
+    "originalFile",
+    "oldString",
+    "newString",
+    "replaceAll",
+    "userModified",
+    "structuredPatch",
+    "oldTodos",
+    "newTodos",
+    "stdout",
+    "stderr",
+    "interrupted",
+    "backgroundTaskId",
+    "agentId",
+)
 
 
 def _safe_token(value: object) -> str | None:

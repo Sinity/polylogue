@@ -100,6 +100,13 @@ contributions are retained only when their identity and record counts prove
 they are compatible. Missing Codex ordering metadata is recovered separately
 from field statistics.
 
+Structure revisions apply to the affected provider: generic reduction is5,
+Codex tool grammar is6 and Claude named tool forms are7. A batch uses the
+highest revision applicable to its actual inventoried providers; an empty
+batch uses5. A ChatGPT-only batch therefore keeps its unchanged revision5
+contract. Mixed batches conservatively bind one combined contract rather than
+claiming separate reuse for each provider. Stored provenance is never relabeled.
+
 The run reports aggregate input bytes, record counts, terminal outcomes and
 reason codes, cache hits/misses by phase, computation contracts, and phase timings. A successful package write
 means evidence was emitted; inspect terminal outcomes to determine input
@@ -282,6 +289,15 @@ literal against that fixed vocabulary. Generation streams neutral operands
 through the existing field sampler and checks measured length, newline and
 character support. Unknown tool names remain anonymous. This does not execute
 programs or qualify arbitrary JavaScript or every tool's argument semantics.
+
+Claude Code uses the same measured field-form owner for the public Read, Edit,
+Write, TodoWrite, Bash and Agent labels. Input field presence and representation
+stay coupled to the sampled label. Result envelope forms follow the actual
+generated call identity and its measured public class, including absence of an
+envelope. Argument bodies, paths and arbitrary tool names remain anonymous;
+the reducer publishes only fixed public keys, labels, modes and counts. This
+does not establish numeric outcome fidelity, foreground/background subtype
+correlation or asynchronous completion and progress semantics.
 
 Original Claude Code child depths remain exact. Each depth's conditional record
 grammar is a row in the existing `record_structures_by_depth` profile object.

@@ -29,6 +29,9 @@ from polylogue.schemas.generation.observation_journal import JournalMemberships,
 from polylogue.schemas.generation.packages import _package_bundle_scope_count
 from polylogue.schemas.record_structure import (
     NATIVE_CODEX_TOOL_VALUE_FIELDS,
+    PUBLIC_CLAUDE_TOOL_INPUT_FIELDS,
+    PUBLIC_CLAUDE_TOOL_NAMES,
+    PUBLIC_CLAUDE_TOOL_RESULT_FIELDS,
     PUBLIC_CONTENT_BODY_FIELDS,
     claude_agent_metadata_field_forms,
     claude_dispatch_field_forms,
@@ -796,12 +799,26 @@ class _ContentStructure:
         if provider == "claude-code":
             self.role_carriers[public_role_carriers(envelope)] += 1
             status, counts, metadata_class = _original_agent_children(tool_owner, original_scope, envelope)
+            result_classes: set[str] = set()
+            for tool in iter_tool_records(provider, envelope):
+                operand = tool_identity_operand(tool)
+                if operand is not None and operand[1] == "result" and isinstance(operand[3], str) and operand[3]:
+                    with closing(
+                        tool_owner.execute(
+                            "SELECT tool_class FROM workload_record_tool_ids WHERE identity=? AND calls>0",
+                            (operand[3].encode("utf-8", "surrogatepass"),),
+                        )
+                    ) as cursor:
+                        prior = cursor.fetchone()
+                    result_classes.add(prior[0] if prior else "")
+            result_class = next(iter(result_classes)) if len(result_classes) == 1 else "mixed" if result_classes else ""
             dispatch_class = json.dumps(
                 {
                     "fields": claude_dispatch_field_forms(envelope),
                     "roles": list(public_role_carriers(envelope)),
                     "children": status,
                     "metadata_class": metadata_class,
+                    "tool_class": result_class,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -844,6 +861,31 @@ class _ContentStructure:
                 mode = tool_result_content_mode(tool) if kind.endswith("_output") else ""
                 syntax = measured_tool_syntax(tool) if not kind.endswith("_output") else ""
                 self.native_tool_field_forms.setdefault(kind, Counter())[(mode, fields, syntax)] += 1
+            elif provider == "claude-code" and kind == "tool_use":
+                name = tool.get("name")
+                tool_input = tool.get("input")
+                fields = tuple(
+                    field
+                    for field in PUBLIC_CLAUDE_TOOL_INPUT_FIELDS
+                    if isinstance(tool_input, Mapping) and field in tool_input
+                )
+                syntax = (
+                    json.dumps(
+                        {
+                            "name": name,
+                            "input_mode": "absent"
+                            if "input" not in tool
+                            else "null"
+                            if tool_input is None
+                            else content_representation(tool_input),
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if isinstance(name, str) and name in PUBLIC_CLAUDE_TOOL_NAMES
+                    else ""
+                )
+                self.native_tool_field_forms.setdefault(kind, Counter())[("", fields, syntax)] += 1
             presence = (
                 "absent"
                 if field_name not in tool
@@ -855,6 +897,7 @@ class _ContentStructure:
             )
             relation = "missing"
             prior_mode = ""
+            tool_class = ""
             prior_count = 0
             result_mode = (
                 tool_result_content_mode(tool)
@@ -867,24 +910,52 @@ class _ContentStructure:
             if isinstance(value, str) and value:
                 identity = value.encode("utf-8", "surrogatepass")
                 cursor = tool_owner.execute(
-                    "SELECT calls,results,result_mode FROM workload_record_tool_ids WHERE identity=?", (identity,)
+                    "SELECT calls,results,result_mode,tool_class FROM workload_record_tool_ids WHERE identity=?",
+                    (identity,),
                 )
                 try:
                     before = cursor.fetchone()
                 finally:
                     cursor.close()
-                calls, results, prior_mode = (0, 0, "") if before is None else before
+                calls, results, prior_mode, prior_class = (0, 0, "", "") if before is None else before
+                name = tool.get("name")
+                tool_class = (
+                    (name if isinstance(name, str) and name in PUBLIC_CLAUDE_TOOL_NAMES else "")
+                    if event == "call" and provider == "claude-code"
+                    else prior_class
+                )
                 prior_count = _bucket_index(float(results))
                 relation = "both" if calls and results else "call" if calls else "result" if results else "new"
                 tool_owner.execute(
-                    "INSERT INTO workload_record_tool_ids VALUES (?,?,?,?) ON CONFLICT(identity) DO UPDATE SET calls=excluded.calls,results=excluded.results,result_mode=excluded.result_mode",
+                    "INSERT INTO workload_record_tool_ids VALUES (?,?,?,?,?) ON CONFLICT(identity) DO UPDATE SET calls=excluded.calls,results=excluded.results,result_mode=excluded.result_mode,tool_class=excluded.tool_class",
                     (
                         identity,
                         calls + (event == "call"),
                         results + (event == "result"),
                         result_mode if event == "result" else prior_mode,
+                        tool_class,
                     ),
                 ).close()
+            if provider == "claude-code" and kind == "tool_result":
+                evidence = envelope.get("toolUseResult")
+                fields = tuple(
+                    field
+                    for field in PUBLIC_CLAUDE_TOOL_RESULT_FIELDS
+                    if isinstance(evidence, Mapping) and field in evidence
+                )
+                syntax = json.dumps(
+                    {
+                        "name": tool_class,
+                        "envelope_mode": "absent"
+                        if "toolUseResult" not in envelope
+                        else "null"
+                        if evidence is None
+                        else content_representation(evidence),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                self.native_tool_field_forms.setdefault(kind, Counter())[(result_mode, fields, syntax)] += 1
             pointer_widths = None
             point: tuple[int, ...] | None = None
             if (
@@ -1023,7 +1094,7 @@ def _record_structure(
 ) -> JSONDocument:
     tool_owner = memberships._journal._connection
     tool_owner.execute(
-        "CREATE TEMP TABLE workload_record_tool_ids(identity BLOB PRIMARY KEY,calls INTEGER NOT NULL,results INTEGER NOT NULL,result_mode TEXT NOT NULL) STRICT, WITHOUT ROWID"
+        "CREATE TEMP TABLE workload_record_tool_ids(identity BLOB PRIMARY KEY,calls INTEGER NOT NULL,results INTEGER NOT NULL,result_mode TEXT NOT NULL,tool_class TEXT NOT NULL) STRICT, WITHOUT ROWID"
     ).close()
     try:
         return _record_structure_with_tool_owner(
