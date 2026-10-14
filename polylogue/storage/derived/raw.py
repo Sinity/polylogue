@@ -4195,10 +4195,10 @@ class RawObservationDerivation(RawObservationInspection):
             try:
                 self._blob_stat_identity(blob_store.blob_path(blob_hash))
             except FileNotFoundError:
-                row = read_raw_source_evidence(archive.source_connection, raw_id)
-                if row is None:
+                evidence = read_raw_source_evidence(archive.source_connection, raw_id)
+                if evidence is None:
                     raise KeyError(raw_id) from None
-                missing_rows[raw_id] = row
+                missing_rows[raw_id] = evidence
             except OSError:
                 # Preparation retains the existing retryable I/O failure.
                 continue
