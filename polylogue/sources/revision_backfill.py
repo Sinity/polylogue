@@ -2089,8 +2089,12 @@ def apply_prepared_revision_replay(
         artifact = prepared_replay_source.attachment_artifacts.get(raw_id)
         if artifact is None:
             raise RetainedPreparationRetryableError(f"publication has no original attachment carrier for {raw_id}")
+        coordinate = session._prepared_row_coordinate
+        if coordinate is None or coordinate[0] != artifact.shard_path:
+            raise RetainedPreparationRetryableError("attachment publication lost its original parser occurrence")
         return artifact.resident_attachment_blobs(
             raw_id=raw_id,
+            session_ordinal=coordinate[1],
             source_read=publication_read,
             session_id=str(make_session_id(session.source_name, session.provider_session_id)),
         )

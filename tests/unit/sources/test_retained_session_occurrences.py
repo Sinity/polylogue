@@ -118,7 +118,7 @@ def test_conflicting_occurrences_keep_material_presence_and_visible_source_debt(
             archive.source_connection.execute(
                 "SELECT decision FROM raw_session_memberships WHERE raw_id=?", (raw_id,)
             ).fetchone()[0]
-            == "ambiguous"
+            == "applied_with_conflict"
         )
         accepted = read_accepted_marker_inputs_sync(archive.source_connection, limit=10)
         assert len(accepted) == 1

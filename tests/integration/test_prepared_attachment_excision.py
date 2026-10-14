@@ -317,18 +317,24 @@ async def test_original_attachment_claims_follow_direct_cohort_and_aggregate_row
                                 original_claim_key = next(
                                     iter(
                                         first_original.resident_attachment_blobs(
-                                            source_read=publication_read, session_id=sid, raw_id=raw_id
+                                            source_read=publication_read,
+                                            session_id=sid,
+                                            raw_id=raw_id,
+                                            session_ordinal=0,
                                         )
                                     )
                                 )
                                 with pytest.raises(ValueError):
                                     first_original.resident_attachment_blobs(
-                                        source_read=publication_read, session_id=sid, raw_id="not-an-acquired-raw"
+                                        source_read=publication_read,
+                                        session_id=sid,
+                                        raw_id="not-an-acquired-raw",
+                                        session_ordinal=0,
                                     )[original_claim_key]
                                 wrong_source = replace(first_original, blob_hash="00" * 32)
                                 with pytest.raises(ValueError):
                                     wrong_source.resident_attachment_blobs(
-                                        source_read=publication_read, session_id=sid, raw_id=raw_id
+                                        source_read=publication_read, session_id=sid, raw_id=raw_id, session_ordinal=0
                                     )[original_claim_key]
                                 publication_read.retained_attachment_reference(
                                     raw_id,
@@ -373,7 +379,9 @@ async def test_original_attachment_claims_follow_direct_cohort_and_aggregate_row
                         for attachment in retained.attachments:
                             assert resident[attachment.acquisition_key] == (None, len(asset), "unavailable")
                     elif route in {"direct", "cohort"}:
-                        resident = artifact.resident_attachment_blobs(source_read=reader, session_id=sid, raw_id=raw_id)
+                        resident = artifact.resident_attachment_blobs(
+                            source_read=reader, session_id=sid, raw_id=raw_id, session_ordinal=0
+                        )
                         for attachment in retained.attachments:
                             assert resident[attachment.acquisition_key] == (None, len(asset), "unavailable")
                     if route.startswith("aggregate"):
@@ -440,7 +448,7 @@ async def test_original_attachment_claims_follow_direct_cohort_and_aggregate_row
                                 accepted_raw_ids=ordered_ids,
                             )
                     else:
-                        mapping = artifact.attachment_blobs(source_read=reader, session_id=sid)
+                        mapping = artifact.attachment_blobs(source_read=reader, session_id=sid, session_ordinal=0)
                     for attachment in retained.attachments:
                         assert attachment.precomputed_blob == (asset_hash, len(asset))
                         assert attachment.inline_bytes is None
