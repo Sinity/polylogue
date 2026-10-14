@@ -512,6 +512,7 @@ def test_parent_and_source_accounting_report_current_typed_failure(
     assert report.raw_dispositions[0].raw_id == raw_id
     assert report.blocking_count == int(kind is RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES)
     check = verify_archive(root, checks=("source-conservation",)).checks[0]
+    assert isinstance(check, ArchiveVerificationCheck)
     terms = check.evidence["terms"]
     assert isinstance(terms, dict)
     non_session_term = terms["non_session_artifact"]
