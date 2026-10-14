@@ -52,6 +52,13 @@ HTTP mutations with inline write bodies first acquire the existing writer bridge
 run on the coordinator's writer worker under explicit child-task delegation;
 they do not enter the read compute pool or acquire another writer gate. A client
 wait deadline reports an indeterminate result and leaves accepted work owned.
+Prepared Raw work requests cleanup on its own physical creator before waiting
+for that creator's completion. Operation retries reach both native cleanup and
+its parked writer through the existing compute settlement registry. A failed
+cleanup attempt keeps that registration and its admission charge until the
+writer actually retires; cancellation preserves the original failure and waits
+for physical settlement.
+
 If SQL cleanup fails, that original worker remains available for cleanup before
 the next mutation can acquire physical custody; HTTP reports retryable
 `writer_sql_unsettled` with status 503. The preceding mutation may have committed. Read routes keep their compute

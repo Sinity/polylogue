@@ -52,3 +52,30 @@ def test_adapter_shutdown_wakes_a_parked_cleanup_owner() -> None:
 
 def test_outside_a_compute_task_nothing_is_registered() -> None:
     assert retain_current_creator_settlement(lambda: None, owner_count=1, failure_types=()) is None
+
+
+def test_operation_retry_reaches_only_its_parked_creator_cleanup() -> None:
+    adapter = BoundedComputeAdapter(max_workers=2)
+    registered = [threading.Event(), threading.Event()]
+    requested = [threading.Event(), threading.Event()]
+
+    def parked(index: int) -> None:
+        release = retain_current_creator_settlement(requested[index].set, owner_count=1, failure_types=())
+        assert release is not None
+        registered[index].set()
+        requested[index].wait()
+        release()
+
+    first = adapter.submit(lambda: parked(0))
+    second = adapter.submit(lambda: parked(1), admission_class="incremental-background")
+    try:
+        assert all(event.wait(10) for event in registered)
+        first.retry_sql_settlement()
+        assert requested[0].wait(10)
+        assert not requested[1].is_set()
+        assert first.future.result(timeout=10) is None
+        assert not second.future.done()
+    finally:
+        adapter.shutdown(wait=True)
+    assert requested[1].is_set()
+    assert adapter.retained_sql_settlements() == ()
