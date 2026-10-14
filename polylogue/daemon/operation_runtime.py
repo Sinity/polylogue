@@ -454,8 +454,12 @@ class DaemonOperationRuntime:
                 request.operation,
             )
             spec = daemon_operation_spec(request.operation)
-            if spec is not None and spec.authority is DaemonAuthority.READ:
-                assert isinstance(snapshot, PinnedOperationRead)
+            if (
+                spec is not None
+                and spec.authority is DaemonAuthority.READ
+                and isinstance(snapshot, PinnedOperationRead)
+            ):
+                # Control-only reads have no native Index reader to interrupt.
                 exchange.cancellation.add_listener(snapshot.archive.interrupt_reads)
 
     def request_deadline_unix_ms(self, request: DaemonOperationRequest) -> int | None:
