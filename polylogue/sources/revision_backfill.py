@@ -55,7 +55,10 @@ from polylogue.archive.session_revision_membership import (
     MembershipClassification,
     MembershipDecision,
     MembershipRevision,
+    RevisionClassification,
+    RevisionEvidence,
     classify_membership_revisions,
+    classify_revision_evidence,
 )
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.compute import DaemonOperationCancelled
@@ -1788,34 +1791,89 @@ class PreparedMembershipReplay:
             raise BaseExceptionGroup("prepared membership cleanup failed", failures)
 
 
+@dataclass(frozen=True, slots=True)
+class SameRawMemberResolution:
+    """One logical member selected from original sealed parser occurrences."""
+
+    raw_id: str
+    logical_key: str
+    representative_ordinal: int
+    session: ParsedSession
+    classification: RevisionClassification[int]
+
+    @property
+    def occurrence_ordinals(self) -> tuple[int, ...]:
+        result = self.classification
+        return tuple(
+            sorted((*result.accepted_keys, *result.equivalent_keys, *result.ambiguous_keys, *result.superseded_keys))
+        )
+
+
+def resolve_same_raw_member(
+    sessions: Sequence[ParsedSession], *, raw_id: str, logical_source_key: str
+) -> SameRawMemberResolution:
+    """Resolve raw-internal evidence without authority from an Index head."""
+    revisions: list[RevisionEvidence[int]] = []
+    original_sessions: dict[int, ParsedSession] = {}
+    primary_failure: BaseException | None = None
+    try:
+        for ordinal, session in enumerate(sessions):
+            check_compute_cancelled()
+            if f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}" != logical_source_key:
+                continue
+            original_sessions[ordinal] = session
+            revisions.append(
+                RevisionEvidence(
+                    ordinal,
+                    session_revision_projection(session),
+                    provider_updated_at=session.updated_at if session.updated_at_provenance != "fallback" else None,
+                    browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                    provider_message_ids=(
+                        session.messages.provider_message_ids(include_none=False)
+                        if isinstance(session.messages, SqliteMessageSink)
+                        else frozenset(
+                            message.provider_message_id for message in session.messages if message.provider_message_id
+                        )
+                    ),
+                    provider_attachment_ids=frozenset(
+                        attachment.provider_attachment_id for attachment in session.attachments
+                    ),
+                )
+            )
+        if not revisions:
+            raise CohortMembershipRefusalError(
+                logical_source_key,
+                raw_id,
+                f"selector member parsed {len(sessions)} session(s), none for this logical key",
+            )
+        classification = classify_revision_evidence(revisions)
+        if not classification.accepted_keys:
+            raise CohortMembershipRefusalError(
+                logical_source_key, raw_id, "raw member has no head-independent representative"
+            )
+        ordinal = classification.accepted_keys[-1]
+        return SameRawMemberResolution(raw_id, logical_source_key, ordinal, original_sessions[ordinal], classification)
+    except BaseException as failure:
+        primary_failure = failure
+        raise
+    finally:
+        failures: list[BaseException] = []
+        for revision in revisions:
+            try:
+                revision.projection.close()
+            except BaseException as failure:
+                failures.append(failure)
+        if failures:
+            if primary_failure is not None:
+                failures.insert(0, primary_failure)
+            raise BaseExceptionGroup("raw member projection cleanup failed", failures)
+
+
 def prepared_session_for_logical_key(
     sessions: Sequence[ParsedSession], *, raw_id: str, logical_source_key: str
 ) -> ParsedSession:
-    """Select exactly one original parser output for the admitted member key."""
-    selected: ParsedSession | None = None
-    parsed_count = 0
-    match_count = 0
-    for session in sessions:
-        check_compute_cancelled()
-        parsed_count += 1
-        if f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}" != logical_source_key:
-            continue
-        match_count += 1
-        if selected is None:
-            selected = session
-    if selected is None:
-        raise CohortMembershipRefusalError(
-            logical_source_key,
-            raw_id,
-            f"selector member parsed {parsed_count} session(s), none for this logical key",
-        )
-    if match_count != 1:
-        raise CohortMembershipRefusalError(
-            logical_source_key,
-            raw_id,
-            f"selector member parsed {match_count} sessions for this logical key, not one",
-        )
-    return selected
+    """Select the original occurrence chosen by the shared semantic owner."""
+    return resolve_same_raw_member(sessions, raw_id=raw_id, logical_source_key=logical_source_key).session
 
 
 def prepared_session_for_revision_key(
