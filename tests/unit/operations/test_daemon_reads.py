@@ -817,3 +817,61 @@ def test_keyless_text_search_with_retained_binding_remains_disabled(
 def test_only_selected_temporal_reads_skip_vector_admission(name: str, session_ref: str | None) -> None:
     payload = {"session_id": session_ref, "params": {"similar_text": "synthetic query"}}
     assert requires_vector_snapshot(name, payload) is not (name == "read.temporal" and bool(session_ref))
+
+
+@pytest.mark.parametrize("completion", ["computed", "cached"])
+def test_canonical_read_cancellation_precedes_cache_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, completion: str
+) -> None:
+    """Cancel after actual row computation/lookup, before any new SQL can notice."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from polylogue.archive.query.execution_control import QueryExecutionContext
+    from polylogue.operations import daemon_execution, daemon_reads
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+    from polylogue.operations.operation_context_types import OperationContext
+    from polylogue.storage.search import cache
+
+    bootstrap_archive_root(tmp_path)
+    request = DaemonOperationRequest("cli.query", {"params": {"limit": 1}}, request_id="cancel-final-result")
+    principal = MutationPrincipal("synthetic-read", frozenset({"read"}), "daemon")
+    control = QueryExecutionContext(call_id="cancel-final-result", query_ref="synthetic-query")
+    runtime = SimpleNamespace(publication_guard=nullcontext, observe_snapshot=lambda *_args: None)
+    context = OperationContext(tmp_path, principal, "daemon", runtime, read_control=control)
+    if completion == "cached":
+        warm = daemon_execution.execute_operation(request, OperationContext(tmp_path, principal, "daemon", runtime))
+        assert warm.outcome == "completed", warm.to_dict()
+        actual_get = cache.get_cached_result
+
+        def cancelled_lookup(*args, **kwargs):
+            result = actual_get(*args, **kwargs)
+            assert result is not None
+            control.cancel()
+            return result
+
+        monkeypatch.setattr(cache, "get_cached_result", cancelled_lookup)
+    else:
+        actual_query = daemon_reads._query_payload
+
+        def cancelled_computation(*args, **kwargs):
+            result = actual_query(*args, **kwargs)
+            control.cancel()
+            return result
+
+        monkeypatch.setattr(daemon_reads, "_query_payload", cancelled_computation)
+    inserted = []
+    actual_put = cache.put_cached_result
+
+    def record_insert(*args, **kwargs):
+        inserted.append(args)
+        return actual_put(*args, **kwargs)
+
+    monkeypatch.setattr(cache, "put_cached_result", record_insert)
+    envelope = daemon_execution.execute_operation(request, context).to_dict()
+    assert control.cancelled, envelope
+    assert envelope["outcome"] == "cancelled"
+    assert envelope["error"]["code"] == "QueryCancelledError"
+    assert envelope["result"] is None
+    assert inserted == []

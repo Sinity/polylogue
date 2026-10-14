@@ -373,6 +373,7 @@ def execute_read_operation(
     else:
         raise ValueError(f"read operation is not declared: {name}")
 
+    dependencies.raise_if_aborted()
     if cacheable:
         assert read_view is not None
         from polylogue.storage.search.cache import put_cached_result
