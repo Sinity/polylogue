@@ -562,6 +562,13 @@ class PublicRecordPlan:
                         "non-message record contradicts its declared content envelope; re-infer the package"
                     )
         elif provider == "codex":
+            # The selected public wire carrier excludes its competing root
+            # fields before scalar draws; package-wide marginals can include
+            # both forms because they describe multiple original streams.
+            if self.form == "codex-envelope":
+                self.absent.add("$.role")
+            else:
+                self.absent.add("$.payload")
             self.content_path = "$.payload.content" if self.form == "codex-envelope" else "$.content"
             role = self.kind.removesuffix("_message")
             if role in CODEX_PUBLIC_MESSAGE_ROLES:

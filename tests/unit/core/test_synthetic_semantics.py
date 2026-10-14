@@ -1295,7 +1295,6 @@ def test_generated_array_depth_numeric_order_and_cycle_refusal() -> None:
         owner.close()
 
 
-@pytest.mark.timeout(0)
 @pytest.mark.parametrize("provider", ["claude-ai", "codex", "chatgpt"])
 def test_record_containers_use_the_original_native_session_driver(tmp_path: Path, provider: str) -> None:
     import tracemalloc
