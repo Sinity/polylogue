@@ -958,7 +958,8 @@ def test_unsupported_json_schema_construct_is_keyed_and_receiptable() -> None:
     assert target.spec is None
     assert target.unsupported is not None
     assert target.unsupported.reason == "unsupported_json_schema_construct"
-    assert {"enum", "required"} <= set(target.unsupported.details)
+    assert "enum" in target.unsupported.details
+    assert ("required", "supported") in {(item.construct, item.state) for item in target.key.construct_support}
     assert ("type", "supported") in {(item.construct, item.state) for item in target.key.construct_support}
     assert manifest.package_receipt == receipt
     assert manifest.receipt_state == "package_receipt_attached"
@@ -974,17 +975,20 @@ def test_every_actual_schema_keyword_is_keyed_and_unhandled_constraints_fail_clo
         observed_constructs.update(item.construct for item in entry.key.construct_support)
 
     assert {"$id", "$schema", "required"} <= observed_constructs
-    # Every occurrence of these constraints must be typed unsupported, wherever
+    # Every occurrence of unhandled constraints must be typed unsupported, wherever
     # it appears. Naming one provider would tie this test to whichever packages
     # happen to be committed; the corpus-wide assertion above already proves the
     # constructs are actually present to classify.
-    classified = 0
+    required_states: set[str] = set()
     for entry in manifest.entries:
         for item in entry.key.construct_support:
-            if item.construct in {"minLength", "maxLength", "required"}:
+            if item.construct in {"minLength", "maxLength"}:
                 assert item.state == "unsupported", f"{entry.key.provider}:{item.construct} is not fail-closed"
-                classified += 1
-    assert classified, "no committed package carries minLength/maxLength/required to classify"
+            elif item.construct == "required":
+                required_states.add(item.state)
+    # Required properties now have a real enforcing handler, independently
+    # exercised by test_synthetic_required_fields; this catalog retains it.
+    assert "supported" in required_states
 
 
 @pytest.mark.parametrize(

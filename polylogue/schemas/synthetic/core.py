@@ -180,7 +180,11 @@ class SyntheticCorpus:
             return
         if self._public_scope is None:
             raise RuntimeError("public record has no original scope path")
-        if self.workload_profile is not None and self.workload_profile.get("profile_kind") == "authored-fixture":
+        if (
+            self.workload_profile is not None
+            and self.workload_profile.get("profile_kind") == "authored-fixture"
+            and self.workload_profile.get("authored_record_cycle") is not None
+        ):
             branch = schema.get("x-polylogue-authored-record-branch")
             branches = self.workload_profile.get("authored_record_structures")
             if type(branch) is not int or not isinstance(branches, list) or not 0 <= branch < len(branches):

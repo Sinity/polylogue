@@ -268,6 +268,11 @@ values or observed private field names. Claude Code role carriers preserve their
 presence/null/value combinations and parser precedence; empty ChatGPT nodes
 retain the measured absence or null form. Missing conditional evidence requires
 reinference, rather than guessing a joint distribution from field marginals.
+Native Codex call and output kinds retain the presence of their fixed public
+value fields together with the selected output carrier and shape. An output
+field therefore cannot disappear because another measured carrier was drawn
+independently. Coverage witnesses explicitly select optional field coordinates
+while retaining the same measured body forms and mutual exclusions.
 
 Original Claude Code child depths remain exact. Each depth's conditional record
 grammar is a row in the existing `record_structures_by_depth` profile object.
@@ -298,6 +303,9 @@ to object and array carriers without substituting material values.
 Inherited message bytes and tool identity schemas/history remain on that same
 native owner across session boundaries. Reported message counts include the
 actual inherited prefix and exclude the session header.
+An authored replay canary may declare session order and prefix counts from its
+measured header classes while retaining the measured record grammar. A declared
+root count absent from that evidence refuses before generation.
 
 The same lazy session/chunk driver serves collected fixtures, file writers and
 `devtools bench fresh-build corpus synthetic`. A borrowed session must be

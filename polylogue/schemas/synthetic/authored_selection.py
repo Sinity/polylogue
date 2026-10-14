@@ -375,6 +375,9 @@ def authored_record_schema(profile: Mapping[str, object] | None, schema: JSONDoc
     if profile is None or profile.get("profile_kind") != "authored-fixture":
         return schema
     cycle = profile.get("authored_record_cycle")
+    if cycle is None and isinstance(profile.get("authored_session_cycle"), list):
+        # A declared session order still uses its measured record grammar.
+        return schema
     if not isinstance(cycle, list) or not cycle:
         raise ValueError("authored fixture has no declared original record order")
     ordinal = (

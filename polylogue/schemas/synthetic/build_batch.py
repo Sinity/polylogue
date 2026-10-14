@@ -795,7 +795,10 @@ def _select_session_header(
         )
         if not joint.bins:
             raise ValueError("original root header count joint is missing; re-infer the package")
-        key = rng.choices(list(joint.bins), weights=[value[1] for value in joint.bins.values()], k=1)[0]
+        eligible_bins = [key for key in joint.bins if selected_point is None or selected_point in joint.extrema[key]]
+        if not eligible_bins:
+            raise ValueError("authored root count declaration is absent from measured header evidence")
+        key = rng.choices(eligible_bins, weights=[joint.bins[key][1] for key in eligible_bins], k=1)[0]
         point = selected_point if selected_point is not None else rng.choice(joint.extrema[key])
         if point not in joint.extrema[key]:
             raise ValueError("authored root count declaration is absent from measured header evidence")

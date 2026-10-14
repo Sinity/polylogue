@@ -428,9 +428,12 @@ def _codex_record_stream_corpus(*, lineage: bool = False) -> SyntheticCorpus:
         # This replay canary declares parent then child; the measured classes
         # and prefix counts still come from the two neutral physical scopes.
         profile["profile_kind"] = "authored-fixture"
-        classes = profile["session_lineage"]["header_classes"]
+        classes = cast(list[dict[str, object]], cast(dict[str, object], profile["session_lineage"])["header_classes"])
         profile["authored_session_cycle"] = [
-            {"class": index, "prefix_point": row["prefix_joint"][0]["points"][0]}
+            {
+                "class": index,
+                "prefix_point": cast(list[dict[str, list[list[int]]]], row["prefix_joint"])[0]["points"][0],
+            }
             for outcome in ("no_explicit_parent", "matched")
             for index, row in enumerate(classes)
             if row["outcome"] == outcome
@@ -673,6 +676,18 @@ def test_profile_generated_lineage_replays_through_production_write_and_read(tmp
     assert receipt.spec.inputs[0].profile_id == batch.report.workload_profile_id
     assert receipt.receipt_id.startswith("workload-receipt:sha256:")
     conn.close()
+
+
+def test_lineage_replay_schedule_cannot_invent_a_root_count() -> None:
+    corpus = _codex_record_stream_corpus(lineage=True)
+    assert corpus.workload_profile is not None
+    cycle = cast(list[dict[str, object]], corpus.workload_profile["authored_session_cycle"])
+    cycle[0]["prefix_point"] = [999, 0, 1, 0, 0]
+    try:
+        with pytest.raises(ValueError, match="root count declaration is absent from measured header evidence"):
+            corpus.generate_batch(count=2, seed=29, session_native_ids=("lineage-parent", "lineage-child"))
+    finally:
+        corpus._relation_solver.close()
 
 
 def test_workload_profile_models_tool_relationships_without_persisting_ids() -> None:
