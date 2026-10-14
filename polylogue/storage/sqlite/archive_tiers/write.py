@@ -8248,16 +8248,20 @@ class ConnectionSessionSourceRead:
         family: RawMembershipSelectionFamily,
         operands: Sequence[str],
     ) -> set[str]:
-        from polylogue.storage.sqlite.archive_tiers.revision_governance import _raw_selection_queries
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _raw_selection_pages,
+            _raw_selection_queries,
+        )
 
         found: set[str] = set()
         if not operands:
             return found
-        for table, column, predicate, parameters in _raw_selection_queries(family, tuple(operands)):
-            with self._statement(f"SELECT {column} FROM {table} WHERE {predicate}", parameters) as rows:
-                for row in rows:
-                    check_compute_cancelled()
-                    found.add(str(row[0]))
+        for page in _raw_selection_pages(operands, self._connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)):
+            for table, column, predicate, parameters in _raw_selection_queries(family, page):
+                with self._statement(f"SELECT {column} FROM {table} WHERE {predicate}", parameters) as rows:
+                    for row in rows:
+                        check_compute_cancelled()
+                        found.add(str(row[0]))
         return found
 
     def pending_raw_envelope_has_membership_authority(self, logical_source_key: str) -> bool:
@@ -8272,10 +8276,27 @@ class ConnectionSessionSourceRead:
 
         return _raw_revision_rebuild_logical_keys(self, raw_ids)
 
-    def replay_representative_rows(self, keys: Sequence[str]) -> AbstractContextManager[sqlite3.Cursor]:
-        from polylogue.storage.sqlite.archive_tiers.revision_governance import _raw_replay_representative_query
+    @contextmanager
+    def replay_representative_rows(self, keys: Sequence[str]) -> Iterator[Iterator[sqlite3.Row]]:
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _raw_replay_representative_query,
+            _raw_selection_pages,
+        )
 
-        return self._statement(*_raw_replay_representative_query(keys))
+        limit = self._connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+
+        def read_pages() -> Generator[sqlite3.Row, None, None]:
+            for key_page in _raw_selection_pages(keys, limit, repeated_values=2):
+                with self._statement(*_raw_replay_representative_query(key_page)) as rows:
+                    while True:
+                        check_compute_cancelled()
+                        row = rows.fetchone()
+                        if row is None:
+                            break
+                        yield row
+
+        with closing(read_pages()) as rows:
+            yield rows
 
     def completed_source_item_rows(self, raw_id: str) -> AbstractContextManager[sqlite3.Cursor]:
         from polylogue.storage.sqlite.archive_tiers.source_items import _COMPLETED_SOURCE_ITEM_SQL
@@ -8791,22 +8812,33 @@ class PreparedSessionSourceRead:
         with self._seal.source_rows(_PUBLICATION_RESERVATION_SQL, (publication_id,)) as rows:
             return _publication_reservation_from_row(rows.fetchone())
 
+    def _selection_parameter_limit(self) -> int:
+        """Hydration and selected queries must fit their own native connections."""
+        return min(
+            self._seal.source_parameter_limit(),
+            self._seal.observer("source").getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER),
+        )
+
     def raw_selection_values(
         self,
         family: RawMembershipSelectionFamily,
         operands: Sequence[str],
     ) -> set[str]:
-        from polylogue.storage.sqlite.archive_tiers.revision_governance import _raw_selection_queries
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            _raw_selection_pages,
+            _raw_selection_queries,
+        )
 
         found: set[str] = set()
         if not operands:
             return found
-        for table, column, predicate, parameters in _raw_selection_queries(family, tuple(operands)):
-            self._load_matches(table, f"SELECT rowid FROM {table} WHERE {predicate}", parameters)
-            with self._seal.source_rows(f"SELECT {column} FROM {table} WHERE {predicate}", parameters) as rows:
-                for row in rows:
-                    check_compute_cancelled()
-                    found.add(str(row[0]))
+        for page in _raw_selection_pages(operands, self._selection_parameter_limit()):
+            for table, column, predicate, parameters in _raw_selection_queries(family, page):
+                self._load_matches(table, f"SELECT rowid FROM {table} WHERE {predicate}", parameters)
+                with self._seal.source_rows(f"SELECT {column} FROM {table} WHERE {predicate}", parameters) as rows:
+                    for row in rows:
+                        check_compute_cancelled()
+                        found.add(str(row[0]))
         return found
 
     def expand_raw_membership_selection(self, raw_ids: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -8911,39 +8943,52 @@ class PreparedSessionSourceRead:
 
         return _raw_revision_rebuild_logical_keys(self, raw_ids)
 
-    def replay_representative_rows(self, keys: Sequence[str]) -> AbstractContextManager[sqlite3.Cursor]:
+    @contextmanager
+    def replay_representative_rows(self, keys: Sequence[str]) -> Iterator[Iterator[sqlite3.Row]]:
         from polylogue.storage.sqlite.archive_tiers.revision_governance import (
             _load_raw_observation_inputs,
             _raw_replay_representative_query,
+            _raw_selection_pages,
         )
 
-        marks = ",".join("?" for _ in keys)
-        parameters = tuple(keys)
-        self._load_matches(
-            "raw_sessions",
-            f"SELECT rowid FROM raw_sessions WHERE logical_source_key IN ({marks})",
-            parameters,
-        )
-        self._load_matches(
-            "raw_session_memberships",
-            f"SELECT rowid FROM raw_session_memberships WHERE logical_source_key IN ({marks})",
-            parameters,
-        )
-        after: str | None = None
-        while True:
-            with self._seal.source_rows(
-                f"SELECT raw_id FROM (SELECT raw_id FROM raw_sessions WHERE logical_source_key IN ({marks}) "
-                f"UNION SELECT raw_id FROM raw_session_memberships WHERE logical_source_key IN ({marks})) "
-                "WHERE (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
-                (*parameters, *parameters, after, after),
-            ) as rows:
-                page = rows.fetchall()
-            if not page:
-                break
-            for (raw_id,) in page:
-                _load_raw_observation_inputs(self._seal, str(raw_id))
-            after = str(page[-1][0])
-        return self._seal.source_rows(*_raw_replay_representative_query(keys))
+        limit = self._selection_parameter_limit()
+
+        def read_pages() -> Generator[sqlite3.Row, None, None]:
+            for key_page in _raw_selection_pages(keys, limit, repeated_values=2, fixed_parameters=2):
+                marks = ",".join("?" for _ in key_page)
+                parameters = tuple(key_page)
+                self._load_matches(
+                    "raw_sessions", f"SELECT rowid FROM raw_sessions WHERE logical_source_key IN ({marks})", parameters
+                )
+                self._load_matches(
+                    "raw_session_memberships",
+                    f"SELECT rowid FROM raw_session_memberships WHERE logical_source_key IN ({marks})",
+                    parameters,
+                )
+                after: str | None = None
+                while True:
+                    with self._seal.source_rows(
+                        f"SELECT raw_id FROM (SELECT raw_id FROM raw_sessions WHERE logical_source_key IN ({marks}) "
+                        f"UNION SELECT raw_id FROM raw_session_memberships WHERE logical_source_key IN ({marks})) "
+                        "WHERE (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
+                        (*parameters, *parameters, after, after),
+                    ) as selected:
+                        raw_page = selected.fetchall()
+                    if not raw_page:
+                        break
+                    for (raw_id,) in raw_page:
+                        _load_raw_observation_inputs(self._seal, str(raw_id))
+                    after = str(raw_page[-1][0])
+                with self._seal.source_rows(*_raw_replay_representative_query(key_page)) as rows:
+                    while True:
+                        check_compute_cancelled()
+                        row = rows.fetchone()
+                        if row is None:
+                            break
+                        yield row
+
+        with closing(read_pages()) as rows:
+            yield rows
 
     def raw_membership_rebuild_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
         from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_membership_rebuild_raw_ids
