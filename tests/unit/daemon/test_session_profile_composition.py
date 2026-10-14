@@ -988,3 +988,80 @@ async def test_profile_inputs_remain_accounted_until_cancelled_native_settlement
             task.cancel()
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("held hydrated input competes with a second physical worker")
+async def test_hydrated_profile_parent_blocks_large_competitor_with_spare_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Measure held inputs and preserve their parent's exclusive admission."""
+    import threading
+
+    import polylogue.storage.derived.session.rebuild as rebuild
+    from polylogue.core.compute import FOREGROUND_BYTE_ALLOWANCE
+
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    compute = BoundedComputeAdapter(max_workers=2, queue_units=2, queue_bytes=2 * FOREGROUND_BYTE_ALLOWANCE)
+    coordinator = DaemonWriteCoordinator(archive_root=recovered.root)
+    entered, release, competitor_entered = threading.Event(), threading.Event(), threading.Event()
+    original = rebuild.compute_session_insight_bundles
+    held_input_bytes: list[int] = []
+
+    def held(jobs: Any) -> Any:
+        held_input_bytes.append(sum(job[1] for job in jobs))
+        entered.set()
+        assert release.wait(10.0)
+        return original(jobs)
+
+    monkeypatch.setattr(rebuild, "compute_session_insight_bundles", held)
+    task = None
+    competitor = None
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        await composed((recovered.target_session_id,))
+        task = asyncio.create_task(composed(None))
+        assert await asyncio.to_thread(entered.wait, 10.0)
+        held_snapshot = compute.snapshot()
+        assert held_input_bytes and min(held_input_bytes) > 0
+        assert held_snapshot.active_input_bytes >= sum(held_input_bytes)
+        assert held_snapshot.capacity_slots == 2 and held_snapshot.active_units == 1
+        # The exclusive envelope protects hydration before its exact input
+        # demand is known. That envelope, rather than the byte counter above,
+        # governs whether a competing foreground operation can dispatch.
+        competitor = compute.submit(
+            competitor_entered.set,
+            admission_class="interactive-read",
+            estimated_bytes=FOREGROUND_BYTE_ALLOWANCE + 1,
+        )
+        snapshot = compute.snapshot()
+        assert snapshot.foreground_pending_bytes == FOREGROUND_BYTE_ALLOWANCE + 1
+        assert snapshot.active_units == 1
+        assert not competitor.future.done() and not competitor_entered.is_set()
+        release.set()
+        await task
+        await competitor.wait()
+        assert competitor_entered.is_set()
+        assert compute.snapshot().active_input_bytes == 0
+        with sqlite3.connect(recovered.index_db) as conn:
+            expected = session_input_bindings(conn, (recovered.target_session_id,))[recovered.target_session_id]
+            assert conn.execute(
+                "SELECT input_content_hash FROM session_profiles WHERE session_id=?", (recovered.target_session_id,)
+            ).fetchone() == (expected,)
+            assert conn.execute("SELECT COUNT(*) FROM session_profile_demand").fetchone() == (0,)
+    finally:
+        release.set()
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if competitor is not None and not competitor.future.done():
+            competitor.cancellation.cancel()
+            await asyncio.gather(competitor.wait(), return_exceptions=True)
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
