@@ -28,9 +28,46 @@ def empty_archive_counts(root: Path) -> dict[str, int]:
         index = archive.index_connection
         assert index is not None
         return {
-            "raw": int(archive.source_connection.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()[0]),
+            "raw_artifacts": int(archive.source_connection.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()[0]),
+            "raw_sessions": int(archive.source_connection.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]),
             "sessions": int(index.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]),
         }
+
+
+def _process_group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def stop_owned_process_group(process: subprocess.Popen[bytes], provenance: dict[str, object]) -> None:
+    """Settle the exact group created with start_new_session, including an exited leader."""
+    pgid = process.pid
+    provenance["owned_process_group_id"] = pgid
+    if _process_group_exists(pgid):
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 30
+    while _process_group_exists(pgid) and time.monotonic() < deadline:
+        # Reap our leader even while descendants are still shutting down.
+        process.poll()
+        time.sleep(0.05)
+    if _process_group_exists(pgid):
+        provenance["forced_cleanup"] = True
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 10
+        while _process_group_exists(pgid) and time.monotonic() < deadline:
+            process.poll()
+            time.sleep(0.05)
+    provenance["daemon_returncode"] = process.wait(timeout=10)
+    provenance["owned_process_group_stopped"] = not _process_group_exists(pgid)
 
 
 def assert_served_empty_status(payload: Mapping[str, Any], *, root: Path, daemon_pid: int) -> None:
@@ -75,7 +112,7 @@ def empty_status_resident(directory: Path) -> Iterator[EmptyResident]:
     home = directory / "home"
     home.mkdir(parents=True, mode=0o700)
     initialize_active_archive_root(root)
-    assert empty_archive_counts(root) == {"raw": 0, "sessions": 0}
+    assert empty_archive_counts(root) == {"raw_artifacts": 0, "raw_sessions": 0, "sessions": 0}
     env = isolated_home_environment(os.environ, home=home)
     for key in (
         "POLYLOGUE_DAEMON_URL",
@@ -123,7 +160,7 @@ def empty_status_resident(directory: Path) -> Iterator[EmptyResident]:
         "candidate_sha": candidate,
         "daemon_command": args,
         "runtime_root": str(runtime),
-        "empty_before": {"raw": 0, "sessions": 0},
+        "empty_before": {"raw_artifacts": 0, "raw_sessions": 0, "sessions": 0},
     }
     with (directory / "daemon.stdout.log").open("wb") as out, (directory / "daemon.stderr.log").open("wb") as err:
         try:
@@ -187,25 +224,11 @@ def empty_status_resident(directory: Path) -> Iterator[EmptyResident]:
                 )
             yield EmptyResident(root, home, env, process.pid, provenance)
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=10)
-                    provenance["forced_cleanup"] = True
-            provenance["daemon_returncode"] = process.returncode
-            try:
-                os.killpg(process.pid, 0)
-            except ProcessLookupError:
-                provenance["owned_process_group_stopped"] = True
-            else:
-                provenance["owned_process_group_stopped"] = False
+            stop_owned_process_group(process, provenance)
             provenance["empty_after"] = empty_archive_counts(root)
             (directory / "resident-proof.json").write_text(json.dumps(provenance, indent=2) + "\n")
             if provenance["owned_process_group_stopped"] is True:
                 shutil.rmtree(runtime)
             assert provenance.get("forced_cleanup") is not True
             assert provenance["owned_process_group_stopped"] is True
-            assert provenance["empty_after"] == {"raw": 0, "sessions": 0}
+            assert provenance["empty_after"] == {"raw_artifacts": 0, "raw_sessions": 0, "sessions": 0}
