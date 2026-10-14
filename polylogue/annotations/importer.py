@@ -97,6 +97,9 @@ class AnnotationImportRowOutcome(BaseModel):
     row_key: str | None = None
     status: Literal["invalid"]
     errors: tuple[str, ...] = ()
+    unresolved_evidence_refs: tuple[int, ...] = Field(
+        default=(), description="Zero-based positions of unresolved entries in this row's evidence_refs"
+    )
 
 
 class AnnotationBatchImportResult(BaseModel):
@@ -317,13 +320,26 @@ def _assertion_confidence(schema: AnnotationSchema, row: AnnotationImportRow, er
     return row.confidence
 
 
-def _failure(line: int, *, row_key: str | None, errors: list[str]) -> AnnotationImportRowOutcome:
-    return AnnotationImportRowOutcome(line=line, row_key=row_key, status="invalid", errors=tuple(errors))
+def _failure(
+    line: int, *, row_key: str | None, errors: list[str], unresolved_evidence_refs: tuple[int, ...] = ()
+) -> AnnotationImportRowOutcome:
+    return AnnotationImportRowOutcome(
+        line=line,
+        row_key=row_key,
+        status="invalid",
+        errors=tuple(errors),
+        unresolved_evidence_refs=unresolved_evidence_refs,
+    )
 
 
 def _failure_document(outcome: AnnotationImportRowOutcome) -> JSONDocument:
     return require_json_document(
-        {"errors": list(outcome.errors), "line": outcome.line, "row_key": outcome.row_key},
+        {
+            "errors": list(outcome.errors),
+            "line": outcome.line,
+            "row_key": outcome.row_key,
+            "unresolved_evidence_refs": list(outcome.unresolved_evidence_refs),
+        },
         context="annotation import validation failure",
     )
 
@@ -430,7 +446,8 @@ async def import_annotation_batch(
                 value=row.value,
                 evidence_refs=row.evidence_refs,
             )
-            for evidence_ref_text in row.evidence_refs:
+            unresolved: list[int] = []
+            for ref_position, evidence_ref_text in enumerate(row.evidence_refs):
                 resolved = batch.ref_resolution(evidence_ref_text)
                 if resolved is None:
                     if resolve_ref is not None:
@@ -446,15 +463,23 @@ async def import_annotation_batch(
                             resolved = False
                     batch.record_ref_resolution(evidence_ref_text, resolved)
                 if not resolved:
-                    errors.append(
-                        f"evidence_ref {_ref_preview(evidence_ref_text)} does not resolve in the live archive"
-                    )
+                    unresolved.append(ref_position)
+            if unresolved:
+                errors.append("evidence_refs_unresolved")
             confidence = _assertion_confidence(schema, row, errors)
             if batch.has_row_key(row.row_key):
                 errors.append(f"duplicate row_key {row.row_key!r} in annotation batch")
             if errors:
                 batch.append_failure(
-                    line_number, _failure_document(_failure(line_number, row_key=row.row_key, errors=errors))
+                    line_number,
+                    _failure_document(
+                        _failure(
+                            line_number,
+                            row_key=row.row_key,
+                            errors=errors,
+                            unresolved_evidence_refs=tuple(unresolved),
+                        )
+                    ),
                 )
                 continue
             assertion_id = assertion_id_for_schema_annotation(
