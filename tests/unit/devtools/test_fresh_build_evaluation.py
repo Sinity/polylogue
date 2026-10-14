@@ -10,10 +10,12 @@ from typing import Any
 import pytest
 
 from devtools.fresh_build_bench.evaluation import evaluate_comparison, evaluate_run, evaluate_samples
+from devtools.fresh_build_bench.report import RECEIPT_FORMAT
 
 
 def _receipt(seconds: float = 10.0, *, candidate: str = "A") -> dict[str, Any]:
     return {
+        "format": RECEIPT_FORMAT,
         "label": candidate,
         "candidate": {"git_sha": candidate * 40, "dirty": False},
         "qualified": True,
