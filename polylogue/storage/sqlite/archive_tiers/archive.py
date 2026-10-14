@@ -4893,8 +4893,19 @@ class ArchiveStore:
             for row in rows:
                 yield _session_profile_insight_from_archive_row(self._conn, row, tier=tier)
 
-    def read_summary(self, session_id: str) -> ArchiveSessionSummary:
-        """Read one session summary by exact session id."""
+    def read_summary(self, session_id: str, *, include_metadata: bool = True) -> ArchiveSessionSummary:
+        """Read one exact header, optionally including its complete metadata relations."""
+        metadata_columns = "'[]' AS working_directories_json, '[]' AS tags_json"
+        tags_join = ""
+        if include_metadata:
+            metadata_columns = """
+                COALESCE((SELECT json_group_array(swd.path)
+                          FROM session_working_dirs swd
+                          WHERE swd.session_id = s.session_id
+                          ORDER BY swd.position, swd.path), '[]') AS working_directories_json,
+                COALESCE(json_group_array(st.tag) FILTER (WHERE st.tag IS NOT NULL), '[]') AS tags_json
+            """
+            tags_join = f"LEFT JOIN {self._tags_relation} st ON st.session_id = s.session_id AND st.tag_source = 'user'"
         row = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
@@ -4911,24 +4922,10 @@ class ArchiveStore:
                    sp.terminal_state,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
                    (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
-                   COALESCE(
-                       (
-                           SELECT json_group_array(swd.path)
-                           FROM session_working_dirs swd
-                           WHERE swd.session_id = s.session_id
-                           ORDER BY swd.position, swd.path
-                       ),
-                       '[]'
-                   ) AS working_directories_json,
-                   COALESCE(
-                       json_group_array(st.tag) FILTER (WHERE st.tag IS NOT NULL),
-                       '[]'
-                   ) AS tags_json
+                   {metadata_columns}
             FROM sessions s
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
-            LEFT JOIN {self._tags_relation} st
-              ON st.session_id = s.session_id
-             AND st.tag_source = 'user'
+            {tags_join}
             WHERE s.session_id = ?
             GROUP BY s.session_id
             """,
