@@ -2388,6 +2388,7 @@ def test_membership_expansion_and_replay_page_both_source_connections(tmp_path: 
 def test_unknown_admitted_artifact_is_not_positive_non_session_evidence(tmp_path: Path) -> None:
     """A valid unknown classifier result must remain work for the real parser."""
     from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact
+    from polylogue.core.json import JSONValue
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
@@ -2412,7 +2413,7 @@ def test_unknown_admitted_artifact_is_not_positive_non_session_evidence(tmp_path
             assert len(rows) == 1
             assert rows[0][0] == admitted.raw_id
             assert not rows[0][2]
-            sidecar_payload = {"result": "neutral"}
+            sidecar_payload: JSONValue = {"result": "neutral"}
             sidecar = classify_artifact(
                 sidecar_payload, provider=Provider.CLAUDE_CODE, source_path="tool-results/result.json"
             )
