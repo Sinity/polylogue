@@ -222,3 +222,45 @@ def test_measured_codex_scope_keeps_the_original_header_and_message_wire_family(
         assert forms == {"flat", "envelope"}
     finally:
         corpus._relation_solver.close()
+
+
+def test_measured_claude_blocks_keep_their_original_body_field_owners(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    from polylogue.core.enums import BlockType
+    from polylogue.sources.parsers.dispatch import parse_payload
+
+    selection = select_synthetic_schema("claude-code", registry_factory=lambda: qualified_schema_registry)
+    corpus = SyntheticCorpus.from_selection(selection)
+    observed_tools = 0
+    try:
+        for ordinal, raw in enumerate(corpus.generate(count=12, seed=7)):
+            records = [json.loads(line) for line in raw.splitlines()]
+            for record in records:
+                content = record["message"]["content"]
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    kind = block["type"]
+                    fields = set(block) & {"text", "thinking", "content", "input"}
+                    assert fields == {"text" if kind == "text" else "input" if kind == "tool_use" else "content"}
+            sessions = parse_payload("claude-code", records, f"neutral-{ordinal}")
+            assert len(sessions) == 1
+            assert len(sessions[0].messages) in {2, 4}
+            calls = [
+                block.tool_id
+                for message in sessions[0].messages
+                for block in message.blocks
+                if block.type is BlockType.TOOL_USE
+            ]
+            results = [
+                block.tool_id
+                for message in sessions[0].messages
+                for block in message.blocks
+                if block.type is BlockType.TOOL_RESULT
+            ]
+            assert calls == results
+            observed_tools += len(calls)
+    finally:
+        corpus._relation_solver.close()
+    assert observed_tools > 0

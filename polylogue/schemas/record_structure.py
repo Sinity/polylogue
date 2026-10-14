@@ -18,6 +18,9 @@ CODEX_PUBLIC_MESSAGE_ROLES = frozenset({"user", "assistant", "developer", "syste
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,47}$")
 
 
+PUBLIC_CONTENT_BODY_FIELDS = ("text", "thinking", "content", "input")
+
+
 def _safe_token(value: object) -> str | None:
     return value if isinstance(value, str) and IDENTIFIER_PATTERN.match(value) else None
 

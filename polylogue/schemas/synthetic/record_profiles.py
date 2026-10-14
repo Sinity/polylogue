@@ -12,6 +12,7 @@ from polylogue.schemas.field_stats.distributions import _bucket_index
 from polylogue.schemas.field_stats.models import FilenameWidthStats, PointerShapeStats
 from polylogue.schemas.record_structure import (
     CODEX_PUBLIC_MESSAGE_ROLES,
+    PUBLIC_CONTENT_BODY_FIELDS,
     content_prefix_kind,
     initial_content_prefix,
     published_kind_tokens,
@@ -498,6 +499,7 @@ class PublicRecordPlan:
         self.kind = kind
         self.scalars: dict[str, str | None] = {}
         self.absent: set[str] = set()
+        self.required_body_fields: set[str] = set()
         self.content_type: str | None = None
         if metadata_class is not None:
             if provider != "claude-code" or kind != "agent_sidecar_meta" or agent_id is None or agent_stem is None:
@@ -885,6 +887,28 @@ class PublicRecordPlan:
         if field_name not in {"type", "content_type"}:
             raise ValueError("content discriminator has no declared wire field")
         coordinate = path + "." + field_name
+        forms_by_kind = self.content.get("block_body_field_forms")
+        if isinstance(forms_by_kind, dict):
+            forms = forms_by_kind.get("block:" + kind)
+            if not isinstance(forms, list) or not forms:
+                raise ValueError("original block body-field forms are missing; re-infer the package")
+            weights: list[int] = []
+            for row in forms:
+                if not isinstance(row, dict) or not isinstance(row.get("fields"), list):
+                    raise ValueError("original block body-field form is malformed")
+                fields = row["fields"]
+                if any(
+                    not isinstance(field, str) or field not in PUBLIC_CONTENT_BODY_FIELDS for field in fields
+                ) or len(fields) != len(set(fields)):
+                    raise ValueError("original block body-field form is malformed")
+                weights.append(_count(row.get("count")))
+            selected = rng.choices(forms, weights=weights, k=1)[0]
+            for field in PUBLIC_CONTENT_BODY_FIELDS:
+                target = path + "." + field
+                if field in selected["fields"]:
+                    self.required_body_fields.add(target)
+                else:
+                    self.absent.add(target)
         self.scalars[coordinate] = kind
         if tool_identity_operand({"type": kind}) is not None:
             self.bind_tool_operand(path, kind, rng)
@@ -1169,6 +1193,9 @@ class PublicRecordPlan:
                 self.tool_pointer_relations[path + ".content"] = str(widths["basename_relation"])
 
     def clear_tool_operand(self, path: str) -> None:
+        self.required_body_fields.difference_update(
+            coordinate for coordinate in tuple(self.required_body_fields) if coordinate.startswith(path + ".")
+        )
         for mapping in (
             self.tool_content_types,
             self.tool_pointer_fields,
@@ -1222,7 +1249,13 @@ class PublicRecordPlan:
         return (
             any(
                 key == path or key.startswith(path + ".")
-                for key in (*self.tool_fields, *self.tool_content_types, *self.header_types, *self.graph_values)
+                for key in (
+                    *self.tool_fields,
+                    *self.tool_content_types,
+                    *self.header_types,
+                    *self.graph_values,
+                    *self.required_body_fields,
+                )
             )
             or any(key == path or key.startswith(path + ".") for key in self.scalars)
             or (
@@ -1240,6 +1273,7 @@ class PublicRecordPlan:
                 *self.tool_content_types,
                 *self.header_types,
                 *self.graph_values,
+                *self.required_body_fields,
             )
             if key.startswith(path + ".")
         }

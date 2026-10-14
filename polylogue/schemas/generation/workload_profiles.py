@@ -28,6 +28,7 @@ from polylogue.schemas.generation.models import _PackageAccumulator, _UnitMember
 from polylogue.schemas.generation.observation_journal import JournalMemberships, ObservationJournal
 from polylogue.schemas.generation.packages import _package_bundle_scope_count
 from polylogue.schemas.record_structure import (
+    PUBLIC_CONTENT_BODY_FIELDS,
     claude_agent_metadata_field_forms,
     claude_dispatch_field_forms,
     codex_message_record,
@@ -767,6 +768,7 @@ class _ContentStructure:
     representations: Counter[str] = field(default_factory=Counter)
     kinds: Counter[str] = field(default_factory=Counter)
     discriminator_fields: dict[str, Counter[str]] = field(default_factory=dict)
+    body_field_forms: dict[str, Counter[tuple[str, ...]]] = field(default_factory=dict)
     starts: Counter[tuple[str, str]] = field(default_factory=Counter)
     ends: Counter[tuple[str, str]] = field(default_factory=Counter)
     transitions: Counter[tuple[str, str, str, str]] = field(default_factory=Counter)
@@ -822,6 +824,8 @@ class _ContentStructure:
                 continue
             kind = next(iter_public_content_kinds(carrier), "block:other")
             self.discriminator_fields.setdefault(kind, Counter())[field_name] += 1
+            fields = tuple(field for field in PUBLIC_CONTENT_BODY_FIELDS if field in carrier)
+            self.body_field_forms.setdefault(kind, Counter())[fields] += 1
         for tool in iter_tool_records(provider, envelope):
             operand = tool_identity_operand(tool)
             if operand is None:
@@ -956,6 +960,10 @@ class _ContentStructure:
             ],
             "representations": dict(sorted(self.representations.items())),
             "block_kinds": dict(sorted(self.kinds.items())),
+            "block_body_field_forms": {
+                kind: [{"fields": list(fields), "count": count} for fields, count in sorted(forms.items())]
+                for kind, forms in sorted(self.body_field_forms.items())
+            },
             "block_discriminator_fields": {
                 kind: dict(sorted(fields.items())) for kind, fields in sorted(self.discriminator_fields.items())
             },
