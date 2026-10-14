@@ -261,7 +261,9 @@ def test_four_independent_arms_preserve_schema_census_and_shared_prefix_lineage(
         expected_schema = tuple(
             conn.execute("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
         )
+        expected_identity = str(conn.execute("SELECT identity FROM schema_identity WHERE tier = 'index'").fetchone()[0])
     for run in _ordered_arms:
+        assert run.output.schema_identity == expected_identity
         assert_finished_builds_equivalent(_ordered_arms[0].output, run.output)
         assert run.output.output_session_count == sealed.raw_count == _TOTAL_RAW_COUNT
         assert run.output.output_message_count == _RAW_COUNT + 24 + 8
@@ -272,6 +274,7 @@ def test_four_independent_arms_preserve_schema_census_and_shared_prefix_lineage(
             scratch_root=run.archive_root,
             session_ids=run.session_ids,
             search_queries=run.search_queries,
+            include_threads=True,
         )
         assert streamed.canonical_logical_digest == run.output.canonical_logical_digest
         assert streamed.schema_identity == run.output.schema_identity

@@ -112,7 +112,7 @@ def test_parse_stage_background_window_preserves_bytes_and_scales(tmp_path: Path
     emit_receipt(
         "parse-stage-thread-scaling",
         {
-            "runtime": repr(runtime),
+            "runtime": runtime.to_dict(),
             "raw_count": _RAW_COUNT,
             "payload_bytes": _PAYLOAD_BYTES,
             "background_ceiling_slots": parallel_slots,
