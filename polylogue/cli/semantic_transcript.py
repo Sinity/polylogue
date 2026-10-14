@@ -43,7 +43,8 @@ class _Ordinals(MutableMapping[str, int]):
         self.owner.connection.execute("DELETE FROM counters WHERE key=?", (key,))
 
     def __iter__(self) -> Iterator[str]:
-        with self.owner.cursor("SELECT key FROM counters") as cursor:
+        self.owner.check()
+        with self.owner.retain_cursor(self.owner.connection.execute("SELECT key FROM counters")) as cursor:
             for row in cursor:
                 self.owner.check()
                 yield str(row[0])
@@ -78,9 +79,12 @@ class _NoticeRange(Sequence[TranscriptNoticeSource]):
             for index in range(len(self)):
                 yield self[index]
             return
-        with self.owner.cursor(
-            "SELECT payload FROM notices WHERE position>=? AND position<? ORDER BY position",
-            (self.indices.start, self.indices.stop),
+        self.owner.check()
+        with self.owner.retain_cursor(
+            self.owner.connection.execute(
+                "SELECT payload FROM notices WHERE position>=? AND position<? ORDER BY position",
+                (self.indices.start, self.indices.stop),
+            )
         ) as cursor:
             for row in cursor:
                 self.owner.check()
@@ -111,13 +115,14 @@ class SemanticTranscriptRecords:
         self.records_owner, self.connection, self.checkpoint = records, connection, checkpoint
         self.closed = False
         self.cursors: set[sqlite3.Cursor] = set()
+        connection.execute("PRAGMA temp_store=FILE")
         connection.executescript(
-            "CREATE TABLE messages(position INTEGER PRIMARY KEY,offset INTEGER NOT NULL);"
-            "CREATE TABLE counters(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
-            "CREATE TABLE occurrences(kind TEXT NOT NULL,tool TEXT NOT NULL,ordinal INTEGER NOT NULL,"
+            "CREATE TEMP TABLE messages(position INTEGER PRIMARY KEY,offset INTEGER NOT NULL);"
+            "CREATE TEMP TABLE counters(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
+            "CREATE TEMP TABLE occurrences(kind TEXT NOT NULL,tool TEXT NOT NULL,ordinal INTEGER NOT NULL,"
             "message_index INTEGER NOT NULL,block_index INTEGER NOT NULL,PRIMARY KEY(kind,tool,ordinal));"
-            "CREATE UNIQUE INDEX occurrence_coordinate ON occurrences(message_index,block_index);"
-            "CREATE TABLE notices(position INTEGER PRIMARY KEY,payload TEXT NOT NULL);"
+            "CREATE UNIQUE INDEX temp.occurrence_coordinate ON occurrences(message_index,block_index);"
+            "CREATE TEMP TABLE notices(position INTEGER PRIMARY KEY,payload TEXT NOT NULL);"
         )
 
     @property
@@ -144,9 +149,7 @@ class SemanticTranscriptRecords:
             yield record
 
     @contextmanager
-    def cursor(self, query: str, parameters: tuple[object, ...] = ()) -> Iterator[sqlite3.Cursor]:
-        self.check()
-        cursor = self.connection.execute(query, parameters)
+    def retain_cursor(self, cursor: sqlite3.Cursor) -> Iterator[sqlite3.Cursor]:
         self.cursors.add(cursor)
         try:
             yield cursor
