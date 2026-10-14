@@ -39,8 +39,8 @@ async def test_daemon_first_and_duplicate_ingest_publish_rows_and_report_conflic
     try:
         api = harness.api_server(root)
         uds = harness.uds_server(root, api_server=api, auth_token=resolve_api_auth_token(None))
-        harness.start_server("api_server", api)
-        harness.start_server("uds_server", uds)
+        _api_task = harness.start_server("api_server", api)
+        _uds_task = harness.start_server("uds_server", uds)
         first = await archive.parse_file(source, source_name="neutral-occurrence")
         repeated = await archive.parse_file(source, source_name="neutral-occurrence")
         assert first.counts["sessions"] == first.changed_counts["sessions"] == 1

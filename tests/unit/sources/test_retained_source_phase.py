@@ -860,7 +860,7 @@ def test_membership_census_closes_owned_projection_and_preserves_failures(
     """Owned comparison evidence closes on every exit; borrowed evidence stays with its caller."""
     from builtins import BaseExceptionGroup
 
-    from polylogue.pipeline.ids import SessionRevisionProjection
+    from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_projection
     from polylogue.sources.parsers.base import ParsedSession
     from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
     from polylogue.storage.sqlite.archive_tiers import revision_governance
@@ -877,7 +877,7 @@ def test_membership_census_closes_owned_projection_and_preserves_failures(
     ) as (_reader, raw_id):
         pass
     session = ParsedSession(source_name=Provider.CHATGPT, provider_session_id="projection", messages=[])
-    create = revision_governance.session_revision_projection
+    create = session_revision_projection
     close = SessionRevisionProjection.close
     supplied = create(session) if borrowed else None
     owned: list[SessionRevisionProjection] = []

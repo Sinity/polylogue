@@ -760,25 +760,26 @@ def classify_revision_evidence(
                 equivalent_by_owner.setdefault(owner, []).append(equivalent_id)
         for owner in tuple(ambiguous_ids):
             ambiguous_ids.update(equivalent_by_owner.get(owner, ()))
-        accepted_equivalents = equivalent_by_owner.get(accepted.key, []) if accepted_ids else []
+        accepted_equivalents: list[_Key] = equivalent_by_owner.get(accepted.key, []) if accepted_ids else []
         accounted_equivalents = set(accepted_equivalents) | (ambiguous_ids & set(equivalents))
-        unassigned_equivalents = set(equivalents) - accounted_equivalents
+        unassigned_equivalents: set[_Key] = set(equivalents) - accounted_equivalents
         if existing_accepted_key == accepted.key:
             return RevisionClassification(
                 (), (), tuple(sorted(ambiguous_ids | unassigned_equivalents)), selection_basis="dom_authority"
             )
         return RevisionClassification(
             accepted_ids,
-            tuple(sorted((*accepted_equivalents, *unassigned_equivalents))),
+            tuple(sorted(accepted_equivalents + list(unassigned_equivalents))),
             tuple(sorted(ambiguous_ids)),
             selection_basis="dom_authority",
         )
     direct_export = _direct_export_precedence(representatives)
     if direct_export is not None:
+        browser_capture_keys: tuple[_Key, ...]
         accepted, browser_capture_keys = direct_export
         return RevisionClassification(
             (accepted.key,),
-            tuple(sorted((*equivalents, *browser_capture_keys))),
+            tuple(sorted(equivalents + list(browser_capture_keys))),
             (),
             selection_basis="direct_export",
         )

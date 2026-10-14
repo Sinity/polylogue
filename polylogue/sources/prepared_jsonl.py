@@ -1935,7 +1935,7 @@ class PreparedSessionSequence(Sequence[ParsedSession]):
     def by_session_id(self, session_id: str) -> ParsedSession:
         return self.artifact.session_by_id(session_id, _shard=self._shard)
 
-    def iter_session_occurrences(self, session_id: str) -> Iterator[tuple[int, ParsedSession]]:
+    def iter_session_occurrences(self, session_id: str) -> Generator[tuple[int, ParsedSession], None, None]:
         """Seek this identity's original ordinal ranges without scanning other members."""
         if self.artifact.sessions_path is None:
             raise RuntimeError(self.artifact.error or "JSONL preparation has no sealed artifact")

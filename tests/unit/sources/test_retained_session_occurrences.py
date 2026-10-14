@@ -240,7 +240,8 @@ def test_source_conflict_does_not_claim_a_missing_derived_representative_is_publ
     debt = archive_debt_list(archive_root=tmp_path, kinds=["raw-materialization"])
     assert len(debt.rows) == 1
     assert debt.rows[0].status == "actionable"
-    assert "need materialization and retain conflict" in debt.rows[0].summary
+    assert "need representative materialization and retain conflict" in debt.rows[0].summary
+    assert debt.rows[0].details is not None
     assert "representative is published" not in debt.rows[0].details
 
 
