@@ -353,6 +353,18 @@ def git_worktree_content_sha256(cwd: Path, *, paths: Sequence[bytes] | None = No
         return None
 
 
+def verification_build_id(*, head: str | None, dirty: bool, content_sha256: str | None) -> str | None:
+    """Name the tree a verification runs against, never a HEAD it did not test.
+
+    A clean checkout is its commit. A dirty one is only its Git-visible
+    content, so the identity is the content digest the run already records;
+    without one the tree is unidentified rather than borrowed from HEAD.
+    """
+    if dirty:
+        return f"worktree-sha256:{content_sha256}" if content_sha256 else None
+    return f"git:{head}" if head else None
+
+
 @dataclass(frozen=True)
 class PytestStepArtifacts:
     step_id: str
