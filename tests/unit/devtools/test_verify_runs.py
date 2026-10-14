@@ -734,7 +734,7 @@ def test_finish_reuses_one_history_scan_with_identical_retention_policy(
             opened[fd] = directory
         return fd
 
-    def close_lock(fd: int | None) -> None:
+    def close_lock(fd: int) -> None:
         if fd is not None:
             opened.pop(fd, None)
         original_close(fd)
