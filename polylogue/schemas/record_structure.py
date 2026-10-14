@@ -221,6 +221,12 @@ def iter_tool_records(provider: str, record: Mapping[str, object]) -> Iterator[M
 
 
 def tool_result_content_mode(record: Mapping[str, object]) -> str:
+    if record.get("type") in {"function_call_output", "custom_tool_call_output"}:
+        for field in ("output", "tools", "result"):
+            if field in record:
+                value = record[field]
+                shape = "null" if value is None else content_representation(value)
+                return f"native-{field}:{shape}"
     content = record.get("content")
     shape = "absent" if "content" not in record else "null" if content is None else content_representation(content)
     if shape not in {"absent", "null", "string", "array", "object"}:

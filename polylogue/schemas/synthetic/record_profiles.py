@@ -1123,6 +1123,24 @@ class PublicRecordPlan:
         mode = row.get("result_mode")
         if not isinstance(mode, str):
             raise ValueError("tool result shape is missing; re-infer the package")
+        if (
+            self.provider == "codex"
+            and kind in {"function_call_output", "custom_tool_call_output"}
+            and mode.startswith("native-")
+        ):
+            carrier, separator, shape = mode.partition(":")
+            field_name = carrier.removeprefix("native-")
+            if (
+                not separator
+                or field_name not in {"output", "tools", "result"}
+                or shape not in {"null", "string", "array", "object"}
+            ):
+                raise ValueError("native tool result shape contradicts its original carrier")
+            content = path + "." + field_name
+            if shape == "null":
+                self.scalars[content] = None
+            else:
+                self.tool_content_types[content] = frozenset({shape})
         if self.provider == "claude-code" and kind == "tool_result":
             shape, separator, disposition = mode.partition(":")
             if (
