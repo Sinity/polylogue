@@ -1955,3 +1955,114 @@ def test_codex_receipt_witnesses_both_original_measured_record_families(
         for witness in entry.parser_witnesses
     )
     assert all(witness.healthy for witness in entry.parser_witnesses)
+
+
+def _chatgpt_tool_result_graph() -> JSONDocument:
+    def node(
+        identity: str,
+        parent: str | None,
+        role: str,
+        *,
+        content_type: str = "text",
+        status: str = "finished_successfully",
+    ) -> JSONDocument:
+        return {
+            "id": "node-" + identity,
+            "parent": parent,
+            "message": {
+                "id": identity,
+                "author": {"role": role},
+                "content": {"content_type": content_type, "parts": ["neutral body"]},
+                "status": status,
+                "create_time": 1,
+            },
+        }
+
+    call = node("call-message", None, "assistant")
+    call_message = cast(JSONDocument, call["message"])
+    call_message["metadata"] = {"command": "lookup", "args": {}}
+    source_author = node("source-author-message", "direct-coordinate", "assistant")
+    source_message = cast(JSONDocument, source_author["message"])
+    source_message["author"] = {"role": "assistant", "metadata": {"real_author": "tool:lookup"}}
+    source_message["metadata"] = {"aggregate_result": {"status": "failed_with_in_kernel_exception"}}
+    incidental = node("incidental-message", "call-coordinate", "assistant")
+    incidental_message = cast(JSONDocument, incidental["message"])
+    incidental_message["author"] = {"role": "assistant", "name": "lookup"}
+    incidental_message["recipient"] = "lookup"
+    return {
+        "id": "neutral-tool-session",
+        "mapping": {
+            "call-coordinate": call,
+            "direct-coordinate": node("direct-message", "call-coordinate", "tool"),
+            "source-author-coordinate": source_author,
+            "unknown-coordinate": node("unknown-message", "source-author-coordinate", "tool", status="in_progress"),
+            "typed-coordinate": node("typed-message", "call-coordinate", "assistant", content_type="execution_output"),
+            "error-coordinate": node("error-message", "call-coordinate", "tool", content_type="system_error"),
+            "incidental-coordinate": incidental,
+            "orphan-coordinate": node("orphan-message", "missing-coordinate", "tool", status="in_progress"),
+            "cycle-a": node("cycle-a-message", "cycle-b", "tool", status="in_progress"),
+            "cycle-b": node("cycle-b-message", "cycle-a", "tool", status="in_progress"),
+        },
+    }
+
+
+def test_chatgpt_tool_result_oracle_reads_native_owners_and_typed_outcomes() -> None:
+    from collections import Counter
+
+    payload = _chatgpt_tool_result_graph()
+    expected = Counter(
+        {
+            (BlockType.TOOL_USE, "call-message", None, None): 1,
+            (BlockType.TOOL_RESULT, "call-message", False, None): 2,
+            (BlockType.TOOL_RESULT, "call-message", True, None): 2,
+            (BlockType.TOOL_RESULT, "call-message", None, None): 1,
+        }
+    )
+    actual_expected = wire_formats._parser_artifact_expected_tool_witnesses("chatgpt", cast(GeneratedValue, payload))
+    assert Counter(actual_expected) == expected
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    assert len(sessions) == 1 and len(sessions[0].messages) == 10
+    assert Counter(wire_formats._parser_artifact_tool_witnesses(sessions)) == expected
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    by_id = {message.provider_message_id: message for message in sessions[0].messages}
+    assert by_id["source-author-message"].material_origin is MaterialOrigin.TOOL_RESULT
+    assert by_id["incidental-message"].material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+    assert all(block.type is not BlockType.TOOL_USE for block in by_id["incidental-message"].blocks)
+    for identity in ("orphan-message", "cycle-a-message", "cycle-b-message"):
+        results = [block for block in by_id[identity].blocks if block.type is BlockType.TOOL_RESULT]
+        assert len(results) == 1 and results[0].tool_id is None and results[0].is_error is None
+
+
+@pytest.mark.parametrize("mutation", ["drop", "owner", "outcome", "invent"])
+def test_chatgpt_tool_result_oracle_refuses_parsed_mutants(mutation: str) -> None:
+    payload = _chatgpt_tool_result_graph()
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    message = next(message for message in sessions[0].messages if message.provider_message_id == "direct-message")
+    result = next(block for block in message.blocks if block.type is BlockType.TOOL_RESULT)
+    if mutation == "drop":
+        message.blocks = [block for block in message.blocks if block is not result]
+    elif mutation == "owner":
+        result.tool_id = "wrong-native-owner"
+    elif mutation == "outcome":
+        result.is_error = True
+    else:
+        message.blocks.append(ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="invented-result", is_error=False))
+    assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+
+
+def test_chatgpt_tool_result_oracle_does_not_read_parsed_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden_parser(*args: object, **kwargs: object) -> None:
+        pytest.fail("the expected tool obligations must come from the native envelope")
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", forbidden_parser)
+    witnesses = wire_formats._parser_artifact_expected_tool_witnesses(
+        "chatgpt", cast(GeneratedValue, _chatgpt_tool_result_graph())
+    )
+    assert len(witnesses) == 6
