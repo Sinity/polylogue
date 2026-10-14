@@ -10,6 +10,7 @@ from typing import Literal
 
 import pytest
 
+from tests.infra.frozen_clock import FrozenClock
 from tests.infra.storage_records import make_message, make_session, store_records
 
 
@@ -326,3 +327,165 @@ def test_store_records_has_no_second_index_tier_writer() -> None:
 
     for retired in ("upsert_session", "upsert_message", "upsert_attachment", "_upsert_session_stats_sync"):
         assert not hasattr(storage_helpers, retired), f"{retired} is a second index-tier writer"
+
+
+@pytest.mark.parametrize("identity_source", ["native", "content"])
+@pytest.mark.parametrize("variant_index", [0, 2])
+def test_builder_preserves_attachment_ownership_on_both_identity_branches(
+    db_path: Path,
+    identity_source: str,
+    variant_index: int,
+) -> None:
+    """A fixture-local ID cannot resolve an attachment against a NULL provider-native ID."""
+    import asyncio
+
+    from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.storage_records import SessionBuilder
+
+    builder = SessionBuilder(db_path, "attachment-owner")
+    builder.add_message(
+        message_id="owner",
+        text="attachment owner",
+        identity_source=identity_source,
+        branch_index=variant_index,
+    )
+    builder.add_attachment(display_name="sample.txt", mime_type="text/plain")
+    session = asyncio.run(builder.build())
+    assert session is not None
+    messages = list(session.messages)
+    assert len(messages) == 1
+    assert len(messages[0].attachments) == 1
+    assert messages[0].attachments[0].name == "sample.txt"
+    assert session.attachments == []
+    with open_connection(db_path) as conn:
+        owner = conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ?", (builder.native_session_id(),)
+        ).fetchone()
+        references = conn.execute("SELECT message_id FROM attachment_refs").fetchall()
+    assert owner is not None
+    assert [row["message_id"] for row in references] == [owner["message_id"]]
+
+
+@pytest.mark.parametrize("child_identity", ["native", "content"])
+def test_builder_preserves_links_to_content_derived_parent_messages(db_path: Path, child_identity: str) -> None:
+    """Passing the synthetic parent ID as a provider ID would persist a NULL parent link."""
+    from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.storage_records import CONTENT_DERIVED_IDENTITY, SessionBuilder
+
+    builder = SessionBuilder(db_path, "message-parent")
+    builder.add_message(message_id="m1", text="parent turn", identity_source=CONTENT_DERIVED_IDENTITY)
+    builder.add_message(
+        message_id="m2",
+        text="child turn",
+        parent_message_id="m1",
+        identity_source=child_identity,
+    )
+    builder.save()
+    with open_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT message_id, parent_message_id, identity_source FROM messages WHERE session_id = ? ORDER BY position",
+            (builder.native_session_id(),),
+        ).fetchall()
+    assert len(rows) == 2
+    parent, child = rows
+    assert parent["identity_source"] == "content"
+    assert child["identity_source"] == child_identity
+    assert child["parent_message_id"] == parent["message_id"]
+
+
+@pytest.mark.frozen_clock_modules("tests.infra.storage_records")
+@pytest.mark.parametrize("route", ["builder", "record"])
+def test_content_derived_fixture_defaults_do_not_depend_on_wall_clock(
+    db_path: Path,
+    frozen_clock: FrozenClock,
+    route: str,
+) -> None:
+    """Synthesizing now() as semantic message time changes the content digest on every run."""
+    from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.storage_records import CONTENT_DERIVED_IDENTITY, SessionBuilder
+
+    def seed(key: str) -> str:
+        builder = SessionBuilder(db_path, key)
+        if route == "builder":
+            builder.add_message(text="stable content", identity_source=CONTENT_DERIVED_IDENTITY)
+            builder.save()
+        else:
+            store_records(
+                session=builder.conv,
+                messages=[make_message(text="stable content", identity_source=CONTENT_DERIVED_IDENTITY)],
+                attachments=[],
+            )
+        with open_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT message_id, session_id, identity_source FROM messages WHERE session_id = ?",
+                (builder.native_session_id(),),
+            ).fetchone()
+        assert row is not None and row["identity_source"] == "content"
+        return str(row["message_id"]).removeprefix(f"{row['session_id']}:")
+
+    before = seed("default-before")
+    frozen_clock.advance(60)
+    after = seed("default-after")
+    assert before.startswith("c:")
+    assert before == after
+
+
+def test_content_derived_fixture_keeps_an_explicit_timestamp(db_path: Path) -> None:
+    from tests.infra.storage_records import CONTENT_DERIVED_IDENTITY, SessionBuilder
+
+    builder = SessionBuilder(db_path, "explicit-time")
+    builder.add_message(timestamp=_SEED_TS, identity_source=CONTENT_DERIVED_IDENTITY)
+    message = make_message(timestamp=_SEED_TS, identity_source=CONTENT_DERIVED_IDENTITY)
+    assert builder.messages[0].sort_key == message.sort_key
+    assert message.sort_key == 1767323045.0
+
+
+@pytest.mark.frozen_clock_modules("tests.infra.storage_records")
+@pytest.mark.parametrize("route", ["builder", "record"])
+def test_native_fixture_default_timestamp_follows_the_clock(
+    db_path: Path,
+    frozen_clock: FrozenClock,
+    route: str,
+) -> None:
+    from tests.infra.storage_records import SessionBuilder
+
+    def make_sort_key() -> float | None:
+        if route == "builder":
+            builder = SessionBuilder(db_path, "native-clock").add_message()
+            return builder.messages[0].sort_key
+        return make_message().sort_key
+
+    before = make_sort_key()
+    frozen_clock.advance(60)
+    after = make_sort_key()
+    assert before == frozen_clock.start
+    assert after == frozen_clock.start + 60
+
+
+@pytest.mark.parametrize("parent_reference", ["archive", "native"])
+@pytest.mark.parametrize("parent_key", ["parent", "parent:segment"])
+def test_builder_resolves_native_and_archive_parent_session_references(
+    db_path: Path,
+    parent_reference: str,
+    parent_key: str,
+) -> None:
+    from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.storage_records import SessionBuilder
+
+    parent = SessionBuilder(db_path, parent_key).provider("claude-code").add_message(text="parent")
+    parent.save()
+    reference = parent.native_session_id() if parent_reference == "archive" else parent.conv.native_id
+    child = (
+        SessionBuilder(db_path, "child")
+        .provider("claude-code")
+        .parent_session(reference)
+        .branch_type("continuation")
+        .add_message(text="child")
+    )
+    child.save()
+    with open_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT parent_session_id FROM sessions WHERE session_id = ?", (child.native_session_id(),)
+        ).fetchone()
+    assert row is not None
+    assert row["parent_session_id"] == parent.native_session_id()
