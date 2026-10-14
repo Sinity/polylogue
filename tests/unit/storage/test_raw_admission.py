@@ -824,3 +824,90 @@ def test_raw_source_root_scope_is_a_literal_path_prefix(tmp_path: Path) -> None:
 
     assert selected("/archive/100%") == {"raw-0", "raw-1"}
     assert selected("/archive/foo") == {"raw-4"}
+
+
+def test_append_capture_identity_preserves_family_native_presence_and_exact_retry(tmp_path: Path) -> None:
+    from contextlib import closing
+
+    from polylogue.archive.revision_authority import append_source_revision
+
+    payload = b"same retained delta\n"
+    digest = hashlib.sha256(payload).hexdigest()
+    revision = RawRevisionEnvelope(
+        logical_source_key="aistudio-drive:declared",
+        kind=RawRevisionKind.APPEND,
+        source_revision=append_source_revision("prior", digest),
+        predecessor_source_revision="prior",
+        append_start_offset=10,
+        append_end_offset=10 + len(payload),
+        acquisition_generation=0,
+        authority=RawRevisionAuthority.QUARANTINED,
+    )
+    with closing(_connect(tmp_path / "source.db")) as conn:
+        identifiers = []
+
+        def retain(
+            *,
+            raw_id: str | None = None,
+            family: Provider | None,
+            native: str | None,
+        ) -> str:
+            return admit_raw_observation(
+                conn,
+                origin=Origin.AISTUDIO_DRIVE,
+                capture_mode=family,
+                source_path="synthetic/declared.jsonl",
+                canonical_source_path="synthetic/declared.jsonl",
+                source_index=-1,
+                payload=payload,
+                acquired_at_ms=1,
+                native_id=native,
+                raw_id=raw_id,
+                post_parse=True,
+                append_revision=revision,
+            ).raw_id
+
+        for family, native in ((Provider.GEMINI, None), (Provider.DRIVE, None), (Provider.GEMINI, ""), (None, None)):
+            identifier = retain(family=family, native=native)
+            assert retain(family=family, native=native) == identifier
+            assert retain(raw_id=identifier, family=family, native=native) == identifier
+            identifiers.append(identifier)
+        assert len(set(identifiers)) == 4
+        assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == 4
+        with pytest.raises(ValueError):
+            retain(raw_id=identifiers[0], family=None, native=None)
+        assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == 4
+
+
+def test_append_capture_identity_encodes_literal_surrogate_paths() -> None:
+    from polylogue.archive.revision_authority import append_source_revision
+    from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
+
+    payload = b"delta"
+    blob_hash = hashlib.sha256(payload).digest()
+    revision = RawRevisionEnvelope(
+        logical_source_key="codex-session:declared",
+        kind=RawRevisionKind.APPEND,
+        source_revision=append_source_revision("prior", blob_hash.hex()),
+        predecessor_source_revision="prior",
+        append_start_offset=1,
+        append_end_offset=1 + len(payload),
+        acquisition_generation=0,
+        authority=RawRevisionAuthority.QUARANTINED,
+    )
+    literal = "synthetic/undecodable-" + chr(0xDCFF) + ".jsonl"
+    assert deterministic_raw_session_id(
+        Origin.CODEX_SESSION,
+        literal,
+        -1,
+        blob_hash,
+        append_revision=revision,
+        capture_mode=Provider.CODEX,
+    ) != deterministic_raw_session_id(
+        Origin.CODEX_SESSION,
+        literal.replace(chr(0xDCFF), chr(0xFFFD)),
+        -1,
+        blob_hash,
+        append_revision=revision,
+        capture_mode=Provider.CODEX,
+    )

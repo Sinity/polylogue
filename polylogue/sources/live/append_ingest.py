@@ -6,12 +6,13 @@ import sqlite3
 import time
 from builtins import BaseExceptionGroup
 from collections.abc import Callable
+from contextlib import closing
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path
+from polylogue.archive.artifact_taxonomy import CLASSIFIED_ARTIFACT_KINDS, ArtifactKind, classify_artifact_path
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -54,21 +55,16 @@ class _AppendIngestOwner(Protocol):
     _polylogue: Any
 
 
-def _bind_append_revision(
+def _prepare_append_revision(
     archive: Any,
-    raw_id: str,
     *,
     logical_source_key: str,
     plan: _AppendPlan,
-) -> tuple[str, RawRevisionAuthority]:
-    """Persist an APPEND envelope from the append plan's durable identity."""
+) -> RawRevisionEnvelope:
+    """Prepare byte authority before the atomic acquisition commit."""
     if plan.cursor_fingerprint is None:
         raise ValueError("append payload did not prove cursor identity")
-    parent = archive.raw_append_revision_parent(
-        logical_source_key,
-        plan.start_offset,
-        plan.cursor_fingerprint,
-    )
+    parent = archive.raw_append_revision_parent(logical_source_key, plan.start_offset, plan.cursor_fingerprint)
     predecessor_raw_id: str | None = None
     baseline_raw_id: str | None = None
     generation = archive.raw_full_revision_generation(logical_source_key)
@@ -76,38 +72,17 @@ def _bind_append_revision(
     if parent is not None:
         predecessor_raw_id, baseline_raw_id, generation = parent
         authority = RawRevisionAuthority.BYTE_PROVEN
-    archive.bind_raw_revision(
-        raw_id,
-        RawRevisionEnvelope(
-            logical_source_key=logical_source_key,
-            kind=RawRevisionKind.APPEND,
-            source_revision=append_source_revision(plan.cursor_fingerprint, plan.payload_hash),
-            acquisition_generation=generation,
-            predecessor_source_revision=plan.cursor_fingerprint,
-            predecessor_raw_id=predecessor_raw_id,
-            baseline_raw_id=baseline_raw_id,
-            append_start_offset=plan.start_offset,
-            append_end_offset=plan.last_complete_newline,
-            authority=authority,
-        ),
-    )
-    return logical_source_key, authority
-
-
-def _bind_hook_carrier_append_revision(
-    archive: Any,
-    raw_id: str,
-    *,
-    provider: Provider,
-    plan: _AppendPlan,
-) -> tuple[str, RawRevisionAuthority]:
-    """Bind one carrier tail without assigning its events a session identity."""
-    logical_source_key = hook_carrier_logical_source_key(provider=provider, source_path=str(plan.path))
-    return _bind_append_revision(
-        archive,
-        raw_id,
+    return RawRevisionEnvelope(
         logical_source_key=logical_source_key,
-        plan=plan,
+        kind=RawRevisionKind.APPEND,
+        source_revision=append_source_revision(plan.cursor_fingerprint, plan.payload_hash),
+        acquisition_generation=generation,
+        predecessor_source_revision=plan.cursor_fingerprint,
+        predecessor_raw_id=predecessor_raw_id,
+        baseline_raw_id=baseline_raw_id,
+        append_start_offset=plan.start_offset,
+        append_end_offset=plan.last_complete_newline,
+        authority=authority,
     )
 
 
@@ -117,6 +92,7 @@ def _write_append_raw_payload(
     provider: Provider,
     plan: _AppendPlan,
     acquired_at_ms: int,
+    revision: RawRevisionEnvelope,
 ) -> str:
     """Capture literal append bytes with their migration-stable raw identity."""
     try:
@@ -130,6 +106,7 @@ def _write_append_raw_payload(
         str,
         archive.write_raw_payload(
             provider=provider,
+            capture_mode=provider,
             payload=plan.payload,
             source_path=str(plan.path),
             canonical_source_path=plan.canonical_source_path,
@@ -138,6 +115,7 @@ def _write_append_raw_payload(
             file_mtime_ms=file_mtime_ms,
             native_id=plan.acquisition_native_id_hint,
             post_parse=True,
+            append_revision=revision,
         ),
     )
 
@@ -207,22 +185,27 @@ def ingest_append_plans(
         if archive_missing:
             initialize_active_archive_root(archive_root)
         with _open_archive_for_live_write(archive_root, cold_build=True) as archive:
-            raw_id = _write_append_raw_payload(archive, provider=provider, plan=plan, acquired_at_ms=acquired_at_ms)
+            logical_source_key = (
+                hook_carrier_logical_source_key(provider=provider, source_path=str(plan.path))
+                if plan.native_id_hint is None
+                else f"{origin_from_provider(provider).value}:{plan.native_id_hint}"
+            )
+            revision = _prepare_append_revision(archive, logical_source_key=logical_source_key, plan=plan)
+            raw_id = _write_append_raw_payload(
+                archive,
+                provider=provider,
+                plan=plan,
+                acquired_at_ms=acquired_at_ms,
+                revision=revision,
+            )
             source = archive.source_connection
             assert source is not None
             profile_key = read_raw_profile_identity(source, raw_id)
-            if plan.native_id_hint is None:
-                authority = _bind_hook_carrier_append_revision(archive, raw_id, provider=provider, plan=plan)[1]
-            else:
-                authority = _bind_append_revision(
-                    archive,
-                    raw_id,
-                    logical_source_key=f"{origin_from_provider(provider).value}:{plan.native_id_hint}",
-                    plan=plan,
-                )[1]
-            return raw_id, authority, profile_key
+            return raw_id, revision.authority, profile_key
 
-    def terminal_receipt(plan: _AppendPlan, raw_id: str, profile_key: str | None) -> tuple[bool, str | None]:
+    def terminal_receipt(
+        plan: _AppendPlan, raw_id: str, profile_key: str | None, provider: Provider
+    ) -> tuple[bool, str | None]:
         """Acknowledge only the committed terminal proof of this raw's selected route."""
         with _open_archive_for_live_write(archive_root, cold_build=True) as archive:
             source = archive.source_connection
@@ -259,11 +242,25 @@ def ingest_append_plans(
                 return True, None
             artifact = source.execute(
                 "SELECT 1 FROM raw_artifacts a JOIN raw_authority_parser_census c ON c.raw_id=a.raw_id "
-                "WHERE a.raw_id=? AND a.parse_as_session=0 AND c.parser_fingerprint=? AND c.status='complete'",
+                f"WHERE a.raw_id=? AND a.parse_as_session=0 AND a.artifact_kind IN "
+                f"({','.join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))}) "
+                "AND c.parser_fingerprint=? AND c.status='complete'",
                 (raw_id, raw_authority_parser_fingerprint()),
             ).fetchone()
             if artifact is not None:
                 return True, None
+            path_kind = classify_artifact_path(str(plan.path), provider=provider)
+            if path_kind is not None and path_kind.kind is ArtifactKind.HOOK_EVENT_CARRIER:
+                with closing(
+                    source.execute(
+                        "SELECT 1 FROM raw_membership_census m JOIN raw_authority_parser_census c ON c.raw_id=m.raw_id "
+                        "WHERE m.raw_id=? AND m.parser_fingerprint=? AND m.status='non_session' "
+                        "AND m.member_count=0 AND c.parser_fingerprint=m.parser_fingerprint AND c.status='complete'",
+                        (raw_id, raw_authority_parser_fingerprint()),
+                    )
+                ) as membership:
+                    if membership.fetchone() is not None:
+                        return True, None
             index = archive.index_connection
             if index is None:
                 return False, None
@@ -313,7 +310,7 @@ def ingest_append_plans(
                 _add_timing(timings, "append.canonical_raw", t0)
             check_compute_cancelled()
             terminal, session_id = admit_stage_write(
-                "watcher.live_ingest.append.receipt", partial(terminal_receipt, plan, raw_id, profile_key)
+                "watcher.live_ingest.append.receipt", partial(terminal_receipt, plan, raw_id, profile_key, provider)
             )
             if terminal:
                 succeeded.append(plan)

@@ -851,6 +851,7 @@ def write_raw_payload(
     native_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
     revision: RawRevisionEnvelope | None = None,
+    append_revision: RawRevisionEnvelope | None = None,
     post_parse: bool = False,
 ) -> str:
     """Commit raw bytes before attempting to parse or index them.
@@ -870,12 +871,16 @@ def write_raw_payload(
     it, because no live acquisition route reaches it -- every production
     acquisition caller (``sources/live/append_ingest.py``,
     ``sources/live/batch.py``) passes ``post_parse=True`` and resolves the
-    ``POST_PARSE_PENDING`` arm. What remains on this branch is fixture seeding:
+    ``POST_PARSE_PENDING`` arm. The explicit append_revision stores
+    the capture window with the bytes before later parser or Index work.
+    What remains on this branch is fixture seeding:
     ``durable_change_train.py``'s temp-archive self-probes and ``tests/infra``
     corpus builders, which need to plant specific row shapes that admission
     would normalize away. Treat a NEW production caller of this branch as a
     chokepoint bypass, not as precedent.
     """
+    if append_revision is not None and (not post_parse or revision is not None or captured_zip_coordinate is not None):
+        raise ValueError("append acquisition requires ordinary post-parse byte retention")
     policy_snapshot = _policy_snapshot_for_store(store)
     # DRIVE is a deliberate compatibility carrier for the non-injective
     # AISTUDIO_DRIVE origin mapping.  Preserve it when callers use the legacy
@@ -933,6 +938,7 @@ def write_raw_payload(
             native_id=native_id,
             raw_id=raw_id,
             post_parse=True,
+            append_revision=append_revision,
             blob_publication_receipt_id=blob_publication_receipt_id,
             manage_transaction=True,
             policy_snapshot=policy_snapshot,

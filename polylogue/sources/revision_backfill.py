@@ -4073,7 +4073,36 @@ def prepare_revision_source_census(
         outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
         if source_index < 0 and not isinstance(outcome, Exception):
             stage_current_parser_followup(raw_id, source_index)
-            if evidence_reader.raw_has_membership_authority(raw_id):
+            fragment_input = prepared_inputs[raw_id]
+            artifact = fragment_input.prepared_artifact
+            stream = artifact.stream_classification() if artifact is not None else None
+            if (
+                stream is not None
+                and stream.proved_non_session
+                and stream.classification.cohort in CLASSIFIED_ARTIFACT_KINDS
+                and not stream.classification.parse_as_session
+                and stream.classification.provider is fragment_input.provider
+                and not outcome[0]
+            ):
+                # Negative coordinates cannot mint an artifact observation,
+                # but the complete retained classification still owns this
+                # fragment's non-session membership and terminal parser answer.
+                record_prepared_membership_census_receipt(
+                    seal,
+                    raw_id,
+                    parser_fingerprint=raw_authority_parser_fingerprint(),
+                    status="non_session",
+                    member_count=0,
+                    censused_at_ms=0,
+                    detail="complete retained classification proves non-session append input",
+                    revision_authority=(
+                        RawRevisionAuthority.BYTE_PROVEN
+                        if evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.BYTE_PROVEN.value
+                        else None
+                    ),
+                )
+                record_current_parser_source_census(seal, raw_id)
+            elif evidence_reader.raw_has_membership_authority(raw_id):
                 record_current_parser_source_census(seal, raw_id)
             else:
                 replace_raw_membership_census(

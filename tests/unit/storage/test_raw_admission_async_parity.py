@@ -92,12 +92,34 @@ def _snapshot(path: Path) -> dict[str, list[tuple[object, ...]]]:
         }
 
 
-async def test_pending_preparse_admission_sync_and_aiosqlite_have_identical_durable_effects(tmp_path: Path) -> None:
+@pytest.mark.parametrize("append", [False, True])
+async def test_pending_preparse_admission_sync_and_aiosqlite_have_identical_durable_effects(
+    tmp_path: Path,
+    append: bool,
+) -> None:
     sync_root = tmp_path / "sync"
     async_root = tmp_path / "async"
     await asyncio.to_thread(initialize_active_archive_root, sync_root)
     await asyncio.to_thread(initialize_active_archive_root, async_root)
     request = _request()
+    if append:
+        from dataclasses import replace
+
+        from polylogue.archive.revision_authority import append_source_revision
+
+        request = replace(
+            request,
+            append_revision=RawRevisionEnvelope(
+                logical_source_key="chatgpt-export:declared",
+                kind=RawRevisionKind.APPEND,
+                source_revision=append_source_revision("prior", request.blob_hash.hex()),
+                predecessor_source_revision="prior",
+                append_start_offset=10,
+                append_end_offset=10 + request.blob_size,
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
     plan = plan_raw_admission(request)
 
     with sqlite3.connect(sync_root / "source.db") as conn:

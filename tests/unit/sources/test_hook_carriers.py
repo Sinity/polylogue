@@ -1908,3 +1908,60 @@ def test_hook_discovery_retains_only_one_decoded_carrier(tmp_path: Path, monkeyp
     assert actual == expected
     assert hook_event_derivation.discover_pending_hook_carriers(archive_root, 32) == ()
     assert hook_event_count(archive_root) == 6
+
+
+def test_live_repeated_hook_line_retains_each_append_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Equal carrier deltas must advance custody twice without raw-id collision."""
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    carrier = append_hook_event(
+        event_type="PostToolUse",
+        session_id="repeated-hook-session",
+        provider="codex",
+        timestamp=_TIMESTAMP,
+        payload={"tool_call_id": "repeat-call"},
+        root=spool_root,
+        event_id="repeat-hook-event",
+    )
+    body = carrier.read_bytes()
+    assert acquire_hook_carriers(archive_root) == 1
+    source = WatchSource(
+        name="codex-hooks",
+        root=hook_carrier_provider_dir("codex", spool_root),
+        layout=export_drop_layout((".ndjson",)),
+        source_id="primary-hook-spool:codex",
+        role="primary-writable",
+    )
+
+    async def append_twice() -> None:
+        async with live_owner_set(archive_root) as owners:
+            watcher = LiveWatcher(
+                SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
+                (source,),
+                **owners.watcher_kwargs(),
+            )
+            for _ in range(2):
+                with carrier.open("ab") as handle:
+                    handle.write(body)
+                metrics = await watcher._ingest_files([carrier])
+                assert (metrics.append_file_count, metrics.full_file_count, metrics.failed_file_count) == (1, 0, 0)
+                assert not metrics.deferred_paths, metrics.to_payload()
+            assert (await watcher._ingest_files([carrier])).append_file_count == 0
+
+    asyncio.run(append_twice())
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        rows = conn.execute(
+            "SELECT raw_id, blob_hash, native_id, append_start_offset, append_end_offset "
+            "FROM raw_sessions WHERE source_path = ? AND revision_kind = 'append' "
+            "ORDER BY append_start_offset",
+            (str(carrier),),
+        ).fetchall()
+    assert len(rows) == 2
+    assert rows[0][0] != rows[1][0]
+    assert rows[0][1] == rows[1][1]
+    assert [row[2:] for row in rows] == [
+        (None, len(body), 2 * len(body)),
+        (None, 2 * len(body), 3 * len(body)),
+    ]

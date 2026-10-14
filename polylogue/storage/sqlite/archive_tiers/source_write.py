@@ -471,11 +471,37 @@ def deterministic_raw_session_id(
     source_index: int,
     blob_hash: bytes,
     native_id: str | None = None,
+    *,
+    append_revision: RawRevisionEnvelope | None = None,
+    capture_mode: Provider | str | None = None,
 ) -> str:
-    """Deterministic text identifier for an archive raw session."""
+    """Identify retained bytes and immutable acquisition coordinates."""
     origin_value = require_vocabulary(origin, Origin, field="origin")
     if origin_value is None:
         raise ValueError("origin is required for raw session ids")
+    if append_revision is not None:
+        if append_revision.kind is not RawRevisionKind.APPEND:
+            raise ValueError("append acquisition identity requires an APPEND envelope")
+        if native_id is not None and not isinstance(native_id, str):
+            raise ValueError("append native identity must be text or absent")
+        family = require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None
+        encoded = json.dumps(
+            (
+                "append",
+                origin_value,
+                family,
+                source_path,
+                source_index,
+                blob_hash.hex(),
+                native_id,
+                append_revision.predecessor_source_revision,
+                append_revision.append_start_offset,
+                append_revision.append_end_offset,
+            ),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        return hashlib.sha256(encoded).hexdigest()
     digest = hashlib.sha256()
     digest.update(origin_value.encode("utf-8", errors="surrogatepass"))
     digest.update(b"\0")
@@ -772,6 +798,8 @@ def write_source_raw_session(
         source_index,
         blob_hash,
         native_id,
+        append_revision=revision if revision is not None and revision.kind is RawRevisionKind.APPEND else None,
+        capture_mode=capture_mode,
     )
 
     with conn if manage_transaction else nullcontext():
@@ -1235,6 +1263,8 @@ def write_source_raw_session_blob_ref(
         source_index,
         blob_hash,
         native_id,
+        append_revision=revision if revision is not None and revision.kind is RawRevisionKind.APPEND else None,
+        capture_mode=capture_mode,
     )
     with conn if manage_transaction else nullcontext():
         raw_inserted = _insert_raw_session(
