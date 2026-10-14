@@ -332,13 +332,42 @@ def test_legacy_codex_page_image_does_not_abort_census(tmp_path: Path) -> None:
         source_path=str(tmp_path / "codex" / "state_5.sqlite"),
     ) as (reader, raw_id):
         assert reader.raw_revision_descriptor(raw_id)[1] == digest
-    published, phase, receipt = asyncio.run(run_retained_source_phase(tmp_path, (raw_id,)))
+    from polylogue.archive.artifact_taxonomy import ArtifactKind
+    from polylogue.storage.derived.raw import RawObservationReplacement
+
+    def check_sealed_binary(replacement: RawObservationReplacement) -> None:
+        assert replacement.prepared_inputs is not None
+        artifact = replacement.prepared_inputs[raw_id].prepared_artifact
+        assert artifact is not None and artifact.blob_hash == digest
+        classification = artifact.stream_classification()
+        assert classification is not None and classification.proved_non_session
+        assert classification.classification.kind is ArtifactKind.BINARY_DATABASE
+        assert not classification.classification.schema_eligible
+        assert not classification.classification.parse_as_session
+        assert artifact.validation_verdict is None
+        assert not artifact.session_sequence()
+
+    published, phase, receipt = asyncio.run(
+        run_retained_source_phase(tmp_path, (raw_id,), before_publication=check_sealed_binary)
+    )
     assert published is False and phase == "census"
     assert isinstance(receipt, RevisionCensusResult) and receipt.scanned == 1
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         detail = conn.execute("SELECT detail FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone()
     assert detail is not None
     assert LEGACY_PAGE_IMAGE_CENSUS_DETAIL in str(detail[0])
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        assert conn.execute(
+            "SELECT artifact_kind, support_status, parse_as_session, schema_eligible FROM raw_artifacts WHERE raw_id=?",
+            (raw_id,),
+        ).fetchall() == [("binary_database", "recognized_unparsed", 0, 0)]
+        assert conn.execute(
+            "SELECT status, member_count FROM raw_membership_census WHERE raw_id=?",
+            (raw_id,),
+        ).fetchone() == ("non_session", 0)
+    assert BlobStore(tmp_path / "blob").blob_path(digest).read_bytes() == payload
+    with prepared_source_fixture(tmp_path) as reader:
+        assert reader.raw_parser_census_is_current(raw_id)
 
 
 def test_backfill_retires_stale_revision_governance_for_empty_replay(tmp_path: Path) -> None:
@@ -939,3 +968,26 @@ def test_membership_census_closes_owned_projection_and_preserves_failures(
     finally:
         if supplied is not None:
             close(supplied)
+
+
+def test_unrecognized_binary_capture_retains_typed_decode_refusal(tmp_path: Path) -> None:
+    """Unrecognized bytes remain an explicit refusal, never healthy binary evidence."""
+    bootstrap_archive_root(tmp_path)
+    payload = b"\xff\x80not-a-recognized-container"
+    digest, _size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
+    with retained_raw_fixture(
+        root=tmp_path,
+        provider=Provider.CODEX,
+        blob_hash=digest,
+        source_path="synthetic/state_5.sqlite",
+    ) as (_reader, raw_id):
+        pass
+    published, phase, receipt = asyncio.run(run_retained_source_phase(tmp_path, (raw_id,)))
+    assert published is False and phase == "census"
+    assert isinstance(receipt, RevisionCensusResult) and receipt.quarantined == 1
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        assert conn.execute(
+            "SELECT artifact_kind, support_status FROM raw_artifacts WHERE raw_id=?",
+            (raw_id,),
+        ).fetchall() == [("terminal_corrupt_input", "decode_failed")]
+    assert BlobStore(tmp_path / "blob").blob_path(digest).read_bytes() == payload

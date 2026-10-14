@@ -8,6 +8,7 @@ from collections.abc import Iterable, MutableSequence
 from contextlib import closing
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -162,8 +163,9 @@ def test_retained_generic_message_object_alias_rejects_invalid_suffix_before_pub
 
 
 @pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("phase", ["classification", "validation"])
 def test_non_json_validation_failure_discards_sealed_artifact_and_preserves_cause(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cancel: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cancel: bool, phase: str
 ) -> None:
     """Validation refusal and cancellation both settle the sealed non-JSON artifact."""
     from polylogue.core.compute import DaemonOperationCancelled
@@ -187,7 +189,10 @@ def test_non_json_validation_failure_discards_sealed_artifact_and_preserves_caus
     def fail_validation(*_args: object, **_kwargs: object) -> object:
         raise validation_failure
 
-    monkeypatch.setattr(schemas, "validate_retained_document", fail_validation)
+    if phase == "classification":
+        monkeypatch.setattr(prepared_jsonl.PreparedJsonl, "stream_classification", fail_validation)
+    else:
+        monkeypatch.setattr(schemas, "validate_retained_document", fail_validation)
     with retained_raw_fixture(
         root=archive,
         provider=Provider.CHATGPT,
@@ -1288,3 +1293,57 @@ def test_retained_fact_recovery_refuses_an_incomplete_provider_record(tmp_path: 
             assert list(artifact.iter_sessions()) == []
         else:
             assert artifact.sessions_path is None and artifact.decode_failure is not None
+
+
+def test_unknown_non_json_input_with_empty_parser_output_retains_schema_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero parser sessions cannot turn UNKNOWN into a binary schema exemption."""
+    import polylogue.schemas as schemas
+
+    bootstrap_archive_root(tmp_path)
+    blob_hash, _size = BlobStore(tmp_path / "blob").write_from_bytes(b"42")
+    original = schemas.validate_retained_document
+    validated: list[Path] = []
+
+    def validate(*args: Any, **kwargs: Any) -> Any:
+        validated.append(Path(args[1]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(schemas, "validate_retained_document", validate)
+    with retained_parser_fixture(
+        root=tmp_path,
+        provider=Provider.CLAUDE_AI,
+        blob_hash=blob_hash,
+        source_path="synthetic/structured.capture",
+        directory=tmp_path / "prepared",
+        prepare=revision_backfill.prepare_retained_non_json_artifact,
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        assert not artifact.session_sequence()
+        assert artifact.validation_verdict is not None
+        assert validated == [BlobStore(tmp_path / "blob").blob_path(blob_hash)]
+
+
+def test_empty_metadata_array_uses_its_sealed_non_session_policy(tmp_path: Path) -> None:
+    """An explicit metadata classification differs from empty parser output alone."""
+    from polylogue.archive.artifact_taxonomy import ArtifactKind
+
+    bootstrap_archive_root(tmp_path)
+    blob_hash, _size = BlobStore(tmp_path / "blob").write_from_bytes(b"[]")
+    with retained_parser_fixture(
+        root=tmp_path,
+        provider=Provider.CHATGPT,
+        blob_hash=blob_hash,
+        source_path="synthetic/metadata.capture",
+        directory=tmp_path / "prepared",
+        prepare=revision_backfill.prepare_retained_non_json_artifact,
+    ) as (artifact, _reader):
+        classification = artifact.stream_classification()
+        assert classification is not None and classification.proved_non_session
+        assert classification.classification.kind is ArtifactKind.METADATA_DOCUMENT
+        assert not classification.classification.parse_as_session
+        assert not classification.classification.schema_eligible
+        assert artifact.validation_verdict is None
+        assert not artifact.session_sequence()
