@@ -30,6 +30,7 @@ from uuid import UUID
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.core.compute import BoundedComputeAdapter, CancellationHandle, DaemonBackpressureError, compute_adapter
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
@@ -1786,7 +1787,9 @@ def _bounded_collected_candidates(
     limit = min(limit, executor.snapshot().by_class("bulk-candidate").ceiling_units)
     try:
         while pending or waiting_candidate is not None or not exhausted:
+            check_compute_cancelled()
             while len(pending) < limit and not exhausted:
+                check_compute_cancelled()
                 if waiting_candidate is None:
                     try:
                         waiting_candidate = next(iterator)
@@ -1810,6 +1813,7 @@ def _bounded_collected_candidates(
                     on_wait()
                 continue
             for future in ready:
+                check_compute_cancelled()
                 result = future.result()
                 pending.pop(future)
                 yield result
