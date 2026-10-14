@@ -224,7 +224,9 @@ popup. Jobs and queue entries live in IndexedDB,
 so MV3 service-worker suspension or a browser restart does not lose the cursor,
 captured artifact, retry deadline, or receiver receipt. `chrome.alarms` wakes
 the next eligible item; expired leases are recovered and only one extension
-instance may own an item at a time.
+instance may own an item at a time. Failed cleanup of an action-owned background
+tab retains its owner and schedules another cleanup alarm. Each attempt checks
+ownership again before closing the tab; adopted tabs and staged drafts stay open.
 
 Provider reads run through an already-open or inactive first-party tab, not
 the service worker's cookie context. ChatGPT bearer and selected-account values

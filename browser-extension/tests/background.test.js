@@ -1715,6 +1715,8 @@ describe("background receiver diagnostics", () => {
     const api = fault === "lookup" ? globalThis.chrome.tabs.get : globalThis.chrome.tabs.remove;
     api.mockRejectedValueOnce(new Error("synthetic_transport_fault"));
     globalThis.chrome.alarms.clear.mockClear();
+    globalThis.chrome.alarms.create.mockClear();
+    const failedAt = Date.now();
     alarmListener({ name: alarm });
     await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: "provider_transport_cleanup_pending", tab_id: 99 }),
@@ -1722,7 +1724,10 @@ describe("background receiver diagnostics", () => {
     expect(sessionStored[key]).toBe(99);
     expect(globalThis.chrome.alarms.clear).not.toHaveBeenCalledWith(alarm);
     expect(tabs.some(tab => tab.id === 99)).toBe(true);
-    alarmListener({ name: alarm });
+    const retry = globalThis.chrome.alarms.create.mock.calls.find(([name]) => name === alarm);
+    expect(retry).toBeDefined();
+    expect(retry[1].when).toBeGreaterThanOrEqual(failedAt + 5 * 60 * 1000);
+    alarmListener({ name: retry[0] });
     await vi.waitFor(() => expect(sessionStored[key]).toBeUndefined());
     expect(globalThis.chrome.tabs.remove).toHaveBeenCalledWith(99);
     expect(tabs.some(tab => tab.id === 99)).toBe(false);

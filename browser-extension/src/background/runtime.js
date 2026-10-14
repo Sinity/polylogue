@@ -2670,6 +2670,9 @@ async function cleanupBackfillTransportTab(alarmName) {
   } catch (error) {
     // Failed lookup/removal does not prove physical closure. Preserve the
     // original persisted owner for a later cleanup or acquisition attempt.
+    // Chrome consumes one-shot alarms when they fire. Re-arm the same owner
+    // so cleanup can resume even when no later action acquires this tab.
+    await runtimeChrome.alarms.create(alarmName, { when: Date.now() + BACKFILL_TRANSPORT_TAB_TTL_MS });
     await appendDebugLog({ stage: "provider_transport_cleanup_pending", provider, tab_id: tabId,
       error: String(error.message || error) }).catch(() => undefined);
   }
