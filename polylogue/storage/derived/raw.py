@@ -43,6 +43,7 @@ from polylogue.core.compute import (
     BoundedComputeAdapter,
     DaemonBackpressureError,
     DaemonOperationCancelled,
+    SharedInputReservation,
     SubmittedOperation,
 )
 from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
@@ -341,7 +342,7 @@ class PreparedNeutralArtifact:
     artifact: PreparedJsonlRead
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, weakref_slot=True)
 class NeutralRawPreparation:
     """Closed capture files and exact parser operands for one admitted Raw page.
 
@@ -364,6 +365,7 @@ class NeutralRawPreparation:
     _backing_lock: threading.Lock = dataclasses_field(default_factory=threading.Lock)
     contexts: Mapping[Provider, NeutralPreparationContext] = dataclasses_field(init=False)
     _observed_custody: bool = dataclasses_field(default=False, init=False)
+    shared_input: SharedInputReservation | None = dataclasses_field(default=None, init=False)
 
     def __post_init__(self) -> None:
         from polylogue.schemas.runtime_registry import SchemaRegistry
@@ -471,7 +473,7 @@ class NeutralRawPreparation:
                 # streams. Input accounting is not a resident-memory bound.
                 yield (
                     key,
-                    raw_size + self.sidecar_input_bytes.get(Path(source_path).as_posix(), 0) + context.schema_bytes,
+                    raw_size + self.sidecar_input_bytes.get(Path(source_path).as_posix(), 0),
                     partial(
                         _prepare_captured_neutral,
                         raw_id,
@@ -488,6 +490,8 @@ class NeutralRawPreparation:
                 )
 
     def close(self) -> None:
+        if self.shared_input is not None:
+            self.shared_input.require_settled()
         failures: list[BaseException] = []
         for backing in tuple(self._backings.values()):
             try:
@@ -507,6 +511,9 @@ class NeutralRawPreparation:
         self.schema_snapshots = MappingProxyType({})
         self.sidecar_input_bytes = MappingProxyType({})
         self.sidecar_backings = MappingProxyType({})
+        if self.shared_input is not None:
+            self.shared_input.close()
+            self.shared_input = None
 
 
 def _parse_captured_neutral(
@@ -2226,7 +2233,11 @@ class RawObservationDerivation(RawObservationInspection):
         try:
             captured = self._capture_neutral_jsonl(raw_ids[0], selection=select, seal=seal, carry=carry)
             seal.close()
-            return None if captured is None else captured[0]
+            if captured is None:
+                return None
+            page = captured[0]
+            page.shared_input = self._compute_adapter.retain_current_shared_input(page.shared_context_bytes, owner=page)
+            return page
         except BaseException as primary:
             failures: list[BaseException] = []
             for close in (seal.close, carry.discard_payload):

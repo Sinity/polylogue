@@ -167,9 +167,12 @@ def test_neutral_worker_charges_only_its_declared_sidecar_scope(tmp_path: Path) 
                 provider, _hash, source_path, _kind, raw_size = page.captures[raw_id].descriptor
                 snapshot = page.schema_snapshots[provider]
                 schema_bytes = sum(len(payload) for _root, files in snapshot.roots for _name, payload in files)
-                assert charge == raw_size + schema_bytes + expected.get(source_path, 0)
+                assert page.shared_input is not None
+                assert page.shared_input.byte_length == page.shared_context_bytes
+                assert schema_bytes > 0
+                assert charge == raw_size + expected.get(source_path, 0)
                 if raw_id == codex:
-                    assert charge == raw_size + schema_bytes
+                    assert charge == raw_size
         finally:
             page.close()
 
