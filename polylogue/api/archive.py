@@ -389,7 +389,45 @@ def _read_session_transcript_page(
         }
     )
     if content_projection is not None and content_projection.filters_content():
-        session = session.with_content_projection(content_projection)
+        if limit is None:
+            session = session.with_content_projection(content_projection)
+        else:
+            from polylogue.archive.hydration import archive_message_to_domain
+            from polylogue.archive.message.messages import MessageCollection
+            from polylogue.archive.semantic.projection_context import content_projection_context
+
+            with content_projection_context(checkpoint=archive.check_operation_read) as dependencies:
+                dependency_offset = 0
+                dependency_total = None
+                while True:
+                    archive.check_operation_read()
+                    page = archive.read_session_page(
+                        resolved_id, limit=500, offset=dependency_offset, include_working_directories=False
+                    )
+                    if page.total_message_count is None:
+                        raise ValueError("transcript dependency page lacks its declared total")
+                    if dependency_total is not None and page.total_message_count != dependency_total:
+                        raise ValueError("transcript dependency total changed during projection")
+                    dependency_total = page.total_message_count
+                    if dependency_offset + len(page.messages) > dependency_total or (
+                        not page.messages and dependency_offset < dependency_total
+                    ):
+                        raise ValueError("transcript dependency page did not cover its declared coordinates")
+                    dependencies.register_page(
+                        [archive_message_to_domain(row, origin=Origin(page.origin)) for row in page.messages],
+                        offset=dependency_offset,
+                    )
+                    dependency_offset += len(page.messages)
+                    if dependency_offset >= dependency_total:
+                        break
+                session = session.model_copy(
+                    update={
+                        "messages": MessageCollection(
+                            messages=dependencies.project_page(session.messages, content_projection)
+                        )
+                    }
+                )
+                archive.check_operation_read()
     return SessionTranscriptPage(
         session=session,
         total_message_count=(
@@ -2344,8 +2382,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         The window is composed at the storage layer
         (``ArchiveStore.read_session_page``), so a page of a long session --
-        or of a deep prefix-sharing lineage child -- costs the page, not the
-        transcript (polylogue-2go3o). ``limit=None`` is the declared whole
+        or of a deep prefix-sharing lineage child -- hydrates the selected page.
+        A content filter also scans bounded dependency pages before projection;
+        its private index retains no message bodies. ``limit=None`` is the declared whole
         transcript, the one shape that legitimately composes everything.
 
         The returned page carries the session's true totals; see
