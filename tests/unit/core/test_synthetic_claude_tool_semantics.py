@@ -176,6 +176,7 @@ def _qualify_mixed_tools(
     todo_tokens: bool = False,
     private_todo: bool = False,
     todo_mix: bool = False,
+    mixed_private_todo: str | None = None,
 ) -> None:
     sources = tmp_path / "sources"
     originals = write_mixed_claude_tool_sources(
@@ -184,6 +185,7 @@ def _qualify_mixed_tools(
         result_arrays=result_arrays,
         private_todo=private_todo,
         todo_mix=todo_mix,
+        mixed_private_todo=mixed_private_todo,
     )
     for records in originals:
         if todo_tokens:
@@ -232,6 +234,8 @@ def _qualify_mixed_tools(
     assert "private_tool_neutral" not in json.dumps(bundle.package_workload_profiles, default=dict)
     assert "private_todo_state" not in json.dumps(bundle.package_workload_profiles, default=dict)
     assert "private_todo_priority" not in json.dumps(bundle.package_workload_profiles, default=dict)
+    if mixed_private_todo is not None:
+        assert mixed_private_todo not in json.dumps(bundle.package_workload_profiles, default=dict)
     packages = tmp_path / "packages"
     persist_generated_provider_bundle(packages, "claude-code", bundle)
     registry = SchemaRegistry(storage_root=packages)
@@ -243,15 +247,26 @@ def _qualify_mixed_tools(
     result_names: set[str] = set()
     mutation_checked = False
     multicall_seen = False
+    todo_classes: set[str] = set()
     try:
         for session in generated:
             records = [json.loads(line) for line in b"".join(session.chunks).splitlines()]
             multicall_seen |= any(len(_tool_calls([record])) > 1 for record in records)
             if todo_tokens:
                 _assert_todo_tokens(records)
-            if private_todo:
+            if mixed_private_todo:
+                for call in _tool_calls(records):
+                    if call["name"] == "TodoWrite":
+                        operand = call["input"]
+                        assert isinstance(operand, dict) and isinstance(operand["todos"], list)
+                        for todo in operand["todos"]:
+                            assert isinstance(todo, dict) and isinstance(todo.get("status"), str)
+                            todo_classes.add("completed" if todo["status"] == "completed" else "anonymous")
+            if private_todo or mixed_private_todo:
                 assert "private_todo_state" not in json.dumps(records)
                 assert "private_todo_priority" not in json.dumps(records)
+                if mixed_private_todo is not None:
+                    assert mixed_private_todo not in json.dumps(records)
             available = _assert_available_calls(records)
             if multiple_calls and len(_tool_calls(records)) > 1:
                 assert available > 0
@@ -275,6 +290,8 @@ def _qualify_mixed_tools(
     assert mutation_checked
     if multiple_calls:
         assert multicall_seen
+    if mixed_private_todo:
+        assert todo_classes == {"completed", "anonymous"}
 
 
 def test_inferred_mixed_claude_tools_preserve_named_semantics(tmp_path: Path) -> None:
@@ -394,3 +411,10 @@ def test_todo_qualification_detects_public_token_binding_loss(tmp_path: Path, mo
 
 def test_todo_public_tokens_weight_actual_items_in_one_native_form(tmp_path: Path) -> None:
     _qualify_mixed_tools(tmp_path, todo_mix=True)
+
+
+@pytest.mark.parametrize("private_token", ("private_todo_state", "00000000-0000-4000-8000-000000000702"))
+def test_mixed_public_and_private_todo_values_keep_the_selected_string_class(
+    tmp_path: Path, private_token: str
+) -> None:
+    _qualify_mixed_tools(tmp_path, mixed_private_todo=private_token)

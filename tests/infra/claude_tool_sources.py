@@ -15,6 +15,7 @@ def mixed_claude_tool_records(
     multiple_calls: bool = False,
     result_arrays: bool = False,
     private_todo: bool = False,
+    private_todo_token: str | None = None,
     todo_mix: bool = False,
 ) -> list[JSONDocument]:
     session = str(uuid.UUID(int=number, version=4))
@@ -88,14 +89,14 @@ def mixed_claude_tool_records(
             assert isinstance(todos, list)
             for todo in todos:
                 assert isinstance(todo, dict)
-                todo["status"] = "private_todo_state"
+                todo["status"] = private_todo_token or "private_todo_state"
             for field in ("oldTodos", "newTodos"):
                 items = result[field]
                 assert isinstance(items, list)
                 for todo in items:
                     assert isinstance(todo, dict)
-                    todo["status"] = "private_todo_state"
-                    todo["priority"] = "private_todo_priority"
+                    todo["status"] = private_todo_token or "private_todo_state"
+                    todo["priority"] = private_todo_token or "private_todo_priority"
         tool_id = f"call-neutral-{index}"
         if multiple_calls and index == 0:
             append(
@@ -130,6 +131,7 @@ def write_mixed_claude_tool_sources(
     result_arrays: bool = False,
     private_todo: bool = False,
     todo_mix: bool = False,
+    mixed_private_todo: str | None = None,
 ) -> list[list[JSONDocument]]:
     root.mkdir()
     sessions = [
@@ -137,7 +139,8 @@ def write_mixed_claude_tool_sources(
             number,
             multiple_calls=multiple_calls,
             result_arrays=result_arrays,
-            private_todo=private_todo,
+            private_todo=private_todo or (mixed_private_todo is not None and number == 2),
+            private_todo_token=mixed_private_todo if number == 2 else None,
             todo_mix=todo_mix,
         )
         for number in range(1, 4)

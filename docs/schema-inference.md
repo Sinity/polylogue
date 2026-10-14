@@ -304,7 +304,8 @@ the reducer publishes only fixed public keys, labels, modes and counts.
 TodoWrite status and priority fields retain only their declared public token
 counts aggregated by actual items within the existing native form; unknown
 values stay anonymous, and descriptions remain content. Tokens
-are sampled per actual string field through the same measured text-shape checks.
+are sampled once per actual string field through the same measured text-shape
+checks; anonymous formatted values keep that choice during body spelling.
 This does not establish numeric outcome fidelity, foreground/background subtype
 correlation or asynchronous completion and progress semantics.
 

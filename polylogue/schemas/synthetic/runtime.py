@@ -730,7 +730,7 @@ def _generate_string(
     plan_path = _record_plan_path(self, path)
     plan = self._public_record_plan
     syntax_value = plan.tool_syntax.get(plan_path) if plan is not None else None
-    if plan is not None and plan_path in plan.tool_tokens:
+    if not _format_body and plan is not None and plan_path in plan.tool_tokens:
         tokens = plan.tool_tokens[plan_path]
         public_token = rng.choices(list(tokens), weights=list(tokens.values()), k=1)[0]
         if public_token:
