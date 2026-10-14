@@ -64,6 +64,8 @@ Declared archive reads carry `archive_materialization` in their outcome detail f
 
 Exact canonical reference evaluation refuses incomplete or unavailable materialization before returning identities, so mutation cardinality cannot accept an incomplete scope. Its Source receipt and read-cache input name the captured physical Source identity, schema and existing raw-state journal high. This revision describes raw existence/materialization evidence, not every unrelated Source table; journal pruning retains its high in SQLite's sequence authority.
 
+Orchestration CLI delivery retains both its typed evidence gaps and the supplied pinned materialization verdict. It writes the selected document before finishing that combined terminal outcome.
+
 ## Shared read input
 
 `ReadRequest.normalize` and `read_contract_schema` share the flat input
