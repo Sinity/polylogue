@@ -6,7 +6,7 @@ import json
 import uuid
 from pathlib import Path
 
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 
 PRIVATE_TOOL = "neutral_private_function"
 
@@ -26,7 +26,7 @@ def mixed_codex_tool_records(number: int, *, custom: bool = False) -> list[JSOND
             },
         },
     ]
-    cases = (
+    cases: tuple[tuple[str, JSONValue], ...] = (
         ("exec_command", {"output": "neutral success", "exit_code": 0, "is_error": False}),
         ("exec_command", {"output": "neutral failure", "exit_code": 7, "is_error": True}),
         (PRIVATE_TOOL, {"output": "neutral plain"}),

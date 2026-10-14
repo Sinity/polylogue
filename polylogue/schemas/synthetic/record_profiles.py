@@ -393,7 +393,7 @@ class _MeasuredPath:
                         for destination, _ in successors:
                             support |= previous[destination][2]
                         support = (support << count_effects[state]) & mask
-                    joint: dict[int, int] = {}
+                    joint = {}
                     if resource_effects is not None and count_effects is not None:
                         own_required, change = resource_effects.get(state, (0, 0))
                         assert selected_count is not None
@@ -1406,12 +1406,12 @@ class PublicRecordPlan:
             and kind in {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
             and isinstance(native_forms, dict)
         ):
-            forms = self._codex_native_forms(
+            codex_forms = self._codex_native_forms(
                 kind, mode, relation, None if width_support is None else tuple(width_support)
             )
-            if not forms:
+            if not codex_forms:
                 raise ValueError("native tool form has no matching original generated call class")
-            selected = rng.choices(forms, weights=[_count(form.get("count")) for form in forms], k=1)[0]
+            selected = rng.choices(codex_forms, weights=[_count(form.get("count")) for form in codex_forms], k=1)[0]
             selected_fields, selected_syntax = selected.get("fields"), selected.get("syntax")
             if (
                 not isinstance(selected_fields, list)
@@ -1924,15 +1924,15 @@ def _call_resource(
         # Native records carry exactly one tool event. Classes are fungible
         # only when EVERY measured result mode supports the same call classes.
         # Competing families, widths or history stay with their joint owner.
-        effects: dict[ContentState, tuple[int, int]] = {}
-        widths: set[int] = set()
+        native_effects: dict[ContentState, tuple[int, int]] = {}
+        native_widths: set[int] = set()
         families: set[str] = set()
         call_classes: set[str] = set()
         result_classes: list[set[str]] = []
         for record_kind, forms in contents.items():
             if not isinstance(forms, dict):
                 return None
-            record_effects: set[tuple[int, int]] = set()
+            native_record_effects: set[tuple[int, int]] = set()
             for modes in forms.values():
                 if not isinstance(modes, dict):
                     return None
@@ -1941,7 +1941,7 @@ def _call_resource(
                         return None
                     operands = profile.get("tool_operands")
                     if not isinstance(operands, dict) or not operands:
-                        record_effects.add((0, 0))
+                        native_record_effects.add((0, 0))
                         continue
                     if len(operands) != 1 or record_kind not in {
                         "function_call",
@@ -1987,17 +1987,17 @@ def _call_resource(
                         support = observed_length_support(width) if isinstance(width, dict) else {}
                         if len(support) != 1 or min(support) <= 0:
                             return None
-                        widths.update(support)
-                    record_effects.add((0, 1) if event == "call" else (1, -1))
-            if len(record_effects) != 1:
+                        native_widths.update(support)
+                    native_record_effects.add((0, 1) if event == "call" else (1, -1))
+            if len(native_record_effects) != 1:
                 return None
-            effects[(record_kind, "record")] = next(iter(record_effects))
-        if len(families) != 1 or len(widths) != 1 or not result_classes:
+            native_effects[(record_kind, "record")] = next(iter(native_record_effects))
+        if len(families) != 1 or len(native_widths) != 1 or not result_classes:
             return None
         classes = call_classes or result_classes[0]
         if any(group != classes for group in result_classes):
             return None
-        return effects, next(iter(widths)), tuple(sorted(classes))
+        return native_effects, next(iter(native_widths)), tuple(sorted(classes))
     effects: dict[ContentState, tuple[int, int]] = {}
     widths: set[int] = set()
     for record_kind, forms in contents.items():

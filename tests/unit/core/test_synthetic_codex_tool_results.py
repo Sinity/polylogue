@@ -6,6 +6,7 @@ import json
 import random
 import re
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from polylogue.schemas.generation.workflow import build_provider_bundle_from_sou
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.source_inference import SchemaSourceInput
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.schemas.synthetic.models import GeneratedString, SchemaRecord
 from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.sources.dispatch import parse_payload
 from tests.infra.codex_tool_sources import PRIVATE_TOOL, mixed_codex_tool_records, write_mixed_codex_tool_sources
@@ -26,7 +28,7 @@ _FREEFORM_HEADER = re.compile(
 _EXEC_HEADER = re.compile(r"\AWall time: [0-9.]+ seconds\nProcess exited with code (-?\d+)(?=\n|$)")
 
 
-def _native_outcomes(records: list[dict[str, object]]) -> Counter[tuple[bool, bool]]:
+def _native_outcomes(records: Sequence[Mapping[str, object]]) -> Counter[tuple[bool, bool]]:
     """Read emitted native fields directly, without the parser's oracle."""
     calls: dict[str, str] = {}
     outcomes: Counter[tuple[bool, bool]] = Counter()
@@ -127,8 +129,14 @@ def test_call_class_binding_loss_is_detected_by_native_oracle(tmp_path: Path, mo
     lost_class = 0
 
     def without_class(
-        self, relation, rng, prior_result_mode=None, prior_count_bucket=None, widths=None, tool_class=None
-    ):
+        self: ForeignKeyGraph,
+        relation: str,
+        rng: random.Random,
+        prior_result_mode: str | None = None,
+        prior_count_bucket: int | None = None,
+        widths: tuple[int, ...] | None = None,
+        tool_class: str | None = None,
+    ) -> tuple[GeneratedString, SchemaRecord]:
         nonlocal lost_class
         if tool_class is not None:
             other = "function_call:" if tool_class != "function_call:" else "function_call:exec_command"
@@ -160,10 +168,15 @@ def test_result_header_grammar_is_public_and_keeps_only_verdict_class(source: st
     descriptor = measured_result_syntax(source)
     encoded = json.dumps(descriptor)
     assert "private" not in encoded and "a9abcdef" not in encoded and "Ω" not in encoded
-    rendered = "".join(
-        value if kind == "literal" else {"ascii": "x", "non_ascii": "ñ", "digits": "1", "zeros": "0"}[kind] * value
-        for kind, value in validated_syntax_parts(descriptor["output_syntax"])
-    )
+    parts: list[str] = []
+    for kind, value in validated_syntax_parts(descriptor["output_syntax"]):
+        if kind == "literal":
+            assert isinstance(value, str)
+            parts.append(value)
+        else:
+            assert isinstance(value, int)
+            parts.append({"ascii": "x", "non_ascii": "ñ", "digits": "1", "zeros": "0"}[kind] * value)
+    rendered = "".join(parts)
     assert len(rendered) == len(source) and rendered.count("\n") == source.count("\n")
     records = mixed_codex_tool_records(1)[:2] + [
         {
@@ -236,7 +249,9 @@ def test_result_form_eligibility_intersects_call_class_and_identity_width() -> N
             }
         }
         forms = plan._codex_native_forms("function_call_output", "native-output:string", "call", (6,))
-        assert [form["syntax"]["call_class"] for form in forms] == ["function_call:"]
+        assert len(forms) == 1
+        syntax = forms[0]["syntax"]
+        assert isinstance(syntax, dict) and syntax["call_class"] == "function_call:"
         # Removing the width intersection admits the unavailable exec+6 pair.
         unconditioned = plan._codex_native_forms("function_call_output", "native-output:string", "call", None)
         assert len(unconditioned) == 2
