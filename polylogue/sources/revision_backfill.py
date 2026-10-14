@@ -1920,12 +1920,14 @@ def is_separator_only_append(
     raw_id: str, plan: RevisionReplayPlan, prepared_inputs: Mapping[str, PreparedRetainedInput]
 ) -> bool:
     """Omit output only for a proved empty continuation of an accepted chain."""
+    item = prepared_inputs.get(raw_id)
+    artifact = item.prepared_artifact if item is not None else None
+    if item is None or artifact is None or not artifact.jsonl_separators_only:
+        return False
     accepted = plan.accepted_raw_ids
     if raw_id not in accepted or accepted.index(raw_id) == 0:
         return False
-    item = prepared_inputs[raw_id]
     baseline = prepared_inputs[accepted[0]]
-    artifact = item.prepared_artifact
     # APPLIED_APPEND is produced only by the byte planner's unique contiguous
     # BYTE_PROVEN edge with its exact predecessor and baseline. A membership
     # candidate, full observation or unproven append never has this decision.
@@ -1937,12 +1939,10 @@ def is_separator_only_append(
         and baseline.revision_kind is RawRevisionKind.FULL
         and item.native_id is not None
         and plan.logical_source_key == f"{origin_from_provider(item.provider).value}:{item.native_id}"
-        and artifact is not None
         and artifact.error is None
         and artifact.blob_hash == item.blob_hash
         and artifact.resolved_provider is item.provider
         and item.payload_bytes > 0
-        and artifact.jsonl_separators_only
         and not artifact.session_sequence()
     )
 
