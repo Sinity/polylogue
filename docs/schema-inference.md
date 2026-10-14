@@ -283,6 +283,15 @@ through the existing field sampler and checks measured length, newline and
 character support. Unknown tool names remain anonymous. This does not execute
 programs or qualify arbitrary JavaScript or every tool's argument semantics.
 
+Claude Code uses the same measured field-form owner for the public Read, Edit,
+Write, TodoWrite, Bash and Agent labels. Input field presence and representation
+stay coupled to the sampled label. Result envelope forms follow the actual
+generated call identity and its measured public class, including absence of an
+envelope. Argument bodies, paths and arbitrary tool names remain anonymous;
+the reducer publishes only fixed public keys, labels, modes and counts. This
+does not establish numeric outcome fidelity, foreground/background subtype
+correlation or asynchronous completion and progress semantics.
+
 Original Claude Code child depths remain exact. Each depth's conditional record
 grammar is a row in the existing `record_structures_by_depth` profile object.
 Inference retains its serialized public rows before retiring the private journal;
