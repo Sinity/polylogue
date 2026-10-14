@@ -5,10 +5,12 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sqlite3
 import stat
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -709,11 +711,11 @@ def test_finish_reuses_one_history_scan_with_identical_retention_policy(
     original_prune = verify_runs.prune_successful_verify_runs
     observed: dict[str, object] = {}
 
-    def counted(path: Path):
+    def counted(path: Path) -> Iterator[dict[str, Any]]:
         traversals[path] += 1
         yield from original_iter(path)
 
-    def prune(**kwargs):
+    def prune(**kwargs: Any) -> dict[str, object]:
         observed.update(original_prune(**kwargs, now=_TEST_NOW))
         return observed
 
@@ -722,7 +724,7 @@ def test_finish_reuses_one_history_scan_with_identical_retention_policy(
     original_open = verify_runs._open_retention_lock
     original_close = verify_runs._close_retention_lock
 
-    def open_lock(directory: Path, *, nonblocking: bool):
+    def open_lock(directory: Path, *, nonblocking: bool) -> int | None:
         if directory == root / verify_runs.VERIFY_CACHE:
             assert history.parent not in opened.values()
             assert verify_runs._APPEND_LOCK.acquire(blocking=False)
@@ -732,30 +734,30 @@ def test_finish_reuses_one_history_scan_with_identical_retention_policy(
             opened[fd] = directory
         return fd
 
-    def close_lock(fd):
+    def close_lock(fd: int | None) -> None:
         if fd is not None:
             opened.pop(fd, None)
         original_close(fd)
 
-    original_connect = verify_runs.sqlite3.connect
+    original_connect = sqlite3.connect
     checked_indexes = []
 
-    class CheckedConnection(verify_runs.sqlite3.Connection):
-        def execute(self, sql, parameters=()):
+    class CheckedConnection(sqlite3.Connection):
+        def execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
             if sql.startswith("CREATE TABLE identities"):
                 assert self.execute("PRAGMA journal_mode").fetchone() == ("off",)
                 assert self.execute("PRAGMA synchronous").fetchone() == (0,)
                 checked_indexes.append(True)
             return super().execute(sql, parameters)
 
-    def connect(*args, **kwargs):
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         return original_connect(*args, **kwargs, factory=CheckedConnection)
 
     monkeypatch.setattr(verify_runs, "_iter_history_pinned", counted)
     monkeypatch.setattr(verify_runs, "prune_successful_verify_runs", prune)
     monkeypatch.setattr(verify_runs, "_open_retention_lock", open_lock)
     monkeypatch.setattr(verify_runs, "_close_retention_lock", close_lock)
-    monkeypatch.setattr(verify_runs.sqlite3, "connect", connect)
+    monkeypatch.setattr(sqlite3, "connect", connect)
     verify_runs.publish_verification_result(current, root=root, history_path=history)
 
     assert traversals[history] == 1
@@ -786,7 +788,7 @@ def test_finish_preserves_details_if_shared_history_changes(
     original_size = verify_runs._tree_size_without_links
     changed = False
 
-    def advance():
+    def advance() -> None:
         append_verify_history(
             {
                 "run_id": "new-global-pin",
@@ -797,12 +799,12 @@ def test_finish_preserves_details_if_shared_history_changes(
             path=history,
         )
 
-    def evidence_append(entry):
+    def evidence_append(entry: Mapping[str, Any]) -> None:
         original_evidence(entry)
         if when == "before_prune":
             advance()
 
-    def size(path, **kwargs):
+    def size(path: Path, **kwargs: Any) -> tuple[int, bool]:
         nonlocal changed
         if when == "during_inspection" and not changed:
             changed = True
@@ -829,7 +831,7 @@ def test_interrupted_finish_recovers_both_lanes_without_repeating_rows(
     current = _finished_run(tmp_path, index=0, exit_code=0)
     original_append = verify_runs.append_verification_evidence
 
-    def interrupted(entry):
+    def interrupted(entry: Mapping[str, Any]) -> None:
         assert [row["run_id"] for row in verify_runs._iter_history_pinned(history)] == [current["run_id"]]
         raise OSError("synthetic interrupted evidence publication")
 
@@ -858,12 +860,12 @@ def test_finish_preserves_new_local_details_missing_from_the_publication_snapsho
     new: dict[str, object] = {}
     retained: dict[str, object] = {}
 
-    def append(entry):
+    def append(entry: Mapping[str, Any]) -> None:
         original_append(entry)
         # Another run's local terminal receipt precedes its durable publication.
         new.update(_finished_run(tmp_path, index=11, exit_code=0))
 
-    def prune(**kwargs):
+    def prune(**kwargs: Any) -> dict[str, object]:
         retained.update(original_prune(**kwargs))
         return retained
 
