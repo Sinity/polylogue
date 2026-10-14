@@ -43,6 +43,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.raw_coordinates import read_captured_zip_coordinate_receipt
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.maintenance.source_manifest_continuity import SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
@@ -73,6 +74,8 @@ _TERM_PARSE_FAILURE = "parse_failure"
 _TERM_VALUE_BOUND_REFUSED = VALUE_BOUND_REFUSED
 _TERM_VALIDATION_REJECTED = "validation_rejected"
 _TERM_NON_SESSION_ARTIFACT = "non_session_artifact"
+_TERM_RAW_FAILURE_EVIDENCE = "raw_failure_evidence"
+_TERM_MISSING_SOURCE_COORDINATES = "missing_source_coordinates"
 _TERM_DECODE_FAILED = "decode_failed"
 _TERM_CENSUS_NON_SESSION = "census_non_session"
 _TERM_UNCLASSIFIED_SHAPE = "unclassified_shape"
@@ -121,6 +124,8 @@ _RULES: dict[str, str] = {
     ),
     _TERM_VALIDATION_REJECTED: "raw_sessions.validation_status = 'failed' records the schema refusal",
     _TERM_NON_SESSION_ARTIFACT: "raw_artifacts declares the item a non-session artifact kind",
+    _TERM_RAW_FAILURE_EVIDENCE: "current raw_artifacts records a typed refusal or deferral, not a non-session verdict",
+    _TERM_MISSING_SOURCE_COORDINATES: "retained session bytes lack proven source coordinates",
     _TERM_DECODE_FAILED: "raw_artifacts.decode_error records the typed decode failure",
     _TERM_CENSUS_NON_SESSION: "raw_membership_census recorded a terminal non-session verdict",
     _TERM_UNCLASSIFIED_SHAPE: "artifact taxonomy holds no classification (unknown/unknown); a rule is missing",
@@ -195,7 +200,14 @@ _BLOCKING: frozenset[str] = frozenset(
 )
 
 _WARNING: frozenset[str] = frozenset(
-    {_TERM_PENDING, _TERM_HOOK_NO_SOURCE, _TERM_AUTHORITY_BLOCKED, _TERM_VALUE_BOUND_REFUSED}
+    {
+        _TERM_PENDING,
+        _TERM_HOOK_NO_SOURCE,
+        _TERM_AUTHORITY_BLOCKED,
+        _TERM_VALUE_BOUND_REFUSED,
+        _TERM_RAW_FAILURE_EVIDENCE,
+        _TERM_MISSING_SOURCE_COORDINATES,
+    }
 )
 
 
@@ -480,17 +492,23 @@ def raw_term_case(conn: sqlite3.Connection, *, cte_name: str = "heads") -> tuple
     has_census = table_exists(conn, "raw_membership_census")
     census_expr = "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
     kind_expr = (
-        "(SELECT a.artifact_kind FROM raw_artifacts a WHERE a.raw_id = r.raw_id ORDER BY a.artifact_id LIMIT 1)"
+        """(SELECT a.artifact_kind FROM raw_artifacts a WHERE a.raw_id = r.raw_id
+             AND a.origin IS r.origin AND a.source_path IS r.source_path AND a.source_index IS r.source_index
+             ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC LIMIT 1)"""
         if has_artifacts
         else "NULL"
     )
     support_expr = (
-        "(SELECT a.support_status FROM raw_artifacts a WHERE a.raw_id = r.raw_id ORDER BY a.artifact_id LIMIT 1)"
+        """(SELECT a.support_status FROM raw_artifacts a WHERE a.raw_id = r.raw_id
+             AND a.origin IS r.origin AND a.source_path IS r.source_path AND a.source_index IS r.source_index
+             ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC LIMIT 1)"""
         if has_artifacts
         else "NULL"
     )
     parse_as_session_expr = (
-        "(SELECT a.parse_as_session FROM raw_artifacts a WHERE a.raw_id = r.raw_id ORDER BY a.artifact_id LIMIT 1)"
+        """(SELECT a.parse_as_session FROM raw_artifacts a WHERE a.raw_id = r.raw_id
+             AND a.origin IS r.origin AND a.source_path IS r.source_path AND a.source_index IS r.source_index
+             ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC LIMIT 1)"""
         if has_artifacts
         else "NULL"
     )
@@ -599,6 +617,11 @@ def raw_term_case(conn: sqlite3.Connection, *, cte_name: str = "heads") -> tuple
             WHEN instr(parse_error, '{VALUE_BOUND_REFUSED_HEAD}') > 0 THEN '{_TERM_VALUE_BOUND_REFUSED}'
             WHEN parse_error IS NOT NULL THEN '{_TERM_PARSE_FAILURE}'
             WHEN validation_status = 'failed' THEN '{_TERM_VALIDATION_REJECTED}'
+            WHEN artifact_kind = 'terminal_missing_source_coordinates' AND support_status = 'unknown'
+                THEN '{_TERM_MISSING_SOURCE_COORDINATES}'
+            WHEN (artifact_kind, support_status) IN (
+                {",".join(repr(pair) for pair in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS)}
+            ) THEN '{_TERM_RAW_FAILURE_EVIDENCE}'
             WHEN parse_as_session = 0
                  AND artifact_kind IN ({",".join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))})
                 THEN '{_TERM_NON_SESSION_ARTIFACT}'
@@ -753,12 +776,16 @@ def audit_source_conservation(
 
     has_artifacts = table_exists(conn, "raw_artifacts")
     parse_as_session_expr = (
-        "(SELECT a.parse_as_session FROM raw_artifacts a WHERE a.raw_id = r.raw_id ORDER BY a.artifact_id LIMIT 1)"
+        """(SELECT a.parse_as_session FROM raw_artifacts a WHERE a.raw_id = r.raw_id
+             AND a.origin IS r.origin AND a.source_path IS r.source_path AND a.source_index IS r.source_index
+             ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC LIMIT 1)"""
         if has_artifacts
         else "NULL"
     )
     kind_expr = (
-        "(SELECT a.artifact_kind FROM raw_artifacts a WHERE a.raw_id = r.raw_id ORDER BY a.artifact_id LIMIT 1)"
+        """(SELECT a.artifact_kind FROM raw_artifacts a WHERE a.raw_id = r.raw_id
+             AND a.origin IS r.origin AND a.source_path IS r.source_path AND a.source_index IS r.source_index
+             ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC LIMIT 1)"""
         if has_artifacts
         else "NULL"
     )
@@ -1073,6 +1100,8 @@ def audit_source_conservation(
         _TERM_PARSE_FAILURE,
         _TERM_VALIDATION_REJECTED,
         _TERM_NON_SESSION_ARTIFACT,
+        _TERM_RAW_FAILURE_EVIDENCE,
+        _TERM_MISSING_SOURCE_COORDINATES,
         _TERM_DECODE_FAILED,
         _TERM_CENSUS_NON_SESSION,
         _TERM_UNCLASSIFIED_SHAPE,
@@ -1178,6 +1207,7 @@ __all__ = [
 TYPED_ABSENCE_TERMS: frozenset[str] = frozenset(
     {
         _TERM_VALIDATION_REJECTED,
+        _TERM_MISSING_SOURCE_COORDINATES,
         _TERM_NON_SESSION_ARTIFACT,
         _TERM_DECODE_FAILED,
         _TERM_AUTHORITY_BLOCKED,

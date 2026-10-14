@@ -40,10 +40,14 @@ from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
+from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.maintenance.archive_verification import ArchiveVerificationCheck, verify_archive
 from polylogue.maintenance.parent_session_accounting import (
@@ -458,3 +462,88 @@ def test_indexed_parent_without_raw_warns(tmp_path: Path) -> None:
     check = _accounting_check(root)
     assert check.status is OutcomeStatus.WARNING, check.summary
     assert check.evidence["materialized_without_source_total"] == 1
+
+
+@pytest.mark.parametrize("kind", list(RawFailureEvidenceKind))
+def test_parent_and_source_accounting_report_current_typed_failure(
+    tmp_path: Path, kind: RawFailureEvidenceKind
+) -> None:
+    """Typed evidence replaces admission without becoming a non-session artifact."""
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as archive:
+        path = _export_file(tmp_path, "missing-coordinate-parent", b"42")
+        admitted = archive.admit_raw_artifact_payload(
+            provider=Provider.CODEX,
+            payload=path.read_bytes(),
+            source_path=str(path),
+            canonical_source_path=str(path),
+            acquired_at_ms=_ACQUIRED_AT_MS,
+            classification=classify_artifact(42, provider=Provider.CODEX, source_path=str(path)),
+        )
+        assert admitted.raw_id is not None
+        raw_id = admitted.raw_id
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path=str(path),
+            source_index=0,
+            acquired_at_ms=_ACQUIRED_AT_MS + 1,
+            kind=kind,
+        )
+
+    with sqlite3.connect(root / "source.db") as conn:
+        carriers = conn.execute(
+            "SELECT artifact_id, artifact_kind FROM raw_artifacts WHERE raw_id = ? ORDER BY artifact_id",
+            (raw_id,),
+        ).fetchall()
+    assert len(carriers) == 1
+    assert carriers[0][1] == kind.value
+
+    report = _audit(root)
+    expected = (
+        "missing_source_coordinates"
+        if kind is RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES
+        else "pending"
+        if kind.lifecycle == "resolution"
+        else "raw_failure_evidence"
+    )
+    assert report.raw_disposition_counts == {expected: 1}
+    assert report.raw_disposition_counts.get("untyped_unmaterialized", 0) == 0
+    assert report.raw_dispositions[0].raw_id == raw_id
+    assert report.blocking_count == int(kind is RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES)
+    check = verify_archive(root, checks=("source-conservation",)).checks[0]
+    assert isinstance(check, ArchiveVerificationCheck)
+    terms = check.evidence["terms"]
+    assert isinstance(terms, dict)
+    non_session_term = terms["non_session_artifact"]
+    assert isinstance(non_session_term, dict)
+    assert non_session_term["count"] == 0
+    if kind.lifecycle != "resolution":
+        term = terms[
+            "missing_source_coordinates"
+            if kind is RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES
+            else "raw_failure_evidence"
+        ]
+        assert isinstance(term, dict)
+        assert term["count"] == 1
+    if kind is RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES:
+        from polylogue.operations.daemon_status import produce_direct_status
+        from polylogue.operations.operation_context import open_operation_read
+        from tests.infra.archive_templates import bootstrap_ready_archive_root
+
+        # Actual accepted-frontier inspection cannot certify missing raw materialization.
+        bootstrap_ready_archive_root(root)
+        with open_operation_read(root) as pinned:
+            status = produce_direct_status(archive=pinned.archive, now_ms=_ACQUIRED_AT_MS + 2)
+        readiness = status["raw_materialization_readiness"]
+        assert isinstance(readiness, dict)
+        assert readiness["unchecked"] == 1
+        components = status["component_readiness"]
+        assert isinstance(components, dict)
+        raw_component = components["raw_materialization"]
+        assert isinstance(raw_component, dict)
+        assert raw_component["state"] != "ready"
+        frontier = status["raw_frontier_integrity"]
+        assert isinstance(frontier, dict)
+        assert frontier["overall_status"] == "healthy"
+        assert status["ok"] is False

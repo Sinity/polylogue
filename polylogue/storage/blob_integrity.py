@@ -26,6 +26,7 @@ from polylogue.storage.blob_liveness import (
     project_live_blob_hashes,
 )
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
+from polylogue.storage.source_blob_restoration import retained_source_location
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
@@ -350,27 +351,6 @@ def _source_db_for_blob_reference_report(db_path: str | Path) -> Path:
     return resolved
 
 
-# Directories the archive owns and acquires material into. A recorded path
-# that runs through one of them was written under some archive root, so its
-# tail from that segment re-anchors onto the root in force.
-_ARCHIVE_OWNED_DIRECTORIES = ("inbox", "browser-capture", "hooks")
-
-
-def _reanchored_archive_path(path: Path, archive_root: Path | None) -> Path | None:
-    """Re-anchor a path recorded under a previous archive root, if it is one."""
-    if archive_root is None:
-        return None
-    parts = path.parts
-    for name in _ARCHIVE_OWNED_DIRECTORIES:
-        if name not in parts:
-            continue
-        tail = parts[parts.index(name) :]
-        candidate = archive_root.joinpath(*tail)
-        if candidate != path:
-            return candidate
-    return None
-
-
 def _source_path_availability(
     path: str | None,
     archive_root: Path | None = None,
@@ -391,11 +371,11 @@ def _source_path_availability(
         coordinate = read_captured_zip_coordinate_receipt(captured_coordinate)
         outer_path = Path(coordinate.canonical_container)
         try:
+            if archive_root is not None:
+                outer_path = Path(retained_source_location({"source_path": str(outer_path)}, archive_root)[0])
             outer_path.stat()
         except (FileNotFoundError, NotADirectoryError):
-            relocated = _reanchored_archive_path(outer_path, archive_root)
-            if relocated is not None:
-                outer_path = relocated
+            pass
         except OSError:
             return None, str(outer_path)
         if raw_evidence is None:
@@ -442,23 +422,16 @@ def _source_path_availability(
         if error in {"replay_provider_unrecorded", "container_coordinate_missing"}:
             return None, str(outer_path)
         return False, str(outer_path)
+    resolved = direct
     try:
-        direct.stat()
+        if archive_root is not None:
+            resolved = Path(retained_source_location({"source_path": str(direct)}, archive_root)[0])
+        resolved.stat()
     except (FileNotFoundError, NotADirectoryError):
-        reanchored = _reanchored_archive_path(direct, archive_root)
-        if reanchored is not None:
-            try:
-                reanchored.stat()
-            except (FileNotFoundError, NotADirectoryError):
-                pass
-            except OSError:
-                return None, str(reanchored)
-            else:
-                return True, str(reanchored)
         return False, str(direct)
     except OSError:
-        return None, str(direct)
-    return True, str(direct)
+        return None, str(resolved)
+    return True, str(resolved)
 
 
 def _optional_str(value: object) -> str | None:

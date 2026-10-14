@@ -169,6 +169,8 @@ selection preserves non-absence filesystem faults; every selected byte window
 still requires exact size and SHA-256 proof. ZIP member authority comes from its
 captured acquisition coordinate, while loose colons remain filename data
 (`storage/source_blob_restoration.py:retained_source_location`).
+Blob availability probes share this location selector and report path presence;
+restoration and backup still prove the selected byte windows.
 Windowless Codex and Claude appends share receipt-history scans between backup
 and raw restoration. First-retention and latest-payload-receipt order offer
 candidate offsets, including preceding appends; exact size and SHA-256
@@ -367,6 +369,14 @@ artifacts are unique per source coordinate, while deferred and terminal
 refusals (including missing coordinates, missing profile evidence and
 unproved retained ZIP membership) are unique per raw acquisition, so two
 refusals at one coordinate stay attached to their distinct raws.
+
+A byte-proven append binding or live coordinate reconstruction retires only the
+missing-coordinate refusal matching its raw, captured coordinate and complete
+current revision binding. The same transaction invalidates its stale
+`non_session` membership receipt. Complete or failed membership receipts, neighboring
+observations and unproven bindings remain intact. Parent and Source accounting
+name coordinate refusals separately from non-session artifacts; a healthy
+accepted frontier cannot certify their missing raw materialization.
 
 `blob_refs` has no single primary key. Attachment references include their
 provider coordinate in the unique key, so identical bytes under two file IDs

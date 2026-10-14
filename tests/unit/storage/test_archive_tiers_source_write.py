@@ -1304,3 +1304,124 @@ def test_complete_file_with_append_relationship_keeps_ordinary_acquisition_ident
         )
     assert actual == expected
     conn.close()
+
+
+@pytest.mark.parametrize("operation", ["bind", "promote", "bind-unproven"])
+@pytest.mark.parametrize(
+    "exact, census_status", [(True, "non_session"), (True, "complete"), (True, "failed"), (False, "non_session")]
+)
+def test_exact_append_coordinates_retire_only_their_refusal_and_stale_census(
+    tmp_path: Path, operation: str, exact: bool, census_status: str
+) -> None:
+    """The real coordinate writer invalidates only the negative proof it refined."""
+    from polylogue.archive.revision_authority import RawRevisionAuthority
+    from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.durable_tier_fixtures import seed_durable_tier
+
+    bootstrap_archive_root(tmp_path)
+    payload = b'{"type":"event_msg","payload":{"type":"legacy"}}\n'
+    source_path = str(tmp_path / "append.jsonl")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=source_path,
+            canonical_source_path=source_path,
+            source_index=-1,
+            acquired_at_ms=1,
+        )
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path=source_path,
+            source_index=-1 if exact else 4,
+            acquired_at_ms=1,
+            kind=RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES,
+        )
+    # Install only the retained prerequisite shape through the synthetic fixture owner.
+    with seed_durable_tier(tmp_path / "source.db") as conn:
+        if operation == "promote":
+            conn.execute(
+                "UPDATE raw_sessions SET logical_source_key=?,source_revision=? WHERE raw_id=?",
+                ("codex-session:append", "c" * 64, raw_id),
+            )
+        conn.execute(
+            "INSERT INTO raw_membership_census(raw_id,parser_fingerprint,status,member_count,censused_at_ms,detail) "
+            "VALUES (?,'old-parser',?,0,1,'prior coordinate assessment')",
+            (raw_id, census_status),
+        )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        conn = archive.source_connection
+        revision = RawRevisionEnvelope(
+            logical_source_key="codex-session:append",
+            kind=RawRevisionKind.APPEND,
+            source_revision="a" * 64,
+            acquisition_generation=1,
+            predecessor_source_revision="b" * 64,
+            predecessor_raw_id="previous-append",
+            baseline_raw_id="baseline-full",
+            append_start_offset=0,
+            append_end_offset=len(payload),
+            authority=RawRevisionAuthority.ASSERTED
+            if operation == "bind-unproven"
+            else RawRevisionAuthority.BYTE_PROVEN,
+        )
+        if operation.startswith("bind"):
+            if operation == "bind" and exact and census_status == "non_session":
+                before = tuple(
+                    conn.execute(
+                        "SELECT revision_kind,source_revision,append_start_offset,append_end_offset "
+                        "FROM raw_sessions WHERE raw_id=?",
+                        (raw_id,),
+                    ).fetchone()
+                )
+                archive.bind_raw_revision(raw_id, revision, manage_transaction=False)
+                assert conn.in_transaction
+                assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone()[0] == 0
+                assert (
+                    conn.execute("SELECT COUNT(*) FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone()[0]
+                    == 0
+                )
+                archive.rollback()
+                conn = archive.source_connection
+                assert not conn.in_transaction
+                assert (
+                    tuple(
+                        conn.execute(
+                            "SELECT revision_kind,source_revision,append_start_offset,append_end_offset "
+                            "FROM raw_sessions WHERE raw_id=?",
+                            (raw_id,),
+                        ).fetchone()
+                    )
+                    == before
+                )
+                assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone()[0] == 1
+                assert (
+                    conn.execute("SELECT COUNT(*) FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone()[0]
+                    == 1
+                )
+            archive.bind_raw_revision(raw_id, revision)
+        else:
+            archive.promote_reconstructed_legacy_append_revisions(
+                ((raw_id, revision),),
+                source_prefix_sha256="d" * 64,
+                source_size=len(payload),
+                source_mtime_ns=1,
+                source_ctime_ns=1,
+                observed_at_ms=2,
+            )
+        assert tuple(
+            conn.execute(
+                "SELECT revision_kind,append_start_offset,append_end_offset FROM raw_sessions WHERE raw_id=?", (raw_id,)
+            ).fetchone()
+        ) == ("append", 0, len(payload))
+        retired = exact and operation != "bind-unproven"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=? AND artifact_kind=?",
+            (raw_id, RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.value),
+        ).fetchone()[0] == int(not retired)
+        assert conn.execute("SELECT COUNT(*) FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone()[
+            0
+        ] == int(not retired or census_status != "non_session")

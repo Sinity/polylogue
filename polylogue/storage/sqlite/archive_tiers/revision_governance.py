@@ -130,6 +130,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     apply_source_raw_state_update,
     bind_source_raw_revision,
     prepare_parser_singleton_witness,
+    retire_missing_source_coordinate_refusal,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
@@ -1252,6 +1253,7 @@ def promote_reconstructed_legacy_append_revisions(
             )
             if cursor.rowcount != 1:
                 raise ValueError(f"legacy append revision is no longer eligible for promotion: {raw_id}")
+            retire_missing_source_coordinate_refusal(conn, raw_id, revision)
             conn.execute("DELETE FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,))
             row = conn.execute(
                 """
