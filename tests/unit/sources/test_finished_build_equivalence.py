@@ -46,7 +46,7 @@ from tests.infra.revision_backfill_benchmark import (
 from tests.infra.workload_artifacts import FinishedBuildResourceProbe
 
 # Small enough to run in an ordinary selection, large enough that the replay
-# phase does real per-cohort work in both arms. The scale is not the claim.
+# phase does real per-cohort work in every arm. The scale is not the claim.
 _RAW_COUNT = 8
 _RAW_PAYLOAD_BYTES = 2_000
 _TOTAL_RAW_COUNT = _RAW_COUNT + 9
@@ -71,7 +71,7 @@ class _Arm:
 
 _BASELINE_ARM = _Arm(name="retained-active-index", owned_inactive_generation=False)
 _REPLACEMENT_ARM = _Arm(name="fresh-owned-generation", owned_inactive_generation=True)
-#: The production callable both arms execute, and the code the work identity binds.
+#: The production callable all arms execute, and the code the work identity binds.
 _REPLAY_ROUTE = RawObservationDerivation.publish
 _ROUTE_CODE = (make_raw_observation_derivation, RawObservationDerivation)
 
@@ -217,7 +217,7 @@ def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Ar
 
 @pytest.fixture(scope="module")
 def _sealed_template(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, SealedRawInput]:
-    """Build, census and seal one raw population both arms then clone."""
+    """Seal one synthetic population for four independent arm clones."""
     template = tmp_path_factory.mktemp("finished-build-equivalence") / "sealed-input"
     bootstrap_archive_root(template)
     build_independent_raw_corpus(
@@ -354,7 +354,7 @@ def test_each_arm_attributes_its_elapsed_time_to_a_named_phase(
     Timing is descriptive: this asserts that each arm carries a complete,
     attributable receipt, not that either arm is faster. A ranking needs the
     dedicated measurement host, and this deliberately does not manufacture
-    one from an 8-raw fixture.
+    one from this finite synthetic fixture.
     """
     _template, sealed = _sealed_template
     receipts = []
