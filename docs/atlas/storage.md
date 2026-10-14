@@ -676,6 +676,13 @@ completed Source member rewinds the cursor; a pruned or regressed journal restar
 into the same candidate. Changed acquired evidence, recipe or custody replaces
 the incompatible candidate. Durable WAL adds I/O compared with disposable
 MEMORY builds, in exchange for preserving completed work across restarts.
+A prepared replay schedule must contain exactly the selected byte and membership
+keys. Publication refuses an omitted or foreign key instead of committing a
+successful partial result. Reordering those same keys retains their real topology;
+children whose parent publishes in the unit are re-prepared against that parent
+before their own publication. This preserves membership for pathological graphs;
+complete-output order equivalence is qualified for shallow fork forests, not for
+every cyclic or deep-chain graph.
 Canonical replay retains one Index transaction per selected component, rather
 than committing each message; the generation record is synchronized once per
 completed page. A later shared component republishes the earlier member's
