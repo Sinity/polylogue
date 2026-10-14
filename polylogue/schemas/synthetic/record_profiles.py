@@ -1141,7 +1141,7 @@ class PublicRecordPlan:
                 self.scalars[content] = None
             else:
                 self.tool_content_types[content] = frozenset({shape})
-        if self.provider == "claude-code" and kind == "tool_result":
+        elif self.provider == "claude-code" and kind == "tool_result":
             shape, separator, disposition = mode.partition(":")
             if (
                 not separator
