@@ -297,7 +297,9 @@ Claude Code uses the same measured field-form owner for the public Read, Edit,
 Write, TodoWrite, Bash and Agent labels. Input field presence and representation
 stay coupled to the sampled label. Result envelope forms follow the actual
 generated call identity and its measured public class, including absence of an
-envelope. Argument bodies, paths and arbitrary tool names remain anonymous;
+envelope. Dispatcher class and result-content mode use the same eligible
+measured form and actual call inventory before either draw. Argument bodies,
+paths and arbitrary tool names remain anonymous;
 the reducer publishes only fixed public keys, labels, modes and counts. This
 does not establish numeric outcome fidelity, foreground/background subtype
 correlation or asynchronous completion and progress semantics.
@@ -364,7 +366,12 @@ tool identifiers stay in run-scoped scratch and never enter the published
 profile. Public event classes, identity field presence and reuse classes bind
 the original relation owner before field draws. Default profile-driven tool records come
 from the measured public record path; no later template appends calls or
-results on that route. Tool-result content shape and pointer format are selected before
+results on that route. For proved all-tool Claude call arrays, the same path
+feasibility calculation supplies the minimum call count needed by its remaining
+result suffix. Only that selected native content array conditions its existing
+count histogram on the minimum; no count is invented or clamped. Mixed
+text/tool arrays and repeated-result histories retain their separate joint
+constraints. Tool-result content shape and pointer format are selected before
 sampling, so a later null or absent field retains its measured representation.
 Original prior result modes and count buckets constrain reuse of the same
 identity, rather than independently mixing duplicate-result histories. Opaque
