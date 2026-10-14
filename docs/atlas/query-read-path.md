@@ -89,6 +89,10 @@ open, independently of subsequent active-pointer promotion. Resuming an idle
 continuation rebinds a stale live frame before proving the anchor against current
 rows; a predecessor's surviving anchor cannot authorize a successor page.
 
+A read checks its existing cancellation control after payload computation and
+before publishing a new result into the cache. A cancelled computation cannot
+leave an answer for a later reader.
+
 Cached facets bind to the complete pinned Index/User frame as well as the
 archive generation and invalidation epoch. A committed assertion can change
 that frame before its writer announces cache invalidation; the new reader
