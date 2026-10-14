@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from itertools import islice
@@ -27,8 +28,6 @@ if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.mcp.server_support import ServerCallbacks
     from polylogue.storage.sqlite.archive_tiers.archive import (
-        ArchiveSessionSearchHit,
-        ArchiveSessionSummary,
         ArchiveStore,
     )
 
@@ -170,7 +169,7 @@ def _archive_prompt_session_page(
     archive: ArchiveStore, session_id: str, *, limit: int = DEFAULT_MESSAGE_PAGE_LIMIT
 ) -> PromptSession:
     """Build prompt context from a bounded message projection."""
-    summary = archive.read_summary(session_id)
+    summary = archive.read_summary(session_id, include_metadata=False)
     rows = archive.query_session_messages((session_id,), limit=limit, offset=0)
 
     def _message(row: Any) -> PromptMessage:
@@ -206,36 +205,25 @@ def _archive_prompt_sessions(archive: ArchiveStore, spec: SessionQuerySpec) -> l
     filters = plan_filter_kwargs(spec.to_plan())
     limit = spec.limit or 10
     query = " ".join(spec.query_terms).strip()
-    if query:
-        rows: list[ArchiveSessionSummary | ArchiveSessionSearchHit] = list(
-            archive.search_summaries(
-                query,
-                limit=limit,
-                offset=spec.offset,
-                sort=None,
-                reverse=spec.reverse,
-                **filters,
-            )
-        )
-    else:
-        rows = list(
-            archive.list_summaries(
-                limit=limit,
-                offset=spec.offset,
-                sort=None,
-                reverse=spec.reverse,
-                sample=bool(spec.sample),
-                **filters,
-            )
-        )
     sessions: list[PromptSession] = []
     seen: set[str] = set()
-    for row in rows:
-        session_id = row.session_id
-        if session_id in seen:
-            continue
-        seen.add(session_id)
-        sessions.append(_archive_prompt_session_page(archive, session_id))
+    with closing(
+        archive.iter_session_identities(
+            query=query,
+            limit=limit,
+            offset=spec.offset,
+            sort=None,
+            reverse=spec.reverse,
+            sample=bool(spec.sample) if not query else False,
+            **filters,
+        )
+    ) as rows:
+        for row in rows:
+            session_id = row.session_id
+            if session_id in seen:
+                continue
+            seen.add(session_id)
+            sessions.append(_archive_prompt_session_page(archive, session_id))
     return sessions
 
 

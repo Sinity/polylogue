@@ -265,6 +265,8 @@ budget with `omission_rows_truncated`; session totals remain exact unless
 `session_token_totals_truncated` explicitly names missing totals. Budgets below
 the final typed envelope are refused rather than enlarged.
 
+Saved-query evaluation enumerates the canonical SQL identity relation without loading unused tags or directory summaries. Each selected identity checks the existing read cancellation control, and its cursor closes on failure. MCP prompt selection uses that identity relation and a scalar summary projection for the actual title, provenance and counts; bounded messages and their declared truncation remain unchanged.
+
 ## Assertion export and identity reset
 
 Assertion capture resolves `--ref last` through the canonical session identity iterator, retaining repository/cwd filtering and newest-session order without loading unused tags or directory summaries. The selector closes its cursor before returning; an empty scope retains its existing refusal.

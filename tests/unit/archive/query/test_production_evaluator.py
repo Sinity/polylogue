@@ -1,8 +1,8 @@
-"""Canonical plans, membership and receipt facts share one admitted reader.
+"""Real canonical saved-query evaluation over an admitted archive reader.
 
-The tests use real synthetic archive rows and durable query/reference state.
-Post-pin commits and post-enumeration commits distinguish reopening tier paths
-from evaluating and measuring the reader actually serving the operation.
+Predicate lowering selects the existing SQL identity relation; member references
+and receipt facts use that same frame. Tests retain real storage and post-pin
+commits, without replacing the selection planner.
 """
 
 from __future__ import annotations
@@ -336,16 +336,16 @@ def test_reference_query_keeps_the_admitted_frame_after_a_commit(tmp_path: Path,
 
 
 def test_evaluator_receipt_uses_the_member_read_frame(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from polylogue.archive.query import archive_execution
-    from polylogue.archive.query.plan import SessionQueryPlan
-    from polylogue.archive.session.domain_models import SessionSummary
+    from collections.abc import Iterator
+
     from polylogue.operations.operation_context import open_operation_read
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionIdentity
 
     root = tmp_path / "archive"
     _seed_archive(root)
     with sqlite3.connect(root / "user.db") as user:
         query = _origin_query(user, origin="codex-session")
-    real_read = archive_execution._list_summaries_in_archive
+    real_read = ArchiveStore.iter_session_identities
     observed = []
     with open_operation_read(root) as pinned:
         connection = pinned.archive.index_connection
@@ -353,14 +353,13 @@ def test_evaluator_receipt_uses_the_member_read_frame(tmp_path: Path, monkeypatc
         watermark = connection.execute("SELECT MAX(updated_at_ms) FROM sessions").fetchone()[0]
         version = connection.execute("PRAGMA user_version").fetchone()[0]
 
-        def commit_after_rows(plan: SessionQueryPlan, archive: ArchiveStore, **kwargs: Any) -> list[SessionSummary]:
-            rows = real_read(plan, archive, **kwargs)
+        def commit_after_rows(archive: ArchiveStore, **kwargs: Any) -> Iterator[ArchiveSessionIdentity]:
+            yield from real_read(archive, **kwargs)
             observed.append(archive)
             with sqlite3.connect(root / "index.db") as writer:
                 writer.execute("UPDATE sessions SET updated_at_ms = ?", (watermark + 1,))
-            return rows
 
-        monkeypatch.setattr(archive_execution, "_list_summaries_in_archive", commit_after_rows)
+        monkeypatch.setattr(ArchiveStore, "iter_session_identities", commit_after_rows)
         evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
         result = evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="reference"))
         assert len(result.member_refs) == 1

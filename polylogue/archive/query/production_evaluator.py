@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from contextlib import closing
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 
@@ -18,6 +19,7 @@ from polylogue.archive.query.evaluator import (
     declared_origin_scope,
 )
 from polylogue.archive.query.expression import RefOperand
+from polylogue.archive.query.filter_kwargs import plan_filter_kwargs
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.predicate import predicate_from_payload
 from polylogue.core.query_identity import LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION
@@ -96,25 +98,19 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
         predicate = predicate_from_payload(ast)
         bound = _bind_predicate_context(predicate, unit="session")
         plan = SessionQueryPlan(boolean_predicate=bound)
-        from polylogue.archive.query.archive_execution import _list_summaries_in_archive
-
+        excluded_prefixes = tuple(request.excluded_origin_prefixes)
         try:
-            # The pinned relation count bounds exact enumeration without a
-            # default page cap or a second archive acquisition.
-            count = int(connection.execute("SELECT COUNT(*) FROM main.sessions").fetchone()[0])
-            summaries = _list_summaries_in_archive(
-                plan, self._archive, config=None, archive_root=self._archive.archive_root, default_limit=count
-            )
+            with closing(self._archive.iter_session_identities(**plan_filter_kwargs(plan))) as identities:
+                members: list[str] = []
+                for identity in identities:
+                    self._connection()
+                    if not any(identity.origin.startswith(prefix) for prefix in excluded_prefixes):
+                        members.append(f"session:{identity.session_id}")
+                member_refs = tuple(members)
         except Exception:
             logger.warning("production-evaluator: evaluation failed for query:%s", query.query_hash, exc_info=True)
             raise
 
-        excluded_prefixes = tuple(request.excluded_origin_prefixes)
-        member_refs = tuple(
-            f"session:{summary.id}"
-            for summary in summaries
-            if not any(str(summary.origin).startswith(prefix) for prefix in excluded_prefixes)
-        )
         excluded_refs = set(request.excluded_scope_refs)
         if excluded_refs:
             member_refs = tuple(ref for ref in member_refs if ref not in excluded_refs)
