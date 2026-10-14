@@ -6,6 +6,8 @@ live in index.db and are rebuilt from this tier.
 
 from __future__ import annotations
 
+from importlib.resources import files as _resource_files
+
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
 # Source remains intentionally hand-written.  Unlike the index/embeddings
@@ -53,6 +55,7 @@ SOURCE_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
         "sinex_publication_obligations",
         "sinex_publication_payloads",
         "sinex_publication_segments",
+        "sinex_publication_originals",
         "sinex_publication_receipts",
         "excised_content",
         "verified_blob_receipts",
@@ -62,7 +65,7 @@ SOURCE_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
 )
 
 # ddl-lifecycle-waiver: benign CREATE TABLE source_generations vocabulary membership moves to typed write validation; structural checks remain in DDL.
-SOURCE_DDL = f"""
+SOURCE_BASELINE_DDL = f"""
 CREATE TABLE IF NOT EXISTS pending_accepted_marker_inputs (
     request_key TEXT PRIMARY KEY CHECK(length(request_key) = 64),
     raw_id TEXT NOT NULL CHECK(raw_id != ''),
@@ -1067,3 +1070,14 @@ BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.ref_id); END;
 """
 
 __all__ = ["SOURCE_DDL", "SOURCE_HAND_WRITTEN_DDL_REASONS"]
+
+
+# The original fresh-v1 floor remains immutable; current fresh stores also
+# include the declared additive Source migration.
+SOURCE_DDL = (
+    SOURCE_BASELINE_DDL
+    + "\n"
+    + _resource_files("polylogue.storage.sqlite.migrations.source")
+    .joinpath("002_sinex_publication_originals.sql")
+    .read_text(encoding="utf-8")
+)

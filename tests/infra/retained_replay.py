@@ -25,6 +25,7 @@ from tests.infra.live_ingest import prepared_live_convergence_owner
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from polylogue.archive.revision_authority import RawRevisionEnvelope
     from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.storage.index_generation import IndexGeneration
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
@@ -217,6 +218,7 @@ async def publish_retained_payload(
     payload: bytes,
     source_path: str,
     acquired_at_ms: int,
+    revision: RawRevisionEnvelope | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     """Acquire real provider bytes, then publish them through the canonical owner.
 
@@ -234,6 +236,7 @@ async def publish_retained_payload(
                 source_path=source_path,
                 canonical_source_path=source_path,
                 acquired_at_ms=acquired_at_ms,
+                revision=revision,
             )
 
     raw_id = await run_archive_fixture_write(archive_root, acquire)

@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,11 +21,37 @@ from polylogue.storage.sqlite.connection_profile import retained_native_sql_owne
 
 
 def native_proof_artifact(
-    tmp_path: Path, fixture: str, provider: Provider = Provider.CHATGPT
+    tmp_path: Path,
+    fixture: str,
+    provider: Provider = Provider.CHATGPT,
+    *,
+    extra_grok_responses: int = 0,
 ) -> tuple[dict[str, Any], int, int]:
     fixture_path = Path(__file__).parents[1] / "fixtures" / provider.value / fixture
     raw = fixture_path.read_bytes()
     payload = json.loads(raw)
+    if type(extra_grok_responses) is not int or extra_grok_responses < 0:
+        raise ValueError("extra response count must be a nonnegative integer")
+    if extra_grok_responses:
+        if provider is not Provider.GROK:
+            raise ValueError("extra native responses require Grok")
+        responses = payload["responses"]["responses"]
+        parent = responses[-1]["responseId"]
+        start = datetime.fromisoformat(payload["conversation"]["modifyTime"])
+        for index in range(extra_grok_responses):
+            response_id = f"large-{index:05d}"
+            timestamp = (start + timedelta(seconds=index + 1)).isoformat().replace("+00:00", "Z")
+            responses.append(
+                {
+                    "responseId": response_id,
+                    "parentResponseId": parent,
+                    "sender": "human" if index % 2 == 0 else "assistant",
+                    "message": f"Neutral synthetic turn {index:05d}",
+                    "createTime": timestamp,
+                }
+            )
+            parent = response_id
+        payload["conversation"]["modifyTime"] = responses[-1]["createTime"]
     native_id = (
         payload["conversation"]["conversationId"]
         if provider is Provider.GROK

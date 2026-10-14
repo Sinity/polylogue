@@ -58,6 +58,7 @@ class BlobOwner:
 # integrity, sealing, GC, and blob-ref reconciliation.
 BLOB_OWNERS: tuple[BlobOwner, ...] = (
     BlobOwner("source", "raw_sessions", blob_column="blob_hash"),
+    BlobOwner("source", "sinex_publication_originals", blob_column="blob_hash"),
     BlobOwner("source", "raw_hook_events", blob_column="blob_hash"),
     # Linked materials retain their bytes independently of session parsing.
     BlobOwner("source", "material_observations", blob_column="blob_hash"),
@@ -78,7 +79,7 @@ BLOB_OWNERS: tuple[BlobOwner, ...] = (
 
 # A source owner introduced by an additive migration must not make older
 # archives unreadable to backup/GC before that migration is applied.
-_OPTIONAL_OWNER_TABLES = frozenset({"material_observations", "source_items"})
+_OPTIONAL_OWNER_TABLES = frozenset({"material_observations", "source_items", "sinex_publication_originals"})
 
 
 def validated_blob_ref_liveness_joins() -> tuple[tuple[str, str, str], ...]:

@@ -9,14 +9,17 @@ WAL transaction spans source.db/index.db.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Sequence
 from pathlib import PurePosixPath
 
 from polylogue.sinex.models import (
     ObligationStatus,
+    PublicationAcquisition,
     PublicationMode,
     PublicationObligation,
+    PublicationOriginal,
     PublicationPayload,
     PublicationReceipt,
     ReceiptState,
@@ -66,6 +69,25 @@ def _validate_payload(payload: PublicationPayload) -> None:
     actual_manifest_digest = hashlib.sha256(payload.manifest_bytes).hexdigest()
     if actual_manifest_digest != payload.manifest_digest:
         raise PublicationPayloadInvalidError("manifest_digest does not match the exact staged manifest bytes")
+    manifest = json.loads(payload.manifest_bytes)
+    content = manifest.get("content_digest", {}) if isinstance(manifest, dict) else {}
+    commitment = content.get("provider_digest") if isinstance(content, dict) else None
+    if payload.originals or (isinstance(commitment, str) and commitment.startswith("polylogue.original-materials/v1:")):
+        from polylogue.sinex.provenance import require_originals_commitment
+
+        try:
+            require_originals_commitment(payload)
+        except ValueError as exc:
+            raise PublicationPayloadInvalidError(str(exc)) from exc
+    for original in payload.originals:
+        if original.role not in {"provider_native", "attachment"} or not original.source_ref:
+            raise PublicationPayloadInvalidError("publication original identity is invalid")
+        try:
+            digest = bytes.fromhex(original.blob_hash)
+        except ValueError as exc:
+            raise PublicationPayloadInvalidError("publication original hash is invalid") from exc
+        if len(digest) != 32 or original.size_bytes < 0 or not original.media_type:
+            raise PublicationPayloadInvalidError("publication original descriptor is invalid")
     names: set[str] = set()
     for name, _segment in payload.segments:
         path = PurePosixPath(name)
@@ -250,6 +272,37 @@ def stage_payload(
             raise PublicationPayloadConflictError(
                 f"publication key already exists with different segment bytes at position={position}"
             )
+    for position, original in enumerate(payload.originals):
+        values = (
+            original.role,
+            original.source_ref,
+            bytes.fromhex(original.blob_hash),
+            original.size_bytes,
+            original.media_type,
+            payload.normalizer_version,
+            json.dumps(original.acquisition.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO sinex_publication_originals "
+            "(object_id,protocol_version,revision_id,manifest_digest,position,role,source_ref,blob_hash,"
+            "size_bytes,media_type,normalizer_version,acquisition_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (*key, position, *values),
+        )
+        actual = conn.execute(
+            "SELECT role,source_ref,blob_hash,size_bytes,media_type,normalizer_version,acquisition_json "
+            "FROM sinex_publication_originals WHERE object_id=? AND protocol_version=? "
+            "AND revision_id=? AND manifest_digest=? AND position=?",
+            (*key, position),
+        ).fetchone()
+        if actual is None or tuple(actual) != values:
+            raise PublicationPayloadConflictError("publication originals differ from staged custody")
+    original_count = conn.execute(
+        "SELECT count(*) FROM sinex_publication_originals WHERE object_id=? AND protocol_version=? "
+        "AND revision_id=? AND manifest_digest=?",
+        key,
+    ).fetchone()[0]
+    if original_count != len(payload.originals):
+        raise PublicationPayloadConflictError("publication original count differs from staged custody")
     return obligation
 
 
@@ -344,6 +397,15 @@ def load_payload(conn: sqlite3.Connection, obligation: PublicationObligation) ->
         key,
     ).fetchall()
     manifest_bytes = bytes(row[0])
+    original_rows = conn.execute(
+        "SELECT role,source_ref,blob_hash,size_bytes,media_type,normalizer_version,acquisition_json "
+        "FROM sinex_publication_originals WHERE object_id=? AND protocol_version=? "
+        "AND revision_id=? AND manifest_digest=? ORDER BY position",
+        key,
+    ).fetchall()
+    normalizers = {str(item[5]) for item in original_rows}
+    if len(normalizers) > 1:
+        raise PublicationPayloadInvalidError("publication original normalizer identity disagrees")
     payload = PublicationPayload(
         object_id=obligation.object_id,
         protocol_version=obligation.protocol_version,
@@ -351,6 +413,18 @@ def load_payload(conn: sqlite3.Connection, obligation: PublicationObligation) ->
         manifest_digest=obligation.manifest_digest,
         manifest_bytes=manifest_bytes,
         segments=tuple((str(item[0]), bytes(item[1])) for item in segment_rows),
+        originals=tuple(
+            PublicationOriginal(
+                str(item[0]),
+                str(item[1]),
+                bytes(item[2]).hex(),
+                int(item[3]),
+                str(item[4]),
+                PublicationAcquisition.from_dict(json.loads(str(item[6]))),
+            )
+            for item in original_rows
+        ),
+        **({"normalizer_version": next(iter(normalizers))} if normalizers else {}),
     )
     _validate_payload(payload)
     if str(row[1]) != hashlib.sha256(manifest_bytes).hexdigest():

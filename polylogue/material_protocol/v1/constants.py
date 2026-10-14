@@ -32,7 +32,8 @@ PROTOCOL_VERSION = "polylogue.material-protocol/v1"
 # Attachment references carry exact encoded native identities, never position.
 SEMANTICS_VERSION = 8
 
-#: Version of the canonicalization algorithm (NFC + sorted-key JSON framing).
+#: Version of exact-value sorted-key JSON framing. Record builders NFC-fold
+#: only declared prose fields under the current semantics version.
 CANONICALIZER_VERSION = 2
 
 #: Media type recorded for NDJSON segment content descriptors.

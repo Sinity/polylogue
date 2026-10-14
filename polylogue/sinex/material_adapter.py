@@ -13,10 +13,11 @@ import dataclasses
 import hashlib
 import json
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
+from typing import overload
 
 from polylogue.archive.models import Session
 from polylogue.core.enums import (
@@ -545,13 +546,37 @@ _SESSION_CARRIERS = frozenset(
 )
 
 
+class _ReadOnlyMessages(Sequence[ParsedMessage]):
+    """Normalization reads sealed parser output without editing its owner."""
+
+    def __init__(self, messages: Sequence[ParsedMessage]) -> None:
+        self.messages = messages
+
+    def __len__(self) -> int:
+        return len(self.messages)
+
+    @overload
+    def __getitem__(self, index: int) -> ParsedMessage: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[ParsedMessage]: ...
+
+    def __getitem__(self, index: int | slice) -> ParsedMessage | Sequence[ParsedMessage]:
+        return self.messages[index]
+
+    def __iter__(self) -> Iterator[ParsedMessage]:
+        return iter(self.messages)
+
+
 def session_material_from_parsed_session(parsed_session: ParsedSession, *, session_id: str) -> SessionMaterial:
     """Build complete v1 material from the real ingest ``ParsedSession``."""
     native_id = native_id_from_session_id(session_id)
     if native_id is None:
         raise ValueError(f"session_id {session_id!r} is not a well-formed 'origin:native_id' session id")
     origin = _origin_for_session_id(session_id)
-    raw_messages = derive_tool_outcomes(parsed_session.messages, parsed_session.session_events, origin=origin)
+    raw_messages = derive_tool_outcomes(
+        _ReadOnlyMessages(parsed_session.messages), parsed_session.session_events, origin=origin
+    )
     attachments_by_message: dict[str, list[ParsedAttachment]] = defaultdict(list)
     unanchored_attachments: list[ParsedAttachment] = []
     for attachment in parsed_session.attachments:

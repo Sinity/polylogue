@@ -50,7 +50,7 @@ class LostReceiptTransport:
 
 class UnsafeDetailTransport:
     async def publish_revision(
-        self, *, request_id: str, manifest_bytes: bytes, segment_bytes: Mapping[str, bytes]
+        self, *, request_id: str, manifest_bytes: bytes, segment_bytes: Mapping[str, bytes], **_kwargs: object
     ) -> PublicationReceipt:
         return PublicationReceipt(
             request_id=request_id,
