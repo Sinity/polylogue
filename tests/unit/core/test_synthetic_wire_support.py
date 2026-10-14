@@ -1955,3 +1955,227 @@ def test_codex_receipt_witnesses_both_original_measured_record_families(
         for witness in entry.parser_witnesses
     )
     assert all(witness.healthy for witness in entry.parser_witnesses)
+
+
+def _chatgpt_tool_result_graph() -> JSONDocument:
+    def node(
+        identity: str,
+        parent: str | None,
+        role: str,
+        *,
+        content_type: str = "text",
+        status: str = "finished_successfully",
+    ) -> JSONDocument:
+        return {
+            "id": "node-" + identity,
+            "parent": parent,
+            "message": {
+                "id": identity,
+                "author": {"role": role},
+                "content": {"content_type": content_type, "parts": ["neutral body"]},
+                "status": status,
+                "create_time": 1,
+            },
+        }
+
+    call = node("call-message", None, "assistant")
+    call_message = cast(JSONDocument, call["message"])
+    call_message["metadata"] = {"command": "lookup", "args": {}}
+    source_author = node("source-author-message", "direct-coordinate", "assistant")
+    source_message = cast(JSONDocument, source_author["message"])
+    source_message["author"] = {"role": "assistant", "metadata": {"real_author": "tool:lookup"}}
+    source_message["metadata"] = {"aggregate_result": {"status": "failed_with_in_kernel_exception"}}
+    incidental = node("incidental-message", "call-coordinate", "assistant")
+    incidental_message = cast(JSONDocument, incidental["message"])
+    incidental_message["author"] = {"role": "assistant", "name": "lookup"}
+    incidental_message["recipient"] = "lookup"
+    return {
+        "id": "neutral-tool-session",
+        "mapping": {
+            "call-coordinate": call,
+            "direct-coordinate": node("direct-message", "call-coordinate", "tool"),
+            "source-author-coordinate": source_author,
+            "unknown-coordinate": node("unknown-message", "source-author-coordinate", "tool", status="in_progress"),
+            "typed-coordinate": node("typed-message", "call-coordinate", "assistant", content_type="execution_output"),
+            "error-coordinate": node("error-message", "call-coordinate", "tool", content_type="system_error"),
+            "incidental-coordinate": incidental,
+            "orphan-coordinate": node("orphan-message", "missing-coordinate", "tool", status="in_progress"),
+            "cycle-a": node("cycle-a-message", "cycle-b", "tool", status="in_progress"),
+            "cycle-b": node("cycle-b-message", "cycle-a", "tool", status="in_progress"),
+        },
+    }
+
+
+def test_chatgpt_tool_result_oracle_reads_native_owners_and_typed_outcomes() -> None:
+    from collections import Counter
+
+    payload = _chatgpt_tool_result_graph()
+    expected = Counter(
+        {
+            (BlockType.TOOL_USE, "call-message", None, None): 1,
+            (BlockType.TOOL_RESULT, "call-message", False, None): 2,
+            (BlockType.TOOL_RESULT, "call-message", True, None): 2,
+            (BlockType.TOOL_RESULT, "call-message", None, None): 1,
+        }
+    )
+    actual_expected = wire_formats._parser_artifact_expected_tool_witnesses("chatgpt", cast(GeneratedValue, payload))
+    assert Counter(actual_expected) == expected
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    assert len(sessions) == 1 and len(sessions[0].messages) == 10
+    assert Counter(wire_formats._parser_artifact_tool_witnesses(sessions)) == expected
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    by_id = {message.provider_message_id: message for message in sessions[0].messages}
+    assert by_id["source-author-message"].material_origin is MaterialOrigin.TOOL_RESULT
+    assert by_id["incidental-message"].material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+    assert all(block.type is not BlockType.TOOL_USE for block in by_id["incidental-message"].blocks)
+    for identity in ("orphan-message", "cycle-a-message", "cycle-b-message"):
+        results = [block for block in by_id[identity].blocks if block.type is BlockType.TOOL_RESULT]
+        assert len(results) == 1 and results[0].tool_id is None and results[0].is_error is None
+
+
+@pytest.mark.parametrize("mutation", ["drop", "owner", "outcome", "invent"])
+def test_chatgpt_tool_result_oracle_refuses_parsed_mutants(mutation: str) -> None:
+    payload = _chatgpt_tool_result_graph()
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    message = next(message for message in sessions[0].messages if message.provider_message_id == "direct-message")
+    result = next(block for block in message.blocks if block.type is BlockType.TOOL_RESULT)
+    if mutation == "drop":
+        message.blocks = [block for block in message.blocks if block is not result]
+    elif mutation == "owner":
+        result.tool_id = "wrong-native-owner"
+    elif mutation == "outcome":
+        result.is_error = True
+    else:
+        message.blocks.append(ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="invented-result", is_error=False))
+    assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+
+
+def test_chatgpt_tool_result_oracle_does_not_read_parsed_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden_parser(*args: object, **kwargs: object) -> None:
+        pytest.fail("the expected tool obligations must come from the native envelope")
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", forbidden_parser)
+    witnesses = wire_formats._parser_artifact_expected_tool_witnesses(
+        "chatgpt", cast(GeneratedValue, _chatgpt_tool_result_graph())
+    )
+    assert len(witnesses) == 6
+
+
+@pytest.mark.parametrize("fallback_text", ["neutral fallback output", ""])
+def test_chatgpt_explicit_tool_answer_retains_result_with_optional_fallback_text(fallback_text: str) -> None:
+    payload = _chatgpt_tool_result_graph()
+    mapping = cast(JSONDocument, payload["mapping"])
+    mapping["fallback-coordinate"] = {
+        "id": "fallback-node",
+        "parent": "call-coordinate",
+        "message": {
+            "id": "fallback-message",
+            "author": {"role": "tool"},
+            "content": {"content_type": "text", "parts": [""], "thoughts": [{"summary": fallback_text}]},
+            "status": "in_progress",
+            "create_time": 2,
+        },
+    }
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    answers = [
+        message
+        for session in sessions
+        for message in session.messages
+        if message.provider_message_id == "fallback-message"
+    ]
+    assert len(answers) == 1 and answers[0].text == fallback_text
+    results = [block for block in answers[0].blocks if block.type is BlockType.TOOL_RESULT]
+    assert len(results) == 1
+    assert results[0].tool_id == "call-message" and results[0].text == (fallback_text or None)
+    assert results[0].is_error is None and results[0].exit_code is None
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+
+
+def test_chatgpt_empty_incidental_tool_name_and_recipient_do_not_create_a_result() -> None:
+    payload = _chatgpt_tool_result_graph()
+    mapping = cast(JSONDocument, payload["mapping"])
+    mapping["ordinary-empty-coordinate"] = {
+        "id": "ordinary-empty-node",
+        "parent": "call-coordinate",
+        "message": {
+            "id": "ordinary-empty-message",
+            "author": {"role": "assistant", "name": "lookup"},
+            "recipient": "lookup",
+            "content": {"content_type": "text", "parts": [""]},
+        },
+    }
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    ordinary = next(
+        message
+        for session in sessions
+        for message in session.messages
+        if message.provider_message_id == "ordinary-empty-message"
+    )
+    assert ordinary.text == "" and ordinary.blocks == []
+    assert ordinary.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+    assert len(wire_formats._parser_artifact_expected_tool_witnesses("chatgpt", cast(GeneratedValue, payload))) == 6
+
+
+@pytest.mark.parametrize("fallback", ["node-id", "mapping-key"])
+def test_chatgpt_call_and_answer_witnesses_use_the_same_native_id_fallback(fallback: str) -> None:
+    from collections import Counter
+
+    payload = _chatgpt_tool_result_graph()
+    mapping = cast(JSONDocument, payload["mapping"])
+    call = cast(JSONDocument, mapping["call-coordinate"])
+    message = cast(JSONDocument, call["message"])
+    del message["id"]
+    canonical = "node-call-message"
+    if fallback == "mapping-key":
+        del call["id"]
+        canonical = "call-coordinate"
+    expected = Counter(
+        {
+            (BlockType.TOOL_USE, canonical, None, None): 1,
+            (BlockType.TOOL_RESULT, canonical, False, None): 2,
+            (BlockType.TOOL_RESULT, canonical, True, None): 2,
+            (BlockType.TOOL_RESULT, canonical, None, None): 1,
+        }
+    )
+    assert (
+        Counter(wire_formats._parser_artifact_expected_tool_witnesses("chatgpt", cast(GeneratedValue, payload)))
+        == expected
+    )
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    assert len(sessions) == 1 and len(sessions[0].messages) == 10
+    assert Counter(wire_formats._parser_artifact_tool_witnesses(sessions)) == expected
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    call_message = next(item for item in sessions[0].messages if item.provider_message_id == canonical)
+    call_message.provider_message_id = "wrong-native-message"
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+
+
+def test_chatgpt_canonical_id_projection_does_not_waive_a_missing_role() -> None:
+    payload = _chatgpt_tool_result_graph()
+    mapping = cast(JSONDocument, payload["mapping"])
+    call = cast(JSONDocument, mapping["call-coordinate"])
+    message = cast(JSONDocument, call["message"])
+    message["author"] = {"name": "lookup"}
+    assert "id:call-message" in wire_formats._parser_artifact_expected_message_keys(
+        "chatgpt", cast(GeneratedValue, payload)
+    )
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )

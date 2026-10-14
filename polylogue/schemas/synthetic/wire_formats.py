@@ -1346,6 +1346,8 @@ def _parser_artifact_node_role(provider: str, node: Mapping[str, JSONValue]) -> 
 def _parser_artifact_node_tool_witnesses(
     provider: str,
     node: Mapping[str, JSONValue],
+    *,
+    native_id: str | None = None,
 ) -> tuple[tuple[BlockType, str, bool | None, int | None], ...]:
     """Project load-bearing tool identity/outcome fields from a raw node.
 
@@ -1357,12 +1359,23 @@ def _parser_artifact_node_tool_witnesses(
     a parser loss.
     """
     if provider == "chatgpt":
+        from polylogue.sources.parsers.chatgpt import _is_tool_author, _node_status_outcome
+
         message = node.get("message")
         if not isinstance(message, Mapping):
             return ()
         content = message.get("content")
         metadata = message.get("metadata")
         metadata = metadata if isinstance(metadata, Mapping) else {}
+        content_type = content.get("content_type", "text") if isinstance(content, Mapping) else None
+        result_kind = content_type in {"execution_output", "computer_output", "system_error", "citable_code_output"}
+        is_error = (
+            True
+            if content_type == "system_error"
+            else _node_status_outcome(message.get("status"), metadata.get("aggregate_result"))[0]
+        )
+        if _is_tool_author(message.get("author")):
+            return ((BlockType.TOOL_RESULT, str(node.get("parent") or ""), is_error, None),)
         recipient = message.get("recipient")
         target = (
             recipient if isinstance(recipient, str) and recipient and recipient != "all" else metadata.get("command")
@@ -1375,10 +1388,20 @@ def _parser_artifact_node_tool_witnesses(
         if (
             isinstance(target, str)
             and target
-            and (isinstance(decoded, dict) or metadata.get("args") not in (None, [], {}, ""))
+            and (
+                isinstance(decoded, dict)
+                or metadata.get("args") not in (None, [], {}, "")
+                or _parser_artifact_node_role(provider, node) is Role.ASSISTANT
+                and isinstance(metadata.get("command"), str)
+                and bool(metadata.get("command"))
+                and isinstance(content, Mapping)
+                and content.get("content_type", "text") == "text"
+            )
         ) or (isinstance(content, Mapping) and content.get("content_type") == "code"):
-            identity = message.get("id")
-            return ((BlockType.TOOL_USE, str(identity), None, None),) if identity is not None else ()
+            call_identity = native_id if native_id is not None else _parser_artifact_node_identity(provider, node)
+            return ((BlockType.TOOL_USE, call_identity, None, None),) if call_identity is not None else ()
+        if result_kind:
+            return ((BlockType.TOOL_RESULT, str(node.get("parent") or ""), is_error, None),)
         return ()
     if provider == "codex" and node.get("type") in _CODEX_TOOL_CALL_TYPES | _CODEX_TOOL_OUTPUT_TYPES:
         identity = node.get("call_id") or node.get("id")
@@ -1596,14 +1619,42 @@ def _parser_artifact_node_material_origin(
     return material_origin
 
 
+def _chatgpt_mapping_nodes(
+    mapping: Mapping[str, JSONValue],
+) -> Iterator[tuple[str, Mapping[str, JSONValue], str]]:
+    """Expose native coordinates and the source owner's canonical message IDs."""
+    from polylogue.sources.parsers.chatgpt import _mapping_message_id
+
+    for key, node in mapping.items():
+        if not isinstance(node, Mapping):
+            continue
+        message = node.get("message")
+        author = message.get("author") if isinstance(message, Mapping) else None
+        if isinstance(message, Mapping) and isinstance(author, Mapping) and isinstance(message.get("content"), Mapping):
+            yield str(key), node, _mapping_message_id(str(key), node, message)
+
+
+def _parser_artifact_expected_node_identities(
+    provider: str, payload: JSONValue
+) -> Iterator[tuple[Mapping[str, JSONValue], str | None]]:
+    if provider == "chatgpt":
+        projected = _parser_artifact_projection(provider, payload)
+        mapping = projected.get("mapping") if isinstance(projected, Mapping) else None
+        if isinstance(mapping, Mapping):
+            for _coordinate, node, identity in _chatgpt_mapping_nodes(mapping):
+                yield node, identity
+            return
+    for node in _parser_artifact_expected_nodes(provider, payload):
+        yield node, _parser_artifact_node_identity(provider, node)
+
+
 def _parser_artifact_expected_message_keys(
     provider: str,
     payload: JSONValue,
 ) -> tuple[str, ...]:
     """Derive the full conversational identity/content set from one artifact."""
     keys: list[str] = []
-    for node in _parser_artifact_expected_nodes(provider, payload):
-        identity = _parser_artifact_node_identity(provider, node)
+    for node, identity in _parser_artifact_expected_node_identities(provider, payload):
         if identity is not None:
             keys.append(f"id:{identity}")
             continue
@@ -1617,8 +1668,7 @@ def _parser_artifact_expected_message_semantic_witnesses(
 ) -> tuple[tuple[str, Role, MaterialOrigin], ...]:
     """Derive identity/text and authoredness from the canonical raw witness."""
     witnesses: list[tuple[str, Role, MaterialOrigin]] = []
-    for node in _parser_artifact_expected_nodes(provider, payload):
-        identity = _parser_artifact_node_identity(provider, node)
+    for node, identity in _parser_artifact_expected_node_identities(provider, payload):
         role = _parser_artifact_node_role(provider, node)
         material_origin = _parser_artifact_node_material_origin(provider, node, role)
         if identity is not None:
@@ -1635,11 +1685,69 @@ def _parser_artifact_expected_tool_witnesses(
     payload: JSONValue,
 ) -> tuple[tuple[BlockType, str, bool | None, int | None], ...]:
     """Collect every raw structured tool assertion owned by this artifact."""
+    if provider == "chatgpt":
+        return _chatgpt_mapping_tool_witnesses(_parser_artifact_projection(provider, payload))
     return tuple(
         witness
         for node in _parser_artifact_expected_nodes(provider, payload)
         for witness in _parser_artifact_node_tool_witnesses(provider, node)
     )
+
+
+def _chatgpt_mapping_tool_witnesses(
+    payload: JSONValue,
+) -> tuple[tuple[BlockType, str, bool | None, int | None], ...]:
+    """Read tool obligations from native graph coordinates, before parsing."""
+    from polylogue.sources.parsers.chatgpt import (
+        _is_tool_author,
+        _node_status_outcome,
+        _owning_tool_call_id,
+    )
+
+    mapping = payload.get("mapping") if isinstance(payload, Mapping) else None
+    if not isinstance(mapping, Mapping):
+        return ()
+    native_nodes = tuple(_chatgpt_mapping_nodes(mapping))
+    native_ids: dict[str, str] = {}
+    for coordinate, node, identity in native_nodes:
+        message = node.get("message")
+        author = message.get("author") if isinstance(message, Mapping) else None
+        role = author.get("role") if isinstance(author, Mapping) else None
+        if isinstance(role, str) and role:
+            native_ids[coordinate] = identity
+    witnesses: list[tuple[BlockType, str, bool | None, int | None]] = []
+    owners: dict[str, str] = {}
+    for _coordinate, node, native_id in native_nodes:
+        message = node.get("message")
+        if not isinstance(message, Mapping):
+            continue
+        content = message.get("content")
+        content_type = content.get("content_type", "text") if isinstance(content, Mapping) else None
+        tool_author = _is_tool_author(message.get("author"))
+        if not tool_author:
+            calls = tuple(
+                witness
+                for witness in _parser_artifact_node_tool_witnesses("chatgpt", node, native_id=native_id)
+                if witness[0] is BlockType.TOOL_USE
+            )
+            if calls:
+                witnesses.extend(calls)
+                continue
+            if content_type not in {"execution_output", "computer_output", "system_error", "citable_code_output"}:
+                continue
+        parent = node.get("parent")
+        parent_id = str(parent) if parent else None
+        owner = _owning_tool_call_id(mapping, parent_id, owners) if tool_author else parent_id
+        native_owner = native_ids.get(owner) if owner is not None else None
+        # Missing/cyclic/unemitted parents stay unlinked; the witness protocol
+        # counts only tool blocks with a provider-owned identity.
+        if native_owner is None:
+            continue
+        metadata = message.get("metadata")
+        aggregate = metadata.get("aggregate_result") if isinstance(metadata, Mapping) else None
+        is_error = True if content_type == "system_error" else _node_status_outcome(message.get("status"), aggregate)[0]
+        witnesses.append((BlockType.TOOL_RESULT, native_owner, is_error, None))
+    return tuple(witnesses)
 
 
 def _parser_artifact_expected_session_id(provider: str, payload: JSONValue, fallback_id: str) -> str | None:
@@ -1723,11 +1831,10 @@ def _parser_artifact_messages_have_artifact_bound_content(
     """Require every raw text segment to survive on its identified message."""
     raw_texts_by_identity: dict[str, Counter[str]] = {}
     anonymous_raw_texts: Counter[str] = Counter()
-    for node in _parser_artifact_expected_nodes(provider, payload):
+    for node, identity in _parser_artifact_expected_node_identities(provider, payload):
         expected_texts = _parser_artifact_node_content_texts(provider, node)
         if not expected_texts:
             continue
-        identity = _parser_artifact_node_identity(provider, node)
         if identity is None:
             anonymous_raw_texts.update(expected_texts)
         else:
