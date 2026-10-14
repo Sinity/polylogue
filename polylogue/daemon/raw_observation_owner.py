@@ -329,6 +329,7 @@ class RawObservationConvergenceOwner:
         width = self._compute_adapter.snapshot().by_class("incremental-background").ceiling_slots
         results: list[RetainedMaterializationResult] = []
         remaining = list(selected)
+        settled_offers: set[str] = set()
         del selected, raw_ids
         async with self._converge_lock:
             while remaining:
@@ -338,7 +339,18 @@ class RawObservationConvergenceOwner:
                 scope_operand = pickle.dumps(offered, protocol=pickle.HIGHEST_PROTOCOL)
                 # Default sidecar ownership starts from this window. A caller's
                 # explicit dependency selection is preserved before expansion.
-                selection = select_retained_raw_ids or self._archive.sidecar_owner_selector(offered)
+                offered_selection = select_retained_raw_ids or self._archive.sidecar_owner_selector(offered)
+                prior_offers = frozenset(settled_offers)
+
+                def selection(
+                    reader: PreparedSessionSourceRead,
+                    choose: Callable[[PreparedSessionSourceRead], Sequence[str]] = offered_selection,
+                    completed: frozenset[str] = prior_offers,
+                ) -> Sequence[str]:
+                    # Neutral capture and the canonical consumer share these
+                    # independent offers; both expand current dependencies later.
+                    return tuple(raw_id for raw_id in choose(reader) if raw_id not in completed)
+
                 async with self._archive.prepared_neutral_page(
                     offered,
                     destination=self._archive.destination_adapter,
@@ -357,6 +369,7 @@ class RawObservationConvergenceOwner:
                         on_membership_refusal=on_membership_refusal,
                         before_publication=before_publication,
                         publication_intent=publication_intent,
+                        settled_offers=prior_offers,
                         neutral_page=page,
                     )
                     result = await self.run_prepared_sync(
@@ -367,5 +380,9 @@ class RawObservationConvergenceOwner:
                     )
                     results.append(result)
                     considered = {*offered, *result.considered_raw_ids}
+                    # Carry only this invocation's completed offer outcomes.
+                    # Current Source dependency expansion still re-enrolls a
+                    # previously settled raw when a later cohort needs it.
+                    settled_offers.update(result.considered_raw_ids)
                     remaining = [raw_id for raw_id in remaining if raw_id not in considered]
         return self._archive.combine_retained_results(results)

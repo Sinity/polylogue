@@ -564,7 +564,12 @@ async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblin
             )
     retries = [e for e in events if e.get("event") == "storage.raw_observation.preparation_isolated"]
     assert retries
-    assert {e["reason"] for e in retries} == {"page_scope_failed", "raw_preparation_failed"}
+    # One-worker admission offers one independent raw at a time. An explicit
+    # selector widens that frame and therefore exercises component isolation.
+    expected_reasons = {"raw_preparation_failed"}
+    if fixed_page:
+        expected_reasons.add("page_scope_failed")
+    assert {e["reason"] for e in retries} == expected_reasons
     for event in retries:
         assert event["outcome"] == "degraded" and event["phase"] == "source_preparation"
         assert event["productive_id"] in acquired.values()
@@ -639,6 +644,65 @@ async def test_page_isolation_does_not_reoffer_settled_independent_raws(
     }
     assert settled == set(selected[:-1])
     assert repeated == []
+
+
+@pytest.mark.asyncio
+async def test_neutral_page_does_not_reparse_settled_independent_jsonl_offers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Completed offers leave both neutral parser pages and canonical preparation."""
+    from polylogue.storage.derived import raw as raw_derivation
+
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
+    acquired: dict[str, str] = {}
+    for index, name in enumerate(("before", "broken", "after")):
+        acquired[name] = await run_archive_fixture_write(
+            tmp_path,
+            partial(
+                _acquire,
+                tmp_path,
+                Provider.CODEX,
+                _codex_rollout(f"neutral-{name}", 2),
+                f"{name}.jsonl",
+                index + 1,
+                native_id=f"neutral-{name}",
+            ),
+        )
+    selected = tuple(acquired.values())
+    original_parse = raw_derivation._parse_captured_neutral_body
+    original_publish = RawObservationDerivation.publish
+    settled: set[str] = set()
+    repeated: list[str] = []
+    fault = RuntimeError("synthetic neutral parser fault")
+
+    def parse(raw_id: str, *args: Any, **kwargs: Any) -> Any:
+        if raw_id in settled:
+            repeated.append(raw_id)
+        if raw_id == acquired["broken"]:
+            raise fault
+        return original_parse(raw_id, *args, **kwargs)
+
+    def publish(
+        self: RawObservationDerivation, frame: Any, replacement: RawObservationReplacement, **kwargs: Any
+    ) -> bool:
+        published = original_publish(self, frame, replacement, **kwargs)
+        if published:
+            settled.update(replacement.raw_ids)
+        return published
+
+    monkeypatch.setattr(raw_derivation, "_parse_captured_neutral_body", parse)
+    monkeypatch.setattr(RawObservationDerivation, "publish", publish)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        outcome = await owner.replay_retained_raw_ids(selected, select_retained_raw_ids=lambda _read: selected)
+    assert [failure.raw_id for failure in outcome.failures] == [acquired["broken"]]
+    assert outcome.failures[0].error is fault
+    assert settled == {acquired["before"], acquired["after"]}
+    assert repeated == []
+    assert _rows(tmp_path / "index.db", "SELECT native_id,message_count FROM sessions ORDER BY native_id") == [
+        ("neutral-after", 2),
+        ("neutral-before", 2),
+    ]
+    assert len({session_id for receipt in outcome.receipts for session_id in receipt.written_session_ids}) == 2
 
 
 @pytest.mark.asyncio
@@ -761,7 +825,9 @@ async def test_raw_owner_keeps_one_preparation_in_flight(tmp_path: Path, monkeyp
             reports = await asyncio.gather(*(owner.converge_raw_id(raw_id) for raw_id in raw_ids[:3]))
             assert [(report.done, report.failed) for report in reports] == [(1, 0)] * 3
             results = (await owner.replay_retained_raw_ids(raw_ids[3:])).require_complete()
-            assert len(results) == 3
+            written = [session_id for receipt in results for session_id in receipt.written_session_ids]
+            assert len(written) == len(set(written)) == 3
+            assert set(written) == {f"chatgpt-export:inflight-{index}" for index in range(3, 6)}
     finally:
         await asyncio.to_thread(compute.shutdown, wait=True)
     assert state["peak_computing"] == 1, state

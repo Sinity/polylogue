@@ -593,6 +593,7 @@ class RawObservationArchiveWork:
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None,
         before_publication: Callable[[], None] | None,
         publication_intent: Callable[[RetainedPublicationIntent], None] | None = None,
+        settled_offers: frozenset[str],
         neutral_page: NeutralRawPreparation | None = None,
     ) -> Callable[[], RetainedMaterializationResult]:
         """Settle real selected replay receipts, including preparatory Source phases.
@@ -692,6 +693,7 @@ class RawObservationArchiveWork:
                                 )
                             )
                             if item not in visited
+                            and item not in settled_offers
                             and item not in refused_ids
                             and item not in dependency_blocked_ids
                             and item not in failed_ids
@@ -779,7 +781,12 @@ class RawObservationArchiveWork:
                         # propagating; nothing of this attempt is retained.
                         if not _isolates_as_raw_failure(failure):
                             raise
-                        retry_single = not isolated and frame_scope != (raw_id,)
+                        # A one-slot admission frame can still select several
+                        # raws through the caller's current Source selector.
+                        # Attribute failure only after retrying that expanded
+                        # component with independent page offers excluded.
+                        attempted_scope = tuple(original_keys) or frame_scope
+                        retry_single = not isolated and attempted_scope != (raw_id,)
                         emit(
                             "storage.raw_observation.preparation_isolated",
                             level=WARNING,
@@ -789,7 +796,7 @@ class RawObservationArchiveWork:
                             operation=_preparation_failure_operation(failure),
                             phase="source_preparation",
                             productive_id=raw_id,
-                            raws=len(frame_scope),
+                            raws=len(attempted_scope),
                         )
                         if retry_single:
                             # A census of the page's opaque siblings may have
