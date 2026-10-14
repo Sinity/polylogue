@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import Mapping
-from pathlib import Path
+from contextlib import redirect_stdout
 
 import click
 
@@ -74,64 +74,16 @@ def run_query_set_read_view(
     fmt = output_format or "ndjson"
     bulk_fmt = "jsonl" if fmt == "ndjson" else fmt
 
-    if destination == RenderDestination.FILE:
-        if not out_path:
+    if destination in (RenderDestination.FILE, RenderDestination.CLIPBOARD, RenderDestination.BROWSER):
+        if destination == RenderDestination.FILE and not out_path:
             raise click.UsageError("--to file requires --out <path>.")
+        from polylogue.cli.output_stream import output_stream
+        from polylogue.cli.read_views.base import deliver_output_stream
 
-        buf = io.StringIO()
-
-        def _captured_echo_read_set(message: object = None, **_kwargs: object) -> None:
-            buf.write(str(message or "") + ("\n" if _kwargs.get("nl", True) else ""))
-
-        _orig_echo = click.echo
-        click.echo = _captured_echo_read_set  # type: ignore[assignment]
-        try:
-            selection = run_query_set_read(
-                env,
-                request,
-                output_format=bulk_fmt,
-                fields=fields,
-            )
-        finally:
-            click.echo = _orig_echo
-        rendered = buf.getvalue()
-        from polylogue.cli.read_views.base import _warn_on_secret_candidates
-
-        _warn_on_secret_candidates(env, rendered, label=out_path)
-        Path(out_path).write_text(rendered, encoding="utf-8")
-        env.ui.console.print(f"Wrote to {out_path}")
-        selection.finish()
-        return
-
-    if destination in (RenderDestination.CLIPBOARD, RenderDestination.BROWSER):
-        # Query-set rendering writes one document per match. Capture that
-        # stream before delivery so clipboard/browser destinations receive the
-        # complete set instead of silently falling back to stdout.
-        buf = io.StringIO()
-
-        def _captured_echo_read_set(message: object = None, **_kwargs: object) -> None:
-            buf.write(str(message or "") + ("\n" if _kwargs.get("nl", True) else ""))
-
-        _orig_echo = click.echo
-        click.echo = _captured_echo_read_set  # type: ignore[assignment]
-        try:
-            selection = run_query_set_read(
-                env,
-                request,
-                output_format=bulk_fmt,
-                fields=fields,
-            )
-        finally:
-            click.echo = _orig_echo
-        from polylogue.cli.read_views.base import deliver_content
-
-        deliver_content(
-            env,
-            buf.getvalue(),
-            destination=destination,
-            out_path=out_path,
-            output_format=fmt,
-        )
+        with output_stream() as rendered:
+            with redirect_stdout(rendered):
+                selection = run_query_set_read(env, request, output_format=bulk_fmt, fields=fields)
+            deliver_output_stream(env, rendered, destination=destination, out_path=out_path, output_format=fmt)
         selection.finish()
         return
 

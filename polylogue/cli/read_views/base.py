@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TextIO
 
 import click
 
@@ -235,22 +235,49 @@ def deliver_content(
     degrade to a plain ``click.echo`` (polylogue-bvnz).
     """
 
+    from polylogue.cli.output_stream import output_stream
+
+    with output_stream() as staged:
+        staged.write(content)
+        deliver_output_stream(
+            env, staged, destination=destination, out_path=out_path, output_format=output_format, session=session
+        )
+
+
+def deliver_output_stream(
+    env: AppEnv,
+    content: TextIO,
+    *,
+    destination: str,
+    out_path: str | None,
+    output_format: str = "markdown",
+    session: Session | None = None,
+) -> None:
+    from polylogue.cli.output_stream import output_chunks
+
     if destination == RenderDestination.FILE:
         if not out_path:
             raise click.UsageError("--to file requires --out <path>.")
-        _warn_on_secret_candidates(env, content, label=out_path)
-        Path(out_path).write_text(content, encoding="utf-8")
+        with Path(out_path).open("w", encoding="utf-8") as output:
+            for chunk in output_chunks(content):
+                output.write(chunk)
+        from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
+
+        notice = describe_path_scan_result(scan_path_for_secret_candidates(Path(out_path)))
+        if notice is not None:
+            env.ui.console.print(f"[yellow]{notice}[/yellow]")
         env.ui.console.print(f"Wrote to {out_path}")
     elif destination == RenderDestination.CLIPBOARD:
         from polylogue.cli.query_output import copy_to_clipboard
 
         copy_to_clipboard(env, content)
     elif destination == RenderDestination.BROWSER:
-        from polylogue.cli.query_output import open_in_browser
+        from polylogue.cli.query_output import _open_descriptor_in_browser
 
-        open_in_browser(env, content, output_format, session)
+        _open_descriptor_in_browser(env, content, output_format, session)
     elif destination in (RenderDestination.STDOUT, RenderDestination.TERMINAL):
-        click.echo(content, nl=False)
+        for chunk in output_chunks(content):
+            click.echo(chunk, nl=False)
     else:
         raise click.UsageError(f"Unrecognized read destination: {destination!r}.")
 

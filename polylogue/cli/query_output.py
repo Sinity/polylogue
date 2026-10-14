@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from html import escape as html_escape
 from time import monotonic
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, TextIO, TypeAlias
 from urllib.parse import quote
 
 import click
@@ -199,18 +199,24 @@ def deliver_query_output(
     document: QueryOutputDocument,
 ) -> None:
     """Deliver a rendered query document to every requested destination."""
+    from polylogue.cli.output_stream import output_chunks
+
     for destination in document.destinations:
         if destination.kind in (RenderDestination.STDOUT, RenderDestination.TERMINAL):
-            click.echo(document.content)
+            for chunk in output_chunks(document.content):
+                click.echo(chunk, nl=False)
+            click.echo()
         elif destination.kind is RenderDestination.BROWSER:
-            open_in_browser(env, document.content, document.output_format, document.session)
+            _open_descriptor_in_browser(env, document.content, document.output_format, document.session)
         elif destination.kind is RenderDestination.CLIPBOARD:
             copy_to_clipboard(env, document.content)
         else:
             assert destination.path is not None
             path = destination.path
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(document.content, encoding="utf-8")
+            with path.open("w", encoding="utf-8") as destination_stream:
+                for chunk in output_chunks(document.content):
+                    destination_stream.write(chunk)
             from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
 
             notice = describe_path_scan_result(scan_path_for_secret_candidates(path))
@@ -219,26 +225,39 @@ def deliver_query_output(
             env.ui.console.print(f"Wrote to {path}")
 
 
+def _open_descriptor_in_browser(env: AppEnv, content: TextIO, output_format: str, conv: Session | None) -> None:
+    from polylogue.cli.output_stream import output_chunks
+
+    if output_format != "html" and conv is not None:
+        from polylogue.rendering.formatting import _conv_to_html
+
+        with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as rendered:
+            rendered.write(_conv_to_html(conv))
+            _open_descriptor_in_browser(env, rendered, "html", None)
+        return
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as handle:
+        if output_format != "html":
+            handle.write("<html><body><pre>")
+        for chunk in output_chunks(content):
+            handle.write(chunk if output_format == "html" else html_escape(chunk))
+        if output_format != "html":
+            handle.write("</pre></body></html>")
+        temp_path = handle.name
+    webbrowser.open(f"file://{temp_path}")
+    env.ui.console.print(f"Opened in browser: {temp_path}")
+
+
 def open_in_browser(
     env: AppEnv,
     content: str,
     output_format: str,
     conv: Session | None,
 ) -> None:
-    if output_format != "html":
-        if conv:
-            from polylogue.rendering.formatting import _conv_to_html
+    from polylogue.cli.output_stream import output_stream
 
-            content = _conv_to_html(conv)
-        else:
-            content = f"<html><body><pre>{html_escape(content)}</pre></body></html>"
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as handle:
-        handle.write(content)
-        temp_path = handle.name
-
-    webbrowser.open(f"file://{temp_path}")
-    env.ui.console.print(f"Opened in browser: {temp_path}")
+    with output_stream() as staged:
+        staged.write(content)
+        _open_descriptor_in_browser(env, staged, output_format, conv)
 
 
 #: Clipboard writers by session type, tried in order until one succeeds.
@@ -267,7 +286,7 @@ def _clipboard_commands() -> tuple[tuple[str, ...], ...]:
     return _PORTABLE_CLIPBOARD_CMDS + _WAYLAND_CLIPBOARD_CMDS
 
 
-def copy_to_clipboard(env: AppEnv, content: str) -> None:
+def copy_to_clipboard(env: AppEnv, content: TextIO) -> None:
     """Write ``content`` to the system clipboard, or fail loudly.
 
     Raises ``click.ClickException`` when no writer works. Delivery that
@@ -278,7 +297,9 @@ def copy_to_clipboard(env: AppEnv, content: str) -> None:
     attempted: list[str] = []
     for cmd in _clipboard_commands():
         try:
-            subprocess.run(list(cmd), input=content.encode("utf-8"), capture_output=True, check=True)
+            content.flush()
+            content.seek(0)
+            subprocess.run(list(cmd), stdin=content, capture_output=True, check=True)
         except FileNotFoundError:
             continue
         except subprocess.CalledProcessError:
@@ -860,15 +881,19 @@ def _send_output(
     conv: Session | None,
 ) -> None:
     """Send output to specified destinations."""
-    deliver_query_output(
-        env,
-        QueryOutputDocument(
-            content=content,
-            output_format=output_format,
-            destinations=tuple(destinations),
-            session=conv,
-        ),
-    )
+    from polylogue.cli.output_stream import output_stream
+
+    with output_stream() as staged:
+        staged.write(content)
+        deliver_query_output(
+            env,
+            QueryOutputDocument(
+                content=staged,
+                output_format=output_format,
+                destinations=tuple(destinations),
+                session=conv,
+            ),
+        )
 
 
 __all__ = [

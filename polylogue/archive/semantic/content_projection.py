@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -149,29 +149,33 @@ def project_session_content(
     if spec.is_default():
         return session
 
-    tool_semantics = _tool_semantics_by_id(list(session.messages))
-    projected_messages = [
-        projected
-        for message in session.messages
-        if (projected := _project_message_content(message, spec, tool_semantics)) is not None
-    ]
-    return session.model_copy(update={"messages": MessageCollection(messages=projected_messages)})
+    return session.model_copy(
+        update={
+            "messages": MessageCollection(messages=list(iter_projected_content(lambda: iter(session.messages), spec)))
+        }
+    )
 
 
 def project_message_content(
     messages: Sequence[Message],
     projection: ContentProjectionSpec | Mapping[str, object] | None,
 ) -> list[Message]:
-    """Return messages with content-kind projection applied."""
+    return list(iter_projected_content(lambda: iter(messages), projection))
+
+
+def iter_projected_content(
+    messages: Callable[[], Iterable[Message]],
+    projection: ContentProjectionSpec | Mapping[str, object] | None,
+) -> Iterator[Message]:
+    """Project complete transcript dependencies while replaying one message at a time."""
     spec = coerce_content_projection_spec(projection)
     if spec.is_default():
-        return list(messages)
-    tool_semantics = _tool_semantics_by_id(messages)
-    return [
-        projected
-        for message in messages
-        if (projected := _project_message_content(message, spec, tool_semantics)) is not None
-    ]
+        yield from messages()
+        return
+    tool_semantics = _tool_semantics_by_id(messages())
+    for message in messages():
+        if (projected := _project_message_content(message, spec, tool_semantics)) is not None:
+            yield projected
 
 
 class ContentProjectionStream:
@@ -197,7 +201,7 @@ class ContentProjectionStream:
         ]
 
 
-def _tool_semantics_by_id(messages: Sequence[Message]) -> dict[str, str]:
+def _tool_semantics_by_id(messages: Iterable[Message]) -> dict[str, str]:
     semantics: dict[str, str] = {}
     for message in messages:
         for block in message.blocks:

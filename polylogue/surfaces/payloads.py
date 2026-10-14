@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, Literal, NotRequired, TypeAlias, TypeVar, cast, get_args
@@ -1171,11 +1171,11 @@ def message_topology_from_domain(message: Message) -> dict[str, object]:
     return values
 
 
-def _session_terminal_state(session: Session) -> str:
+def _session_terminal_state(session: Session, messages: Callable[[], Iterable[Message]] | None = None) -> str:
     """Read terminal state from the narrow canonical structural classifier."""
     from polylogue.archive.session.session_profile import build_session_terminal_state
 
-    return build_session_terminal_state(session)[0]
+    return build_session_terminal_state(session, messages=messages)[0]
 
 
 def message_render_envelope_from_domain(
@@ -1350,6 +1350,7 @@ def session_list_envelope_from_domain(
     session: Session,
     *,
     bound_title: bool = True,
+    messages: Callable[[], Iterable[Message]] | None = None,
 ) -> SessionListEnvelope:
     from polylogue.surfaces.query_rows import session_row
 
@@ -1370,15 +1371,15 @@ def session_list_envelope_from_domain(
         target_ref=TargetRefPayload.session(session_id),
         anchor=reader_anchor("session", session_id),
         actions=reader_session_actions(),
-        message_count=len(session.messages),
-        terminal_state=_session_terminal_state(session),
+        message_count=sum(1 for _ in messages()) if messages is not None else len(session.messages),
+        terminal_state=_session_terminal_state(session, messages),
         relative_time=row.relative_time,
         # Domain Session deliberately carries no typed usage-cost evidence.
         total_cost_usd=None,
         cost_provenance=None,
         tags=tuple(session.tags),
         summary=session.summary,
-        words=sum(message.word_count for message in session.messages),
+        words=sum(message.word_count for message in (messages() if messages is not None else session.messages)),
         repo=row.repo,
         cwd_display=row.cwd_display,
         flags=_build_flags_from_session(session),

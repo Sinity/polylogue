@@ -96,40 +96,43 @@ def _mapping_parent_message_id(message: Mapping[str, object]) -> str | None:
     return str(parent_message_id)
 
 
-def _mapping_is_mainline(message: Mapping[str, object]) -> bool:
-    return _is_mainline_variant(_mapping_is_active_path(message), _mapping_branch_index(message))
+def branch_group_positions(
+    metadata: Sequence[tuple[str | None, int, bool | None]],
+) -> tuple[list[int], dict[int, list[int]]]:
+    """Select the same mainline and alternative ordering without retaining bodies."""
+    if not any(branch_index for _, branch_index, _ in metadata):
+        return list(range(len(metadata))), {}
+    mainline = [
+        position
+        for position, (parent, branch_index, active) in enumerate(metadata)
+        if _is_mainline_variant(active, branch_index) or parent is None
+    ]
+    by_parent = {metadata[position][0]: position for position in mainline if metadata[position][0] is not None}
+    branches: dict[int, list[int]] = {}
+    for position, (parent, branch_index, active) in enumerate(metadata):
+        if _is_mainline_variant(active, branch_index) or parent is None:
+            continue
+        sibling = by_parent.get(parent)
+        if sibling is None:
+            mainline.append(position)
+        else:
+            branches.setdefault(sibling, []).append(position)
+    return mainline, branches
 
 
 def _attach_mapping_message_branches(messages: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
-    copied_messages = [dict(message) for message in messages]
-    if not any(_mapping_branch_index(message) for message in copied_messages):
-        return copied_messages
-
-    mainline = [
-        message
-        for message in copied_messages
-        if _mapping_is_mainline(message) or _mapping_parent_message_id(message) is None
-    ]
-    mainline_by_parent = {
-        parent_message_id: message
-        for message in mainline
-        if (parent_message_id := _mapping_parent_message_id(message)) is not None
-    }
-
-    for message in copied_messages:
-        parent_message_id = _mapping_parent_message_id(message)
-        if _mapping_is_mainline(message) or parent_message_id is None:
-            continue
-        sibling = mainline_by_parent.get(parent_message_id)
-        if sibling is None:
-            mainline.append(message)
-            continue
-        sibling.setdefault("branches", [])
-        branches = sibling["branches"]
-        if isinstance(branches, list):
-            branches.append(message)
-
-    return mainline
+    copied = [dict(message) for message in messages]
+    positions, branches = branch_group_positions(
+        [
+            (_mapping_parent_message_id(message), _mapping_branch_index(message), _mapping_is_active_path(message))
+            for message in copied
+        ]
+    )
+    for position, alternatives in branches.items():
+        target = copied[position].setdefault("branches", [])
+        if isinstance(target, list):
+            target.extend(copied[index] for index in alternatives)
+    return [copied[position] for position in positions]
 
 
 @overload
@@ -148,28 +151,12 @@ def attach_rendered_message_branches(
         return []
     if all(isinstance(message, RenderedMessage) for message in messages):
         typed_messages = [message for message in messages if isinstance(message, RenderedMessage)]
-        if not any(message.branch_index for message in typed_messages):
-            return typed_messages
-
-        mainline = [
-            message
-            for message in typed_messages
-            if _is_mainline_variant(message.is_active_path, message.branch_index) or message.parent_message_id is None
-        ]
-        mainline_by_parent = {
-            message.parent_message_id: message for message in mainline if message.parent_message_id is not None
-        }
-
-        for message in typed_messages:
-            if _is_mainline_variant(message.is_active_path, message.branch_index) or message.parent_message_id is None:
-                continue
-            sibling = mainline_by_parent.get(message.parent_message_id)
-            if sibling is None:
-                mainline.append(message)
-                continue
-            sibling.branches.append(message)
-
-        return mainline
+        positions, branches = branch_group_positions(
+            [(message.parent_message_id, message.branch_index, message.is_active_path) for message in typed_messages]
+        )
+        for position, alternatives in branches.items():
+            typed_messages[position].branches.extend(typed_messages[index] for index in alternatives)
+        return [typed_messages[position] for position in positions]
 
     mapping_messages = [message for message in messages if isinstance(message, Mapping)]
     return _attach_mapping_message_branches(mapping_messages)

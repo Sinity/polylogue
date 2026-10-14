@@ -82,35 +82,7 @@ def render_markdown_document(
     for msg in messages:
         message_id = msg.message_id
         message_ids.add(message_id)
-        role = msg.role or "message"
-        text = msg.text or ""
-        timestamp = msg.timestamp
-        msg_atts = attachments_by_message.get(message_id, [])
-        blocks = msg.blocks
-
-        if not text.strip() and not msg_atts and not blocks:
-            continue
-
-        lines.append(f"## {role}")
-        if timestamp:
-            lines.append(f"_Timestamp: {timestamp}_")
-        lines.append("")
-
-        # Structure-preserving: if we have typed content blocks, render them
-        if blocks and has_structured_blocks(blocks):
-            block_text = render_blocks_markdown(blocks)
-            if block_text:
-                lines.append(block_text)
-                lines.append("")
-        elif text:
-            formatted_text = format_message_text(text)
-            if formatted_text:
-                lines.append(formatted_text)
-                lines.append("")
-
-        for att in msg_atts:
-            append_attachment_markdown(att, lines, archive_root)
-        lines.append("")
+        lines.extend(markdown_message_lines(msg, attachments_by_message.get(message_id, []), archive_root))
 
     orphan_keys = [key for key in attachments_by_message if key not in message_ids]
     if orphan_keys:
@@ -122,6 +94,42 @@ def render_markdown_document(
         lines.append("")
 
     return "\n".join(lines).strip() + "\n"
+
+
+def markdown_message_lines(
+    msg: MarkdownMessage, attachments: list[MarkdownAttachment], archive_root: Path
+) -> list[str]:
+    lines: list[str] = []
+    role = msg.role or "message"
+    text = msg.text or ""
+    timestamp = msg.timestamp
+    msg_atts = attachments
+    blocks = msg.blocks
+
+    if not text.strip() and not msg_atts and not blocks:
+        return []
+
+    lines.append(f"## {role}")
+    if timestamp:
+        lines.append(f"_Timestamp: {timestamp}_")
+    lines.append("")
+
+    # Structure-preserving: if we have typed content blocks, render them
+    if blocks and has_structured_blocks(blocks):
+        block_text = render_blocks_markdown(blocks)
+        if block_text:
+            lines.append(block_text)
+            lines.append("")
+    elif text:
+        formatted_text = format_message_text(text)
+        if formatted_text:
+            lines.append(formatted_text)
+            lines.append("")
+
+    for att in msg_atts:
+        append_attachment_markdown(att, lines, archive_root)
+    lines.append("")
+    return lines
 
 
 def _normalize_markdown_attachment(
