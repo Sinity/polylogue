@@ -2203,7 +2203,7 @@ def _collect_message_entries(
         }:
             content_blocks.append(typed_unknown_block(content, wire_type=str(content_type)))
 
-        if _is_tool_author(author) and (content_blocks or text):
+        if _is_tool_author(author):
             content_blocks = _tool_role_result_blocks(
                 content_blocks,
                 tool_id=tool_result_owner_id,
