@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import multiprocessing
+import queue
 import re
 import resource
 import subprocess
@@ -187,13 +188,35 @@ def measure_collection(selection: list[str], *, root: Path) -> dict[str, Any]:
     context = multiprocessing.get_context("fork")
     output_queue = context.Queue()
     worker = context.Process(target=_run_isolated_collection, args=(command, str(root), environment, output_queue))
-    worker.start()
-    returncode, stdout, stderr, peak = output_queue.get()
-    worker.join()
+    try:
+        worker.start()
+        while True:
+            try:
+                measurement = output_queue.get(timeout=0.05)
+                break
+            except queue.Empty:
+                if worker.is_alive():
+                    continue
+                worker.join()
+                # Drain a result published between the wait and the exit probe.
+                try:
+                    measurement = output_queue.get_nowait()
+                    break
+                except queue.Empty as exc:
+                    raise RuntimeError(
+                        f"isolated collection measurement exited {worker.exitcode} without a result"
+                    ) from exc
+        worker.join()
+        if worker.exitcode != 0:
+            raise RuntimeError(f"isolated collection measurement exited {worker.exitcode}")
+        returncode, stdout, stderr, peak = measurement
+    finally:
+        if worker.pid is not None:
+            if worker.is_alive():
+                worker.terminate()
+            worker.join()
+        output_queue.close()
     elapsed = time.monotonic() - started
-    if worker.exitcode != 0:
-        raise RuntimeError(f"isolated collection measurement exited {worker.exitcode}")
-    output_queue.close()
     output = (stdout or "") + "\n" + (stderr or "")
     # Isolate the measured child so RUSAGE_CHILDREN's process-wide high-water
     # mark from an earlier, larger child cannot understate this collection.

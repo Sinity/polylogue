@@ -8,6 +8,7 @@ broken collection as a budget verdict. Both are pinned here.
 
 from __future__ import annotations
 
+import os
 import resource
 import subprocess
 import sys
@@ -209,3 +210,20 @@ def test_without_a_budget_a_measurement_is_never_a_verdict(
     output = capsys.readouterr().out
     assert "581.3 MiB" in output
     assert "budget" not in output
+
+
+@pytest.mark.uses_real_clock("waits for an isolated measurement worker to exit")
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("exit_code", [0, 23])
+def test_exited_collection_worker_without_a_result_does_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_code: int
+) -> None:
+    """Blocking queue.get never notices either a clean or a failed child exit."""
+
+    def exit_without_result(*_args: object) -> None:
+        os._exit(exit_code)
+
+    monkeypatch.setattr(collection_cost, "_run_isolated_collection", exit_without_result)
+    monkeypatch.setattr(collection_cost, "collection_env", lambda: {})
+    with pytest.raises(RuntimeError):
+        collection_cost.measure_collection([], root=tmp_path)
