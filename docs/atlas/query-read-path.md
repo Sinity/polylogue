@@ -267,6 +267,8 @@ the final typed envelope are refused rather than enlarged.
 
 ## Assertion export and identity reset
 
+Assertion capture resolves `--ref last` through the canonical session identity iterator, retaining repository/cwd filtering and newest-session order without loading unused tags or directory summaries. The selector closes its cursor before returning; an empty scope retains its existing refusal.
+
 Assertion export reads `created_at_ms, assertion_id` order through the resident
 `user.assertions.export` v3 contract. The first request streams that pinned User
 selection into a private SQLite relation, sorting once and counting inserted

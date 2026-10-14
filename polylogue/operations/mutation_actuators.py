@@ -1675,10 +1675,11 @@ def resolve_assertion_candidate_refs(archive: ArchiveStore, refs: Sequence[str],
                 (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
                 resolved_cwd,
             )
-            summaries = archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
-            if not summaries:
+            with closing(archive.iter_session_identities(cwd_prefix=str(repo_root), limit=1)) as identities:
+                selected = next(identities, None)
+            if selected is None:
                 raise ValueError("--ref last found no archived session for the current repository/cwd")
-            resolved_refs.append(f"session:{summaries[0].session_id}")
+            resolved_refs.append(f"session:{selected.session_id}")
             continue
         parsed = parse_public_ref(ref)
         if isinstance(parsed, ObjectRef):
