@@ -14,6 +14,7 @@ import pytest
 
 from devtools.fresh_build_bench.corpus import SampleSource, select_real, verify_manifest
 from devtools.fresh_build_bench.experiment import reduce_experiment, run_experiment
+from devtools.fresh_build_bench.report import RECEIPT_FORMAT
 from devtools.fresh_build_bench.run import RunConfig
 
 
@@ -294,6 +295,7 @@ def test_selection_preserves_dependency_coordinates_through_symlink_source_root(
 
 def _sample(arm: str, seconds: float, **changes: Any) -> dict[str, Any]:
     receipt = {
+        "format": RECEIPT_FORMAT,
         "qualified": True,
         "outcome": "terminal",
         "measurement_scope": "ordinary-daemon-terminal-route",
