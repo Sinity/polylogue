@@ -847,6 +847,10 @@ def upgrade_chat_export_user_authorship(provider: Provider, message: ParsedMessa
 
 
 class ParsedSession(BaseModel):
+    # Internal sealed row coordinate, independent of the durable session ID.
+    # Private data is absent from parser payloads and content identity.
+    _prepared_row_coordinate: tuple[Path, int] | None = PrivateAttr(default=None)
+
     source_name: Provider
     provider_session_id: str
     title: str | None = None

@@ -923,6 +923,7 @@ def _membership_census(raw_id: str, sessions: list[ParsedSession], **census: Any
             seal,
             raw_id,
             sessions,
+            parser_sessions=sessions,
             parser_fingerprint=census.pop("parser_fingerprint", raw_authority_parser_fingerprint()),
             censused_at_ms=census.pop("censused_at_ms", 1),
             revision_authority=census.pop("revision_authority", None),

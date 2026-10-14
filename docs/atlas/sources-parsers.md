@@ -830,3 +830,10 @@ a prospective full-file requirement from the same action. Its hash and byte
 count are observations to retain, never an acquisition publication receipt.
 Declared raw-only carriers keep their precedence. ZIP and native SQLite
 capture remain in their existing families.
+
+A supported bundle preserves repeated session identities as distinct sealed
+parser ordinals. Membership census counts distinct logical members and resolves
+their observations through the shared revision classifier. Unordered divergent
+members do not establish last-member authority. A selected representative with
+unresolved alternatives records Source `applied_with_conflict`; accepted-marker
+requests and candidate bodies remain bound to each original occurrence.

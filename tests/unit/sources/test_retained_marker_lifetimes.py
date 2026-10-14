@@ -60,7 +60,7 @@ def _carrier(
     *,
     raw_id: str,
     sessions: tuple[ParsedSession, ...],
-    writes: Iterable[tuple[str, PreparedSessionWrite, tuple[object, ...]]],
+    writes: Iterable[tuple[str, PreparedSessionWrite | None, tuple[object, ...]]],
 ) -> PreparedAcceptedMarkerCarrier:
     bindings = tuple(_accepted_marker_request_session_binding(session) for session in sessions)
     return prepare_accepted_marker_carrier(

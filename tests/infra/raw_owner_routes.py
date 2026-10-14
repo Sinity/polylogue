@@ -251,6 +251,7 @@ async def seed_membership_census_async(
                             seal,
                             raw_id,
                             list(sessions),
+                            parser_sessions=list(sessions),
                             parser_fingerprint=parser_fingerprint,
                             censused_at_ms=censused_at_ms,
                             detail=detail,

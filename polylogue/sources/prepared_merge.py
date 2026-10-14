@@ -532,7 +532,7 @@ class _AggregateAttachmentBlobs(Mapping[object, tuple[bytes | None, int, str]]):
             _prepared_reader(original.sessions_path) as connection,
             connection_cursor(
                 connection,
-                "SELECT 1 FROM prepared_attachment a JOIN prepared_session s "
+                "SELECT s.ordinal FROM prepared_attachment a JOIN prepared_session s "
                 "ON s.attachment_ordinal=a.session_ordinal WHERE s.session_id=? "
                 "AND a.session_ordinal=? AND a.attachment_ordinal=? LIMIT 2",
                 (self.session_id, session_ordinal, attachment_ordinal),
@@ -542,12 +542,14 @@ class _AggregateAttachmentBlobs(Mapping[object, tuple[bytes | None, int, str]]):
         if len(original_rows) != 1:
             raise ValueError("aggregate attachment origin is missing or belongs to another session")
         original_key = (str(original.sessions_path), int(session_ordinal), int(attachment_ordinal))
-        return self._original_attachment_blobs(original, raw_id)[original_key]
+        return self._original_attachment_blobs(original, raw_id, int(original_rows[0][0]))[original_key]
 
     def _original_attachment_blobs(
-        self, original: PreparedJsonl, raw_id: str
+        self, original: PreparedJsonl, raw_id: str, session_ordinal: int
     ) -> Mapping[object, tuple[bytes | None, int, str]]:
-        return original.attachment_blobs(source_read=self.source_read, session_id=self.session_id)
+        return original.attachment_blobs(
+            source_read=self.source_read, session_id=self.session_id, session_ordinal=session_ordinal
+        )
 
 
 class _AggregateResidentAttachmentBlobs(_AggregateAttachmentBlobs):
@@ -564,10 +566,10 @@ class _AggregateResidentAttachmentBlobs(_AggregateAttachmentBlobs):
         self.retained_read = source_read
 
     def _original_attachment_blobs(
-        self, original: PreparedJsonl, raw_id: str
+        self, original: PreparedJsonl, raw_id: str, session_ordinal: int
     ) -> Mapping[object, tuple[bytes | None, int, str]]:
         return original.resident_attachment_blobs(
-            source_read=self.retained_read, session_id=self.session_id, raw_id=raw_id
+            source_read=self.retained_read, session_id=self.session_id, session_ordinal=session_ordinal, raw_id=raw_id
         )
 
 

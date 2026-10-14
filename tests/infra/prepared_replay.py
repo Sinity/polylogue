@@ -269,7 +269,7 @@ def publish_membership_census(archive: ArchiveStore, raw_id: str, sessions: Any,
     publish_prepared_source(
         archive.archive_root,
         "test.membership-census",
-        lambda seal: replace_raw_membership_census(seal, raw_id, sessions, **census),
+        lambda seal: replace_raw_membership_census(seal, raw_id, sessions, parser_sessions=sessions, **census),
     )
 
 

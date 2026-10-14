@@ -112,13 +112,14 @@ def prepare_accepted_marker_carrier(
     raw_id: str,
     request_facts: Mapping[str, object],
     request_sessions: Callable[[], Iterable[Mapping[str, object]]],
-    prepared_sessions: Iterable[tuple[str, PreparedSessionWrite, Iterable[object]]],
+    prepared_sessions: Iterable[tuple[str, PreparedSessionWrite | None, Iterable[object]]],
 ) -> PreparedAcceptedMarkerCarrier:
     """Stream one accepted raw's complete request and selected write carrier.
 
     ``request_sessions`` must be repeatable. It yields candidate-free normalized
     session bindings on each pass. ``prepared_sessions`` yields the canonical
-    output for each selected session as ``(session_id, write, retired_ids)``.
+    output for each selected occurrence as ``(session_id, write, retired_ids)``.
+    An equivalent repeat has ``write=None`` and retains an empty candidate frame.
     """
     if not raw_id:
         raise AcceptedMarkerInputRefusedError("accepted marker carrier has an empty raw id")
@@ -163,7 +164,7 @@ def prepare_accepted_marker_carrier(
             first = False
             emit(b'{"candidates":[')
             candidate_first = True
-            for candidate in marker_candidates_for_prepared_write_stream(prepared):
+            for candidate in marker_candidates_for_prepared_write_stream(prepared) if prepared is not None else ():
                 _emit_comma(emit, candidate_first)
                 candidate_first = False
                 emit_json(candidate)

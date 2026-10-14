@@ -94,9 +94,6 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
         attachment_native_identity,
         attachment_reference_id,
     )
-    from polylogue.core.identity_law import (
-        session_id as archive_session_id,
-    )
     from polylogue.core.sources import origin_from_provider
     from polylogue.operations.source_target_read import _PinnedRetainedRead, _prepare_source_target_artifact
     from polylogue.pipeline.ids import attachment_message_owner_key
@@ -108,7 +105,7 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
         _attachment_id,
         _attachment_message_id_maps,
         _attachment_native_id_values,
-        prepared_session_rows_from_shard,
+        prepared_session_rows_for_parsed_session,
     )
 
     archive = snapshot.archive
@@ -122,86 +119,76 @@ def _source_declares_attachment(snapshot: PinnedOperationRead, *, session_id: st
             if artifact.error is not None or artifact.shard_path is None:
                 return False
             artifact.verify_files(full=True)
-            rows = prepared_session_rows_from_shard(artifact.shard_path, session_id)
-            with closing(artifact.iter_sessions()) as parsed:
-                session = next(
-                    (
-                        value
-                        for value in parsed
-                        if archive_session_id(origin_from_provider(value.source_name).value, value.provider_session_id)
-                        == session_id
-                    ),
-                    None,
-                )
-                if session is None:
-                    return False
-                raw_messages = session.messages
-                origin = origin_from_provider(session.source_name)
-                if isinstance(raw_messages, SqliteMessageSink):
-                    messages: Sequence[ParsedMessage] = raw_messages.normalized_messages(
-                        session.session_events, origin=origin
+            with closing(artifact.session_sequence().iter_session_occurrences(session_id)) as occurrences:
+                for _ordinal, session in occurrences:
+                    rows = prepared_session_rows_for_parsed_session(artifact.shard_path, session)
+                    raw_messages = session.messages
+                    origin = origin_from_provider(session.source_name)
+                    if isinstance(raw_messages, SqliteMessageSink):
+                        messages: Sequence[ParsedMessage] = raw_messages.normalized_messages(
+                            session.session_events, origin=origin
+                        )
+                    else:
+                        messages = derive_tool_outcomes(
+                            normalize_active_branch(raw_messages), session.session_events, origin=origin
+                        )
+                    attachments = tuple(session.attachments)
+                    wanted_owner_keys = {
+                        key
+                        for attachment in attachments
+                        if (key := attachment_message_owner_key(attachment, rows.owner_resolution))
+                    }
+                    _resolution, by_owner_key, _owning_messages = _attachment_message_id_maps(
+                        session_id,
+                        messages,
+                        content_identities=rows.content_identities,
+                        owner_resolution=rows.owner_resolution,
+                        wanted_owner_keys=wanted_owner_keys,
                     )
-                else:
-                    messages = derive_tool_outcomes(
-                        normalize_active_branch(raw_messages), session.session_events, origin=origin
-                    )
-                attachments = tuple(session.attachments)
-                wanted_owner_keys = {
-                    key
-                    for attachment in attachments
-                    if (key := attachment_message_owner_key(attachment, rows.owner_resolution))
-                }
-                _resolution, by_owner_key, _owning_messages = _attachment_message_id_maps(
-                    session_id,
-                    messages,
-                    content_identities=rows.content_identities,
-                    owner_resolution=rows.owner_resolution,
-                    wanted_owner_keys=wanted_owner_keys,
-                )
 
-            def agrees_with_index_descriptor(
-                attachment: ParsedAttachment, message_id: str, expected_identity: str
-            ) -> bool:
-                row = archive._conn.execute(
-                    "SELECT r.native_identity,a.attachment_id,a.display_name,a.media_type,a.byte_count "
-                    "FROM attachment_refs r JOIN attachments a ON a.attachment_id=r.attachment_id "
-                    "WHERE r.session_id=? AND r.ref_id=?",
-                    (session_id, ref_id),
-                ).fetchone()
-                if row is None:
-                    return False
-                expected_native = set(_attachment_native_id_values(attachment))
-                actual_native = {
-                    (str(native[0]), str(native[1]))
-                    for native in archive._conn.execute(
-                        "SELECT id_kind,native_id FROM attachment_native_ids WHERE ref_id=?",
-                        (ref_id,),
-                    )
-                }
-                return (
-                    str(row[0]) == expected_identity
-                    and attachment_reference_id(message_id, expected_identity) == ref_id
-                    and str(row[1]) == _attachment_id("", attachment, blob_hash=None)
-                    and row[2] == attachment.name
-                    and row[3] == attachment.mime_type
-                    and int(row[4]) == int(attachment.size_bytes or 0)
-                    and actual_native == expected_native
-                )
+                    def agrees_with_index_descriptor(
+                        attachment: ParsedAttachment, message_id: str, expected_identity: str
+                    ) -> bool:
+                        row = archive._conn.execute(
+                            "SELECT r.native_identity,a.attachment_id,a.display_name,a.media_type,a.byte_count "
+                            "FROM attachment_refs r JOIN attachments a ON a.attachment_id=r.attachment_id "
+                            "WHERE r.session_id=? AND r.ref_id=?",
+                            (session_id, ref_id),
+                        ).fetchone()
+                        if row is None:
+                            return False
+                        expected_native = set(_attachment_native_id_values(attachment))
+                        actual_native = {
+                            (str(native[0]), str(native[1]))
+                            for native in archive._conn.execute(
+                                "SELECT id_kind,native_id FROM attachment_native_ids WHERE ref_id=?",
+                                (ref_id,),
+                            )
+                        }
+                        return (
+                            str(row[0]) == expected_identity
+                            and attachment_reference_id(message_id, expected_identity) == ref_id
+                            and str(row[1]) == _attachment_id("", attachment, blob_hash=None)
+                            and row[2] == attachment.name
+                            and row[3] == attachment.mime_type
+                            and int(row[4]) == int(attachment.size_bytes or 0)
+                            and actual_native == expected_native
+                        )
 
-            for attachment in attachments:
-                owner_key = attachment_message_owner_key(attachment, rows.owner_resolution)
-                message_id = by_owner_key.get(owner_key) if owner_key is not None else None
-                if message_id is None:
-                    continue
-                try:
-                    expected_identity = attachment_native_identity(attachment.provider_attachment_id)
-                    expected_ref_id = attachment_reference_id(message_id, expected_identity)
-                except ValueError:
-                    continue
-                if expected_ref_id == ref_id and agrees_with_index_descriptor(
-                    attachment, message_id, expected_identity
-                ):
-                    return True
+                    for attachment in attachments:
+                        owner_key = attachment_message_owner_key(attachment, rows.owner_resolution)
+                        message_id = by_owner_key.get(owner_key) if owner_key is not None else None
+                        if message_id is None:
+                            continue
+                        try:
+                            expected_identity = attachment_native_identity(attachment.provider_attachment_id)
+                            expected_ref_id = attachment_reference_id(message_id, expected_identity)
+                        except ValueError:
+                            continue
+                        if expected_ref_id == ref_id and agrees_with_index_descriptor(
+                            attachment, message_id, expected_identity
+                        ):
+                            return True
             return False
         except (KeyError, ValueError):
             return False

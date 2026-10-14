@@ -10,11 +10,12 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session_revision_membership import (
     MembershipRevision,
+    RevisionEvidence,
     _content_by_identity,
     _event_axis_relation,
-    _maximal_evidence_fallback,
     _relation,
     classify_membership_revisions,
+    classify_revision_evidence,
 )
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_projection
@@ -137,7 +138,7 @@ def test_maximal_evidence_fallback_picks_deterministically() -> None:
     module.
     """
     representatives = [_revision("raw-a", "one"), _revision("raw-b", "one", "left"), _revision("raw-c", "one", "right")]
-    assert _maximal_evidence_fallback(representatives).raw_id == "raw-c"
+    assert classify_membership_revisions(representatives).accepted_raw_ids[-1] == "raw-c"
 
 
 def test_maximal_evidence_fallback_is_order_independent() -> None:
@@ -150,7 +151,9 @@ def test_maximal_evidence_fallback_is_order_independent() -> None:
     revision's own projected content, never on input order.
     """
     revisions = [_revision("raw-a", "one"), _revision("raw-b", "one", "left"), _revision("raw-c", "one", "right")]
-    results = {_maximal_evidence_fallback(list(ordering)).raw_id for ordering in permutations(revisions)}
+    results = {
+        classify_membership_revisions(list(ordering)).accepted_raw_ids[-1] for ordering in permutations(revisions)
+    }
     assert results == {"raw-c"}
     for ordering in permutations(revisions):
         classified = classify_membership_revisions(list(ordering))
@@ -1738,3 +1741,123 @@ def test_tied_or_undeclared_capture_order_keeps_the_existing_fallback() -> None:
     assert classify_membership_revisions(tied).accepted_raw_ids == ("raw-b",)
     undeclared = [_revision("raw-a", "one", "two"), _captured(_revision("raw-b", "uno"), (9, 0))]
     assert classify_membership_revisions(undeclared).accepted_raw_ids == ("raw-a",)
+
+
+def _evidence(key: int, revision: MembershipRevision) -> RevisionEvidence[int]:
+    return RevisionEvidence(
+        key,
+        revision.projection,
+        revision.provider_updated_at,
+        revision.observed_at_ms,
+        revision.capture_order,
+        revision.browser_snapshot_fidelity,
+        revision.provider_message_ids,
+        revision.provider_attachment_ids,
+    )
+
+
+def test_occurrence_growth_and_equivalence_preserve_each_key() -> None:
+    # Array ordering is deliberately different from semantic growth order.
+    result = classify_revision_evidence(
+        [
+            _evidence(0, _revision("unused", "one", "two")),
+            _evidence(1, _revision("unused", "one")),
+            _evidence(2, _revision("unused", "one", "two")),
+        ]
+    )
+    assert result.accepted_keys == (1, 0)
+    assert result.equivalent_keys == (2,)
+    assert result.ambiguous_keys == ()
+    assert result.selection_basis == "containment"
+    assert not result.requires_absent_head
+
+
+def test_occurrence_conflict_is_not_last_member_wins() -> None:
+    result = classify_revision_evidence(
+        [
+            _evidence(0, _revision("unused", "one", "two")),
+            _evidence(1, _revision("unused", "different")),
+            _evidence(2, _revision("unused", "different")),
+        ]
+    )
+    assert result.accepted_keys == (0,)
+    assert result.equivalent_keys == (2,)
+    assert result.ambiguous_keys == (1,)
+    assert result.selection_basis == "maximal_evidence"
+    assert result.requires_absent_head
+
+
+@pytest.mark.parametrize("existing_key", [None, 0, 1, 99])
+def test_physical_head_presence_blocks_fallback_without_an_occurrence_mapping(existing_key: int | None) -> None:
+    result = classify_revision_evidence(
+        [
+            _evidence(0, _revision("unused", "one", "two")),
+            _evidence(1, _revision("unused", "different")),
+        ],
+        existing_head_present=True,
+        existing_accepted_key=existing_key,
+    )
+    assert result.accepted_keys == ()
+    assert result.ambiguous_keys == (0, 1)
+    assert result.selection_basis == "maximal_evidence"
+
+
+def test_ordinal_is_not_declared_capture_order() -> None:
+    earlier = dataclasses.replace(_revision("raw-a", "richer", "evidence"), capture_order=(10, 1))
+    later = dataclasses.replace(_revision("raw-b", "latest"), capture_order=(20, 1))
+    # The latest declared observation has a smaller ordinal and less content.
+    result = classify_revision_evidence([_evidence(8, earlier), _evidence(3, later)])
+    assert result.accepted_keys == (3,)
+    assert result.ambiguous_keys == (8,)
+    assert result.selection_basis == "declared_capture"
+    assert result.requires_absent_head
+    guarded = classify_revision_evidence([_evidence(8, earlier), _evidence(3, later)], existing_head_present=True)
+    assert guarded.accepted_keys == ()
+    assert guarded.ambiguous_keys == (3, 8)
+
+
+def test_occurrence_dom_guard_requires_a_known_evidence_key() -> None:
+    dom = _browser_revision("raw-a", "dom", "2026-01-01T00:00:00Z", "dom")
+    native = _browser_revision("raw-b", "native", None, "native")
+    revisions = [_evidence(0, dom), _evidence(1, native)]
+    unknown_mapping = classify_revision_evidence(revisions, existing_head_present=True)
+    assert unknown_mapping.accepted_keys == (0,)
+    assert unknown_mapping.ambiguous_keys == (1,)
+    assert unknown_mapping.selection_basis == "dom_authority"
+    known_mapping = classify_revision_evidence(revisions, existing_head_present=True, existing_accepted_key=0)
+    assert known_mapping.accepted_keys == ()
+    assert known_mapping.ambiguous_keys == (0, 1)
+
+
+@pytest.mark.parametrize(
+    "revisions",
+    [
+        [_revision("raw-a", "one"), _revision("raw-b", "one", "two"), _revision("raw-c", "one")],
+        [_revision("raw-a", "first"), _revision("raw-b", "second")],
+        [
+            dataclasses.replace(_revision("raw-a", "first"), capture_order=(10, 1)),
+            dataclasses.replace(_revision("raw-b", "second"), capture_order=(20, 1)),
+        ],
+        [
+            _browser_revision("raw-a", "dom", "2026-01-01T00:00:00Z", "dom"),
+            _browser_revision("raw-b", "native", "2026-01-02T00:00:00Z", "native"),
+        ],
+        [_browser_revision("raw-a", "dom", None, "dom"), _revision("raw-b", "direct")],
+    ],
+)
+@pytest.mark.parametrize("head", [None, "raw-a", "raw-b", "external-head"])
+def test_raw_adapter_and_ordinal_keys_have_the_same_classification(
+    revisions: list[MembershipRevision],
+    head: str | None,
+) -> None:
+    raw = classify_membership_revisions(revisions, existing_accepted_raw_id=head)
+    key_by_raw = {revision.raw_id: ordinal for ordinal, revision in enumerate(revisions)}
+    ordinal = classify_revision_evidence(
+        [_evidence(key_by_raw[revision.raw_id], revision) for revision in revisions],
+        existing_head_present=head is not None,
+        existing_accepted_key=key_by_raw.get(head) if head is not None else None,
+    )
+    assert ordinal.accepted_keys == tuple(key_by_raw[key] for key in raw.accepted_raw_ids)
+    assert ordinal.equivalent_keys == tuple(key_by_raw[key] for key in raw.equivalent_raw_ids)
+    assert ordinal.ambiguous_keys == tuple(key_by_raw[key] for key in raw.ambiguous_raw_ids)
+    assert ordinal.superseded_keys == tuple(key_by_raw[key] for key in raw.superseded_raw_ids)

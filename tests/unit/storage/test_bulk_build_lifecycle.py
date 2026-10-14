@@ -258,7 +258,7 @@ def _write_fresh_shard_arm(conn: sqlite3.Connection, directory: Path, sessions: 
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared_rows=prepared_session_rows_from_shard(shard.path, _archive_session_id(session)),
+            prepared_rows=prepared_session_rows_from_shard(shard.path, _archive_session_id(session), session_ordinal=0),
             fresh_build=True,
             fresh_build_batch=seen,
             bulk_build=True,
@@ -721,7 +721,8 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
                 archive_root=tmp_path / "shard",
                 before_publish=defer,
                 prepared_rows=[
-                    prepared_session_rows_from_shard(shard.path, _archive_session_id(session)) for session in sessions
+                    prepared_session_rows_from_shard(shard.path, _archive_session_id(session), session_ordinal=ordinal)
+                    for ordinal, session in enumerate(sessions)
                 ],
                 fresh_build=True,
                 fresh_build_batch=seen,

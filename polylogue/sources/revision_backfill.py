@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, Protocol, cast, overload
 
 import ijson
 
@@ -55,7 +55,10 @@ from polylogue.archive.session_revision_membership import (
     MembershipClassification,
     MembershipDecision,
     MembershipRevision,
+    RevisionClassification,
+    RevisionEvidence,
     classify_membership_revisions,
+    classify_revision_evidence,
 )
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.compute import DaemonOperationCancelled
@@ -294,6 +297,7 @@ class PreparedRevisionReplayResult:
     written_counts: dict[str, int] = field(default_factory=dict, compare=False)
     session_outputs: tuple[tuple[str, bytes | None, bytes | None, int], ...] = ()
     membership_refusals: tuple[tuple[str, str, MembershipDecision], ...] = ()
+    membership_conflicts: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1788,34 +1792,98 @@ class PreparedMembershipReplay:
             raise BaseExceptionGroup("prepared membership cleanup failed", failures)
 
 
+@dataclass(frozen=True, slots=True)
+class SameRawMemberResolution:
+    """One logical member selected from original sealed parser occurrences."""
+
+    raw_id: str
+    logical_key: str
+    representative_ordinal: int
+    session: ParsedSession
+    classification: RevisionClassification[int]
+
+    @property
+    def occurrence_ordinals(self) -> tuple[int, ...]:
+        result = self.classification
+        return tuple(
+            sorted((*result.accepted_keys, *result.equivalent_keys, *result.ambiguous_keys, *result.superseded_keys))
+        )
+
+
+def resolve_same_raw_member(
+    sessions: Sequence[ParsedSession], *, raw_id: str, logical_source_key: str
+) -> SameRawMemberResolution:
+    """Resolve raw-internal evidence without authority from an Index head."""
+    revisions: list[RevisionEvidence[int]] = []
+    primary_failure: BaseException | None = None
+    try:
+        with ExitStack() as readers:
+            occurrences = (
+                readers.enter_context(closing(sessions.iter_session_occurrences(logical_source_key)))
+                if isinstance(sessions, PreparedSessionSequence)
+                else enumerate(sessions)
+            )
+            for ordinal, session in occurrences:
+                check_compute_cancelled()
+                if (
+                    f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+                    != logical_source_key
+                ):
+                    continue
+                revisions.append(
+                    RevisionEvidence(
+                        ordinal,
+                        session_revision_projection(session),
+                        provider_updated_at=session.updated_at if session.updated_at_provenance != "fallback" else None,
+                        browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                        provider_message_ids=(
+                            session.messages.provider_message_ids(include_none=False)
+                            if isinstance(session.messages, SqliteMessageSink)
+                            else frozenset(
+                                message.provider_message_id
+                                for message in session.messages
+                                if message.provider_message_id
+                            )
+                        ),
+                        provider_attachment_ids=frozenset(
+                            attachment.provider_attachment_id for attachment in session.attachments
+                        ),
+                    )
+                )
+        if not revisions:
+            raise CohortMembershipRefusalError(
+                logical_source_key,
+                raw_id,
+                f"selector member parsed {len(sessions)} session(s), none for this logical key",
+            )
+        classification = classify_revision_evidence(revisions)
+        if not classification.accepted_keys:
+            raise CohortMembershipRefusalError(
+                logical_source_key, raw_id, "raw member has no head-independent representative"
+            )
+        ordinal = classification.accepted_keys[-1]
+        return SameRawMemberResolution(raw_id, logical_source_key, ordinal, sessions[ordinal], classification)
+    except BaseException as failure:
+        primary_failure = failure
+        raise
+    finally:
+        failures: list[BaseException] = []
+        for revision in revisions:
+            try:
+                revision.projection.close()
+            except BaseException as failure:
+                failures.append(failure)
+        if failures:
+            if primary_failure is not None:
+                failures.insert(0, primary_failure)
+            raise BaseExceptionGroup("raw member projection cleanup failed", failures)
+
+
 def prepared_session_for_logical_key(
     sessions: Sequence[ParsedSession], *, raw_id: str, logical_source_key: str
 ) -> ParsedSession:
-    """Select exactly one original parser output for the admitted member key."""
-    selected: ParsedSession | None = None
-    parsed_count = 0
-    match_count = 0
-    for session in sessions:
-        check_compute_cancelled()
-        parsed_count += 1
-        if f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}" != logical_source_key:
-            continue
-        match_count += 1
-        if selected is None:
-            selected = session
-    if selected is None:
-        raise CohortMembershipRefusalError(
-            logical_source_key,
-            raw_id,
-            f"selector member parsed {parsed_count} session(s), none for this logical key",
-        )
-    if match_count != 1:
-        raise CohortMembershipRefusalError(
-            logical_source_key,
-            raw_id,
-            f"selector member parsed {match_count} sessions for this logical key, not one",
-        )
-    return selected
+    """Select the original occurrence chosen by the shared semantic owner."""
+    return resolve_same_raw_member(sessions, raw_id=raw_id, logical_source_key=logical_source_key).session
 
 
 def prepared_session_for_revision_key(
@@ -1839,12 +1907,29 @@ def prepared_session_for_revision_key(
     return session
 
 
+def _membership_head_matches_projection(
+    raw_id: str,
+    head_raw_id: str | None,
+    head_session_revision: tuple[object, ...] | None,
+    projection: SessionRevisionProjection,
+) -> bool:
+    """Prove that the selected observation is the exact materialized head."""
+    return (
+        raw_id == head_raw_id
+        and head_session_revision is not None
+        and head_session_revision[0] == raw_id
+        and head_session_revision[1] == projection.session_hash
+        and head_session_revision[2] == "semantic"
+    )
+
+
 def prepare_membership_replay(
     archive: RetainedMembershipRead,
     logical_key: str,
     prepared_inputs: Mapping[str, PreparedRetainedInput],
     *,
     head_raw_id: str | None,
+    head_session_revision: tuple[object, ...] | None = None,
     stop: Callable[[], bool] | None = None,
 ) -> PreparedMembershipReplay:
     """Capture membership comparison on the retained read-only snapshot."""
@@ -1867,6 +1952,9 @@ def prepare_membership_replay(
     member_sessions: dict[str, ParsedSession] = {}
     revisions: list[MembershipRevision] = []
     projections: dict[str, SessionRevisionProjection] = {}
+    conflicted_raw_ids: set[str] = set()
+    fallback_only_raw_ids: set[str] = set()
+    unchanged_head_raw_ids: set[str] = set()
     try:
         for raw_id in sorted(candidate_raw_ids):
             if raw_id not in prepared_inputs:
@@ -1879,9 +1967,18 @@ def prepare_membership_replay(
                     logical_key, raw_id, f"selector member did not parse: {outcome}"
                 ) from outcome
             sessions, _size, _kind = outcome
-            session = prepared_session_for_logical_key(sessions, raw_id=raw_id, logical_source_key=logical_key)
+            resolution = resolve_same_raw_member(sessions, raw_id=raw_id, logical_source_key=logical_key)
+            session = resolution.session
+            if resolution.classification.ambiguous_keys:
+                conflicted_raw_ids.add(raw_id)
+            if resolution.classification.requires_absent_head:
+                fallback_only_raw_ids.add(raw_id)
             member_sessions[raw_id] = session
             projections[raw_id] = session_revision_projection(session)
+            if _membership_head_matches_projection(raw_id, head_raw_id, head_session_revision, projections[raw_id]):
+                # The exact already materialized representative is proved,
+                # rather than associating a physical Raw head with ordinal zero.
+                unchanged_head_raw_ids.add(raw_id)
             revisions.append(
                 MembershipRevision(
                     raw_id,
@@ -1910,7 +2007,21 @@ def prepare_membership_replay(
                     ),
                 )
             )
-        classification = classify_membership_revisions(revisions, existing_accepted_raw_id=head_raw_id)
+        eligible = (
+            [
+                revision
+                for revision in revisions
+                if revision.raw_id not in fallback_only_raw_ids or revision.raw_id in unchanged_head_raw_ids
+            ]
+            if head_raw_id is not None
+            else revisions
+        )
+        classification = classify_membership_revisions(eligible, existing_accepted_raw_id=head_raw_id)
+        if conflicted_raw_ids:
+            classification = dataclasses.replace(
+                classification,
+                ambiguous_raw_ids=tuple(sorted(set(classification.ambiguous_raw_ids) | conflicted_raw_ids)),
+            )
     except BaseException as primary:
         failures: list[BaseException] = [primary]
         for projection in projections.values():
@@ -2005,8 +2116,12 @@ def apply_prepared_revision_replay(
         artifact = prepared_replay_source.attachment_artifacts.get(raw_id)
         if artifact is None:
             raise RetainedPreparationRetryableError(f"publication has no original attachment carrier for {raw_id}")
+        coordinate = session._prepared_row_coordinate
+        if coordinate is None or coordinate[0] != artifact.shard_path:
+            raise RetainedPreparationRetryableError("attachment publication lost its original parser occurrence")
         return artifact.resident_attachment_blobs(
             raw_id=raw_id,
+            session_ordinal=coordinate[1],
             source_read=publication_read,
             session_id=str(make_session_id(session.source_name, session.provider_session_id)),
         )
@@ -2023,6 +2138,7 @@ def apply_prepared_revision_replay(
     written_counts: dict[str, int] = {}
     session_outputs: dict[str, tuple[str, bytes | None, bytes | None, int]] = {}
     membership_refusals: list[tuple[str, str, MembershipDecision]] = []
+    membership_conflicts: list[tuple[str, str]] = []
 
     refused_publication_raw_ids: set[str] = set()
 
@@ -2263,7 +2379,6 @@ def apply_prepared_revision_replay(
                         f"original prepared membership acknowledgements are absent for {logical_key}"
                     )
                 classification = membership_plan.classification
-                quarantined += len(classification.ambiguous_raw_ids)
                 accepted_members = classification.accepted_raw_ids
                 if (
                     accepted_members
@@ -2316,15 +2431,25 @@ def apply_prepared_revision_replay(
                     raise RetainedPreparationRetryableError(
                         f"membership publication disagrees with original Source acknowledgements for {logical_key}"
                     )
+                quarantined += sum(decision is MembershipDecision.AMBIGUOUS for decision in actual_decisions.values())
                 membership_refusals.extend(
                     (logical_key, raw_id, decision)
                     for raw_id, decision in actual_decisions.items()
                     if decision is MembershipDecision.AMBIGUOUS
                 )
+                membership_conflicts.extend(
+                    (logical_key, raw_id)
+                    for raw_id, decision in actual_decisions.items()
+                    if decision is MembershipDecision.APPLIED_WITH_CONFLICT
+                )
                 if (
                     accepted_members
                     and head_plan.yield_to_head_raw_id is None
-                    and actual_decisions[accepted_members[-1]] is MembershipDecision.APPLIED
+                    and actual_decisions[accepted_members[-1]]
+                    in {
+                        MembershipDecision.APPLIED,
+                        MembershipDecision.APPLIED_WITH_CONFLICT,
+                    }
                 ):
                     replayed += 1
             for logical_key in work_event_keys:
@@ -2410,6 +2535,7 @@ def apply_prepared_revision_replay(
         written_counts=written_counts,
         session_outputs=tuple(session_outputs.values()),
         membership_refusals=tuple(membership_refusals),
+        membership_conflicts=tuple(membership_conflicts),
     )
 
 
@@ -3751,6 +3877,7 @@ def prepare_revision_source_census(
                 seal,
                 raw_id,
                 [],
+                parser_sessions=[],
                 parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
@@ -3874,6 +4001,41 @@ def prepare_revision_source_census(
 
         return staged
 
+    def resolved_member_sessions(raw_id: str, sessions: Sequence[ParsedSession]) -> Sequence[ParsedSession]:
+        """Resolve original ordinals without retaining every hydrated member."""
+        first_ordinals: dict[str, int] = {}
+        repeated_keys: set[str] = set()
+        for ordinal, session in enumerate(sessions):
+            check_compute_cancelled()
+            logical_key = canonical_authority_logical_key(f"{session.source_name.value}:{session.provider_session_id}")
+            if logical_key in first_ordinals:
+                repeated_keys.add(logical_key)
+            else:
+                first_ordinals[logical_key] = ordinal
+        selected_ordinals = tuple(
+            resolve_same_raw_member(sessions, raw_id=raw_id, logical_source_key=logical_key).representative_ordinal
+            if logical_key in repeated_keys
+            else first_ordinals[logical_key]
+            for logical_key in sorted(first_ordinals)
+        )
+
+        class ResolvedMembers(Sequence[ParsedSession]):
+            def __len__(self) -> int:
+                return len(selected_ordinals)
+
+            @overload
+            def __getitem__(self, index: int) -> ParsedSession: ...
+
+            @overload
+            def __getitem__(self, index: slice) -> list[ParsedSession]: ...
+
+            def __getitem__(self, index: int | slice) -> ParsedSession | list[ParsedSession]:
+                if isinstance(index, slice):
+                    return [sessions[ordinal] for ordinal in selected_ordinals[index]]
+                return sessions[selected_ordinals[index]]
+
+        return ResolvedMembers()
+
     def apply_outcome(raw_id: str, source_index: int) -> None:
         check_compute_cancelled()
         state.scanned += 1
@@ -3888,6 +4050,7 @@ def prepare_revision_source_census(
                     seal,
                     raw_id,
                     None,
+                    parser_sessions=None,
                     parser_fingerprint=raw_authority_parser_fingerprint(),
                     censused_at_ms=0,
                     detail=BYTE_AUTHORITY_CENSUS_DETAIL,
@@ -3928,6 +4091,7 @@ def prepare_revision_source_census(
                         seal,
                         raw_id,
                         [],
+                        parser_sessions=[],
                         parser_fingerprint=raw_authority_parser_fingerprint(),
                         censused_at_ms=0,
                         detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
@@ -3975,6 +4139,7 @@ def prepare_revision_source_census(
                         seal,
                         raw_id,
                         [],
+                        parser_sessions=[],
                         parser_fingerprint=raw_authority_parser_fingerprint(),
                         censused_at_ms=0,
                         detail=str(outcome),
@@ -4150,6 +4315,7 @@ def prepare_revision_source_census(
                     seal,
                     raw_id,
                     [],
+                    parser_sessions=[],
                     parser_fingerprint=raw_authority_parser_fingerprint(),
                     censused_at_ms=0,
                     detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL if _retained_page_image_raw(evidence_reader, raw_id) else "",
@@ -4187,7 +4353,8 @@ def prepare_revision_source_census(
             replace_raw_membership_census(
                 seal,
                 raw_id,
-                sessions,
+                resolved_member_sessions(raw_id, sessions),
+                parser_sessions=sessions,
                 parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 revision_authority=None,
@@ -4206,7 +4373,8 @@ def prepare_revision_source_census(
             replace_raw_membership_census(
                 seal,
                 raw_id,
-                sessions,
+                resolved_member_sessions(raw_id, sessions),
+                parser_sessions=sessions,
                 parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=SUPERSEDED_IDENTITY_GOVERNANCE_DETAIL,
@@ -4254,6 +4422,7 @@ def prepare_revision_source_census(
                     seal,
                     raw_id,
                     [],
+                    parser_sessions=[],
                     parser_fingerprint=raw_authority_parser_fingerprint(),
                     censused_at_ms=0,
                     detail="current parser authority confirms typed non-session input",
@@ -4334,6 +4503,7 @@ def prepare_revision_source_membership_conversion(
                 seal,
                 raw_id,
                 sessions,
+                parser_sessions=sessions,
                 parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
@@ -4480,35 +4650,33 @@ def _prepared_accepted_marker_sessions(
     selected_session_ids: set[str],
     prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
     marker_write_factory: Callable[[str, ParsedSession], PreparedSessionWrite],
-) -> Generator[tuple[str, PreparedSessionWrite, tuple[object, ...]], None, None]:
-    """Stream canonical marker writes, closing each owned temporary after use."""
+) -> Generator[tuple[str, PreparedSessionWrite | None, tuple[object, ...]], None, None]:
+    """Retain every selected occurrence using its own sealed row coordinate."""
     from polylogue.sources.parsers.base_models import ParsedSession as ParsedSessionModel
 
-    found_binding_digests: dict[str, str] = {}
+    cohort = artifact.session_sequence()
+    resolutions = {
+        session_id: resolve_same_raw_member(cohort, raw_id=raw_id, logical_source_key=session_id)
+        for session_id in selected_session_ids
+    }
+    found_session_ids: set[str] = set()
     with closing(artifact.iter_sessions()) as parsed_sessions:
-        for session in parsed_sessions:
+        for ordinal, session in enumerate(parsed_sessions):
             if not isinstance(session, ParsedSessionModel):
                 raise RetainedPreparationRetryableError(
                     f"accepted marker request has an invalid retained session for {raw_id}"
                 )
-            if str(make_session_id(session.source_name, session.provider_session_id)) not in selected_session_ids:
+            session_id = str(make_session_id(session.source_name, session.provider_session_id))
+            if session_id not in selected_session_ids:
                 continue
-            binding = _accepted_marker_request_session_binding(session)
-            session_id = binding["session_id"]
-            if not isinstance(session_id, str) or session_id not in selected_session_ids:
+            found_session_ids.add(session_id)
+            resolution = resolutions[session_id]
+            if ordinal in resolution.classification.equivalent_keys:
+                yield session_id, None, ()
                 continue
-            binding_digest = hashlib.sha256(
-                json.dumps(binding, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-            ).hexdigest()
-            prior_binding_digest = found_binding_digests.get(session_id)
-            if prior_binding_digest is not None:
-                if prior_binding_digest != binding_digest:
-                    raise RetainedPreparationRetryableError(
-                        f"accepted marker request has conflicting parsed session {raw_id}:{session_id}"
-                    )
-                continue
-            found_binding_digests[session_id] = binding_digest
-            prepared = prepared_writes.get((raw_id, session_id))
+            prepared = (
+                prepared_writes.get((raw_id, session_id)) if ordinal == resolution.representative_ordinal else None
+            )
             if prepared is None:
                 prepared = marker_write_factory(raw_id, session)
                 try:
@@ -4517,11 +4685,10 @@ def _prepared_accepted_marker_sessions(
                     prepared.close()
             else:
                 yield session_id, prepared, ()
-    missing = selected_session_ids - found_binding_digests.keys()
+    missing = selected_session_ids - found_session_ids
     if missing:
-        missing_session_id = min(missing)
         raise RetainedPreparationRetryableError(
-            f"accepted marker request lost selected parsed session {raw_id}:{missing_session_id}"
+            f"accepted marker request lost selected parsed session {raw_id}:{min(missing)}"
         )
 
 

@@ -196,7 +196,7 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
     from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC
     from polylogue.storage.sqlite.archive_tiers.write import (
         PreparedSessionWriteRefusedError,
-        prepared_session_rows_from_shard,
+        prepared_session_rows_for_parsed_session,
     )
 
     archive = snapshot.archive
@@ -242,53 +242,46 @@ def bind_source_block(snapshot: PinnedOperationRead, *, session_id: str, block_i
                     if artifact.error is not None or artifact.shard_path is None:
                         continue
                     artifact.verify_files(full=True)
-                    try:
-                        rows = prepared_session_rows_from_shard(artifact.shard_path, session_id)
-                    except PreparedSessionWriteRefusedError:
-                        continue
-                    for values in rows.block_rows:
-                        _checkpoint(snapshot)
-                        row = dict(zip(columns, values, strict=True))
-                        occurrence = row["content_occurrence"]
-                        if type(occurrence) is not int:
-                            raise SourceTargetUnavailableError("retained block identity has an invalid occurrence")
-                        source_id = make_block_id(
-                            str(row["message_id"]),
-                            content_identity=str(row["content_identity"]),
-                            content_occurrence=occurrence,
-                        )
-                        if source_id == block_id:
-                            from polylogue.core.identity_law import session_id as archive_session_id
-                            from polylogue.core.sources import origin_from_provider
-
-                            with closing(artifact.iter_sessions()) as sessions:
-                                provider_session_id = next(
-                                    value.provider_session_id
-                                    for value in sessions
-                                    if archive_session_id(
-                                        origin_from_provider(value.source_name).value, value.provider_session_id
+                    with closing(artifact.session_sequence().iter_session_occurrences(session_id)) as occurrences:
+                        for _ordinal, session in occurrences:
+                            try:
+                                rows = prepared_session_rows_for_parsed_session(artifact.shard_path, session)
+                            except PreparedSessionWriteRefusedError:
+                                continue
+                            for values in rows.block_rows:
+                                _checkpoint(snapshot)
+                                row = dict(zip(columns, values, strict=True))
+                                occurrence = row["content_occurrence"]
+                                if type(occurrence) is not int:
+                                    raise SourceTargetUnavailableError(
+                                        "retained block identity has an invalid occurrence"
                                     )
-                                    == session_id
+                                source_id = make_block_id(
+                                    str(row["message_id"]),
+                                    content_identity=str(row["content_identity"]),
+                                    content_occurrence=occurrence,
                                 )
-                            dependencies = enrichment_dependency_digest(
-                                provider=provider,
-                                source_path=source_path,
-                                captured_zip_coordinate=archive.raw_captured_zip_coordinate(str(raw_id)),
-                                provider_session_ids=(provider_session_id,),
-                                index_conn=archive._conn,
-                                source_conn=source,
-                                blob_root=archive.archive_root / "blob",
-                                parser_sidecars=True,
-                            )
-                            snapshot.source_block_reads[key] = _BlockSupplier(
-                                str(raw_id),
-                                marker,
-                                tuple(raw_row),
-                                tuple(membership_row) if membership_row is not None else None,
-                                provider_session_id,
-                                dependencies,
-                            )
-                            return
+                                if source_id == block_id:
+                                    provider_session_id = session.provider_session_id
+                                    dependencies = enrichment_dependency_digest(
+                                        provider=provider,
+                                        source_path=source_path,
+                                        captured_zip_coordinate=archive.raw_captured_zip_coordinate(str(raw_id)),
+                                        provider_session_ids=(provider_session_id,),
+                                        index_conn=archive._conn,
+                                        source_conn=source,
+                                        blob_root=archive.archive_root / "blob",
+                                        parser_sidecars=True,
+                                    )
+                                    snapshot.source_block_reads[key] = _BlockSupplier(
+                                        str(raw_id),
+                                        marker,
+                                        tuple(raw_row),
+                                        tuple(membership_row) if membership_row is not None else None,
+                                        provider_session_id,
+                                        dependencies,
+                                    )
+                                    return
                 finally:
                     artifact.discard()
     raise SourceTargetUnavailableError("block target has no accepted retained Source supplier")

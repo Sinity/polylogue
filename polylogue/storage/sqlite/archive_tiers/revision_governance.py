@@ -1888,6 +1888,7 @@ def replace_raw_membership_census(
     raw_id: str,
     sessions: Sequence[ParsedSession] | None,
     *,
+    parser_sessions: Sequence[ParsedSession] | None,
     parser_fingerprint: str,
     censused_at_ms: int,
     detail: str = "",
@@ -1899,9 +1900,11 @@ def replace_raw_membership_census(
 
     The parent owns the original read window and selected Source phase;
     publication commits the retained effects on the actual Source writer.
+    Sessions are unique resolved logical members; parser_sessions preserves
+    the complete original parser output independently of that membership set.
     """
     if projections is not None and (sessions is None or len(projections) != len(sessions)):
-        raise ValueError("prepared membership projections must align with the complete parser census")
+        raise ValueError("prepared membership projections must align with the resolved logical members")
     check_compute_cancelled()
     _load_parser_census_source_inputs(seal, raw_id)
     raw_key = seal.retain_literal_scalar(raw_id)
@@ -1950,34 +1953,48 @@ def replace_raw_membership_census(
     if sessions is not None:
         for index, session in enumerate(sessions):
             projection = projections[index] if projections is not None else session_revision_projection(session)
-            logical_key = canonical_authority_logical_key(f"{session.source_name.value}:{session.provider_session_id}")
-            check_compute_cancelled()
-            logical_key_cell = seal.retain_literal_scalar(logical_key)
-            member_expressions, member_parameters = _prepared_source_operands(
-                seal,
-                raw_id,
-                logical_key,
-                session.provider_session_id,
-                projection.session_hash.hex(),
-                projection.session_hash,
-                len(projection.message_hashes),
-            )
-            seal.source_allocation_dependencies("raw_session_memberships")
-            with seal.source_statement(
-                f"""
-                INSERT INTO raw_session_memberships (
-                    rowid, raw_id, logical_source_key, provider_session_id,
-                    source_revision, normalized_content_hash, message_count
-                ) VALUES (?, {member_expressions[0]}, {member_expressions[1]}, {member_expressions[2]},
-                          {member_expressions[3]}, {member_expressions[4]}, {member_expressions[5]})
-                """,
-                (None, *member_parameters),
-                table="raw_session_memberships",
-                writable_targets=(("raw_session_memberships", (raw_key, logical_key_cell)),),
-                prepared_cells={"raw_id": raw_key, "logical_source_key": logical_key_cell},
-                allocation_parameter=0,
-            ):
-                pass
+            try:
+                logical_key = canonical_authority_logical_key(
+                    f"{session.source_name.value}:{session.provider_session_id}"
+                )
+                check_compute_cancelled()
+                logical_key_cell = seal.retain_literal_scalar(logical_key)
+                member_expressions, member_parameters = _prepared_source_operands(
+                    seal,
+                    raw_id,
+                    logical_key,
+                    session.provider_session_id,
+                    projection.session_hash.hex(),
+                    projection.session_hash,
+                    len(projection.message_hashes),
+                )
+                seal.source_allocation_dependencies("raw_session_memberships")
+                with seal.source_statement(
+                    f"""
+                    INSERT INTO raw_session_memberships (
+                        rowid, raw_id, logical_source_key, provider_session_id,
+                        source_revision, normalized_content_hash, message_count
+                    ) VALUES (?, {member_expressions[0]}, {member_expressions[1]}, {member_expressions[2]},
+                              {member_expressions[3]}, {member_expressions[4]}, {member_expressions[5]})
+                    """,
+                    (None, *member_parameters),
+                    table="raw_session_memberships",
+                    writable_targets=(("raw_session_memberships", (raw_key, logical_key_cell)),),
+                    prepared_cells={"raw_id": raw_key, "logical_source_key": logical_key_cell},
+                    allocation_parameter=0,
+                ):
+                    pass
+            except BaseException as primary:
+                if projections is None:
+                    try:
+                        projection.close()
+                    except BaseException as cleanup:
+                        raise BaseExceptionGroup(
+                            "membership preparation and projection close failed", [primary, cleanup]
+                        ) from None
+                raise
+            if projections is None:
+                projection.close()
     status: Literal["failed", "non_session", "complete"] = (
         "failed" if sessions is None else ("non_session" if not sessions else "complete")
     )
@@ -1991,7 +2008,7 @@ def replace_raw_membership_census(
         detail=detail,
         revision_authority=revision_authority,
     )
-    record_current_parser_source_census(seal, raw_id, parser_sessions=sessions)
+    record_current_parser_source_census(seal, raw_id, parser_sessions=parser_sessions)
 
 
 def refine_prepared_raw_origin(seal: PreparedIndexMutation, raw_id: str, origin: Origin) -> None:
@@ -2917,6 +2934,8 @@ def _application_decision_for(decision: MembershipDecision) -> ApplicationDecisi
     prior comment-only, string-``startswith``-based mapping with no
     compiler signal if either vocabulary changed.
     """
+    if decision in {MembershipDecision.APPLIED, MembershipDecision.APPLIED_WITH_CONFLICT}:
+        return ApplicationDecision.SELECTED_BASELINE
     if decision is MembershipDecision.AMBIGUOUS:
         return ApplicationDecision.AMBIGUOUS
     if decision in (
@@ -2948,7 +2967,12 @@ def membership_decisions_for_classification(
     for raw_id in classification.accepted_raw_ids[:-1]:
         decisions[raw_id] = MembershipDecision.SUPERSEDED_PREFIX
     if classification.accepted_raw_ids:
-        decisions[classification.accepted_raw_ids[-1]] = MembershipDecision.APPLIED
+        tip = classification.accepted_raw_ids[-1]
+        decisions[tip] = (
+            MembershipDecision.APPLIED_WITH_CONFLICT
+            if tip in classification.ambiguous_raw_ids
+            else MembershipDecision.APPLIED
+        )
     return decisions
 
 
@@ -5278,6 +5302,7 @@ class _MembershipDecisionProducer(SourceArtifactProducer, SourceRawStateProducer
 _MEMBERSHIP_TERMINAL_DECISIONS = frozenset(
     {
         MembershipDecision.APPLIED,
+        MembershipDecision.APPLIED_WITH_CONFLICT,
         MembershipDecision.SUPERSEDED_PREFIX,
         MembershipDecision.SUPERSEDED_EQUIVALENT,
         MembershipDecision.SUPERSEDED_BY_WINNER,
@@ -5474,7 +5499,11 @@ def membership_decisions_for_head_plan(
             *classification.ambiguous_raw_ids,
             *classification.superseded_raw_ids,
         ):
-            decisions[raw_id] = MembershipDecision.SUPERSEDED_EQUIVALENT
+            decisions[raw_id] = (
+                MembershipDecision.AMBIGUOUS
+                if raw_id in classification.ambiguous_raw_ids
+                else MembershipDecision.SUPERSEDED_EQUIVALENT
+            )
     elif suppressed:
         for raw_id in (*classification.accepted_raw_ids, *classification.equivalent_raw_ids):
             decisions[raw_id] = MembershipDecision.DEFERRED
@@ -5762,11 +5791,15 @@ def apply_prepared_membership_index(
         _apply_membership_head_plan(store._conn, logical_source_key, head_plan)
         assert existing_head is not None
         session_id = str(existing_head[3])
-        cohort_raw_ids = (
-            *classification.accepted_raw_ids,
-            *classification.equivalent_raw_ids,
-            *classification.ambiguous_raw_ids,
-            *classification.superseded_raw_ids,
+        cohort_raw_ids = tuple(
+            dict.fromkeys(
+                (
+                    *classification.accepted_raw_ids,
+                    *classification.equivalent_raw_ids,
+                    *classification.ambiguous_raw_ids,
+                    *classification.superseded_raw_ids,
+                )
+            )
         )
         for generation, raw_id in enumerate(cohort_raw_ids):
             projection = projections_by_raw_id[raw_id]
@@ -5781,7 +5814,7 @@ def apply_prepared_membership_index(
                     logical_source_key=logical_source_key,
                     source_revision=projection.session_hash.hex(),
                     acquisition_generation=generation,
-                    decision=ApplicationDecision.SUPERSEDED,
+                    decision=_application_decision_for(decisions[raw_id]),
                     accepted_raw_id=None,
                     accepted_source_revision=None,
                     accepted_content_hash=None,
@@ -5836,11 +5869,15 @@ def apply_prepared_membership_index(
             + len(accepted_projection.event_hashes)
             + len(accepted_projection.attachment_identities)
         )
-        cohort_raw_ids = (
-            *classification.accepted_raw_ids,
-            *classification.equivalent_raw_ids,
-            *classification.ambiguous_raw_ids,
-            *classification.superseded_raw_ids,
+        cohort_raw_ids = tuple(
+            dict.fromkeys(
+                (
+                    *classification.accepted_raw_ids,
+                    *classification.equivalent_raw_ids,
+                    *classification.ambiguous_raw_ids,
+                    *classification.superseded_raw_ids,
+                )
+            )
         )
         for generation, raw_id in enumerate(cohort_raw_ids):
             projection = projections_by_raw_id[raw_id]
@@ -5867,8 +5904,6 @@ def apply_prepared_membership_index(
                 ),
                 decided_at_ms=decided_at_ms,
             )
-    if yield_to_head_raw_id is None:
-        decisions[accepted_raw_id] = MembershipDecision.APPLIED
     return session_id, decisions
 
 

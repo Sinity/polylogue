@@ -2256,13 +2256,17 @@ def prepare_session_write(
         raise
 
 
-def prepared_session_rows_from_shard(shard_path: Path, session_id: str) -> PreparedSessionRows:
-    """Expose a sealed artifact's existing rows to read-only preparation."""
+def prepared_session_rows_from_shard(shard_path: Path, session_id: str, *, session_ordinal: int) -> PreparedSessionRows:
+    """Expose one exact original occurrence from a sealed artifact."""
+    if type(session_ordinal) is not int or session_ordinal < 0:
+        raise PreparedSessionWriteRefusedError("sealed shard has an invalid session ordinal")
     shard = open_session_shard(shard_path)
     try:
-        entry = shard.by_session_id()[session_id]
-    except KeyError as exc:
+        entry = shard.sessions[session_ordinal]
+    except IndexError as exc:
         raise PreparedSessionWriteRefusedError("sealed shard lacks one exact session row range") from exc
+    if entry.session_id != session_id:
+        raise PreparedSessionWriteRefusedError("sealed shard ordinal names another session")
     return PreparedSessionRows(
         session_id=entry.session_id,
         session_content_hash=entry.session_content_hash,
@@ -2271,6 +2275,18 @@ def prepared_session_rows_from_shard(shard_path: Path, session_id: str) -> Prepa
         content_identities=entry.content_identities,
         owner_resolution=entry.owner_resolution,
     )
+
+
+def prepared_session_rows_for_parsed_session(shard_path: Path, session: ParsedSession) -> PreparedSessionRows:
+    """Bind parsed evidence to its original sealed occurrence and content."""
+    coordinate = session._prepared_row_coordinate
+    if coordinate is None or coordinate[0] != shard_path:
+        raise PreparedSessionWriteRefusedError("parsed session lacks its original sealed row coordinate")
+    session_id = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
+    rows = prepared_session_rows_from_shard(shard_path, session_id, session_ordinal=coordinate[1])
+    if rows.session_content_hash != _prepared_session_content_hash(session):
+        raise PreparedSessionWriteRefusedError("parsed session content disagrees with its sealed occurrence")
+    return rows
 
 
 def prepare_session_rows(
@@ -9023,6 +9039,32 @@ class PreparedSessionSourceRead:
         )
         with self._seal.original_rows("index", _RAW_REVISION_HEAD_SQL, parameters) as rows:
             return _raw_revision_head_from_row(rows.fetchone())
+
+    def membership_session_revision(self, session_id: str) -> tuple[object, ...] | None:
+        """Bind the existing physical owner, content and authority for comparison."""
+        parameters = (session_id,)
+        self._seal.before_index_input(
+            "sessions",
+            ("raw_id", "content_hash"),
+            "SELECT rowid FROM sessions WHERE session_id=?",
+            parameters,
+        )
+        self._seal.before_index_input(
+            "raw_revision_heads",
+            ("accepted_raw_id", "accepted_content_hash", "accepted_frontier_kind"),
+            "SELECT rowid FROM raw_revision_heads WHERE logical_source_key=?",
+            parameters,
+        )
+        with self._seal.original_rows(
+            "index",
+            "SELECT s.raw_id,s.content_hash,h.accepted_frontier_kind "
+            "FROM sessions s JOIN raw_revision_heads h ON h.session_id=s.session_id "
+            "AND h.accepted_raw_id=s.raw_id AND h.accepted_content_hash=s.content_hash "
+            "WHERE s.session_id=? AND h.logical_source_key=?",
+            (session_id, session_id),
+        ) as rows:
+            row = rows.fetchone()
+        return None if row is None else tuple(row)
 
     def adoption_session_hash(self, session_id: str) -> tuple[object, ...] | None:
         from polylogue.storage.sqlite.archive_tiers.revision_governance import _REPLAY_ADOPTION_SESSION_SQL

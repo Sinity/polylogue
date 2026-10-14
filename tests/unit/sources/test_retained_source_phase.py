@@ -598,6 +598,7 @@ def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_re
                             seal,
                             raw_id,
                             aggregate.session_sequence(),
+                            parser_sessions=aggregate.session_sequence(),
                             parser_fingerprint=raw_authority_parser_fingerprint(),
                             censused_at_ms=1,
                             revision_authority=RawRevisionAuthority.BYTE_PROVEN,
@@ -757,3 +758,184 @@ def test_retained_thread_graph_cohort_preserves_absent_evidence_and_scope_parent
         assert source.execute(
             "SELECT raw_id FROM raw_sessions WHERE raw_id IN ('older-graph','newer-graph') ORDER BY raw_id"
         ).fetchall() == [("newer-graph",), ("older-graph",)]
+
+
+@pytest.mark.parametrize(
+    ("texts", "expected_message_count"),
+    [
+        (("prefix", "prefix", "prefix"), 1),
+        (("prefix", "prefix|growth", "prefix"), 2),
+        (("prefix|growth", "prefix", "prefix"), 2),
+        (("first", "second", "second"), 1),
+    ],
+    ids=["identical", "containment", "reverse-containment", "conflicting"],
+)
+def test_repeated_export_members_publish_unique_census_and_complete_parser_identity(
+    tmp_path: Path, texts: tuple[str, ...], expected_message_count: int
+) -> None:
+    """The real census resolves one member without discarding sealed occurrences."""
+    import json
+
+    from polylogue.pipeline.ids import session_revision_projection
+    from polylogue.storage.derived.raw import RawObservationReplacement
+    from tests.infra.retained_parser_payloads import _chatgpt_session
+
+    bootstrap_archive_root(tmp_path)
+    payload = json.dumps(
+        [_chatgpt_session("repeated", *text.split("|")) for text in texts] + [_chatgpt_session("separate", "other")],
+        sort_keys=True,
+    ).encode()
+    digest, _size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
+    with retained_raw_fixture(
+        root=tmp_path,
+        provider=Provider.CHATGPT,
+        blob_hash=digest,
+        source_path="synthetic/repeated-conversations.json",
+    ) as (_reader, raw_id):
+        pass
+    original_hashes: list[bytes] = []
+
+    def retain_original_ordinals(replacement: RawObservationReplacement) -> None:
+        assert replacement.prepared_inputs is not None
+        artifact = replacement.prepared_inputs[raw_id].prepared_artifact
+        assert artifact is not None and artifact.blob_hash == digest
+        original = artifact.session_sequence()
+        assert len(original) == len(texts) + 1
+        assert [session.provider_session_id for session in original] == [
+            *("repeated" for _ in texts),
+            "separate",
+        ]
+        for session in original:
+            with closing(session_revision_projection(session)) as projection:
+                original_hashes.append(projection.session_hash)
+
+    published, phase, receipt = asyncio.run(
+        run_retained_source_phase(tmp_path, (raw_id,), before_publication=retain_original_ordinals)
+    )
+    assert published is False and phase == "census"
+    assert isinstance(receipt, RevisionCensusResult) and receipt.quarantined == 0
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        assert conn.execute(
+            "SELECT status, member_count FROM raw_membership_census WHERE raw_id=?", (raw_id,)
+        ).fetchone() == ("complete", 2)
+        members = conn.execute(
+            "SELECT logical_source_key, normalized_content_hash, message_count "
+            "FROM raw_session_memberships WHERE raw_id=? ORDER BY logical_source_key",
+            (raw_id,),
+        ).fetchall()
+        assert len(members) == 2
+        assert members[0][0] == "chatgpt-export:repeated"
+        assert members[0][1] in original_hashes[:-1]
+        assert members[0][2] == expected_message_count
+        assert members[1][0] == "chatgpt-export:separate"
+        assert members[1][1] == original_hashes[-1]
+        census = conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+        ).fetchone()
+        assert census is not None and census[0] == "complete"
+        assert json.loads(census[1]) == ["chatgpt-export:repeated", "chatgpt-export:separate"]
+    with prepared_source_fixture(tmp_path) as reader:
+        assert reader.raw_parser_census_is_current(raw_id)
+
+
+@pytest.mark.parametrize(
+    ("borrowed", "fail_prepare", "fail_close"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (True, True, False),
+        (False, False, True),
+        (False, True, True),
+    ],
+    ids=["owned", "borrowed", "prepare-failure", "borrowed-prepare-failure", "close-failure", "both-failures"],
+)
+def test_membership_census_closes_owned_projection_and_preserves_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    borrowed: bool,
+    fail_prepare: bool,
+    fail_close: bool,
+) -> None:
+    """Owned comparison evidence closes on every exit; borrowed evidence stays with its caller."""
+    from builtins import BaseExceptionGroup
+
+    from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_projection
+    from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
+    from polylogue.storage.sqlite.archive_tiers import revision_governance
+    from polylogue.storage.sqlite.reference_seal import KnownTierCell, PreparedIndexMutation
+    from tests.infra.prepared_replay import publish_prepared_source
+
+    bootstrap_archive_root(tmp_path)
+    digest, _size = BlobStore(tmp_path / "blob").write_from_bytes(b"{}")
+    with retained_raw_fixture(
+        root=tmp_path,
+        provider=Provider.CHATGPT,
+        blob_hash=digest,
+        source_path="synthetic/projection.json",
+    ) as (_reader, raw_id):
+        pass
+    session = ParsedSession(source_name=Provider.CHATGPT, provider_session_id="projection", messages=[])
+    create = session_revision_projection
+    close = SessionRevisionProjection.close
+    supplied = create(session) if borrowed else None
+    owned: list[SessionRevisionProjection] = []
+    closed: list[SessionRevisionProjection] = []
+    primary = RuntimeError("synthetic preparation failure")
+    cleanup = RuntimeError("synthetic close failure")
+
+    def create_owned(value: ParsedSession) -> SessionRevisionProjection:
+        projection = create(value)
+        owned.append(projection)
+        return projection
+
+    def close_owned(projection: SessionRevisionProjection) -> None:
+        close(projection)
+        if projection is supplied or any(projection is item for item in owned):
+            closed.append(projection)
+            if fail_close:
+                raise cleanup
+
+    monkeypatch.setattr(revision_governance, "session_revision_projection", create_owned)
+    monkeypatch.setattr(SessionRevisionProjection, "close", close_owned)
+
+    def prepare(seal: PreparedIndexMutation) -> None:
+        original_retain = seal.retain_literal_scalar
+
+        def retain(value: None | int | float | str | bytes) -> KnownTierCell:
+            if fail_prepare and value == "chatgpt-export:projection":
+                raise primary
+            return original_retain(value)
+
+        if fail_prepare:
+            monkeypatch.setattr(seal, "retain_literal_scalar", retain)
+        revision_governance.replace_raw_membership_census(
+            seal,
+            raw_id,
+            [session],
+            parser_sessions=[session],
+            projections=[supplied] if supplied is not None else None,
+            parser_fingerprint=raw_authority_parser_fingerprint(),
+            censused_at_ms=0,
+            revision_authority=None,
+        )
+
+    try:
+        if fail_prepare and fail_close:
+            with pytest.raises(BaseExceptionGroup) as raised:
+                publish_prepared_source(tmp_path, "test.census.projection-close", prepare)
+            assert raised.value.exceptions == (primary, cleanup)
+        elif fail_prepare or fail_close:
+            with pytest.raises(RuntimeError) as refused:
+                publish_prepared_source(tmp_path, "test.census.projection-close", prepare)
+            assert refused.value is (primary if fail_prepare else cleanup)
+        else:
+            publish_prepared_source(tmp_path, "test.census.projection-close", prepare)
+        assert len(owned) == (0 if borrowed else 1)
+        assert len(closed) == (0 if borrowed else 1)
+        if owned:
+            assert closed[0] is owned[0]
+    finally:
+        if supplied is not None:
+            close(supplied)

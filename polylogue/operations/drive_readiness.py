@@ -201,10 +201,14 @@ def inspect_drive_readiness(
                 if decision == MembershipDecision.AMBIGUOUS:
                     blocked = True
                     failures.append(DriveFileFailure(coordinate, "drive_membership_ambiguous"))
+                elif decision == MembershipDecision.APPLIED_WITH_CONFLICT:
+                    blocked = True
+                    gaps.add("drive_membership_conflict")
                 elif decision == MembershipDecision.DEFERRED:
                     gaps.add("drive_membership_deferred")
                 if decision not in {
                     MembershipDecision.APPLIED,
+                    MembershipDecision.APPLIED_WITH_CONFLICT,
                     MembershipDecision.SUPERSEDED_PREFIX,
                     MembershipDecision.SUPERSEDED_EQUIVALENT,
                     MembershipDecision.SUPERSEDED_BY_WINNER,
@@ -212,7 +216,7 @@ def inspect_drive_readiness(
                     materialized = False
                     continue
                 head = source.execute(
-                    "SELECT raw_id FROM raw_session_memberships WHERE logical_source_key=? AND decision='applied'",
+                    "SELECT raw_id FROM raw_session_memberships WHERE logical_source_key=? AND decision IN ('applied','applied_with_conflict')",
                     (key,),
                 ).fetchone()
                 if (

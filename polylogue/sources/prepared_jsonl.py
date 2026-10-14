@@ -827,6 +827,7 @@ class PreparedJsonlRead:
             metadata["attachments"] = []
             _restore_spilled_accounting(metadata, self.sessions_path)
             session = ParsedSession.model_validate(metadata)
+            session._prepared_row_coordinate = (self.shard_path, ordinal)
             yield session.model_copy(
                 update={
                     "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
@@ -1001,6 +1002,7 @@ class PreparedJsonlRead:
             metadata["attachments"] = []
             _restore_spilled_accounting(metadata, self.sessions_path)
             session = ParsedSession.model_validate(metadata)
+            session._prepared_row_coordinate = (self.shard_path, ordinal)
             return session.model_copy(
                 update={
                     "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
@@ -1454,41 +1456,38 @@ class PreparedJsonl(PreparedJsonlRead):
                     _prepared_claim_from_record(str(encoded), self.publication_publisher),
                 )
 
-    def attachment_blobs(
-        self, *, source_read: BlobPublicationSourceRead, session_id: str
-    ) -> Mapping[object, tuple[bytes | None, int, str]]:
-        """Borrow actual ordinary or selected Source evidence for the sealed attachment view."""
+    def _attachment_ordinal_for_occurrence(self, session_id: str, session_ordinal: int) -> int:
         if self.sessions_path is None:
             raise ValueError("prepared artifact has no attachment carrier")
+        if type(session_ordinal) is not int or session_ordinal < 0:
+            raise KeyError((session_id, session_ordinal))
         self.verify_files(full=False)
         with (
             _prepared_reader(self.sessions_path) as connection,
             connection_cursor(
-                connection, "SELECT attachment_ordinal FROM prepared_session WHERE session_id=? LIMIT 2", (session_id,)
+                connection,
+                "SELECT session_id, attachment_ordinal FROM prepared_session WHERE ordinal=?",
+                (session_ordinal,),
             ) as cursor,
         ):
-            rows = cursor.fetchall()
-        if len(rows) != 1:
-            raise KeyError(session_id)
-        return _PreparedAttachmentBlobs(self, source_read, int(rows[0][0]))
+            row = cursor.fetchone()
+        if row is None or row[0] != session_id:
+            raise KeyError((session_id, session_ordinal))
+        return int(row[1])
+
+    def attachment_blobs(
+        self, *, source_read: BlobPublicationSourceRead, session_id: str, session_ordinal: int
+    ) -> Mapping[object, tuple[bytes | None, int, str]]:
+        """Borrow attachment evidence from one original parser occurrence."""
+        ordinal = self._attachment_ordinal_for_occurrence(session_id, session_ordinal)
+        return _PreparedAttachmentBlobs(self, source_read, ordinal)
 
     def resident_attachment_blobs(
-        self, *, source_read: RetainedAttachmentSourceRead, session_id: str, raw_id: str
+        self, *, source_read: RetainedAttachmentSourceRead, session_id: str, session_ordinal: int, raw_id: str
     ) -> Mapping[object, tuple[bytes | None, int, str]]:
-        """Bind acquired claims to current durable Raw evidence, not a consumed reservation."""
-        if self.sessions_path is None:
-            raise ValueError("prepared artifact has no attachment carrier")
-        self.verify_files(full=False)
-        with (
-            _prepared_reader(self.sessions_path) as connection,
-            connection_cursor(
-                connection, "SELECT attachment_ordinal FROM prepared_session WHERE session_id=? LIMIT 2", (session_id,)
-            ) as cursor,
-        ):
-            rows = cursor.fetchall()
-        if len(rows) != 1:
-            raise KeyError(session_id)
-        return _ResidentAttachmentBlobs(self, source_read, int(rows[0][0]), raw_id)
+        """Bind one occurrence's acquired claims to its current durable Raw evidence."""
+        ordinal = self._attachment_ordinal_for_occurrence(session_id, session_ordinal)
+        return _ResidentAttachmentBlobs(self, source_read, ordinal, raw_id)
 
     def iter_attachment_refs(
         self,
@@ -1935,6 +1934,25 @@ class PreparedSessionSequence(Sequence[ParsedSession]):
 
     def by_session_id(self, session_id: str) -> ParsedSession:
         return self.artifact.session_by_id(session_id, _shard=self._shard)
+
+    def iter_session_occurrences(self, session_id: str) -> Generator[tuple[int, ParsedSession], None, None]:
+        """Seek this identity's original ordinal ranges without scanning other members."""
+        if self.artifact.sessions_path is None:
+            raise RuntimeError(self.artifact.error or "JSONL preparation has no sealed artifact")
+        self.artifact.verify_files(full=False)
+        after = -1
+        while True:
+            check_compute_cancelled()
+            with _prepared_reader(self.artifact.sessions_path) as connection:
+                rows = connection.execute(
+                    "SELECT ordinal FROM prepared_session WHERE session_id=? AND ordinal>? ORDER BY ordinal LIMIT 512",
+                    (session_id, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0])
+            for (ordinal,) in rows:
+                yield int(ordinal), self[int(ordinal)]
 
     def iter_provider_session_ids(self) -> Iterator[str]:
         """Read the complete original native-ID scope without hydrating transcripts."""

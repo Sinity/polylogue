@@ -1818,7 +1818,7 @@ def _ack_raw_transition(selection: _FrontierSelection, raw_id: str) -> bool:
                 if not (
                     before["decision"] is None
                     and before["revision_authority"] == "quarantined"
-                    and now["decision"] == "applied"
+                    and now["decision"] in {"applied", "applied_with_conflict"}
                     and now["revision_authority"] == "byte_proven"
                     and type(now["decided_at_ms"]) is int
                     and now["decided_at_ms"] >= 0

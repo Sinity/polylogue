@@ -285,7 +285,10 @@ def _classify_frontier_row(
         if (
             not (
                 retained_under_debt
-                or (row.get("membership_decision") == "applied" and row.get("membership_authority") == "byte_proven")
+                or (
+                    row.get("membership_decision") in {"applied", "applied_with_conflict"}
+                    and row.get("membership_authority") == "byte_proven"
+                )
             )
             or row.get("membership_source_revision") != row.get("accepted_source_revision")
             or str(row.get("membership_content_hash") or "").lower()
