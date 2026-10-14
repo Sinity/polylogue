@@ -2,7 +2,7 @@
 
 import sqlite3
 from builtins import BaseExceptionGroup
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path
 from typing import Literal
@@ -2468,11 +2468,11 @@ def test_overlapping_literal_children_freeze_main_until_last_physical_settlement
 
     started, args = begin(tmp_path)
     assert started.operation_id is not None
-    released = []
+    released: list[object] = []
     actual_release = ArchiveWriteCustody.release_sql_owner
-    selected_seal = None
+    selected_seal: PreparedIndexMutation | None = None
 
-    def release(custody, owner):
+    def release(custody: ArchiveWriteCustody, owner: object) -> None:
         if owner is selected_seal:
             released.append(owner)
         return actual_release(custody, owner)
@@ -2545,13 +2545,14 @@ def test_overlapping_literal_children_freeze_main_until_last_physical_settlement
                 for tier in (first_tier, "user" if first_tier == "source" else "source"):
                     owner = owners[tier]
                     connection = owner.require_connection()
+                    assert isinstance(connection, ControlledConnection)
                     if settlement_failure != "none" and tier == first_tier:
                         actual_authorizer = seal._scratch.set_authorizer
                         if settlement_failure == "close":
                             connection.close_failure = OSError(errno.EIO, "exact overlapping reader close failure")
                         else:
 
-                            def fail_authorizer(callback):
+                            def fail_authorizer(callback: Callable[..., int] | None) -> None:
                                 raise OSError(errno.EIO, "exact frozen authorizer settlement failure")
 
                             monkeypatch.setattr(seal._scratch, "set_authorizer", fail_authorizer)
@@ -2585,6 +2586,7 @@ def test_overlapping_literal_children_freeze_main_until_last_physical_settlement
             finally:
                 for owner in owners.values():
                     if owner.connection is not None:
+                        assert isinstance(owner.connection, ControlledConnection)
                         owner.connection.close_failure = None
                     owner.close()
                 foreign.close()
@@ -2655,7 +2657,9 @@ def test_overlapping_literal_cancellation_preserves_exact_native_obligations(
                 actual_configure = KnownTierMutationPermit.configure_mutation_connection
                 reached = []
 
-                def configure(permit, connection, statements):
+                def configure(
+                    permit: KnownTierMutationPermit, connection: sqlite3.Connection, statements: tuple[str, ...]
+                ) -> None:
                     if permit is source_permit and cancel_site == "source_admission":
                         reached.append(True)
                         cancelled.set()
