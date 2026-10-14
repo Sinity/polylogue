@@ -357,9 +357,15 @@ def main(argv: list[str] | None = None) -> int:
         print(render(receipt))
         return 0 if receipt["qualified"] else 1
     if args.command == "report":
-        from devtools.fresh_build_bench.report import render
+        from devtools.fresh_build_bench.report import IncompatibleReceiptFormatError, render, require_receipt_format
 
         original = json.loads(args.receipt.read_text())
+        if original.get("format") not in {"polylogue.component-experiment.v1", "polylogue.fresh-build-experiment.v1"}:
+            try:
+                require_receipt_format(original)
+            except IncompatibleReceiptFormatError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
         if original.get("format") == "polylogue.component-experiment.v1":
             from devtools.fresh_build_bench.components import refresh_component_experiment
 
@@ -392,10 +398,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "compare":
         from devtools.fresh_build_bench.evaluation import evaluate_comparison
-        from devtools.fresh_build_bench.report import compare
+        from devtools.fresh_build_bench.report import IncompatibleReceiptFormatError, compare, require_receipt_format
 
         before = json.loads(args.before.read_text(encoding="utf-8"))
         after = json.loads(args.after.read_text(encoding="utf-8"))
+        try:
+            require_receipt_format(before)
+            require_receipt_format(after)
+        except IncompatibleReceiptFormatError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
         admissible, text = compare(before, after, allow_unqualified=args.allow_unqualified)
         evaluation = evaluate_comparison(before, after, target_metric=args.metric)
         evaluation["inspection_admissible"] = admissible

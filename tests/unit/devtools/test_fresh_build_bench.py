@@ -26,6 +26,7 @@ from devtools.fresh_build_bench.corpus import (
 )
 from devtools.fresh_build_bench.profile_report import thread_group_label
 from devtools.fresh_build_bench.report import (
+    RECEIPT_FORMAT,
     _derive_dependents,
     _ts,
     analyse_batches,
@@ -261,6 +262,7 @@ def test_event_timestamps_are_utc() -> None:
 
 def _receipt(**overrides: object) -> dict[str, Any]:
     receipt: dict[str, Any] = {
+        "format": RECEIPT_FORMAT,
         "label": "r",
         "outcome": "terminal",
         "candidate": {"git_sha": "0" * 40},
@@ -3191,3 +3193,30 @@ def test_negative_readiness_refreshes_on_relevant_wal_change(
         forced = run.observe(archive, started, readiness_probe=probe, readiness_max_age_s=0.0)
         assert not forced.readiness_cached and forced.readiness_complete
         assert calls == before_change_calls + 2
+
+
+@pytest.mark.parametrize("format_value", [None, "polylogue.fresh-build-receipt.v1"])
+def test_incompatible_receipt_format_is_rejected_before_refresh(
+    tmp_path: Path, format_value: str | None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Interpreting old profile summaries as refused makes a measured run unqualified."""
+    from devtools.fresh_build_bench import cli, report
+
+    receipt = _receipt(format=format_value, qualified=True)
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(ValueError, match="incompatible_receipt_format"):
+        report.refresh(path)
+    with pytest.raises(ValueError, match="incompatible_receipt_format"):
+        report.render(receipt)
+    for options in ([], ["--json"], ["--refresh"], ["--refresh", "--json"]):
+        assert cli.main(["report", str(path), *options]) == 2
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert output.err.strip() == "incompatible_receipt_format"
+    for before, after in ((receipt, _receipt()), (_receipt(), receipt)):
+        assert report.comparability_problems(before, after) == ["incompatible_receipt_format"]
+        comparable, result = report.compare(before, after, allow_unqualified=True)
+        assert not comparable
+        assert result == "NOT COMPARABLE: incompatible_receipt_format"
+    assert json.loads(path.read_text(encoding="utf-8")) == receipt

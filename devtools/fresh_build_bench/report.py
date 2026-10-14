@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
-RECEIPT_FORMAT: Final = "polylogue.fresh-build-receipt.v1"
+RECEIPT_FORMAT: Final = "polylogue.fresh-build-receipt.v2"
 
 #: Ordered (pattern, bucket). First match wins. Keys are the daemon's
 #: ``stage_timings_s`` names from the ``ingestion_batch`` ledger rows.
@@ -1480,7 +1480,17 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+class IncompatibleReceiptFormatError(ValueError):
+    """The receipt has a measurement contract this reducer cannot interpret."""
+
+
+def require_receipt_format(receipt: dict[str, Any]) -> None:
+    if receipt.get("format") != RECEIPT_FORMAT:
+        raise IncompatibleReceiptFormatError("incompatible_receipt_format")
+
+
 def render(receipt: dict[str, Any]) -> str:
+    require_receipt_format(receipt)
     from devtools.fresh_build_bench.evaluation import evaluate_run
 
     evaluation = evaluate_run(receipt)
@@ -1601,6 +1611,8 @@ def render(receipt: dict[str, Any]) -> str:
 
 def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
     """Why two receipts' numbers or outputs may not be set side by side."""
+    if before.get("format") != RECEIPT_FORMAT or after.get("format") != RECEIPT_FORMAT:
+        return ["incompatible_receipt_format"]
     problems = []
     if before["corpus"]["digest"] != after["corpus"]["digest"]:
         problems.append("different corpora")
@@ -1699,6 +1711,11 @@ def compare(before: dict[str, Any], after: dict[str, Any], *, allow_unqualified:
     for example to read a promoted index's output digests from a build whose
     derived phase did not settle; the verdict line says so.
     """
+    try:
+        require_receipt_format(before)
+        require_receipt_format(after)
+    except IncompatibleReceiptFormatError:
+        return False, "NOT COMPARABLE: incompatible_receipt_format"
     problems = comparability_problems(before, after)
     # Only a run that promoted (and so has an output to compare) may have its
     # qualification waived; one that stalled before promotion never can.
@@ -1769,6 +1786,7 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     re-read milestones is recomputed.
     """
     receipt: dict[str, Any] = json.loads(receipt_path.read_text(encoding="utf-8"))
+    require_receipt_format(receipt)
     work = receipt_path.parent
     if receipt.get("product_tree") is not None:
         receipt["checks"]["product_content_bound"] = product_content_bound(work, receipt["product_tree"])

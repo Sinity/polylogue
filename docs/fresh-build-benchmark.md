@@ -94,6 +94,13 @@ does not attribute a busy thread to a particular preparation function.
 
 ## Receipt
 
+Receipts use `polylogue.fresh-build-receipt.v2`. Refresh, render and comparison
+reject other formats before interpreting their measurement fields. `report`,
+including JSON output and refresh, returns exit 2 with
+`incompatible_receipt_format`; `compare` refuses the same input before evaluating
+its measurements. `--allow-unqualified` does not make another format comparable.
+The original receipt stays unchanged.
+
 | Section | Source | Contents |
 | --- | --- | --- |
 | `timing_s` | event log and observer | event preparation/chunks/promotion; observed readiness and derived observation delay |
@@ -323,7 +330,7 @@ agentctl job start polylogue fresh_build_bench --workspace /realm/worktree/drive
 
 Each new run binds a read-only diagnostic policy observer by hash in its launcher. The observer reads the existing published compute owner's capacities, per-class reserves and ceilings, and actual GIL mode after product and profiling imports. It records observed policy changes in `policy.json`, sealed by the run receipt. Sampling is periodic at 50 ms and at normal process exit, so transient changes between samples can be missed. The observer never constructs or changes an adapter. Missing binding prevents qualification and comparison. Different effective policies or launcher settings cannot silently compare as one configuration. Python launcher wrappers are refused because their injected behavior cannot be bound by the interpreter identity; pass the real interpreter executable.
 
-`report RECEIPT --refresh` (also accepting an `experiment.json`) writes a new content-addressed `receipt.view-<digest>.json` beside the original. The view binds the source receipt digest and reducer version, rechecks the evidence seal, and recomputes derived fields. It leaves the original receipt unchanged, so prior experiment references remain valid. Old receipts without effective policy or actual candidate readiness proof remain readable, but do not qualify a controlled comparison. Refresh validates recorded proof and never reconstructs historical imports.
+`report RECEIPT --refresh` (also accepting an `experiment.json`) writes a new content-addressed `receipt.view-<digest>.json` beside the original. The view binds the source receipt digest and reducer version, rechecks the evidence seal, and recomputes derived fields. It leaves the original receipt unchanged, so prior experiment references remain valid. Current-format receipts without effective policy or actual candidate readiness proof remain readable, but do not qualify a controlled comparison. Refresh validates recorded proof and never reconstructs historical imports.
 
 The selected population is a timed, non-atomic census. Unselected live sessions may grow while selection copies a stable complete chosen closure; new dependencies or edits in that chosen closure are refused. The launcher inserts the protected candidate path before any sampler or product import, and the observer records actual imported product module paths and content hashes. Candidate import mismatch prevents qualification. The driver hash must also remain unchanged during the measured run.
 
