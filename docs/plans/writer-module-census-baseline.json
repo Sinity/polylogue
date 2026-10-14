@@ -53,6 +53,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/archive/semantic/projection_context.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/archive/session_revision_membership.py",
     "tiers": [],
     "authority": "scratch"

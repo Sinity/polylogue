@@ -507,3 +507,16 @@ is an explicit refusal rather than an arbitrary attributed commit.
 CLI open and stream actions retain the supplied read outcome. A successful URL
 launch does not clear a selection gap; an empty selection retains its supplied
 terminal status and total, including an unknown total.
+
+
+Bounded Python content projections classify against the complete composed
+transcript's tool dependencies before selecting output by role/type or counting
+survivors. A request-owned native scratch relation retains only tool IDs,
+terminal semantic kinds and message/block coordinates; reused IDs keep terminal
+last-wins semantics. Raw pages and the requested output page stay bounded. The
+existing transcript epoch is revalidated before asynchronous results return;
+physical session pages use their current pinned reader and retain physical
+message totals independently of projected survivors. No reader or scratch
+transaction crosses an external page request. Late faults and cancellation
+propagate before a result is returned, and native scratch custody closes the
+private context on its creator. Default projections retain the direct page path.
