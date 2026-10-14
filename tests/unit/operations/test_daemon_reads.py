@@ -272,6 +272,7 @@ def test_search_projection_hydrates_storage_rows_and_describes_real_lanes() -> N
         title=summary.title,
         snippet="needle",
         lane_ranks={"text": 2, "vector": 3},
+        score=1 / 62 + 1 / 63,
     )
     hits = project_search_hits(
         SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid"),
