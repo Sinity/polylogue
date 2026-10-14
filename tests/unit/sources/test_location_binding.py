@@ -18,7 +18,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocumentList
 from polylogue.sources.acquisition_boundary import refuse_foreign_path
 from polylogue.sources.dispatch import ForeignOriginContentError, detect_provider
-from polylogue.sources.live.batch_support import _jsonl_provider_and_session_artifact
+from polylogue.sources.live.batch_support import _jsonl_provider_and_non_session_proof
 from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.source_parsing import parse_one_source_path
 from tests.infra.source_builders import acquired_payloads
@@ -145,7 +145,7 @@ def test_raw_only_paths_are_classified_by_location_before_any_probe(tmp_path: Pa
     history.parent.mkdir()
     history.write_bytes(_jsonl(_CODEX_ROLLOUT))
     refuse_foreign_path(history, Provider.CLAUDE_CODE)
-    assert _jsonl_provider_and_session_artifact(history, Provider.CLAUDE_CODE) == (Provider.CLAUDE_CODE, False, None)
+    assert _jsonl_provider_and_non_session_proof(history, Provider.CLAUDE_CODE) == (Provider.CLAUDE_CODE, True, None)
 
 
 def test_archive_members_at_a_bound_location_are_validated() -> None:
