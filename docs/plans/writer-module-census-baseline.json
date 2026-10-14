@@ -73,6 +73,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/cli/semantic_transcript.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/context/scheduler.py",
     "tiers": [
       "ops"

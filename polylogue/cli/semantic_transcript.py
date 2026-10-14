@@ -117,7 +117,7 @@ class SemanticTranscriptRecords:
         self.cursors: set[sqlite3.Cursor] = set()
         connection.execute("PRAGMA temp_store=FILE")
         connection.executescript(
-            "CREATE TEMP TABLE messages(position INTEGER PRIMARY KEY,offset INTEGER NOT NULL);"
+            "CREATE TEMP TABLE semantic_records(position INTEGER PRIMARY KEY,offset INTEGER NOT NULL);"
             "CREATE TEMP TABLE counters(key TEXT PRIMARY KEY,value INTEGER NOT NULL);"
             "CREATE TEMP TABLE occurrences(kind TEXT NOT NULL,tool TEXT NOT NULL,ordinal INTEGER NOT NULL,"
             "message_index INTEGER NOT NULL,block_index INTEGER NOT NULL,PRIMARY KEY(kind,tool,ordinal));"
@@ -139,7 +139,7 @@ class SemanticTranscriptRecords:
         stream = self.records_owner.stream
         stream.seek(0, 2)
         offset = stream.tell()
-        self.connection.execute("INSERT INTO messages VALUES(?,?)", (self.count, offset))
+        self.connection.execute("INSERT INTO semantic_records VALUES(?,?)", (self.count, offset))
         self.records_owner.append(record)
 
     def records(self) -> Generator[dict[str, object], None, None]:
@@ -188,7 +188,9 @@ class SemanticTranscriptRecords:
             result = counterpart(coordinate, BlockType.TOOL_RESULT.value)
             if result is None:
                 return None
-            offset = self.connection.execute("SELECT offset FROM messages WHERE position=?", (result[0],)).fetchone()[0]
+            offset = self.connection.execute(
+                "SELECT offset FROM semantic_records WHERE position=?", (result[0],)
+            ).fetchone()[0]
             stream = self.records_owner.stream
             stream.seek(offset)
             record = json.loads(stream.readline())
