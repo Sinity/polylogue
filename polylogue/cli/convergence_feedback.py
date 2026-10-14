@@ -38,7 +38,7 @@ _UNDETERMINED = "Archive convergence state could not be determined; results may 
 
 
 def _raw_materialization_warning(
-    readiness: dict[str, object],
+    readiness: Mapping[str, object],
     *,
     is_unmeasured: bool,
     assessment_reason: str,
