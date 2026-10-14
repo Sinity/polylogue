@@ -536,6 +536,9 @@ def _walk_object(
             if content.rsplit(".", 1)[0] == plan_path
         }
         ordered_keys.sort(key=lambda key: plan_path + "." + key not in identities)
+        # Bind the result's actual selected call before drawing a child alias.
+        if plan.provider == "claude-code" and plan.kind == "user_tool_result" and plan_path == "$":
+            ordered_keys.sort(key=lambda key: key != "message")
     orders = self._relation_solver.numeric_orders(schema) if self.provider == "codex" else ()
     selected_numeric_fields: set[str] | None = None
     if orders:
@@ -797,7 +800,12 @@ def _generate_string(
         return syntax_value
     excluded = plan.string_exclusions.get(plan_path, frozenset()) if plan is not None else frozenset()
     agent_prefix = plan.agent_identity_prefix if plan is not None and plan_path == "$.toolUseResult.agentId" else None
-    fresh_tool = plan is not None and plan_path in plan.tool_fields and plan.tool_fields[plan_path][1] == "new"
+    if plan is not None and plan_path == "$.data.agentId":
+        agent_prefix = plan.progress_identity_prefix
+    fresh_task = plan is not None and plan.new_background_task and plan_path == "$.toolUseResult.backgroundTaskId"
+    fresh_identity = (
+        fresh_task or plan is not None and plan_path in plan.tool_fields and plan.tool_fields[plan_path][1] == "new"
+    )
 
     def accepted_identity(value: GeneratedString) -> bool:
         if agent_prefix is not None:
@@ -805,7 +813,10 @@ def _generate_string(
                 return False
             assert plan is not None
             return plan.owner.agent_identity_is_new(value)
-        return not fresh_tool or (plan is not None and plan.owner.tool_identity_is_new(value))
+        if fresh_task:
+            assert plan is not None
+            return plan.owner.background_task_is_new(value)
+        return not fresh_identity or (plan is not None and plan.owner.tool_identity_is_new(value))
 
     width = plan.tool_widths.get(plan_path) if plan is not None else None
     pointer_width = plan.tool_pointer_widths.get(plan_path) if plan is not None else None
@@ -1101,7 +1112,7 @@ def _generate_string(
         cached = self._categorical_pools.get(path)
         pool = (
             cached[1]
-            if cached is not None and cached[0] == fingerprint and agent_prefix is None and not fresh_tool
+            if cached is not None and cached[0] == fingerprint and agent_prefix is None and not fresh_identity
             else None
         )
         if pool is None:
@@ -1138,7 +1149,7 @@ def _generate_string(
                 else None,
                 excluded=excluded,
                 prefix="agent-" if agent_prefix else "",
-                accepts=accepted_identity if agent_prefix is not None or fresh_tool else None,
+                accepts=accepted_identity if agent_prefix is not None or fresh_identity else None,
             )
             # Replace this path entry rather than retaining every historical
             # branch/distribution version in the corpus.
@@ -1149,16 +1160,16 @@ def _generate_string(
     character_class_value = _schema_record(schema.get("x-polylogue-observed-distribution")).get("character_class")
     character_class = character_class_value if isinstance(character_class_value, str) else None
     text_length, newlines = _sample_text_shape(schema, rng, minimum_plain=int(character_class == "non_ascii"))
-    if (excluded or agent_prefix is not None or fresh_tool) and text_length is None:
+    if (excluded or agent_prefix is not None or fresh_identity) and text_length is None:
         text_length = max(32, newlines + 1)
-    if (excluded or agent_prefix is not None or fresh_tool) and text_length is not None:
+    if (excluded or agent_prefix is not None or fresh_identity) and text_length is not None:
         # Anonymous spelling is already owned by the category sampler. Borrow
         # its exact shape domain, excluding aliases before choosing a value.
         from polylogue.schemas.synthetic.text_value import text_equals
 
-        if plan is not None and (fresh_tool or agent_prefix is not None):
+        if plan is not None and (fresh_identity or agent_prefix is not None):
             value = plan.owner.fresh_shape_identity(
-                "agent" if agent_prefix is not None else "tool",
+                "agent" if agent_prefix is not None else "task" if fresh_task else "tool",
                 text_length,
                 newlines,
                 prefix="agent-" if agent_prefix else "",

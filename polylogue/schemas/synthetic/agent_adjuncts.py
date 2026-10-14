@@ -27,7 +27,13 @@ class _AgentContext(Protocol):
     ) -> GeneratedArray: ...
 
     def _generate_agent_metadata(
-        self, schema: SchemaRecord, metadata_class: SchemaRecord, agent_id: str, stem: str, rng: random.Random
+        self,
+        schema: SchemaRecord,
+        metadata_class: SchemaRecord,
+        agent_id: str,
+        stem: str,
+        rng: random.Random,
+        dispatch_tool_id: str | None = None,
     ) -> GeneratedValue: ...
 
     def iter_metadata_document_chunks(self, data: GeneratedValue) -> Generator[bytes, None, None]: ...
@@ -83,7 +89,7 @@ def prepare_agent_adjuncts(corpus: _AgentContext, rng: random.Random) -> None:
             agent_id = result.get("agentId")
             if not isinstance(agent_id, str):
                 raise RuntimeError("original metadata dispatcher identity lost its concrete coordinate")
-            document = corpus._generate_agent_metadata(meta_schema, meta_class, agent_id, operand[1], rng)
+            document = corpus._generate_agent_metadata(meta_schema, meta_class, agent_id, operand[1], rng, operand[0])
             _retain_file(corpus, operand[1] + ".meta.json", "agent_sidecar_meta", document)
         after = ordinal
 

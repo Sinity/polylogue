@@ -104,7 +104,7 @@ they are compatible. Missing Codex ordering metadata is recovered separately
 from field statistics.
 
 Structure revisions apply to the affected provider: generic reduction is5,
-Codex tool grammar and result classes are9; Claude named tool forms and public Todo tokens are8.
+Codex and Claude native carrier and identity forms are10; unaffected providers remain5.
 A batch uses the highest revision applicable to its actual inventoried providers; an empty
 batch uses5. A ChatGPT-only batch therefore keeps its unchanged revision5
 contract. Mixed batches conservatively bind one combined contract rather than
@@ -441,3 +441,22 @@ conversations. The fresh-build corpus writer records populations, normalized
 weights, profile identities and actual selection counts. Composition refuses
 packages without this measured denominator; it never substitutes byte sizes or
 bundle totals. Session artifact writes refuse existing targets.
+
+
+Native bookkeeping forms retain fixed parser-owned field presence, types and
+public item discriminators; values remain anonymous schema draws. Current turn
+and thread aliases borrow the generated session cells, and measured constant
+instruction scopes reuse one neutral instruction value. This does not reproduce
+an original instruction sequence or publish its text or hashes.
+
+Claude Agent progress borrows an open Agent call without settling its result.
+The original generated data cell supplies the later child identity and the
+physical metadata binds the actual dispatcher tool ID. Bash foreground and
+background forms retain their measured subtype. The supported canonical failed-task XML notifications
+retain fixed protocol syntax with anonymous command/path operands and refer to
+existing generated task/result cells. Acknowledgements remain unknown until a
+recognized completion; a task-only notification with competing starts remains
+ambiguous. Other notification spellings and provenance kinds retain ordinary schema
+evidence without an executable notification grammar claim. Repeated background acknowledgements on one call and unmatched canonical
+task/tool relationships are unsupported for executable generation. They never
+become matching completions. Native parsing retains their unknown outcomes. Parser trust checks are unchanged.

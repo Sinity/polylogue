@@ -22,6 +22,21 @@ IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,47}$")
 PUBLIC_CONTENT_BODY_FIELDS = ("text", "thinking", "content", "input")
 NATIVE_CODEX_TOOL_VALUE_FIELDS = ("name", "execution", "arguments", "input", "action", "output", "tools", "result")
 PUBLIC_CLAUDE_TOOL_NAMES = frozenset({"Read", "Edit", "Write", "TodoWrite", "Bash", "Agent"})
+PUBLIC_CLAUDE_TOOL_CLASSES = PUBLIC_CLAUDE_TOOL_NAMES | {"Bash:foreground", "Bash:background"}
+
+
+def claude_tool_class(name: object, operand: object) -> str:
+    if not isinstance(name, str) or name not in PUBLIC_CLAUDE_TOOL_NAMES:
+        return ""
+    if name == "Bash":
+        return (
+            "Bash:background"
+            if isinstance(operand, Mapping) and operand.get("run_in_background") is True
+            else "Bash:foreground"
+        )
+    return name
+
+
 PUBLIC_CLAUDE_TODO_TOKENS = {
     "status": frozenset({"pending", "in_progress", "completed"}),
     "priority": frozenset({"low", "medium", "high"}),
@@ -493,6 +508,108 @@ def codex_parent_field_forms(header: Mapping[str, object]) -> dict[str, str]:
     return forms
 
 
+# These are parser-owned native carriers, not observed user key vocabularies.
+CODEX_BOOKKEEPING_FIELDS = (
+    "payload.turn_id",
+    "payload.thread_id",
+    "payload.metadata.turn_id",
+    "payload.internal_chat_message_metadata_passthrough.turn_id",
+    "payload.user_instructions",
+    "payload.developer_instructions",
+    "payload.summary",
+    "payload.summary[*].type",
+    "payload.summary[*].text",
+    "payload.item",
+    "payload.item.type",
+)
+CLAUDE_BOOKKEEPING_FIELDS = (
+    "relocatedCwd",
+    "attributionAgent",
+    "attributionSkill",
+    "attributionMcpServer",
+    "attributionMcpTool",
+    "attributionPlugin",
+    "parentToolUseID",
+    "data.agentId",
+    "data.childSessionId",
+)
+
+
+def native_record_field_forms(provider: str, record: Mapping[str, object]) -> dict[str, str]:
+    """Measure fixed native carrier shapes without retaining their values."""
+    paths = (
+        CODEX_BOOKKEEPING_FIELDS
+        if provider == "codex"
+        else CLAUDE_BOOKKEEPING_FIELDS
+        if provider == "claude-code"
+        else ()
+    )
+
+    def values_at(value: object, parts: tuple[str, ...]) -> Iterator[object]:
+        if not parts:
+            yield value
+            return
+        part = parts[0]
+        field = part.removesuffix("[*]")
+        if not isinstance(value, Mapping) or field not in value:
+            return
+        child = value[field]
+        if part.endswith("[*]"):
+            if isinstance(child, list):
+                for item in child:
+                    yield from values_at(item, parts[1:])
+        else:
+            yield from values_at(child, parts[1:])
+
+    result: dict[str, str] = {}
+    for path in paths:
+        shapes: set[str] = set()
+        token: str | None = None
+        uniform_token = True
+        for value in values_at(record, tuple(path.split("."))):
+            shape = (
+                "null"
+                if value is None
+                else "object"
+                if isinstance(value, Mapping)
+                else "array"
+                if isinstance(value, list)
+                else "empty"
+                if value == ""
+                else "string"
+                if isinstance(value, str)
+                else "boolean"
+                if isinstance(value, bool)
+                else "integer"
+                if isinstance(value, int)
+                else "number"
+                if isinstance(value, float)
+                else "unsupported"
+            )
+            if provider == "claude-code" and path == "data.agentId" and isinstance(value, str) and value:
+                shape = "agent:prefixed" if value.startswith("agent-") else "agent:plain"
+            shapes.add(shape)
+            if path in {"payload.item.type", "payload.summary[*].type"}:
+                public = (
+                    value
+                    if isinstance(value, str) and value in {"CommandExecution", "FileChange", "summary_text"}
+                    else None
+                )
+                if public is None or token is not None and public != token:
+                    uniform_token = False
+                token = public
+        result[path] = (
+            "public:" + token
+            if uniform_token and token is not None
+            else next(iter(shapes))
+            if len(shapes) == 1
+            else "absent"
+            if not shapes
+            else "mixed"
+        )
+    return result
+
+
 def claude_dispatch_field_forms(record: Mapping[str, object]) -> dict[str, str]:
     """Public dispatcher carrier presence; values remain schema-owned."""
 
@@ -516,7 +633,13 @@ def claude_dispatch_field_forms(record: Mapping[str, object]) -> dict[str, str]:
             return "array"
         return "unsupported"
 
-    forms = {"toolUseResult": form(record, "toolUseResult")}
+    forms = {"toolUseResult": form(record, "toolUseResult"), "origin": form(record, "origin")}
+    origin = record.get("origin")
+    if isinstance(origin, Mapping):
+        kind = origin.get("kind")
+        forms["origin.kind"] = (
+            "public:" + kind if isinstance(kind, str) and kind in published_kind_tokens() else form(origin, "kind")
+        )
     result = record.get("toolUseResult")
     if isinstance(result, Mapping):
         forms["toolUseResult.agentId"] = form(result, "agentId")
