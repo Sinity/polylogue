@@ -174,7 +174,7 @@ jobs:
           diff -u upstream/nix/homebrew-tap-template/Formula/polylogue.rb tap/Formula/polylogue.rb || true
 
       - name: Set up Homebrew for resource regeneration
-        uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478
+        uses: Homebrew/actions/setup-homebrew@eb02c69dbabdb66ff183c614f4ce7ab3c077592c
 
       - name: Regenerate Python resource blocks from the bumped sdist
         env:
