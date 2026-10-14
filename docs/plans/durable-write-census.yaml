@@ -1272,6 +1272,10 @@ writes:
     classification: private_witness_hydration
     reason: "Only raw_existence_journal_control and audit_continuity_control rowid 1 canonical DDL seeds are replaced in the creator-owned private Native witness. The exact retained original image is restored before the first captured statement under the baseline-only hydration phase. The original Source observer is untouched; this classification grants no live Source write authority."
 caller_supplied_sql:
+  - file: "polylogue/schemas/synthetic/opaque_adjuncts.py"
+    function: "_one"
+    parameter: "statement"
+    reason: "All callers supply SELECTs over the synthetic relation owner's generated tool history, adjacency and adjunct tables. The helper steps and closes one borrowed cursor on that same private NativeSQLCustodyOwner connection, creates no connection, and performs no archive mutation."
   - file: "polylogue/schemas/observation_spill.py"
     function: "_read_rows"
     parameter: "sql"

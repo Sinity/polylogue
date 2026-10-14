@@ -1804,8 +1804,8 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
         if node.get("type") in _CODEX_TOOL_OUTPUT_TYPES:
             from polylogue.sources.parsers.codex import _codex_tool_output_text
 
-            text = _codex_tool_output_text(_codex_tool_output(node))
-            return (_normalise_evidence_text(text),) if text else ()
+            output_text = _codex_tool_output_text(_codex_tool_output(node))
+            return (_normalise_evidence_text(output_text),) if output_text else ()
         content = node.get("content")
         content_values = (
             tuple(

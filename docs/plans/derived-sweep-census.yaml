@@ -9,6 +9,13 @@
 # unclassified until a reviewer assigns a permitted classification.
 package: polylogue
 sites:
+  - file: "polylogue/schemas/synthetic/relations.py"
+    function: "ForeignKeyGraph.advance_scope"
+    subject: "{}"
+    kind: "unbound_rewrite"
+    scope: "no_where"
+    classification: producer_scoped_transaction
+    reason: "The literal generated_* table list belongs only to this synthetic sampler's private native relation owner. Beginning a new generation clears exactly the previous generation's arrays, identities, tool context and adjunct preparation on that same creator-owned connection; no archive tier is connected or corrected."
   - file: "polylogue/sources/tool_outcomes.py"
     function: "_normalize_message"
     subject: "source_content_identity"

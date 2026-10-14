@@ -893,19 +893,22 @@ class PublicRecordPlan:
             if not isinstance(forms, list) or not forms:
                 raise ValueError("original block body-field forms are missing; re-infer the package")
             weights: list[int] = []
+            field_forms: list[tuple[str, ...]] = []
             for row in forms:
                 if not isinstance(row, dict) or not isinstance(row.get("fields"), list):
                     raise ValueError("original block body-field form is malformed")
-                fields = row["fields"]
+                fields = row.get("fields")
+                assert isinstance(fields, list)
                 if any(
                     not isinstance(field, str) or field not in PUBLIC_CONTENT_BODY_FIELDS for field in fields
                 ) or len(fields) != len(set(fields)):
                     raise ValueError("original block body-field form is malformed")
+                field_forms.append(tuple(str(field) for field in fields))
                 weights.append(_count(row.get("count")))
-            selected = rng.choices(forms, weights=weights, k=1)[0]
+            selected = rng.choices(field_forms, weights=weights, k=1)[0]
             for field in PUBLIC_CONTENT_BODY_FIELDS:
                 target = path + "." + field
-                if field in selected["fields"]:
+                if field in selected:
                     self.required_body_fields.add(target)
                 else:
                     self.absent.add(target)
@@ -1331,6 +1334,8 @@ class PublicRecordPlan:
                 if not formats and (schema.get("x-polylogue-format") == "persisted-tool-output") != pointer:
                     return False
             return True
+        if path in self.required_body_fields:
+            return bool(schema)
         if path in self.tool_fields:
             types = _schema_types(schema)
             if types and "string" not in types:

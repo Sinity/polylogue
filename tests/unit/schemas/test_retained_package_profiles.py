@@ -228,7 +228,7 @@ def test_measured_claude_blocks_keep_their_original_body_field_owners(
     qualified_schema_registry: SchemaRegistry,
 ) -> None:
     from polylogue.core.enums import BlockType
-    from polylogue.sources.parsers.dispatch import parse_payload
+    from polylogue.sources.dispatch import parse_payload
 
     selection = select_synthetic_schema("claude-code", registry_factory=lambda: qualified_schema_registry)
     corpus = SyntheticCorpus.from_selection(selection)
