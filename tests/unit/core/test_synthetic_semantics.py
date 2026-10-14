@@ -292,7 +292,9 @@ class TestSyntheticSessionEnvelope:
         assert written.session_files[0].exists()
         assert written.report.generated_count == 1
 
-    def test_write_specs_artifacts_avoids_same_source_name_collisions(self, tmp_path: Path) -> None:
+    def test_write_specs_artifacts_avoids_same_source_name_collisions(
+        self, tmp_path: Path, qualified_provider_defaults: None
+    ) -> None:
         specs = (
             CorpusSpec(
                 provider="chatgpt",
@@ -801,10 +803,6 @@ def _deserialize_for_parser(provider: str, raw: bytes) -> object:
         return json.loads(raw)
 
 
-def _available_providers() -> list[str]:
-    return SyntheticCorpus.available_providers()
-
-
 # ---------------------------------------------------------------------------
 # Core roundtrip: generate → parse for every provider
 # ---------------------------------------------------------------------------
@@ -1297,6 +1295,7 @@ def test_generated_array_depth_numeric_order_and_cycle_refusal() -> None:
         owner.close()
 
 
+@pytest.mark.timeout(0)
 @pytest.mark.parametrize("provider", ["claude-ai", "codex", "chatgpt"])
 def test_record_containers_use_the_original_native_session_driver(tmp_path: Path, provider: str) -> None:
     import tracemalloc

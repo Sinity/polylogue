@@ -773,7 +773,8 @@ def _select_session_header(
         raise ValueError("original first-header joint has no realizable retained parent")
     row, points = rng.choices(feasible, weights=weights, k=1)[0]
     carrier = row.get("carrier")
-    structure = structures.get(carrier) if isinstance(carrier, str) else None
+    by_form = structures.get(carrier) if isinstance(carrier, str) else None
+    structure = by_form.get(row.get("form")) if isinstance(by_form, dict) else None
     if not isinstance(structure, dict):
         raise ValueError("first-header conditional record grammar is missing")
     self._session_record_structure = structure

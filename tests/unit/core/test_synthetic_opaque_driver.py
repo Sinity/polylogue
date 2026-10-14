@@ -260,16 +260,17 @@ def test_collector_fixture_writer_and_fresh_build_consume_the_same_original_file
     selection = SyntheticSchemaSelection(
         "claude-code", "neutral", "session_record_stream", corpus.schema, corpus.wire_format, corpus.workload_profile
     )
+    writer_root = tmp_path / "home/.claude/projects"
     written = SyntheticCorpus.write_selection_artifacts(
         selection,
         CorpusSpec(provider="claude-code", count=2, seed=11),
-        tmp_path / "writer",
+        writer_root,
         prefix="session",
         index_width=6,
     )
     assert len(written.files) == 6
     assert len(written.session_files) == len(written.facts) == 2
-    project = tmp_path / "writer" / "-synthetic-project"
+    project = writer_root / "-synthetic-project"
     assert all(path.suffix == ".jsonl" and path.parent == project for path in written.session_files)
     assert len(written.facts) == 2
     for index, artifact in enumerate(collected.artifacts):
@@ -280,7 +281,7 @@ def test_collector_fixture_writer_and_fresh_build_consume_the_same_original_file
     from polylogue.core.enums import Provider
     from polylogue.sources.source_walk import census_source_root
 
-    census = census_source_root(tmp_path / "writer", provider=Provider.CLAUDE_CODE)
+    census = census_source_root(writer_root, provider=Provider.CLAUDE_CODE)
     assert census.candidate_count == 6
     assert census.disposition_counts["session"] == 2
     # Benchmark corpus creation owns a real /realm output. Its sealed manifest

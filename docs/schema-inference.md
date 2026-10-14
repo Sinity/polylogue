@@ -276,7 +276,10 @@ grammar through the same privacy predicates. Public JSON re-emission uses the
 profile serializer, which includes the original retained rows.
 
 Codex first-header profiles retain public wire form and parent-field presence
-classes together with the original parent/prefix count joint. The planner
+classes together with the original parent/prefix count joint. Record grammars
+condition on both the parent carrier and first-header wire form, so a selected
+flat header retains flat messages and an envelope header retains envelope
+records. Profiles lacking that joint need fresh inference. The planner
 selects an already completed generated parent on the original native cohort,
 then binds that identity before drawing the header fields. Existing element
 schemas remain the sole authority for identity width, format and field branches;

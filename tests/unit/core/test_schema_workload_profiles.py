@@ -2116,13 +2116,15 @@ def test_original_session_headers_prove_exact_prefix_and_preserve_ambiguous_pare
         assert {point for rows in fork.extrema.values() for point in rows} == {(4, 3, 3, 2, 2)}
         assert {point for rows in spawn.extrema.values() for point in rows} == {(2, 3, 1, 2, 0)}
         structures = json_document(lineage["record_structures"])
-        fork_structure = json_document(structures["prefix:forked_from_id"])
+        fork_structure = json_document(json_document(structures["prefix:forked_from_id"])["codex-envelope"])
         fork_counts = json_document(fork_structure["scope_record_count"])
         # This carrier also has the original ambiguous-parent stream. Its
         # own two-record grammar remains visible, not rewritten as the fork.
         assert fork_counts["count"] == 2 and fork_counts["min"] == 2 and fork_counts["max"] == 4
         spawn_counts = json_document(
-            json_document(structures["spawn:thread_spawn.parent_thread_id"])["scope_record_count"]
+            json_document(json_document(structures["spawn:thread_spawn.parent_thread_id"])["codex-envelope"])[
+                "scope_record_count"
+            ]
         )
         assert spawn_counts["count"] == 1 and spawn_counts["min"] == spawn_counts["max"] == 2
         assert "private-" not in b"".join(iter_workload_profile_chunks(profile)).decode()

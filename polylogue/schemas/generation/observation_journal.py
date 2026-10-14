@@ -1222,6 +1222,7 @@ class JournalMemberships(Sequence[_UnitMembership]):
         *,
         order: Literal["bundle", "stream"],
         _session_carrier: str | None = None,
+        _session_header_form: str | None = None,
         _agent_depth: int | None = None,
     ) -> Generator[ObservedStreamSample, None, None]:
         """Replay original samples in scope/ingestion order, one sample at a time.
@@ -1253,9 +1254,15 @@ class JournalMemberships(Sequence[_UnitMembership]):
                 "WHERE header.bundle_scope=COALESCE(units.bundle_scope,units.raw_id,units.source_path,"
                 "units.session_id,'unit:' || units.unit_id) "
                 "AND header.stream_key=COALESCE(units.raw_id,units.source_path,units.bundle_scope,'unit:' || units.unit_id) "
-                "AND header.artifact_kind=units.artifact_kind AND header.carrier=?)"
+                "AND header.artifact_kind=units.artifact_kind AND header.carrier=?"
+                + (" AND header.header_form=?" if _session_header_form is not None else "")
+                + ")"
             )
             parameters = [*parameters, _session_carrier]
+            if _session_header_form is not None:
+                parameters.append(_session_header_form)
+        elif _session_header_form is not None:
+            raise ValueError("header form requires its original session carrier")
         if _agent_depth is not None:
             if type(_agent_depth) is not int or _agent_depth < 0:
                 raise ValueError("original agent depth must be a nonnegative exact integer")

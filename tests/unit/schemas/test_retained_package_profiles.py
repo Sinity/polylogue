@@ -194,3 +194,31 @@ def test_selected_source_profile_refuses_input_changed_during_original_observati
             observation_recorder=alter_original,
         )
     assert reached
+
+
+def test_measured_codex_scope_keeps_the_original_header_and_message_wire_family(qualified_schema_registry) -> None:
+    from polylogue.sources.dispatch import parse_payload
+    from tests.infra.qualified_schema_registry import neutral_source_expectations
+
+    expected = neutral_source_expectations(providers=("codex",))["codex"]
+    expected_counts = {item.message_count for item in expected}
+    selection = select_synthetic_schema("codex", registry_factory=lambda: qualified_schema_registry)
+    corpus = SyntheticCorpus.from_selection(selection)
+    forms = set()
+    try:
+        for raw in corpus.generate(count=12, seed=42):
+            records = [json.loads(line) for line in raw.splitlines()]
+            envelope = records[0].get("type") == "session_meta"
+            forms.add("envelope" if envelope else "flat")
+            if envelope:
+                assert all(
+                    record["type"] == "response_item" and isinstance(record["payload"], dict) for record in records[1:]
+                )
+            else:
+                assert all(record["type"] == "message" and "payload" not in record for record in records[1:])
+            sessions = parse_payload("codex", records, "neutral-family")
+            assert len(sessions) == 1
+            assert len(sessions[0].messages) in expected_counts
+        assert forms == {"flat", "envelope"}
+    finally:
+        corpus._relation_solver.close()

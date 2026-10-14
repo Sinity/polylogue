@@ -978,6 +978,7 @@ def _record_structure(
     memberships: JournalMemberships,
     *,
     session_carrier: str | None = None,
+    session_header_form: str | None = None,
     agent_depth: int | None = None,
 ) -> JSONDocument:
     tool_owner = memberships._journal._connection
@@ -986,7 +987,12 @@ def _record_structure(
     ).close()
     try:
         return _record_structure_with_tool_owner(
-            provider, memberships, tool_owner, session_carrier=session_carrier, agent_depth=agent_depth
+            provider,
+            memberships,
+            tool_owner,
+            session_carrier=session_carrier,
+            session_header_form=session_header_form,
+            agent_depth=agent_depth,
         )
     finally:
         tool_owner.execute("DROP TABLE workload_record_tool_ids").close()
@@ -998,6 +1004,7 @@ def _record_structure_with_tool_owner(
     tool_owner: sqlite3.Connection,
     *,
     session_carrier: str | None = None,
+    session_header_form: str | None = None,
     agent_depth: int | None = None,
 ) -> JSONDocument:
     """Aggregate ordered public record kinds without retaining source keys."""
@@ -1015,7 +1022,12 @@ def _record_structure_with_tool_owner(
     record_count = 0
     missing_timestamps = 0
     with closing(
-        memberships.iter_scope_samples(order="stream", _session_carrier=session_carrier, _agent_depth=agent_depth)
+        memberships.iter_scope_samples(
+            order="stream",
+            _session_carrier=session_carrier,
+            _session_header_form=session_header_form,
+            _agent_depth=agent_depth,
+        )
     ) as samples:
         for original in samples:
             scope = original.bundle_scope, original.artifact_kind, original.stream_key
@@ -1352,16 +1364,22 @@ def _session_lineage_profile(provider: str, memberships: JournalMemberships) -> 
             finally:
                 cursor.close()
             structures: JSONDocument = {}
-            carriers = connection.execute("SELECT DISTINCT carrier FROM workload_session_headers ORDER BY carrier")
+            carriers = connection.execute(
+                "SELECT DISTINCT carrier,header_form FROM workload_session_headers ORDER BY carrier,header_form"
+            )
             try:
                 # The first-header carrier grammar is a fixed public field
                 # vocabulary, not a retained identity population. Close its
                 # native cursor before the conditional pass's TEMP DDL.
-                original_carriers = tuple(row[0] for row in carriers)
+                original_carriers = tuple(carriers)
             finally:
                 carriers.close()
-            for carrier in original_carriers:
-                structures[carrier] = _record_structure(provider, memberships, session_carrier=carrier)
+            for carrier, form in original_carriers:
+                by_form = structures.setdefault(carrier, {})
+                assert isinstance(by_form, dict)
+                by_form[form or "absent"] = _record_structure(
+                    provider, memberships, session_carrier=carrier, session_header_form=form
+                )
             return {
                 "population": "first-original-session-header",
                 "supported": True,
