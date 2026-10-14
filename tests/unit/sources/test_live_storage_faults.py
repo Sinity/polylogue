@@ -478,6 +478,69 @@ async def test_an_attempt_close_skipped_under_lock_is_reported(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_write_available", [False, True])
+async def test_successful_intake_reports_actual_terminal_attempt_receipt(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_write_available: bool,
+) -> None:
+    """Committed intake cannot certify an Ops write that returned False."""
+    archive, watcher, source_path = storage_env
+    original_finish = CursorStore.finish_ingest_attempt
+    finish_calls: list[str] = []
+
+    def finish(self: CursorStore, attempt_id: str, **options: Any) -> bool:
+        finish_calls.append(attempt_id)
+        return original_finish(self, attempt_id, **options) if terminal_write_available else False
+
+    monkeypatch.setattr(CursorStore, "finish_ingest_attempt", finish)
+    try:
+        with capture() as events:
+            outcomes = await _admit(watcher)
+        assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.ADMITTED}
+        attempt_id = _latest_attempt_id(watcher)
+        assert finish_calls == [attempt_id]
+        assert _latest_attempt(watcher)[0] == ("completed" if terminal_write_available else "running")
+        chunks = [event for event in events if event.get("event") == "live.ingest.chunk"]
+        assert len(chunks) == 1
+        assert chunks[0].get("attempt_id") == attempt_id
+        assert chunks[0].get("terminal_receipt_available") is terminal_write_available
+        assert chunks[0].get("outcome") == ("ok" if terminal_write_available else "degraded")
+        unavailable = [event for event in events if event.get("event") == "live.ingest.attempt_finish_failed"]
+        assert [(event.get("attempt_id"), event.get("reason")) for event in unavailable] == (
+            [] if terminal_write_available else [(attempt_id, "ops_write_skipped")]
+        )
+        assert not [event for event in events if event.get("event") == "log.field_rejected"]
+        session = await archive.get_session("claude-code-session:storage-fault")
+        assert session is not None
+        assert [message.text for message in session.messages] == ["kept through a full disk"]
+        states = _raw_parse_states(archive.archive_root, source_path)
+        assert len(states) == 1 and states[0][0] is not None and states[0][1] is None
+        cursor = watcher._cursor.get_record(source_path)
+        assert cursor is not None and cursor.failure_count == 0
+
+        if not terminal_write_available:
+            monkeypatch.setattr(CursorStore, "finish_ingest_attempt", original_finish)
+            assert (
+                await watcher._batch_processor._run_ops_write(
+                    "attempt_finish",
+                    watcher._cursor.finish_ingest_attempt,
+                    attempt_id,
+                    status="completed",
+                    phase="completed",
+                )
+                is True
+            )
+            assert _latest_attempt_id(watcher) == attempt_id
+            assert _latest_attempt(watcher)[0] == "completed"
+            assert _raw_parse_states(archive.archive_root, source_path) == states
+            assert watcher._cursor.get_record(source_path) == cursor
+    finally:
+        watcher.stop()
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_a_storage_fault_discards_blobs_staged_earlier_in_the_pass(
     storage_env: tuple[Polylogue, LiveWatcher, Path],
     monkeypatch: pytest.MonkeyPatch,
