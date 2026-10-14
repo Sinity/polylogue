@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import os
@@ -335,10 +336,15 @@ class _McpCallLogDispatcher:
             return
         with self._start_lock:
             if self._thread is None:
+                # One process-wide sender serves every later call. Start it
+                # with an empty context so it never keeps the first starter's
+                # log correlation or other context-carried state where threads
+                # inherit their creator's context (thread_inherit_context).
                 self._thread = threading.Thread(
                     target=self._run,
                     name="mcp-call-log-sender",
                     daemon=True,
+                    context=contextvars.Context(),
                 )
                 self._thread.start()
 
