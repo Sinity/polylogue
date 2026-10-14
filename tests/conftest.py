@@ -1351,9 +1351,9 @@ def synthetic_source(
             return Source(name=provider, path=provider_dir)
 
         if count == 1:
-            return Source(name=f"{provider}-test", path=written.files[0])
+            return Source(name=f"{provider}-test", path=written.session_files[0])
         # For multiple files, return Source pointing to first file
         # (pipeline processes individual files, not directories)
-        return Source(name=f"{provider}-test", path=written.files[0])
+        return Source(name=f"{provider}-test", path=written.session_files[0])
 
     return _factory

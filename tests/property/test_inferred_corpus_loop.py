@@ -246,11 +246,11 @@ def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
         source_root / spec.provider,
         prefix="inferred",
     )
-    assert written.batch.report.generated_count == spec.count == 1
+    assert written.report.generated_count == spec.count == 1
     assert written.files and all(path.stat().st_size > 0 for path in written.files)
 
     archive_root = tmp_path / "archive"
-    source_path = written.files[0].relative_to(source_root)
+    source_path = written.session_files[0].relative_to(source_root)
     monkeypatch.chdir(source_root)
     ingest_result = asyncio.run(ingest_one_shot_archive(archive_root, [Source(name=spec.provider, path=source_path)]))
     assert ingest_result.counts["sessions"] > 0
@@ -291,7 +291,7 @@ def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
     assert fts_source_count == fts_index_count
     assert searchable_texts and all(text.strip() for text in searchable_texts)
 
-    generated_text = written.batch.raw_items[0].decode("utf-8")
+    generated_text = written.session_files[0].read_text(encoding="utf-8")
     generated_tokens = tuple(dict.fromkeys(re.findall(r"[A-Za-z][A-Za-z0-9_]{4,}", generated_text.lower())))
     with sqlite3.connect(archive_root / "index.db") as conn:
         search_token = next(
@@ -366,9 +366,9 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
             output_dir,
             prefix=f"inferred-{index:03d}",
         )
-        assert written.batch.report.generated_count == spec.count
+        assert written.report.generated_count == spec.count
         assert written.files and all(path.stat().st_size > 0 for path in written.files)
-        expected_session_count += written.batch.report.generated_count
+        expected_session_count += written.report.generated_count
         source_paths = tuple(path.relative_to(source_root) for path in written.files)
         expected_source_paths.update(str(path.resolve()) for path in written.files)
         sources.extend(Source(name=selection.provider, path=path) for path in source_paths)
@@ -420,7 +420,7 @@ def test_inferred_selection_profiles_recover_in_a_fresh_process(tmp_path: Path) 
     archive_root = tmp_path / "archive"
     session_ids = _ingest_and_converge_sources(
         archive_root,
-        (Source(name=spec.provider, path=written.files[0]),),
+        (Source(name=spec.provider, path=written.session_files[0]),),
     )
     baseline = archive_snapshot(archive_root, session_ids=session_ids)
     with sqlite3.connect(archive_root / "index.db") as conn:

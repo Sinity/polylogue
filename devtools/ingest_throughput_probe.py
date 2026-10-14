@@ -286,7 +286,7 @@ def _build_fixture_files(
     seed: int,
     messages_min: int,
     messages_max: int,
-) -> tuple[list[Path], list[dict[str, Any]]]:
+) -> tuple[list[Path], list[dict[str, Any]], list[Path]]:
     """Write ``batches`` single-session synthetic source files deterministically."""
     from polylogue.core.sources import origin_from_provider
     from polylogue.scenarios import build_default_corpus_specs
@@ -309,7 +309,7 @@ def _build_fixture_files(
     from polylogue.sources.source_parsing import parse_one_source_path
 
     expected = []
-    for artifact, path in zip(written.batch.artifacts, written.files, strict=True):
+    for facts, path in zip(written.facts, written.session_files, strict=True):
         parsed_sessions = [
             session
             for _raw, session in parse_one_source_path(
@@ -326,13 +326,13 @@ def _build_fixture_files(
         session_id = f"{origin_from_provider(provider).value}:{parsed.provider_session_id}"
         expected.append(
             {
-                "session_id": artifact.facts.expected_session_id or session_id,
-                "messages": artifact.message_count,
+                "session_id": facts.expected_session_id or session_id,
+                "messages": facts.message_count,
                 "message_ids": _parsed_message_ids(parsed, session_id),
-                "source_sha256": artifact.facts.raw_sha256,
+                "source_sha256": facts.raw_sha256,
             }
         )
-    return list(written.files), expected
+    return list(written.session_files), expected, list(written.files)
 
 
 async def _ingest_batch(archive_root: Path, provider: str, source_file: Path) -> _BatchOutcome:
@@ -523,7 +523,7 @@ def measure_ingest_throughput(
             "skipped_raw_count": 0,
             "budget_exhausted": 0,
         }
-        source_files, expected_rows = _build_fixture_files(
+        source_files, expected_rows, input_files = _build_fixture_files(
             base,
             provider=provider,
             batches=batches,
@@ -535,7 +535,7 @@ def measure_ingest_throughput(
             batches = len(source_files)
         expected_sessions = len(expected_rows)
         expected_messages = sum(int(row["messages"]) for row in expected_rows)
-        input_digest = _input_digest(source_files)
+        input_digest = _input_digest(input_files)
 
         index_db = archive_root / "index.db"
         index_wal = archive_root / "index.db-wal"

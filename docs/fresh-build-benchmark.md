@@ -24,6 +24,7 @@ only when their corpus digests match.
 | Kind | Command | Use |
 | --- | --- | --- |
 | sample | `corpus sample --out DIR --seed N --fraction F` | A seeded byte-fraction of each (origin, size bucket) stratum of real sources. A unit keeps its parser sidecars: a Claude Code session with its subagents and `tool-results/`, a Gemini CLI project with its `tool-outputs/`. Private. |
+| synthetic | `corpus synthetic --out DIR --provider TOKEN (--sessions N | --bytes N) --seed N` | The same lazy session/chunk driver used by synthetic fixtures, from the package's measured workload profile. Missing package profiles refuse; neutral inferred packages qualify mechanics, not an operator workload. |
 | files | `corpus files --out DIR [--export ORIGIN=PATH] [--hooks DIR --hooks-fraction F] FILE...` | Exactly the named real transcripts, e.g. one whale; each must be a file its source root's watcher admits. `--export` stages a ChatGPT or Claude.ai export under `exports/`. `--hooks` stages a deterministic fraction of a legacy hook spool for backlog timing. Private. |
 
 Both are private: corpora, manifests and receipts stay outside the checkout

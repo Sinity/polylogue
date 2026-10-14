@@ -29,7 +29,10 @@ from collections import defaultdict, deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
+
+if TYPE_CHECKING:
+    from polylogue.schemas.synthetic import SyntheticCorpus
 
 MANIFEST_FORMAT: Final = "polylogue.fresh-build-corpus.v1"
 MANIFEST_NAME: Final = "manifest.json"
@@ -946,3 +949,69 @@ def _copy_hook_tree(source_root: Path, destination_root: Path, *, fraction: floa
             ):
                 raise ValueError("hook spool changed while staging; retry from a quiescent snapshot")
         stack.extend(reversed(directories))
+
+
+def corpus_from_synthetic(
+    out: Path, *, corpus: SyntheticCorpus, seed: int, count: int | None = None, target_bytes: int | None = None
+) -> dict[str, Any]:
+    """Seal the original package driver's bytes for a fresh-build benchmark.
+
+    A caller may supply a newly inferred neutral package to qualify generator
+    mechanics. Its receipt does not prove the measured operator workload.
+    """
+    if count is None and target_bytes is None:
+        raise ValueError("synthetic corpus needs a session count or byte target")
+    if count is not None and (type(count) is not int or count < 0):
+        raise ValueError("synthetic session count must be a nonnegative exact integer")
+    if target_bytes is not None and (type(target_bytes) is not int or target_bytes < 0):
+        raise ValueError("synthetic byte target must be a nonnegative exact integer")
+    profile = corpus.workload_profile
+    if profile is None:
+        raise ValueError("package workload_profile_file is missing; re-infer and publish the package")
+    layouts = {
+        "claude-code": ("home/.claude/projects/schema", ".jsonl"),
+        "codex": ("home/.codex/sessions/schema", ".jsonl"),
+        "chatgpt": ("exports/chatgpt", ".json"),
+        "claude-ai": ("exports/claude-ai", ".json"),
+    }
+    if corpus.provider not in layouts:
+        raise ValueError("provider has no declared fresh-build synthetic source layout")
+    directory, suffix = layouts[corpus.provider]
+    refuse_inside_checkout(out, "synthetic corpus")
+    if out.exists() and any(out.iterdir()):
+        raise ValueError("synthetic corpus directory must be absent or empty")
+    _private_root(out)
+    destination = out / directory
+    destination.mkdir(parents=True, mode=0o700)
+    sessions = corpus.iter_sessions(count=count, target_bytes=target_bytes, seed=seed)
+    session_count = 0
+    try:
+        for session in sessions:
+            session_count += 1
+            path = destination / f"session-{session.index:06d}{suffix}"
+            with path.open("xb") as handle:
+                path.chmod(0o600)
+                for chunk in session.chunks:
+                    handle.write(chunk)
+            for adjunct in session.adjuncts:
+                adjunct_path = path.parent / path.stem / adjunct.directory / adjunct.name
+                adjunct_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                with adjunct_path.open("xb") as handle:
+                    adjunct_path.chmod(0o600)
+                    for chunk in adjunct.chunks:
+                        handle.write(chunk)
+    finally:
+        sessions.close()
+    return seal(
+        out,
+        kind="synthetic",
+        parameters={
+            "provider": corpus.provider,
+            "package_version": corpus.package_version,
+            "element_kind": corpus.element_kind,
+            "profile_id": profile.get("profile_id"),
+            "seed": seed,
+            "sessions": session_count,
+            "target_bytes": target_bytes,
+        },
+    )
