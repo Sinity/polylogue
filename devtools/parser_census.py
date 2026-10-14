@@ -60,11 +60,11 @@ import os
 import sys
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial as partial_call
 from io import BytesIO
+from itertools import batched
 from pathlib import Path
 from typing import cast
 
@@ -584,12 +584,14 @@ def census_member(member: DenominatorMember, *, max_member_bytes: int = DEFAULT_
     from contextlib import ExitStack
 
     from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+    from polylogue.core.compute_cancel import check_compute_cancelled, raise_if_operation_cancelled
     from polylogue.core.enums import Provider
     from polylogue.core.json import JSONValue
     from polylogue.pipeline.ids import session_content_hash
     from polylogue.sources import dispatch
     from polylogue.sources.decoders import _decode_json_bytes, owned_json_records
 
+    check_compute_cancelled()
     path = member.path
     provider_hint = Provider.from_string(member.subject)
 
@@ -620,6 +622,7 @@ def census_member(member: DenominatorMember, *, max_member_bytes: int = DEFAULT_
         try:
             return _explain_member(member, path)
         except Exception as exc:  # pragma: no cover - defensive: explain owns its own refusals
+            raise_if_operation_cancelled(exc)
             return refused(OUTCOME_PARSE_FAILURE, f"explain failure: {type(exc).__name__}: {exc}")
 
     path_classification = classify_artifact_path(path, provider=provider_hint)
@@ -665,6 +668,7 @@ def census_member(member: DenominatorMember, *, max_member_bytes: int = DEFAULT_
             else:
                 sessions = dispatch.parse_payload(detected, payload, path.stem, source_path=str(path))
         except Exception as exc:
+            raise_if_operation_cancelled(exc)
             return refused(
                 OUTCOME_PARSE_FAILURE,
                 f"parser failure: {type(exc).__name__}: {exc}",
@@ -672,6 +676,7 @@ def census_member(member: DenominatorMember, *, max_member_bytes: int = DEFAULT_
                 kind=artifact.kind.value,
             )
 
+        check_compute_cancelled()
         messages = [message for session in sessions for message in session.messages]
         blocks = [block for message in messages for block in message.blocks]
         tool_outcomes: dict[str, int] = {}
@@ -702,11 +707,6 @@ def census_member(member: DenominatorMember, *, max_member_bytes: int = DEFAULT_
         )
 
 
-def _census_member_payload(max_member_bytes: int, member: DenominatorMember) -> dict[str, object]:
-    """Process-pool entry point: dataclasses cross the boundary as payloads."""
-    return census_member(member, max_member_bytes=max_member_bytes).to_payload()
-
-
 def build_census(
     members: Sequence[DenominatorMember],
     denominator: Mapping[str, object],
@@ -715,25 +715,35 @@ def build_census(
     partial: bool = False,
     max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES,
 ) -> Census:
-    """Census every member, in this process when ``workers`` is 1."""
+    """Census members in order through shared compute, at the requested width."""
+    from polylogue.core.compute import compute_adapter
+    from polylogue.core.compute_cancel import check_compute_cancelled
     from polylogue.sources.origin_specs import lowering_fingerprint
 
     started = time.monotonic()
     results: list[MemberCensus] = []
-    if workers <= 1:
-        results = [census_member(member, max_member_bytes=max_member_bytes) for member in members]
-    else:
-        worker = partial_call(_census_member_payload, max_member_bytes)
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            for payload in pool.map(worker, members, chunksize=16):
-                results.append(MemberCensus.from_payload(payload))
+    worker_count = max(1, workers)
+    adapter = compute_adapter()
+    worker = partial_call(census_member, max_member_bytes=max_member_bytes)
+    # The requested width bounds this consumer; shared admission may be lower.
+    # Each map drains its admitted work before this window can be released.
+    for window in batched(members, worker_count):
+        results.extend(
+            adapter.map(
+                worker,
+                window,
+                admission_class="bulk-candidate",
+                estimated_bytes=lambda member: member.byte_count,
+                checkpoint=check_compute_cancelled,
+            )
+        )
     return Census(
         parser_fingerprint=lowering_fingerprint(),
         denominator=dict(denominator),
         members=tuple(results),
         recorded_at=datetime.now(timezone.utc).isoformat(),
         duration_seconds=time.monotonic() - started,
-        workers=max(1, workers),
+        workers=worker_count,
         partial=partial,
         max_member_bytes=max_member_bytes,
     )
@@ -989,7 +999,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=None, help="Write the census here instead of the census dir.")
     parser.add_argument("--no-write", action="store_true", help="Do not persist the census.")
     parser.add_argument("--limit", type=int, default=None, help="Census at most N members (a partial census).")
-    parser.add_argument("--workers", type=int, default=_default_workers(), help="Parse worker processes.")
+    parser.add_argument(
+        "--workers", type=int, default=_default_workers(), help="Maximum concurrent parse workers on shared compute."
+    )
     parser.add_argument(
         "--max-member-bytes",
         type=int,

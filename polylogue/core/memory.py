@@ -20,7 +20,7 @@ def release_process_memory() -> MemoryReleaseResult:
     """Release Python cycles and return free malloc arenas to the OS when possible.
 
     Long-running ingest daemons can transiently allocate large parser payloads,
-    process-pool results, and SQLite buffers. CPython frees those objects, but
+    compute results, and SQLite buffers. CPython frees those objects, but
     glibc often keeps arenas resident unless asked to trim. This helper is
     deliberately best-effort: it is safe on non-glibc platforms and never turns
     memory reclamation failures into ingest failures.

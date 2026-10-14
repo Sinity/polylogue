@@ -183,7 +183,7 @@ class PublicationPayload:
     """Exact, restart-safe material bytes staged with an obligation.
 
     ``segments`` is an ordered tuple rather than a mutable mapping so the
-    payload can cross the process-pool/async boundary without aliasing.  The
+    payload stays immutable across asynchronous publication. The
     segment name is the transport-visible protocol filename, not an invented
     database identifier.
     """
