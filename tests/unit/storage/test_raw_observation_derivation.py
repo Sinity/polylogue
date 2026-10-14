@@ -2630,7 +2630,7 @@ def test_retained_preparation_keeps_each_path_dependent_source_coordinate(
     calls: list[str] = []
     owner: Any = raw if provider is Provider.CLAUDE_CODE else revision_backfill
     method = "_parse_captured_neutral" if provider is Provider.CLAUDE_CODE else "prepare_retained_jsonl_artifact"
-    original = getattr(owner, method)
+    original: Callable[..., PreparedJsonl] = getattr(owner, method)
 
     def observed(*args: Any, **kwargs: Any) -> PreparedJsonl:
         calls.append(str(args[0] if provider is Provider.CLAUDE_CODE else args[1]))
