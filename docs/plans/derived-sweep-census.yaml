@@ -605,14 +605,14 @@ sites:
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
-    function: "_resolve_session_graph"
+    function: "_resolve_session_graph_with_dispatch"
     subject: "session_identity_claims"
     kind: "state_selected_subject"
     scope: "state_predicate"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
-    function: "_resolve_session_graph"
+    function: "_resolve_session_graph_with_dispatch"
     subject: "session_links"
     kind: "state_selected_subject"
     scope: "state_predicate"
