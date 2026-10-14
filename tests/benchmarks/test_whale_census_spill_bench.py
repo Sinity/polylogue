@@ -19,10 +19,10 @@ import pytest
 
 from devtools.measurement_receipts import emit_receipt
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
-from polylogue.operations.session_records import read_session_records
 from polylogue.sources import revision_backfill
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from tests.infra.retained_replay import replay_retained_components
 from tests.infra.revision_backfill_benchmark import build_whale_bearing_corpus
 
@@ -69,10 +69,11 @@ def test_managed_whale_replay_records_complete_output_and_actual_resources(
         sessions = tuple(archive._conn.execute("SELECT session_id, raw_id FROM sessions"))
         assert {str(row[1]) for row in sessions} == {*small_raw_ids, whale_raw_id}
         for session_id, raw_id in sessions:
-            page = read_session_records(archive, str(session_id), limit=None, offset=0)
+            page = read_archive_session_envelope(archive._conn, str(session_id))
             assert page is not None and page.lineage_complete
-            assert len(page.session.messages) == 1
-            observed[str(raw_id)] = hashlib.sha256(page.session.messages[0].text.encode()).hexdigest()
+            assert len(page.messages) == 1
+            assert len(page.messages[0].blocks) == 1
+            observed[str(raw_id)] = hashlib.sha256(page.messages[0].blocks[0].text.encode()).hexdigest()
     assert observed == expected
     receipt = emit_receipt(
         f"managed-retained-whale-{whale_payload_bytes}",

@@ -33,6 +33,7 @@ from tests.infra.reindex_differential import (
     SealedRawInput,
     assert_finished_builds_equivalent,
     capture_finished_build_output,
+    capture_streamed_finished_build_fingerprint,
     clone_sealed_arm,
     finished_build_work_identity,
     seal_raw_input,
@@ -265,6 +266,19 @@ def test_four_independent_arms_preserve_schema_census_and_shared_prefix_lineage(
         assert run.output.output_session_count == sealed.raw_count == _TOTAL_RAW_COUNT
         assert run.output.output_message_count == _RAW_COUNT + 24 + 8
         assert run.replayed_logical_sources == sealed.raw_count
+        streamed = capture_streamed_finished_build_fingerprint(
+            run.archive_root,
+            run.index_path,
+            scratch_root=run.archive_root,
+            session_ids=run.session_ids,
+            search_queries=run.search_queries,
+        )
+        assert streamed.canonical_logical_digest == run.output.canonical_logical_digest
+        assert streamed.schema_identity == run.output.schema_identity
+        assert streamed.schema_object_census == run.output.schema_object_census
+        assert streamed.output_session_count == run.output.output_session_count
+        assert streamed.output_message_count == run.output.output_message_count
+        assert streamed.output_block_count == run.output.output_block_count
         assert run.adoption_deferred == run.quarantined == 0
         with sqlite3.connect(run.index_path) as conn:
             assert (
