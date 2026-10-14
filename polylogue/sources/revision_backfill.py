@@ -4759,6 +4759,7 @@ def prepare_retained_replay_source(
     membership_plans: Mapping[str, PreparedMembershipReplay],
     adoptions: Mapping[tuple[str, tuple[str, ...]], PreparedRevisionAdoption],
     prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
+    prepared_aggregates: Mapping[str, PreparedRetainedAggregate],
     marker_write_factory: Callable[[str, ParsedSession], PreparedSessionWrite],
 ) -> PreparedRetainedReplaySource:
     """Stage exact acknowledgements for the original ordered Index outcomes."""
@@ -4783,6 +4784,11 @@ def prepare_retained_replay_source(
     original_index_outputs: dict[str, tuple[bytes | None, int] | None] = {}
     decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     marker_recipe = marker_recipe_fingerprint()
+    from polylogue.config import load_polylogue_config
+    from polylogue.sinex.models import PublicationMode
+
+    publication_mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
+
     marker_sessions_by_raw: dict[str, set[str]] = {}
     with seal.original_read_snapshot(), seal.source_producer():
 
@@ -4877,12 +4883,54 @@ def prepare_retained_replay_source(
             # window; a multi-session Raw must select its own session there.
             attachment_artifacts[raw_id] = artifact
 
+        def stage_bridge_session(session: ParsedSession, raw_ids: tuple[str, ...]) -> None:
+            if publication_mode is PublicationMode.OFF:
+                return
+            from polylogue.sinex.material_adapter import encode_parsed_session_publication
+            from polylogue.sinex.prepared import prepare_publication_payload, prepared_originals_for_raw_ids
+            from polylogue.sinex.provenance import bind_originals
+
+            if any(
+                verdict is not None and verdict.strict_refusal
+                for verdict in (prepared_inputs[raw_id].validation_verdict for raw_id in raw_ids)
+            ):
+                return
+            session_id = str(make_session_id(session.source_name, session.provider_session_id))
+            normalizer_version = "polylogue.material-protocol/v1;semantics=8;canonicalizer=2;parsers=" + ",".join(
+                prepared_inputs[raw_id].parser_fingerprint for raw_id in raw_ids
+            )
+            payload = bind_originals(
+                encode_parsed_session_publication(session, session_id=session_id),
+                prepared_originals_for_raw_ids(seal, raw_ids),
+                normalizer_version=normalizer_version,
+            )
+            prepare_publication_payload(seal, payload, mode=publication_mode, now_ms=decided_at_ms)
+
         for logical_key, outcome in byte_outcomes.items():
             adoption = adoptions[(logical_key, outcome.plan.accepted_raw_ids)]
             if not adoption.adoptable or outcome.suppressed:
                 continue
             if adoption.session_id is None:
                 raise RetainedPreparationRetryableError("accepted byte acknowledgement has no session identity")
+            if publication_mode is not PublicationMode.OFF:
+                accepted = outcome.plan.accepted_raw_ids
+                if len(accepted) > 1:
+                    bridge_session, _bridge_path = _validated_prepared_aggregate(
+                        logical_key,
+                        accepted,
+                        prepared_inputs=prepared_inputs,
+                        prepared_aggregates=prepared_aggregates,
+                    )
+                else:
+                    artifact = prepared_inputs[accepted[-1]].prepared_artifact
+                    if artifact is None:
+                        raise RetainedPreparationRetryableError("bridge publication lost its parsed carrier")
+                    bridge_session = prepared_session_for_revision_key(
+                        artifact.session_sequence(),
+                        raw_id=accepted[-1],
+                        logical_source_key=logical_key,
+                    )
+                stage_bridge_session(bridge_session, accepted)
             for raw_id in outcome.plan.accepted_raw_ids:
                 retain_accepted_marker_session(raw_id, adoption.session_id)
                 retain_attachment_carrier(raw_id)
@@ -4907,6 +4955,7 @@ def prepare_retained_replay_source(
                 session_id = str(make_session_id(session.source_name, session.provider_session_id))
                 skipped = not adoption.adoptable or _reader_suppresses(seal.observer("user"), session_id)
                 if not skipped:
+                    stage_bridge_session(session, accepted)
                     for raw_id in accepted:
                         retain_accepted_marker_session(
                             raw_id,

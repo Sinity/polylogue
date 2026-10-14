@@ -169,11 +169,13 @@ class PublicationService:
     def _connect(self, *, readonly: bool = False) -> sqlite3.Connection:
         if readonly:
             conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True, timeout=30.0)
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA foreign_keys = ON")
         else:
+            # The Source factory configures its profile before installing the
+            # writer authorizer; callers cannot reconfigure that connection.
             conn = open_source_tier_write_connection(self.source_db_path, archive_root=self.source_db_path.parent)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 30000")
-        conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     @staticmethod
@@ -309,6 +311,8 @@ class PublicationService:
                     request_id=obligation.request_id,
                     manifest_bytes=payload.manifest_bytes,
                     segment_bytes=payload.segment_bytes,
+                    originals=payload.originals,
+                    normalizer_version=payload.normalizer_version,
                 ),
                 timeout=self.attempt_timeout_s,
             )

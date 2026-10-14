@@ -14,10 +14,9 @@ without blocking later projection stages.  ``off`` mode constructs no
 publication service, encodes no material payload, writes no obligation, and
 performs no transport work.
 
-The package does not contain a live Sinex network implementation.
-:class:`~polylogue.sinex.transport.LocalReferenceTransport` is an in-process
-contract double used for deterministic idempotency and failure-path tests; a
-real configured transport must be injected by deployment composition.
+``SinexHTTPTransport`` publishes through the authenticated native revision RPC.
+It stages separate acquired originals from retained Source CAS, not provider
+URIs. ``LocalReferenceTransport`` remains an in-process test double.
 """
 
 from __future__ import annotations
@@ -26,11 +25,13 @@ from polylogue.sinex.models import (
     ObligationStatus,
     PublicationMode,
     PublicationObligation,
+    PublicationOriginal,
     PublicationPayload,
     PublicationReceipt,
     PublicationStatus,
     ReceiptState,
 )
+from polylogue.sinex.network_transport import SinexHTTPTransport
 from polylogue.sinex.obligations import (
     PublicationPayloadConflictError,
     PublicationPayloadInvalidError,
@@ -59,7 +60,9 @@ __all__ = [
     "ObligationStatus",
     "PublicationMode",
     "PublicationObligation",
+    "PublicationOriginal",
     "PublicationPayload",
+    "SinexHTTPTransport",
     "PublicationPayloadConflictError",
     "PublicationPayloadInvalidError",
     "PublicationReceipt",

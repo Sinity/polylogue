@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -78,6 +78,107 @@ class PublicationReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class PublicationAcquisition:
+    """Scope of the acquired representation, independently of its CAS digest."""
+
+    kind: str = "unknown"
+    byte_start: int | None = None
+    byte_end: int | None = None
+    addressing_mode: str | None = None
+    tables: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"full_snapshot", "byte_window", "logical_snapshot", "unknown"}:
+            raise ValueError("publication_acquisition_kind_invalid")
+        if self.kind == "byte_window":
+            if (
+                type(self.byte_start) is not int
+                or type(self.byte_end) is not int
+                or not 0 <= self.byte_start <= self.byte_end
+            ):
+                raise ValueError("publication_acquisition_window_invalid")
+        elif self.byte_start is not None or self.byte_end is not None:
+            raise ValueError("publication_acquisition_window_unexpected")
+        if self.addressing_mode is not None and not isinstance(self.addressing_mode, str):
+            raise ValueError("publication_acquisition_address_invalid")
+        if self.tables is not None and (
+            self.kind != "logical_snapshot" or any(not isinstance(item, str) for item in self.tables)
+        ):
+            raise ValueError("publication_acquisition_tables_invalid")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "byte_window": None if self.byte_start is None else {"start": self.byte_start, "end": self.byte_end},
+            "addressing_mode": self.addressing_mode,
+            "tables": None if self.tables is None else list(self.tables),
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> PublicationAcquisition:
+        if set(value) != {"kind", "byte_window", "addressing_mode", "tables"}:
+            raise ValueError("publication_acquisition_fields_invalid")
+        kind = value["kind"]
+        window = value["byte_window"]
+        address = value["addressing_mode"]
+        tables = value["tables"]
+        if not isinstance(kind, str) or (address is not None and not isinstance(address, str)):
+            raise ValueError("publication_acquisition_identity_invalid")
+        start = end = None
+        if window is not None:
+            if not isinstance(window, dict) or set(window) != {"start", "end"}:
+                raise ValueError("publication_acquisition_window_invalid")
+            start, end = window["start"], window["end"]
+            if type(start) is not int or type(end) is not int:
+                raise ValueError("publication_acquisition_window_invalid")
+        if tables is not None and (not isinstance(tables, list) or any(not isinstance(item, str) for item in tables)):
+            raise ValueError("publication_acquisition_tables_invalid")
+        return cls(
+            kind=kind,
+            byte_start=start,
+            byte_end=end,
+            addressing_mode=address,
+            tables=None if tables is None else tuple(tables),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationOriginal:
+    """Exact retained Source bytes published separately from normalized records."""
+
+    role: str
+    source_ref: str
+    blob_hash: str
+    size_bytes: int
+    media_type: str
+    acquisition: PublicationAcquisition = field(default_factory=PublicationAcquisition)
+
+    def __post_init__(self) -> None:
+        if self.role not in {"provider_native", "attachment"}:
+            raise ValueError("publication_original_role_invalid")
+        if type(self.source_ref) is not str or not self.source_ref.strip():
+            raise ValueError("publication_original_source_ref_invalid")
+        if (
+            type(self.blob_hash) is not str
+            or len(self.blob_hash) != 64
+            or any(character not in "0123456789abcdef" for character in self.blob_hash)
+        ):
+            raise ValueError("publication_original_hash_invalid")
+        if type(self.size_bytes) is not int or self.size_bytes < 0:
+            raise ValueError("publication_original_size_invalid")
+        if type(self.media_type) is not str or not self.media_type.strip():
+            raise ValueError("publication_original_media_type_invalid")
+        if not isinstance(self.acquisition, PublicationAcquisition):
+            raise ValueError("publication_original_acquisition_invalid")
+        if self.acquisition.kind == "byte_window" and (
+            self.acquisition.byte_start is None
+            or self.acquisition.byte_end is None
+            or self.acquisition.byte_end - self.acquisition.byte_start != self.size_bytes
+        ):
+            raise ValueError("publication_original_window_size_mismatch")
+
+
+@dataclass(frozen=True, slots=True)
 class PublicationPayload:
     """Exact, restart-safe material bytes staged with an obligation.
 
@@ -93,6 +194,8 @@ class PublicationPayload:
     manifest_digest: str
     manifest_bytes: bytes
     segments: tuple[tuple[str, bytes], ...]
+    originals: tuple[PublicationOriginal, ...] = ()
+    normalizer_version: str = "polylogue.material-protocol/v1;semantics=8;canonicalizer=2"
 
     @property
     def segment_bytes(self) -> dict[str, bytes]:
@@ -174,6 +277,8 @@ __all__ = [
     "ObligationStatus",
     "PublicationMode",
     "PublicationObligation",
+    "PublicationAcquisition",
+    "PublicationOriginal",
     "PublicationPayload",
     "PublicationReceipt",
     "PublicationStatus",

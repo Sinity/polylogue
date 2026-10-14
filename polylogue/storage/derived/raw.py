@@ -4127,6 +4127,7 @@ class RawObservationDerivation(RawObservationInspection):
                                 adoptions=prepared_replay_adoption,
                                 prepared_writes=prepared_writes,
                                 marker_write_factory=prepare_marker_write,
+                                prepared_aggregates=aggregates,
                             )
                             membership_plans = dict(prepared_replay_source.membership_plans)
                             for compiled_write in prepared_writes.values():

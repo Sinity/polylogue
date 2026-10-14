@@ -6,24 +6,53 @@ The full Sinex-backed architecture described here is a target, not the current i
 
 ## Current transport boundary
 
-The local Sinex checkout contains the Polylogue material protocol and has
-durable emission plus aggregate raw-envelope settlement wired inside
-`sinexd`. Its public RPC currently provides source-material staging and read
-operations. It does not provide an external-producer operation that accepts a
-Polylogue revision, publishes its anchored observations, and returns the
-stable-request durable receipt needed by `polylogue.sinex`.
+`SinexHTTPTransport` uses authenticated JSON-RPC `polylogue.revision.publish`
+and `polylogue.revision.status`. Deployment composition supplies an explicit
+endpoint, Bearer credential, retained `BlobStore`, staging directory and, when
+required by the native gateway, TLS client context. Register its factory with
+`register_configured_transport_factory` before daemon convergence starts.
+No endpoint or credential is inferred, and `LocalReferenceTransport` remains
+an in-process test double.
 
-Consequently, Polylogue keeps the transport seam and its durable source-tier
-obligation ledger, while `LocalReferenceTransport` remains test-only. A live
-transport cannot be implemented or proven from the current public boundary
-without inventing a second receipt protocol or reaching into Sinex internals.
-The blocked work requires a versioned Sinex external-producer API that stages
-and confirms material, submits the anchored event batch, and exposes the
-aggregate settlement and durable receipt for reconnect and retry.
+This interface requires a local or shared filesystem: Sinex must be able to
+read the producer-owned staging files. It is not a remote upload interface.
+The configured service identity's filesystem access must be qualified during
+operational setup. The adapter streams retained originals into its own staging
+directory and keeps those files until the blocking network exchange finishes,
+including when the asynchronous caller stops waiting. The configured client
+exchange timeout reports unknown transport progress and attempts status
+reconciliation; it cannot invent a native acceptance or terminal rejection. Native publication
+claims retain immutable CAS material before admission; retries reconcile the
+same durable request rather than acquiring mutable provider locations again.
+
+Accepted Source intake stages normalized manifest/segments, the normalizer
+version and original-material descriptors in the same admitted transaction as
+parse acknowledgement. `sinex_publication_originals` directly pins original
+CAS blobs. Provider originals name the exact acquired representation: a full
+snapshot, an append byte window, a logical SQLite export, or unknown scope.
+Attachments remain separate materials. An aggregate after multiple appends
+includes all contributing retained inputs, not just the newest tail.
+
+The optional manifest `content_digest.provider_digest` binds those witnesses
+as `polylogue.original-materials/v1:sha256:<hex>`. This is a Polylogue source
+witness commitment, not a provider-reported digest. Its canonical profile-2
+payload contains the exact normalizer version and ordered original descriptors
+(role, source reference, SHA-256, byte size, media type and acquisition scope).
+It excludes mutable file locators and refuses repeated role/source references.
+Normalized revision identity and segment bytes retain their existing versioned
+identity. Exact opaque Unicode keys and values remain unchanged; prose builders
+alone perform their specified normalization.
+
+A pending native claim is not a receipt. `raw_accepted` requires a real NATS
+PubAck and does not unlock primary projection. Settled native receipts determine
+confirmation or durable debt. Connection loss or a pending status leaves the
+existing outbox retryable under the same request ID. The encoder and durable
+payload currently materialize normalized segment bytes; these tests do not
+establish a bounded-memory producer for arbitrarily large revisions.
 
 Polylogue is, and permanently remains, SQLite-native: standalone SQLite is a first-class, supported product mode, not a deprecated migration path (operator directive, 2026-07-13). `polylogue.toml`'s `[sinex] mode` selects the Sinex-backed authority profile and defaults to `off`, which performs zero Sinex transport work and creates no durable publication obligations.
 
-`polylogue.sinex` (polylogue-303r.2.1) wires the local publication producer into production ingest and daemon convergence: mirror/primary ingest encodes and verifies the accepted normalized revision, then atomically records its exact manifest/segment bytes and durable `source.db` obligation. The daemon drains that outbox through a deployment-injected transport, persists bounded retry/receipt state, and recovers from source-tier bytes after restart or ops reset. `primary` blocks only the affected newest local projection until an allowed durable receipt; `mirror` reports exact lag while local reads continue. `off` performs no encoding, outbox write, service construction, or transport work. `LocalReferenceTransport` remains an in-process contract double used only by tests. A backed daemon with no deployment-registered transport fails explicitly; this change does not infer credentials/endpoints or present the test double as a deployed Sinex adapter. The real material/JetStream/settlement integration remains `polylogue-303r.2.2`, pending the corresponding Sinex capabilities.
+`polylogue.sinex` (polylogue-303r.2.1) wires the local publication producer into production ingest and daemon convergence: mirror/primary ingest encodes and verifies the accepted normalized revision, then atomically records its exact manifest/segment bytes and durable `source.db` obligation. The daemon drains that outbox through a deployment-injected transport, persists bounded retry/receipt state, and recovers from source-tier bytes after restart or ops reset. `primary` blocks only the affected newest local projection until an allowed durable receipt; `mirror` reports exact lag while local reads continue. `off` performs no encoding, outbox write, service construction, or transport work. `LocalReferenceTransport` remains an in-process contract double used only by tests. A backed daemon with no deployment-registered transport fails explicitly; this change does not infer credentials/endpoints or present the test double as a deployed Sinex adapter. Operational activation and the broader Sinex-backed architecture remain separate acceptance gates.
 
 Before `polylogue.sinex` landed, Polylogue could at most emit a low-volume bridge event to Sinex containing session metadata such as identity, origin, content hash, message count, model, and optional cost — the current package supersedes that as the intended producer, though it does not yet make Sinex the authority for complete transcript content or Polylogue user state end-to-end (that requires the remaining 303r.1/.4/.5/.6 phases plus the live Sinex counterpart above).
 

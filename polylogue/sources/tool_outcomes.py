@@ -210,7 +210,7 @@ def iter_tool_result_owners(messages: Sequence[ParsedMessage]) -> Generator[tupl
 
 
 def derive_tool_outcomes(
-    messages: list[ParsedMessage] | SqliteMessageSink,
+    messages: Sequence[ParsedMessage],
     events: Sequence[ParsedSessionEvent],
     *,
     origin: Origin,

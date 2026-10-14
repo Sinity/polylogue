@@ -3,12 +3,9 @@
 ``SinexTransport`` is the interface a real Sinex producer (staging exact
 material bytes, publishing anchored observations through JetStream, and
 reconciling durable receipts / aggregate raw-envelope settlement) must
-satisfy. Sinex's receipt and settlement implementation is present inside the
-local ``sinexd`` Rust process, but the current public boundary exposes no
-external-producer operation that accepts this revision contract and returns
-its durable receipt. No implementation in this module therefore talks to a
-live Sinex instance. See the package docstring in
-``polylogue/sinex/__init__.py`` for the full note.
+satisfy. The authenticated network implementation is
+``network_transport.SinexHTTPTransport`` and uses the native revision RPC;
+its caller supplies the endpoint, credentials and retained blob capability.
 
 :class:`LocalReferenceTransport` is a contract-faithful in-process double: it
 enforces the same idempotency-by-request_id and receipt-state vocabulary a
@@ -26,7 +23,7 @@ from dataclasses import dataclass, field
 from threading import RLock
 from typing import Protocol, runtime_checkable
 
-from polylogue.sinex.models import PublicationReceipt, ReceiptState
+from polylogue.sinex.models import PublicationOriginal, PublicationReceipt, ReceiptState
 
 
 @runtime_checkable
@@ -46,6 +43,8 @@ class SinexTransport(Protocol):
         request_id: str,
         manifest_bytes: bytes,
         segment_bytes: Mapping[str, bytes],
+        originals: tuple[PublicationOriginal, ...] = (),
+        normalizer_version: str = "polylogue.material-protocol/v1;semantics=8;canonicalizer=2",
     ) -> PublicationReceipt: ...
 
 
@@ -121,6 +120,8 @@ class NullTransport:
         request_id: str,
         manifest_bytes: bytes,
         segment_bytes: Mapping[str, bytes],
+        originals: tuple[PublicationOriginal, ...] = (),
+        normalizer_version: str = "polylogue.material-protocol/v1;semantics=8;canonicalizer=2",
     ) -> PublicationReceipt:
         raise TransportUsedInOffModeError(
             f"NullTransport.publish_revision called for request_id={request_id!r}; "
@@ -159,6 +160,8 @@ class LocalReferenceTransport:
         request_id: str,
         manifest_bytes: bytes,
         segment_bytes: Mapping[str, bytes],
+        originals: tuple[PublicationOriginal, ...] = (),
+        normalizer_version: str = "polylogue.material-protocol/v1;semantics=8;canonicalizer=2",
     ) -> PublicationReceipt:
         digest = hashlib.sha256()
 
@@ -166,6 +169,9 @@ class LocalReferenceTransport:
             digest.update(len(payload).to_bytes(8, "big"))
             digest.update(payload)
 
+        from polylogue.sinex.provenance import originals_commitment
+
+        add_frame(originals_commitment(originals, normalizer_version).encode("utf-8"))
         add_frame(manifest_bytes)
         for name, payload in sorted(segment_bytes.items()):
             add_frame(name.encode("utf-8"))

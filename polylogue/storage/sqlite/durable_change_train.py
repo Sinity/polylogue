@@ -939,6 +939,17 @@ def _invoke_runtime_consumers(
                             f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
                         )
                     detail = _probe_accepted_marker_delivery_cursor_reader(cast(Callable[..., object], value))
+                elif reference in (
+                    "polylogue/sinex/obligations.py:stage_payload",
+                    "polylogue/sinex/obligations.py:load_payload",
+                ):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError("publication original custody requires Source")
+                    from polylogue.sinex.migration_probe import publication_originals_runtime_probe
+
+                    detail = publication_originals_runtime_probe(
+                        cast(Callable[..., object], value), writer=reference.endswith(":stage_payload")
+                    )
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)

@@ -12,7 +12,7 @@ from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
     assert_complete_audit_disposition,
     audit_column_dispositions,
 )
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_BASELINE_DDL, SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_attachments import SourceAttachment
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
@@ -21,7 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 # changes advance the relevant tier through a numbered migration.
 ARCHIVE_FORMAT_FLOOR_VERSION = 1
 ARCHIVE_BASELINE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = dict.fromkeys(ArchiveTier, 1)
-SOURCE_TIER_VERSION = 1
+SOURCE_TIER_VERSION = 2
 USER_TIER_VERSION = 1
 AUDIT_TIER_VERSION = 1
 
@@ -29,7 +29,7 @@ AUDIT_COLUMN_DISPOSITIONS = audit_column_dispositions()
 assert_complete_audit_disposition(AUDIT_COLUMN_DISPOSITIONS)
 
 ARCHIVE_BASELINE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
-    ArchiveTier.SOURCE: SOURCE_DDL,
+    ArchiveTier.SOURCE: SOURCE_BASELINE_DDL,
     ArchiveTier.INDEX: INDEX_DDL,
     ArchiveTier.EMBEDDINGS: EMBEDDINGS_DDL,
     ArchiveTier.USER: USER_DDL,
@@ -40,7 +40,7 @@ ARCHIVE_BASELINE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
 
 # Every tier's current schema is its baseline until a numbered durable
 # migration lands; that migration then extends this mapping.
-ARCHIVE_DDL_BY_TIER: Mapping[ArchiveTier, str] = dict(ARCHIVE_BASELINE_DDL_BY_TIER)
+ARCHIVE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {**ARCHIVE_BASELINE_DDL_BY_TIER, ArchiveTier.SOURCE: SOURCE_DDL}
 
 ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
     ArchiveTier.SOURCE: SOURCE_TIER_VERSION,
