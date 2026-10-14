@@ -86,6 +86,10 @@ neither reopens tier paths after membership enumeration. Attached User readers
 retain holdout refusal and excision visibility. Standing-query batches and the
 MCP reference adapter own the evaluator's existing operation-reader lifetime.
 
+A CLI bare `find 'from <ref>'` read resolves durable membership through
+`session.reference`. Additional root selection predicates raise a usage error;
+limit, output formatting and transport retain their existing behavior.
+
 ## Read identities
 
 Use generated session, message, and block identities for exact reads. Use
