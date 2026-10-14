@@ -580,3 +580,128 @@ def test_archive_lineage_descriptor_does_not_invent_resolution_when_truncated() 
     assert descriptor.resolved is None
     assert descriptor.availability.value == "partial"
     assert descriptor.lineage_truncation_reason == "cycle"
+
+
+@pytest.mark.parametrize("case_path", CASE_PATHS, ids=lambda path: path.stem)
+def test_disk_semantic_entries_preserve_full_input_fixture_contract(case_path: Path) -> None:
+    """Disk FIFO coordinates and notices use the same full-input semantic reduction."""
+    from polylogue.cli.semantic_transcript import semantic_transcript_records
+    from polylogue.rendering.semantic_markdown import (
+        render_semantic_transcript_markdown,
+        semantic_transcript_markdown_chunks,
+    )
+
+    case = _case(case_path)
+    expected = build_case_transcript(case, case_path=case_path)
+    from devtools.render_semantic_card_fixtures import _materialize_messages
+
+    # Resolve fixture-file/byte declarations through the owning builder, then
+    # stage the JSON wire form; replacement text retains the same UTF-8 caveat.
+    messages = json.loads(
+        json.dumps(
+            _materialize_messages(case["messages"], case_path=case_path),
+            default=lambda value: value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value,
+        )
+    )
+    # The fixture's lineage constructor owns its topology inputs, not this stage.
+    from polylogue.rendering.semantic_card_models import LineageDescriptor
+
+    raw_lineage = case.get("lineage")
+    descriptor = LineageDescriptor(**raw_lineage) if isinstance(raw_lineage, dict) else None
+    with semantic_transcript_records() as stage:
+        for message in messages:
+            assert isinstance(message, dict)
+            stage.append(message)
+        entries = list(
+            stage.entries(
+                session_id=str(case["session_id"]),
+                provider_family=cast(str | None, case.get("provider_family")),
+                lineage=descriptor,
+            )
+        )
+        assert [entry.to_document() for entry in entries] == [entry.to_document() for entry in expected.entries]
+        assert "".join(semantic_transcript_markdown_chunks(entries)) == render_semantic_transcript_markdown(expected)
+
+
+def test_disk_semantic_fifo_before_use_and_long_notice_run_are_incremental() -> None:
+    """Earlier results pair by FIFO ordinal; a long absence run stays one disk-backed notice."""
+    from polylogue.cli.semantic_transcript import semantic_transcript_records
+    from polylogue.rendering.semantic_markdown import semantic_transcript_markdown_chunks
+
+    rows = [
+        {
+            "id": "result-first",
+            "role": "user",
+            "blocks": [{"type": "tool_result", "tool_id": "shared", "text": "first result", "tool_outcome": "ok"}],
+        },
+        {
+            "id": "result-second",
+            "role": "user",
+            "blocks": [{"type": "tool_result", "tool_id": "shared", "text": "second result", "tool_outcome": "error"}],
+        },
+        *(
+            {"id": f"thinking-{i}", "role": "assistant", "blocks": [{"type": "thinking", "text": ""}]}
+            for i in range(401)
+        ),
+        {
+            "id": "use-first",
+            "role": "assistant",
+            "blocks": [
+                {"type": "tool_use", "tool_id": "shared", "tool_name": "Bash", "tool_input": {"command": "true"}}
+            ],
+        },
+        {
+            "id": "use-second",
+            "role": "assistant",
+            "blocks": [
+                {"type": "tool_use", "tool_id": "shared", "tool_name": "Bash", "tool_input": {"command": "false"}}
+            ],
+        },
+    ]
+    with semantic_transcript_records() as stage:
+        for row in rows:
+            stage.append(row)
+        entries = stage.entries(session_id="synthetic", provider_family="codex", lineage=None)
+        notice = next(entries).notice
+        assert notice is not None and notice.count == 401
+        assert not isinstance(notice.sources, tuple)
+        assert notice.sources[0].message_id == "thinking-0"
+        assert notice.sources[-1].message_id == "thinking-400"
+        cards = [entry.card for entry in entries]
+        assert [card.source.result_message_id for card in cards if card] == ["result-first", "result-second"]
+        # One reference per yielded chunk avoids a 401-source joined document.
+        from polylogue.rendering.semantic_card_models import SemanticTranscriptEntry
+
+        rendered_chunks = list(semantic_transcript_markdown_chunks([SemanticTranscriptEntry(notice=notice)]))
+        assert sum("/type:thinking" in chunk for chunk in rendered_chunks) == 401
+        assert max(map(len, rendered_chunks)) < 150
+
+
+def test_disk_semantic_cancel_closes_suspended_notice_cursor() -> None:
+    from polylogue.cli.semantic_transcript import semantic_transcript_records
+    from polylogue.rendering.semantic_markdown import semantic_transcript_markdown_chunks
+
+    class Cancelled(BaseException):
+        pass
+
+    cancelled = False
+
+    def checkpoint() -> None:
+        if cancelled:
+            raise Cancelled()
+
+    with pytest.raises(Cancelled):
+        with semantic_transcript_records(checkpoint=checkpoint) as stage:
+            path = Path(stage.connection.execute("PRAGMA database_list").fetchone()[2])
+            for i in range(3):
+                stage.append({"id": str(i), "role": "assistant", "blocks": [{"type": "thinking", "text": ""}]})
+            chunks = semantic_transcript_markdown_chunks(
+                stage.entries(session_id="synthetic", provider_family="codex", lineage=None)
+            )
+            next(chunks)
+            next(chunks)
+            cancelled = True
+            next(chunks)
+    assert not path.parent.exists()
+    with pytest.raises(RuntimeError):
+        next(stage.records())

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import difflib
 import json
-from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
@@ -98,14 +97,14 @@ class RenderableMessage:
 
 
 @dataclass(frozen=True, slots=True)
-class _BlockCoordinate:
+class SemanticBlockCoordinate:
     message_index: int
     block_index: int
 
 
 @dataclass(frozen=True, slots=True)
-class _ResultMatch:
-    coordinate: _BlockCoordinate
+class SemanticResultMatch:
+    coordinate: SemanticBlockCoordinate
     message: RenderableMessage
     block: RenderableBlock
 
@@ -382,22 +381,33 @@ def lineage_descriptor_from_topology(
     )
 
 
-def build_semantic_transcript(
-    messages: Sequence[Mapping[str, object] | object],
+class EmptyThinkingStore(Protocol):
+    """Retain a contiguous absence run under its caller's storage lifetime."""
+
+    def append(self, source: TranscriptNoticeSource) -> None: ...
+    def drain(self) -> Sequence[TranscriptNoticeSource]: ...
+
+
+class _MemoryThinkingStore:
+    def __init__(self) -> None:
+        self.sources: list[TranscriptNoticeSource] = []
+
+    def append(self, source: TranscriptNoticeSource) -> None:
+        self.sources.append(source)
+
+    def drain(self) -> Sequence[TranscriptNoticeSource]:
+        sources = tuple(self.sources)
+        self.sources.clear()
+        return sources
+
+
+def normalized_semantic_messages(
+    messages: Iterable[Mapping[str, object] | object],
     *,
     session_id: str,
-    lineage: LineageDescriptor | None = None,
     provider_family: str | None = None,
-) -> SemanticTranscript:
-    """Build one ordered document for prose, thinking, tools, and attachments.
-
-    Tool pairing is structural by ``tool_id`` and FIFO coordinates, independent
-    of serialization order.  Empty typed thinking/reasoning blocks compact into
-    one notice per contiguous run while retaining every exact source coordinate.
-    No card kind or outcome is inferred from prose.
-    """
-
-    normalized: list[RenderableMessage] = []
+) -> Iterator[RenderableMessage]:
+    """Normalize one physical record at a time using the shared wire semantics."""
     session_provider = normalize_provider_family(provider_family) if provider_family else None
     for raw in messages:
         message = coerce_renderable_message(raw)
@@ -408,148 +418,150 @@ def build_semantic_transcript(
             message = replace(message, provider_family=session_provider)
         if inherited_prefix != message.inherited_prefix:
             message = replace(message, inherited_prefix=inherited_prefix)
-        normalized.append(message)
+        yield message
 
-    result_by_use, paired_results = _pair_tool_results(normalized)
-    entries: list[SemanticTranscriptEntry] = []
-    pending_empty_thinking: list[TranscriptNoticeSource] = []
 
-    def flush_empty_thinking() -> None:
-        if not pending_empty_thinking:
-            return
-        entries.append(
-            SemanticTranscriptEntry(
-                notice=TranscriptNotice(
-                    kind=SemanticNoticeKind.EMPTY_THINKING,
-                    sources=tuple(pending_empty_thinking),
-                )
+def iter_semantic_entries(
+    messages: Iterable[RenderableMessage],
+    *,
+    session_id: str,
+    lineage: LineageDescriptor | None,
+    result_for_use: Callable[[SemanticBlockCoordinate], SemanticResultMatch | None],
+    result_is_paired: Callable[[SemanticBlockCoordinate], bool],
+    pending_empty_thinking: EmptyThinkingStore,
+) -> Iterator[SemanticTranscriptEntry]:
+    """Reduce semantic entries; the caller owns dependency and absence storage."""
+
+    def flush_empty_thinking() -> Iterator[SemanticTranscriptEntry]:
+        sources = pending_empty_thinking.drain()
+        if sources:
+            yield SemanticTranscriptEntry(
+                notice=TranscriptNotice(kind=SemanticNoticeKind.EMPTY_THINKING, sources=sources)
             )
-        )
-        pending_empty_thinking.clear()
 
     if lineage is not None:
-        entries.append(SemanticTranscriptEntry(card=_build_lineage_card(lineage)))
-
-    for message_index, message in enumerate(normalized):
+        yield SemanticTranscriptEntry(card=_build_lineage_card(lineage))
+    for message_index, message in enumerate(messages):
         if not message.blocks:
-            flush_empty_thinking()
+            yield from flush_empty_thinking()
             if message.text and message.text.strip():
-                entries.append(SemanticTranscriptEntry(prose=_prose_for_message(message, message.text)))
+                yield SemanticTranscriptEntry(prose=_prose_for_message(message, message.text))
             for attachment in message.attachments:
-                entries.append(
-                    SemanticTranscriptEntry(
-                        card=_build_attachment_envelope_card(
-                            session_id=session_id,
-                            message=message,
-                            attachment=attachment,
-                        )
-                    )
+                yield SemanticTranscriptEntry(
+                    card=_build_attachment_envelope_card(session_id=session_id, message=message, attachment=attachment)
                 )
             continue
-
         emitted_block_attachment_keys: set[tuple[object, ...]] = set()
         for block_index, block in enumerate(message.blocks):
-            coordinate = _BlockCoordinate(message_index, block_index)
+            coordinate = SemanticBlockCoordinate(message_index, block_index)
             if block.type in _THINKING_BLOCK_TYPES:
                 if block.text is None or not block.text.strip():
                     pending_empty_thinking.append(_notice_source(message, block_index, block))
                 else:
-                    flush_empty_thinking()
-                    entries.append(
-                        SemanticTranscriptEntry(prose=_prose_for_block(message, block_index=block_index, block=block))
-                    )
+                    yield from flush_empty_thinking()
+                    yield SemanticTranscriptEntry(prose=_prose_for_block(message, block_index=block_index, block=block))
                 continue
-
-            # Any typed non-thinking row terminates an absence run, even when the
-            # row is subsequently absorbed into a paired card.
-            flush_empty_thinking()
+            yield from flush_empty_thinking()
             if block.type == BlockType.TOOL_USE.value:
-                entries.append(
-                    SemanticTranscriptEntry(
-                        card=_build_tool_card(
-                            session_id=session_id,
-                            message=message,
-                            block_index=block_index,
-                            block=block,
-                            result=result_by_use.get(coordinate),
-                        )
+                yield SemanticTranscriptEntry(
+                    card=_build_tool_card(
+                        session_id=session_id,
+                        message=message,
+                        block_index=block_index,
+                        block=block,
+                        result=result_for_use(coordinate),
                     )
                 )
                 continue
             if block.type == BlockType.TOOL_RESULT.value:
-                if coordinate not in paired_results:
-                    entries.append(
-                        SemanticTranscriptEntry(
-                            card=_build_orphan_result_card(
-                                session_id=session_id,
-                                message=message,
-                                block_index=block_index,
-                                block=block,
-                            )
+                if not result_is_paired(coordinate):
+                    yield SemanticTranscriptEntry(
+                        card=_build_orphan_result_card(
+                            session_id=session_id, message=message, block_index=block_index, block=block
                         )
                     )
                 continue
             if block.type in _ATTACHMENT_BLOCK_TYPES:
-                entries.append(
-                    SemanticTranscriptEntry(
-                        card=_build_attachment_block_card(
-                            session_id=session_id,
-                            message=message,
-                            block_index=block_index,
-                            block=block,
-                        )
+                yield SemanticTranscriptEntry(
+                    card=_build_attachment_block_card(
+                        session_id=session_id, message=message, block_index=block_index, block=block
                     )
                 )
                 emitted_block_attachment_keys.add(_block_attachment_identity(block))
                 continue
             if block.text is not None and block.text != "":
-                entries.append(
-                    SemanticTranscriptEntry(prose=_prose_for_block(message, block_index=block_index, block=block))
-                )
-
+                yield SemanticTranscriptEntry(prose=_prose_for_block(message, block_index=block_index, block=block))
         if _should_emit_message_text(message):
-            flush_empty_thinking()
+            yield from flush_empty_thinking()
             assert message.text is not None
-            entries.append(SemanticTranscriptEntry(prose=_prose_for_message(message, message.text)))
-
+            yield SemanticTranscriptEntry(prose=_prose_for_message(message, message.text))
         for attachment in message.attachments:
             if _attachment_matches_block(attachment, emitted_block_attachment_keys):
                 continue
-            flush_empty_thinking()
-            entries.append(
-                SemanticTranscriptEntry(
-                    card=_build_attachment_envelope_card(
-                        session_id=session_id,
-                        message=message,
-                        attachment=attachment,
-                    )
-                )
+            yield from flush_empty_thinking()
+            yield SemanticTranscriptEntry(
+                card=_build_attachment_envelope_card(session_id=session_id, message=message, attachment=attachment)
             )
+    yield from flush_empty_thinking()
 
-    flush_empty_thinking()
-    return SemanticTranscript(session_id=session_id, entries=tuple(entries))
+
+def build_semantic_transcript(
+    messages: Sequence[Mapping[str, object] | object],
+    *,
+    session_id: str,
+    lineage: LineageDescriptor | None = None,
+    provider_family: str | None = None,
+) -> SemanticTranscript:
+    """Build the explicit full-input transcript through the shared entry reducer."""
+    normalized = list(normalized_semantic_messages(messages, session_id=session_id, provider_family=provider_family))
+    result_by_use, paired_results = _pair_tool_results(normalized)
+    return SemanticTranscript(
+        session_id=session_id,
+        entries=tuple(
+            iter_semantic_entries(
+                normalized,
+                session_id=session_id,
+                lineage=lineage,
+                result_for_use=result_by_use.get,
+                result_is_paired=paired_results.__contains__,
+                pending_empty_thinking=_MemoryThinkingStore(),
+            )
+        ),
+    )
+
+
+def semantic_tool_occurrences(
+    messages: Iterable[RenderableMessage],
+    ordinals: MutableMapping[str, int],
+) -> Iterator[tuple[str, str, int, SemanticBlockCoordinate, SemanticResultMatch | None]]:
+    """Enumerate FIFO tool coordinates independently of serialization order."""
+    for message_index, message in enumerate(messages):
+        for block_index, block in enumerate(message.blocks):
+            if block.type not in {BlockType.TOOL_USE.value, BlockType.TOOL_RESULT.value} or not block.tool_id:
+                continue
+            key = json.dumps([block.type, block.tool_id])
+            ordinal = ordinals.get(key, 0)
+            ordinals[key] = ordinal + 1
+            coordinate = SemanticBlockCoordinate(message_index, block_index)
+            result = (
+                SemanticResultMatch(coordinate, message, block) if block.type == BlockType.TOOL_RESULT.value else None
+            )
+            yield block.type, block.tool_id, ordinal, coordinate, result
 
 
 def _pair_tool_results(
     messages: Sequence[RenderableMessage],
-) -> tuple[dict[_BlockCoordinate, _ResultMatch], frozenset[_BlockCoordinate]]:
-    uses: dict[str, list[_BlockCoordinate]] = defaultdict(list)
-    results: dict[str, list[_ResultMatch]] = defaultdict(list)
-    for message_index, message in enumerate(messages):
-        for block_index, block in enumerate(message.blocks):
-            coordinate = _BlockCoordinate(message_index, block_index)
-            if block.type == BlockType.TOOL_USE.value and block.tool_id:
-                uses[block.tool_id].append(coordinate)
-            elif block.type == BlockType.TOOL_RESULT.value and block.tool_id:
-                results[block.tool_id].append(_ResultMatch(coordinate, message, block))
-
-    result_by_use: dict[_BlockCoordinate, _ResultMatch] = {}
-    paired_results: set[_BlockCoordinate] = set()
-    for tool_id, use_coordinates in uses.items():
-        for use_coordinate, result in zip(use_coordinates, results.get(tool_id, ()), strict=False):
-            result_by_use[use_coordinate] = result
-            paired_results.add(result.coordinate)
-    return result_by_use, frozenset(paired_results)
+) -> tuple[dict[SemanticBlockCoordinate, SemanticResultMatch], frozenset[SemanticBlockCoordinate]]:
+    uses: dict[tuple[str, int], SemanticBlockCoordinate] = {}
+    results: dict[tuple[str, int], SemanticResultMatch] = {}
+    for kind, tool_id, ordinal, coordinate, result in semantic_tool_occurrences(messages, {}):
+        if kind == BlockType.TOOL_USE.value:
+            uses[tool_id, ordinal] = coordinate
+        else:
+            assert result is not None
+            results[tool_id, ordinal] = result
+    result_by_use = {coordinate: results[key] for key, coordinate in uses.items() if key in results}
+    return result_by_use, frozenset(result.coordinate for result in result_by_use.values())
 
 
 def _notice_source(
@@ -648,7 +660,7 @@ def _source_for_message(
     message: RenderableMessage,
     block: RenderableBlock | None = None,
     block_index: int | None = None,
-    result: _ResultMatch | None = None,
+    result: SemanticResultMatch | None = None,
     attachment_id: str | None = None,
 ) -> SemanticCardSource:
     result_message = result.message if result is not None else None
@@ -686,7 +698,7 @@ def _build_tool_card(
     message: RenderableMessage,
     block_index: int,
     block: RenderableBlock,
-    result: _ResultMatch | None,
+    result: SemanticResultMatch | None,
 ) -> SemanticCard:
     result_block = result.block if result is not None else None
     classification = classify_tool(
@@ -1362,6 +1374,12 @@ def _deduplicate(values: Iterable[str]) -> tuple[str, ...]:
 
 __all__ = [
     "build_semantic_transcript",
+    "iter_semantic_entries",
+    "normalized_semantic_messages",
+    "semantic_tool_occurrences",
+    "EmptyThinkingStore",
+    "SemanticBlockCoordinate",
+    "SemanticResultMatch",
     "coerce_renderable_message",
     "lineage_descriptor_from_archive_envelope",
     "lineage_descriptor_from_session",
