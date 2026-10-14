@@ -31,6 +31,7 @@ pytestmark = pytest.mark.uses_real_clock(
 
 def test_temporal_route_retains_every_activity_bucket(tmp_path: Path) -> None:
     """The native temporal payload retains all bucket facts, beyond display summaries."""
+    from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType, Provider
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -46,7 +47,7 @@ def test_temporal_route_retains_every_activity_bucket(tmp_path: Path) -> None:
             messages=[
                 ParsedMessage(
                     provider_message_id=f"message-{number}",
-                    role="assistant",
+                    role=Role.ASSISTANT,
                     occurred_at_ms=1788220800000 + number * 3600000,
                     text=f"Synthetic timestamped message {number}",
                     blocks=[
