@@ -441,6 +441,7 @@ def _validate_raw_replay_application_receipt(
         problems.append("membership receipt pairs do not match the immutable authority witness")
     terminal_membership_decisions = {
         MembershipDecision.APPLIED,
+        MembershipDecision.APPLIED_WITH_CONFLICT,
         MembershipDecision.SUPERSEDED_EQUIVALENT,
         MembershipDecision.SUPERSEDED_PREFIX,
         MembershipDecision.SUPERSEDED_BY_WINNER,

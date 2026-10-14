@@ -244,10 +244,24 @@ def _raw_materialization_rows(archive_root: Path, *, index_db: Path | None = Non
     attach_readonly_database(conn, index_db, alias="index_tier")
     try:
         quarantine_expr, quarantine_params = _revision_quarantine_sql(conn)
+        conflict_expr = (
+            "EXISTS (SELECT 1 FROM raw_session_memberships m WHERE m.raw_id=r.raw_id "
+            "AND m.decision='applied_with_conflict')"
+            if _table_exists(conn, "raw_session_memberships")
+            else "0"
+        )
+        materialized_conflicts_expr = (
+            "NOT EXISTS (SELECT 1 FROM raw_session_memberships m WHERE m.raw_id=r.raw_id "
+            "AND m.decision='applied_with_conflict' AND NOT EXISTS ("
+            "SELECT 1 FROM index_tier.sessions actual WHERE actual.raw_id=m.raw_id "
+            "AND actual.session_id=m.logical_source_key AND actual.content_hash=m.normalized_content_hash))"
+            if _table_exists(conn, "raw_session_memberships")
+            else "0"
+        )
         candidate_rows = list(
             conn.execute(
                 f"""
-                SELECT
+                SELECT DISTINCT
                     r.origin,
                     r.raw_id,
                     r.native_id,
@@ -261,7 +275,9 @@ def _raw_materialization_rows(archive_root: Path, *, index_db: Path | None = Non
                     r.parse_error,
                     r.validation_status,
                     r.validation_error,
-                    {quarantine_expr} AS revision_quarantined
+                    {quarantine_expr} AS revision_quarantined,
+                    {conflict_expr} AS membership_conflict,
+                    {materialized_conflicts_expr} AS representative_materialized
                 FROM raw_sessions AS r
                 LEFT JOIN raw_container_coordinates AS coordinate ON coordinate.raw_id = r.raw_id
                 LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
@@ -269,7 +285,7 @@ def _raw_materialization_rows(archive_root: Path, *, index_db: Path | None = Non
                   ON r.native_id IS NOT NULL
                  AND s_by_native.origin = r.origin
                  AND s_by_native.native_id = r.native_id
-                WHERE s_by_raw.raw_id IS NULL
+                WHERE s_by_raw.raw_id IS NULL OR {conflict_expr}
                 ORDER BY r.origin, r.blob_size DESC, r.raw_id
                 """,
                 quarantine_params,
@@ -280,7 +296,13 @@ def _raw_materialization_rows(archive_root: Path, *, index_db: Path | None = Non
         for row in candidate_rows:
             category: str
             can_reconcile_alias = not row["parse_error"] or _retryable_decode_missing_blob_error(row["parse_error"])
-            if row["revision_quarantined"]:
+            if row["membership_conflict"]:
+                category = (
+                    "materialized-membership-conflict"
+                    if row["representative_materialized"]
+                    else "unmaterialized-membership-conflict"
+                )
+            elif row["revision_quarantined"]:
                 category = "revision-authority-quarantined"
             elif can_reconcile_alias and (
                 _raw_materialized_by_native_id(conn, row) or _raw_materialized_by_source_path_native(conn, row)
@@ -766,6 +788,28 @@ def _raw_materialization_debt_row(
                 description="Let daemon convergence drain acquired raw sessions into the index tier.",
             ),
         )
+    elif category == "unmaterialized-membership-conflict":
+        severity = "warning"
+        status = "actionable"
+        stage = "raw-authority"
+        summary = f"{count} {origin} selected representative(s) need materialization and retain conflict"
+        details = (
+            "Source retained a selected semantic representative and conflicting original observations. "
+            "The active Index has no session from this raw. Convergence must publish the representative; "
+            "the unresolved alternatives remain conflict debt afterwards."
+        )
+        actions = (ArchiveDebtActionPayload(label="Run daemon convergence", command=("polylogued", "run")),)
+    elif category == "materialized-membership-conflict":
+        severity = "warning"
+        status = "blocked"
+        stage = "raw-authority"
+        summary = f"{count} {origin} raw artifact(s) retain conflicting session observations"
+        details = (
+            "The selected semantic representative is published. Other original observations remain "
+            "retained conflict evidence; array order does not establish which observation supersedes another. "
+            "Replaying identical bytes preserves this outcome. New provider authority is needed to resolve it."
+        )
+        actions = ()
     elif category == "revision-authority-quarantined":
         severity = "warning"
         status = "blocked"

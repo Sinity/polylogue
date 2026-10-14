@@ -297,6 +297,7 @@ class PreparedRevisionReplayResult:
     written_counts: dict[str, int] = field(default_factory=dict, compare=False)
     session_outputs: tuple[tuple[str, bytes | None, bytes | None, int], ...] = ()
     membership_refusals: tuple[tuple[str, str, MembershipDecision], ...] = ()
+    membership_conflicts: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1906,12 +1907,29 @@ def prepared_session_for_revision_key(
     return session
 
 
+def _membership_head_matches_projection(
+    raw_id: str,
+    head_raw_id: str | None,
+    head_session_revision: tuple[object, ...] | None,
+    projection: SessionRevisionProjection,
+) -> bool:
+    """Prove that the selected observation is the exact materialized head."""
+    return (
+        raw_id == head_raw_id
+        and head_session_revision is not None
+        and head_session_revision[0] == raw_id
+        and head_session_revision[1] == projection.session_hash
+        and head_session_revision[2] == "semantic"
+    )
+
+
 def prepare_membership_replay(
     archive: RetainedMembershipRead,
     logical_key: str,
     prepared_inputs: Mapping[str, PreparedRetainedInput],
     *,
     head_raw_id: str | None,
+    head_session_revision: tuple[object, ...] | None = None,
     stop: Callable[[], bool] | None = None,
 ) -> PreparedMembershipReplay:
     """Capture membership comparison on the retained read-only snapshot."""
@@ -1936,6 +1954,7 @@ def prepare_membership_replay(
     projections: dict[str, SessionRevisionProjection] = {}
     conflicted_raw_ids: set[str] = set()
     fallback_only_raw_ids: set[str] = set()
+    unchanged_head_raw_ids: set[str] = set()
     try:
         for raw_id in sorted(candidate_raw_ids):
             if raw_id not in prepared_inputs:
@@ -1956,6 +1975,10 @@ def prepare_membership_replay(
                 fallback_only_raw_ids.add(raw_id)
             member_sessions[raw_id] = session
             projections[raw_id] = session_revision_projection(session)
+            if _membership_head_matches_projection(raw_id, head_raw_id, head_session_revision, projections[raw_id]):
+                # The exact already materialized representative is proved,
+                # rather than associating a physical Raw head with ordinal zero.
+                unchanged_head_raw_ids.add(raw_id)
             revisions.append(
                 MembershipRevision(
                     raw_id,
@@ -1985,7 +2008,11 @@ def prepare_membership_replay(
                 )
             )
         eligible = (
-            [revision for revision in revisions if revision.raw_id not in fallback_only_raw_ids]
+            [
+                revision
+                for revision in revisions
+                if revision.raw_id not in fallback_only_raw_ids or revision.raw_id in unchanged_head_raw_ids
+            ]
             if head_raw_id is not None
             else revisions
         )
@@ -2111,6 +2138,7 @@ def apply_prepared_revision_replay(
     written_counts: dict[str, int] = {}
     session_outputs: dict[str, tuple[str, bytes | None, bytes | None, int]] = {}
     membership_refusals: list[tuple[str, str, MembershipDecision]] = []
+    membership_conflicts: list[tuple[str, str]] = []
 
     refused_publication_raw_ids: set[str] = set()
 
@@ -2351,7 +2379,6 @@ def apply_prepared_revision_replay(
                         f"original prepared membership acknowledgements are absent for {logical_key}"
                     )
                 classification = membership_plan.classification
-                quarantined += len(classification.ambiguous_raw_ids)
                 accepted_members = classification.accepted_raw_ids
                 if (
                     accepted_members
@@ -2404,15 +2431,25 @@ def apply_prepared_revision_replay(
                     raise RetainedPreparationRetryableError(
                         f"membership publication disagrees with original Source acknowledgements for {logical_key}"
                     )
+                quarantined += sum(decision is MembershipDecision.AMBIGUOUS for decision in actual_decisions.values())
                 membership_refusals.extend(
                     (logical_key, raw_id, decision)
                     for raw_id, decision in actual_decisions.items()
                     if decision is MembershipDecision.AMBIGUOUS
                 )
+                membership_conflicts.extend(
+                    (logical_key, raw_id)
+                    for raw_id, decision in actual_decisions.items()
+                    if decision is MembershipDecision.APPLIED_WITH_CONFLICT
+                )
                 if (
                     accepted_members
                     and head_plan.yield_to_head_raw_id is None
-                    and actual_decisions[accepted_members[-1]] is MembershipDecision.APPLIED
+                    and actual_decisions[accepted_members[-1]]
+                    in {
+                        MembershipDecision.APPLIED,
+                        MembershipDecision.APPLIED_WITH_CONFLICT,
+                    }
                 ):
                     replayed += 1
             for logical_key in work_event_keys:
@@ -2498,6 +2535,7 @@ def apply_prepared_revision_replay(
         written_counts=written_counts,
         session_outputs=tuple(session_outputs.values()),
         membership_refusals=tuple(membership_refusals),
+        membership_conflicts=tuple(membership_conflicts),
     )
 
 

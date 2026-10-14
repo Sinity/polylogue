@@ -2934,6 +2934,8 @@ def _application_decision_for(decision: MembershipDecision) -> ApplicationDecisi
     prior comment-only, string-``startswith``-based mapping with no
     compiler signal if either vocabulary changed.
     """
+    if decision in {MembershipDecision.APPLIED, MembershipDecision.APPLIED_WITH_CONFLICT}:
+        return ApplicationDecision.SELECTED_BASELINE
     if decision is MembershipDecision.AMBIGUOUS:
         return ApplicationDecision.AMBIGUOUS
     if decision in (
@@ -2965,10 +2967,12 @@ def membership_decisions_for_classification(
     for raw_id in classification.accepted_raw_ids[:-1]:
         decisions[raw_id] = MembershipDecision.SUPERSEDED_PREFIX
     if classification.accepted_raw_ids:
-        decisions[classification.accepted_raw_ids[-1]] = MembershipDecision.APPLIED
-    # One raw can publish a representative while its other original
-    # occurrences remain conflicting evidence. Preserve that Source debt.
-    decisions.update(dict.fromkeys(classification.ambiguous_raw_ids, MembershipDecision.AMBIGUOUS))
+        tip = classification.accepted_raw_ids[-1]
+        decisions[tip] = (
+            MembershipDecision.APPLIED_WITH_CONFLICT
+            if tip in classification.ambiguous_raw_ids
+            else MembershipDecision.APPLIED
+        )
     return decisions
 
 
@@ -5298,6 +5302,7 @@ class _MembershipDecisionProducer(SourceArtifactProducer, SourceRawStateProducer
 _MEMBERSHIP_TERMINAL_DECISIONS = frozenset(
     {
         MembershipDecision.APPLIED,
+        MembershipDecision.APPLIED_WITH_CONFLICT,
         MembershipDecision.SUPERSEDED_PREFIX,
         MembershipDecision.SUPERSEDED_EQUIVALENT,
         MembershipDecision.SUPERSEDED_BY_WINNER,
@@ -5494,7 +5499,11 @@ def membership_decisions_for_head_plan(
             *classification.ambiguous_raw_ids,
             *classification.superseded_raw_ids,
         ):
-            decisions[raw_id] = MembershipDecision.SUPERSEDED_EQUIVALENT
+            decisions[raw_id] = (
+                MembershipDecision.AMBIGUOUS
+                if raw_id in classification.ambiguous_raw_ids
+                else MembershipDecision.SUPERSEDED_EQUIVALENT
+            )
     elif suppressed:
         for raw_id in (*classification.accepted_raw_ids, *classification.equivalent_raw_ids):
             decisions[raw_id] = MembershipDecision.DEFERRED
@@ -5782,11 +5791,15 @@ def apply_prepared_membership_index(
         _apply_membership_head_plan(store._conn, logical_source_key, head_plan)
         assert existing_head is not None
         session_id = str(existing_head[3])
-        cohort_raw_ids = (
-            *classification.accepted_raw_ids,
-            *classification.equivalent_raw_ids,
-            *classification.ambiguous_raw_ids,
-            *classification.superseded_raw_ids,
+        cohort_raw_ids = tuple(
+            dict.fromkeys(
+                (
+                    *classification.accepted_raw_ids,
+                    *classification.equivalent_raw_ids,
+                    *classification.ambiguous_raw_ids,
+                    *classification.superseded_raw_ids,
+                )
+            )
         )
         for generation, raw_id in enumerate(cohort_raw_ids):
             projection = projections_by_raw_id[raw_id]
@@ -5801,7 +5814,7 @@ def apply_prepared_membership_index(
                     logical_source_key=logical_source_key,
                     source_revision=projection.session_hash.hex(),
                     acquisition_generation=generation,
-                    decision=ApplicationDecision.SUPERSEDED,
+                    decision=_application_decision_for(decisions[raw_id]),
                     accepted_raw_id=None,
                     accepted_source_revision=None,
                     accepted_content_hash=None,
@@ -5856,11 +5869,15 @@ def apply_prepared_membership_index(
             + len(accepted_projection.event_hashes)
             + len(accepted_projection.attachment_identities)
         )
-        cohort_raw_ids = (
-            *classification.accepted_raw_ids,
-            *classification.equivalent_raw_ids,
-            *classification.ambiguous_raw_ids,
-            *classification.superseded_raw_ids,
+        cohort_raw_ids = tuple(
+            dict.fromkeys(
+                (
+                    *classification.accepted_raw_ids,
+                    *classification.equivalent_raw_ids,
+                    *classification.ambiguous_raw_ids,
+                    *classification.superseded_raw_ids,
+                )
+            )
         )
         for generation, raw_id in enumerate(cohort_raw_ids):
             projection = projections_by_raw_id[raw_id]
@@ -5887,8 +5904,6 @@ def apply_prepared_membership_index(
                 ),
                 decided_at_ms=decided_at_ms,
             )
-    if yield_to_head_raw_id is None:
-        decisions[accepted_raw_id] = MembershipDecision.APPLIED
     return session_id, decisions
 
 

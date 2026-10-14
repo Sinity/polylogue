@@ -260,6 +260,8 @@ class IngestTerminalSummaryHistorical(_Receipt):
     # reported here -- a skipped key that nothing counts would be a silent
     # degradation traded for the loud one.
     refused_membership_count: int = Field(ge=0, default=0)
+    # Published representatives whose original Source observations still conflict.
+    conflicting_membership_count: int = Field(ge=0, default=0)
     # Every refusal is named: inline up to one page, otherwise in referenced
     # audit pages that together hold exactly ``refused_membership_count``.
     refused_memberships: list[IngestRefusedMembershipHistorical] = Field(
@@ -386,8 +388,10 @@ class IngestHistoricalReceiptV2(_Receipt):
             raise ValueError("historical ingest profile total does not match its pages")
         if paged_insights and self.summary.profile_targets_observed > self.insight_page_count * MAX_PAGE_ITEMS:
             raise ValueError("historical ingest profile total exceeds its referenced pages")
-        if self.summary.refused_membership_count and self.summary.source_complete:
-            raise ValueError("historical ingest cannot be source-complete while memberships were refused")
+        if (
+            self.summary.refused_membership_count or self.summary.conflicting_membership_count
+        ) and self.summary.source_complete:
+            raise ValueError("historical ingest cannot be source-complete while memberships were refused or conflict")
         return self
 
 
@@ -445,6 +449,7 @@ def ingest_unconverged_error(history: IngestHistoricalReceiptV2) -> dict[str, ob
             "data": {
                 "source_complete": False,
                 "refused_membership_count": getattr(summary, "refused_membership_count", 0),
+                "conflicting_membership_count": getattr(summary, "conflicting_membership_count", 0),
                 "unresolved_raw_count": getattr(summary, "unresolved_raw_count", 0),
                 "profile_convergence_complete": getattr(summary, "profile_convergence_complete", None),
             },

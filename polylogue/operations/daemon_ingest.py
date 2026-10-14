@@ -200,6 +200,7 @@ class SourceReceiptSpool:
     confirmed_raw_count: int
     unresolved_raw_count: int
     index_destination: IndexMutationDestination | None = None
+    conflicting_membership_count: int = 0
 
     def close(self) -> None:
         unlink_spool(self.path)
@@ -276,6 +277,8 @@ def _spool_source_receipt(
             "CREATE INDEX logicals_session ON logicals(expected_session_id);"
             "CREATE TABLE raw_logicals(raw_id TEXT NOT NULL, logical_key TEXT NOT NULL, "
             "PRIMARY KEY(raw_id, logical_key)) WITHOUT ROWID;"
+            "CREATE TABLE membership_conflicts(raw_id TEXT NOT NULL, logical_key TEXT NOT NULL, "
+            "PRIMARY KEY(raw_id,logical_key)) WITHOUT ROWID;"
             "CREATE TABLE raw_metadata(source_item_id TEXT PRIMARY KEY, page_ref TEXT NOT NULL, page_count INTEGER NOT NULL, "
             "raw_count INTEGER NOT NULL, unresolved_count INTEGER NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID;"
         )
@@ -302,6 +305,17 @@ def _spool_source_receipt(
                 ) as raw_receipts:
                     for raw in raw_receipts:
                         raw_complete = raw.parser_complete
+                        with closing(
+                            source_conn.execute(
+                                "SELECT logical_source_key FROM raw_session_memberships "
+                                "WHERE raw_id=? AND decision='applied_with_conflict'",
+                                (raw.raw_id,),
+                            )
+                        ) as conflicts:
+                            spool.executemany(
+                                "INSERT OR IGNORE INTO membership_conflicts VALUES (?, ?)",
+                                ((raw.raw_id, str(row[0])) for row in conflicts),
+                            )
                         for logical in raw.logicals:
                             raw_complete &= logical.complete
                             if check_stop is not None:
@@ -359,8 +373,17 @@ def _spool_source_receipt(
         complete &= enumeration_complete
         confirmed = int(spool.execute("SELECT COUNT(*) FROM raws WHERE complete=1").fetchone()[0])
         unresolved = int(spool.execute("SELECT COUNT(*) FROM raws WHERE complete=0").fetchone()[0])
+        conflicting = int(spool.execute("SELECT COUNT(*) FROM membership_conflicts").fetchone()[0])
     return SourceReceiptSpool(
-        path, generation_id, observed_count, enumeration_complete, complete, confirmed, unresolved, index_destination
+        path,
+        generation_id,
+        observed_count,
+        enumeration_complete,
+        complete,
+        confirmed,
+        unresolved,
+        index_destination,
+        conflicting,
     )
 
 
@@ -1349,11 +1372,17 @@ class IngestExecution:
             insight_pages_digest=self.insight_pages_digest,
             summary=IngestTerminalSummaryHistorical(
                 enumeration_complete=receipt.enumeration_complete,
-                source_complete=receipt.complete and self.source_items_sealable and self.refused_count == 0,
+                source_complete=(
+                    receipt.complete
+                    and self.source_items_sealable
+                    and self.refused_count == 0
+                    and receipt.conflicting_membership_count == 0
+                ),
                 confirmed_raw_count=receipt.confirmed_raw_count,
                 unresolved_raw_count=receipt.unresolved_raw_count,
                 profile_targets_observed=sum(len(part.targets) for part in profile_parts),
                 refused_membership_count=self.refused_count,
+                conflicting_membership_count=receipt.conflicting_membership_count,
                 refused_memberships=self.inline_refusals,
                 refused_membership_pages_ref=self.refusal_pages_ref,
                 refused_membership_page_count=self.refusal_page_count,

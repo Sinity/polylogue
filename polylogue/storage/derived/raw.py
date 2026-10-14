@@ -3908,6 +3908,24 @@ class RawObservationDerivation(RawObservationInspection):
                                             logical_key,
                                             prepared,
                                             head_raw_id=effective_head_raw_id,
+                                            head_session_revision=(
+                                                (
+                                                    None
+                                                    if preceding_byte.effective_session_revision is None
+                                                    or preceding_byte.effective_head is None
+                                                    else (
+                                                        *preceding_byte.effective_session_revision,
+                                                        cast(
+                                                            tuple[object, ...],
+                                                            membership_head_input_from_revision_head(
+                                                                preceding_byte.effective_head
+                                                            ),
+                                                        )[4],
+                                                    )
+                                                )
+                                                if preceding_byte is not None
+                                                else membership_read.membership_session_revision(logical_key)
+                                            ),
                                             stop=compute_cancel_requested,
                                         )
                                     except CohortMembershipRefusalError as refusal:

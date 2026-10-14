@@ -867,3 +867,29 @@ readers attach Source read-only) and returns empty only for a successful
 zero-row join (`storage/source_sessions.py`; `operations/embedding_derivation.py`).
 
 The Ops `product_retry_incarnation` singleton provides a disposable UUID combined with the open database file's physical identity for exact product attempts. The existing `convergence_debt` row retains demand identity, admitted and settled attempt UUIDs, process ownership, observation count, and actual failure streak. These fields are not durable Source authority. Claude workflow is the first global archive/current consumer; its graphs and receipt are rejected when current canonical input or the exact admitted attempt changed.
+
+### Selected representatives with conflicting observations
+
+A retained bundle may contain several observations of one logical session.
+The shared revision classifier selects their semantic representative using
+content and declared provider authority. A file ordinal identifies evidence;
+it supplies no chronology. Selected publication carries every original occurrence in the sealed
+parser artifact and accepted-marker carrier, including conflicting and equal
+observations. Source membership records one logical member.
+
+`applied_with_conflict` records a published representative whose other original
+observations remain unresolved. Its Index application is `selected_baseline`
+and binds the exact selected Raw, projection and content hash. Source parsing
+and canonical materialization are complete; semantic conflict is separate debt.
+Debt reads confirm current Index materialization before calling a representative
+published. Discarded derived output remains actionable materialization debt.
+A duplicate acquisition may reaffirm the same semantic Raw head only when its
+selected projection exactly matches the existing session's physical owner and
+content. It cannot downgrade a byte head. A new or changed fallback cannot
+replace an established head.
+
+Machine ingest records `conflicting_membership_count` separately from refused
+memberships and parse failures, on both first and duplicate delivery. It keeps
+the actual session/message change counts and reports a degraded terminal outcome
+until those original alternatives are resolved by new authority. Drive readiness
+exposes `drive_membership_conflict` independently of materialization progress.

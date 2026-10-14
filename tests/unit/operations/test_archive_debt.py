@@ -544,7 +544,9 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
     )
 
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT, origin TEXT, native_id TEXT, raw_id TEXT)")
+        conn.execute(
+            "CREATE TABLE sessions (session_id TEXT, origin TEXT, native_id TEXT, raw_id TEXT, content_hash BLOB)"
+        )
 
     # A tier holding tables must declare the schema version it emulates; the
     # read guard treats a stamped-zero populated tier as skew.
@@ -1071,7 +1073,9 @@ def _install_revision_governance(source_db: Path) -> None:
         conn.execute(
             "CREATE TABLE raw_membership_census (raw_id TEXT, status TEXT, detail TEXT, revision_authority TEXT)"
         )
-        conn.execute("CREATE TABLE raw_session_memberships (raw_id TEXT, decision TEXT)")
+        conn.execute(
+            "CREATE TABLE raw_session_memberships (raw_id TEXT, decision TEXT, logical_source_key TEXT, normalized_content_hash BLOB)"
+        )
 
 
 def test_archive_debt_reports_ambiguous_membership_quarantine_as_blocked(tmp_path: Path) -> None:

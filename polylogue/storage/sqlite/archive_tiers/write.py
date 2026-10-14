@@ -9040,6 +9040,32 @@ class PreparedSessionSourceRead:
         with self._seal.original_rows("index", _RAW_REVISION_HEAD_SQL, parameters) as rows:
             return _raw_revision_head_from_row(rows.fetchone())
 
+    def membership_session_revision(self, session_id: str) -> tuple[object, ...] | None:
+        """Bind the existing physical owner, content and authority for comparison."""
+        parameters = (session_id,)
+        self._seal.before_index_input(
+            "sessions",
+            ("raw_id", "content_hash"),
+            "SELECT rowid FROM sessions WHERE session_id=?",
+            parameters,
+        )
+        self._seal.before_index_input(
+            "raw_revision_heads",
+            ("accepted_raw_id", "accepted_content_hash", "accepted_frontier_kind"),
+            "SELECT rowid FROM raw_revision_heads WHERE logical_source_key=?",
+            parameters,
+        )
+        with self._seal.original_rows(
+            "index",
+            "SELECT s.raw_id,s.content_hash,h.accepted_frontier_kind "
+            "FROM sessions s JOIN raw_revision_heads h ON h.session_id=s.session_id "
+            "AND h.accepted_raw_id=s.raw_id AND h.accepted_content_hash=s.content_hash "
+            "WHERE s.session_id=? AND h.logical_source_key=?",
+            (session_id, session_id),
+        ) as rows:
+            row = rows.fetchone()
+        return None if row is None else tuple(row)
+
     def adoption_session_hash(self, session_id: str) -> tuple[object, ...] | None:
         from polylogue.storage.sqlite.archive_tiers.revision_governance import _REPLAY_ADOPTION_SESSION_SQL
 

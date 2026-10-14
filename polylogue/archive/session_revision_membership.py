@@ -29,6 +29,7 @@ class MembershipDecision(PolylogueStrEnum):
     """
 
     APPLIED = "applied"
+    APPLIED_WITH_CONFLICT = "applied_with_conflict"
     SUPERSEDED_EQUIVALENT = "superseded_equivalent"
     SUPERSEDED_PREFIX = "superseded_prefix"
     SUPERSEDED_BY_WINNER = "superseded_by_winner"

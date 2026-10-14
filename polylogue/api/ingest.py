@@ -133,6 +133,8 @@ class PolylogueIngestMixin:
             result.counts["messages"] += message_count
             result.changed_counts["sessions"] += changed_sessions
             result.changed_counts["messages"] += changed_messages
+            if conflicts := int(summary.get("conflicting_membership_count", 0)):
+                result.counts["membership_conflicts"] = result.counts.get("membership_conflicts", 0) + conflicts
             result.parse_failures += int(summary.get("refused_membership_count", 0))
             result.parse_failures += int(summary.get("unresolved_raw_count", 0))
             result.batch_observations.append(
