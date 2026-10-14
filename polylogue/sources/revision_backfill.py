@@ -2389,7 +2389,9 @@ def apply_prepared_revision_replay(
                             prepared_write=prepared_write,
                             write_result=record_write_result,
                             preacquired_attachment_blobs_by_raw_id={
-                                raw_id: attachment_view(raw_id, parsed_by_raw_id[raw_id])
+                                raw_id: {}
+                                if is_separator_only_append(raw_id, plan, prepared_inputs)
+                                else attachment_view(raw_id, parsed_by_raw_id[raw_id])
                                 for raw_id in plan.accepted_raw_ids
                             },
                         )

@@ -167,6 +167,12 @@ async def test_live_blank_only_append_advances_raw_evidence_without_adding_messa
             assert after[2][0] == before[2][0]
             assert after[2][1] == (after[0], b"\n\n")
             assert (after[0], "applied_append") in after[3]
+            (await owners.raw_owner.replay_retained_raw_ids((after[0],))).require_complete()
+            assert await owners.raw_owner.run_convergence_sync("fixture.blank-append.warm", read_state) == after
         finally:
             watcher.stop()
             await archive.close()
+
+    async with live_owner_set(root) as restarted:
+        (await restarted.raw_owner.replay_retained_raw_ids((after[0],))).require_complete()
+        assert await restarted.raw_owner.run_convergence_sync("fixture.blank-append.reopened", read_state) == after
