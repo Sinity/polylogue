@@ -844,6 +844,21 @@ class ModelRequest:
 # ---------------------------------------------------------------------------
 
 
+def _explicit_structure(predicate: QueryPredicate | None) -> bool:
+    """An affirmative root choice or family walk replaces the default root scope.
+
+    Only conjunctions can carry such a choice for the whole query; a scope
+    named under OR or NOT does not constrain the other branch's candidate set.
+    """
+    if isinstance(predicate, QueryLineagePredicate):
+        return True
+    if isinstance(predicate, QueryFieldPredicate):
+        return predicate.field.removeprefix("session.") == "root" and predicate.op == "="
+    if isinstance(predicate, QueryBoolPredicate) and predicate.op == "and":
+        return any(_explicit_structure(child) for child in predicate.children)
+    return False
+
+
 @dataclass(slots=True)
 class ReferenceArchive:
     """In-memory oracle over declared sessions."""
@@ -884,8 +899,30 @@ class ReferenceArchive:
         messages = tuple(message for ancestor in chain for message in ancestor.messages)
         return replace(self.sessions[key], messages=messages)
 
-    def _lineage_ids(self, key: str) -> frozenset[str]:
-        return frozenset(session.session_id for session in self.lineage(key))
+    def _lineage_families(self) -> dict[str, frozenset[str]]:
+        """Share one family set per connected parent tree, in linear work."""
+        neighbors: dict[str, set[str]] = {key: set() for key in self.sessions}
+        for key, session in self.sessions.items():
+            if session.parent_key in neighbors:
+                parent = session.parent_key
+                assert parent is not None
+                neighbors[key].add(parent)
+                neighbors[parent].add(key)
+        families: dict[str, frozenset[str]] = {}
+        for key in self.sessions:
+            if key in families:
+                continue
+            component: set[str] = set()
+            pending = [key]
+            while pending:
+                member = pending.pop()
+                if member in component:
+                    continue
+                component.add(member)
+                pending.extend(neighbors[member] - component)
+            ids = frozenset(self.sessions[member].session_id for member in component)
+            families.update((member, ids) for member in component)
+        return families
 
     def matching(self, expression: str | QueryExpressionAST, *, recompose: bool = False) -> tuple[ModelSession, ...]:
         """Sessions matching ``expression``, in the archive's default order.
@@ -898,9 +935,13 @@ class ReferenceArchive:
         ast = parse_expression_ast(expression) if isinstance(expression, str) else expression
         predicate = predicate_from_ast(ast)
         selected: list[ModelSession] = []
+        families = self._lineage_families()
+        implicit_root_only = not _explicit_structure(predicate)
         for key in self.sessions:
             candidate = self.recomposed(key) if recompose else self.sessions[key]
-            if predicate is None or evaluate_predicate(candidate, predicate, lineage=self._lineage_ids(key)):
+            if implicit_root_only and candidate.parent_key is not None:
+                continue
+            if predicate is None or evaluate_predicate(candidate, predicate, lineage=families[key]):
                 selected.append(candidate)
         return tuple(sorted(selected, key=_default_sort_key))
 

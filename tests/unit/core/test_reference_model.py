@@ -9,10 +9,21 @@ every surface, so the closed vocabulary is pinned here too.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from polylogue.archive.query.expression import QueryExpressionAST
+from polylogue.archive.query.predicate import (
+    QueryBoolPredicate,
+    QueryFieldPredicate,
+    QueryLineagePredicate,
+    QueryNotPredicate,
+    QueryPredicate,
+)
 from tests.infra.reference_model import (
     ModelBlock,
+    ModelCorpus,
     ModelMessage,
     ModelRequest,
     ModelSession,
@@ -116,7 +127,8 @@ def test_reference_model_lineage_orders_ancestors_first() -> None:
     )
 
     assert tuple(session.key for session in archive.lineage("child")) == ("parent", "child")
-    assert archive.query("contains:tail").session_ids == ("claude-code-session:ext-child",)
+    assert archive.query("contains:tail").session_ids == ()
+    assert archive.query("root:false contains:tail").session_ids == ("claude-code-session:ext-child",)
 
 
 def test_reference_model_recomposes_parent_prefix_only_when_asked() -> None:
@@ -136,11 +148,10 @@ def test_reference_model_recomposes_parent_prefix_only_when_asked() -> None:
     assert archive.query("contains:inherited").session_ids == ("claude-code-session:ext-parent",)
     assert archive.query("messages:>=2").session_ids == ()
 
-    assert archive.query("contains:inherited", recompose=True).session_ids == (
+    assert archive.query("root:false contains:inherited", recompose=True).session_ids == (
         "claude-code-session:ext-child",
-        "claude-code-session:ext-parent",
     )
-    assert archive.query("messages:>=2", recompose=True).session_ids == ("claude-code-session:ext-child",)
+    assert archive.query("root:false messages:>=2", recompose=True).session_ids == ("claude-code-session:ext-child",)
 
 
 def test_reference_model_uses_structural_action_sequence_semantics() -> None:
@@ -218,3 +229,105 @@ def test_reference_model_refuses_a_field_it_does_not_declare() -> None:
 
     with pytest.raises(UnsupportedByModelError):
         archive.query("sessions where semantic:widgets")
+
+
+def _lineage_corpus() -> ModelCorpus:
+    return ModelCorpus(
+        (
+            _session("root", messages=(_message("root-turn", text="root content"),), minute=0),
+            _session(
+                "child-one", messages=(_message("child-one-turn", text="child content"),), parent_key="root", minute=1
+            ),
+            _session(
+                "child-two", messages=(_message("child-two-turn", text="sibling content"),), parent_key="root", minute=2
+            ),
+            _session("other", messages=(_message("other-turn", text="unrelated content"),), minute=3),
+        )
+    )
+
+
+@pytest.mark.parametrize("seed", ["root", "child-one", "child-two"])
+def test_reference_lineage_seed_selects_the_whole_family(seed: str) -> None:
+    """Ancestor-only membership drops a child seed's parent and siblings."""
+    archive = _lineage_corpus().reference_archive()
+    result = archive.query(f"lineage:id:claude-code-session:ext-{seed}")
+    assert result.total == 3
+    assert set(result.session_ids) == {
+        "claude-code-session:ext-root",
+        "claude-code-session:ext-child-one",
+        "claude-code-session:ext-child-two",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expression", "expected_keys"),
+    [
+        ("lineage:id:claude-code-session:ext-child-one", {"root", "child-one", "child-two"}),
+        ("messages:>=1", {"root", "other"}),
+        ("contains:child", set()),
+        ("root:false contains:child", {"child-one"}),
+        ("root:true", {"root", "other"}),
+        ("root:false", {"child-one", "child-two"}),
+        ("sessions where NOT lineage:id:claude-code-session:ext-child-one", {"other"}),
+        ("sessions where lineage:id:claude-code-session:ext-child-one OR title:other", {"root", "other"}),
+    ],
+)
+async def test_reference_structure_agrees_with_the_production_session_route(
+    db_path: Path,
+    workspace_env: dict[str, Path],
+    expression: str,
+    expected_keys: set[str],
+) -> None:
+    """Exercise actual query lowering and storage, rather than comparing two model methods."""
+    from tests.infra.surface_differential import ApiExpressionSurface
+
+    corpus = _lineage_corpus()
+    assert len(corpus.seed(db_path)) == 4
+    request = ModelRequest(name="structure-regression", expression=expression)
+    expected = corpus.reference_archive().query(request)
+    api = ApiExpressionSurface(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        actual = await api.execute(request)
+    finally:
+        await api.close()
+    ids = {f"claude-code-session:ext-{key}" for key in expected_keys}
+    assert set(expected.session_ids) == ids, (expression, expected.session_ids)
+    assert set(actual.session_ids) == ids, (expression, actual.session_ids)
+    assert expected.total == actual.total == len(ids)
+
+
+@pytest.mark.parametrize(
+    ("predicate", "expected_keys"),
+    [
+        (
+            QueryBoolPredicate(
+                "or",
+                (
+                    QueryFieldPredicate(field="root", values=("false",), op="="),
+                    QueryFieldPredicate(field="title", values=("other",), op="="),
+                ),
+            ),
+            {"other"},
+        ),
+        (QueryNotPredicate(QueryFieldPredicate(field="root", values=("true",), op="=")), set()),
+        (
+            QueryBoolPredicate(
+                "and",
+                (
+                    QueryLineagePredicate(seed_session_id="claude-code-session:ext-child-one"),
+                    QueryFieldPredicate(field="root", values=("false",), op="="),
+                ),
+            ),
+            {"child-one", "child-two"},
+        ),
+    ],
+)
+def test_reference_scope_stays_root_only_unless_structure_is_affirmative(
+    predicate: QueryPredicate, expected_keys: set[str]
+) -> None:
+    # The evaluator's scope rule also covers AST shapes that the public query
+    # parser currently refuses, including root under Boolean operators.
+    ast = QueryExpressionAST((), boolean_predicate=predicate)
+    sessions = _lineage_corpus().reference_archive().matching(ast)
+    assert {session.session_id for session in sessions} == {f"claude-code-session:ext-{key}" for key in expected_keys}
