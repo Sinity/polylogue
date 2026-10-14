@@ -1126,7 +1126,8 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
     """Decode JSON to private disk and expose a lazy view.
 
     With ``jsonl=True``, every whitespace-separated root value is instead
-    exposed as an item in one synthetic lazy array.
+    exposed as an item in one synthetic lazy array. An empty or separator-only
+    stream exposes no items; it does not create a JSON value.
     """
 
     def __init__(self, path: Path | None, *, jsonl: bool = False, accepted_prefix_size: int | None = None) -> None:
@@ -1398,9 +1399,16 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
                     pending = sendable_list()
                     parser = exact_backend.basic_parse_coro(pending, multiple_values=self._jsonl)
                     aligned = LexemeAlignedReader(scalar_reader)
+                    nonblank = False
                     try:
                         while True:
                             chunk = aligned.read(65536)
+                            nonblank |= bool(chunk.strip(b" \t\r\n"))
+                            # ijson requires a first value even in multiple-value
+                            # mode. JSONL permits zero records, but an unfinished
+                            # nonblank value must still reach its EOF refusal.
+                            if self._jsonl and not chunk and not nonblank:
+                                return
                             try:
                                 parser.send(chunk)
                             except StopIteration:

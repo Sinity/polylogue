@@ -147,9 +147,12 @@ async def test_original_attachment_claims_follow_direct_cohort_and_aggregate_row
         original_merge = prepared_merge._merge_into_store
 
         def corrupt_origin(
-            ordered: Sequence[tuple[str, PreparedJsonl]], merged: ParsedSession, store: SqliteMessageStore
+            ordered: Sequence[tuple[str, PreparedJsonl]],
+            merged: ParsedSession,
+            store: SqliteMessageStore,
+            separator_only_raw_ids: frozenset[str],
         ) -> ParsedSession:
-            result = original_merge(ordered, merged, store)
+            result = original_merge(ordered, merged, store, separator_only_raw_ids)
             if route == "aggregate_missing":
                 store.conn.execute("DELETE FROM prepared_attachment_origin WHERE attachment_ordinal=0")
             elif route == "aggregate_crossraw":

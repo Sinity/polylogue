@@ -16,6 +16,7 @@ from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.live_ingest import prepared_live_convergence_owner
+from tests.infra.raw_owner_routes import live_owner_set
 
 
 @pytest.mark.asyncio
@@ -99,3 +100,79 @@ async def test_watcher_routes_acquired_raw_to_its_supplied_retained_owner(
             clear_degraded()
             watcher.stop()
             await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_live_blank_only_append_advances_raw_evidence_without_adding_messages(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    source_root = tmp_path / "sessions"
+    source_root.mkdir()
+    path = source_root / "stable-session.jsonl"
+    original = (
+        b'{"type":"session_meta","payload":{"id":"stable-session"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m1",'
+        b'"role":"user","content":[{"type":"input_text","text":"stable prompt"}]}}\n'
+    )
+    path.write_bytes(original)
+    async with live_owner_set(root) as owners:
+        await owners.coordinator.run_sync("fixture.blank-append.bootstrap", lambda: bootstrap_archive_root(root))
+        cursor = await owners.coordinator.run_sync(
+            "fixture.blank-append.cursor", lambda: CursorStore(root / "index.db", ops_db_path=root / "ops.db")
+        )
+        archive = Polylogue(archive_root=root)
+        watcher = LiveWatcher(
+            archive,
+            [WatchSource(name="codex", root=source_root)],
+            cursor=cursor,
+            **owners.watcher_kwargs(),
+        )
+
+        def read_state() -> tuple[str, int, tuple[tuple[str, bytes], ...], tuple[tuple[str, str], ...]]:
+            with ArchiveStore.open_existing(root, read_only=True) as stored:
+                source = stored.source_connection
+                index = stored.index_connection
+                assert index is not None
+                row = index.execute(
+                    "SELECT raw_id, message_count FROM sessions WHERE native_id='stable-session'"
+                ).fetchone()
+                assert row is not None
+                raws = tuple(
+                    (str(raw[0]), stored.raw_revision_material(str(raw[0]))[1])
+                    for raw in source.execute("SELECT raw_id FROM raw_sessions ORDER BY rowid")
+                )
+                applications = tuple(
+                    (str(application[0]), str(application[1]))
+                    for application in index.execute("SELECT raw_id, decision FROM raw_revision_applications")
+                )
+                return str(row[0]), int(row[1]), raws, applications
+
+        try:
+            baseline = await watcher._ingest_files([path])
+            assert baseline.succeeded_file_count == 1
+            assert baseline.failed_file_count == 0
+            before = await owners.raw_owner.run_convergence_sync("fixture.blank-append.before", read_state)
+            assert before[1] == 1
+            assert before[2] == ((before[0], original),)
+
+            with path.open("ab") as handle:
+                handle.write(b"\n\n")
+            appended = await watcher._ingest_files([path])
+            after = await owners.raw_owner.run_convergence_sync("fixture.blank-append.after", read_state)
+            assert appended.append_file_count == 1
+            assert appended.succeeded_file_count == 1
+            assert appended.failed_file_count == 0
+            assert after[0] != before[0]
+            assert after[1] == before[1] == 1
+            assert len(after[2]) == 2
+            assert after[2][0] == before[2][0]
+            assert after[2][1] == (after[0], b"\n\n")
+            assert (after[0], "applied_append") in after[3]
+            (await owners.raw_owner.replay_retained_raw_ids((after[0],))).require_complete()
+            assert await owners.raw_owner.run_convergence_sync("fixture.blank-append.warm", read_state) == after
+        finally:
+            watcher.stop()
+            await archive.close()
+
+    async with live_owner_set(root) as restarted:
+        (await restarted.raw_owner.replay_retained_raw_ids((after[0],))).require_complete()
+        assert await restarted.raw_owner.run_convergence_sync("fixture.blank-append.reopened", read_state) == after

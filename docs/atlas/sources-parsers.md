@@ -2,6 +2,13 @@
 
 ## Area boundary
 
+A separator-only JSONL append retains its complete Raw byte window without
+creating a session. Only a unique contiguous byte-proven continuation of an
+existing session chain may omit parser output during composition. Its whole
+window must contain JSON separators, not an unfinished nonblank tail. The
+aggregate retains every Raw dependency and application receipt, advances the
+session's Raw head, and preserves the existing messages.
+
 Gemini CLI result blocks retain both model-facing output and error text when
 the provider reports both streams. Divergent terminal renderings remain
 separately marked. Hermes ATIF tool availability events retain each declared

@@ -717,6 +717,7 @@ class PreparedJsonlRead:
     observed_parse_key: str | None = field(default=None, compare=False, repr=False)
     observed_parse_artifact_ref: str | None = field(default=None, compare=False, repr=False)
     positive_evidence_filtered: bool = False
+    jsonl_separators_only: bool = False
     attempt_directory: Path | None = None
     failed_observation: tuple[int, int, int] | None = None
     decode_failure: DecodeFailure | None = None
@@ -2547,6 +2548,7 @@ def _finalize_prepared_cohort(
         validation_reuse=original.validation_reuse if isinstance(original, PreparedJsonl) else None,
         observed_parse_key=original.observed_parse_key,
         observed_parse_artifact_ref=original.observed_parse_artifact_ref,
+        jsonl_separators_only=original.jsonl_separators_only,
     )
     if not preserve_parser_stage:
         return result
@@ -3906,6 +3908,18 @@ def prepare_jsonl_blob(
                         "cohort input changed and cleanup failed", [source_change, cleanup]
                     ) from None
                 raise source_change
+        if jsonl_wire and taxonomy.record_count == 0 and not result.session_sequence():
+            # Bind the entire retained window, not merely its accepted prefix.
+            # Incomplete nonblank tails and empty JSON arrays are not separators.
+            separator_hash = hashlib.sha256()
+            with source.open("rb") as separator_input:
+                for chunk in iter(lambda: separator_input.read(64 * 1024), b""):
+                    check_compute_cancelled()
+                    if chunk.strip(b" \t\r\n"):
+                        break
+                    separator_hash.update(chunk)
+                else:
+                    result = replace(result, jsonl_separators_only=separator_hash.hexdigest() == after_hash)
         sealed = True
         return result
     except (

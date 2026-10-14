@@ -51,7 +51,7 @@ from polylogue.archive.revision_authority import (
     canonical_authority_logical_key,
     is_work_event_raw_id,
 )
-from polylogue.archive.revision_replay import RevisionReplayPlan
+from polylogue.archive.revision_replay import ApplicationDecision, RevisionReplayPlan
 from polylogue.archive.session_revision_membership import (
     MembershipClassification,
     MembershipDecision,
@@ -1916,6 +1916,37 @@ def prepared_session_for_logical_key(
     return resolve_same_raw_member(sessions, raw_id=raw_id, logical_source_key=logical_source_key).session
 
 
+def is_separator_only_append(
+    raw_id: str, plan: RevisionReplayPlan, prepared_inputs: Mapping[str, PreparedRetainedInput]
+) -> bool:
+    """Omit output only for a proved empty continuation of an accepted chain."""
+    item = prepared_inputs.get(raw_id)
+    artifact = item.prepared_artifact if item is not None else None
+    if item is None or artifact is None or not artifact.jsonl_separators_only:
+        return False
+    accepted = plan.accepted_raw_ids
+    if raw_id not in accepted or accepted.index(raw_id) == 0:
+        return False
+    baseline = prepared_inputs[accepted[0]]
+    # APPLIED_APPEND is produced only by the byte planner's unique contiguous
+    # BYTE_PROVEN edge with its exact predecessor and baseline. A membership
+    # candidate, full observation or unproven append never has this decision.
+    return (
+        any(a.raw_id == raw_id and a.decision is ApplicationDecision.APPLIED_APPEND for a in plan.applications)
+        and item.revision_kind is RawRevisionKind.APPEND
+        and item.provider is not Provider.UNKNOWN
+        and item.provider is baseline.provider
+        and baseline.revision_kind is RawRevisionKind.FULL
+        and item.native_id is not None
+        and plan.logical_source_key == f"{origin_from_provider(item.provider).value}:{item.native_id}"
+        and artifact.error is None
+        and artifact.blob_hash == item.blob_hash
+        and artifact.resolved_provider is item.provider
+        and item.payload_bytes > 0
+        and not artifact.session_sequence()
+    )
+
+
 def prepared_session_for_revision_key(
     sessions: Sequence[ParsedSession], *, raw_id: str, logical_source_key: str
 ) -> ParsedSession:
@@ -2292,9 +2323,10 @@ def apply_prepared_revision_replay(
                     stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
                         time.perf_counter() - spill_started
                     )
-                    parsed_by_raw_id[raw_id] = prepared_session_for_logical_key(
-                        sessions, raw_id=raw_id, logical_source_key=logical_key
-                    )
+                    if not is_separator_only_append(raw_id, plan, prepared_inputs):
+                        parsed_by_raw_id[raw_id] = prepared_session_for_logical_key(
+                            sessions, raw_id=raw_id, logical_source_key=logical_key
+                        )
                     retained_bytes += payload_bytes
                 prepared_aggregate_session: ParsedSession | None = None
                 if len(plan.accepted_raw_ids) > 1:
@@ -2357,7 +2389,9 @@ def apply_prepared_revision_replay(
                             prepared_write=prepared_write,
                             write_result=record_write_result,
                             preacquired_attachment_blobs_by_raw_id={
-                                raw_id: attachment_view(raw_id, parsed_by_raw_id[raw_id])
+                                raw_id: {}
+                                if is_separator_only_append(raw_id, plan, prepared_inputs)
+                                else attachment_view(raw_id, parsed_by_raw_id[raw_id])
                                 for raw_id in plan.accepted_raw_ids
                             },
                         )
@@ -4932,7 +4966,13 @@ def prepare_retained_replay_source(
                     )
                 stage_bridge_session(bridge_session, accepted)
             for raw_id in outcome.plan.accepted_raw_ids:
-                retain_accepted_marker_session(raw_id, adoption.session_id)
+                if is_separator_only_append(raw_id, outcome.plan, prepared_inputs):
+                    # This Raw's marker input is genuinely empty. Retain its
+                    # request acknowledgement without borrowing the composed
+                    # session from a predecessor's parsed output.
+                    marker_sessions_by_raw.setdefault(raw_id, set())
+                else:
+                    retain_accepted_marker_session(raw_id, adoption.session_id)
                 retain_attachment_carrier(raw_id)
             for raw_id in revision_replay_terminal_raw_ids(outcome.plan):
                 prepare_raw_parse_success(seal, raw_id, provider=prepared_inputs[raw_id].provider)
