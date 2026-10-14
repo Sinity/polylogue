@@ -94,7 +94,7 @@ class ForeignKeyGraph:
                 )
                 connection.execute(
                     "CREATE TABLE generated_path_layers(path_id INTEGER NOT NULL,remaining INTEGER NOT NULL,"
-                    "state TEXT NOT NULL,log_mass REAL NOT NULL,required_resource INTEGER NOT NULL,count_support BLOB NOT NULL,"
+                    "state TEXT NOT NULL,log_mass REAL NOT NULL,required_resource INTEGER NOT NULL,count_support BLOB NOT NULL,count_resource TEXT NOT NULL,"
                     "PRIMARY KEY(path_id,remaining,state)) STRICT, WITHOUT ROWID"
                 ).close()
                 connection.execute(

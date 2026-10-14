@@ -39,6 +39,7 @@ from polylogue.schemas.synthetic.observed_values import (
     measured_character_shapes,
     measured_string_formats,
     neutral_numeric_range,
+    numeric_verdict_support,
     observed_length_support,
 )
 from polylogue.schemas.synthetic.record_profiles import ConditionalContentKinds, PublicRecordPlan
@@ -418,6 +419,15 @@ def _walk_node(
                 )
             )
 
+    if plan is not None and plan_path in plan.tool_verdicts:
+        verdict = plan.tool_verdicts[plan_path]
+        if verdict in {"true", "false"}:
+            if _schema_type(self, schema, rng, path) != "boolean":
+                raise ValueError("measured verdict contradicts its original boolean field")
+            return verdict == "true"
+        if _schema_type(self, schema, rng, path) != "integer":
+            raise ValueError("measured exit verdict contradicts its original integer field")
+        return _generate_number(self, schema, rng, is_int=True, outcome_class=verdict)
     if plan is not None and plan_path in plan.scalars:
         return plan.scalars[plan_path]
     if plan is not None and plan_path in plan.graph_values:
@@ -1409,7 +1419,16 @@ def _generate_number(
     rng: random.Random,
     *,
     is_int: bool = False,
+    outcome_class: str | None = None,
 ) -> float | int:
+    if outcome_class is not None:
+        if outcome_class not in {"zero", "nonzero"} or not is_int:
+            raise ValueError("measured numeric verdict is undeclared")
+        support = numeric_verdict_support(schema, outcome_class)
+        if not support:
+            raise ValueError("numeric verdict has no original support")
+        low, high, _ = rng.choices(support, weights=[weight for _, _, weight in support], k=1)[0]
+        return rng.randint(low, high)
     observed = _sample_observed_distribution(schema, "numeric", rng)
     range_value = schema.get("x-polylogue-range")
     if observed is not None:
