@@ -9,7 +9,7 @@ from collections.abc import Iterator, Set
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypeAlias, TypeVar, cast
+from typing import Any, Generic, Literal, TypeAlias, TypeVar, cast
 
 from polylogue.core.enums import PolylogueStrEnum
 from polylogue.core.timestamps import parse_timestamp
@@ -46,6 +46,51 @@ class MembershipDecision(PolylogueStrEnum):
 #: side holding an identity the other lacks (a genuine fork).
 _Relation: TypeAlias = Literal["equal", "a_contains_b", "b_contains_a", "conflict"]
 _T = TypeVar("_T")
+
+
+_Key = TypeVar("_Key", str, int)
+SelectionBasis: TypeAlias = Literal[
+    "empty",
+    "containment",
+    "provider_order",
+    "independent_native",
+    "dom_authority",
+    "direct_export",
+    "declared_capture",
+    "maximal_evidence",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionEvidence(Generic[_Key]):
+    """One observation addressed by a raw identity or a sealed parser ordinal.
+
+    Keys identify evidence and provide a deterministic tie-break. They never
+    establish capture order or provider authority.
+    """
+
+    key: _Key
+    projection: SessionRevisionProjection
+    provider_updated_at: str | None = None
+    observed_at_ms: int | None = None
+    capture_order: tuple[int, int] | None = None
+    browser_snapshot_fidelity: Literal["dom", "native"] | None = None
+    provider_message_ids: Set[str | None] = frozenset()
+    provider_attachment_ids: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionClassification(Generic[_Key]):
+    accepted_keys: tuple[_Key, ...]
+    equivalent_keys: tuple[_Key, ...]
+    ambiguous_keys: tuple[_Key, ...]
+    superseded_keys: tuple[_Key, ...] = ()
+    selection_basis: SelectionBasis = "empty"
+
+    @property
+    def requires_absent_head(self) -> bool:
+        """Whether publication relies on there being no established head."""
+        return self.selection_basis in {"declared_capture", "maximal_evidence"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,8 +573,8 @@ def _frontier(projection: SessionRevisionProjection) -> tuple[int, int, int, int
 
 
 def _equal_content_representative(
-    incumbent: MembershipRevision, candidate: MembershipRevision
-) -> tuple[MembershipRevision, MembershipRevision]:
+    incumbent: RevisionEvidence[_Key], candidate: RevisionEvidence[_Key]
+) -> tuple[RevisionEvidence[_Key], RevisionEvidence[_Key]]:
     """Pick (winner, loser) between two revisions already proven ``equal`` in content.
 
     Equal content is not equal authority: a direct/native export and a
@@ -544,7 +589,7 @@ def _equal_content_representative(
     browser-capture sibling, and a native browser snapshot always outranks a
     DOM snapshot of the same underlying session. Only when neither
     revision's provenance outranks the other's does provider timestamp (and
-    finally a stable raw_id) decide, exactly as before this function
+    finally a stable evidence key) decide, exactly as before this function
     existed.
     """
     incumbent_direct = incumbent.browser_snapshot_fidelity is None
@@ -577,60 +622,65 @@ def _equal_content_representative(
         # Timestamped id-less messages intentionally share a mutable revision
         # axis.  When their content changes but provider_updated_at is absent
         # or unchanged, observation order is the remaining source-backed
-        # authority; raw_id is only a deterministic last resort.
+        # authority; evidence key is only a deterministic last resort.
         return (candidate, incumbent) if candidate.observed_at_ms > incumbent.observed_at_ms else (incumbent, candidate)
     # No distinguishing provenance or provider timestamp -- these two are
-    # already proven identical content, so which raw_id represents them does
+    # already proven identical content, so which evidence key represents them does
     # not matter for correctness; pick deterministically rather than
     # requiring a timestamp that a re-export of an untouched conversation
     # may never carry (its own provider updated_at legitimately does not
     # move when nothing provider-visible changed).
-    winner, loser = sorted((incumbent, candidate), key=lambda item: item.raw_id)
+    winner, loser = sorted((incumbent, candidate), key=lambda item: item.key)
     return winner, loser
 
 
 def classify_membership_revisions(
     revisions: list[MembershipRevision], *, existing_accepted_raw_id: str | None = None
 ) -> MembershipClassification:
-    """Accept one total growth chain by set containment; never choose a branch silently.
+    """Bind revision classification to actual retained Raw identities."""
+    evidence = [
+        RevisionEvidence(
+            item.raw_id,
+            item.projection,
+            item.provider_updated_at,
+            item.observed_at_ms,
+            item.capture_order,
+            item.browser_snapshot_fidelity,
+            item.provider_message_ids,
+            item.provider_attachment_ids,
+        )
+        for item in revisions
+    ]
+    result = classify_revision_evidence(
+        evidence,
+        existing_head_present=existing_accepted_raw_id is not None,
+        existing_accepted_key=existing_accepted_raw_id,
+    )
+    return MembershipClassification(
+        result.accepted_keys, result.equivalent_keys, result.ambiguous_keys, result.superseded_keys
+    )
 
-    Two revisions are the same content, contain each other, or conflict --
-    total and decidable, with no residual category (polylogue-aggz). This
-    replaces what used to be four separate mechanisms (a positional-prefix
-    message dominance test, a denylist-stripped ordered event-hash prefix
-    test, a strict-vs-loose attachment id correlation pass, and a
-    session-hash/metadata-timestamp tiebreak layered on top of all three)
-    with one relation, applied uniformly to every axis.
 
-    A genuine, irreducible conflict -- no containment chain exists at all,
-    not export-vintage noise -- falls back to the presence-guarantee pick
-    (``_maximal_evidence_fallback``, deterministic maximal-evidence
-    representative, conflict recorded as debt rather than absence) ONLY when
-    ``existing_accepted_raw_id`` is ``None`` -- no head exists yet for this
-    cohort under ANY authority, so nothing is retired or downgraded by
-    materializing one. Any existing head at all -- even one that happens to
-    sit at the exact raw_id the fallback would itself pick -- refuses the
-    fallback and quarantines exactly as this cohort always did: every
-    representative in ``ambiguous_raw_ids``, nothing accepted. This is
-    deliberately narrower than "only refuse a DIFFERENT raw_id": re-accepting
-    the SAME raw_id through membership governance still overwrites that
-    head's ``accepted_frontier_kind``/generation metadata (e.g. downgrading
-    a byte-governed head to "semantic"), a real authority downgrade even
-    though the pointed-to raw_id never changed -- proven by a real
-    integration-test regression during development, not a theoretical
-    concern. The guard is a structural guarantee, not a runtime check that
-    could be bypassed: a later membership pass can never silently touch an
-    already-established head just because arbitration could not order the
-    new cohort (polylogue-miwv, PR #3211's write-back invariant). Callers
-    are responsible for passing the CURRENT accepted head's raw_id (via
-    ``archive.raw_revision_head_raw_id(logical_source_key)`` or equivalent)
-    -- omitting it when a head does exist defeats the guard.
+def classify_revision_evidence(
+    revisions: list[RevisionEvidence[_Key]],
+    *,
+    existing_head_present: bool = False,
+    existing_accepted_key: _Key | None = None,
+) -> RevisionClassification[_Key]:
+    """Classify evidence using content and declared acquisition authority.
+
+    Head presence guards contextual publication independently of its evidence
+    key. An ordinal cannot identify a physical Raw head without a proved
+    association. An absent-head call returns the head-independent proposal;
+    its selection basis states whether later publication needs that guard.
     """
+    if existing_accepted_key is not None:
+        existing_head_present = True
     if not revisions:
-        return MembershipClassification((), (), ())
+        return RevisionClassification((), (), (), selection_basis="empty")
 
-    representatives: list[MembershipRevision] = []
-    equivalents: list[str] = []
+    representatives: list[RevisionEvidence[_Key]] = []
+    equivalents: list[_Key] = []
     for revision in revisions:
         match_index = next(
             (i for i, rep in enumerate(representatives) if _relation(rep.projection, revision.projection) == "equal"),
@@ -642,128 +692,125 @@ def classify_membership_revisions(
         incumbent = representatives[match_index]
         winner, loser = _equal_content_representative(incumbent, revision)
         representatives[match_index] = winner
-        equivalents.append(loser.raw_id)
+        equivalents.append(loser.key)
 
-    representatives.sort(key=lambda item: (_frontier(item.projection), item.raw_id))
+    representatives.sort(key=lambda item: (_frontier(item.projection), item.key))
     conflict = any(
         _relation(older.projection, newer.projection) != "b_contains_a"
         for older, newer in zip(representatives, representatives[1:], strict=False)
     )
     if not conflict:
-        return MembershipClassification(
-            tuple(item.raw_id for item in representatives),
+        return RevisionClassification(
+            tuple(item.key for item in representatives),
             tuple(sorted(equivalents)),
             (),
+            selection_basis="containment",
         )
 
     browser_order = _provider_ordered_browser_snapshots(representatives)
     if browser_order is not None:
-        return MembershipClassification(
-            tuple(item.raw_id for item in browser_order),
+        return RevisionClassification(
+            tuple(item.key for item in browser_order),
             tuple(sorted(equivalents)),
             (),
+            selection_basis="provider_order",
         )
     independent_winner = _unique_later_native_snapshot(representatives)
     if independent_winner is not None:
-        equivalent_ids: list[str] = []
-        superseded_ids: list[str] = []
-        winner_ambiguous_ids: list[str] = []
+        equivalent_ids: list[_Key] = []
+        superseded_ids: list[_Key] = []
+        winner_ambiguous_ids: list[_Key] = []
         for revision in revisions:
-            if revision.raw_id == independent_winner.raw_id:
+            if revision.key == independent_winner.key:
                 continue
             if _relation(revision.projection, independent_winner.projection) == "equal":
-                equivalent_ids.append(revision.raw_id)
+                equivalent_ids.append(revision.key)
             elif _browser_snapshot_dominates(revision, independent_winner):
-                superseded_ids.append(revision.raw_id)
+                superseded_ids.append(revision.key)
             else:
-                winner_ambiguous_ids.append(revision.raw_id)
-        return MembershipClassification(
-            (independent_winner.raw_id,),
+                winner_ambiguous_ids.append(revision.key)
+        return RevisionClassification(
+            (independent_winner.key,),
             tuple(sorted(equivalent_ids)),
             tuple(sorted(winner_ambiguous_ids)),
             tuple(sorted(superseded_ids)),
+            selection_basis="independent_native",
         )
     dom_authority = _dom_authority_when_native_is_unordered(representatives)
     if dom_authority is not None:
         accepted, ambiguous = dom_authority
-        ambiguous_ids = {item.raw_id for item in ambiguous}
-        if existing_accepted_raw_id == accepted.raw_id:
-            ambiguous_ids.add(accepted.raw_id)
-            accepted_ids: tuple[str, ...] = ()
+        ambiguous_ids = {item.key for item in ambiguous}
+        if existing_accepted_key == accepted.key:
+            ambiguous_ids.add(accepted.key)
+            accepted_ids: tuple[_Key, ...] = ()
         else:
-            accepted_ids = (accepted.raw_id,)
-        equivalent_by_owner: dict[str, list[str]] = {}
-        revision_by_id = {item.raw_id: item for item in revisions}
+            accepted_ids = (accepted.key,)
+        equivalent_by_owner: dict[_Key, list[_Key]] = {}
+        revision_by_id = {item.key: item for item in revisions}
         for equivalent_id in equivalents:
             equivalent = revision_by_id[equivalent_id]
             owner = next(
-                (
-                    item.raw_id
-                    for item in representatives
-                    if _relation(item.projection, equivalent.projection) == "equal"
-                ),
+                (item.key for item in representatives if _relation(item.projection, equivalent.projection) == "equal"),
                 None,
             )
             if owner is not None:
                 equivalent_by_owner.setdefault(owner, []).append(equivalent_id)
         for owner in tuple(ambiguous_ids):
             ambiguous_ids.update(equivalent_by_owner.get(owner, ()))
-        accepted_equivalents = equivalent_by_owner.get(accepted.raw_id, []) if accepted_ids else []
+        accepted_equivalents = equivalent_by_owner.get(accepted.key, []) if accepted_ids else []
         accounted_equivalents = set(accepted_equivalents) | (ambiguous_ids & set(equivalents))
         unassigned_equivalents = set(equivalents) - accounted_equivalents
-        if existing_accepted_raw_id == accepted.raw_id:
-            return MembershipClassification((), (), tuple(sorted(ambiguous_ids | unassigned_equivalents)))
-        return MembershipClassification(
+        if existing_accepted_key == accepted.key:
+            return RevisionClassification(
+                (), (), tuple(sorted(ambiguous_ids | unassigned_equivalents)), selection_basis="dom_authority"
+            )
+        return RevisionClassification(
             accepted_ids,
             tuple(sorted((*accepted_equivalents, *unassigned_equivalents))),
             tuple(sorted(ambiguous_ids)),
+            selection_basis="dom_authority",
         )
     direct_export = _direct_export_precedence(representatives)
     if direct_export is not None:
-        accepted, browser_capture_raw_ids = direct_export
-        return MembershipClassification(
-            (accepted.raw_id,),
-            tuple(sorted((*equivalents, *browser_capture_raw_ids))),
+        accepted, browser_capture_keys = direct_export
+        return RevisionClassification(
+            (accepted.key,),
+            tuple(sorted((*equivalents, *browser_capture_keys))),
             (),
+            selection_basis="direct_export",
         )
     latest = _latest_direct_capture(representatives)
-    if latest is not None and existing_accepted_raw_id is None:
+    if latest is not None and not existing_head_present:
         # Conflicting direct (non-browser) captures of one session are
         # successive full revisions: the latest declared capture is the
         # session's current state, whatever its evidence volume. The same
         # no-existing-head guard as the fallback below applies.
-        return MembershipClassification(
-            (latest.raw_id,),
+        return RevisionClassification(
+            (latest.key,),
             tuple(sorted(equivalents)),
-            tuple(sorted(item.raw_id for item in representatives if item.raw_id != latest.raw_id)),
+            tuple(sorted(item.key for item in representatives if item.key != latest.key)),
+            selection_basis="declared_capture",
         )
-    # Presence-guarantee fallback, guarded against ANY interference with an
-    # already-established head -- see this function's own docstring for why
-    # this is deliberately narrower than "only refuse when the raw_id
-    # differs". Applying the fallback even when its pick happens to be the
-    # SAME raw_id as the existing head is still unsafe: verified directly
-    # during development (a real integration-test regression) that
-    # ``apply_prepared_membership_index`` re-accepting that raw_id
-    # through MEMBERSHIP governance downgrades a byte-governed head's own
-    # ``accepted_frontier_kind``/generation metadata from "byte" to
-    # "semantic", even though the pointed-to raw_id never changed -- a
-    # genuine authority downgrade, not a no-op. So the fallback applies
-    # ONLY when no head exists at all yet.
+    # Reaffirming even the same physical head through semantic membership
+    # can downgrade its established byte authority. Any existing head blocks
+    # this fallback, independently of the selected evidence key.
     fallback = _maximal_evidence_fallback(representatives)
-    if existing_accepted_raw_id is None:
-        return MembershipClassification(
-            (fallback.raw_id,),
+    if not existing_head_present:
+        return RevisionClassification(
+            (fallback.key,),
             tuple(sorted(equivalents)),
-            tuple(sorted(item.raw_id for item in representatives if item.raw_id != fallback.raw_id)),
+            tuple(sorted(item.key for item in representatives if item.key != fallback.key)),
+            selection_basis="maximal_evidence",
         )
-    return MembershipClassification(
+    return RevisionClassification(
         (),
         tuple(sorted(equivalents)),
-        tuple(sorted(item.raw_id for item in representatives)),
+        tuple(sorted(item.key for item in representatives)),
+        selection_basis="maximal_evidence",
     )
 
 
-def _latest_direct_capture(representatives: list[MembershipRevision]) -> MembershipRevision | None:
+def _latest_direct_capture(representatives: list[RevisionEvidence[_Key]]) -> RevisionEvidence[_Key] | None:
     """The uniquely latest declared capture of an all-direct conflict, if any.
 
     Applies only when every representative is a direct capture (no browser
@@ -778,47 +825,14 @@ def _latest_direct_capture(representatives: list[MembershipRevision]) -> Members
     return ordered[-1]
 
 
-def _maximal_evidence_fallback(representatives: list[MembershipRevision]) -> MembershipRevision:
-    """Deterministically select the maximal-evidence revision for an irreducible conflict.
-
-    Designed and unit-tested as the presence-guarantee alternative to
-    quarantining every representative with nothing accepted: a document
-    should never simply vanish from the archive just because arbitration
-    could not order its revisions. Frontier order (most messages, most
-    events, most attachments, most acquired bytes) with a stable raw_id
-    tiebreak means the same cohort always resolves to the same head
-    regardless of processing order -- verified directly by
-    ``test_maximal_evidence_fallback_is_order_independent``.
-
-    Called by ``classify_membership_revisions`` for a genuine, irreducible
-    conflict, but GUARDED there: the caller passes the cohort's current
-    accepted head's raw_id (if any) as ``existing_accepted_raw_id``, and the
-    fallback pick is applied ONLY when no head exists yet. ANY existing head
-    -- even one that happens to sit at the exact raw_id this function would
-    itself pick -- refuses the fallback and preserves plain quarantine
-    (nothing accepted) exactly as before this function was wired in. This
-    guard exists because, unguarded (or guarded only against a DIFFERENT
-    raw_id), a fallback pick can silently damage an already-established
-    head -- proven by real integration-test regressions during development:
-    ``test_divergent_bundle_member_preserves_last_accepted_session`` and its
-    sibling ``test_divergent_bundle_member_does_not_block_safe_members``
-    exercise the DIFFERENT-raw_id case against a real, carefully-designed
-    invariant in ``apply_prepared_membership_index``
-    write-back (polylogue-miwv, PR #3211): once a logical source has an
-    accepted head, a later membership pass may not silently retire it in
-    favor of an unrelated raw. A second, independently-discovered case ruled
-    out even the SAME-raw_id "re-affirmation" shape: re-accepting that exact
-    raw_id through MEMBERSHIP governance still overwrites the head's own
-    ``accepted_frontier_kind``/generation metadata (e.g. downgrading a
-    byte-governed head to "semantic"), a real authority downgrade despite
-    the pointed-to raw_id never changing (``test_live_multi_session_divergence_keeps_accepted_head_as_debt``).
-    """
-    return max(representatives, key=lambda item: (_frontier(item.projection), item.raw_id))
+def _maximal_evidence_fallback(representatives: list[RevisionEvidence[_Key]]) -> RevisionEvidence[_Key]:
+    """Pick maximal evidence with a stable key tie-break, never key chronology."""
+    return max(representatives, key=lambda item: (_frontier(item.projection), item.key))
 
 
 def _provider_ordered_browser_snapshots(
-    revisions: list[MembershipRevision],
-) -> list[MembershipRevision] | None:
+    revisions: list[RevisionEvidence[_Key]],
+) -> list[RevisionEvidence[_Key]] | None:
     """Order compatible mutable browser snapshots by provider authority.
 
     Kept as a genuine exception to the content-only relation above, not a
@@ -829,7 +843,7 @@ def _provider_ordered_browser_snapshots(
     ``_relation`` genuinely cannot correlate them (it would read a
     DOM-to-native fidelity upgrade as two disjoint, conflicting message id
     sets). ``provider_message_ids``/``provider_attachment_ids`` on
-    ``MembershipRevision`` carry the browser-capture layer's own identity
+    ``RevisionEvidence`` carry the browser-capture layer's own identity
     evidence for exactly this reason. ChatGPT can also move an already-present
     context/tool node when later work appears, and can complete text in place
     under the same provider message id, so a strict serialized-content
@@ -841,13 +855,13 @@ def _provider_ordered_browser_snapshots(
 
     if not revisions or any(item.browser_snapshot_fidelity is None for item in revisions):
         return None
-    timestamped: list[tuple[int, float, int, str, MembershipRevision]] = []
+    timestamped: list[tuple[int, float, int, _Key, RevisionEvidence[_Key]]] = []
     for item in revisions:
         parsed = parse_timestamp(item.provider_updated_at)
         if parsed is None:
             return None
         fidelity_rank = 1 if item.browser_snapshot_fidelity == "native" else 0
-        timestamped.append((fidelity_rank, parsed.timestamp(), item.observed_at_ms or -1, item.raw_id, item))
+        timestamped.append((fidelity_rank, parsed.timestamp(), item.observed_at_ms or -1, item.key, item))
     timestamped.sort(key=lambda entry: entry[:4])
     ordered = [entry[4] for entry in timestamped]
     for older, newer in zip(ordered, ordered[1:], strict=False):
@@ -856,7 +870,7 @@ def _provider_ordered_browser_snapshots(
     return ordered
 
 
-def _unique_later_native_snapshot(revisions: list[MembershipRevision]) -> MembershipRevision | None:
+def _unique_later_native_snapshot(revisions: list[RevisionEvidence[_Key]]) -> RevisionEvidence[_Key] | None:
     """Select one native snapshot that independently dominates every sibling.
 
     Older snapshots need not form a total order among themselves. A unique
@@ -884,8 +898,8 @@ def _unique_later_native_snapshot(revisions: list[MembershipRevision]) -> Member
 
 
 def _direct_export_precedence(
-    revisions: list[MembershipRevision],
-) -> tuple[MembershipRevision, tuple[str, ...]] | None:
+    revisions: list[RevisionEvidence[_Key]],
+) -> tuple[RevisionEvidence[_Key], tuple[_Key, ...]] | None:
     """A genuine non-browser-capture revision always outranks browser-capture siblings.
 
     Browser capture exists to backfill a session before its direct/native
@@ -907,12 +921,12 @@ def _direct_export_precedence(
     browser_sourced = [item for item in revisions if item.browser_snapshot_fidelity is not None]
     if len(direct) != 1 or not browser_sourced:
         return None
-    return direct[0], tuple(item.raw_id for item in browser_sourced)
+    return direct[0], tuple(item.key for item in browser_sourced)
 
 
 def _dom_authority_when_native_is_unordered(
-    revisions: list[MembershipRevision],
-) -> tuple[MembershipRevision, tuple[MembershipRevision, ...]] | None:
+    revisions: list[RevisionEvidence[_Key]],
+) -> tuple[RevisionEvidence[_Key], tuple[RevisionEvidence[_Key], ...]] | None:
     """Keep an equal-frontier DOM head when native evidence is not time-ordered.
 
     A browser-native capture is a fidelity upgrade only when its provider
@@ -950,7 +964,7 @@ def _dom_authority_when_native_is_unordered(
     return dom_revision, tuple(native)
 
 
-def _browser_snapshot_dominates(older: MembershipRevision, newer: MembershipRevision) -> bool:
+def _browser_snapshot_dominates(older: RevisionEvidence[_Key], newer: RevisionEvidence[_Key]) -> bool:
     older_time = parse_timestamp(older.provider_updated_at)
     newer_time = parse_timestamp(newer.provider_updated_at)
     if older_time is None or newer_time is None:
@@ -986,5 +1000,9 @@ __all__ = [
     "MembershipClassification",
     "MembershipDecision",
     "MembershipRevision",
+    "RevisionEvidence",
+    "RevisionClassification",
+    "SelectionBasis",
+    "classify_revision_evidence",
     "classify_membership_revisions",
 ]
