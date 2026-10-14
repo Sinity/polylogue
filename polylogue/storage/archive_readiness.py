@@ -495,6 +495,7 @@ def _pinned_parser_census_projection(
                 )
                 complete = measured.complete(
                     typed_non_session=bool(typed_non_session),
+                    typed_terminal_refusal=False,
                     parser_confirmed_non_session=bool(parser_confirmed_non_session),
                     byte_governed_fragment=bool(byte_governed_fragment),
                 )
@@ -1432,6 +1433,7 @@ def current_typed_non_session_raw(
     ) as measured:
         return measured.complete(
             typed_non_session=True,
+            typed_terminal_refusal=False,
             parser_confirmed_non_session=True,
             byte_governed_fragment=False,
         )

@@ -396,12 +396,28 @@ def _parser_census_state(
     raw_id = str(raw[0])
     if receipt is None:
         return False, (SourceGenerationBlocker.PARSER_CENSUS_MISSING,)
+    from polylogue.archive.artifact_taxonomy import CLASSIFIED_ARTIFACT_KINDS
+    from polylogue.core.raw_failure_evidence import (
+        RAW_FAILURE_VALIDATION_FAILURE_KINDS,
+        retained_raw_decode_refusal_from_row,
+    )
+    from polylogue.storage.sqlite.queries.raw_state import retained_raw_decode_refusal_sql
+
     with closing(
         source_conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM main.raw_artifacts WHERE raw_id=? AND parse_as_session=0)", (raw_id,)
+            f"SELECT EXISTS(SELECT 1 FROM main.raw_artifacts WHERE raw_id=? AND parse_as_session=0 "
+            f"AND artifact_kind IN ({','.join('?' for _ in CLASSIFIED_ARTIFACT_KINDS)}))",
+            (raw_id, *sorted(CLASSIFIED_ARTIFACT_KINDS)),
         )
     ) as rows:
         typed_non_session = bool(rows.fetchone()[0])
+    with closing(
+        source_conn.execute(
+            retained_raw_decode_refusal_sql(),
+            (raw_id, raw_authority_parser_fingerprint(), *sorted(RAW_FAILURE_VALIDATION_FAILURE_KINDS)),
+        )
+    ) as rows:
+        parser_refused = retained_raw_decode_refusal_from_row(raw_id, rows.fetchone()) is not None
     with closing(
         source_conn.execute(
             "SELECT parser_fingerprint, status, member_count, revision_authority "
@@ -436,11 +452,13 @@ def _parser_census_state(
     # alone (``record_current_parser_source_census``); no membership census
     # row is ever written for it, so its absence is the expected shape.
     typed_non_session_identity = typed_non_session and census is None
+    terminal_refusal_identity = parser_refused and census is None
     expected_census = (
         parser_confirmed_non_session
         or byte_governed_fragment
         or primary_revision_identity
         or typed_non_session_identity
+        or terminal_refusal_identity
         or current
         and census_status == "complete"
         and recorded_count == membership_count
@@ -451,6 +469,7 @@ def _parser_census_state(
         and expected_census
         and measured.complete(
             typed_non_session=typed_non_session,
+            typed_terminal_refusal=parser_refused,
             parser_confirmed_non_session=parser_confirmed_non_session,
             byte_governed_fragment=byte_governed_fragment,
         )

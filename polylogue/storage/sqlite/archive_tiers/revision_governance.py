@@ -2289,7 +2289,8 @@ def record_current_parser_source_census(
                 )
             )
         complete = measured.complete(
-            typed_non_session=settled_without_session,
+            typed_non_session=typed_non_session,
+            typed_terminal_refusal=parser_refused,
             parser_confirmed_non_session=parser_confirmed_non_session,
             byte_governed_fragment=byte_governed_fragment,
         )
@@ -4063,9 +4064,10 @@ def prepared_parser_census_is_current(seal: PreparedIndexMutation, raw_id: str) 
     _load_parser_census_source_inputs(seal, raw_id)
     fingerprint = raw_authority_parser_fingerprint()
     with seal.source_rows(
-        """
+        f"""
         SELECT r.logical_source_key,r.revision_kind,r.source_index,
-               EXISTS(SELECT 1 FROM raw_artifacts a WHERE a.raw_id=r.raw_id AND a.parse_as_session=0),
+               EXISTS(SELECT 1 FROM raw_artifacts a WHERE a.raw_id=r.raw_id AND a.parse_as_session=0
+                      AND a.artifact_kind IN ({",".join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))})),
                EXISTS(SELECT 1 FROM raw_membership_census mc WHERE mc.raw_id=r.raw_id
                       AND mc.parser_fingerprint=? AND mc.status='non_session'),
                EXISTS(SELECT 1 FROM raw_membership_census mc WHERE mc.raw_id=r.raw_id
@@ -4083,6 +4085,17 @@ def prepared_parser_census_is_current(seal: PreparedIndexMutation, raw_id: str) 
         raise ReferenceSealStaleError("selected parser census raw is absent")
     if not raw[6] or not raw[7] or raw[8] != "array":
         return False
+    from polylogue.core.raw_failure_evidence import (
+        RAW_FAILURE_VALIDATION_FAILURE_KINDS,
+        retained_raw_decode_refusal_from_row,
+    )
+    from polylogue.storage.sqlite.queries.raw_state import retained_raw_decode_refusal_sql
+
+    with seal.source_rows(
+        retained_raw_decode_refusal_sql(),
+        (raw_id, fingerprint, *sorted(RAW_FAILURE_VALIDATION_FAILURE_KINDS)),
+    ) as refusal_rows:
+        parser_refused = retained_raw_decode_refusal_from_row(raw_id, refusal_rows.fetchone()) is not None
     with parser_census_identity_measurement(
         raw_logical_key=raw[0],
         revision_kind=raw[1],
@@ -4093,6 +4106,7 @@ def prepared_parser_census_is_current(seal: PreparedIndexMutation, raw_id: str) 
     ) as measured:
         return measured.complete(
             typed_non_session=bool(raw[3]),
+            typed_terminal_refusal=parser_refused,
             parser_confirmed_non_session=bool(raw[4]),
             byte_governed_fragment=int(raw[2]) < 0 and bool(raw[5]),
         )

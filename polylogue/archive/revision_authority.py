@@ -170,15 +170,26 @@ def parser_census_identity_is_complete(
     identities_match: bool,
     observed_count: int,
     typed_non_session: bool,
+    typed_terminal_refusal: bool,
     parser_confirmed_non_session: bool,
     byte_governed_fragment: bool,
 ) -> bool:
-    """One completion law for exact measured producer and retained identity sets."""
+    """Complete a settled attempt while preserving its exact identity set.
+
+    Non-session proof and typed terminal refusal are distinct dispositions;
+    neither can excuse invalid or mismatched durable/observed identities.
+    """
     return (
         durable_valid
         and observed_valid
         and identities_match
-        and (observed_count > 0 or typed_non_session or parser_confirmed_non_session or byte_governed_fragment)
+        and (
+            observed_count > 0
+            or typed_non_session
+            or typed_terminal_refusal
+            or parser_confirmed_non_session
+            or byte_governed_fragment
+        )
     )
 
 
@@ -220,6 +231,7 @@ class ParserCensusIdentityMeasurement:
         self,
         *,
         typed_non_session: bool,
+        typed_terminal_refusal: bool,
         parser_confirmed_non_session: bool,
         byte_governed_fragment: bool,
     ) -> bool:
@@ -229,6 +241,7 @@ class ParserCensusIdentityMeasurement:
             identities_match=self.identities_match,
             observed_count=self.observed_count,
             typed_non_session=typed_non_session,
+            typed_terminal_refusal=typed_terminal_refusal,
             parser_confirmed_non_session=parser_confirmed_non_session,
             byte_governed_fragment=byte_governed_fragment,
         )

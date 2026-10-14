@@ -74,6 +74,7 @@ async def test_a_pending_async_acquisition_can_later_bind_its_parsed_identity(
             assert measured.identities_match
             assert not measured.complete(
                 typed_non_session=False,
+                typed_terminal_refusal=False,
                 parser_confirmed_non_session=False,
                 byte_governed_fragment=False,
             )

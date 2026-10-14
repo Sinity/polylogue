@@ -1294,6 +1294,7 @@ class RawObservationInspection:
         ):
             if not measured.complete(
                 typed_non_session=non_session,
+                typed_terminal_refusal=False,
                 parser_confirmed_non_session=membership is not None
                 and membership["status"] == "non_session"
                 and membership["parser_fingerprint"] == parser_fingerprint,
