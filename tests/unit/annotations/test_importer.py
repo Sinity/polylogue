@@ -369,7 +369,16 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
         for index in range(4)
     ]
     rows.append(
-        {"row_key": "bad-evidence", "value": {"label": "no", "confidence": 0.4}, "evidence_refs": ["missing-session"]}
+        {
+            "row_key": "bad-evidence",
+            "value": {"label": "no", "confidence": 0.4},
+            "evidence_refs": [
+                "codex-session:annotation-target",
+                "missing-session",
+                "codex-session:annotation-target",
+                "missing-session",
+            ],
+        }
     )
     jsonl = "\n".join(json.dumps(row) for row in rows)
     registry = AnnotationSchemaRegistry()
@@ -393,6 +402,15 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
         batches = archive.list_annotation_batches(schema_id="test.import")
     assert {batch.batch_ref for batch in batches} == {"annotation-batch:batch-one", "annotation-batch:batch-two"}
     assert all(batch.validation_failures for batch in batches)
+    with ArchiveStore.open_existing(archive_root) as archive:
+        for batch_id in ("batch-one", "batch-two"):
+            page = archive.get_annotation_batch_page(batch_id, limit=10, offset=0)
+            assert page is not None
+            failures = [item for item in page.items if item["kind"] == "validation-error"]
+            assert len(failures) == 1
+            failure = require_json_document(failures[0]["failure"], context="retained validation failure")
+            assert failures[0]["error"] == "evidence_refs_unresolved"
+            assert failure["unresolved_evidence_refs"] == [1, 3]
 
     with connect_user_db(archive_root / "user.db") as conn:
         assertion_rows = conn.execute(
