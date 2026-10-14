@@ -1899,3 +1899,40 @@ def test_claude_ai_v2_witnesses_render_one_coherent_shape_the_parser_reads() -> 
         assert wire_formats._parser_artifact_has_complete_message_coverage(
             sessions, "claude-ai", payload, f"coherent-{index}"
         )
+
+
+@pytest.mark.parametrize("enveloped", (False, True))
+def test_codex_native_tool_receipt_checks_both_record_sides_and_outcomes(enveloped: bool) -> None:
+    header = {"type": "session_meta", "id": "neutral-session"}
+    call = {"type": "function_call", "call_id": "neutral-call", "name": "Read", "arguments": "{}"}
+    output = {
+        "type": "function_call_output",
+        "call_id": "neutral-call",
+        "output": {"output": "neutral result", "exit_code": 0, "is_error": False},
+    }
+    payload = (
+        [
+            {"type": "session_meta", "payload": {"id": "neutral-session"}},
+            {"type": "response_item", "payload": call},
+            {"type": "response_item", "payload": output},
+        ]
+        if enveloped
+        else [header, call, output]
+    )
+    sessions = dispatch_module.parse_payload("codex", payload, "neutral-fallback")
+    assert len(sessions) == 1
+    messages = sessions[0].messages
+    assert len(messages) == 2
+    assert [message.provider_message_id for message in messages] == ["neutral-call::call", "neutral-call::output"]
+    assert [message.role for message in messages] == [Role.ASSISTANT, Role.TOOL]
+    assert messages[1].blocks[0].is_error is False
+    assert messages[1].blocks[0].exit_code == 0
+    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "codex", payload, "neutral-fallback")
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "codex", payload, "neutral-fallback")
+    for mutation in ({"tool_id": None}, {"is_error": True}, {"exit_code": 1}):
+        block = messages[1].blocks[0].model_copy(update=mutation)
+        changed = messages[1].model_copy(update={"blocks": [block]})
+        corrupted = [sessions[0].model_copy(update={"messages": [messages[0], changed]})]
+        assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
+            corrupted, "codex", payload, "neutral-fallback"
+        )

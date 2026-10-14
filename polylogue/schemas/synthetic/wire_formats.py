@@ -1020,6 +1020,17 @@ def _normalise_evidence_text(value: str) -> str:
     return " ".join(value.split())
 
 
+_CODEX_TOOL_CALL_TYPES = frozenset({"function_call", "custom_tool_call"})
+_CODEX_TOOL_OUTPUT_TYPES = frozenset({"function_call_output", "custom_tool_call_output"})
+
+
+def _codex_tool_output(node: Mapping[str, JSONValue]) -> object:
+    for key in ("output", "tools", "result"):
+        if node.get(key) is not None:
+            return node[key]
+    return None
+
+
 def _parser_evidence_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[str, JSONValue], ...]:
     """Return the route-owned conversational nodes from one wire artifact."""
     from polylogue.browser_capture.models import looks_like_browser_capture
@@ -1088,6 +1099,9 @@ def _parser_evidence_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[s
                     nodes.append(record)
                 continue
             record_type = record.get("type")
+            if record_type in _CODEX_TOOL_CALL_TYPES | _CODEX_TOOL_OUTPUT_TYPES:
+                nodes.append(record)
+                continue
             if record_type == "message" and isinstance(record.get("content"), list | GeneratedArray):
                 nodes.append(record)
                 continue
@@ -1095,8 +1109,11 @@ def _parser_evidence_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[s
             if (
                 record_type == "response_item"
                 and isinstance(nested, dict | GeneratedRecord)
-                and nested.get("type") == "message"
-                and isinstance(nested.get("content"), list | GeneratedArray)
+                and (
+                    nested.get("type") in _CODEX_TOOL_CALL_TYPES | _CODEX_TOOL_OUTPUT_TYPES
+                    or nested.get("type") == "message"
+                    and isinstance(nested.get("content"), list | GeneratedArray)
+                )
             ) or (
                 record_type == "event_msg"
                 and isinstance(nested, dict | GeneratedRecord)
@@ -1242,6 +1259,13 @@ def _parser_artifact_expected_nodes(provider: str, payload: JSONValue) -> tuple[
 def _parser_artifact_node_identity(provider: str, node: Mapping[str, JSONValue]) -> str | None:
     """Extract the provider message identity from one parser-owned raw node."""
     identity: object = None
+    if provider == "codex" and node.get("type") in _CODEX_TOOL_CALL_TYPES | _CODEX_TOOL_OUTPUT_TYPES:
+        if native_id := node.get("id"):
+            return str(native_id)
+        if call_id := node.get("call_id"):
+            side = "call" if node.get("type") in _CODEX_TOOL_CALL_TYPES else "output"
+            return f"{call_id}::{side}"
+        return None
     if provider == "chatgpt":
         message = node.get("message")
         if isinstance(message, Mapping):
@@ -1262,6 +1286,11 @@ def _parser_artifact_node_identity(provider: str, node: Mapping[str, JSONValue])
 def _parser_artifact_node_role(provider: str, node: Mapping[str, JSONValue]) -> Role:
     """Normalize the role asserted by one raw parser-owned message node."""
     raw_role: object = None
+    if provider == "codex":
+        if node.get("type") in _CODEX_TOOL_CALL_TYPES:
+            return Role.ASSISTANT
+        if node.get("type") in _CODEX_TOOL_OUTPUT_TYPES:
+            return Role.TOOL
     if provider == "chatgpt":
         message = node.get("message")
         author = message.get("author") if isinstance(message, Mapping) else None
@@ -1334,6 +1363,16 @@ def _parser_artifact_node_tool_witnesses(
             identity = message.get("id")
             return ((BlockType.TOOL_USE, str(identity), None, None),) if identity is not None else ()
         return ()
+    if provider == "codex" and node.get("type") in _CODEX_TOOL_CALL_TYPES | _CODEX_TOOL_OUTPUT_TYPES:
+        identity = node.get("call_id") or node.get("id")
+        if not identity:
+            return ()
+        if node.get("type") in _CODEX_TOOL_CALL_TYPES:
+            return ((BlockType.TOOL_USE, str(identity), None, None),)
+        from polylogue.sources.parsers.codex import _codex_tool_result_outcome
+
+        is_error, exit_code, _reason = _codex_tool_result_outcome(_codex_tool_output(node))
+        return ((BlockType.TOOL_RESULT, str(identity), is_error, exit_code),)
     if provider not in {"claude-ai", "claude-code", "codex"}:
         return ()
     if provider == "claude-code":
@@ -1452,6 +1491,10 @@ def _codex_node_content_blocks(node: Mapping[str, JSONValue], text: str) -> list
     from polylogue.sources.parsers.base_models import ParsedContentBlock
     from polylogue.sources.parsers.base_support import content_blocks_from_segments
 
+    if node.get("type") in _CODEX_TOOL_CALL_TYPES:
+        return [ParsedContentBlock(type=BlockType.TOOL_USE)]
+    if node.get("type") in _CODEX_TOOL_OUTPUT_TYPES:
+        return [ParsedContentBlock(type=BlockType.TOOL_RESULT, text=text)]
     blocks = content_blocks_from_segments(node.get("content"), lower_transport_text=True)
     if not blocks and text:
         blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
@@ -1737,6 +1780,14 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
                     if isinstance(text, str) and text
                 )
     elif provider == "codex":
+        if node.get("type") in _CODEX_TOOL_CALL_TYPES:
+            name = node.get("name") or node.get("execution") or node.get("type")
+            return (_normalise_evidence_text(str(name)),)
+        if node.get("type") in _CODEX_TOOL_OUTPUT_TYPES:
+            from polylogue.sources.parsers.codex import _codex_tool_output_text
+
+            text = _codex_tool_output_text(_codex_tool_output(node))
+            return (_normalise_evidence_text(text),) if text else ()
         content = node.get("content")
         content_values = (
             tuple(
