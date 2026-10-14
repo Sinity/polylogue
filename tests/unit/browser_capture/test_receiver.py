@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPResponse
+from logging import WARNING
 from pathlib import Path
 from threading import Lock, Thread
 from typing import cast
@@ -1415,7 +1416,7 @@ def test_receiver_reports_invalid_control_json_once(
     assert errors == ["invalid_json"]
     invalid = [(name, fields) for name, fields in events if name == "browser_capture.invalid_json"]
     assert invalid == [
-        ("browser_capture.invalid_json", {"level": server.WARNING, "request_id": response.getheader("X-Request-ID")})
+        ("browser_capture.invalid_json", {"level": WARNING, "request_id": response.getheader("X-Request-ID")})
     ]
 
 
