@@ -11,6 +11,7 @@ from typing_extensions import TypedDict
 from polylogue.archive.context_models import ContextImage
 from polylogue.core.enums import DisplayLabelSource
 from polylogue.core.json import JSONDocument
+from polylogue.core.payload_model import SurfacePayloadModel, model_json_document
 from polylogue.core.sources import source_name_to_origin
 from polylogue.core.user_state_targets import TARGET_SESSION
 from polylogue.core.web_urls import canonical_session_url
@@ -24,9 +25,7 @@ from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
     SearchEnvelope,
-    SurfacePayloadModel,
     build_search_envelope,
-    model_json_document,
     role_label,
     session_summary_envelope_from_domain,
 )

@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from polylogue.surfaces.payloads import SurfacePayloadModel
+from polylogue.core.payload_model import SurfacePayloadModel
 
 CoordinationView = Literal["status", "self", "work-item", "conflicts", "handoff"]
 

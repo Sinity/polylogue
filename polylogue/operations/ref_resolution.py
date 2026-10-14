@@ -373,11 +373,8 @@ def _oversized_annotation_batch_ref_payload(ref: str) -> Any | None:
 
     if not ref.startswith("annotation-batch"):
         return None
-    from polylogue.surfaces.payloads import (
-        AnnotationBatchRefDigestPayload,
-        PublicRefResolutionPayload,
-        model_json_document,
-    )
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import AnnotationBatchRefDigestPayload, PublicRefResolutionPayload
 
     try:
         descriptor = AnnotationBatchRefDigestPayload.from_oversized_ref(ref)
@@ -397,11 +394,8 @@ def _oversized_annotation_batch_ref_payload(ref: str) -> Any | None:
 def _invalid_unicode_ref_payload(ref: str) -> Any | None:
     """Fail closed before an invalid Python string reaches parsing or SQLite."""
 
-    from polylogue.surfaces.payloads import (
-        InvalidUnicodeRefDigestPayload,
-        PublicRefResolutionPayload,
-        model_json_document,
-    )
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import InvalidUnicodeRefDigestPayload, PublicRefResolutionPayload
 
     try:
         descriptor = InvalidUnicodeRefDigestPayload.from_invalid_ref(ref)
@@ -450,7 +444,8 @@ _PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset(
 
 
 def _pending_ref_payload(ref: str, normalized_ref: str, kind: str) -> Any:
-    from polylogue.surfaces.payloads import PendingObjectRefPayload, PublicRefResolutionPayload, model_json_document
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import PendingObjectRefPayload, PublicRefResolutionPayload
 
     return PublicRefResolutionPayload(
         ref=ref,
@@ -470,11 +465,8 @@ def _resolve_session_object_ref(
     object_ref: ObjectRef,
     evidence_ref: EvidenceRef | None,
 ) -> PublicRefResolutionPayload:
-    from polylogue.surfaces.payloads import (
-        PublicRefResolutionPayload,
-        model_json_document,
-        session_summary_envelope_from_summary,
-    )
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import PublicRefResolutionPayload, session_summary_envelope_from_summary
 
     try:
         session_id = archive.resolve_session_id(object_ref.object_id)
@@ -512,11 +504,8 @@ def _resolve_message_object_ref(
     object_ref: ObjectRef,
     evidence_ref: EvidenceRef | None,
 ) -> PublicRefResolutionPayload:
-    from polylogue.surfaces.payloads import (
-        PublicRefResolutionPayload,
-        message_render_envelope_from_domain,
-        model_json_document,
-    )
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import PublicRefResolutionPayload, message_render_envelope_from_domain
 
     row = archive._conn.execute(
         """
@@ -585,8 +574,9 @@ def _resolve_block_object_ref(
     object_ref: ObjectRef,
     evidence_ref: EvidenceRef | None,
 ) -> PublicRefResolutionPayload:
+    from polylogue.core.payload_model import model_json_document
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveBlockQueryRow
-    from polylogue.surfaces.payloads import BlockQueryRowPayload, PublicRefResolutionPayload, model_json_document
+    from polylogue.surfaces.payloads import BlockQueryRowPayload, PublicRefResolutionPayload
 
     row = archive._conn.execute(
         """
@@ -671,8 +661,9 @@ def _resolve_assertion_object_ref(
     normalized_ref: str,
     object_ref: ObjectRef,
 ) -> PublicRefResolutionPayload:
+    from polylogue.core.payload_model import model_json_document
     from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
-    from polylogue.surfaces.payloads import AssertionClaimPayload, PublicRefResolutionPayload, model_json_document
+    from polylogue.surfaces.payloads import AssertionClaimPayload, PublicRefResolutionPayload
 
     conn = archive.index_connection
     if conn is None or not any(row[1] == "user_tier" for row in conn.execute("PRAGMA database_list")):
@@ -711,13 +702,13 @@ def _resolve_finding_object_ref(
     normalized_ref: str,
     object_ref: ObjectRef,
 ) -> PublicRefResolutionPayload:
+    from polylogue.core.payload_model import model_json_document
     from polylogue.operations.finding_evidence import evaluate_finding_evidence
     from polylogue.storage.sqlite.finding_provenance import compute_finding_provenance
     from polylogue.surfaces.payloads import (
         FindingEvidenceRefState,
         FindingProvenancePayload,
         PublicRefResolutionPayload,
-        model_json_document,
     )
 
     conn = archive.index_connection
@@ -886,11 +877,11 @@ def _resolve_annotation_batch_object_ref(
     limit: int,
     offset: int,
 ) -> PublicRefResolutionPayload:
+    from polylogue.core.payload_model import model_json_document
     from polylogue.surfaces.payloads import (
         AnnotationBatchPayload,
         PublicRefResolutionPayload,
         RefResolutionActionPayload,
-        model_json_document,
     )
 
     page = archive.get_annotation_batch_page(object_ref.object_id, limit=limit, offset=offset)
@@ -970,12 +961,8 @@ def _resolve_delegation_object_ref(
     edge_only, quarantined, and authority-contradicted states are returned
     as typed payloads, never silently guessed."""
 
-    from polylogue.surfaces.payloads import (
-        DELEGATION_STATE_CAVEATS,
-        DelegationCardPayload,
-        PublicRefResolutionPayload,
-        model_json_document,
-    )
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import DELEGATION_STATE_CAVEATS, DelegationCardPayload, PublicRefResolutionPayload
 
     ancestry_session_id = parse_delegation_ancestry_object_id(object_ref.object_id)
     if ancestry_session_id is not None:
@@ -1041,11 +1028,8 @@ def _resolve_delegation_ancestry_object_ref(
     depth-annotated, in one recursive-CTE call
     (``ArchiveStore.get_delegation_ancestry``)."""
 
-    from polylogue.surfaces.payloads import (
-        DelegationAncestryPayload,
-        PublicRefResolutionPayload,
-        model_json_document,
-    )
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import DelegationAncestryPayload, PublicRefResolutionPayload
 
     rows = archive.get_delegation_ancestry(session_id)
     payload = DelegationAncestryPayload.from_rows(session_id, rows)
@@ -1084,11 +1068,8 @@ def _resolve_delegation_subtree_object_ref(
         archive_snapshot_epoch,
         validate_continuation_epoch,
     )
-    from polylogue.surfaces.payloads import (
-        DelegationSubtreePayload,
-        PublicRefResolutionPayload,
-        model_json_document,
-    )
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import DelegationSubtreePayload, PublicRefResolutionPayload
 
     request = QueryTransactionRequest(
         operation=REF_RESOLUTION_OPERATION,
@@ -1170,7 +1151,8 @@ def _resolve_runtime_object_ref(
                 snapshot = row.snapshot
                 if snapshot.snapshot_ref.format() != normalized_ref:
                     continue
-                from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload, model_json_document
+                from polylogue.core.payload_model import model_json_document
+                from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload
 
                 payload = ContextSnapshotQueryRowPayload(
                     snapshot_ref=snapshot.snapshot_ref.format(),
@@ -1228,12 +1210,12 @@ def _resolve_runtime_object_ref_for_summary(
     summary: Any,
 ) -> PublicRefResolutionPayload | None:
     from polylogue.analysis.transforms import compile_session_digest
+    from polylogue.core.payload_model import model_json_document
     from polylogue.surfaces.payloads import (
         ContextSnapshotQueryRowPayload,
         ObservedEventQueryRowPayload,
         PublicRefResolutionPayload,
         RunQueryRowPayload,
-        model_json_document,
     )
 
     session = archive_envelope_to_session(

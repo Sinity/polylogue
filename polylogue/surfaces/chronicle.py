@@ -8,8 +8,8 @@ from typing import Any
 
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import MaterialOrigin
+from polylogue.core.payload_model import SurfacePayloadModel
 from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
-from polylogue.surfaces.payloads import SurfacePayloadModel
 
 
 class ChronicleMessagePayload(SurfacePayloadModel):

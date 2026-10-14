@@ -14,13 +14,13 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import AssertionKind, AssertionStatus
+from polylogue.core.payload_model import serialize_surface_payload
 from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 from polylogue.surfaces.payloads import (
     AssertionBulkJudgmentPayload,
     AssertionCandidateQueueHealthPayload,
     AssertionCandidateReviewItemPayload,
     AssertionCandidateReviewListPayload,
-    serialize_surface_payload,
 )
 
 

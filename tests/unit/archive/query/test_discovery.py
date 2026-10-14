@@ -142,6 +142,7 @@ def test_rows_are_typed_one_sentence_provider_neutral_and_privacy_safe() -> None
 
 
 def test_declared_projection_columns_track_public_row_payload_models() -> None:
+    from polylogue.core.payload_model import SurfacePayloadModel
     from polylogue.surfaces.payloads import (
         ActionQueryRowPayload,
         AssertionQueryRowPayload,
@@ -154,7 +155,6 @@ def test_declared_projection_columns_track_public_row_payload_models() -> None:
         QueryUnitAggregateRowPayload,
         RunQueryRowPayload,
         SessionListRowPayload,
-        SurfacePayloadModel,
     )
 
     models: dict[str, type[SurfacePayloadModel]] = {

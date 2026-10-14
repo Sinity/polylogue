@@ -64,7 +64,8 @@ def execute_neighbor_read(payload: Mapping[str, object], *, archive: ArchiveStor
     """Run the shared neighbor selector on the pinned archive snapshot."""
 
     from polylogue.archive.session.neighbor_candidates import NeighborDiscoveryRequest, discover_neighbor_candidates
-    from polylogue.surfaces.payloads import SessionNeighborCandidatePayload, model_json_document
+    from polylogue.core.payload_model import model_json_document
+    from polylogue.surfaces.payloads import SessionNeighborCandidatePayload
 
     request = NeighborDiscoveryRequest(
         session_id=str(payload["session_id"]) if payload.get("session_id") else None,

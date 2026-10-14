@@ -24,8 +24,8 @@ from polylogue.archive.query.predicate import (
     QueryPredicate,
 )
 from polylogue.core.json import JSONDocument
+from polylogue.core.payload_model import model_json_document
 from polylogue.surfaces import payloads as surface_payloads
-from polylogue.surfaces.payloads import model_json_document
 
 if TYPE_CHECKING:
     from polylogue.archive.query.expression import WithUnitWindow

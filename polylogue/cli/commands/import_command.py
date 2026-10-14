@@ -334,8 +334,8 @@ def import_command(
     # socket; the browser API URL (``POLYLOGUE_DAEMON_URL``) selects nothing
     # here, so the command takes no URL option.
     if explain:
+        from polylogue.core.payload_model import model_json_document
         from polylogue.sources.import_explain import explain_import_path
-        from polylogue.surfaces.payloads import model_json_document
 
         if demo:
             fail("import", "--explain requires a source PATH; --demo materializes and schedules generated fixtures.")

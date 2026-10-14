@@ -47,6 +47,7 @@ from polylogue.core.errors import (
 )
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
+from polylogue.core.payload_model import model_json_document
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.staged_body import BodyStorageExhaustedError, StagedBody
 from polylogue.daemon import workspace_routes
@@ -138,7 +139,6 @@ from polylogue.surfaces.payloads import (
     _build_flags_from_session,
     message_render_envelope_from_domain,
     message_topology_from_domain,
-    model_json_document,
     reader_anchor,
     reader_message_actions,
     reader_session_actions,

@@ -159,6 +159,7 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
             query_discovery_examples,
         )
         from polylogue.archive.query.metadata import query_unit_descriptors, terminal_query_source_list
+        from polylogue.core.payload_model import serialize_surface_payload
         from polylogue.mcp.declarations import (
             TARGET_DEFAULT_READ_ALGEBRA,
             TARGET_PROMPTS,
@@ -166,7 +167,6 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
             MCPResultSemantics,
         )
         from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
-        from polylogue.surfaces.payloads import serialize_surface_payload
 
         mcp_result_semantics = {
             "exhaustive": MCPResultSemantics.EXHAUSTIVE_PAGE,
