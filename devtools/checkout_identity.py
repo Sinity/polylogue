@@ -46,7 +46,9 @@ class CheckoutIdentity:
     branch: str | None
     head: str | None
     default_branch: str
-    #: Commits the default branch names locally and on ``origin``.
+    #: Authorization observations of local and origin default-branch refs.
+    #: Other worktrees may move these without changing this checkout's HEAD,
+    #: branch or source content.
     default_tips: frozenset[str] = frozenset()
 
     @property

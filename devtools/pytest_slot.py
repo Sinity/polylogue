@@ -1051,22 +1051,30 @@ def _focused_worktree_provenance(cwd: str, environment: Mapping[str, str]) -> di
     from devtools.verify_runs import git_dirty, git_worktree_content_sha256
 
     root = Path(cwd)
-    # Identity, content, identity again: the three describe one checkout state
-    # only if nothing moved between them.
+    # The candidate's root, branch, HEAD and content must remain stable.
+    # Shared default-branch refs are authorization observations, not candidate
+    # content: another worktree can move them while this checkout is frozen.
     identity = checkout_identity(root)
     digest = git_worktree_content_sha256(root)
     dirty = git_dirty(root)
     if identity.head is None or digest is None:
         raise PytestSlotUnavailableError("focused worktree content could not be identified")
-    if checkout_identity(root) != identity or git_worktree_content_sha256(root) != digest or git_dirty(root) != dirty:
+    confirmed = checkout_identity(root)
+    if (
+        (confirmed.root, confirmed.branch, confirmed.head) != (identity.root, identity.branch, identity.head)
+        or git_worktree_content_sha256(root) != digest
+        or git_dirty(root) != dirty
+    ):
         raise PytestSlotUnavailableError("the checkout changed while its content was being identified")
     head = identity.head
-    # The branch admitted at submission may have changed while the run queued.
-    refusal = default_branch_refusal(
-        identity, command="devtools test", allowed=environment.get(ALLOW_DEFAULT_BRANCH_ENV) == "1"
-    )
-    if refusal is not None:
-        raise PytestSlotUnavailableError(f"the checkout is on the default branch at slot start: {refusal}")
+    # Admission must hold at both observations, including a detached default
+    # tip that moves onto or away from this HEAD while content is hashed.
+    for observed in (identity, confirmed):
+        refusal = default_branch_refusal(
+            observed, command="devtools test", allowed=environment.get(ALLOW_DEFAULT_BRANCH_ENV) == "1"
+        )
+        if refusal is not None:
+            raise PytestSlotUnavailableError(f"the checkout is on the default branch at slot start: {refusal}")
     return {
         "git_head": head,
         "git_branch": identity.branch,
