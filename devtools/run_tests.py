@@ -94,13 +94,11 @@ from devtools.verify_runs import (
     VERIFY_RUNS_DIR,
     PytestStepArtifacts,
     VerifyRun,
-    append_verification_evidence,
-    append_verify_history,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
     git_head,
     git_worktree_content_sha256,
-    prune_successful_verify_runs,
+    publish_verification_result,
     pytest_command_worker_request,
     verify_history_path,
     wrapper_phase,
@@ -1484,12 +1482,7 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
     history_path = verify_history_path(root=ROOT)
-    with wrapper_phase("publication.semantic_history"):
-        append_verify_history(payload, path=history_path)
-    with wrapper_phase("publication.durable_evidence"):
-        append_verification_evidence(payload)
-    with wrapper_phase("publication.retention"):
-        prune_successful_verify_runs(root=ROOT, history_path=history_path)
+    publish_verification_result(payload, root=ROOT, history_path=history_path)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     # The verdict is the last thing written, on every run. A pipeline exits with
