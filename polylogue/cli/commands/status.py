@@ -326,7 +326,7 @@ def status_command(
     mode = operation_result.authority.get("mode")
     status = operation_result.value
     status_ok = (
-        _show_status_json(env, status, full=full_payload or exact_archive_readiness, source=str(mode))
+        _show_status_json(status, full=full_payload or exact_archive_readiness, source=str(mode))
         if output_format == "json"
         else _render_direct_status_payload(env, status, compact=not full_payload)
         if mode == "direct"
@@ -571,7 +571,7 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     return overall_ok
 
 
-def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False, source: str | None = None) -> bool:
+def _show_status_json(status: dict[str, Any], *, full: bool = False, source: str | None = None) -> bool:
     """Machine-readable JSON status output."""
     source = source or ("direct" if status.get("daemon_liveness") is False else "daemon")
     normalized = normalize_raw_frontier_status_payload(
@@ -580,7 +580,7 @@ def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False
         require_fresh_snapshot=source == "daemon",
     )
     payload = {"source": source, **normalized} if full else _compact_status_payload(normalized, source=source)
-    env.ui.console.print(json.dumps(payload, indent=2, default=str))
+    click.echo(json.dumps(payload, indent=2, default=str))
     return _status_ok(normalized, require_fresh_snapshot=source == "daemon")
 
 
@@ -895,7 +895,7 @@ def _raw_failure_lifecycle_is_healthy(status: dict[str, Any]) -> bool:
     )
 
 
-def _show_daemon_status_unavailable_json(env: AppEnv) -> None:
+def _show_daemon_status_unavailable_json(_env: AppEnv) -> None:
     payload = {
         # Unreachable, not running: the status read failed, so liveness was
         # never observed and cannot be published as true (polylogue-2d8oq).
@@ -905,7 +905,7 @@ def _show_daemon_status_unavailable_json(env: AppEnv) -> None:
             "reason": "status_read_failed",
         },
     }
-    env.ui.console.print(json.dumps(_compact_status_payload(payload, source="daemon"), indent=2, default=str))
+    click.echo(json.dumps(_compact_status_payload(payload, source="daemon"), indent=2, default=str))
 
 
 def _show_daemon_status_unavailable(env: AppEnv, *, compact: bool = False) -> None:
@@ -937,7 +937,7 @@ def _show_daemon_absent(env: AppEnv, detail: str, *, archive_root: Path | None, 
         compact = _compact_status_payload(payload, source="daemon")
         if diagnostic is not None:
             compact["diagnostic"] = diagnostic_payload(diagnostic)
-        env.ui.console.print(json.dumps(compact, indent=2, default=str))
+        click.echo(json.dumps(compact, indent=2, default=str))
         return
     env.ui.console.print("\n[bold yellow]Daemon: not running[/bold yellow]")
     env.ui.console.print(f"  {detail}")
@@ -959,7 +959,7 @@ def _show_direct_status_diagnostic(env: AppEnv, diagnostic: Any, *, output_forma
         "diagnostic": diagnostic_payload(diagnostic),
     }
     if output_format == "json":
-        env.ui.console.print(json.dumps(payload, indent=2))
+        click.echo(json.dumps(payload, indent=2))
         return
     env.ui.console.print("\n[bold yellow]Daemon: not running[/bold yellow]")
     env.ui.console.print(f"  {diagnostic.headline}")

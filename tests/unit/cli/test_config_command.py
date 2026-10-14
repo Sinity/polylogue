@@ -61,7 +61,7 @@ def _run(args: list[str]) -> str:
     env = make_app_env()
     result = CliRunner().invoke(config_command, obj=env, args=args)
     assert result.exit_code == 0, (result.output, result.exception)
-    return cast(StringIO, cast(Console, env.ui.console).file).getvalue()
+    return result.stdout + cast(StringIO, cast(Console, env.ui.console).file).getvalue()
 
 
 @pytest.mark.parametrize(

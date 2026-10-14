@@ -202,7 +202,7 @@ def test_status_command_renders_canonical_daemon_operation_result() -> None:
         {"include_archive_readiness": False},
         daemon_disabled=False,
     )
-    payload = json.loads(_combined_calls(env))
+    payload = json.loads(result.stdout)
     assert payload["source"] == "daemon"
     assert payload["daemon_liveness"] is True
     assert payload["status_snapshot"]["state"] == "fresh"
@@ -232,7 +232,7 @@ def test_status_command_reports_operation_unavailable_without_claiming_liveness(
         )
 
     assert result.exit_code == 1
-    payload = json.loads(_combined_calls(env))
+    payload = json.loads(result.stdout)
     assert payload["daemon_liveness"] is False
     assert payload["status_snapshot"]["state"] == "unavailable"
 
@@ -259,7 +259,7 @@ def test_status_command_does_not_misclassify_sqlite_failure_with_snapshot(
         )
 
     assert result.exit_code == 1
-    payload = json.loads(_combined_calls(env))
+    payload = json.loads(result.stdout)
     assert "diagnostic" not in payload
     # An unrelated SQLite failure is still a failed read: it proves nothing
     # about the daemon and must not be published as liveness (polylogue-2d8oq).
@@ -441,8 +441,9 @@ def test_daemon_status_renders_raw_frontier_integrity(frozen_clock: FrozenClock)
 
 
 @pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
-def test_compact_daemon_status_cannot_preserve_stale_green_frontier(frozen_clock: FrozenClock) -> None:
-    env = _make_app_env()
+def test_compact_daemon_status_cannot_preserve_stale_green_frontier(
+    frozen_clock: FrozenClock, capsys: pytest.CaptureFixture[str]
+) -> None:
     violated = _healthy_raw_frontier_integrity()
     violated.update(
         {
@@ -454,7 +455,6 @@ def test_compact_daemon_status_cannot_preserve_stale_green_frontier(frozen_clock
         }
     )
     _show_status_json(
-        env,
         {
             "ok": True,
             "daemon_liveness": True,
@@ -463,19 +463,20 @@ def test_compact_daemon_status_cannot_preserve_stale_green_frontier(frozen_clock
         },
     )
 
-    payload = json.loads(_combined_calls(env))
+    payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert payload["raw_frontier_integrity"]["overall_status"] == "violated"
     assert "broken_head_samples" not in payload["raw_frontier_integrity"]
 
 
 @pytest.mark.parametrize("full", [False, True])
-def test_daemon_status_json_missing_frontier_is_explicit_unknown(full: bool) -> None:
-    env = _make_app_env()
+def test_daemon_status_json_missing_frontier_is_explicit_unknown(
+    full: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
 
-    _show_status_json(env, {"ok": True, "daemon_liveness": True}, full=full)
+    _show_status_json({"ok": True, "daemon_liveness": True}, full=full)
 
-    payload = json.loads(_combined_calls(env))
+    payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
     assert payload["component_readiness"]["raw_frontier_integrity"]["state"] == "unknown"
@@ -537,10 +538,8 @@ def test_daemon_status_text_marks_missing_frontier_non_green() -> None:
     assert "Raw frontier: [yellow]unknown[/yellow]" in rendered
 
 
-def test_daemon_status_stale_healthy_frontier_becomes_unknown() -> None:
-    env = _make_app_env()
+def test_daemon_status_stale_healthy_frontier_becomes_unknown(capsys: pytest.CaptureFixture[str]) -> None:
     _show_status_json(
-        env,
         {
             "ok": True,
             "daemon_liveness": True,
@@ -550,14 +549,13 @@ def test_daemon_status_stale_healthy_frontier_becomes_unknown() -> None:
         full=True,
     )
 
-    payload = json.loads(_combined_calls(env))
+    payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
     assert "omitted freshness provenance" in payload["raw_frontier_integrity"]["broken_head_reason"]
 
 
-def test_daemon_status_json_is_compact_by_default() -> None:
-    env = _make_app_env()
+def test_daemon_status_json_is_compact_by_default(capsys: pytest.CaptureFixture[str]) -> None:
     full_payload = {
         "ok": True,
         "daemon_liveness": True,
@@ -598,9 +596,9 @@ def test_daemon_status_json_is_compact_by_default() -> None:
         "last_ingestion_batch": {"debug": True},
     }
 
-    _show_status_json(env, full_payload)
+    _show_status_json(full_payload)
 
-    payload = json.loads(_combined_calls(env))
+    payload = json.loads(capsys.readouterr().out)
     assert payload["source"] == "daemon"
     assert payload["daemon_liveness"] is True
     assert payload["component_readiness"]["search"]["state"] == "ready"
@@ -613,8 +611,9 @@ def test_daemon_status_json_is_compact_by_default() -> None:
         assert heavy_key not in payload
 
 
-def test_daemon_status_json_full_preserves_fields_but_normalizes_missing_authority() -> None:
-    env = _make_app_env()
+def test_daemon_status_json_full_preserves_fields_but_normalizes_missing_authority(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     full_payload = {
         "daemon_liveness": True,
         "live_cursor": {"tracked_file_count": 2},
@@ -622,9 +621,9 @@ def test_daemon_status_json_full_preserves_fields_but_normalizes_missing_authori
         "assertion_candidate_queue": {"state": "scheduler-stalled", "pending_count": 2},
     }
 
-    _show_status_json(env, full_payload, full=True)
+    _show_status_json(full_payload, full=True)
 
-    payload = json.loads(_combined_calls(env))
+    payload = json.loads(capsys.readouterr().out)
     assert payload["daemon_liveness"] is True
     assert payload["live_cursor"] == full_payload["live_cursor"]
     assert payload["archive_debt"] == full_payload["archive_debt"]
@@ -688,26 +687,24 @@ class TestCanonicalStatusOperation:
             {"include_archive_readiness": False},
             daemon_disabled=False,
         )
-        payload = json.loads(_combined_calls(env))
+        payload = json.loads(result.stdout)
         assert payload["source"] == "direct"
         assert payload["daemon_liveness"] is False
         assert payload["sessions"] == 2
         assert payload["messages"] == 5
         assert payload["ok"] is False
 
-    def test_status_json_provenance_comes_from_operation_authority(self) -> None:
+    def test_status_json_provenance_comes_from_operation_authority(self, capsys: pytest.CaptureFixture[str]) -> None:
         """A stale liveness probe cannot relabel daemon-served data as direct.
 
         Anti-vacuity: deriving source from ``daemon_liveness`` changes this
         payload to ``direct`` and skips the daemon snapshot provenance check.
         """
-        env = _make_app_env()
         _show_status_json(
-            env,
             {"ok": True, "daemon_liveness": False, "status_snapshot": {"state": "fresh"}},
             source="daemon",
         )
-        payload = json.loads(_combined_calls(env))
+        payload = json.loads(capsys.readouterr().out)
         assert payload["source"] == "daemon"
 
     def test_status_honors_a_non_builtin_daemon_url(self) -> None:
@@ -830,7 +827,7 @@ class TestCanonicalStatusOperation:
             {"include_archive_readiness": True},
             daemon_disabled=False,
         )
-        payload = json.loads(_combined_calls(env))
+        payload = json.loads(result.stdout)
         assert payload["daemon_liveness"] is False
         assert payload["source"] == "direct"
 
@@ -866,7 +863,7 @@ class TestCanonicalStatusOperation:
             )
 
         assert result.exit_code == 1
-        payload = json.loads(_combined_calls(env))
+        payload = json.loads(result.stdout)
         assert payload["source"] == "daemon"
         assert payload["component_readiness"]["search"]["state"] == "ready"
         assert payload["ingest"]["latest"]["attempt_id"] == "attempt-1"
@@ -1653,3 +1650,13 @@ def test_plaintext_status_without_collection_evidence_renders_unchanged() -> Non
     output = _combined_calls(env)
     assert "100.0% indexed" in output
     assert "collection" not in output
+
+
+def test_full_status_json_preserves_markup_looking_values(capsys: pytest.CaptureFixture[str]) -> None:
+    """A terminal markup renderer would change this declared machine value."""
+    literal = "[bold]literal[/bold] " + "x" * 300
+    ok = _show_status_json({"ok": False, "daemon_liveness": False, "literal": literal}, full=True, source="direct")
+    assert ok is False
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out)["literal"] == literal

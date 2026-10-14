@@ -186,7 +186,7 @@ def init_command(
     payload["body"] = body
 
     if output_format == "json":
-        env.ui.console.print(json.dumps(payload, indent=2, default=str), markup=False, highlight=False)
+        click.echo(json.dumps(payload, indent=2, default=str))
         return
 
     console = env.ui.console
