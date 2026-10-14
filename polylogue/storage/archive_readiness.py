@@ -25,7 +25,6 @@ from polylogue.core.raw_failure_evidence import RAW_FAILURE_TERMINAL_EVIDENCE_SU
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.sqlite_introspection import view_exists
 from polylogue.logging import get_logger
-from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.raw_authority import iter_parser_census_logical_keys, raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1651,6 +1650,9 @@ def _archive_readiness_counts(
     source_conn: sqlite3.Connection | None,
     source_check_available: bool,
 ) -> dict[str, Any]:
+    # Payload-only readiness adapters never inspect native session insights.
+    from polylogue.storage.derived.session.status import session_insight_status_sync
+
     sessions_table_present = _table_exists(conn, "sessions")
     messages_table_present = _table_exists(conn, "messages")
     session_count = _fast_count(conn, "SELECT COUNT(*) FROM sessions") if sessions_table_present else 0
