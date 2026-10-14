@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -375,3 +376,117 @@ def test_pytest_on_another_head_with_identical_content_voids_verification(
 
     assert verify_module._main(["--quick"]) == 1
     assert history["diagnosis"] == "checkout_moved_during_run"
+
+
+def _independent_commit(root: Path) -> str:
+    result = subprocess.run(
+        ["git", "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Independent default branch tip"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _change_during_content_hash(monkeypatch: pytest.MonkeyPatch, change: Callable[[], None]) -> None:
+    from devtools import verify_runs
+
+    original = verify_runs.git_worktree_content_sha256
+    changed = False
+
+    def hash_then_change(root: Path) -> str | None:
+        nonlocal changed
+        digest = original(root)
+        if not changed:
+            changed = True
+            change()
+        return digest
+
+    monkeypatch.setattr(verify_runs, "git_worktree_content_sha256", hash_then_change)
+
+
+@pytest.mark.parametrize(
+    "refs",
+    [("refs/heads/master",), ("refs/remotes/origin/master",), ("refs/heads/master", "refs/remotes/origin/master")],
+)
+def test_slot_provenance_accepts_independent_default_tip_movement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, refs: tuple[str, ...]
+) -> None:
+    from devtools import pytest_slot
+
+    root = _repository(tmp_path / "feature", "feature/test")
+    before = checkout_identity(root)
+    other = _independent_commit(root)
+
+    def move_tips() -> None:
+        for ref in refs:
+            subprocess.run(["git", "update-ref", ref, other], cwd=root, check=True)
+
+    _change_during_content_hash(monkeypatch, move_tips)
+    provenance = pytest_slot._focused_worktree_provenance(str(root), {pytest_slot.WORKTREE_PROVENANCE_ENV: "1"})
+    assert provenance is not None
+    assert provenance["git_head"] == before.head
+    assert provenance["git_branch"] == before.branch
+    assert provenance["git_dirty"] is False
+    assert checkout_identity(root).default_tips != before.default_tips
+
+
+@pytest.mark.parametrize("mutation", ["source", "head", "branch"])
+def test_slot_provenance_refuses_candidate_mutation_during_hashing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mutation: str
+) -> None:
+    from devtools import pytest_slot
+
+    root = _repository(tmp_path / "feature", "feature/test")
+
+    def mutate() -> None:
+        if mutation == "source":
+            (root / "seed.txt").write_text("changed source\n", encoding="utf-8")
+        elif mutation == "head":
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-m", "New candidate head"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+        else:
+            subprocess.run(["git", "switch", "-q", "-c", "feature/other"], cwd=root, check=True)
+
+    _change_during_content_hash(monkeypatch, mutate)
+    with pytest.raises(pytest_slot.PytestSlotUnavailableError, match="changed while its content"):
+        pytest_slot._focused_worktree_provenance(str(root), {pytest_slot.WORKTREE_PROVENANCE_ENV: "1"})
+
+
+@pytest.mark.parametrize("starts_at_default_tip", [False, True])
+@pytest.mark.parametrize("allowed", [False, True])
+def test_slot_provenance_preserves_default_tip_authorization_at_both_snapshots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, starts_at_default_tip: bool, allowed: bool
+) -> None:
+    from devtools import pytest_slot
+    from devtools.checkout_identity import ALLOW_DEFAULT_BRANCH_ENV
+
+    root = _repository(tmp_path / "detached", "master")
+    candidate = checkout_identity(root).head
+    assert candidate is not None
+    other = _independent_commit(root)
+    if not starts_at_default_tip:
+        subprocess.run(["git", "update-ref", "refs/heads/master", other], cwd=root, check=True)
+    subprocess.run(["git", "switch", "-q", "--detach", candidate], cwd=root, check=True)
+
+    def move_tip() -> None:
+        subprocess.run(
+            ["git", "update-ref", "refs/heads/master", other if starts_at_default_tip else candidate],
+            cwd=root,
+            check=True,
+        )
+
+    _change_during_content_hash(monkeypatch, move_tip)
+    environment = {pytest_slot.WORKTREE_PROVENANCE_ENV: "1"}
+    if allowed:
+        environment[ALLOW_DEFAULT_BRANCH_ENV] = "1"
+        provenance = pytest_slot._focused_worktree_provenance(str(root), environment)
+        assert provenance is not None and provenance["git_head"] == candidate and provenance["git_branch"] is None
+    else:
+        with pytest.raises(pytest_slot.PytestSlotUnavailableError, match="default branch at slot start"):
+            pytest_slot._focused_worktree_provenance(str(root), environment)

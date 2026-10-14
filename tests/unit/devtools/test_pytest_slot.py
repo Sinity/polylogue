@@ -1188,7 +1188,7 @@ def test_worktree_snapshot_refuses_content_change_during_hashing(
 
     from devtools import checkout_identity, verify_runs
 
-    identity = SimpleNamespace(head="a" * 40, branch="feature/test")
+    identity = SimpleNamespace(root=tmp_path.resolve(), head="a" * 40, branch="feature/test")
     monkeypatch.setattr(checkout_identity, "checkout_identity", lambda _root: identity)
     monkeypatch.setattr(checkout_identity, "default_branch_refusal", lambda *_a, **_kw: None)
     monkeypatch.setattr(verify_runs, "git_dirty", lambda _root: False)

@@ -32,6 +32,13 @@ The generic worker `focused` profile maps to `pytest_focused`, which requires
 an explicit selector after `--`; the static `verify_quick` operation remains
 available by name and does not count as behavioral test evidence.
 
+A focused slot binds the checkout root, branch, HEAD and Git-visible content
+before starting pytest. Changes to that candidate refuse the run; a change
+during pytest voids its result. Another worktree may advance local or origin
+default-branch refs while the candidate stays frozen. Those refs still enforce
+default-branch authorization at both capture observations, including detached
+HEADs, and require `--on-default-branch` when either observation names the base.
+
 For a routine fix, choose a small check that distinguishes the changed
 behavior, or imports/basic static checks when sufficient. Broader regression
 belongs at integration milestones. Keep first failures visible; retry only
