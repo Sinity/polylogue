@@ -80,6 +80,12 @@ later nonblank line before trying the existing record fold first. The syntax
 probe retains no record values. Single values, multiline documents and failed
 record attempts keep the complete-document grammar and malformed-evidence path.
 
+JSONL intake excludes a known provider only from positive complete non-session
+proof. Empty, unsupported and malformed record streams remain eligible for raw
+acquisition without claiming session candidacy. A malformed tail cannot turn a
+metadata prefix into exclusion proof; retained preparation owns decode refusal
+and accepted-prefix outcomes. Declared raw-only carriers retain their precedence.
+
 Sources acquire bytes and identify their material source. Detection chooses a
 provider parser by input shape. `RawObservationConvergenceOwner` coordinates
 retained preparation through `RawObservationDerivation`; JSONL and non-JSON

@@ -28,6 +28,7 @@ from polylogue.archive.artifact_taxonomy import (
 )
 from polylogue.archive.raw_payload.decode import (
     jsonl_session_artifact,
+    scan_jsonl_session_artifact,
 )
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
@@ -1199,31 +1200,23 @@ def _crash(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def _jsonl_provider_and_session_artifact(
+def _jsonl_provider_and_non_session_proof(
     path: Path,
     fallback_provider: Provider,
     *,
     checkpoint: Callable[[], None] | None = None,
 ) -> tuple[Provider, bool, str | None]:
-    """Classify complete accepted records before session-artifact evaluation."""
+    """Return positive non-session proof, preserving unproven decode outcomes."""
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
-    # A ``raw-only`` declaration is terminal: its bytes are evidence and the
-    # record shape cannot decide otherwise (polylogue-ximhz). Checked before
-    # any content probe, so a prompt-history log -- whose rows carry the same
-    # ``sessionId`` keys a transcript does -- is never session-parsed.
+    # Declared raw-only carriers never borrow authority from record shape.
     if path_declaration_refuses_session(fallback_provider, path):
-        return fallback_provider, False, None
+        return fallback_provider, True, None
     provider, detection_failure = detect_provider_from_path_evidence(path, fallback_provider, check_stop=checkpoint)
     if path_declaration_refuses_session(provider, path):
-        return provider, False, detection_failure
-    artifact = jsonl_session_artifact(path, provider=provider, source_path=path, check_stop=checkpoint)
-    if artifact is not None:
         return provider, True, detection_failure
-    path_classification = classify_artifact_path(path, provider=provider)
-    if path_classification is not None:
-        return provider, path_classification.parse_as_session, detection_failure
-    return provider, False, detection_failure
+    scan = scan_jsonl_session_artifact(path, provider=provider, source_path=path, check_stop=checkpoint)
+    return provider, scan.proved_non_session, detection_failure
 
 
 def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
@@ -1627,18 +1620,15 @@ def _classify_pre_acquisition(
     if origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
         return PreAcquisitionDecision(None, fallback_provider)
     if jsonl:
-        provider, parse_as_session, crash = (
-            _jsonl_provider_and_session_artifact(path, fallback_provider)
+        provider, proved_non_session, crash = (
+            _jsonl_provider_and_non_session_proof(path, fallback_provider)
             if checkpoint is None
-            else _jsonl_provider_and_session_artifact(path, fallback_provider, checkpoint=checkpoint)
+            else _jsonl_provider_and_non_session_proof(path, fallback_provider, checkpoint=checkpoint)
         )
-        # An unknown JSONL cannot be safely excluded from acquire: the strict
-        # parse route persists typed terminal evidence for empty and
-        # malformed exports. Known-provider sidecars are excluded here, in
-        # source-only intake as in the baseline, because their record-stream
-        # classification is already authoritative; retaining one would settle
-        # a sidecar as corrupt session input.
-        if not parse_as_session and provider is not Provider.UNKNOWN:
+        # Only complete non-session evidence can exclude a known provider.
+        # Empty, unsupported and malformed streams reach acquisition without
+        # claiming session candidacy; retained preparation owns their outcome.
+        if proved_non_session and provider is not Provider.UNKNOWN:
             return PreAcquisitionDecision("declared artifact rule: not parsed as a session", provider, crash)
         return PreAcquisitionDecision(None, provider, crash)
     if path.suffix.lower() == ".json":
