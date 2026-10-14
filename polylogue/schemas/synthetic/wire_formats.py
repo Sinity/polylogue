@@ -1494,7 +1494,18 @@ def _codex_node_content_blocks(node: Mapping[str, JSONValue], text: str) -> list
     if node.get("type") in _CODEX_TOOL_CALL_TYPES:
         return [ParsedContentBlock(type=BlockType.TOOL_USE)]
     if node.get("type") in _CODEX_TOOL_OUTPUT_TYPES:
-        return [ParsedContentBlock(type=BlockType.TOOL_RESULT, text=text)]
+        from polylogue.sources.parsers.codex import _codex_tool_result_outcome
+
+        is_error, exit_code, reason = _codex_tool_result_outcome(_codex_tool_output(node))
+        return [
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                text=text,
+                is_error=is_error,
+                exit_code=exit_code,
+                outcome_unknown_reason=reason,
+            )
+        ]
     blocks = content_blocks_from_segments(node.get("content"), lower_transport_text=True)
     if not blocks and text:
         blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
@@ -1636,6 +1647,13 @@ def _parser_artifact_expected_session_id(provider: str, payload: JSONValue, fall
                 session_id = payload.get(field)
                 if isinstance(session_id, str) and session_id:
                     return session_id
+    if provider == "codex" and isinstance(payload, list | GeneratedArray):
+        from polylogue.schemas.record_structure import codex_session_header
+
+        for record in payload:
+            if isinstance(record, Mapping) and (header := codex_session_header(record)) is not None:
+                identity = header.get("id")
+                return identity if isinstance(identity, str) and identity else fallback_id
     if provider == "claude-code" and isinstance(payload, list | GeneratedArray):
         session_ids = {
             session_id
