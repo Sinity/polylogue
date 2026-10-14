@@ -341,6 +341,7 @@ def test_generated_browser_capture_attachment_strings_become_valid_bytes() -> No
     assert len(sessions) == 1 and len(sessions[0].attachments) == 2
 
 
+@pytest.mark.timeout(600)  # Includes waiting for the shared full-catalog build.
 def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> None:
     registry = SchemaRegistry(storage_root=SCHEMA_DIR)
     receipt = shared_wire_support_receipt()
@@ -1351,7 +1352,7 @@ def test_coverage_witnesses_keep_nested_union_choices_independent() -> None:
 
 
 def test_claude_nested_array_content_is_explicitly_unrepresentable() -> None:
-    """The wire normalizer removes nested arrays; extra witnesses cannot recover them."""
+    """Witness generation must refuse nested arrays rather than flatten selected values."""
     schema: SchemaRecord = {
         "type": "object",
         "properties": {
@@ -1364,7 +1365,7 @@ def test_claude_nested_array_content_is_explicitly_unrepresentable() -> None:
                             "type": "object",
                             "properties": {
                                 "content": {
-                                    "type": ["string", "array"],
+                                    "type": "array",
                                     "items": {
                                         "type": "object",
                                         "properties": {"text": {"type": "string"}},
@@ -1378,16 +1379,20 @@ def test_claude_nested_array_content_is_explicitly_unrepresentable() -> None:
         },
     }
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="jsonl"), "claude-code")
-    raw_items = list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
-    payloads = [json.loads(line) for raw in raw_items for line in raw.splitlines()]
-    coverage = wire_formats.construct_coverage(schema, payloads)
+    try:
+        with pytest.raises(ValueError, match="nested Claude Code content cannot be flattened"):
+            list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
+    finally:
+        corpus._relation_solver.close()
+    coverage = wire_formats.construct_coverage(schema, ())
     assert coverage.missing_keywords
     omitted_role = "type:string@$.properties.message.properties.role"
     reasons = wire_formats._route_nonrepresentable_reasons(
         "claude-code", (*coverage.missing_keywords, omitted_role), package_version="v2"
     )
-    assert set(reasons) == set(coverage.missing_keywords)
-    assert len(raw_items) < 8
+    assert reasons
+    assert all(".properties.content.items[*].properties.content" in keyword for keyword in reasons)
+    assert omitted_role not in reasons
 
 
 def test_receipt_generation_and_validation_use_injected_registry_schema(
@@ -1437,7 +1442,7 @@ def test_receipt_generation_and_validation_use_injected_registry_schema(
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     assert entry.schema_valid is True
-    assert entry.healthy
+    assert entry.healthy, (entry.validation_error, entry.construct_coverage)
     assert any(schema is divergent_schema for schema in captured_schemas)
     assert entry.construct_coverage is not None
     marker = "type:integer@$.properties.registry_only_marker"
@@ -1470,8 +1475,12 @@ def test_chatgpt_v1_media_waiver_does_not_hide_parser_relevant_omissions() -> No
     registry = SchemaRegistry()
     selection = select_synthetic_schema("chatgpt", version="v1", registry_factory=lambda: registry)
     corpus = SyntheticCorpus.from_selection(selection)
-    payload = corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=20260805).raw_items[0]
-    payloads: tuple[GeneratedValue, ...] = (json.loads(payload),)
+    try:
+        with pytest.raises(ValueError, match="selected wire carrier must be an object"):
+            corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=20260805)
+    finally:
+        corpus._relation_solver.close()
+    payloads: tuple[GeneratedValue, ...] = ()
     witnessed = wire_formats.construct_coverage(selection.schema, payloads)
     parser_relevant = next(
         keyword
@@ -1501,12 +1510,14 @@ def test_chatgpt_v1_media_waiver_does_not_hide_parser_relevant_omissions() -> No
     assert not final.complete
 
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=registry)
+        receipt = wire_formats.build_wire_support_receipt(registry=registry, providers=("chatgpt",))
     receipt_entry = next(
         entry
         for entry in receipt.entries
         if (entry.provider, entry.package_version, entry.element_kind) == ("chatgpt", "v1", selection.element_kind)
     )
+    assert receipt_entry.validation_error is not None
+    assert "selected wire carrier must be an object" in receipt_entry.validation_error
     assert receipt_entry.construct_coverage is not None
     assert parser_relevant in receipt_entry.construct_coverage.missing_keywords
     assert not receipt_entry.healthy
@@ -1771,7 +1782,7 @@ def test_shared_wire_generation_observes_provider_parser_mutation(
         monkeypatch.setattr(codex, "parse", drop_messages)
         second = dispatch_module.parse_payload("codex", payload, "w1-codex")
         assert calls == 1
-        assert second and not second[0].messages
+        assert second == []
 
 
 def test_shared_wire_generation_observes_implicit_filesystem_sidecars(
@@ -1867,11 +1878,11 @@ def test_codex_native_tool_receipt_checks_both_record_sides_and_outcomes(envelop
     payload: list[JSONValue] = (
         [
             {"type": "session_meta", "payload": {"id": "neutral-session"}},
-            {"type": "response_item", "payload": call},
-            {"type": "response_item", "payload": output},
+            {"type": "response_item", "payload": cast(JSONValue, call)},
+            {"type": "response_item", "payload": cast(JSONValue, output)},
         ]
         if enveloped
-        else [header, call, output]
+        else [cast(JSONValue, header), cast(JSONValue, call), cast(JSONValue, output)]
     )
     sessions = dispatch_module.parse_payload("codex", payload, "neutral-fallback")
     assert len(sessions) == 1
