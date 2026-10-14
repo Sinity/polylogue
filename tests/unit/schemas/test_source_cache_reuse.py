@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import tempfile
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from hashlib import sha256
@@ -11,6 +13,8 @@ from zipfile import ZipFile
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter, DaemonOperationCancelled, current_cancellation
+from polylogue.core.compute_cancel import compute_cancel
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue
@@ -22,6 +26,100 @@ from polylogue.schemas.source_cache import CachedContribution
 from polylogue.schemas.source_recipe import SourceEvidenceRecipe, contracts_match_except_key_limit
 
 _CURRENT_SOURCE_RECIPE = SourceEvidenceRecipe.for_provider
+
+
+@pytest.mark.uses_real_clock("source worker cancellation uses OS synchronization")
+def test_cancelled_source_collection_drains_workers_before_spool_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parent settles both admitted readers while their spool still exists."""
+    parent_cancel = threading.Event()
+    parent_token = compute_cancel.set(parent_cancel)
+    started_lock = threading.Lock()
+    all_started = threading.Event()
+    completed_paths: list[Path] = []
+    started = 0
+
+    def collect(
+        candidate: source._SourceCandidate,
+        dynamic_paths_by_element: dict[str, tuple[str, ...]],
+        *,
+        include_statistics: bool = True,
+        spool_path: Path | None = None,
+    ) -> source._CollectedCandidate:
+        nonlocal started
+        del dynamic_paths_by_element, include_statistics
+        assert spool_path is not None
+        handle = current_cancellation()
+        assert handle is not None
+        cancelled = threading.Event()
+        remove_listener = handle.add_listener(cancelled.set)
+        try:
+            with started_lock:
+                started += 1
+                if started == 2:
+                    all_started.set()
+            assert cancelled.wait(5), "parent never cancelled its admitted source worker"
+            # The caller's TemporaryDirectory must outlive physical settlement.
+            spool_path.write_text("worker drained", encoding="utf-8")
+            with started_lock:
+                completed_paths.append(spool_path)
+            return source._CollectedCandidate(candidate, None, source.SourceTerminal("included"), spool_path=spool_path)
+        finally:
+            remove_listener()
+
+    monkeypatch.setattr(source, "_collect_candidate", collect)
+    candidates = tuple(
+        source._SourceCandidate("CODEX", tmp_path, tmp_path / f"{index}.jsonl", f"source-{index}") for index in range(2)
+    )
+    # Foreground keeps its reserve; two background readers really run together.
+    executor = BoundedComputeAdapter(max_workers=3, queue_units=2)
+    try:
+        with tempfile.TemporaryDirectory(dir=tmp_path) as spool_name:
+            spool_root = Path(spool_name)
+
+            def cancel_when_admitted() -> None:
+                assert all_started.wait(5)
+                parent_cancel.set()
+
+            with pytest.raises(DaemonOperationCancelled):
+                list(
+                    source._bounded_collected_candidates(
+                        executor,
+                        candidates,
+                        limit=2,
+                        dynamic_paths_by_element={},
+                        spool_directory=spool_root,
+                        on_wait=cancel_when_admitted,
+                    )
+                )
+            assert len(completed_paths) == 2
+            assert all(path.read_text(encoding="utf-8") == "worker drained" for path in completed_paths)
+        assert not spool_root.exists()
+    finally:
+        parent_cancel.set()
+        executor.shutdown(wait=True)
+        compute_cancel.reset(parent_token)
+
+
+def test_cancelled_source_collection_does_not_admit_another_candidate(tmp_path: Path) -> None:
+    parent_cancel = threading.Event()
+    parent_cancel.set()
+    parent_token = compute_cancel.set(parent_cancel)
+    executor = BoundedComputeAdapter(max_workers=1, queue_units=0)
+    admitted: list[bool] = []
+
+    def candidates() -> Iterable[source._SourceCandidate]:
+        admitted.append(True)
+        yield source._SourceCandidate("CODEX", tmp_path, tmp_path / "source.jsonl", "source")
+
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            list(source._bounded_collected_candidates(executor, candidates(), limit=1, dynamic_paths_by_element={}))
+        assert not admitted
+    finally:
+        executor.shutdown(wait=True)
+        compute_cancel.reset(parent_token)
 
 
 @pytest.mark.parametrize("revision", [None, True, "1", 1.0, [], {}])
