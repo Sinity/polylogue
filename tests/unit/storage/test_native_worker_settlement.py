@@ -615,7 +615,7 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
         assert ready.is_set() and len(prepared) == 1
         replacement = prepared[0]
         seal = replacement.reference_seal
-        assert seal is not None and seal.publication_lifetime_bound
+        assert seal is not None and seal.preparation_lifetime_bound
         exclusion = seal._publication_exclusion
         assert exclusion is not None and exclusion.held
         assert not operation.future.done() and adapter.snapshot().active_units == 1

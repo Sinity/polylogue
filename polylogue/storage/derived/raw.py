@@ -866,35 +866,18 @@ class RawObservationReplacement:
     provider_parse_seconds: float = 0.0
 
     def close(self) -> None:
-        """Drain this prepared carrier when publication is cancelled or ends."""
-        if self.reference_seal is not None and self.reference_seal.publication_lifetime_bound:
-            self.reference_seal.close()
+        """Drain native readers before releasing their original prepared bytes."""
+        seal = self.reference_seal
+        if seal is not None:
+            if not seal.preparation_lifetime_bound:
+                seal.retain_preparation_payload(self._close_prepared_payload)
+            seal.close()
             return
-        failures: list[BaseException] = []
-        for close in (
-            self._close_prepared_payload,
-            *(() if self.reference_seal is None else (self.reference_seal.close,)),
-        ):
-            try:
-                close()
-            except BaseException as failure:
-                failures.append(failure)
-        if failures:
-            raise BaseExceptionGroup("retained preparation cleanup failed", failures)
+        self._close_prepared_payload()
 
     def retire_unpublished(self) -> None:
-        """Retire a preparation that is prepared again instead of published.
-
-        Its seal settles its native SQL first and then the payload, as at
-        publication: a thread-state projection holds native handles under
-        the scratch tree the payload removes.
-        """
-        seal = self.reference_seal
-        if seal is None or seal.publication_lifetime_bound:
-            self.close()
-            return
-        seal.retain_preparation_payload(self._close_prepared_payload)
-        seal.close()
+        """Retire an unpublished preparation through the same physical owner."""
+        self.close()
 
     def _close_prepared_payload(self, *, preserve_scratch: bool = False) -> None:
         """Settle the carrier payload without recursing into its retained seal."""
@@ -2889,6 +2872,9 @@ class RawObservationDerivation(RawObservationInspection):
             if (
                 select_retained_raw_ids is None
                 and not replay_current
+                # Source terminal receipts may settle before their prepared
+                # Index effects. This same continuation still owes replay.
+                and not carry.committed
                 and self.inspect(frame, (key,)).get(key) == "valid"
             ):
                 return RawObservationReplacement(

@@ -2031,6 +2031,7 @@ def test_computed_raw_carrier_settles_at_its_actual_publication_boundary(
         held: set[str] = set()
         captured: list[RawObservationReplacement] = []
         closes: list[RawObservationReplacement] = []
+        publication_lifetimes: list[bool] = []
         original_compute = RawObservationDerivation.compute
         original_close = RawObservationReplacement.close
 
@@ -2060,13 +2061,15 @@ def test_computed_raw_carrier_settles_at_its_actual_publication_boundary(
 
         def close(replacement: RawObservationReplacement) -> None:
             closes.append(replacement)
+            assert replacement.reference_seal is not None
+            publication_lifetimes.append(replacement.reference_seal._publication_exclusion is not None)
             original_close(replacement)
 
         def fail_publication(*args: object, **kwargs: object) -> None:
             # The census commits in place while compute prepares; the replay
             # publication that publish starts is the one that fails.
             assert captured[0].reference_seal is not None
-            assert captured[0].reference_seal.publication_lifetime_bound
+            assert captured[0].reference_seal.preparation_lifetime_bound
             raise OSError("synthetic publication failure")
 
         def publish(actor: str, work: Callable[[], bool]) -> bool:
@@ -2096,7 +2099,8 @@ def test_computed_raw_carrier_settles_at_its_actual_publication_boundary(
         replacement = captured[0]
         assert closes[0] is replacement
         assert replacement.reference_seal is not None
-        assert replacement.reference_seal.publication_lifetime_bound == (admission == "publication_failure")
+        assert replacement.reference_seal.preparation_lifetime_bound
+        assert publication_lifetimes == [admission == "publication_failure"]
         if replacement.scratch_directory is not None:
             assert not replacement.scratch_directory.exists()
         with sqlite3.connect(tmp_path / "index.db") as index:
@@ -2127,7 +2131,8 @@ def test_raw_publication_rejects_foreign_original_seal_before_binding_lifetime(t
         before = _snapshot(root)
         with pytest.raises(RuntimeError):
             _publish(adapter, frame, moved)
-        assert not foreign.publication_lifetime_bound
+        assert foreign.preparation_lifetime_bound
+        assert foreign._publication_exclusion is None
         assert foreign._closed
         assert _snapshot(root) == before
         assert moved.scratch_directory is not None and not moved.scratch_directory.exists()

@@ -999,3 +999,108 @@ def test_unrecognized_binary_capture_retains_typed_decode_refusal(tmp_path: Path
             (raw_id,),
         ).fetchall() == [("terminal_corrupt_input", "decode_failed")]
     assert BlobStore(tmp_path / "blob").blob_path(digest).read_bytes() == payload
+
+
+def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys(tmp_path: Path) -> None:
+    """A missing typed identity invalidates only that receipt, then converges."""
+    from polylogue.storage.raw_authority import iter_parser_census_logical_keys
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    bootstrap_archive_root(tmp_path)
+    acquired: list[str] = []
+    for native in ("legacy-membership", "canonical-membership"):
+        payload = (
+            f'{{"type":"session_meta","payload":{{"id":"{native}"}}}}\n'
+            '{"type":"response_item","payload":{"type":"message","role":"user",'
+            '"content":[{"type":"input_text","text":"neutral prompt"}]}}\n'
+        ).encode()
+        digest, _size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
+        with retained_raw_fixture(
+            root=tmp_path,
+            provider=Provider.CODEX,
+            blob_hash=digest,
+            source_path=str(tmp_path / f"{native}.jsonl"),
+            native_id=native,
+        ) as (_reader, raw_id):
+            acquired.append(raw_id)
+
+    async def initial_replay() -> None:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            (await owner.replay_retained_raw_ids(acquired)).require_complete()
+
+    asyncio.run(initial_replay())
+    with (
+        write_lease("test.retained.incomplete-membership-receipt", archive_root=tmp_path),
+        ArchiveStore.open_existing(tmp_path, read_only=False) as archive,
+    ):
+        archive._ensure_source_conn().execute(
+            "UPDATE raw_authority_parser_census SET logical_keys_json='[]', "
+            "detail='parser-observed: incomplete typed identity' WHERE raw_id=?",
+            (acquired[0],),
+        )
+        archive.commit()
+    with prepared_source_fixture(tmp_path) as reader:
+        assert [reader.raw_parser_census_is_current(raw_id) for raw_id in acquired] == [False, True]
+    asyncio.run(run_retained_source_phase(tmp_path, (acquired[0],), replay_current=True))
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        row = conn.execute(
+            "SELECT status,logical_keys_json FROM raw_authority_parser_census WHERE raw_id=?",
+            (acquired[0],),
+        ).fetchone()
+    assert row is not None and row[0] == "complete"
+    assert tuple(iter_parser_census_logical_keys(row[1])) == ("codex-session:legacy-membership",)
+    with prepared_source_fixture(tmp_path) as reader:
+        assert [reader.raw_parser_census_is_current(raw_id) for raw_id in acquired] == [True, True]
+
+
+def test_raw_observation_owner_finalizes_an_unreceipted_codex_state_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exact-raw convergence completes one logical export and leaves its sibling pending."""
+    from tests.infra.retained_parser_payloads import _codex_thread_state_snapshot_bytes
+
+    bootstrap_archive_root(tmp_path)
+    acquired: list[str] = []
+    for ordinal in range(2):
+        payload = _codex_thread_state_snapshot_bytes(tmp_path, f"neutral title {ordinal}")
+        digest, _size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
+        with retained_raw_fixture(
+            root=tmp_path,
+            provider=Provider.CODEX,
+            blob_hash=digest,
+            source_path=str(tmp_path / f"install-{ordinal}" / "state_5.sqlite"),
+        ) as (_reader, raw_id):
+            acquired.append(raw_id)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        assert conn.execute("SELECT count(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone() == (0,)
+        assert conn.execute("SELECT count(*) FROM raw_membership_census").fetchone() == (0,)
+
+    from polylogue.storage.derived.raw import RawObservationReplacement
+
+    original_close = RawObservationReplacement.close
+
+    def close_twice(replacement: RawObservationReplacement) -> None:
+        original_close(replacement)
+        original_close(replacement)
+
+    monkeypatch.setattr(RawObservationReplacement, "close", close_twice)
+
+    async def converge() -> None:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            report = await owner.converge_raw_id(acquired[0])
+            assert report.failed == report.pending == 0, report.outcomes
+
+    asyncio.run(converge())
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        finalized = dict(conn.execute("SELECT raw_id, parsed_at_ms IS NOT NULL FROM raw_sessions"))
+        assert finalized == {acquired[0]: True, acquired[1]: False}
+        assert conn.execute("SELECT raw_id,status FROM raw_membership_census").fetchall() == [
+            (acquired[0], "non_session"),
+        ]
+    with prepared_source_fixture(tmp_path) as reader:
+        assert reader.raw_parser_census_is_current(acquired[0])
+        assert not reader.raw_parser_census_is_current(acquired[1])
+
+    with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
+        assert read_thread_titles(conn, thread_ids=["codex-state-thread"]) == {"codex-state-thread": "neutral title 0"}

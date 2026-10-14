@@ -386,7 +386,7 @@ def prepared_fixture_index_batch(
                     )
             yield seal, tuple(pending)
     finally:
-        if seal is None or not seal.publication_lifetime_bound:
+        if seal is None or seal._publication_exclusion is not exclusion:
             exclusion.close()
 
 
