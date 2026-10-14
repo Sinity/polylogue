@@ -545,6 +545,16 @@ window. Logical classification and parser binding cannot remint that identity.
 Retrying an identical capture reuses its row; equal bytes at another proven
 window remain separate acquisitions. Interruption after retention leaves the
 complete append envelope for ordinary retained census and replay.
+A complete physical file whose logical relationship is APPEND retains its
+ordinary acquisition identity. Only explicit captured append operands supply
+the witnessed window identity to the Source writer.
+
+Canonical append preparation seeks only incoming content digests through the
+session/content/occurrence index. It seals their next occurrences in owned
+scratch, verifies those bytes before admission, and rechecks the exact keyed
+frontier at publication. Removed occurrences remain gaps; new occurrences
+start above the greatest retained ordinal. Parser carriers hold no compiled
+publication writes; the actual retained replacement owns their settlement.
 
 A negative-coordinate hook fragment has no artifact observation. Its complete
 sealed non-session classification produces the current membership and parser

@@ -4117,6 +4117,8 @@ class RawObservationDerivation(RawObservationInspection):
                                 marker_write_factory=prepare_marker_write,
                             )
                             membership_plans = dict(prepared_replay_source.membership_plans)
+                            for compiled_write in prepared_writes.values():
+                                compiled_write.verify_files(full=True)
                     except BaseException as primary:
                         failure = (
                             DaemonOperationCancelled("retained preparation cancelled during verification")

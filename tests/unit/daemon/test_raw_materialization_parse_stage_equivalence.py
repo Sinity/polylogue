@@ -60,10 +60,10 @@ def _connect(path: Path) -> sqlite3.Connection:
 async def test_raw_materialization_hands_current_output_to_the_canonical_session_derivation(tmp_path: Path) -> None:
     """Raw admission targets its actual output after releasing the writer lease.
 
-    Anti-vacuity: removing the raw-to-session query or calling the profile
-    owner before raw publication leaves the materialized session without its
-    canonical profile partition. Repeating the handoff proves that inspection
-    rather than the intake item is the source of idempotence.
+    The scoped callback acknowledges the latest persisted demand; the fair
+    no-hint owner completes its profile after intake yields. Removing the
+    publication demand or failing its consumer leaves the original profile
+    assertion unsatisfied. Repeated handoff has no new work.
     """
     archive_root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
@@ -99,6 +99,21 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
         )
         await daemon_cli._converge_raw_materialized_session_profiles(archive_root, raw_id, composed.callback)
         with _connect(archive_root / "index.db") as conn:
+            assert (
+                conn.execute(
+                    "SELECT session_id FROM session_profile_demand WHERE session_id = ?", session_ids
+                ).fetchone()[0]
+                == session_ids[0]
+            )
+            assert (
+                conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", session_ids).fetchone()[0]
+                == 0
+            )
+        # Scoped handoff acknowledges the persisted latest demand. The same
+        # fair no-hint owner completes it after intake yields.
+        completed = await composed.callback(None)
+        assert completed.failed == 0 and completed.done > 0
+        with _connect(archive_root / "index.db") as conn:
             first = tuple(
                 conn.execute(
                     "SELECT session_id, input_content_hash FROM session_profiles WHERE session_id = ?",
@@ -108,6 +123,8 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
         assert len(first) == 1
 
         await daemon_cli._converge_raw_materialized_session_profiles(archive_root, raw_id, composed.callback)
+        repeated = await composed.callback(None)
+        assert repeated.failed == 0 and repeated.work.inspected == 0
         with _connect(archive_root / "index.db") as conn:
             second = tuple(
                 conn.execute(

@@ -628,3 +628,87 @@ def test_real_claude_repeated_message_events_keep_their_authored_occurrence(
     finally:
         for artifact in reversed(artifacts):
             artifact.discard()
+
+
+def test_retained_revision_metadata_does_not_collect_growing_history(tmp_path: Path) -> None:
+    """Repeated retained lookups keep one header and one message page resident."""
+    import tracemalloc
+    from dataclasses import replace
+
+    from polylogue.archive.revision_authority import RawRevisionKind
+    from polylogue.sources.revision_backfill import PreparedRetainedInput, _PreparedReplayInputs
+
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="growing",
+        messages=[
+            ParsedMessage(provider_message_id=f"message-{ordinal}", role=Role.USER, text="neutral " * 64)
+            for ordinal in range(4096)
+        ],
+    )
+    artifact = _chunk_artifact(tmp_path / "raw", session, "e" * 64)
+    retained = PreparedRetainedInput(
+        raw_id="raw",
+        provider=Provider.CODEX,
+        blob_hash=artifact.blob_hash,
+        source_path="neutral.jsonl",
+        revision_kind=RawRevisionKind.APPEND,
+        payload_bytes=128,
+        native_id="growing",
+        parser_fingerprint="fixture",
+        fallback_timestamp=None,
+        verified_blob_stat=(0, 0, 0, 0, 0),
+        validation_verdict=None,
+        prepared_artifact=artifact,
+    )
+    peaks = []
+    try:
+        for count in (16, 512):
+            inputs = {f"raw-{ordinal}": replace(retained, raw_id=f"raw-{ordinal}") for ordinal in range(count)}
+            view = _PreparedReplayInputs(inputs)
+            tracemalloc.start()
+            try:
+                for raw_id in inputs:
+                    sessions, payload_bytes = view.for_raw(raw_id)
+                    assert payload_bytes == 128
+                    assert len(sessions) == 1
+                    current = sessions[0]
+                    assert len(current.messages) == 4096
+                    assert current.messages[-1].provider_message_id == "message-4095"
+                peaks.append(tracemalloc.get_traced_memory()[1])
+            finally:
+                tracemalloc.stop()
+        assert peaks[1] < max(2 * peaks[0], 512 * 1024)
+    finally:
+        artifact.discard()
+
+
+@pytest.mark.parametrize("fold", ["coordinates", "source-hash"])
+def test_retained_cohort_fold_observes_owner_cancellation(fold: str) -> None:
+    import threading
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.sources.chunk_positions import ChunkPositions
+
+    cancelled = threading.Event()
+    message = ParsedMessage(provider_message_id="neutral", role=Role.USER, text="neutral")
+    artifact = cast(PreparedJsonl, SimpleNamespace(blob_hash="e" * 64))
+
+    class CancelDuringIteration(list[Any]):
+        def __iter__(self) -> Iterator[Any]:
+            for value in super().__iter__():
+                yield value
+                cancelled.set()
+
+    token = compute_cancel.set(cancelled)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            if fold == "coordinates":
+                ChunkPositions(CancelDuringIteration([message, message]), 0)
+            else:
+                prepared_cohort_source_hash(CancelDuringIteration([("raw-0", artifact), ("raw-1", artifact)]))
+    finally:
+        compute_cancel.reset(token)

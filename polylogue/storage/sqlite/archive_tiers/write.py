@@ -23,7 +23,7 @@ from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence, Set
 from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import date, datetime
 from datetime import time as datetime_time
 from decimal import Decimal
@@ -81,6 +81,7 @@ from polylogue.core.message_native_identity import (
     sqlite_message_native_id,
 )
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
+from polylogue.core.prepared_file import PreparedFileSeal
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.sql_settlement import current_native_sql_lifetimes, retain_native_sql_lifetimes
@@ -749,6 +750,98 @@ def _retain_stale_session_observations(
 
 
 @dataclass(frozen=True, slots=True)
+class _PreparedOccurrenceFrontier:
+    """Closed canonical next occurrences for only this append's digests."""
+
+    path: Path
+    seal: PreparedFileSeal
+    scratch: tempfile.TemporaryDirectory[str]
+
+    @classmethod
+    def build(
+        cls, identities: Sequence[MessageContentIdentity], offsets: Mapping[str, int]
+    ) -> _PreparedOccurrenceFrontier:
+        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+        scratch = tempfile.TemporaryDirectory(prefix="polylogue-append-frontier-")
+        path = Path(scratch.name) / "frontier.db"
+        owner = None
+        close_attempted = False
+        try:
+            conn = connect_measured(path)
+            owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(scratch,))
+            with connection_cursor(conn, "PRAGMA journal_mode=MEMORY"):
+                pass
+            with connection_cursor(
+                conn, "CREATE TABLE frontier (digest TEXT PRIMARY KEY, next_occurrence INTEGER NOT NULL) WITHOUT ROWID"
+            ):
+                pass
+            for digest, _occurrence in identities:
+                check_compute_cancelled()
+                with connection_cursor(conn, "SELECT 1 FROM frontier WHERE digest=?", (digest,)) as rows:
+                    exists = rows.fetchone() is not None
+                if not exists:
+                    with connection_cursor(
+                        conn, "INSERT INTO frontier VALUES (?, ?)", (digest, offsets.get(digest, 0))
+                    ):
+                        pass
+            conn.commit()
+            close_attempted = True
+            owner.close()
+            seal = PreparedFileSeal.capture(path)
+            return cls(path, seal, scratch)
+        except BaseException as primary:
+            failures: list[BaseException] = []
+            if owner is not None and not close_attempted:
+                try:
+                    owner.close()
+                except BaseException as cleanup:
+                    failures.append(cleanup)
+            try:
+                _cleanup_prepared_scratch(scratch)
+            except BaseException as cleanup:
+                failures.append(cleanup)
+            if failures:
+                raise BaseExceptionGroup(
+                    "append frontier preparation and cleanup failed", [primary, *failures]
+                ) from primary
+            raise
+
+    def verify(self, *, full: bool) -> None:
+        check_compute_cancelled()
+        try:
+            self.seal.verify(self.path, full=full)
+        except (OSError, ValueError) as failure:
+            raise PreparedSessionWriteRefusedError("prepared append frontier changed") from failure
+
+    def matches(self, conn: sqlite3.Connection, session_id: str) -> bool:
+        self.verify(full=False)
+        current = _stored_content_occurrences(conn, session_id)
+        after = ""
+        while True:
+            with (
+                retain_native_sql_lifetimes(self.scratch),
+                _prepared_reader(self.path) as prepared,
+                connection_cursor(
+                    prepared,
+                    "SELECT digest,next_occurrence FROM frontier WHERE digest>? ORDER BY digest LIMIT 512",
+                    (after,),
+                ) as cursor,
+            ):
+                rows = cursor.fetchall()
+            if not rows:
+                return True
+            for digest, next_occurrence in rows:
+                check_compute_cancelled()
+                if current.get(str(digest), 0) != int(next_occurrence):
+                    return False
+            after = str(rows[-1][0])
+
+    def close(self) -> None:
+        _cleanup_prepared_scratch(self.scratch)
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedSessionRows:
     """Sealed row and identity evidence produced before writer admission.
 
@@ -768,10 +861,9 @@ class PreparedSessionRows:
     content_identities: Sequence[MessageContentIdentity]
     owner_resolution: MessageOwnerResolution
     position_offset: int = 0
-    #: Per-digest content-occurrence counts already stored for this session,
-    #: the append-side analogue of ``position_offset``. Empty for a
-    #: full-replace write, where the session's rows are the only rows.
-    content_occurrence_offsets: tuple[tuple[str, int], ...] = ()
+    #: Exact per-incoming-key occurrences captured before writer admission.
+    #: Full replacement has no historical occurrence prerequisite.
+    occurrence_frontier: _PreparedOccurrenceFrontier | None = None
     scratch: tempfile.TemporaryDirectory[str] | None = None
 
 
@@ -1645,6 +1737,11 @@ class PreparedSessionWrite:
     enrichment_binding: tuple[str | None, str | None] | None
     cross_acquisition_union: _PreparedCrossAcquisitionUnion | None = None
 
+    def verify_files(self, *, full: bool) -> None:
+        """Verify this write's closed append frontier before admission."""
+        if self.rows.occurrence_frontier is not None:
+            self.rows.occurrence_frontier.verify(full=full)
+
     def close(self) -> None:
         """Close every carrier before retiring its actual scratch directory."""
         failures: list[BaseException] = []
@@ -1655,6 +1752,11 @@ class PreparedSessionWrite:
                     scratch.close()
                 except BaseException as failure:
                     failures.append(failure)
+        if self.rows.occurrence_frontier is not None:
+            try:
+                self.rows.occurrence_frontier.close()
+            except BaseException as failure:
+                failures.append(failure)
         try:
             self.context.close()
         except BaseException as failure:
@@ -2056,6 +2158,7 @@ def prepare_session_write(
     )
     scratch: tempfile.TemporaryDirectory[str] | None = None
     prepared_union: _PreparedCrossAcquisitionUnion | None = None
+    occurrence_frontier: _PreparedOccurrenceFrontier | None = None
     try:
         if before_input is not None:
             before_input(
@@ -2146,7 +2249,6 @@ def prepare_session_write(
                 content_identities=entry.content_identities,
                 owner_resolution=entry.owner_resolution,
                 position_offset=position_offset,
-                content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
                 scratch=scratch,
             )
         else:
@@ -2181,8 +2283,10 @@ def prepare_session_write(
                     list(context.messages.messages if isinstance(context.messages, _MessageTail) else context.messages)
                 ),
                 position_offset=position_offset,
-                content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
             )
+        if merge_append:
+            occurrence_frontier = _PreparedOccurrenceFrontier.build(rows.content_identities, content_occurrence_offsets)
+            rows = replace(rows, occurrence_frontier=occurrence_frontier)
         prepared_union = None
         if raw_id is not None and not merge_append and not force_replace:
             union_source_path = getattr(context.messages, "path", None)
@@ -2232,6 +2336,11 @@ def prepare_session_write(
         )
     except BaseException as primary:
         failures: list[BaseException] = []
+        if occurrence_frontier is not None:
+            try:
+                occurrence_frontier.close()
+            except BaseException as cleanup:
+                failures.append(cleanup)
         if prepared_union is not None and prepared_union.carry_forward.scratch is not None:
             try:
                 prepared_union.carry_forward.scratch.close()
@@ -2340,7 +2449,6 @@ def prepare_session_rows(
                 content_identities=tuple(content_identities),
                 owner_resolution=message_owner_resolution(list(messages)),
                 position_offset=position_offset,
-                content_occurrence_offsets=tuple(sorted((content_occurrence_offsets or {}).items())),
             )
 
     finally:
@@ -2958,12 +3066,9 @@ def write_parsed_session_to_archive(
                     # stored ordinals. Prepared rows pinned against either
                     # stale value would generate ids that collide with, or skip
                     # past, what is stored (polylogue-eqsri).
-                    stored_content_occurrences = (
-                        tuple(sorted(_stored_content_occurrences(conn, session_id).items())) if messages else ()
-                    )
-                    if (
-                        prepared_write.rows.position_offset != position_offset
-                        or prepared_write.rows.content_occurrence_offsets != stored_content_occurrences
+                    frontier = prepared_write.rows.occurrence_frontier
+                    if prepared_write.rows.position_offset != position_offset or (
+                        messages and (frontier is None or not frontier.matches(conn, session_id))
                     ):
                         raise PreparedSessionWriteRefusedError(
                             "prepared replay append lowering no longer matches its pinned frontier"
@@ -7365,36 +7470,58 @@ def _next_message_position(conn: sqlite3.Connection, session_id: str) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
+class _StoredContentOccurrences(Mapping[str, int]):
+    """Seek next occurrences through the canonical incoming-key index."""
+
+    def __init__(self, conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None) -> None:
+        self.conn = conn
+        self.session_id = session_id
+        self.before_input = before_input
+
+    def __getitem__(self, digest: str) -> int:
+        parameters = (self.session_id, digest)
+        if self.before_input is not None:
+            self.before_input(
+                "messages",
+                ("content_identity", "content_occurrence"),
+                "SELECT rowid FROM messages WHERE session_id=? AND content_identity=? "
+                "ORDER BY content_occurrence DESC LIMIT 1",
+                parameters,
+            )
+        with connection_cursor(
+            self.conn,
+            "SELECT content_occurrence FROM messages WHERE session_id=? AND content_identity=? "
+            "ORDER BY content_occurrence DESC LIMIT 1",
+            parameters,
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            raise KeyError(digest)
+        # Removal can leave holes; COUNT would reuse a surviving identity.
+        return int(row[0]) + 1
+
+    def __iter__(self) -> Iterator[str]:
+        with connection_cursor(
+            self.conn,
+            "SELECT DISTINCT content_identity FROM messages WHERE session_id=? AND content_identity IS NOT NULL",
+            (self.session_id,),
+        ) as rows:
+            for (digest,) in rows:
+                yield str(digest)
+
+    def __len__(self) -> int:
+        with connection_cursor(
+            self.conn,
+            "SELECT COUNT(DISTINCT content_identity) FROM messages WHERE session_id=? AND content_identity IS NOT NULL",
+            (self.session_id,),
+        ) as rows:
+            return int(rows.fetchone()[0])
+
+
 def _stored_content_occurrences(
     conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
-) -> dict[str, int]:
-    """Return the next content occurrence for each digest stored in a session.
-
-    The append-side analogue of ``_next_message_position``: an appended
-    message whose declared semantics match one already written continues that
-    digest's numbering instead of restarting at zero and colliding with the
-    stored row's ``message_id``. Materialized-prefix identity scopes preserve
-    their existing ordinals across replacement, so retained rows can have gaps.
-    """
-    if before_input is not None:
-        before_input(
-            "messages",
-            ("content_identity", "content_occurrence"),
-            "SELECT rowid FROM messages WHERE session_id=? AND content_identity IS NOT NULL",
-            (session_id,),
-        )
-    with connection_cursor(
-        conn,
-        """
-        SELECT content_identity, MAX(content_occurrence) + 1
-        FROM messages
-        WHERE session_id = ? AND content_identity IS NOT NULL
-        GROUP BY content_identity
-        """,
-        (session_id,),
-    ) as _input_cursor:
-        rows = _input_cursor.fetchall()
-    return {str(row[0]): int(row[1]) for row in rows}
+) -> Mapping[str, int]:
+    return _StoredContentOccurrences(conn, session_id, before_input)
 
 
 def _write_attachments(

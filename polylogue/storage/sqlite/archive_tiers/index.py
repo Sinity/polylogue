@@ -714,6 +714,11 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_session_position
 ON messages(session_id, position, variant_index);
 
+-- Append preparation and settlement seek only incoming semantic digests.
+-- The last component exposes the exact next occurrence even after removals.
+CREATE INDEX IF NOT EXISTS idx_messages_session_content_identity
+ON messages(session_id, content_identity, content_occurrence);
+
 -- Covers the per-session reads of the observed clock: the `occurred_at_ms`
 -- range filters and the chronological projections, which read timestamps
 -- without deciding a transcript's order. No read orders by the leading

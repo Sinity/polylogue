@@ -53,3 +53,23 @@ def test_capture_refuses_a_redirect_without_changing_target_permissions(tmp_path
     with pytest.raises(OSError):
         PreparedFileSeal.capture(alias)
     assert target.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("payload", [b"", b"neutral carrier"])
+def test_prepared_file_sealing_observes_owner_cancellation(tmp_path: Path, payload: bytes) -> None:
+    import threading
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    path = tmp_path / "cancelled-carrier.db"
+    path.write_bytes(payload)
+    cancelled = threading.Event()
+    cancelled.set()
+    token = compute_cancel.set(cancelled)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            PreparedFileSeal.capture(path)
+    finally:
+        compute_cancel.reset(token)
+    assert path.read_bytes() == payload
