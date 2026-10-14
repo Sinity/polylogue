@@ -50,6 +50,14 @@ later recorded events from appearing. Shared inherited occurrences appear once
 in a selected temporal set. Both projections retain named lineage gaps in their
 caveats and typed terminal outcome; CLI delivery preserves that outcome.
 
+Every selected time bucket has an activity band, ranked by descending event
+count with timestamp ties. Standard Markdown and temporal context compilation
+retain every selected bucket and event label. The API context projection uses
+the same composed-occurrence owner as the daemon temporal read; it does not
+apply a separate message/action excerpt. An explicitly requested context token
+budget still admits or omits the resulting segment through the context-image
+compiler's existing budget decision.
+
 ## Read completeness
 
 Declared archive reads carry `archive_materialization` in their outcome detail from the same pinned Source/Index frame that supplied the rows. Incomplete or unavailable raw materialization gives a named degraded outcome, including zero-row answers; a genuine zero-raw scope remains empty. Renderers consume this supplied evidence rather than probing a later archive snapshot. Cached base results are copied and qualified on the current pinned Source frame.

@@ -424,14 +424,13 @@ def _archive_action_sequence(values: Sequence[str]) -> tuple[str, ...]:
 
 
 def _archive_context_temporal_window(config: Config, summary: SessionSummary) -> TemporalEvidenceWindow:
-    """Build the temporal context excerpt for one selected session."""
-    from polylogue.operations.context_image_product import CONTEXT_TEMPORAL_MESSAGE_EVENTS, context_temporal_window
+    """Build complete temporal evidence for one selected session."""
+    from polylogue.operations.context_image_product import context_temporal_window
 
     with archive_read_context(
         _active_archive_root(config),
         operation="archive.context.temporal_window",
         arguments={"session_id": str(summary.id)},
-        page_size=CONTEXT_TEMPORAL_MESSAGE_EVENTS,
         projection="temporal-window",
         stable_order="time,message_id",
     ) as archive:

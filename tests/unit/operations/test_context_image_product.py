@@ -15,6 +15,7 @@ from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.operations.context_image_product import context_image_from_pinned_reader
 from polylogue.operations.daemon_protocol import daemon_operation_spec, validate_operation_result
 from polylogue.operations.daemon_reads import execute_read_operation
+from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -130,7 +131,8 @@ def test_composed_views_compile_on_the_pinned_reader_as_the_facade_does(tmp_path
         .save()
     )
     views = ["temporal", "chronicle", "messages"]
-    with ArchiveStore.open_existing(root, read_only=True) as archive:
+    with open_operation_read(root) as pinned:
+        archive = pinned.archive
         session_id = archive.list_summaries(limit=1)[0].session_id
         result = execute_read_operation(
             "read.context-image",
@@ -182,7 +184,8 @@ def test_context_image_operation_preserves_seed_order_and_projection(tmp_path: P
             .add_message("one", role="user", text=f"Evidence {number}")
             .save()
         )
-    with ArchiveStore.open_existing(root, read_only=True) as archive:
+    with open_operation_read(root) as pinned:
+        archive = pinned.archive
         refs = [summary.session_id for summary in archive.list_summaries(limit=2)]
         selected = list(reversed(refs))
         result = execute_read_operation(
@@ -245,8 +248,8 @@ def test_context_image_assertions_follow_pinned_user_snapshot(tmp_path: Path) ->
             )
 
     add_claim("visible")
-    with ArchiveStore.open_existing(root, read_only=True) as archive:
-        archive.begin_read_snapshot()
+    with open_operation_read(root) as pinned:
+        archive = pinned.archive
         assert archive.index_connection is not None
         assert archive.index_connection.execute("SELECT COUNT(*) FROM user_tier.assertions").fetchone()[0] == 1
         add_claim("late")

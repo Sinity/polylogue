@@ -261,11 +261,9 @@ def compile_temporal_context_segment(
         lines.append(f"- Caveats: {', '.join(window.caveats)}")
     lines.extend(["", "## Events"])
     if window.events:
-        for event in window.events[:50]:
+        for event in window.events:
             label = event.label.replace("\n", " ").strip()
             lines.append(f"- {event.occurred_at.isoformat()} [{event.family}/{event.kind}] {label}")
-        if len(window.events) > 50:
-            lines.append(f"- ... {len(window.events) - 50} more events omitted from this segment.")
     else:
         lines.append("- none")
     markdown = "\n".join(lines).rstrip() + "\n"
@@ -274,9 +272,6 @@ def compile_temporal_context_segment(
         for ref_text in event.evidence_refs:
             with suppress(ValueError):
                 evidence_refs.append(EvidenceRef.parse(ref_text))
-    caveats = list(window.caveats)
-    if len(window.events) > 50:
-        caveats.append("temporal_events_omitted_after_50")
     return ContextSegment(
         segment_id=f"read-view:{session_id}:temporal",
         kind="read_view",
@@ -285,9 +280,9 @@ def compile_temporal_context_segment(
         payload_kind="temporal",
         object_refs=(ObjectRef(kind="session", object_id=session_id),),
         evidence_refs=tuple(dict.fromkeys(evidence_refs)),
-        caveats=tuple(dict.fromkeys(caveats)),
+        caveats=window.caveats,
         token_estimate=_estimate_tokens(markdown),
-        lossiness="bounded_temporal_events",
+        lossiness="temporal_event_labels",
     )
 
 

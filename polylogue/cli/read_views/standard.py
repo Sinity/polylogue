@@ -426,21 +426,17 @@ def _render_temporal_window_markdown(window: TemporalEvidenceWindow) -> str:
         lines.append(f"- Caveats: {', '.join(window.caveats)}")
     lines.extend(["", "## Buckets"])
     if window.buckets:
-        for bucket in window.buckets[:25]:
+        for bucket in window.buckets:
             lines.append(f"- {bucket.bucket_start.isoformat()} {bucket.family}/{bucket.kind}: {bucket.count}")
-        if len(window.buckets) > 25:
-            lines.append(f"- ... {len(window.buckets) - 25} more buckets")
     else:
         lines.append("- none")
     lines.extend(["", "## Events"])
     if window.events:
-        for event in window.events[:50]:
+        for event in window.events:
             label = event.label.replace("\n", " ").strip()
             lines.append(
                 f"- {event.occurred_at.isoformat()} [{event.family}/{event.kind}] {label} ({event.source_ref})"
             )
-        if len(window.events) > 50:
-            lines.append(f"- ... {len(window.events) - 50} more events")
     else:
         lines.append("- none")
     return "\n".join(lines) + "\n"
