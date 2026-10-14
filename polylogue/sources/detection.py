@@ -299,46 +299,20 @@ class CompiledDetectorRegistry:
         record is held at a time. A record stream is never a single JSON
         document, so record-mode bindings do not apply.
         """
-        from polylogue.sources.detection_projection import detection_read_view, project_detection_value
-
-        candidates = (
-            *self.by_mode.get(DetectionMode.SEQUENCE_DOCUMENT, ()),
-            *self.by_mode.get(DetectionMode.SEQUENCE_RECORD_STREAM, ()),
-        )
-        rules = tuple(_stream_projection(compiled.binding) for compiled in candidates)
-        best = len(candidates)
-        witness: object = None
-        seen = False
+        classifier = self.record_stream_classifier()
         for record in records:
             if check_stop is not None:
                 check_stop()
-            seen = True
-            projections: dict[str, object] = {}
-            # Only bindings at or before the current winner can change the
-            # outcome; re-testing the winner keeps its last witness, as the
-            # complete "any" fold does. Each predicate sees its own declared
-            # projection, so no binding walks undeclared record content.
-            for index in range(min(best + 1, len(candidates))):
-                path = candidates[index].binding.stream_projection_path
-                assert path is not None  # _stream_projection validated every declaration above.
-                if path not in projections:
-                    projections[path] = detection_read_view(project_detection_value(record, rules[index]))
-                projected = projections[path]
-                if candidates[index].predicate([projected]):
-                    best, witness = index, projected
-                    break
-        if not seen or best == len(candidates):
-            return None, None
-        compiled = candidates[best]
-        if compiled.provider_resolver is None:
-            return compiled.binding.fixed_provider, compiled.binding.evidence_label
-        resolved_provider: object = compiled.provider_resolver([witness])
-        if resolved_provider is not None and (
-            not isinstance(resolved_provider, Provider)
-            or resolved_provider not in compiled.binding.dynamic_provider_allowlist
-        ):
-            raise DetectorBindingError(f"{compiled.binding.binding_id}: invalid projected dynamic provider")
-        return resolved_provider, compiled.binding.evidence_label
+            classifier.observe(record)
+        return classifier.finish()
+
+    def record_stream_classifier(self) -> RecordStreamClassifier:
+        return RecordStreamClassifier(
+            (
+                *self.by_mode.get(DetectionMode.SEQUENCE_DOCUMENT, ()),
+                *self.by_mode.get(DetectionMode.SEQUENCE_RECORD_STREAM, ()),
+            )
+        )
 
     def detect_stream(
         self, handle: IO[bytes], *, check_stop: Callable[[], None] | None = None
@@ -388,6 +362,60 @@ class CompiledDetectorRegistry:
             return None, None
         finally:
             handle.seek(start)
+
+
+class RecordStreamClassifier:
+    """The registry's complete-record fold, owned by one admitted input."""
+
+    def __init__(self, candidates: tuple[_CompiledBinding, ...]) -> None:
+        self.candidates = candidates
+        self.rules = tuple(_stream_projection(compiled.binding) for compiled in candidates)
+        self.best = len(candidates)
+        self.witness: object = None
+        self.seen = False
+
+    def possible_providers(self) -> frozenset[Provider]:
+        return frozenset(
+            provider
+            for compiled in self.candidates[: self.best + 1]
+            for provider in (
+                (compiled.binding.fixed_provider,)
+                if compiled.provider_resolver is None
+                else compiled.binding.dynamic_provider_allowlist
+            )
+            if provider is not None
+        )
+
+    def observe(self, record: object) -> None:
+        from polylogue.sources.detection_projection import detection_read_view, project_detection_value
+
+        self.seen = True
+        projections: dict[str, object] = {}
+        # Earlier bindings may supersede a late winner. The winning binding
+        # also keeps its last witness, exactly as the complete any-fold does.
+        for index in range(min(self.best + 1, len(self.candidates))):
+            path = self.candidates[index].binding.stream_projection_path
+            assert path is not None
+            if path not in projections:
+                projections[path] = detection_read_view(project_detection_value(record, self.rules[index]))
+            projected = projections[path]
+            if self.candidates[index].predicate([projected]):
+                self.best, self.witness = index, projected
+                break
+
+    def finish(self) -> tuple[Provider | None, str | None]:
+        if not self.seen or self.best == len(self.candidates):
+            return None, None
+        compiled = self.candidates[self.best]
+        if compiled.provider_resolver is None:
+            return compiled.binding.fixed_provider, compiled.binding.evidence_label
+        resolved_provider: object = compiled.provider_resolver([self.witness])
+        if resolved_provider is not None and (
+            not isinstance(resolved_provider, Provider)
+            or resolved_provider not in compiled.binding.dynamic_provider_allowlist
+        ):
+            raise DetectorBindingError(f"{compiled.binding.binding_id}: invalid projected dynamic provider")
+        return resolved_provider, compiled.binding.evidence_label
 
 
 @functools.cache
