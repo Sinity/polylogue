@@ -172,6 +172,7 @@ def test_fault_connections_remain_native_backup_endpoints(custom_factory: bool, 
                 connection.row_factory = sqlite3.Row
                 assert connection.execute("SELECT value FROM records").fetchone()["value"] == 7
                 if custom_factory:
+                    assert isinstance(connection, CountingConnection)
                     assert connection.reads == 1
                 connection.backup(native_target)
                 assert native_target.execute("SELECT value FROM records").fetchall() == [(7,)]
