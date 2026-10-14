@@ -18,6 +18,7 @@ from typing import Literal, cast
 import pytest
 
 from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, categorical_values
 from polylogue.schemas.synthetic.classification import classify_schema_constructs
 from polylogue.schemas.synthetic.wire_formats import TreeConfig, WireFormat
@@ -610,7 +611,9 @@ def _string_length_fields(node: object, path: str = "$") -> list[tuple[str, dict
     return found
 
 
-def test_fresh_packages_generate_string_lengths_inside_their_observed_range(qualified_schema_registry) -> None:
+def test_fresh_packages_generate_string_lengths_inside_their_observed_range(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
     """Every top-level string field with an observed length histogram stays inside [min, max]."""
     checked = 0
     for provider in ("chatgpt", "claude-code", "gemini"):

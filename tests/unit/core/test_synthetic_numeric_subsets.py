@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
@@ -179,18 +180,24 @@ def test_numeric_subset_alias_reuse_requires_original_solver_custody() -> None:
     from polylogue.schemas.synthetic.observed_values import existing_value_is_supported
 
     schema = generate_schema_from_samples(_samples(), provider="codex", max_stats_samples=0)
-    pending = [schema]
+    pending: list[object] = [schema]
+    usage_schema: SchemaRecord | None = None
     while pending:
         node = pending.pop()
         if isinstance(node, dict):
             if "x-polylogue-numeric-order" in node:
-                usage_schema = node
+                usage_schema = cast(SchemaRecord, node)
                 break
             pending.extend(node.values())
         elif isinstance(node, list):
             pending.extend(node)
     else:
         pytest.fail("original inference did not declare a numeric subset")
-    usage = _samples()[2]["payload"]["info"]["last_token_usage"]
+    payload = _samples()[2]["payload"]
+    assert isinstance(payload, dict)
+    info = payload["info"]
+    assert isinstance(info, dict)
+    usage = info["last_token_usage"]
+    assert usage_schema is not None
     with pytest.raises(ValueError, match="relational solver custody"):
         existing_value_is_supported(usage_schema, usage)

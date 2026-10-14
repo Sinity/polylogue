@@ -196,7 +196,9 @@ def test_selected_source_profile_refuses_input_changed_during_original_observati
     assert reached
 
 
-def test_measured_codex_scope_keeps_the_original_header_and_message_wire_family(qualified_schema_registry) -> None:
+def test_measured_codex_scope_keeps_the_original_header_and_message_wire_family(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
     from polylogue.sources.dispatch import parse_payload
     from tests.infra.qualified_schema_registry import neutral_source_expectations
 

@@ -8,10 +8,11 @@ import pytest
 
 from polylogue.schemas.synthetic import SyntheticCorpus, WireFormat
 from polylogue.schemas.synthetic.classification import classify_schema_constructs
+from polylogue.schemas.synthetic.models import SchemaRecord
 
 
 def test_required_fields_are_drawn_despite_optional_marginal_frequency() -> None:
-    schema = {
+    schema: SchemaRecord = {
         "type": "object",
         "properties": {"value": {"type": "integer", "x-polylogue-frequency": 0.1}},
         "required": ["value"],
@@ -27,7 +28,7 @@ def test_required_fields_are_drawn_despite_optional_marginal_frequency() -> None
 
 
 def test_required_fields_without_a_declared_property_schema_refuse() -> None:
-    schema = {"type": "object", "properties": {"other": {"type": "integer"}}, "required": ["missing"]}
+    schema: SchemaRecord = {"type": "object", "properties": {"other": {"type": "integer"}}, "required": ["missing"]}
     assert (
         next(item for item in classify_schema_constructs(schema) if item.construct == "required").state == "unsupported"
     )
@@ -40,7 +41,7 @@ def test_required_fields_without_a_declared_property_schema_refuse() -> None:
 
 
 def test_known_publication_counters_are_metadata_and_unknown_extensions_refuse() -> None:
-    schema = {
+    schema: SchemaRecord = {
         "type": "integer",
         "x-polylogue-publication-omitted-structure-witness-count": 0,
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound": 0,

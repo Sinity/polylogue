@@ -417,6 +417,7 @@ class _CoverageCorpus(Protocol):
     _coverage_type_choices: dict[str, str]
     _coverage_null_paths: set[str]
     _coverage_witness_mode: bool
+    _coverage_header_form: str | None
 
     def generate_batch(
         self,
@@ -505,9 +506,7 @@ def _route_nonrepresentable_reasons(
     reasons: dict[str, str] = {}
     excluded_roots = _route_excluded_root_properties(provider, schema)
     prefixes: tuple[tuple[str, str], ...]
-    if provider == "codex":
-        prefixes = (("$.properties.payload", "Codex flat-record shaping removes the payload envelope"),)
-    elif provider == "claude-ai":
+    if provider == "claude-ai":
         prefixes = (
             (
                 "$.properties.chat_messages.items[*]",
@@ -836,7 +835,20 @@ def generate_coverage_witnesses(
         for plan_index, groups in choice_groups.items()
         for group in groups
     )
-    for index, (branches, types) in enumerate(assignments):
+    header_forms: tuple[str | None, ...] = (None,)
+    profile = corpus.workload_profile
+    if corpus.provider == "codex" and profile is not None and profile.get("profile_kind") != "authored-fixture":
+        lineage = profile.get("session_lineage")
+        classes = lineage.get("header_classes") if isinstance(lineage, Mapping) else None
+        forms: set[str] = set()
+        for row in classes if isinstance(classes, list) else ():
+            form = row.get("form") if isinstance(row, Mapping) else None
+            if isinstance(form, str):
+                forms.add(form)
+        if forms:
+            header_forms = tuple(sorted(forms))
+    conditioned_assignments = [(branches, types, form) for branches, types in assignments for form in header_forms]
+    for index, (branches, types, header_form) in enumerate(conditioned_assignments):
         original = (
             corpus.schema,
             corpus.workload_profile,
@@ -847,6 +859,7 @@ def generate_coverage_witnesses(
             corpus._generation_state,
             corpus._categorical_pools,
             corpus._public_record_plan,
+            corpus._coverage_header_form,
         )
         try:
             corpus._generation_state = replace(corpus._generation_state)
@@ -856,6 +869,7 @@ def generate_coverage_witnesses(
             corpus._coverage_type_choices = types
             corpus._coverage_null_paths = set()
             corpus._coverage_witness_mode = True
+            corpus._coverage_header_form = header_form
             batch = corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed + index)
         finally:
             (
@@ -868,6 +882,7 @@ def generate_coverage_witnesses(
                 corpus._generation_state,
                 corpus._categorical_pools,
                 corpus._public_record_plan,
+                corpus._coverage_header_form,
             ) = original
         yield from batch.raw_items
 
@@ -1656,8 +1671,8 @@ def _parser_artifact_expected_session_id(provider: str, payload: JSONValue, fall
 
         for record in payload:
             if isinstance(record, Mapping) and (header := codex_session_header(record)) is not None:
-                identity = header.get("id")
-                return identity if isinstance(identity, str) and identity else fallback_id
+                header_identity = header.get("id")
+                return header_identity if isinstance(header_identity, str) and header_identity else fallback_id
     if provider == "claude-code" and isinstance(payload, list | GeneratedArray):
         session_ids = {
             session_id

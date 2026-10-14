@@ -82,6 +82,7 @@ class SyntheticCorpus:
         self._coverage_type_choices: dict[str, str] = {}
         self._coverage_null_paths: set[str] = set()
         self._coverage_witness_mode = False
+        self._coverage_header_form: str | None = None
         self._generation_state = SyntheticGenerationState(
             relation_solver=RelationConstraintSolver(schema),
             semantic_generator=None,

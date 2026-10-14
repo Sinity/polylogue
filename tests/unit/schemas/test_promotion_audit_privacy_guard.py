@@ -727,5 +727,13 @@ def test_audit_reads_each_original_depth_grammar_without_expanding_the_profile(t
 
     report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
     failures = [check for check in report.checks if check.status.value == "error"]
-    assert any(check.name == "published_paths" and check.provider.endswith("/depth:24") for check in failures)
+    from polylogue.schemas.audit.models import AuditCheck
+
+    assert any(
+        isinstance(check, AuditCheck)
+        and check.name == "published_paths"
+        and check.provider is not None
+        and check.provider.endswith("/depth:24")
+        for check in failures
+    )
     assert "/home/neutral/generated" not in report.format_text()

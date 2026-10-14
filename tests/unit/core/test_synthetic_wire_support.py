@@ -1857,14 +1857,14 @@ def test_claude_ai_witnesses_render_one_coherent_shape_the_parser_reads(
 
 @pytest.mark.parametrize("enveloped", (False, True))
 def test_codex_native_tool_receipt_checks_both_record_sides_and_outcomes(enveloped: bool) -> None:
-    header = {"type": "session_meta", "id": "neutral-session"}
-    call = {"type": "function_call", "call_id": "neutral-call", "name": "Read", "arguments": "{}"}
-    output = {
+    header: JSONDocument = {"type": "session_meta", "id": "neutral-session"}
+    call: JSONDocument = {"type": "function_call", "call_id": "neutral-call", "name": "Read", "arguments": "{}"}
+    output: JSONDocument = {
         "type": "function_call_output",
         "call_id": "neutral-call",
         "output": {"output": "neutral result", "exit_code": 0, "is_error": False},
     }
-    payload = (
+    payload: list[JSONValue] = (
         [
             {"type": "session_meta", "payload": {"id": "neutral-session"}},
             {"type": "response_item", "payload": call},
@@ -1917,3 +1917,20 @@ def test_neutral_tool_source_profiles_have_nonvacuous_healthy_receipts(
         for entry in receipt.entries
         for witness in entry.parser_witnesses
     )
+
+
+def test_codex_receipt_witnesses_both_original_measured_record_families(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    receipt = shared_wire_support_receipt(storage_root=qualified_schema_registry.storage_root, providers=("codex",))
+    assert receipt.complete and len(receipt.entries) == 1
+    entry = receipt.entries[0]
+    assert entry.construct_coverage is not None
+    assert entry.construct_coverage.complete
+    assert not any("payload" in keyword for keyword in entry.construct_coverage.nonrepresentable_keywords)
+    assert any("type:array@$.properties.content" in witness.exercised_keywords for witness in entry.parser_witnesses)
+    assert any(
+        "type:array@$.properties.payload.properties.content" in witness.exercised_keywords
+        for witness in entry.parser_witnesses
+    )
+    assert all(witness.healthy for witness in entry.parser_witnesses)

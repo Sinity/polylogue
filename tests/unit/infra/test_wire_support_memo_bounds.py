@@ -94,7 +94,7 @@ def test_generated_witness_memo_holds_its_declared_byte_budget(monkeypatch: pyte
     corpora = 32
     generated = 0
 
-    def stub_witnesses(corpus: Any, *, seed: int, max_witnesses: int = 128) -> list[bytes]:
+    def stub_witnesses(corpus: Any, *, seed: int) -> list[bytes]:
         nonlocal generated
         generated += 1
         return [bytes(payload_bytes)]
@@ -102,7 +102,7 @@ def test_generated_witness_memo_holds_its_declared_byte_budget(monkeypatch: pyte
     monkeypatch.setattr(wire_formats, "generate_coverage_witnesses", stub_witnesses)
     with wire_support.shared_wire_generation():
         for index in range(corpora):
-            wire_formats.generate_coverage_witnesses(_corpus(index), seed=1, max_witnesses=1)
+            list(wire_formats.generate_coverage_witnesses(_corpus(index), seed=1))
 
     assert payload_bytes * corpora > wire_support._GENERATED_WITNESS_BYTES_LIMIT, (
         "the fixture must offer more than the budget or the bound is never exercised"
@@ -128,40 +128,34 @@ def test_generated_witness_memo_still_answers_from_its_memo(monkeypatch: pytest.
     """
     calls = 0
 
-    def stub_witnesses(corpus: Any, *, seed: int, max_witnesses: int = 128) -> list[bytes]:
+    def stub_witnesses(corpus: Any, *, seed: int) -> list[bytes]:
         nonlocal calls
         calls += 1
         return [b"payload"]
 
     monkeypatch.setattr(wire_formats, "generate_coverage_witnesses", stub_witnesses)
     with wire_support.shared_wire_generation():
-        first = wire_formats.generate_coverage_witnesses(_corpus(0), seed=1, max_witnesses=1)
-        second = wire_formats.generate_coverage_witnesses(_corpus(0), seed=1, max_witnesses=1)
+        first = list(wire_formats.generate_coverage_witnesses(_corpus(0), seed=1))
+        second = list(wire_formats.generate_coverage_witnesses(_corpus(0), seed=1))
 
     assert calls == 1, f"the memo answered nothing: the generator ran {calls} times for one key"
     assert first == second == [b"payload"]
 
 
 @pytest.mark.usefixtures("isolated_memos")
-def test_generated_witness_memo_keeps_the_corpus_it_was_just_asked_for(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A corpus larger than the whole budget is still the one that survives.
-
-    RED WITHOUT: drop the ``len(...) > 1`` guard in ``_retain_witnesses`` and
-    an over-budget entry evicts itself, turning the memo into a slower no-op.
-    """
+def test_oversized_generated_witness_passes_through_without_retention(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An oversized stream still yields all bytes while remaining uncached."""
     oversized = wire_support._GENERATED_WITNESS_BYTES_LIMIT + 1024
 
-    def stub_witnesses(corpus: Any, *, seed: int, max_witnesses: int = 128) -> list[bytes]:
+    def stub_witnesses(corpus: Any, *, seed: int) -> list[bytes]:
         return [bytes(oversized)]
 
     monkeypatch.setattr(wire_formats, "generate_coverage_witnesses", stub_witnesses)
     with wire_support.shared_wire_generation():
-        wire_formats.generate_coverage_witnesses(_corpus(0), seed=1, max_witnesses=1)
-
-    assert len(wire_support._GENERATED_WITNESSES) == 1, (
-        f"an over-budget corpus evicted itself: {len(wire_support._GENERATED_WITNESSES)} entries retained"
-    )
-    assert sum(len(payload) for entry in wire_support._GENERATED_WITNESSES.values() for payload in entry) == oversized
+        delivered = list(wire_formats.generate_coverage_witnesses(_corpus(0), seed=1))
+    assert len(delivered) == 1 and len(delivered[0]) == oversized
+    assert not wire_support._GENERATED_WITNESSES
+    assert wire_support._GENERATED_WITNESS_BYTES == 0
 
 
 @pytest.mark.usefixtures("isolated_memos")
@@ -170,14 +164,14 @@ def test_tiny_witnesses_are_bounded_by_retained_entry_heap(monkeypatch: pytest.M
     budget = 256 * 1024
     monkeypatch.setattr(wire_support, "_GENERATED_WITNESS_BYTES_LIMIT", budget)
 
-    def stub_witnesses(corpus: Any, *, seed: int, max_witnesses: int = 128) -> list[bytes]:
+    def stub_witnesses(corpus: Any, *, seed: int) -> list[bytes]:
         return [b"0"]
 
     monkeypatch.setattr(wire_formats, "generate_coverage_witnesses", stub_witnesses)
     corpus = _corpus(0)
     with wire_support.shared_wire_generation():
         for seed in range(5_000):
-            assert wire_formats.generate_coverage_witnesses(corpus, seed=seed, max_witnesses=1) == [b"0"]
+            assert list(wire_formats.generate_coverage_witnesses(corpus, seed=seed)) == [b"0"]
 
     assert wire_support._GENERATED_WITNESSES, "the budget must still retain usable tiny witnesses"
     assert len(wire_support._GENERATED_WITNESSES) < 5_000

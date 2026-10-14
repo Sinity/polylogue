@@ -66,6 +66,8 @@ class _SyntheticBatchContext(Protocol):
         self, schema: SchemaRecord, metadata_class: SchemaRecord, agent_id: str, stem: str, rng: random.Random
     ) -> JSONValue: ...
 
+    _coverage_witness_mode: bool
+    _coverage_header_form: str | None
     _session_header_class: SchemaRecord | None
     _session_header_bound: bool
     _session_parent_id: str | None
@@ -736,6 +738,8 @@ def _select_session_header(
         if type(selected_class) is not int or not 0 <= selected_class < len(classes):
             raise ValueError("authored first-header declaration is malformed")
         classes = [classes[selected_class]]
+    if self._coverage_witness_mode and self._coverage_header_form is not None:
+        classes = [row for row in classes if isinstance(row, dict) and row.get("form") == self._coverage_header_form]
     for row in classes:
         if not isinstance(row, dict):
             raise ValueError("first-header class is malformed")

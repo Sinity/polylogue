@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
+from typing import cast
 
 import pytest
 
@@ -631,12 +632,15 @@ class TestObservedValueAnnotationIsExhaustive:
     def test_rare_public_discriminators_remain_original_field_support(self) -> None:
         from polylogue.schemas.generation.field_annotations import _enum_values
 
-        samples: list[JSONDocument] = (
-            [{"role": "user"}] * 100
-            + [{"role": "assistant"}] * 100
-            + [{"role": "developer"}, {"role": "progress"}, {"role": "file-history-snapshot"}]
-            + [{"role": "neutral_private_category"}]
-            + [{"role": "person@example.com"}]
+        samples = cast(
+            list[JSONDocument],
+            (
+                [{"role": "user"}] * 100
+                + [{"role": "assistant"}] * 100
+                + [{"role": "developer"}, {"role": "progress"}, {"role": "file-history-snapshot"}]
+                + [{"role": "neutral_private_category"}]
+                + [{"role": "person@example.com"}]
+            ),
         )
         stats = _collect_field_stats(samples)["$.role"]
         values = _enum_values(stats, path="$.role", privacy_config=None)

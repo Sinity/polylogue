@@ -479,9 +479,9 @@ def test_original_ambiguous_pointer_can_supply_persisted_stem_aliases(
             with ToolResultIndexAccumulator(disk_backed=True) as original:
                 original.observe(record)
                 for name, kind in zip(names, expected, strict=True):
-                    match = original.reference_for_filename(name)
-                    assert match is not None and match.tool_use_id == "middle"
-                    assert match.reference_kind == kind
+                    original_match = original.reference_for_filename(name)
+                    assert original_match is not None and original_match.tool_use_id == "middle"
+                    assert original_match.reference_kind == kind
 
             with pytest.raises(StopIteration):
                 next(sessions)

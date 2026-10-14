@@ -843,7 +843,14 @@ class _ContentStructure:
             relation = "missing"
             prior_mode = ""
             prior_count = 0
-            result_mode = tool_result_content_mode(tool) if provider == "claude-code" and kind == "tool_result" else ""
+            result_mode = (
+                tool_result_content_mode(tool)
+                if provider == "claude-code"
+                and kind == "tool_result"
+                or provider == "codex"
+                and kind in {"function_call_output", "custom_tool_call_output"}
+                else ""
+            )
             if isinstance(value, str) and value:
                 identity = value.encode("utf-8", "surrogatepass")
                 cursor = tool_owner.execute(

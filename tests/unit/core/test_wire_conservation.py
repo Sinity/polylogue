@@ -556,7 +556,9 @@ def test_chatgpt_capture_catalog_retains_parser_owned_mapping_and_title(version:
     registry = SchemaRegistry()
     schema = registry.get_element_schema("chatgpt", version=version, element_kind="session_document")
     assert schema is not None
-    assert {"mapping", "title"} <= schema["properties"].keys()
+    properties = schema.get("properties")
+    assert isinstance(properties, dict)
+    assert {"mapping", "title"} <= properties.keys()
     assert registry.get_workload_profile("chatgpt", version=version) is None
     assert not any(path == "$.title" or path.startswith("$.mapping") for path in excluded_paths_from_pins("chatgpt"))
 
