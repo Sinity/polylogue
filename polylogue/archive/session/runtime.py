@@ -246,13 +246,12 @@ def _pending_tool_blocks(session: Session, messages: Callable[[], Iterable[Messa
 
 class _ToolResultSummary(NamedTuple):
     outcome: str
-    text: str | None
 
 
 def _session_tool_results(
     session: Session, messages: Callable[[], Iterable[Message]] | None = None
 ) -> dict[str, _ToolResultSummary]:
-    """Session-wide ``tool_id -> (structural outcome, result text)`` map.
+    """Session-wide ``tool_id -> structural outcome`` map.
 
     Mirrors ``_pending_tool_blocks``'s session-wide (not per-message)
     ``tool_use``/``tool_result`` pairing and
@@ -261,10 +260,9 @@ def _session_tool_results(
     message and its paired ``tool_result`` in a *later* message, which
     :func:`polylogue.archive.actions.parsing.build_tool_calls_from_content_blocks`
     (and therefore ``Action.output_text``, per-message only) cannot see.
-    Reading blocks directly session-wide here is what makes both the
-    structural error signal and its tagged text fallback in
-    :func:`_terminal_state` actually fire for the common shape, not just the
-    rare same-message case.
+    Reading blocks directly session-wide lets :func:`_terminal_state` use
+    structural outcomes for the common shape, not just the rare same-message
+    case. Result bodies are not needed by that decision.
     """
     results: dict[str, _ToolResultSummary] = {}
     for message in messages() if messages is not None else session.messages:
@@ -276,11 +274,7 @@ def _session_tool_results(
             tool_id = _tool_block_id(block)
             if tool_id is None:
                 continue
-            text = block.get("text")
-            results[tool_id] = _ToolResultSummary(
-                outcome=tool_result_block_outcome(block),
-                text=text if isinstance(text, str) and text else None,
-            )
+            results[tool_id] = _ToolResultSummary(outcome=tool_result_block_outcome(block))
     return results
 
 

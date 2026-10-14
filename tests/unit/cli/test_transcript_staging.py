@@ -201,3 +201,50 @@ def test_large_transcript_body_is_staged_and_rendered_one_page_at_a_time(
     # Representative Python allocations only; this is neither RSS nor a bound
     # on branch positions/tool dependency identifiers for all possible inputs.
     assert peak < 24 * 1024 * 1024
+
+
+def test_repeatable_terminal_classifier_does_not_retain_tool_result_bodies() -> None:
+    import tracemalloc
+
+    from polylogue.archive.models import Message
+    from polylogue.archive.session.runtime import build_session_terminal_state
+    from tests.infra.builders import make_conv, make_msg
+
+    header = make_conv(id="tool-result-transcript", messages=[])
+
+    def messages(size: int) -> Iterator[Message]:
+        for position in range(20):
+            yield make_msg(
+                id=f"tool-{position}",
+                role="assistant",
+                text="tool",
+                blocks=[
+                    {
+                        "type": "tool_use",
+                        "tool_id": f"call-{position}",
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "true"},
+                    },
+                    {"type": "tool_result", "tool_id": f"call-{position}", "text": "x" * size, "tool_outcome": "ok"},
+                ],
+            )
+        # A repeated physical tool ID retains the last structural outcome.
+        yield make_msg(
+            id="repeated-result",
+            role="tool",
+            text="result",
+            blocks=[{"type": "tool_result", "tool_id": "call-19", "text": "x" * size, "tool_outcome": "error"}],
+        )
+        yield make_msg(id="after-result", role="assistant", text="done")
+
+    expected = build_session_terminal_state(header, messages=lambda: messages(1))
+    assert expected[0] == "error_left" and expected[3] == "action_outcome"
+    tracemalloc.start()
+    try:
+        actual = build_session_terminal_state(header, messages=lambda: messages(2 * 1024 * 1024))
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert actual == expected
+    # Representative Python heap, not RSS or a bound on all structural input.
+    assert peak < 24 * 1024 * 1024
