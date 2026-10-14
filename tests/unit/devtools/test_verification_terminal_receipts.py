@@ -705,3 +705,22 @@ def test_focused_completion_prunes_against_the_history_it_published(
     assert len(rows) == len(successful) + 1
     assert rows[-1]["exit_code"] == 4
     assert not (receipt_workspace / verify_runs.VERIFY_HISTORY_PATH).exists()
+
+
+def test_receipt_append_memory_does_not_grow_with_prior_history(receipt_workspace: Path) -> None:
+    """Retaining every prior run identity makes one streamed append grow with history."""
+    import tracemalloc
+
+    history = receipt_workspace / "large-history.jsonl"
+    with history.open("w", encoding="utf-8") as handle:
+        for index in range(5000):
+            handle.write(json.dumps({"run_id": f"prior-{index}-" + "x" * 700}) + "\n")
+    tracemalloc.start()
+    try:
+        verify_runs._append_jsonl_batch(iter(({"run_id": "new-receipt"},)), path=history)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1024 * 1024, peak
+    with history.open(encoding="utf-8") as handle:
+        assert sum(1 for _ in handle) == 5001

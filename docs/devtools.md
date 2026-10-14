@@ -210,7 +210,8 @@ it does not rerun verification or grant new authority. The history's canonical
 receipt also restores missing evidence after successful detail pruning. Both
 append lanes serialize run identity checks with publication, so concurrent
 finish and recovery produce one row per run in each lane. Recovery scans identities once per
-lane for a batch and makes every appended row durable before advancing.
+lane for a batch using a temporary disk-backed identity index, keeping memory
+independent of history length. Every appended row becomes durable before advancing.
 
 
 `devtools cache gc` returns one requested artifact page (`--page-size`, default
