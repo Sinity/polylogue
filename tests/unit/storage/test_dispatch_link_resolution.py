@@ -19,11 +19,14 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
-from typing import cast
+from typing import Generic, TypeVar, cast
+
+import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base_models import ParsedDispatchObservation
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.storage.blob_store import blob_store_for_connection
 from polylogue.storage.io_phase_metrics import connect_measured
@@ -33,6 +36,8 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.retained_replay import replay_retained_components
+
+_SpoolValue = TypeVar("_SpoolValue")
 
 _PARENT = "0d9f1c2e-parent-uuid"
 _T0 = "2026-05-28T00:59:00.000Z"
@@ -534,3 +539,131 @@ def test_retained_sidecar_remains_evidence_after_new_acquisition_moves(tmp_path:
         edge = _link(index, child_id)
         assert edge["parent_tool_use_block_id"] == _tool_use_block_id(index, "call_1")
         assert _dispatch_reason(edge) is None
+
+
+def test_late_parent_dispatch_projection_decodes_each_event_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import write
+
+    conn = _index_conn(tmp_path / "index.db")
+    children = [_write_child(conn, f"fan-{index}") for index in range(12)]
+    parent = parse_code(_parent_records([(f"tool-{index}", f"fan-{index}") for index in range(12)]), _PARENT)
+    original = write._dispatch_child_identity_values
+    observed = 0
+
+    def count(observation: ParsedDispatchObservation, payload: dict[str, object]) -> set[str]:
+        nonlocal observed
+        observed += 1
+        return original(observation, payload)
+
+    monkeypatch.setattr(write, "_dispatch_child_identity_values", count)
+    write_fixture_index_session(conn, parent)
+    assert observed == 12, observed
+    for index, child in enumerate(children):
+        assert _link(conn, child)["parent_tool_use_block_id"] == _tool_use_block_id(conn, f"tool-{index}")
+        assert _dispatch_reason(_link(conn, child)) is None
+
+
+def test_dispatch_projection_is_fresh_after_event_and_claim_changes_in_one_transaction(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers import write
+
+    conn = _index_conn(tmp_path / "index.db")
+    parent = _write_parent(conn, _parent_records([("call_1", "a1"), ("call_2", "a2"), ("call_3", "unclaimed")]))
+    child = _write_child(conn, "a1")
+    other = _write_child(conn, "a2")
+    conn.commit()
+    conn.execute("BEGIN")
+    try:
+        event = conn.execute(
+            "SELECT rowid,payload_json FROM session_events WHERE session_id=? "
+            "AND event_type='claude_delegation_progress' ORDER BY rowid LIMIT 1",
+            (parent,),
+        ).fetchone()
+        assert event is not None
+        payload = json.loads(event[1])
+        payload["provider_tool_id"] = "call_3"
+        conn.execute("UPDATE session_events SET payload_json=? WHERE rowid=?", (json.dumps(payload), event[0]))
+        conn.execute("UPDATE session_links SET parent_tool_use_block_id=NULL WHERE src_session_id=?", (child,))
+        write._resolve_session_graph(conn, parent, _PARENT, "claude-code-session")
+        assert _link(conn, child)["parent_tool_use_block_id"] == _tool_use_block_id(conn, "call_3")
+        # An exact alias becomes contested before the next invocation. The
+        # prior projection must not survive even this same outer transaction.
+        claim = conn.execute(
+            "SELECT origin,identity_namespace,provider_value,claim_kind,evidence_json "
+            "FROM session_identity_claims WHERE claimant_session_id=? AND provider_value=?",
+            (child, payload["child_provider_id"]),
+        ).fetchone()
+        assert claim is not None
+        conn.execute(
+            "INSERT INTO session_identity_claims VALUES (?,?,?,?,?,?)",
+            (claim[0], claim[1], claim[2], other, claim[3], claim[4]),
+        )
+        conn.execute("UPDATE session_links SET parent_tool_use_block_id=NULL WHERE src_session_id=?", (child,))
+        write._resolve_session_graph(conn, parent, _PARENT, "claude-code-session")
+        assert _link(conn, child)["parent_tool_use_block_id"] is None
+        assert _dispatch_reason(_link(conn, child)) == "dispatch-evidence-absent"
+        assert conn.in_transaction
+    finally:
+        conn.rollback()
+
+
+def test_parent_dispatch_spool_closes_when_resolution_is_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from polylogue.storage.sqlite.archive_tiers import write
+
+    conn = _index_conn(tmp_path / "index.db")
+    _write_child(conn, "cancelled")
+    _write_child(conn, "other-cancelled")
+    parent = parse_code(_parent_records([("call_1", "cancelled"), ("call_2", "other-cancelled")]), _PARENT)
+    import os
+
+    from polylogue.sources.pickle_spool import PickleSpool
+
+    descriptors: list[int] = []
+
+    class ObservedSpool(PickleSpool[_SpoolValue], Generic[_SpoolValue]):
+        def __init__(self) -> None:
+            super().__init__()
+            descriptors.append(self._file.fileno())
+
+    def cancel(*args: object) -> set[str]:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(write, "PickleSpool", ObservedSpool)
+    monkeypatch.setattr(write, "_dispatch_child_identity_values", cancel)
+    with pytest.raises(asyncio.CancelledError):
+        write_fixture_index_session(conn, parent)
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
+def test_dispatch_projection_is_shared_between_resolved_and_unresolved_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import write
+
+    conn = _index_conn(tmp_path / "index.db")
+    parent = _write_parent(conn, _parent_records([("call_1", "a1"), ("call_2", "a2")]))
+    first, second = _write_child(conn, "a1"), _write_child(conn, "a2")
+    # Place one edge in each of the graph owner's existing convergence walks.
+    conn.execute("UPDATE session_links SET resolved_dst_session_id=NULL WHERE src_session_id=?", (second,))
+    original = write._dispatch_child_identity_values
+    observed = 0
+
+    def count(observation: ParsedDispatchObservation, payload: dict[str, object]) -> set[str]:
+        nonlocal observed
+        observed += 1
+        return original(observation, payload)
+
+    monkeypatch.setattr(write, "_dispatch_child_identity_values", count)
+    write._resolve_session_graph(conn, parent, _PARENT, "claude-code-session")
+    assert observed == 2, observed
+    assert _link(conn, first)["parent_tool_use_block_id"] == _tool_use_block_id(conn, "call_1")
+    assert _link(conn, second)["parent_tool_use_block_id"] == _tool_use_block_id(conn, "call_2")

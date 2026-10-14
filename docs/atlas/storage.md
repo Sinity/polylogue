@@ -617,6 +617,14 @@ The exported synchronous topology adapter discovers both children and outbound l
 - Provider usage counters are NOT sliced like messages. A prefix-sharing child keeps its own reported `total_*` lanes verbatim; only a usage event bound to a replayed prefix message is dropped, because the parent already owns that observation (`_provider_usage_event_row` in `polylogue/storage/sqlite/archive_tiers/write.py:9527`; `_reextract_provider_usage_tail_db` in the same file at `13204`).
 - Logical-session usage is therefore the chain root's observation plus each prefix-sharing descendant's own, not a root plus deltas (`polylogue/storage/usage.py:1837-1849`).
 
+Parent-side dispatch resolution shares one lazily built disk projection of the
+parent's delegation events for each graph invocation. Resolved and newly resolved
+child-link walks reuse that projection; the next invocation reads current events
+and identity claims even inside the same outer transaction. Bounded event cursors
+close before identity lookup, and cancellation closes the projection's spool.
+Exact child identity, tool identity and sidecar witnesses still decide binding;
+there is no positional or nearest-call fallback.
+
 ## Invariants and gotchas
 
 - `branch_point_message_id` is deliberately not an FK. Parent full replacement deletes before reinserting deterministic message IDs; `ON DELETE SET NULL` would fire during the DELETE step and permanently sever the child (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:1255-1274`).
