@@ -192,6 +192,7 @@ def _emit_reference_query(
     config: Config,
     expression: str,
     *,
+    params: Mapping[str, object],
     output_format: str,
     limit: int | None,
     daemon_disabled: bool,
@@ -215,6 +216,10 @@ def _emit_reference_query(
         raise click.UsageError(
             "reference pipeline stages are not supported by the CLI find surface; "
             "only the bare `from <ref>` operand is supported"
+        )
+    if SessionQuerySpec.from_params(params).has_filters():
+        raise click.UsageError(
+            "Reference reads do not apply root predicates; remove them or use a session query instead."
         )
     from polylogue.cli.lowering import lower_session_reference
     from polylogue.cli.operation_kernel import OperationKernelError
@@ -682,6 +687,7 @@ def _execute_archive_query_owned(env: AppEnv, request: RootModeRequest, lifetime
     if _emit_reference_query(
         config,
         raw_query,
+        params=params,
         output_format=output_format,
         limit=_optional_int(params.get("limit")),
         daemon_disabled=daemon_disabled,
