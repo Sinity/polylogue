@@ -285,6 +285,11 @@ then binds that identity before drawing the header fields. Existing element
 schemas remain the sole authority for identity width, format and field branches;
 a parent binding cannot add an undeclared field or replace a selected null.
 Incomplete or ambiguous original parent evidence is an explicit refusal.
+Declared required properties are drawn even when their package-wide occurrence
+frequency is optional. A required property without a declared field schema, or
+one that conflicts with the selected wire form, refuses. Publication provenance
+counters and dynamic-key markers remain metadata; message-container hints apply
+to object and array carriers without substituting material values.
 Inherited message bytes and tool identity schemas/history remain on that same
 native owner across session boundaries. Reported message counts include the
 actual inherited prefix and exclude the session header.

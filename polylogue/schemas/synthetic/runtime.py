@@ -22,7 +22,11 @@ from polylogue.schemas.field_stats.models import PointerShapeStats
 from polylogue.schemas.synthetic.array_value import GeneratedArray, walk_generated_values
 from polylogue.schemas.synthetic.build_wire_formats import normalize_browser_capture_attachments, validate_wire_payload
 from polylogue.schemas.synthetic.categorical_values import _strings_of_shape, categorical_codebook
-from polylogue.schemas.synthetic.classification import cooccurrence_observation_count, normalized_observed_type_counts
+from polylogue.schemas.synthetic.classification import (
+    cooccurrence_observation_count,
+    declared_required_properties,
+    normalized_observed_type_counts,
+)
 from polylogue.schemas.synthetic.conservation import COVERAGE_EXTRA_KEY
 from polylogue.schemas.synthetic.models import GeneratedRecord, GeneratedString, SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.models import GeneratedValue as JSONValue
@@ -461,11 +465,14 @@ def _walk_object(
 ) -> _GenerationFrame:
     obj = self._relation_solver.fk_graph.new_record(schema, path=path)
     properties = _schema_record(schema.get("properties"))
+    schema_required = declared_required_properties(schema)
     candidate_keys = set(properties.keys())
     plan = None if self._coverage_witness_mode else self._public_record_plan
     if plan is not None:
         candidate_keys |= plan.child_fields(path)
     if plan is not None:
+        if any(path + "." + key in plan.absent for key in schema_required):
+            raise ValueError("required field conflicts with the selected original wire form")
         candidate_keys = {key for key in candidate_keys if path + "." + key not in plan.absent}
     if plan is not None and plan.mode == "absent":
         candidate_keys = {key for key in candidate_keys if path + "." + key != plan.content_path}
@@ -473,7 +480,9 @@ def _walk_object(
         candidate_keys -= skip_keys
 
     if self._relation_solver.mutual_exclusions and not self._coverage_witness_mode:
-        required = {key for key in candidate_keys if plan is not None and plan.requires_field(path + "." + key)}
+        required = schema_required | {
+            key for key in candidate_keys if plan is not None and plan.requires_field(path + "." + key)
+        }
         candidate_keys = self._relation_solver.filter_mutually_exclusive(path, candidate_keys, rng, required=required)
 
     ordered_keys = list(chain(properties, sorted(candidate_keys - properties.keys())))
@@ -497,7 +506,7 @@ def _walk_object(
             if name not in candidate_keys:
                 continue
             field_schema = _schema_record(properties.get(name, schema.get("additionalProperties")))
-            forced = plan is not None and plan.requires_field(path + "." + name)
+            forced = name in schema_required or plan is not None and plan.requires_field(path + "." + name)
             if not field_schema and not forced:
                 continue
             frequency = field_schema.get("x-polylogue-frequency")
@@ -514,7 +523,7 @@ def _walk_object(
         if prop_name not in candidate_keys:
             continue
         prop_schema = _schema_record(properties.get(prop_name, schema.get("additionalProperties")))
-        forced = plan is not None and plan.requires_field(path + "." + prop_name)
+        forced = prop_name in schema_required or plan is not None and plan.requires_field(path + "." + prop_name)
         if not prop_schema and not forced:
             continue
 

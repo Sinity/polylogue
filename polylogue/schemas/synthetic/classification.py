@@ -47,6 +47,7 @@ _SUPPORTED_SCHEMA_CONSTRUCTS = frozenset(
         "oneOf",
         "properties",
         "readOnly",
+        "required",
         "title",
         "type",
         "writeOnly",
@@ -186,6 +187,9 @@ _PERSISTED_SCHEMA_METADATA_ANNOTATIONS = frozenset(
         "x-polylogue-field-first-seen",
         "x-polylogue-field-last-seen",
         "x-polylogue-generated-at",
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
         "x-polylogue-generator",
         "x-polylogue-high-cardinality-keys",
         "x-polylogue-observation-status",
@@ -702,9 +706,24 @@ def _annotation_is_supported_at_node(
                 key, value, root_schema
             )
         if role == "message_container":
-            return "object" in schema_types
+            return bool(schema_types & {"object", "array"})
         return "string" in schema_types and _annotation_supported(key, value, root_schema)
     return key in _PERSISTED_SCHEMA_METADATA_ANNOTATIONS
+
+
+def declared_required_properties(schema: Mapping[str, object]) -> frozenset[str]:
+    """Narrow the required fields this runtime can draw from declared properties."""
+    raw = schema.get("required", [])
+    properties = schema.get("properties", {})
+    if (
+        not isinstance(raw, list)
+        or any(not isinstance(name, str) for name in raw)
+        or len(set(raw)) != len(raw)
+        or not isinstance(properties, Mapping)
+        or any(name not in properties or not isinstance(properties[name], Mapping) for name in raw)
+    ):
+        raise ValueError("required fields need unique names and declared property schemas")
+    return frozenset(raw)
 
 
 def classify_schema_constructs(schema: object, *, _descend: bool = True) -> tuple[ConstructSupport, ...]:
@@ -734,7 +753,15 @@ def classify_schema_constructs(schema: object, *, _descend: bool = True) -> tupl
                         else "unsupported",
                     )
                 continue
-            record(key, "supported" if key in _SUPPORTED_SCHEMA_CONSTRUCTS else "unsupported")
+            if key == "required":
+                try:
+                    declared_required_properties(node)
+                except ValueError:
+                    record(key, "unsupported")
+                else:
+                    record(key, "supported")
+            else:
+                record(key, "supported" if key in _SUPPORTED_SCHEMA_CONSTRUCTS else "unsupported")
             if key in _SCHEMA_MAPPING_KEYWORDS and isinstance(value, Mapping):
                 if key in {"$defs", "dependentSchemas", "dependencies", "patternProperties", "properties"}:
                     for child_name, child in value.items():
@@ -775,6 +802,7 @@ __all__ = [
     "ConstructSupport",
     "ConstructSupportState",
     "classify_schema_constructs",
+    "declared_required_properties",
     "cooccurrence_observation_count",
     "normalized_observed_type_counts",
     "unsupported_schema_constructs",

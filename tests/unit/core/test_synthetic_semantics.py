@@ -1295,7 +1295,16 @@ def test_generated_array_depth_numeric_order_and_cycle_refusal() -> None:
         owner.close()
 
 
-@pytest.mark.parametrize("provider", ["claude-ai", "codex", "chatgpt"])
+# This bounded-memory trace includes thousands of native field draws and the
+# final streaming serialization. Its execution budget remains finite.
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "claude-ai",
+        pytest.param("codex", marks=pytest.mark.timeout(600)),
+        pytest.param("chatgpt", marks=pytest.mark.timeout(600)),
+    ],
+)
 def test_record_containers_use_the_original_native_session_driver(tmp_path: Path, provider: str) -> None:
     import tracemalloc
 
