@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import csv
 import io
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import closing
 from typing import TYPE_CHECKING, TextIO
 
@@ -107,7 +107,7 @@ def session_chunks(
     content_projection: ContentProjectionSpec | None = None,
     compact_json: bool = False,
     tags: Callable[[], Iterable[str]] | None = None,
-) -> Iterator[str]:
+) -> Generator[str, None, None]:
     from polylogue.archive.semantic.content_projection import iter_projected_content
     from polylogue.rendering.transcript import message_document_chunks, stripped_chunks
 
