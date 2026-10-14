@@ -21,6 +21,8 @@ from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.source_cache import CachedContribution
 from polylogue.schemas.source_recipe import SourceEvidenceRecipe, contracts_match_except_key_limit
 
+_CURRENT_SOURCE_RECIPE = SourceEvidenceRecipe.for_provider
+
 
 @pytest.mark.parametrize("revision", [None, True, "1", 1.0, [], {}])
 def test_malformed_recipe_revision_cannot_reuse_evidence(revision: JSONValue) -> None:
@@ -125,6 +127,85 @@ def run_chatgpt(root: Path, cache: Path) -> source.SourceInferenceResult:
     return source.infer_sources((source.SchemaSourceInput("chatgpt", root),), cache_path=cache, max_workers=1)
 
 
+@pytest.mark.parametrize(("provider", "revision"), (("chatgpt", 5), ("codex", 6), ("claude-code", 7), ("gemini", 5)))
+def test_structure_recipe_changes_only_for_the_affected_provider(provider: str, revision: int) -> None:
+    recipe = SourceEvidenceRecipe.for_provider(provider)
+    assert recipe.structure_revision == revision
+    previous = SourceEvidenceRecipe(structure_revision=5)
+    assert contracts_match_except_key_limit(previous.contract("structure"), recipe.contract("structure")) == (
+        revision == 5
+    )
+
+
+def test_existing_chatgpt_five_cache_is_reused_without_relabeling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "inputs"
+    root.mkdir()
+    (root / "session.json").write_text(json.dumps(chatgpt_conversation("neutral-session", 1.0)), encoding="utf-8")
+    cache_path = tmp_path / "cache.sqlite"
+    with monkeypatch.context() as previous_code:
+        previous_code.setattr(
+            SourceEvidenceRecipe, "for_provider", lambda _provider: SourceEvidenceRecipe(structure_revision=5)
+        )
+        previous = run_chatgpt(root, cache_path)
+    previous_recipe = json.loads(json.dumps(previous.recipe))
+    current = run_chatgpt(root, cache_path)
+    assert previous.included_candidate_count == current.included_candidate_count == 1
+    assert current.cache_phase_hits == {"structure": 1, "statistics": 1}
+    assert current.cache_phase_misses == {}
+    assert previous.recipe == previous_recipe
+    assert current.recipe["structure"] == previous_recipe["structure"]
+    assert current.evidence_by_element == previous.evidence_by_element
+
+
+@pytest.mark.parametrize(("provider", "previous_revision"), (("codex", 5), ("claude-code", 6)))
+def test_changed_tool_provider_invalidates_its_prior_structure_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, previous_revision: int
+) -> None:
+    root = tmp_path / "inputs"
+    root.mkdir()
+    if provider == "codex":
+        write_codex(root, "session", "neutral-session", "2025-01-01T00:00:00Z")
+    else:
+        write_source(root, "session")
+    cache_path = tmp_path / "cache.sqlite"
+    inputs = (source.SchemaSourceInput(provider, root),)
+    with monkeypatch.context() as previous_code:
+        previous_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda _provider: SourceEvidenceRecipe(structure_revision=previous_revision),
+        )
+        previous = source.infer_sources(inputs, cache_path=cache_path, max_workers=1)
+    previous_recipe = json.loads(json.dumps(previous.recipe))
+    current = source.infer_sources(inputs, cache_path=cache_path, max_workers=1)
+    assert previous.included_candidate_count == current.included_candidate_count == 1
+    assert current.cache_phase_misses["structure"] == 1
+    assert not current.cache_phase_hits.get("structure")
+    assert current.recipe["structure"] != previous_recipe["structure"]
+    assert previous.recipe == previous_recipe
+
+
+def test_mixed_provider_batch_keeps_the_highest_applicable_structure_recipe(tmp_path: Path) -> None:
+    root = tmp_path / "inputs"
+    root.mkdir()
+    write_codex(root, "codex", "neutral-codex", "2025-01-01T00:00:00Z")
+    write_source(root, "claude")
+    result = source.infer_sources(
+        (
+            source.SchemaSourceInput("codex", root / "codex.jsonl"),
+            source.SchemaSourceInput("claude-code", root / "claude.jsonl"),
+        ),
+        cache_path=tmp_path / "cache.sqlite",
+        max_workers=1,
+    )
+    assert result.included_candidate_count == 2
+    assert result.recipe["structure"] == SourceEvidenceRecipe(structure_revision=7).contract("structure")
+    empty = source.infer_sources((), cache_path=tmp_path / "empty.sqlite", max_workers=1)
+    assert empty.recipe["structure"] == SourceEvidenceRecipe(structure_revision=5).contract("structure")
+
+
 def result_evidence(result: source.SourceInferenceResult) -> SchemaEvidence:
     return merge_evidence(SchemaEvidence.from_json(row) for rows in result.evidence_by_element.values() for row in rows)
 
@@ -163,7 +244,11 @@ def test_identity_upgrade_replaces_legacy_codex_path_fallback_cache(
         return legacy_source_ids[source_path]
 
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(identity_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), identity_revision=1),
+        )
         old_code.setattr(source, "_native_source_id", old_native_source_id)
         old_code.setattr(source, "_old_path_fallback", lambda *_args: False)
         old = run_codex(root, cache)
@@ -201,7 +286,7 @@ def test_headerless_claude_code_recollects_legacy_path_fallback_cache(
     run(root, cache_path)
     candidate = source.inventory_schema_sources((source.SchemaSourceInput("claude-code", root),))[0]
     digest, byte_count = source._stable_file_digest(source_file)
-    recipe = SourceEvidenceRecipe()
+    recipe = SourceEvidenceRecipe.for_provider("claude-code")
     manifest_key = source._cache_key(
         candidate,
         digest,
@@ -289,7 +374,11 @@ def test_codex_metadata_refresh_orders_reserialized_legacy_exports_and_reuses_it
         pytest.fail("could not construct the digest-order control")
     cache = tmp_path / "cache.sqlite"
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(identity_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), identity_revision=1),
+        )
         old_code.setattr(source, "_declared_update_key", old_declared_update_key)
         old_code.setattr(source, "_refreshed_codex_descriptor", old_metadata_refresh)
         run_codex(root, cache)
@@ -334,7 +423,11 @@ def test_codex_metadata_refresh_caches_a_computed_null_timestamp(
     write_codex(root, "second", "shared", None)
     cache = tmp_path / "cache.sqlite"
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(identity_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), identity_revision=1),
+        )
         old_code.setattr(source, "_declared_update_key", old_declared_update_key)
         old_code.setattr(source, "_refreshed_codex_descriptor", old_metadata_refresh)
         run_codex(root, cache)
@@ -373,7 +466,11 @@ def test_codex_metadata_refresh_only_recollects_missing_maximum_metadata(
         return None
 
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(identity_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), identity_revision=1),
+        )
         old_code.setattr(source, "_declared_update_key", old_update_key)
         old_code.setattr(source, "_refreshed_codex_descriptor", old_metadata_refresh)
         run_codex(root, cache)
@@ -399,7 +496,11 @@ def test_codex_metadata_refresh_refuses_a_changed_source(tmp_path: Path, monkeyp
     changed = write_codex(root, "second", "shared", "2026-02-01T00:00:00Z")
     cache = tmp_path / "cache.sqlite"
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(identity_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), identity_revision=1),
+        )
         old_code.setattr(source, "_declared_update_key", old_declared_update_key)
         old_code.setattr(source, "_refreshed_codex_descriptor", old_metadata_refresh)
         run_codex(root, cache)
@@ -439,7 +540,11 @@ def test_identity_only_upgrade_reuses_collapsed_native_evidence(
     cache = tmp_path / "cache.sqlite"
     monkeypatch.setattr(detection, "_HIGH_CARDINALITY_KEY_THRESHOLD", 128)
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(identity_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), identity_revision=1),
+        )
         run(root, cache)
     upgraded = run(root, cache)
     assert upgraded.cache_phase_hits == {"structure": 1, "statistics": 1}
@@ -485,11 +590,19 @@ def test_statistics_miss_preserves_codex_timestamp_discovered_after_old_prelimin
     write_codex(root, "newer", "shared", "2026-02-01T00:00:00Z", marker="newer_only")
     cache = tmp_path / "cache.sqlite"
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(identity_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), identity_revision=1),
+        )
         old_code.setattr(source, "_declared_update_key", old_declared_update_key)
         old_code.setattr(source, "_refreshed_codex_descriptor", old_metadata_refresh)
         run_codex(root, cache)
-    monkeypatch.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(statistics_revision=2))
+    monkeypatch.setattr(
+        SourceEvidenceRecipe,
+        "for_provider",
+        lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), statistics_revision=2),
+    )
     upgraded = run_codex(root, cache)
     assert upgraded.cache_phase_misses == {"statistics": 2}
     current_properties = result_evidence(upgraded).current_structure.get("properties")
@@ -511,7 +624,11 @@ def test_legacy_codex_zip_cache_is_recollected_on_identity_upgrade(
     member.unlink()
     cache = tmp_path / "cache.sqlite"
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(identity_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), identity_revision=1),
+        )
         run_codex(root, cache)
     upgraded = run_codex(root, cache)
     fresh = run_codex(root, tmp_path / "fresh.sqlite")
@@ -593,7 +710,11 @@ def test_singleton_zip_cache_row_reuses_across_member_partition_revision(
         zip_file.writestr("member.json", json.dumps(chatgpt_conversation("shared", 1)))
     cache = tmp_path / "cache.sqlite"
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(zip_member_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), zip_member_revision=1),
+        )
         run_chatgpt(archive, cache)
     upgraded = run_chatgpt(archive, cache)
     assert upgraded.cache_phase_hits == {"structure": 1, "statistics": 1}
@@ -638,7 +759,11 @@ def test_multi_record_legacy_zip_cache_row_is_recollected_for_member_partitionin
         )
 
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(zip_member_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), zip_member_revision=1),
+        )
         old_code.setattr(source, "_collect_payload_evidence", old_zip_collect)
         run_chatgpt(archive, cache)
     upgraded = run_chatgpt(archive, cache)
@@ -655,7 +780,11 @@ def test_flatfile_equal_count_cache_row_reuses_across_zip_member_revision(
     loose.write_text(json.dumps(chatgpt_conversation("shared", 1)))
     cache = tmp_path / "cache.sqlite"
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(zip_member_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), zip_member_revision=1),
+        )
         run_chatgpt(loose, cache)
     upgraded = run_chatgpt(loose, cache)
     assert upgraded.cache_phase_hits == {"structure": 1, "statistics": 1}
@@ -699,7 +828,11 @@ def test_old_zip_count_poison_becomes_a_flatfile_cache_miss(tmp_path: Path, monk
         )
 
     with monkeypatch.context() as old_code:
-        old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(zip_member_revision=1))
+        old_code.setattr(
+            SourceEvidenceRecipe,
+            "for_provider",
+            lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), zip_member_revision=1),
+        )
         old_code.setattr(source, "_collect_payload_evidence", old_zip_collect)
         run_chatgpt(archive, cache)
     loose = tmp_path / "loose.json"
@@ -751,7 +884,7 @@ def test_semantic_revision_invalidates_only_the_dependent_phase(
     write_source(root, "session")
     cache = tmp_path / "cache.sqlite"
     cold = run(root, cache)
-    monkeypatch.setattr(source, "SourceEvidenceRecipe", lambda: recipe)
+    monkeypatch.setattr(SourceEvidenceRecipe, "for_provider", lambda _provider: recipe)
     upgraded = run(root, cache)
     assert upgraded.cache_phase_hits == hits
     assert upgraded.cache_phase_misses == misses
@@ -796,7 +929,11 @@ def test_structure_recipe_upgrade_replaces_old_shape_hashes_while_reusing_statis
                     payload["shape_hashes"] = [stale_hash]
             source_cache.put(replace(cached, evidence=stale))
 
-    monkeypatch.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(structure_revision=3))
+    monkeypatch.setattr(
+        SourceEvidenceRecipe,
+        "for_provider",
+        lambda provider: replace(_CURRENT_SOURCE_RECIPE(provider), structure_revision=3),
+    )
     upgraded = run(root, cache)
     cold = run(root, tmp_path / "cold.sqlite")
     assert upgraded.cache_phase_hits == {"statistics": 1}

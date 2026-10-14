@@ -2246,7 +2246,11 @@ def infer_sources(
 
     report("inventory", force=True)
     collect_started = time.monotonic_ns()
-    recipe = SourceEvidenceRecipe()
+    recipe = max(
+        (SourceEvidenceRecipe.for_provider(candidate.provider) for candidate in candidates),
+        key=lambda item: item.structure_revision,
+        default=SourceEvidenceRecipe(),
+    )
     structure_recipe = recipe.fingerprint("structure")
     statistics_recipe = recipe.fingerprint("statistics")
     phase_hits: Counter[str] = Counter()

@@ -178,7 +178,7 @@ class ForeignKeyGraph:
                 connection.execute(
                     "CREATE TABLE generated_session_prefix_tools(prefix_id INTEGER NOT NULL,event TEXT NOT NULL, "
                     "message_ordinal INTEGER NOT NULL,ordinal INTEGER NOT NULL,identity TEXT NOT NULL, "
-                    "schema_json TEXT,result_mode TEXT NOT NULL,tool_class TEXT NOT NULL, "
+                    "schema_json TEXT,result_mode TEXT NOT NULL, "
                     "PRIMARY KEY(prefix_id,event,message_ordinal,ordinal)) STRICT, WITHOUT ROWID"
                 )
                 connection.create_collation("generated_numeric_order", _compare_numeric_states)
@@ -888,12 +888,11 @@ class ForeignKeyGraph:
         *,
         schema: SchemaRecord | None = None,
         result_mode: str = "",
-        tool_class: str = "",
     ) -> None:
         if event not in {"call", "result"}:
             raise ValueError("original prefix tool event is malformed")
         self._live_tool_owner().execute(
-            "INSERT INTO generated_session_prefix_tools VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO generated_session_prefix_tools VALUES (?,?,?,?,?,?,?)",
             (
                 prefix_id,
                 event,
@@ -902,7 +901,6 @@ class ForeignKeyGraph:
                 json.dumps(_string_state(identity), ensure_ascii=True, separators=(",", ":")),
                 json.dumps(schema, ensure_ascii=True, separators=(",", ":")) if schema is not None else None,
                 result_mode,
-                tool_class,
             ),
         ).close()
 
@@ -1020,7 +1018,7 @@ class ForeignKeyGraph:
         connection = self._require_prefix_read(prefix_id, messages)
         cursor = connection.execute(
             self._prefix_chain_sql()
-            + "SELECT tools.identity,tools.event,tools.schema_json,tools.result_mode,tools.tool_class FROM chain "
+            + "SELECT tools.identity,tools.event,tools.schema_json,tools.result_mode FROM chain "
             "JOIN generated_session_prefixes prefix USING(prefix_id) "
             "JOIN generated_session_prefix_tools tools USING(prefix_id) "
             "WHERE tools.message_ordinal<MAX(0,chain.wanted-prefix.inherited_messages) "
@@ -1028,7 +1026,7 @@ class ForeignKeyGraph:
             (messages, prefix_id),
         )
         try:
-            for identity_state, event, schema_json, mode, tool_class in cursor:
+            for identity_state, event, schema_json, mode in cursor:
                 identity = _string_from_state(json.loads(identity_state))
                 if self._connection is not connection:
                     raise RuntimeError("prefix tool context lost its original physical owner")
@@ -1044,7 +1042,7 @@ class ForeignKeyGraph:
                     before.close()
                 calls, results = (0, 0) if previous is None else previous
                 relation = "both" if calls and results else "call" if calls else "result" if results else "new"
-                self.observe_tool_identity(identity, event, relation, json.loads(schema_json), mode, tool_class)
+                self.observe_tool_identity(identity, event, relation, json.loads(schema_json), mode)
         finally:
             if self._connection is connection:
                 cursor.close()

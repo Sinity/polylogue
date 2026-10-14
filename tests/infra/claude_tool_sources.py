@@ -6,14 +6,14 @@ import json
 import uuid
 from pathlib import Path
 
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 
 
 def mixed_claude_tool_records(number: int) -> list[JSONDocument]:
     session = str(uuid.UUID(int=number, version=4))
     rows: list[JSONDocument] = []
 
-    def append(kind: str, content: object, **fields: object) -> None:
+    def append(kind: str, content: JSONValue, **fields: JSONValue) -> None:
         rows.append(
             {
                 "type": kind,

@@ -100,6 +100,13 @@ contributions are retained only when their identity and record counts prove
 they are compatible. Missing Codex ordering metadata is recovered separately
 from field statistics.
 
+Structure revisions apply to the affected provider: generic reduction is5,
+Codex tool grammar is6 and Claude named tool forms are7. A batch uses the
+highest revision applicable to its actual inventoried providers; an empty
+batch uses5. A ChatGPT-only batch therefore keeps its unchanged revision5
+contract. Mixed batches conservatively bind one combined contract rather than
+claiming separate reuse for each provider. Stored provenance is never relabeled.
+
 The run reports aggregate input bytes, record counts, terminal outcomes and
 reason codes, cache hits/misses by phase, computation contracts, and phase timings. A successful package write
 means evidence was emitted; inspect terminal outcomes to determine input

@@ -1264,7 +1264,8 @@ class PublicRecordPlan:
             forms = native_forms.get(kind) if isinstance(native_forms, dict) else None
             if not isinstance(forms, list) or not forms or any(not isinstance(form, dict) for form in forms):
                 raise ValueError("Claude tool input forms are missing; re-infer the package")
-            selected = rng.choices(forms, weights=[_count(form.get("count")) for form in forms], k=1)[0]
+            input_forms = [form for form in forms if isinstance(form, dict)]
+            selected = rng.choices(input_forms, weights=[_count(form.get("count")) for form in input_forms], k=1)[0]
             syntax, fields = selected.get("syntax"), selected.get("fields")
             if (
                 not isinstance(syntax, dict)

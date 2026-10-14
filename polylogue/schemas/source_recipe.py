@@ -23,8 +23,13 @@ class SourceEvidenceRecipe:
     admission_revision: int = 2
     identity_revision: int = 4
     zip_member_revision: int = 2
-    structure_revision: int = 7
+    structure_revision: int = 5
     statistics_revision: int = 2
+
+    @classmethod
+    def for_provider(cls, provider: str) -> SourceEvidenceRecipe:
+        """Apply only the structure reductions that changed this provider."""
+        return cls(structure_revision=6 if provider == "codex" else 7 if provider == "claude-code" else 5)
 
     def contract(self, phase: EvidencePhase) -> JSONDocument:
         return {

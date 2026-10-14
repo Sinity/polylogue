@@ -384,7 +384,9 @@ def test_legacy_family_migrates_without_changing_version_or_dropping_witnesses(
     with monkeypatch.context() as legacy:
         legacy.setattr(workflow, "canonicalize_structure_schema", lambda schema: schema)
         legacy.setattr(evidence_module, "structure_schema_digest", legacy_structure_schema_digest)
-        legacy.setattr(source_inference, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(structure_revision=1))
+        legacy.setattr(
+            SourceEvidenceRecipe, "for_provider", lambda _provider: SourceEvidenceRecipe(structure_revision=1)
+        )
         old = build(None)
     assert old.catalog is not None
     old_package = old.catalog.packages[0]
