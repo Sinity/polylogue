@@ -41,8 +41,8 @@ def test_giant_jsonl_record_remains_eligible_with_bounded_reads(
     original_open = Path.open
 
     class BoundedReader(io.BufferedReader):
-        def read(self, size: int = -1) -> bytes:
-            assert 0 <= size <= 1024 * 1024
+        def read(self, size: int | None = -1) -> bytes:
+            assert size is not None and 0 <= size <= 1024 * 1024
             reads.append(size)
             return super().read(size)
 
@@ -51,7 +51,7 @@ def test_giant_jsonl_record_remains_eligible_with_bounded_reads(
             reads.append(len(buffer))
             return super().readinto(buffer)
 
-        def readline(self, size: int = -1) -> bytes:
+        def readline(self, size: int | None = -1) -> bytes:
             raise AssertionError("intake must not read a whole physical record")
 
     def observed_open(path: Path, *args: Any, **kwargs: Any) -> Any:
