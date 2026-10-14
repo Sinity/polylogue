@@ -6953,77 +6953,6 @@ def test_full_batch_malformed_workflow_journal_remains_typed_evidence(tmp_path: 
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
-def test_append_admission_bind_failure_persists_exact_pending_envelope_and_retries(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="append-admission-retry")
-    original_bind = ArchiveStore.bind_raw_revision
-    fail_once = True
-
-    def fail_bind(self: ArchiveStore, raw_id: str, revision: RawRevisionEnvelope, **kwargs: Any) -> None:
-        nonlocal fail_once
-        if fail_once:
-            fail_once = False
-            raise sqlite3.IntegrityError("injected append bind failure")
-        original_bind(self, raw_id, revision, **kwargs)
-
-    monkeypatch.setattr(ArchiveStore, "bind_raw_revision", fail_bind)
-    first = ingest_append_with_owner(owner, [plan])
-
-    assert first.succeeded == []
-    assert first.failed == [plan]
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        row = conn.execute(
-            """
-            SELECT raw_id, blob_hash, blob_size, logical_source_key, revision_kind, source_revision,
-                   predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
-                   append_start_offset, append_end_offset, acquisition_generation,
-                   revision_authority, parse_error
-            FROM raw_sessions WHERE source_index = -1
-            """
-        ).fetchone()
-    assert row is not None
-    raw_id = str(row[0])
-    assert row[1] is not None
-    assert BlobStore(tmp_path / "blob").read_all(bytes(row[1]).hex()) == plan.payload
-    assert row[2] == len(plan.payload)
-    assert row[3:13] == (
-        f"pending-raw:codex-session:-1:{plan.path}:{raw_id}",
-        "full",
-        sha256(plan.payload).hexdigest(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        0,
-        "quarantined",
-    )
-    # The admitted acquire stage fails as a whole before it returns a raw id
-    # (561dbe2ff0), so no parse evidence is written: the bytes did not fail
-    # to decode, and the pending envelope alone carries the retry.
-    assert row[13] is None
-
-    retry = ingest_append_with_owner(owner, [plan])
-
-    assert retry.succeeded == [plan]
-    assert retry.failed == []
-    bound = _raw_revision_envelope_row(tmp_path, raw_id)
-    assert bound[0] == "codex-session:append-admission-retry"
-    assert bound[1] == "append"
-    assert bound[2] is not None
-    assert bound[3] is not None
-    assert bound[4] is not None
-    assert bound[5] is not None
-    assert bound[6] == plan.stat_size - len(plan.payload)
-    assert bound[7] == plan.stat_size
-    assert isinstance(bound[8], int) and bound[8] >= 0
-    assert bound[9] == "byte_proven"
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE source_index = -1").fetchone() == (1,)
-
-
 def test_public_full_blob_publication_failure_keeps_the_bound_raw_and_retries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -10551,3 +10480,129 @@ def test_jsonl_action_preserves_cancellation_and_releases_capture(
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
         assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+
+
+def test_live_identical_codex_deltas_advance_distinct_raw_windows(tmp_path: Path) -> None:
+    """The second equal delta must retain custody and a new message occurrence."""
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source = root / "repeat.jsonl"
+    source.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"repeat-session","timestamp":"2026-09-01T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"initial question"}]}}\n'
+    )
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+    initial = run_ingest_files(processor, [source], emit_event=False)
+    assert initial.failed_file_count == 0, initial.to_payload()
+    initial_size = source.stat().st_size
+    delta = (
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"repeated question"}]}}\n'
+    )
+    for _ in range(2):
+        with source.open("ab") as handle:
+            handle.write(delta)
+        metrics = run_ingest_files(processor, [source], emit_event=False)
+        assert (metrics.append_file_count, metrics.full_file_count, metrics.failed_file_count) == (1, 0, 0)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = conn.execute(
+            "SELECT raw_id, blob_hash, append_start_offset, append_end_offset "
+            "FROM raw_sessions WHERE revision_kind = 'append' ORDER BY append_start_offset",
+        ).fetchall()
+    assert len(rows) == 2
+    assert rows[0][0] != rows[1][0]
+    assert rows[0][1] == rows[1][1]
+    assert [row[2:] for row in rows] == [
+        (initial_size, initial_size + len(delta)),
+        (initial_size + len(delta), initial_size + 2 * len(delta)),
+    ]
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (3,)
+        occurrences = conn.execute(
+            "SELECT content_occurrence FROM messages WHERE content_identity IN "
+            "(SELECT content_identity FROM messages GROUP BY content_identity HAVING COUNT(*) = 2) "
+            "ORDER BY content_occurrence",
+        ).fetchall()
+        assert occurrences == [(0,), (1,)]
+
+
+def test_committed_append_capture_replays_after_intake_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.sources.live import append_ingest
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source = root / "interrupted.jsonl"
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"interrupted-session","timestamp":"2026-09-01T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"initial question"}]}}\n'
+    )
+    delta = (
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"retained before interruption"}]}}\n'
+    )
+    source.write_bytes(baseline)
+    processor, _cursor = _live_processor(tmp_path, root, source_name="codex")
+    initial = run_ingest_files(processor, [source], emit_event=False)
+    assert initial.failed_file_count == 0 and not initial.deferred_paths
+    with source.open("ab") as handle:
+        handle.write(delta)
+    plan = processor.plan_append(source)
+    assert isinstance(plan, _AppendPlan)
+    original = append_ingest._write_append_raw_payload
+    captured: list[str] = []
+    interruption = DaemonOperationCancelled("synthetic stop after acquisition commit")
+
+    def interrupt(*args: Any, **kwargs: Any) -> str:
+        captured.append(original(*args, **kwargs))
+        raise interruption
+
+    with monkeypatch.context() as patch:
+        patch.setattr(append_ingest, "_write_append_raw_payload", interrupt)
+        with pytest.raises(DaemonOperationCancelled) as caught:
+            ingest_append_with_owner(processor, [plan])
+        assert caught.value is interruption
+    assert len(captured) == 1
+    raw_id = captured[0]
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        before = conn.execute(
+            "SELECT raw_id, native_id, blob_hash, revision_kind, source_revision, predecessor_source_revision, "
+            "append_start_offset, append_end_offset, logical_source_key FROM raw_sessions WHERE raw_id=?",
+            (raw_id,),
+        ).fetchone()
+        assert before is not None and before[3] == "append"
+        assert before[6:8] == (len(baseline), len(baseline) + len(delta))
+        assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == 2
+    assert BlobStore(tmp_path / "blob").blob_path(bytes(before[2]).hex()).read_bytes() == delta
+    replay_retained_components(tmp_path, selected_raw_ids=(raw_id,))
+    with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
+        assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 2
+    # Retry the exact captured operand after its real parser/application binding.
+    result = ingest_append_with_owner(processor, [plan])
+    assert result.succeeded == [plan] and not result.failed and not result.deferred
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        after = conn.execute(
+            "SELECT raw_id, native_id, blob_hash, revision_kind, source_revision, predecessor_source_revision, "
+            "append_start_offset, append_end_offset, logical_source_key FROM raw_sessions WHERE raw_id=?",
+            (raw_id,),
+        ).fetchone()
+        assert after == before
+        assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT status FROM raw_authority_parser_census WHERE raw_id=?",
+            (raw_id,),
+        ).fetchone() == ("complete",)
+    with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
+        assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 2

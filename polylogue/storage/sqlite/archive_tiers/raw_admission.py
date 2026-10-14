@@ -179,6 +179,8 @@ class PendingPreParseRawAdmissionRequest:
     ``blob_hash`` stays content-addressed. ``raw_id`` is an observation
     identity: callers may supply a provider-scoped coordinate (Hermes does),
     otherwise the planner derives the canonical coordinate-sensitive id.
+    An explicit append_revision retains the acquired window atomically;
+    ordinary full captures remain pending until the parser establishes identity.
     """
 
     origin: Origin | str
@@ -200,6 +202,7 @@ class PendingPreParseRawAdmissionRequest:
     policy_snapshot: ExcisionPolicySnapshot | None = None
     source_item: SourceItemAdmission | None = None
     artifact: ArchiveSourceArtifact | None = None
+    append_revision: RawRevisionEnvelope | None = None
 
 
 RawAdmissionRequest: TypeAlias = PendingPreParseRawAdmissionRequest
@@ -256,6 +259,29 @@ def acquisition_timestamp_ms(value: object) -> int:
     return result
 
 
+def _require_append_acquisition(
+    revision: RawRevisionEnvelope | None,
+    *,
+    blob_hash: bytes,
+    blob_size: int,
+) -> None:
+    if revision is None:
+        return
+    from polylogue.archive.revision_authority import append_source_revision
+
+    if (
+        revision.kind is not RawRevisionKind.APPEND
+        or revision.predecessor_source_revision is None
+        or revision.append_start_offset is None
+        or revision.append_end_offset is None
+        or type(revision.append_start_offset) is not int
+        or type(revision.append_end_offset) is not int
+        or revision.append_end_offset - revision.append_start_offset != blob_size
+        or revision.source_revision != append_source_revision(revision.predecessor_source_revision, blob_hash.hex())
+    ):
+        raise ValueError("append acquisition must bind its exact retained bytes and window")
+
+
 def plan_raw_admission(request: RawAdmissionRequest) -> RawAdmissionPlan:
     """Validate and plan a normal pre-parse raw admission without SQL.
 
@@ -272,12 +298,15 @@ def plan_raw_admission(request: RawAdmissionRequest) -> RawAdmissionPlan:
     if request.file_mtime_ms is not None and request.file_mtime_ms < 0:
         raise ValueError("file_mtime_ms must be a nonnegative integer when supplied")
 
+    _require_append_acquisition(request.append_revision, blob_hash=request.blob_hash, blob_size=request.blob_size)
     raw_id = request.raw_id or deterministic_raw_session_id(
         request.origin,
         request.source_path,
         request.source_index,
         request.blob_hash,
         request.native_id,
+        append_revision=request.append_revision,
+        capture_mode=request.capture_mode,
     )
     if not raw_id:
         raise ValueError("raw_id must not be empty")
@@ -291,7 +320,8 @@ def plan_raw_admission(request: RawAdmissionRequest) -> RawAdmissionPlan:
         request=request,
         arm=RawAdmissionArm.POST_PARSE_PENDING,
         raw_id=raw_id,
-        revision=RawRevisionEnvelope(
+        revision=request.append_revision
+        or RawRevisionEnvelope(
             logical_source_key=pending_key,
             kind=RawRevisionKind.FULL,
             source_revision=request.blob_hash.hex(),
@@ -388,6 +418,8 @@ def _execute_raw_admission_plan_sync(
         source_index=request.source_index,
         blob_hash=request.blob_hash,
         blob_size=request.blob_size,
+        append_revision=request.append_revision,
+        capture_mode=request.capture_mode,
     )
     admitted_raw_id = write_source_raw_session_blob_ref(
         conn,
@@ -557,6 +589,8 @@ def _assert_existing_raw_observation_identity(
     source_index: int,
     blob_hash: bytes,
     blob_size: int,
+    append_revision: RawRevisionEnvelope | None = None,
+    capture_mode: Provider | str | None = None,
 ) -> bool:
     """Return whether an explicit raw id already names the same observation.
 
@@ -585,6 +619,20 @@ def _assert_existing_raw_observation_identity(
     stored_origin = row[0]
     if tuple(row[1:]) != (native_id, source_path, source_index, blob_hash, blob_size, canonical_source_path):
         raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
+    if append_revision is not None:
+        capture = conn.execute(
+            "SELECT capture_mode, revision_kind, predecessor_source_revision, append_start_offset, append_end_offset "
+            "FROM raw_sessions WHERE raw_id=?",
+            (raw_id,),
+        ).fetchone()
+        if capture is None or tuple(capture) != (
+            _enum_value(capture_mode) if capture_mode is not None else None,
+            RawRevisionKind.APPEND.value,
+            append_revision.predecessor_source_revision,
+            append_revision.append_start_offset,
+            append_revision.append_end_offset,
+        ):
+            raise ValueError(f"raw id is already bound to different append acquisition evidence: {raw_id}")
     from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_profile_identity
 
     record_raw_profile_identity(conn, raw_id=raw_id, profile_key=captured_profile_key)
@@ -627,6 +675,7 @@ def admit_raw_observation(
     native_id: str | None = None,
     logical_source_key: str | None = None,
     baseline_revision: RawRevisionEnvelope | None = None,
+    append_revision: RawRevisionEnvelope | None = None,
     prior_head: PriorRawHead | None = None,
     raw_id: str | None = None,
     post_parse: bool = False,
@@ -643,7 +692,8 @@ def admit_raw_observation(
     ``logical_source_key`` is required for the ``BASELINE``/``ARTIFACT``
     outcomes that do not compare against a prior head. ``post_parse=True`` is
     the separate pre-parse preservation contract and derives a typed pending
-    key instead of accepting a nullable revision.
+    key for a full capture. An explicit append_revision preserves the
+    already-proven byte window in that same acquisition transaction.
 
     ``additional_blob_refs`` forwards through to the underlying
     ``write_source_raw_session`` call for the session-content arms (BASELINE/
@@ -682,14 +732,19 @@ def admit_raw_observation(
                 "identity is its acquisition coordinate, so no prior head applies"
             )
 
+    if append_revision is not None and not post_parse:
+        raise ValueError("append acquisition requires post-parse retention")
     if post_parse:
         blob_hash = deterministic_blob_hash(payload)
+        _require_append_acquisition(append_revision, blob_hash=blob_hash, blob_size=len(payload))
         resolved_raw_id = raw_id or deterministic_raw_session_id(
             origin,
             source_path,
             source_index,
             blob_hash,
             native_id,
+            append_revision=append_revision,
+            capture_mode=capture_mode,
         )
         pending_key = pending_raw_logical_source_key(
             origin=origin,
@@ -708,6 +763,8 @@ def admit_raw_observation(
             source_index=source_index,
             blob_hash=blob_hash,
             blob_size=len(payload),
+            append_revision=append_revision,
+            capture_mode=capture_mode,
         ):
             _backfill_raw_file_mtime(conn, raw_id=resolved_raw_id, file_mtime_ms=file_mtime_ms)
             return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=resolved_raw_id)
@@ -726,7 +783,8 @@ def admit_raw_observation(
             raw_id=resolved_raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=additional_blob_refs,
-            revision=RawRevisionEnvelope(
+            revision=append_revision
+            or RawRevisionEnvelope(
                 logical_source_key=pending_key,
                 kind=RawRevisionKind.FULL,
                 source_revision=blob_hash.hex(),

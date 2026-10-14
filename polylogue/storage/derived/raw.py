@@ -1148,9 +1148,12 @@ class RawObservationInspection:
                 if artifact_exemption is None:
                     from polylogue.sources.dispatch import is_jsonl_source_path
                     from polylogue.sources.live.batch_support import jsonl_parse_prefix_size_of_handle
+                    from polylogue.sources.origin_specs import path_declaration_refuses_session
 
-                    typed_schema_ineligible = False
-                    if is_jsonl_source_path(raw["source_path"]):
+                    typed_schema_ineligible = raw["capture_mode"] is not None and path_declaration_refuses_session(
+                        Provider(raw["capture_mode"]), raw["source_path"]
+                    )
+                    if not typed_schema_ineligible and is_jsonl_source_path(raw["source_path"]):
                         retained_path = BlobStore(self.archive_root / "blob").blob_path(bytes(raw["blob_hash"]).hex())
                         try:
                             with retained_path.open("rb") as retained_input:

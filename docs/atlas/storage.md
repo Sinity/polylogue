@@ -527,6 +527,22 @@ the transaction retains its optimistic input revalidation
 - Authoritative retained replay keeps identical session and message rows when the semantic hash, provider aliases, parser/lowering fingerprints and canonical prefix representation match the original prepared write. It still settles Source governance and provenance, and applies the existing link and graph updater for current hook evidence. Changed prefix representation or fingerprints require lowering. Work-event raws insert their new events independently of transcript equality; duplicate event IDs retain their original idempotent result.
 - It is the parsed-session lowering choke point used by retained Raw publication and authoritative revision replay/reindex (`write_with_reparse_receipt` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). The acquired Raw owner prepares and admits batches before this writer runs. It is not the only mutation function in the six-tier substrate.
 
+## Append acquisition identity
+
+Live append intake retains its byte envelope in the same Source transaction as
+the raw bytes. The raw identity includes the actual capture family, exact
+native identity (including absent versus empty), predecessor revision and byte
+window. Logical classification and parser binding cannot remint that identity.
+Retrying an identical capture reuses its row; equal bytes at another proven
+window remain separate acquisitions. Interruption after retention leaves the
+complete append envelope for ordinary retained census and replay.
+
+A negative-coordinate hook fragment has no artifact observation. Its complete
+sealed non-session classification produces the current membership and parser
+receipts instead. Replay and cursor settlement consume those receipts under
+the independently declared raw-only path policy and actual capture family.
+Unknown shapes or empty parser output alone do not establish this exemption.
+
 ## Blob publication, liveness, and GC
 
 - Blob paths are SHA-256-addressed as `<root>/<first-two-hex>/<remaining-hex>` (`polylogue/storage/blob_store.py:193-197`).

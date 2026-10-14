@@ -2619,6 +2619,7 @@ class ArchiveStore:
         native_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
         revision: RawRevisionEnvelope | None = None,
+        append_revision: RawRevisionEnvelope | None = None,
         post_parse: bool = False,
     ) -> str:
         self._require_writable("write source.db raw evidence")
@@ -2641,6 +2642,7 @@ class ArchiveStore:
             native_id=native_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
+            append_revision=append_revision,
             post_parse=post_parse,
         )
 
