@@ -151,8 +151,11 @@ def test_unbatched_census_persists_parser_observed_receipt_before_close(tmp_path
     assert str(receipt[1]).startswith("parser-observed:")
 
 
-def test_batched_terminal_artifact_receipts_roll_back_together(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A fault at the second actual Source receipt rolls back the entire original cohort."""
+@pytest.mark.parametrize("prior_component", [False, True])
+def test_batched_terminal_artifact_receipts_roll_back_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prior_component: bool
+) -> None:
+    """A failed cohort rolls back together without undoing an earlier independent commit."""
     from collections.abc import Iterator
     from contextlib import contextmanager
 
@@ -176,6 +179,9 @@ def test_batched_terminal_artifact_receipts_roll_back_together(tmp_path: Path, m
         ) as (reader, raw_id):
             assert reader.raw_revision_descriptor(raw_id)[1] == digest
             acquired.append(raw_id)
+    if prior_component:
+        asyncio.run(run_retained_source_phase(tmp_path, acquired[:1]))
+    selected = acquired[1:] if prior_component else acquired
     calls = 0
     original_cursor = PreparedIndexMutation._owned_cursor
 
@@ -200,7 +206,7 @@ def test_batched_terminal_artifact_receipts_roll_back_together(tmp_path: Path, m
                 and "raw_authority_parser_census" in sql
             ):
                 calls += 1
-                if calls == 2:
+                if calls == (1 if prior_component else 2):
                     raise RuntimeError("injected second terminal census failure")
             with original_cursor(current, connection, sql, parameters) as cursor:
                 yield cursor
@@ -208,18 +214,20 @@ def test_batched_terminal_artifact_receipts_roll_back_together(tmp_path: Path, m
         monkeypatch.setattr(PreparedIndexMutation, "_owned_cursor", fail_second_receipt)
 
     with pytest.raises(RuntimeError, match="injected second terminal census failure"):
-        asyncio.run(run_retained_source_phase(tmp_path, acquired, before_publication=install_fault))
-    assert calls == 2
+        asyncio.run(run_retained_source_phase(tmp_path, selected, before_publication=install_fault))
+    assert calls == (1 if prior_component else 2)
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
-        placeholders = ",".join("?" for _raw_id in acquired)
-        assert conn.execute(
-            f"SELECT COUNT(*) FROM raw_artifacts WHERE raw_id IN ({placeholders})",
-            acquired,
-        ).fetchone() == (0,)
-        assert conn.execute(
-            f"SELECT COUNT(*) FROM raw_authority_parser_census WHERE raw_id IN ({placeholders})",
-            acquired,
-        ).fetchone() == (0,)
+        for index, raw_id in enumerate(acquired):
+            expected = int(prior_component and index == 0)
+            assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone() == (
+                expected,
+            )
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+            ).fetchone() == (expected,)
+            assert conn.execute(
+                "SELECT parsed_at_ms IS NOT NULL FROM raw_sessions WHERE raw_id=?", (raw_id,)
+            ).fetchone() == (expected,)
 
 
 def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) -> None:
