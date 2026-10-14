@@ -37,7 +37,7 @@ def originals_commitment(originals: tuple[PublicationOriginal, ...], normalizer_
 
     from polylogue.core.json import JSONValue
 
-    if not isinstance(normalizer_version, str) or not normalizer_version.strip():
+    if type(normalizer_version) is not str or not normalizer_version.strip():
         raise ValueError("publication_normalizer_version_missing")
     payload = {"normalizer_version": normalizer_version, "originals": original_descriptors(originals)}
     return ORIGINAL_MATERIALS_COMMITMENT + hashlib.sha256(canonical_bytes(cast(JSONValue, payload))).hexdigest()
