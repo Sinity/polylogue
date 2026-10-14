@@ -38,6 +38,7 @@ def test_published_provider_body_distribution_matches_sampled_driver_within_tole
         for slot, old in enumerate(
             (
                 "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222",
                 "33333333-3333-4333-8333-333333333333",
                 "44444444-4444-4444-8444-444444444444",
             )
@@ -67,9 +68,9 @@ def test_published_provider_body_distribution_matches_sampled_driver_within_tole
         value = pending.pop()
         if isinstance(value, dict):
             observed = value.get("x-polylogue-observed-distribution")
-            length = observed.get("string_length") if isinstance(observed, dict) else None
-            if isinstance(length, dict) and length.get("min") == 63 and length.get("max") == 1023:
-                measured.append(length)
+            distribution = observed.get("string_length") if isinstance(observed, dict) else None
+            if isinstance(distribution, dict) and distribution.get("min") == 63 and distribution.get("max") == 1023:
+                measured.append(distribution)
             pending.extend(value.values())
         elif isinstance(value, list):
             pending.extend(value)
@@ -90,9 +91,11 @@ def test_published_provider_body_distribution_matches_sampled_driver_within_tole
             parsed = parse_payload(provider, payload, "neutral")
             assert parsed
             for message in parsed[0].messages:
-                texts = [block.text for block in message.blocks if block.text] or [message.text]
+                texts = [block.text for block in message.blocks if block.text]
+                if not texts:
+                    assert message.text
+                    texts = [message.text]
                 for text in texts:
-                    assert isinstance(text, str) and text
                     sampled[_bucket_index(float(len(text)))] += 1
     finally:
         sessions.close()
