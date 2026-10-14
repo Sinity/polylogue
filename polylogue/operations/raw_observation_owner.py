@@ -518,6 +518,7 @@ class RawObservationArchiveWork:
                             carry_context(operation),
                             admission_class="incremental-background",
                             estimated_bytes=estimated_bytes,
+                            shared_input=page.shared_input,
                         )
                     except DaemonBackpressureError:
                         if not pending:

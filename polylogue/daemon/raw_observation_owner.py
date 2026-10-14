@@ -93,6 +93,7 @@ class RawObservationConvergenceOwner:
         *,
         settlement_owners: Callable[[], tuple[SQLCustodyOwner, ...]],
         estimated_bytes: int,
+        shared_input: compute.SharedInputReservation | None = None,
     ) -> T:
         """Retain dependency-discovering Raw work under exclusive byte admission.
 
@@ -133,6 +134,7 @@ class RawObservationConvergenceOwner:
                 admission_class="incremental-background",
                 estimated_bytes=estimated_bytes,
                 exclusive_bytes=True,
+                shared_input=shared_input,
                 cancellation=cancellation,
             )
             physical = submitted
@@ -377,6 +379,7 @@ class RawObservationConvergenceOwner:
                         replay,
                         settlement_owners=partial(retained_settlement_owners, retained),
                         estimated_bytes=len(scope_operand),
+                        shared_input=None if page is None else page.shared_input,
                     )
                     results.append(result)
                     considered = {*offered, *result.considered_raw_ids}

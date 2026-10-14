@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import threading
+import weakref
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
 from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.enums import Provider
 from polylogue.core.write_lease import coordinator_write_lease_active
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.sources.prepared_jsonl import PreparedJsonl
 from polylogue.storage.derived import raw as raw_module
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -34,6 +39,29 @@ async def test_selected_independent_preparations_overlap_with_real_admission(
     workers: int,
     capacity: int,
     expected_peak: int,
+    record_property: Callable[[str, object], None],
+) -> None:
+    await _exercise_independent_preparation_admission(
+        tmp_path, monkeypatch, workers, capacity, expected_peak, record_property
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock
+async def test_shared_page_context_allows_two_real_parsers_in_once_charged_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_property: Callable[[str, object], None]
+) -> None:
+    """Repeated per-worker schema admission cannot fit this same complete page."""
+    await _exercise_independent_preparation_admission(tmp_path, monkeypatch, 8, None, 2, record_property)
+
+
+async def _exercise_independent_preparation_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workers: int,
+    capacity: int | None,
+    expected_peak: int,
+    record_property: Callable[[str, object], None],
 ) -> None:
     """The ordinary route overlaps two closed-file parsers, never Source/writers.
 
@@ -42,6 +70,16 @@ async def test_selected_independent_preparations_overlap_with_real_admission(
     """
     await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     raws = await run_archive_fixture_write(tmp_path, lambda: acquire_independent_codex_raws(tmp_path, 2))
+    constrained_shared_input = capacity is None
+    if capacity is None:
+        with SchemaRegistry().current_provider_snapshot(Provider.CODEX) as schema:
+            unique_schema_bytes = sum(
+                {id(payload): len(payload) for _root, files in schema.roots for _name, payload in files}.values()
+            )
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            private_bytes = sum(archive.raw_payload_sizes(raws).values())
+        assert unique_schema_bytes > 0 and private_bytes > 0
+        capacity = unique_schema_bytes + private_bytes
     kernel = BoundedComputeAdapter(max_workers=workers, queue_units=8, queue_bytes=capacity)
     coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = RawObservationConvergenceOwner(
@@ -54,7 +92,21 @@ async def test_selected_independent_preparations_overlap_with_real_admission(
     release = threading.Event()
     lock = threading.Lock()
     active = peak = calls = 0
+    pages: list[raw_module.NeutralRawPreparation] = []
+    actual_private_bytes: dict[str, int] = {}
+    original_capture = raw_module.RawObservationDerivation.capture_neutral_raws
     original = raw_module._parse_captured_neutral
+
+    def capture(
+        adapter: raw_module.RawObservationDerivation,
+        raw_ids: Sequence[str],
+        *,
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+    ) -> raw_module.NeutralRawPreparation | None:
+        page = original_capture(adapter, raw_ids, selection=selection)
+        if page is not None:
+            pages.append(page)
+        return page
 
     def prepare(
         raw_id: str,
@@ -70,6 +122,7 @@ async def test_selected_independent_preparations_overlap_with_real_admission(
         with lock:
             calls += 1
             active += 1
+            actual_private_bytes[raw_id] = captured.descriptor[4]
             peak = max(peak, active)
             if active == expected_peak:
                 both_started.set()
@@ -79,7 +132,9 @@ async def test_selected_independent_preparations_overlap_with_real_admission(
         finally:
             with lock:
                 active -= 1
+                actual_private_bytes.pop(raw_id)
 
+    monkeypatch.setattr(raw_module.RawObservationDerivation, "capture_neutral_raws", capture)
     monkeypatch.setattr(raw_module, "_parse_captured_neutral", prepare)
     task = asyncio.create_task(owner.replay_retained_raw_ids(raws))
     rendezvous = asyncio.create_task(asyncio.to_thread(both_started.wait, 10))
@@ -88,7 +143,27 @@ async def test_selected_independent_preparations_overlap_with_real_admission(
         if task in completed:
             await task
             pytest.fail("ordinary retained replay ended before independent parsers overlapped")
-        assert await rendezvous
+        assert await rendezvous, f"admitted parser calls={calls}, peak={peak}, active={active}, captures={len(pages)}"
+        page = pages[0]
+        assert page.shared_input is not None
+        snapshot = kernel.snapshot()
+        assert snapshot.retained_input_count == 1
+        assert snapshot.retained_input_bytes == page.shared_context_bytes > 0
+        with lock:
+            private_bytes = sum(actual_private_bytes.values())
+        assert snapshot.active_input_bytes == private_bytes
+        shared_charge = min(page.shared_context_bytes, capacity)
+        assert snapshot.used_bytes == shared_charge + min(private_bytes, capacity - shared_charge)
+        assert snapshot.to_dict()["retained_input_bytes"] == page.shared_context_bytes
+        record_property("shared_input_bytes", page.shared_context_bytes)
+        record_property("private_input_bytes", private_bytes)
+        record_property("admitted_byte_charge", snapshot.used_bytes)
+        record_property("simultaneous_parser_count", snapshot.active_units)
+        if constrained_shared_input:
+            assert snapshot.used_bytes == capacity
+            repeated_schema_charge = private_bytes + expected_peak * page.shared_context_bytes
+            assert repeated_schema_charge > capacity
+            record_property("repeated_schema_byte_charge", repeated_schema_charge)
         release.set()
         (await task).require_complete()
         assert peak == expected_peak
@@ -206,6 +281,12 @@ async def test_selected_preparation_cancellation_joins_creators_before_scratch_r
             with pytest.raises(asyncio.CancelledError):
                 await task
         assert kernel.snapshot().used_units == 0
+        if cleanup_fault and phase == "capture":
+            assert kernel.snapshot().retained_input_count == 1
+            assert kernel.snapshot().retained_input_bytes == pages[0].shared_context_bytes > 0
+            assert pages[0].contexts
+            original_close(pages[0])
+        assert kernel.snapshot().retained_input_count == 0
         with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
             assert archive.index_connection is not None
             assert archive.source_connection is not None
@@ -502,5 +583,85 @@ async def test_slow_first_parser_releases_completion_capacity_without_reordering
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+        kernel.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_failed_page_cleanup_retains_its_actual_owner_without_caller_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same ledger retains a failed page and releases it after physical close."""
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
+    raws = await run_archive_fixture_write(tmp_path, lambda: acquire_independent_codex_raws(tmp_path, 2))
+    kernel = BoundedComputeAdapter(max_workers=4, queue_units=8)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    owner = RawObservationConvergenceOwner(
+        tmp_path,
+        compute_adapter=kernel,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        write_coordinator=coordinator,
+    )
+    references: list[weakref.ReferenceType[raw_module.NeutralRawPreparation]] = []
+    scratch_names: set[str] = set()
+    original_capture = raw_module.RawObservationDerivation.capture_neutral_raws
+    original_cleanup = raw_module._cleanup_scratch
+    allow_cleanup = False
+
+    def capture(
+        adapter: raw_module.RawObservationDerivation,
+        raw_ids: Sequence[str],
+        *,
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+    ) -> raw_module.NeutralRawPreparation | None:
+        page = original_capture(adapter, raw_ids, selection=selection)
+        if page is not None:
+            references.append(weakref.ref(page))
+            scratch_names.add(page.scratch_owner.name)
+        return page
+
+    def cleanup(scratch: TemporaryDirectory[str]) -> None:
+        if scratch.name in scratch_names and not allow_cleanup:
+            raise OSError("synthetic page directory retirement refusal")
+        original_cleanup(scratch)
+
+    monkeypatch.setattr(raw_module.RawObservationDerivation, "capture_neutral_raws", capture)
+    monkeypatch.setattr(raw_module, "_cleanup_scratch", cleanup)
+    try:
+        failed = False
+        try:
+            await owner.replay_retained_raw_ids(raws)
+        except OSError:
+            # Discard the exception and its traceback instead of keeping a
+            # hidden page reference through pytest's exception-info object.
+            failed = True
+        assert failed
+        gc.collect()
+        assert len(references) == 1
+        assert references[0]() is not None
+        assert kernel.snapshot().used_units == 0
+        assert kernel.snapshot().retained_input_count == 1
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            assert archive.count_sessions() == 2
+        retained = kernel.retained_shared_inputs()
+        assert len(retained) == 1
+        page = retained[0].owner
+        assert isinstance(page, raw_module.NeutralRawPreparation)
+        assert page is references[0]()
+        assert page.contexts and Path(page.scratch_owner.name).is_dir()
+        assert retained[0].byte_length == page.shared_context_bytes > 0
+        allow_cleanup = True
+        page.close()
+        del page
+        gc.collect()
+        assert retained[0].owner is None
+        assert references[0]() is None
+        assert kernel.snapshot().retained_input_count == kernel.snapshot().used_bytes == 0
+    finally:
+        allow_cleanup = True
+        for reservation in kernel.retained_shared_inputs():
+            page = reservation.owner
+            if isinstance(page, raw_module.NeutralRawPreparation):
+                page.close()
         kernel.shutdown(wait=True)
         await coordinator.shutdown(timeout=1)

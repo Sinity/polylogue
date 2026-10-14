@@ -159,6 +159,9 @@ class AdmissionSnapshot:
     envelope. ``foreground_pending_bytes`` names a larger foreground charge
     waiting for exclusive retirement; its original demand remains reported.
     Queued operands can already reside in memory despite that deferred charge.
+    ``retained_input_bytes`` counts page-owned input once between capture and
+    retirement, including periods with no worker. It is separate from each
+    worker's private input attribution.
     """
 
     capacity_units: int
@@ -173,6 +176,8 @@ class AdmissionSnapshot:
     classes: tuple[ClassAdmissionSnapshot, ...] = ()
     retained_sql_settlements: tuple[RetainedSQLSettlement, ...] = ()
     active_input_bytes: int = 0
+    retained_input_bytes: int = 0
+    retained_input_count: int = 0
     queued_input_bytes: int = 0
     exclusive_byte_units: int = 0
     foreground_allowance_capacity_bytes: int = FOREGROUND_BYTE_ALLOWANCE
@@ -210,6 +215,8 @@ class AdmissionSnapshot:
             "queued_bytes": self.queued_bytes,
             "active_units": self.active_units,
             "active_input_bytes": self.active_input_bytes,
+            "retained_input_bytes": self.retained_input_bytes,
+            "retained_input_count": self.retained_input_count,
             "queued_input_bytes": self.queued_input_bytes,
             "exclusive_byte_units": self.exclusive_byte_units,
             "foreground_allowance_capacity_bytes": self.foreground_allowance_capacity_bytes,
@@ -489,12 +496,58 @@ def capture_compute_bridge() -> Callable[[], contextlib.AbstractContextManager[N
     return borrow
 
 
+class SharedInputReservation:
+    """One retained immutable input owned by a page, without a worker slot.
+
+    Only its original adapter and admission class can borrow the input. Close
+    prohibits new borrowers; the charge survives every accepted physical task.
+    The payload owner closes this reservation after retiring its own references.
+    """
+
+    def __init__(self, adapter: BoundedComputeAdapter, admission_class: str, byte_length: int, owner: object) -> None:
+        self._adapter = adapter
+        self._owner: object | None = owner
+        self._admission_class = admission_class
+        self._byte_length = byte_length
+        self._bytes = min(byte_length, adapter.capacity_bytes)
+        self._borrowers = 0
+        self._accepting = True
+        self._closing = False
+        self._released = False
+
+    @property
+    def owner(self) -> object | None:
+        """Recover the original payload owner after failed physical retirement."""
+        with self._adapter._lock:
+            return self._owner
+
+    @property
+    def admission_class(self) -> str:
+        return self._admission_class
+
+    @property
+    def byte_length(self) -> int:
+        return self._byte_length
+
+    def require_settled(self) -> None:
+        """Fence new borrowing before retiring payload, after accepted creators settle."""
+        with self._adapter._lock:
+            if self._borrowers:
+                raise RuntimeError("shared input still has physical compute borrowers")
+            self._accepting = False
+
+    def close(self) -> None:
+        self._adapter._close_shared_input(self)
+
+
 class _Task:
     __slots__ = (
         "admission_class",
         "bytes",
         "input_demand_bytes",
         "exclusive_bytes",
+        "shared_input",
+        "transferred_shared_input",
         "cancellation",
         "remove_cancellation_listener",
         "context",
@@ -527,6 +580,7 @@ class _Task:
         input_demand_bytes: int,
         exclusive_bytes: bool,
         slots: int,
+        shared_input: SharedInputReservation | None = None,
     ) -> None:
         self.function = function
         self.context = context
@@ -540,6 +594,8 @@ class _Task:
         self.pending_bytes: int | None = None
         self.input_demand_bytes = input_demand_bytes
         self.exclusive_bytes = exclusive_bytes
+        self.shared_input = shared_input
+        self.transferred_shared_input = False
         self.slots = slots
         self.queued_at = monotonic()
         self.trace_task_id = uuid4().hex[:16] if TRACE_COMPUTE else None
@@ -597,6 +653,7 @@ class BoundedComputeAdapter:
         self._rejected = 0
         self._shutdown = False
         self._cancel_on_shutdown = False
+        self._shared_inputs: set[SharedInputReservation] = set()
         self._sql_settlements: dict[int, _RetainedSQLSettlement] = {}
         self._classes: dict[str, _ClassState] = {name: _ClassState(name) for name in ADMISSION_CLASSES}
         self._queues: dict[str, deque[_Task]] = {name: deque() for name in ADMISSION_CLASSES}
@@ -643,7 +700,9 @@ class BoundedComputeAdapter:
             "used_bytes": self._used_bytes,
             "foreground_allowance_capacity_bytes": FOREGROUND_BYTE_ALLOWANCE,
             "foreground_allowance_used_bytes": (
-                self._group_bytes("foreground") if self._background_exclusive_units else 0
+                self._group_bytes("foreground")
+                if self._background_exclusive_units or self._isolated_shared_input()
+                else 0
             ),
             # Each group shares one reserve. Report the aggregate
             # usage so a rejected sibling cannot make the bounded admission
@@ -696,7 +755,12 @@ class BoundedComputeAdapter:
 
     def _background_exclusive(self, task: _Task) -> bool:
         return task.admission_class in BACKGROUND_CLASSES and (
-            task.exclusive_bytes or task.input_demand_bytes > self.capacity_bytes
+            task.exclusive_bytes
+            or task.input_demand_bytes > self.capacity_bytes
+            or (
+                task.shared_input is not None
+                and task.shared_input.byte_length + task.input_demand_bytes > self.capacity_bytes
+            )
         )
 
     def _group_bytes(self, group: str, *, original: bool = False) -> int:
@@ -706,13 +770,44 @@ class BoundedComputeAdapter:
             for state in (self._classes[name],)
         )
 
+    def _isolated_shared_input(self) -> bool:
+        return any(item.byte_length >= self.capacity_bytes and item.byte_length > 0 for item in self._shared_inputs)
+
     def _acquire_locked(self, state: _ClassState, task: _Task) -> None:
         group = self._class_group(state.admission_class)
         group_used_units = self._group_used_units(state.admission_class)
         other_reserved_units = self._unmet_other_unit_reserves(state.admission_class)
         extra_bytes = 0
         isolated = True
-        if self._background_exclusive_units:
+        shared = task.shared_input
+        if shared is not None:
+            if shared._adapter is not self or shared.admission_class != task.admission_class:
+                raise ValueError("shared input belongs to a different compute adapter or admission class")
+            if not shared._accepting or shared._closing or shared._released or shared not in self._shared_inputs:
+                raise ValueError("shared input reservation is closed")
+            # An oversized borrower uses the remainder of its own page's
+            # envelope. It cannot overlap any other byte-holding background
+            # creator, even one borrowing this same page. A foreground operand
+            # already waiting without its byte charge cannot block the page's
+            # own publication: its activation still waits for page retirement.
+            isolated = not self._exclusive_byte_units and not self._background_exclusive_units
+            if task.exclusive_bytes or self._background_exclusive(task):
+                isolated = isolated and (
+                    self._group_bytes("background") == shared._bytes
+                    and self._group_used_units(task.admission_class) == 0
+                    and len(self._shared_inputs) == 1
+                    and self._group_used_units("control") <= 1
+                    and self._group_bytes("foreground", original=True)
+                    - sum(
+                        queued.input_demand_bytes
+                        for name in FOREGROUND_CLASSES
+                        for queued in self._queues[name]
+                        if queued.pending_bytes is not None
+                    )
+                    <= FOREGROUND_BYTE_ALLOWANCE
+                )
+                extra_bytes = self._group_bytes("foreground") if isolated else 0
+        elif self._background_exclusive_units or self._isolated_shared_input():
             # Exactly one foreground position, shared by control and reads.
             # A larger operand waits without a worker or native SQL owner;
             # its complete declared input demand remains observable.
@@ -755,6 +850,8 @@ class BoundedComputeAdapter:
                 admission_class=state.admission_class,
                 evidence=self._evidence(state),
             )
+        if shared is not None:
+            shared._borrowers += 1
         self._used_units += task.units
         self._used_bytes += task.bytes
         self._exclusive_byte_units += int(task.exclusive_bytes and task.pending_bytes is None)
@@ -771,6 +868,7 @@ class BoundedComputeAdapter:
             return True
         if (
             self._background_exclusive_units
+            or self._isolated_shared_input()
             or self._exclusive_byte_units
             or self._used_bytes + charge > self.capacity_bytes
             or (task.exclusive_bytes and self._used_input_bytes > task.input_demand_bytes)
@@ -783,8 +881,8 @@ class BoundedComputeAdapter:
         self._exclusive_byte_units += int(task.exclusive_bytes)
         return True
 
-    def require_current_creator(self) -> None:
-        """Require this reservation's actual creator for SQL-backed preparation."""
+    def _current_creator(self) -> _Task:
+        """Require the actual admitted physical creator, including cleanup."""
         task: _Task | None = getattr(_CURRENT_COMPUTE, "task", None)
         if (
             getattr(_CURRENT_COMPUTE, "adapter", None) is not self
@@ -793,6 +891,11 @@ class BoundedComputeAdapter:
             or task.creator_thread is not threading.current_thread()
         ):
             raise RuntimeError("preparation requires its admitted compute creator")
+        return task
+
+    def require_current_creator(self) -> None:
+        """Require this reservation's actual creator for SQL-backed preparation."""
+        self._current_creator()
         from polylogue.core.compute_cancel import check_compute_cancelled
 
         check_compute_cancelled()
@@ -815,6 +918,66 @@ class BoundedComputeAdapter:
             self._used_input_bytes += additional_bytes
             self._classes[task.admission_class].used_input_bytes += additional_bytes
 
+    def retain_current_shared_input(self, byte_length: int, *, owner: object) -> SharedInputReservation:
+        """Transfer exact page input from its exclusive capture before completion."""
+        if type(byte_length) is not int or byte_length < 0:
+            raise ValueError("shared input requires a nonnegative byte length")
+        # Capture has already constructed the payload. Cancellation must not
+        # interrupt its transfer to the same physical retirement owner.
+        task = self._current_creator()
+        if (
+            not task.exclusive_bytes
+            or task.admission_class not in BACKGROUND_CLASSES
+            or task.shared_input is not None
+            or task.transferred_shared_input
+        ):
+            raise RuntimeError("shared input capture requires its own exclusive reservation")
+        shared = SharedInputReservation(self, task.admission_class, byte_length, owner)
+        with self._lock:
+            if self._shared_inputs:
+                raise RuntimeError("exclusive capture cannot replace an existing shared page")
+            # The running capture already holds the whole envelope. Transfer
+            # its charge without an admission gap or a duplicated worker slot.
+            self._shared_inputs.add(shared)
+            task.transferred_shared_input = True
+            task.bytes -= shared._bytes
+            self._active_bytes -= shared._bytes
+            state = self._classes[task.admission_class]
+            self._used_input_bytes += byte_length
+            state.used_input_bytes += byte_length
+        return shared
+
+    def _release_shared_input_locked(self, shared: SharedInputReservation) -> None:
+        if shared._released or not shared._closing or shared._borrowers:
+            return
+        shared._released = True
+        shared._owner = None
+        self._shared_inputs.remove(shared)
+        self._used_bytes -= shared._bytes
+        self._used_input_bytes -= shared.byte_length
+        state = self._classes[shared.admission_class]
+        state.used_bytes -= shared._bytes
+        state.used_input_bytes -= shared.byte_length
+        self._idle.notify_all()
+
+    def _close_shared_input(self, shared: SharedInputReservation) -> None:
+        with self._lock:
+            shared._accepting = False
+            shared._closing = True
+            self._release_shared_input_locked(shared)
+            runnable = self._drain_locked()
+        self._run_all(runnable)
+
+    def retained_shared_inputs(self) -> tuple[SharedInputReservation, ...]:
+        """Keep failed page retirement recoverable through this same input owner."""
+        with self._lock:
+            return tuple(self._shared_inputs)
+
+    def retained_shared_input_count(self) -> int:
+        """Count pages whose physical input prevents replacement of this owner."""
+        with self._lock:
+            return len(self._shared_inputs)
+
     def submit(
         self,
         function: Callable[[], T],
@@ -823,6 +986,7 @@ class BoundedComputeAdapter:
         units: int = 1,
         estimated_bytes: int = 0,
         exclusive_bytes: bool = False,
+        shared_input: SharedInputReservation | None = None,
         cancellation: CancellationHandle | None = None,
     ) -> SubmittedOperation[T]:
         if admission_class not in self._classes:
@@ -834,11 +998,16 @@ class BoundedComputeAdapter:
                 evidence={"units": units, "estimated_bytes": estimated_bytes},
             )
         input_demand_bytes = estimated_bytes
+        if shared_input is not None and (
+            shared_input._adapter is not self or shared_input.admission_class != admission_class
+        ):
+            raise ValueError("shared input belongs to a different compute adapter or admission class")
         # A unit larger than the whole byte envelope reserves all of it, and
         # so runs with no other byte-holding work, instead of being refused:
         # the envelope bounds concurrency, not the size of an input the daemon
         # must eventually process.
-        estimated_bytes = self.capacity_bytes if exclusive_bytes else min(estimated_bytes, self.capacity_bytes)
+        byte_capacity = self.capacity_bytes - (0 if shared_input is None else shared_input._bytes)
+        estimated_bytes = byte_capacity if exclusive_bytes else min(estimated_bytes, byte_capacity)
         handle = cancellation or CancellationHandle()
         future: Future[T] = Future()
         if getattr(_CURRENT_COMPUTE, "adapter", None) is self:
@@ -849,6 +1018,8 @@ class BoundedComputeAdapter:
             # the subunit settles before its synchronous completion.
             parent = _CURRENT_COMPUTE.cancellation
             parent_task = _CURRENT_COMPUTE.task
+            if shared_input is not None and shared_input is not parent_task.shared_input:
+                raise RuntimeError("nested compute cannot borrow a different shared reservation")
             if exclusive_bytes and not parent_task.exclusive_bytes:
                 raise RuntimeError("nested preparation cannot acquire exclusive bytes inside ordinary admission")
 
@@ -893,6 +1064,7 @@ class BoundedComputeAdapter:
             input_demand_bytes=input_demand_bytes,
             exclusive_bytes=exclusive_bytes,
             slots=min(units, self.max_workers),
+            shared_input=shared_input,
         )
 
         with self._lock:
@@ -1296,6 +1468,10 @@ class BoundedComputeAdapter:
             if task.state == "done":
                 return
             task.state = "done"
+            # A caller may retain SubmittedOperation after completion. Retired
+            # closures and contexts must not keep a page alive through it.
+            task.function = lambda: None
+            task.context = contextvars.Context()
             remove_listener = task.remove_cancellation_listener
             task.remove_cancellation_listener = None
             state = self._classes[task.admission_class]
@@ -1320,6 +1496,10 @@ class BoundedComputeAdapter:
                 self._active_slots -= task.slots
                 state.active_units -= task.units
                 state.active_slots -= task.slots
+            if task.shared_input is not None:
+                task.shared_input._borrowers -= 1
+                self._release_shared_input_locked(task.shared_input)
+                task.shared_input = None
             runnable = self._drain_locked()
             idle = self._used_units == 0
             if idle:
@@ -1380,17 +1560,23 @@ class BoundedComputeAdapter:
                 capacity_bytes=self.capacity_bytes,
                 used_bytes=self._used_bytes,
                 queued_units=max(0, self._used_units - self._active_units),
-                queued_bytes=max(0, self._used_bytes - self._active_bytes),
+                queued_bytes=max(
+                    0, self._used_bytes - self._active_bytes - sum(item._bytes for item in self._shared_inputs)
+                ),
                 active_units=self._active_units,
                 rejected=self._rejected,
                 capacity_slots=self.max_workers,
                 classes=classes,
                 retained_sql_settlements=tuple(entry.evidence for entry in self._sql_settlements.values()),
                 active_input_bytes=self._active_input_bytes,
+                retained_input_bytes=sum(item.byte_length for item in self._shared_inputs),
+                retained_input_count=len(self._shared_inputs),
                 queued_input_bytes=sum(task.input_demand_bytes for queue in self._queues.values() for task in queue),
                 exclusive_byte_units=self._exclusive_byte_units,
                 foreground_allowance_used_bytes=(
-                    self._group_bytes("foreground") if self._background_exclusive_units else 0
+                    self._group_bytes("foreground")
+                    if self._background_exclusive_units or self._isolated_shared_input()
+                    else 0
                 ),
                 foreground_pending_bytes=sum(
                     task.pending_bytes or 0 for name in FOREGROUND_CLASSES for task in self._queues[name]
@@ -1495,6 +1681,8 @@ def reset_compute_adapter(*, join_timeout_s: float = 0.0) -> tuple[str, ...]:
                 _SHARED_COMPUTE_ADAPTER = None
         return ()
     surviving = adapter.close(join_timeout_s=join_timeout_s)
+    if not surviving and adapter.retained_shared_input_count():
+        raise RuntimeError("shared compute owner still retains page input")
     if not surviving:
         with _SHARED_COMPUTE_LOCK:
             if _SHARED_COMPUTE_ADAPTER is adapter:
@@ -1503,6 +1691,7 @@ def reset_compute_adapter(*, join_timeout_s: float = 0.0) -> tuple[str, ...]:
 
 
 __all__ = [
+    "SharedInputReservation",
     "ADMISSION_CLASSES",
     "BACKGROUND_CLASSES",
     "MAX_BACKGROUND_STARVATION_S",
