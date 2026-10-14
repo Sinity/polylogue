@@ -2066,3 +2066,41 @@ def test_chatgpt_tool_result_oracle_does_not_read_parsed_sessions(monkeypatch: p
         "chatgpt", cast(GeneratedValue, _chatgpt_tool_result_graph())
     )
     assert len(witnesses) == 6
+
+
+@pytest.mark.parametrize("fallback_text", ["neutral fallback output", ""])
+def test_chatgpt_tool_result_fallback_text_requires_positive_content(fallback_text: str) -> None:
+    payload = _chatgpt_tool_result_graph()
+    mapping = cast(JSONDocument, payload["mapping"])
+    mapping["fallback-coordinate"] = {
+        "id": "fallback-node",
+        "parent": "call-coordinate",
+        "message": {
+            "id": "fallback-message",
+            "author": {"role": "tool"},
+            "content": {"content_type": "text", "parts": [""], "thoughts": [{"summary": fallback_text}]},
+            "status": "in_progress",
+            "create_time": 2,
+        },
+    }
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    answers = [
+        message
+        for session in sessions
+        for message in session.messages
+        if message.provider_message_id == "fallback-message"
+    ]
+    if fallback_text:
+        assert len(answers) == 1 and answers[0].text == fallback_text
+        results = [block for block in answers[0].blocks if block.type is BlockType.TOOL_RESULT]
+        assert len(results) == 1
+        assert results[0].tool_id == "call-message" and results[0].text == fallback_text
+        assert results[0].is_error is None and results[0].exit_code is None
+        assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+            sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+        )
+    else:
+        assert len(answers) == 1 and not answers[0].text and not answers[0].blocks
+        assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
+            sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+        )
