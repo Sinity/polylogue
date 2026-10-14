@@ -24,16 +24,18 @@ from tests.unit.storage.test_archive_readiness import _seed_rows
 
 
 @pytest.mark.parametrize(
-    ("raw_key", "members", "receipt", "non_session", "fragment", "expected"),
+    ("raw_key", "members", "receipt", "non_session", "terminal_refusal", "fragment", "expected"),
     [
-        ("codex:n:exact tail", (), '["codex-session:n:exact tail"]', False, False, True),
-        ("codex:key", (), '["codex:key", "codex-session:key"]', False, False, False),
-        ("codex:key", ("codex:other",), '["codex:key"]', False, False, False),
-        (None, ("invalid:key",), "[]", True, False, False),
-        ("codex:key", (), '["codex:key", 17]', False, False, False),
-        (None, (), "[]", False, False, False),
-        (None, (), "[]", True, False, True),
-        (None, (), "[]", False, True, True),
+        ("codex:n:exact tail", (), '["codex-session:n:exact tail"]', False, False, False, True),
+        ("codex:key", (), '["codex:key", "codex-session:key"]', False, False, False, False),
+        ("codex:key", ("codex:other",), '["codex:key"]', False, False, False, False),
+        (None, ("invalid:key",), "[]", True, False, False, False),
+        ("codex:key", (), '["codex:key", 17]', False, False, False, False),
+        (None, (), "[]", False, False, False, False),
+        (None, (), "[]", True, False, False, True),
+        (None, (), "[]", False, False, True, True),
+        (None, (), "[]", False, True, False, True),
+        ("codex:key", (), "[]", False, True, False, False),
     ],
 )
 def test_shared_census_workspace_preserves_exact_measurement_and_clears_previous_raw(
@@ -41,6 +43,7 @@ def test_shared_census_workspace_preserves_exact_measurement_and_clears_previous
     members: tuple[str, ...],
     receipt: str,
     non_session: bool,
+    terminal_refusal: bool,
     fragment: bool,
     expected: bool,
 ) -> None:
@@ -60,7 +63,10 @@ def test_shared_census_workspace_preserves_exact_measurement_and_clears_previous
         )
         assert (
             standalone.complete(
-                typed_non_session=non_session, parser_confirmed_non_session=False, byte_governed_fragment=fragment
+                typed_non_session=non_session,
+                typed_terminal_refusal=terminal_refusal,
+                parser_confirmed_non_session=False,
+                byte_governed_fragment=fragment,
             )
             is expected
         )
@@ -92,7 +98,10 @@ def test_shared_census_workspace_preserves_exact_measurement_and_clears_previous
         ) == standalone_flags
         assert (
             measured.complete(
-                typed_non_session=non_session, parser_confirmed_non_session=False, byte_governed_fragment=fragment
+                typed_non_session=non_session,
+                typed_terminal_refusal=terminal_refusal,
+                parser_confirmed_non_session=False,
+                byte_governed_fragment=fragment,
             )
             is expected
         )

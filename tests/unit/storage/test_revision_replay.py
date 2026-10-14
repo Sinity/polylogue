@@ -411,6 +411,51 @@ def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path:
             assert tuple(receipt.logicals) == ()
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("support_status", "unknown"), ("origin", "chatgpt-export"), ("source_path", "other.jsonl"), ("source_index", 1)],
+)
+def test_terminal_parser_census_rejects_inconsistent_decode_carrier(tmp_path: Path, field: str, value: object) -> None:
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"not valid codex jsonl",
+            source_path="terminal-corrupt.jsonl",
+            canonical_source_path="terminal-corrupt.jsonl",
+            acquired_at_ms=1,
+        )
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CODEX,
+            source_path="terminal-corrupt.jsonl",
+            source_index=0,
+            acquired_at_ms=1,
+            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CODEX,
+            error=ValueError("terminal corrupt input"),
+            preserve_existing_failure_evidence=True,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(f"UPDATE raw_artifacts SET {field}=? WHERE raw_id=?", (value, raw_id))
+    publish_prepared_source(
+        tmp_path,
+        "test.revision.invalid-terminal-census",
+        lambda seal: archive_revision_governance.record_current_parser_source_census(seal, raw_id),
+    )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute(
+            "SELECT status FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+        ).fetchone() == ("failed",)
+        assert source.execute("SELECT * FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchall() == []
+        assert (
+            source.execute("SELECT parse_error FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone()[0] is not None
+        )
+
+
 def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys(tmp_path: Path) -> None:
     """A byte-governed receipt cannot overclaim an empty durable identity set."""
     bootstrap_archive_root(tmp_path)
