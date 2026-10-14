@@ -122,17 +122,27 @@ def test_bench_cli_status_cold(benchmark: Any, bench_empty_status_resident: Empt
     executable = Path(sys.executable).parent / ("polylogued" if route == "daemon" else "polylogue")
     args = [str(executable), *(["agents", "status"] if route == "agents" else ["status"]), "--format", "json"]
     samples: list[float] = []
+    attempts: list[tuple[subprocess.CompletedProcess[bytes], float]] = []
 
     def invoke() -> int:
         started = perf_counter()
         result = subprocess.run(args, env=env, cwd=resident.home, capture_output=True, timeout=30)
         elapsed_ms = (perf_counter() - started) * 1000
-        attempt = len(samples) + 1
-        (resident.home.parent / f"{route}-attempt-{attempt}.stdout.json").write_bytes(result.stdout)
-        (resident.home.parent / f"{route}-attempt-{attempt}.stderr.log").write_bytes(result.stderr)
-        (resident.home.parent / f"{route}-attempt-{attempt}.receipt.json").write_text(
-            json.dumps({"elapsed_ms": elapsed_ms, "returncode": result.returncode, "profiling": False}) + "\n"
-        )
+        attempts.append((result, elapsed_ms))
+        return result.returncode
+
+    try:
+        benchmark_repeated(benchmark, invoke, rounds=5)
+    finally:
+        # Preserve every returned response, including when a later launch fails.
+        # Fixture I/O and validation must not count as command startup time.
+        for attempt, (result, elapsed_ms) in enumerate(attempts, start=1):
+            (resident.home.parent / f"{route}-attempt-{attempt}.stdout.json").write_bytes(result.stdout)
+            (resident.home.parent / f"{route}-attempt-{attempt}.stderr.log").write_bytes(result.stderr)
+            (resident.home.parent / f"{route}-attempt-{attempt}.receipt.json").write_text(
+                json.dumps({"elapsed_ms": elapsed_ms, "returncode": result.returncode, "profiling": False}) + "\n"
+            )
+    for result, elapsed_ms in attempts:
         payload = json.loads(result.stdout)
         if route == "agents":
             assert result.returncode == 0, result.stderr.decode(errors="replace")
@@ -143,9 +153,6 @@ def test_bench_cli_status_cold(benchmark: Any, bench_empty_status_resident: Empt
             assert_served_empty_status(payload, root=resident.root, daemon_pid=resident.daemon_pid)
         samples.append(elapsed_ms)
         record_metrics(benchmark, cold_start_ms=elapsed_ms, bytes=len(result.stdout), rows=result.stdout.count(b"\n"))
-        return result.returncode
-
-    benchmark_repeated(benchmark, invoke, rounds=5)
     benchmark.extra_info.update(
         {
             "route": route,
@@ -156,7 +163,7 @@ def test_bench_cli_status_cold(benchmark: Any, bench_empty_status_resident: Empt
             "interpreter": sys.executable,
             "daemon": "owned resident",
             "resident_provenance": resident.provenance,
-            "rounds": 5,
+            "rounds": len(samples),
             "profiling": False,
             "bytecode_cache_prefix": env["PYTHONPYCACHEPREFIX"],
             "cache_admission": "existing owned checkout cache; five sequential cold processes; no prewarm or purge",
