@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import closing
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +31,7 @@ from polylogue.core.query_identity import query_ref, result_set_ref
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import INFO, WARNING, emit
+from polylogue.operations.query_evaluation import open_query_evaluator, query_user_path
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     FindingAssertion,
     list_assertion_claims,
@@ -207,21 +208,20 @@ def _clock_due_promoted_findings(
 def make_standing_query_stage(
     db_path: Path,
     *,
-    evaluator: CanonicalPlanEvaluator | None = None,
+    evaluator_factory: Callable[[], AbstractContextManager[CanonicalPlanEvaluator]] | None = None,
 ) -> ConvergenceStage:
     """Re-evaluate watched definitions after affected session convergence.
 
-    The canonical-plan evaluator is deliberately injected. Identity JSON is
-    not an executable plan, so the stage stays inert until the owning planner
-    is supplied by broad runtime wiring. Its durable baseline, receipt, and
-    candidate-finding semantics are nevertheless the production path.
+    The evaluator factory owns each batch's admitted read lifetime. Without a
+    supplied planner the stage stays inert. Watch baselines and candidate
+    findings are persisted only after their evaluations finish.
     """
 
     def check(_path: Path) -> bool:
         """Whole-archive trigger: a declared clock boundary, not an ingest event."""
-        if evaluator is None:
+        if evaluator_factory is None:
             return False
-        user_db = _standing_user_db_path(db_path)
+        user_db = query_user_path(db_path)
         if not user_db.exists():
             return False
         with closing(open_readonly_connection(user_db)) as conn:
@@ -233,56 +233,57 @@ def make_standing_query_stage(
 
     def execute(_path: Path) -> StageExecuteReturn:
         """Re-evaluate exactly the watches whose clock boundary has passed."""
-        if evaluator is None:
+        if evaluator_factory is None:
             return True
-        user_db = _standing_user_db_path(db_path)
+        user_db = query_user_path(db_path)
         if not user_db.exists():
             return True
-        now_ms = int(time.time() * 1000)
-        conn = open_daemon_connection(user_db, timeout=30.0, archive_root=user_db.parent)
-        try:
-            due = _clock_due_watches(conn, now_ms=now_ms)
-            promoted_due = _clock_due_promoted_findings(conn, now_ms=now_ms, db_path=db_path)
-            if not due and not promoted_due:
-                return True
-            for query in due:
-                evaluation = evaluator.evaluate(
-                    QueryEvaluationRequest(
-                        query=query,
-                        purpose="standing-watch",
-                        changed_session_ids=(),
-                        excluded_scope_refs=(query_ref(query.query_hash).format(),),
-                        excluded_origin_prefixes=("notice.",),
+        with evaluator_factory() as evaluator:
+            now_ms = int(time.time() * 1000)
+            conn = open_daemon_connection(user_db, timeout=30.0, archive_root=user_db.parent)
+            try:
+                due = _clock_due_watches(conn, now_ms=now_ms)
+                promoted_due = _clock_due_promoted_findings(conn, now_ms=now_ms, db_path=db_path)
+                if not due and not promoted_due:
+                    return True
+                for query in due:
+                    evaluation = evaluator.evaluate(
+                        QueryEvaluationRequest(
+                            query=query,
+                            purpose="standing-watch",
+                            changed_session_ids=(),
+                            excluded_scope_refs=(query_ref(query.query_hash).format(),),
+                            excluded_origin_prefixes=("notice.",),
+                        )
                     )
-                )
-                if evaluation.cache_only:
-                    continue
-                _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
-            staged_boundaries: dict[tuple[str, str, str], int] = {}
-            if promoted_due:
-                unevaluated = _materialize_promoted_finding_drifts(
-                    conn, evaluator, now_ms=now_ms, query_hashes=frozenset(promoted_due)
-                )
-                boundary = clock_boundary_start_ms(now_ms)
-                for query_hash, receipt_key in promoted_due.items():
-                    # A cache-only evaluation produced no answer; leave it due so
-                    # the next check retries instead of waiting a clock boundary.
-                    if query_hash not in unevaluated:
-                        staged_boundaries[receipt_key] = boundary
-            conn.commit()
-            # Publish the receipts only once the drifts they vouch for are durable.
-            _PROMOTED_CLOCK_BOUNDARIES.update(staged_boundaries)
-        finally:
-            conn.close()
-        emit(
-            "daemon.stage.clock_boundary",
-            level=INFO,
-            outcome="ok",
-            stage="standing-queries",
-            reason="clock_boundary_passed",
-            watches=len(due),
-        )
-        return True
+                    if evaluation.cache_only:
+                        continue
+                    _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
+                staged_boundaries: dict[tuple[str, str, str], int] = {}
+                if promoted_due:
+                    unevaluated = _materialize_promoted_finding_drifts(
+                        conn, evaluator, now_ms=now_ms, query_hashes=frozenset(promoted_due)
+                    )
+                    boundary = clock_boundary_start_ms(now_ms)
+                    for query_hash, receipt_key in promoted_due.items():
+                        # A cache-only evaluation produced no answer; leave it due so
+                        # the next check retries instead of waiting a clock boundary.
+                        if query_hash not in unevaluated:
+                            staged_boundaries[receipt_key] = boundary
+                conn.commit()
+                # Publish the receipts only once the drifts they vouch for are durable.
+                _PROMOTED_CLOCK_BOUNDARIES.update(staged_boundaries)
+            finally:
+                conn.close()
+            emit(
+                "daemon.stage.clock_boundary",
+                level=INFO,
+                outcome="ok",
+                stage="standing-queries",
+                reason="clock_boundary_passed",
+                watches=len(due),
+            )
+            return True
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
         # One clock read for the whole batch: the boundary is a property of the
@@ -297,96 +298,98 @@ def make_standing_query_stage(
         return execute(paths[0])
 
     def check_sessions(session_ids: Sequence[str]) -> set[str]:
-        if evaluator is None or not session_ids:
+        if evaluator_factory is None or not session_ids:
             return set()
-        user_db = _standing_user_db_path(db_path)
+        user_db = query_user_path(db_path)
         if not user_db.exists():
             return set()
-        try:
-            with closing(open_readonly_connection(user_db)) as conn:
-                watched = list_watched_queries(conn)
-                if not watched and not _has_promoted_expected_findings(conn):
-                    return set()
-                scope = _narrowed_origin_scope(conn, evaluator, watched)
-                if scope is None:
-                    return set(session_ids)
-                return {
-                    session_id
-                    for session_id in session_ids
-                    if (origin := session_origin(str(session_id))) is None or origin in scope
-                }
-        except Exception as exc:
-            emit(
-                "daemon.stage.check_failed",
-                level=WARNING,
-                outcome="degraded",
-                stage="standing-queries",
-                reason="watch_lookup_failed_assuming_work",
-                path=user_db,
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            return set(session_ids)
+        with evaluator_factory() as evaluator:
+            try:
+                with closing(open_readonly_connection(user_db)) as conn:
+                    watched = list_watched_queries(conn)
+                    if not watched and not _has_promoted_expected_findings(conn):
+                        return set()
+                    scope = _narrowed_origin_scope(conn, evaluator, watched)
+                    if scope is None:
+                        return set(session_ids)
+                    return {
+                        session_id
+                        for session_id in session_ids
+                        if (origin := session_origin(str(session_id))) is None or origin in scope
+                    }
+            except Exception as exc:
+                emit(
+                    "daemon.stage.check_failed",
+                    level=WARNING,
+                    outcome="degraded",
+                    stage="standing-queries",
+                    reason="watch_lookup_failed_assuming_work",
+                    path=user_db,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+                return set(session_ids)
 
     def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
-        if evaluator is None:
+        if evaluator_factory is None:
             return True
-        user_db = _standing_user_db_path(db_path)
+        user_db = query_user_path(db_path)
         if not user_db.exists():
             return True
-        now_ms = int(time.time() * 1000)
-        ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-        try:
-            conn = open_daemon_connection(user_db, timeout=30.0, archive_root=user_db.parent)
+        with evaluator_factory() as evaluator:
+            now_ms = int(time.time() * 1000)
+            ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
             try:
-                for query in list_watched_queries(conn):
-                    query_reference = query_ref(query.query_hash).format()
-                    evaluation = evaluator.evaluate(
-                        QueryEvaluationRequest(
-                            query=query,
-                            purpose="standing-watch",
-                            changed_session_ids=ids,
-                            excluded_scope_refs=(query_reference,),
-                            excluded_origin_prefixes=("notice.",),
+                conn = open_daemon_connection(user_db, timeout=30.0, archive_root=user_db.parent)
+                try:
+                    for query in list_watched_queries(conn):
+                        query_reference = query_ref(query.query_hash).format()
+                        evaluation = evaluator.evaluate(
+                            QueryEvaluationRequest(
+                                query=query,
+                                purpose="standing-watch",
+                                changed_session_ids=ids,
+                                excluded_scope_refs=(query_reference,),
+                                excluded_origin_prefixes=("notice.",),
+                            )
                         )
-                    )
-                    if evaluation.cache_only:
-                        # An index-only relation after reset is not evidence of
-                        # membership drift. Compare durable user-tier baselines only.
-                        continue
-                    _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
-                _materialize_promoted_finding_drifts(conn, evaluator, now_ms=now_ms)
-                conn.commit()
-            finally:
-                conn.close()
-            return True
-        except sqlite3.OperationalError as exc:
-            transient = is_transient_sqlite_lock(exc)
-            emit(
-                "daemon.stage.execute_failed",
-                level=INFO if transient else WARNING,
-                outcome="skipped" if transient else "error",
-                stage="standing-queries",
-                reason="archive_busy" if transient else "evaluation_failed",
-                sessions=len(ids),
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            if transient:
-                return False
-            raise
-        except Exception as exc:
-            emit(
-                "daemon.stage.execute_failed",
-                level=WARNING,
-                outcome="error",
-                stage="standing-queries",
-                reason="evaluation_deferred",
-                sessions=len(ids),
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            raise
+                        if evaluation.cache_only:
+                            # An index-only relation after reset is not evidence of
+                            # membership drift. Compare durable user-tier baselines only.
+                            continue
+                        _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
+                    _materialize_promoted_finding_drifts(conn, evaluator, now_ms=now_ms)
+                    conn.commit()
+                finally:
+                    conn.close()
+                return True
+            except sqlite3.OperationalError as exc:
+                transient = is_transient_sqlite_lock(exc)
+                emit(
+                    "daemon.stage.execute_failed",
+                    level=INFO if transient else WARNING,
+                    outcome="skipped" if transient else "error",
+                    stage="standing-queries",
+                    reason="archive_busy" if transient else "evaluation_failed",
+                    sessions=len(ids),
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+                if transient:
+                    return False
+                raise
+            except Exception as exc:
+                emit(
+                    "daemon.stage.execute_failed",
+                    level=WARNING,
+                    outcome="error",
+                    stage="standing-queries",
+                    reason="evaluation_deferred",
+                    sessions=len(ids),
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+                raise
 
     return ConvergenceStage(
         name="standing-queries",
@@ -408,7 +411,7 @@ def establish_watch_baselines(
     db_path: Path,
     *,
     archive_root: Path,
-    evaluator: CanonicalPlanEvaluator | None = None,
+    evaluator_factory: Callable[[], AbstractContextManager[CanonicalPlanEvaluator]] | None = None,
 ) -> int:
     """Measure every watched definition that has no baseline yet.
 
@@ -420,41 +423,41 @@ def establish_watch_baselines(
     ``archive_root`` names the archive whose writer lease the caller holds.
     Returns how many baselines were measured.
     """
-    user_db = _standing_user_db_path(db_path)
+    user_db = query_user_path(db_path)
     if not db_path.exists() or not user_db.exists():
         return 0
-    if evaluator is None:
-        from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
+    if evaluator_factory is None:
 
-        evaluator = ArchiveCanonicalPlanEvaluator(db_path)
-    now_ms = int(time.time() * 1000)
-    measured = 0
-    conn = open_daemon_connection(user_db, timeout=30.0, archive_root=archive_root)
-    try:
-        for query in list_watched_queries(conn):
-            if get_watched_query_baseline(conn, query.query_hash) is not None:
-                continue
-            evaluation = evaluator.evaluate(
-                QueryEvaluationRequest(
-                    query=query,
-                    purpose="standing-watch",
-                    changed_session_ids=(),
-                    excluded_scope_refs=(query_ref(query.query_hash).format(),),
-                    excluded_origin_prefixes=("notice.",),
+        def default_evaluator_factory() -> AbstractContextManager[CanonicalPlanEvaluator]:
+            return open_query_evaluator(db_path)
+
+        evaluator_factory = default_evaluator_factory
+
+    with evaluator_factory() as evaluator:
+        now_ms = int(time.time() * 1000)
+        measured = 0
+        conn = open_daemon_connection(user_db, timeout=30.0, archive_root=archive_root)
+        try:
+            for query in list_watched_queries(conn):
+                if get_watched_query_baseline(conn, query.query_hash) is not None:
+                    continue
+                evaluation = evaluator.evaluate(
+                    QueryEvaluationRequest(
+                        query=query,
+                        purpose="standing-watch",
+                        changed_session_ids=(),
+                        excluded_scope_refs=(query_ref(query.query_hash).format(),),
+                        excluded_origin_prefixes=("notice.",),
+                    )
                 )
-            )
-            if evaluation.cache_only:
-                continue
-            _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
-            measured += 1
-        conn.commit()
-    finally:
-        conn.close()
-    return measured
-
-
-def _standing_user_db_path(db_path: Path) -> Path:
-    return db_path.with_name("user.db")
+                if evaluation.cache_only:
+                    continue
+                _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
+                measured += 1
+            conn.commit()
+        finally:
+            conn.close()
+        return measured
 
 
 def _narrowed_origin_scope(

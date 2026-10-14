@@ -56,14 +56,6 @@
       "count": 3
     },
     {
-      "file": "polylogue/archive/query/production_evaluator.py",
-      "digest": "4001fe70084213f736c04dbc62eba28b3a651c37"
-    },
-    {
-      "file": "polylogue/archive/query/production_evaluator.py",
-      "digest": "6de735098af24d2a233eb027a5a916d68c375b78"
-    },
-    {
       "file": "polylogue/archive/query/source_freshness.py",
       "digest": "183197da57a7854b3a1cc3f24e9c3021cbe74b4b"
     },

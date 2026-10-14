@@ -21,6 +21,7 @@ from polylogue.daemon.convergence_standing_queries import make_standing_query_st
 from polylogue.logging import INFO, WARNING, emit, span
 from polylogue.operations.claude_workflow_convergence import make_claude_workflow_stage
 from polylogue.operations.lineage_prefix_recompose import make_lineage_prefix_recompose_stage
+from polylogue.operations.query_evaluation import open_query_evaluator
 from polylogue.operations.raw_authority_verdict_cache import (
     RawAuthorityVerdictCacheWork,
     find_raw_authority_verdict_cache_work,
@@ -430,7 +431,6 @@ def make_default_convergence_stages(
     sinex_transport: SinexTransport | None = None,
 ) -> tuple[ConvergenceStage, ...]:
     """Build daemon stages, failing explicitly when backed mode lacks transport."""
-    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
     from polylogue.paths import archive_root
     from polylogue.sinex.models import PublicationMode
     from polylogue.sinex.transport import resolve_configured_transport
@@ -468,7 +468,7 @@ def make_default_convergence_stages(
             # Session-profile publication is no longer a generic stage.  The
             # daemon's typed session owner runs it through the derivation
             # kernel after ingest and from its no-hint periodic sweep.
-            make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
+            make_standing_query_stage(db_path, evaluator_factory=lambda: open_query_evaluator(db_path)),
         )
     )
     return tuple(stages)

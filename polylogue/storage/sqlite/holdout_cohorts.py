@@ -121,12 +121,17 @@ def mark_holdout(
     return policy
 
 
-def get_holdout_policy(conn: sqlite3.Connection, result_set_id: str) -> HoldoutPolicy | None:
+def get_holdout_policy(
+    conn: sqlite3.Connection, result_set_id: str, *, schema: str | None = None
+) -> HoldoutPolicy | None:
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError("invalid SQLite schema")
+    table = "result_set_holdout_policies" if schema is None else f"{schema}.result_set_holdout_policies"
     row = conn.execute(
-        """
+        f"""
         SELECT result_set_id, frame, selection_definition_json, intended_confirmation_use,
                authority, created_epoch
-        FROM result_set_holdout_policies WHERE result_set_id = ?
+        FROM {table} WHERE result_set_id = ?
         """,
         (result_set_id,),
     ).fetchone()
@@ -226,14 +231,16 @@ def has_holdout_contamination(conn: sqlite3.Connection, result_set_id: str) -> b
     return row is not None
 
 
-def require_non_holdout_access(conn: sqlite3.Connection, result_set_id: str, *, declared_confirmation: bool) -> None:
+def require_non_holdout_access(
+    conn: sqlite3.Connection, result_set_id: str, *, declared_confirmation: bool, schema: str | None = None
+) -> None:
     """Planner-level guard: refuse an exploratory read of a holdout relation.
 
     Raises :class:`HoldoutAccessError` when ``result_set_id`` is a holdout
     and the caller has not declared this as a confirmation access. Not a
     holdout relation at all is always fine (no-op).
     """
-    if is_holdout(conn, result_set_id) and not declared_confirmation:
+    if get_holdout_policy(conn, result_set_id, schema=schema) is not None and not declared_confirmation:
         raise HoldoutAccessError(
             f"result-set:{result_set_id} is a holdout relation; exploratory queries cannot read its "
             "members. Pass declared_confirmation=True (and record the access) for an authorized "

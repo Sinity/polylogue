@@ -10,6 +10,7 @@ was enabled and silently never re-evaluated.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -127,7 +128,7 @@ def test_clock_boundary_triggers_re_evaluation(tmp_path: Path, frozen_clock: Fro
     """
     index_db, query_hash = _seed(tmp_path, _RELATIVE)
     evaluator = _Evaluator()
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
 
     assert stage.check(index_db) is True
     assert stage.execute(index_db) is True
@@ -158,7 +159,7 @@ def test_absolute_watch_is_never_clock_due(tmp_path: Path, frozen_clock: FrozenC
     """
     index_db, _query_hash = _seed(tmp_path, _ABSOLUTE)
     evaluator = _Evaluator()
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
 
     assert stage.check(index_db) is False
     frozen_clock.advance(CLOCK_BOUNDARY_MS / 1000 * 4)
@@ -171,7 +172,7 @@ def test_disabled_watch_incurs_no_clock_evaluation(tmp_path: Path) -> None:
     """AC1's second half: only watches the user actually enabled run."""
     index_db, _query_hash = _seed(tmp_path, _RELATIVE, watch=False)
     evaluator = _Evaluator()
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
 
     assert stage.check(index_db) is False
     assert stage.execute(index_db) is True
