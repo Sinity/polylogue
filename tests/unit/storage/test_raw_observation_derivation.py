@@ -2390,6 +2390,7 @@ def test_unknown_admitted_artifact_is_not_positive_non_session_evidence(tmp_path
     from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact
     from polylogue.core.json import JSONValue
     from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
     bootstrap_archive_root(tmp_path)
@@ -2437,5 +2438,9 @@ def test_unknown_admitted_artifact_is_not_positive_non_session_evidence(tmp_path
         ):
             reader = PreparedSessionSourceRead(seal, blob_store=BlobStore(tmp_path / "blob"))
             assert {row[0]: row[2] for row in reader.raw_membership_census_rows(tuple(expected))} == expected
+            for raw_id in expected:
+                record_current_parser_source_census(seal, raw_id)
+            with seal.source_rows("SELECT raw_id, status FROM raw_authority_parser_census ORDER BY raw_id") as receipts:
+                assert dict(receipts) == {admitted.raw_id: "failed", known.raw_id: "complete"}
 
     _run_raw_law(tmp_path, exercise)

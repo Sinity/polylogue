@@ -2153,9 +2153,10 @@ def record_current_parser_source_census(
     if parser_sessions is not None and inherited_logical_keys is not None:
         raise ValueError("parser census cannot combine parsed and inherited identities")
     with seal.source_rows(
-        """
+        f"""
         SELECT logical_source_key, revision_kind,
-               EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0),
+               EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0
+                      AND artifact_kind IN ({", ".join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))})),
                source_index
         FROM raw_sessions WHERE raw_id = ?
         """,
@@ -2183,9 +2184,10 @@ def record_current_parser_source_census(
                 witness=singleton_witness,
             )
         with seal.source_rows(
-            """
+            f"""
             SELECT logical_source_key, revision_kind,
-                   EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0),
+                   EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0
+                      AND artifact_kind IN ({", ".join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))})),
                    source_index
             FROM raw_sessions WHERE raw_id = ?
             """,
