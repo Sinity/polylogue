@@ -1013,6 +1013,9 @@ COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
 INTERACTIVE_READ_SNAPSHOT_AGE_S = 30.0
 BACKGROUND_READ_SNAPSHOT_AGE_S = 300.0
 
+# Read queries can materialize archive-wide sort and association relations.
+# Keep their spill eligible for disk backing instead of retaining every TEMP
+# page in the reader heap; query_only still denies caller TEMP writes.
 READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     role="read",
     timeout_seconds=READ_DB_TIMEOUT,
@@ -1024,6 +1027,7 @@ READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     # by SQLite at the file level, but the pragma additionally
     # rejects accidental writes via the same connection at SQL parse
     # time instead of waiting for the write lock.
+    temp_store="FILE",
     query_only=True,
     generation_identity="live",
     max_snapshot_age_s=INTERACTIVE_READ_SNAPSHOT_AGE_S,
@@ -1036,6 +1040,7 @@ BACKGROUND_READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     busy_timeout_ms=int(TIMEOUT_CLASS_BACKGROUND_READ_S * 1000),
     cache_size_kib=READ_CACHE_SIZE_KIB,
     mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+    temp_store="FILE",
     query_only=True,
     generation_identity="live",
     max_snapshot_age_s=BACKGROUND_READ_SNAPSHOT_AGE_S,
@@ -1048,6 +1053,7 @@ OFFLINE_BULK_READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     busy_timeout_ms=int(TIMEOUT_CLASS_OFFLINE_BULK_S * 1000),
     cache_size_kib=READ_CACHE_SIZE_KIB,
     mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+    temp_store="FILE",
     query_only=True,
     generation_identity="live",
     max_snapshot_age_s=BACKGROUND_READ_SNAPSHOT_AGE_S,
@@ -1065,6 +1071,7 @@ SEALED_READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     busy_timeout_ms=int(TIMEOUT_CLASS_OFFLINE_BULK_S * 1000),
     cache_size_kib=READ_CACHE_SIZE_KIB,
     mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+    temp_store="FILE",
     query_only=True,
     generation_identity="sealed",
     immutable=True,

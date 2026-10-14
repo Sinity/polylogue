@@ -1294,7 +1294,7 @@ class ArchiveStore:
                     timeout=read_timeout,
                     opened_main_fd=opened_index_fd,
                     validate_schema=False,
-                    profile=replace(READ_CONNECTION_PROFILE, temp_store="FILE"),
+                    profile=READ_CONNECTION_PROFILE,
                 )
                 if opened_index_fd is None and _generation_token(selected_path) != self.index_generation:
                     raise StaleContinuationError("selected archive generation changed while opening the reader")

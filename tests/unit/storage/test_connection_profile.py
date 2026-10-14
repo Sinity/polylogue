@@ -676,3 +676,42 @@ def test_source_factory_initializes_local_profile_before_authorization_and_retai
         assert not connection.in_transaction
     finally:
         owner.close()
+
+
+@pytest.mark.parametrize("timeout_class", ["interactive-read", "background-read", "offline-bulk"])
+def test_common_reader_spills_health_query_to_file(tmp_path: Path, timeout_class: str) -> None:
+    """The source-derived health count needs TEMP sorts on an ordinary reader."""
+    from polylogue.storage.derived.session.status import SESSION_OBSERVED_EVENT_COUNT_SQL
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.storage_records import SessionBuilder
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    db_path = root / "index.db"
+    SessionBuilder(db_path, "health-tools").add_message(
+        "call",
+        role="assistant",
+        text="run",
+        blocks=[{"type": "tool_use", "tool_name": "Bash", "tool_id": "call-1", "input": {"command": "true"}}],
+    ).add_message(
+        "result",
+        role="user",
+        text="done",
+        blocks=[{"type": "tool_result", "tool_id": "call-1", "text": "done", "is_error": False}],
+    ).save()
+    with closing(connection_profile.open_readonly_connection(db_path, timeout_class=timeout_class)) as reader:
+        plan = reader.execute("EXPLAIN QUERY PLAN " + SESSION_OBSERVED_EVENT_COUNT_SQL).fetchall()
+        assert any("TEMP B-TREE" in row[3] for row in plan)
+        assert reader.execute("PRAGMA temp_store").fetchone()[0] == 1
+        assert reader.execute(SESSION_OBSERVED_EVENT_COUNT_SQL).fetchone()[0] == 2
+        assert reader.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly database"):
+            reader.execute("DELETE FROM sessions")
+
+
+def test_sealed_reader_uses_file_backed_temp(tmp_path: Path) -> None:
+    db_path = tmp_path / "sealed.db"
+    sqlite3.connect(db_path).close()
+    with closing(connection_profile.open_readonly_connection(db_path, immutable=True, validate_schema=False)) as reader:
+        assert reader.execute("PRAGMA temp_store").fetchone()[0] == 1
+        assert reader.execute("PRAGMA query_only").fetchone()[0] == 1
