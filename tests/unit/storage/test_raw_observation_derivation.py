@@ -2570,3 +2570,83 @@ def test_index_failure_keeps_committed_source_classification_for_retry(
             assert index.execute("SELECT native_id FROM sessions").fetchall() == [("retained",)]
 
     _run_raw_law(tmp_path, run_phase)
+
+
+@pytest.mark.parametrize("provider", [Provider.GEMINI_CLI, Provider.CLAUDE_CODE])
+def test_retained_preparation_keeps_each_path_dependent_source_coordinate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: Provider
+) -> None:
+    """Equal bytes in distinct sidecar scopes each receive a real worker capture."""
+    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.sources import revision_backfill
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.storage.derived import raw
+
+    record = (
+        {
+            "sessionId": "shared",
+            "kind": "chat",
+            "startTime": "2026-01-01T00:00:00Z",
+            "messages": [{"id": "m", "type": "user", "content": "neutral source"}],
+        }
+        if provider is Provider.GEMINI_CLI
+        else {
+            "type": "user",
+            "sessionId": "shared",
+            "uuid": "m",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user", "content": "neutral source"},
+        }
+    )
+    payload = json.dumps(record).encode() + b"\n"
+    paths = (
+        ("first/chats/session.json", "second/chats/session.json")
+        if provider is Provider.GEMINI_CLI
+        else (
+            "first/session.jsonl",
+            "second/session.jsonl",
+        )
+    )
+    bootstrap_archive_root(tmp_path)
+    with _fixture_archive(tmp_path) as archive:
+        raw_ids = tuple(
+            archive.write_raw_payload(
+                provider=provider,
+                payload=payload,
+                source_path=path,
+                canonical_source_path=path,
+                acquired_at_ms=index + 1,
+                revision=RawRevisionEnvelope(
+                    logical_source_key=f"{origin_from_provider(provider).value}:shared",
+                    kind=RawRevisionKind.FULL,
+                    source_revision="same-bytes",
+                    acquisition_generation=0,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                ),
+            )
+            for index, path in enumerate(paths)
+        )
+    calls: list[str] = []
+    owner: Any = raw if provider is Provider.CLAUDE_CODE else revision_backfill
+    method = "_parse_captured_neutral" if provider is Provider.CLAUDE_CODE else "prepare_retained_jsonl_artifact"
+    original = getattr(owner, method)
+
+    def observed(*args: Any, **kwargs: Any) -> PreparedJsonl:
+        calls.append(str(args[0] if provider is Provider.CLAUDE_CODE else args[1]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, method, observed)
+
+    def exercise(compute: BoundedComputeAdapter) -> None:
+        adapter = make_raw_observation_derivation(tmp_path, compute_adapter=compute)
+        replacement = adapter.compute(raw_observation_frame(tmp_path), raw_ids[0], replay_current=True)
+        try:
+            assert set(replacement.raw_ids) == set(raw_ids)
+            assert sorted(calls) == sorted(raw_ids)
+            assert replacement.prepared_inputs is not None
+            assert {item.source_path for item in replacement.prepared_inputs.values()} == set(paths)
+        finally:
+            replacement.close()
+
+    _run_raw_law(tmp_path, exercise)
