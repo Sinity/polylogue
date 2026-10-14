@@ -54,7 +54,7 @@ def test_managed_whale_replay_records_complete_output_and_actual_resources(
     for raw_id, blob_hash in hashes.items():
         text = json.loads(store.read_all(blob_hash).splitlines()[-1])["payload"]["content"][0]["text"]
         expected[raw_id] = hashlib.sha256(text.encode()).hexdigest()
-    del text
+        del text
     monkeypatch.setattr(
         revision_backfill,
         "parse_retained_raw_sessions",
@@ -96,7 +96,7 @@ def test_managed_whale_replay_records_complete_output_and_actual_resources(
         assert {str(row[1]) for row in sessions} == {*small_raw_ids, whale_raw_id}
         for session_id, raw_id in sessions:
             page = read_archive_session_envelope(archive._conn, str(session_id))
-            assert page is not None and page.lineage_complete
+            assert page.lineage_complete
             assert len(page.messages) == 1
             assert len(page.messages[0].blocks) == 1
             observed_text = page.messages[0].blocks[0].text
