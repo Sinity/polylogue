@@ -186,7 +186,7 @@ def restore_message_fts_triggers_sync(conn: sqlite3.Connection) -> None:
 def _create_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     """Issue the ``CREATE TRIGGER IF NOT EXISTS`` DDL for existing surfaces."""
     for ddl in _fts_trigger_ddl_for_existing_surfaces_sync(conn):
-        conn.executescript(ddl) if ";" in ddl else conn.execute(ddl)
+        conn.execute(ddl)
 
 
 def restore_fts_triggers_sync(conn: sqlite3.Connection) -> None:
@@ -224,17 +224,13 @@ def ensure_fts_triggers_sync(conn: sqlite3.Connection) -> None:
     replacing trigger definitions; ``restore_fts_triggers_sync`` is the
     no-drop recovery path.
 
-    Fast-path: when all expected triggers are already present, return
-    immediately without issuing any ``executescript()`` calls.  Each
-    ``executescript()`` call issues an implicit COMMIT that fragments the
-    caller's WAL transaction into multiple smaller ones; avoiding it in
-    steady state preserves the intended one-transaction boundary for
-    ``commit_archive_write_effects`` (#1851).
+    Each trigger is one statement, including its body semicolons. Execute
+    it without executescript, which would implicitly commit the caller.
     """
     if _triggers_present_sync(conn, _FTS_TRIGGER_NAMES):
         return
     for ddl in _fts_trigger_ddl_for_existing_surfaces_sync(conn):
-        conn.executescript(ddl) if ";" in ddl else conn.execute(ddl)
+        conn.execute(ddl)
 
 
 def ensure_fts_index_sync(conn: sqlite3.Connection) -> None:
@@ -249,10 +245,7 @@ async def ensure_fts_index_async(conn: aiosqlite.Connection) -> None:
     await conn.execute(FTS_MESSAGES_TABLE_SQL)
     await conn.execute(FTS_MESSAGES_IDENTITY_TABLE_SQL)
     for ddl in await _fts_trigger_ddl_for_existing_surfaces_async(conn):
-        if ";" in ddl:
-            await conn.executescript(ddl)
-        else:
-            await conn.execute(ddl)
+        await conn.execute(ddl)
 
 
 def _fts_trigger_ddl_for_existing_surfaces_sync(conn: sqlite3.Connection) -> tuple[str, ...]:

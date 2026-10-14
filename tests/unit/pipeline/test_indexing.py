@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config
-from polylogue.pipeline.services.indexing import IndexService
+from polylogue.pipeline.services.indexing import IndexService, rebuild_index, update_index_for_sessions
 from polylogue.storage.fts import fts_lifecycle
 from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_async
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -436,3 +436,25 @@ async def test_borrowed_full_rebuild_settles_cancelled_worker_and_preserves_dist
         async with conn.execute("SELECT 1") as cursor:
             row = await cursor.fetchone()
             assert row is not None and row[0] == 1
+
+
+@pytest.mark.parametrize("route", ["full", "scoped"])
+async def test_successful_fts_write_preserves_the_callers_rollback(sqlite_backend: SQLiteBackend, route: str) -> None:
+    """A successful FTS operation must not commit unrelated caller writes."""
+    async with sqlite_backend.connection() as conn:
+        await conn.execute("CREATE TABLE fixture_fts_caller (value TEXT)")
+        await conn.commit()
+    with pytest.raises(RuntimeError, match="caller rollback"):
+        async with sqlite_backend.transaction():
+            async with sqlite_backend.connection() as conn:
+                await conn.execute("INSERT INTO fixture_fts_caller VALUES ('uncommitted')")
+            if route == "full":
+                await rebuild_index(sqlite_backend)
+            else:
+                await update_index_for_sessions([], sqlite_backend)
+            raise RuntimeError("caller rollback")
+    async with sqlite_backend.read_connection() as conn:
+        async with conn.execute("SELECT COUNT(*) FROM fixture_fts_caller") as cursor:
+            row = await cursor.fetchone()
+            assert row is not None
+            assert row[0] == 0

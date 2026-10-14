@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 from typing_extensions import TypedDict
@@ -54,7 +55,8 @@ async def rebuild_index(
     progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Rebuild the entire FTS5 index from persisted message rows."""
-    async with backend.connection() as conn:
+    transaction = backend.transaction() if backend.transaction_depth == 0 else nullcontext()
+    async with transaction, backend.connection() as conn:
         del phase_count
         if session_ids is not None and progress_callback is not None and session_ids:
             progress_callback(0, desc=f"Indexing: full-text search 0/{len(session_ids):,}")
@@ -64,7 +66,6 @@ async def rebuild_index(
             progress_callback=progress_callback,
             progress_desc=_fts_progress_desc_factory() if progress_callback is not None else None,
         )
-        await conn.commit()
     invalidate_search_cache()
 
 
@@ -78,7 +79,8 @@ async def update_index_for_sessions(
     """Repair FTS rows for the provided sessions from persisted message rows."""
     session_id_list = [session_id async for session_id in _iter_ids(session_ids)]
     changed = bool(session_id_list)
-    async with backend.connection() as conn:
+    transaction = backend.transaction() if backend.transaction_depth == 0 else nullcontext()
+    async with transaction, backend.connection() as conn:
         del phase_count
         phase_total = len(session_id_list)
         if progress_callback is not None and session_id_list:
@@ -92,7 +94,6 @@ async def update_index_for_sessions(
             progress_callback=progress_callback,
             progress_desc=(_fts_progress_desc_factory() if progress_callback is not None else None),
         )
-        await conn.commit()
     if changed:
         invalidate_search_cache()
 
