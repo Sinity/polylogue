@@ -546,3 +546,35 @@ def neutral_numeric_range(schema: Mapping[str, object]) -> tuple[float, float]:
     if schema.get("x-polylogue-format") == "unix-epoch":
         return 1670000000.0, 1760000000.0
     return 0.0, 1000.0
+
+
+def numeric_verdict_support(schema: Mapping[str, object], outcome_class: str) -> list[tuple[int, int, int]]:
+    """Condition the existing integer support without publishing magnitudes."""
+    if outcome_class not in {"zero", "nonzero"}:
+        raise ValueError("measured numeric verdict is undeclared")
+    distribution = _observed(schema, "numeric")
+    histogram = distribution.get("histogram")
+    if isinstance(histogram, list) and histogram:
+        supported: list[tuple[int, int, int]] = []
+        for row in histogram:
+            if (
+                not isinstance(row, list)
+                or len(row) != 2
+                or type(row[0]) is not int
+                or type(row[1]) is not int
+                or row[1] <= 0
+            ):
+                raise ValueError("numeric verdict histogram is malformed")
+            observed = histogram_value(distribution, row[0])
+            if observed is None:
+                raise ValueError("numeric verdict histogram has no declared scale")
+            value = int(observed)
+            if (value == 0) == (outcome_class == "zero"):
+                supported.append((value, value, row[1]))
+        return supported
+    lo, hi = neutral_numeric_range(schema)
+    minimum, maximum = math.ceil(lo), math.floor(hi)
+    if outcome_class == "zero":
+        return [(0, 0, 1)] if minimum <= 0 <= maximum else []
+    ranges = [(minimum, min(maximum, -1)), (max(minimum, 1), maximum)]
+    return [(low, high, high - low + 1) for low, high in ranges if low <= high]

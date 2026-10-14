@@ -1,4 +1,4 @@
-"""Anonymous spellings of measured, public Codex tool grammar.
+"""Anonymous spellings of measured, public Codex call and result grammar.
 
 Only fixed syntax tokens and anonymous run widths leave the source reducer.
 Paths, command bodies and source identifiers are never representative values.
@@ -11,7 +11,13 @@ import json
 import re
 from collections.abc import Iterator, Mapping
 
-from polylogue.sources.parsers.codex import _skip_js_string_or_comment
+from polylogue.sources.parsers.codex import (
+    _CODEX_CHUNK_ID_PREFIX_RE,
+    _CODEX_COMMAND_LINE_PREFIX_RE,
+    _CODEX_EXEC_ENVELOPE_OUTCOME_RE,
+    _CODEX_FREEFORM_OUTCOME_RE,
+    _skip_js_string_or_comment,
+)
 
 PUBLIC_TOOL_NAMES = frozenset({"apply_patch", "patch", "exec", "exec_command", "shell_command"})
 _WORDS = PUBLIC_TOOL_NAMES | {"await", "tools", "functions", "cmd", "command", "input"}
@@ -30,7 +36,25 @@ _PATCH_PREFIXES = (
 )
 _PUNCTUATION = frozenset("(){}[]:;,.=\"'` \t\r\n")
 _ESCAPES = frozenset({"\\n", "\\r", "\\t", "\\\\", '\\"', "\\'", "\\`"})
-_LITERALS = _WORDS | set(_PATCH_PREFIXES) | _PUNCTUATION | _ESCAPES | {"//", "/*", "*/"}
+_RESULT_LITERALS = frozenset(
+    {
+        "Command: ",
+        "Chunk ID: ",
+        "Wall time: ",
+        " seconds\n",
+        "Process exited with code ",
+        "Process completed with exit code ",
+        "Process running with session ID ",
+        "Exit code: ",
+        "\nWall time: ",
+        "Output:\n",
+        "\nOutput:\n",
+        "Total output lines: ",
+        "-",
+    }
+)
+_INPUT_LITERALS = _WORDS | set(_PATCH_PREFIXES) | _PUNCTUATION | _ESCAPES | {"//", "/*", "*/"}
+_LITERALS = _RESULT_LITERALS | _INPUT_LITERALS
 _RUNS = re.compile(r"[^\x00-\x7f]+|[^\n\r\x80-\U0010ffff]+|[\n\r]")
 _CODE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*|[(){}\[\]:;,.= \t\r\n]|[^A-Za-z_$(){}\[\]:;,.= \t\r\n\"'`]+")
 _LINES = re.compile(r"\\n|\n")
@@ -155,8 +179,8 @@ def measured_tool_syntax(tool: Mapping[str, object]) -> str:
                 match = _CODE.match(value, position)
                 if (
                     match is not None
-                    and match.end() - position <= max(map(len, _LITERALS))
-                    and match.group() in _LITERALS
+                    and match.end() - position <= max(map(len, _INPUT_LITERALS))
+                    and match.group() in _INPUT_LITERALS
                 ):
                     token = match.group()
                     parts.append(["literal", token])
@@ -200,7 +224,88 @@ def validated_syntax_parts(parts: object) -> Iterator[tuple[str, str | int]]:
         kind, value = part
         if kind == "literal" and isinstance(value, str) and value in _LITERALS:
             yield "literal", value
-        elif kind in {"ascii", "non_ascii"} and type(value) is int and value > 0:
+        elif kind in {"ascii", "non_ascii", "digits", "zeros"} and type(value) is int and value > 0:
             yield kind, value
         else:
             raise ValueError("tool syntax contains a private or unsupported token")
+
+
+# Reuse the production header grammar at an explicit offset without copying
+# the potentially huge result body merely to remove a prefix.
+_CHUNK_PREFIX = re.compile(_CODEX_CHUNK_ID_PREFIX_RE.pattern.removeprefix(r"\A"))
+_EXEC_HEADER = re.compile(_CODEX_EXEC_ENVELOPE_OUTCOME_RE.pattern.removeprefix(r"\A"))
+_FREEFORM_HEADER = re.compile(_CODEX_FREEFORM_OUTCOME_RE.pattern.removeprefix(r"\A"))
+_RESULT_TOKEN = re.compile(
+    r"[0-9]+|" + "|".join(re.escape(token) for token in sorted(_RESULT_LITERALS | {".", "\n"}, key=len, reverse=True))
+)
+OUTCOME_WRAPPERS = ("", "metadata.", "result.", "output.")
+OUTCOME_FIELDS = ("exit_code", "is_error", "timed_out")
+
+
+def codex_tool_class(kind: str, name: object) -> str:
+    """Pair the public call family with a public or anonymous name class."""
+    call = {"function_call_output": "function_call", "custom_tool_call_output": "custom_tool_call"}.get(kind, kind)
+    if call not in {"function_call", "custom_tool_call"}:
+        raise ValueError("Codex tool class has no declared call family")
+    return call + ":" + (name if isinstance(name, str) and name in PUBLIC_TOOL_NAMES else "")
+
+
+def measured_result_syntax(value: object) -> dict[str, object]:
+    """Keep fixed result grammar and verdict classes without private values."""
+    result: dict[str, object] = {}
+    if isinstance(value, Mapping):
+        outcomes: dict[str, str] = {}
+        for prefix in OUTCOME_WRAPPERS:
+            wrapper = value if not prefix else value.get(prefix[:-1])
+            for field in OUTCOME_FIELDS:
+                current = wrapper.get(field) if isinstance(wrapper, Mapping) else None
+                label = "absent" if not isinstance(wrapper, Mapping) or field not in wrapper else "other"
+                if field == "exit_code" and type(current) is int:
+                    label = "zero" if current == 0 else "nonzero"
+                elif field != "exit_code" and type(current) is bool:
+                    label = "true" if current else "false"
+                outcomes[prefix + field] = label
+        result["outcomes"] = outcomes
+    elif isinstance(value, str):
+        parts: list[list[object]] = []
+        position = 0
+        command = _CODEX_COMMAND_LINE_PREFIX_RE.match(value)
+        if command is not None:
+            parts.append(["literal", "Command: "])
+            _anonymous(parts, value, len("Command: "), command.end())
+            position = command.end()
+        # Chunk IDs are fixed protocol fields with anonymous hexadecimal
+        # spellings; neutral digits remain in that same lexical support.
+        chunk = _CHUNK_PREFIX.match(value, position)
+        if chunk is not None:
+            parts.extend(
+                [
+                    ["literal", "Chunk ID: "],
+                    ["digits", chunk.end() - position - len("Chunk ID: ") - 1],
+                    ["literal", "\n"],
+                ]
+            )
+            position = chunk.end()
+        match = _EXEC_HEADER.match(value, position) or _FREEFORM_HEADER.match(value, position)
+        if match is None:
+            return result
+        exit_spans = [
+            match.span(name) for name in match.re.groupindex if name.startswith("exit_code") and match.start(name) >= 0
+        ]
+        previous = position
+        for token in _RESULT_TOKEN.finditer(value, position, match.end()):
+            if token.start() != previous:
+                _anonymous(parts, value, previous, token.start())
+            if value[token.start()].isdigit():
+                zero = any(start <= token.start() and token.end() <= stop for start, stop in exit_spans) and all(
+                    value[index] == "0" for index in range(token.start(), token.end())
+                )
+                parts.append(["zeros" if zero else "digits", token.end() - token.start()])
+            else:
+                parts.append(["literal", token.group()])
+            previous = token.end()
+        _anonymous(parts, value, previous, len(value))
+        for _ in validated_syntax_parts(parts):
+            pass
+        result["output_syntax"] = parts
+    return result

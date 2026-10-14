@@ -53,7 +53,7 @@ from polylogue.schemas.record_structure import (
     tool_identity_operand,
     tool_result_content_mode,
 )
-from polylogue.schemas.tool_input_syntax import measured_tool_syntax
+from polylogue.schemas.tool_input_syntax import codex_tool_class, measured_result_syntax, measured_tool_syntax
 from polylogue.schemas.workload_profile_rows import DepthGrammars, WorkloadProfile, workload_profile_digest
 from polylogue.sources.live.tool_result_sidecars import ToolResultIndexAccumulator
 
@@ -879,17 +879,7 @@ class _ContentStructure:
             if operand is None:
                 continue
             kind, event, field_name, value = operand
-            if provider == "codex" and kind in {
-                "function_call",
-                "custom_tool_call",
-                "function_call_output",
-                "custom_tool_call_output",
-            }:
-                fields = tuple(field for field in NATIVE_CODEX_TOOL_VALUE_FIELDS if field in tool)
-                mode = tool_result_content_mode(tool) if kind.endswith("_output") else ""
-                syntax = measured_tool_syntax(tool) if not kind.endswith("_output") else ""
-                self.native_tool_field_forms.setdefault(kind, Counter())[(mode, fields, syntax)] += 1
-            elif provider == "claude-code" and kind == "tool_use":
+            if provider == "claude-code" and kind == "tool_use":
                 name = tool.get("name")
                 tool_input = tool.get("input")
                 fields = tuple(
@@ -927,7 +917,12 @@ class _ContentStructure:
             )
             relation = "missing"
             prior_mode = ""
-            tool_class = ""
+            name = tool.get("name")
+            tool_class = (
+                codex_tool_class(kind, name)
+                if provider == "codex" and kind in {"function_call", "custom_tool_call"}
+                else ""
+            )
             prior_count = 0
             result_mode = (
                 tool_result_content_mode(tool)
@@ -952,6 +947,8 @@ class _ContentStructure:
                 tool_class = (
                     (name if isinstance(name, str) and name in PUBLIC_CLAUDE_TOOL_NAMES else "")
                     if event == "call" and provider == "claude-code"
+                    else tool_class
+                    if event == "call" and provider == "codex"
                     else prior_class
                 )
                 prior_count = _bucket_index(float(results))
@@ -966,6 +963,22 @@ class _ContentStructure:
                         tool_class,
                     ),
                 ).close()
+            if provider == "codex" and kind in {
+                "function_call",
+                "custom_tool_call",
+                "function_call_output",
+                "custom_tool_call_output",
+            }:
+                fields = tuple(field for field in NATIVE_CODEX_TOOL_VALUE_FIELDS if field in tool)
+                descriptor = json.loads(measured_tool_syntax(tool) or "{}") if event == "call" else {}
+                descriptor["call_class"] = tool_class or codex_tool_class(kind, None)
+                if event == "result":
+                    value_field = next((field for field in ("output", "tools", "result") if field in tool), None)
+                    if value_field is not None:
+                        descriptor.update(measured_result_syntax(tool[value_field]))
+                self.native_tool_field_forms.setdefault(kind, Counter())[
+                    (result_mode, fields, json.dumps(descriptor, sort_keys=True, separators=(",", ":")))
+                ] += 1
             if provider == "claude-code" and kind == "tool_result":
                 evidence = envelope.get("toolUseResult")
                 fields = tuple(

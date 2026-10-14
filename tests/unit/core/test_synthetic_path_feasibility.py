@@ -381,3 +381,40 @@ def test_actual_codex_header_joint_conditions_messages_before_field_draws() -> N
             assert records[-1]["type"] == "turn_context"
         finally:
             corpus._relation_solver.close()
+
+
+@pytest.mark.parametrize("lose_joint", (False, True))
+def test_selected_message_quota_uses_its_own_call_resource_floor(lose_joint: bool) -> None:
+    root, safe, message, quiet, result = ((name, "record") for name in ("root", "safe", "message", "quiet", "result"))
+    owner = ForeignKeyGraph()
+    try:
+        path = _MeasuredPath(
+            {root: 10_000, safe: 1},
+            {quiet: 1, result: 1},
+            {root: {message: 1, quiet: 1}, safe: {quiet: 1}, message: {result: 1}, quiet: {quiet: 1, result: 1}},
+            3,
+            owner,
+            resource_effects={root: (0, 0), safe: (0, 0), message: (1, -1), quiet: (0, 0), result: (1, -1)},
+            available_resource=lambda: 1,
+            count_effects={root: 0, safe: 1, message: 1, quiet: 0, result: 0},
+            selected_count=1,
+        )
+        layer = path._layer(2)
+        # The other quota needs no calls; the requested quota needs two.
+        root_key = next(key for key in layer if key.startswith("root"))
+        assert layer[root_key][1] == 0 and layer[root_key][3][1] == 2
+        if lose_joint:
+            owner._live_tool_owner().execute(
+                "UPDATE generated_path_layers SET count_resource=? WHERE path_id=? AND remaining=? AND state=?",
+                ('{"0":0,"1":0}', path.layers.array_id, 2, root_key),
+            ).close()
+        chosen = path.sample(random.Random(31))
+        try:
+            if lose_joint:
+                assert next(chosen)[0] == "root"
+            else:
+                assert next(chosen)[0] == "safe"
+        finally:
+            chosen.close()
+    finally:
+        owner.close()

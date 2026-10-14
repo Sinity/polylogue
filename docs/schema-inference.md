@@ -104,7 +104,7 @@ they are compatible. Missing Codex ordering metadata is recovered separately
 from field statistics.
 
 Structure revisions apply to the affected provider: generic reduction is5,
-Codex tool grammar is6 and Claude named tool forms and public Todo tokens are8.
+Codex tool grammar and result classes are9; Claude named tool forms and public Todo tokens are8.
 A batch uses the highest revision applicable to its actual inventoried providers; an empty
 batch uses5. A ChatGPT-only batch therefore keeps its unchanged revision5
 contract. Mixed batches conservatively bind one combined contract rather than
@@ -292,6 +292,25 @@ literal against that fixed vocabulary. Generation streams neutral operands
 through the existing field sampler and checks measured length, newline and
 character support. Unknown tool names remain anonymous. This does not execute
 programs or qualify arbitrary JavaScript or every tool's argument semantics.
+
+Native Codex result forms also retain their call family and public or anonymous
+name class. Result-mode feasibility and the actual identity draw use that same
+class. Fixed result headers use the production parser's anchored grammar;
+commands, body text and numeric magnitudes remain anonymous. Structural verdict
+fields retain only zero/nonzero and boolean classes, including their absence.
+Generation conditions the existing numeric support on that verdict and checks
+boolean support in the selected schema branch. This preserves structural
+success/failure associations, not private exit-code magnitudes.
+
+For proved single native call/result families with uniform identity widths,
+first-result history and identical class support in every result mode, the
+existing record path also reserves sufficient open calls for its suffix.
+When a header selects a message count, each count has its own resource floor;
+separate count and resource marginals cannot establish that feasibility.
+This filters impossible paths without claiming a newly fitted path probability
+model. Competing families or nonfungible history keep their joint owner.
+The existing inherited prefix covers role-bearing message records; standalone
+native function/custom-call prefix replay is not qualified by this rule.
 
 Claude Code uses the same measured field-form owner for the public Read, Edit,
 Write, TodoWrite, Bash and Agent labels. Input field presence and representation

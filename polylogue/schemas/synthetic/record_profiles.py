@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import random
 import sqlite3
@@ -28,11 +29,18 @@ from polylogue.schemas.synthetic.models import GeneratedString, SchemaRecord
 from polylogue.schemas.synthetic.observed_values import (
     existing_value_is_supported,
     measured_string_formats,
+    numeric_verdict_support,
     observed_length_support,
 )
 from polylogue.schemas.synthetic.relations import ForeignKeyGraph
 from polylogue.schemas.synthetic.text_value import JoinedText, SampledText, joined_text_value
-from polylogue.schemas.tool_input_syntax import PUBLIC_TOOL_NAMES, validated_syntax_parts
+from polylogue.schemas.tool_input_syntax import (
+    OUTCOME_FIELDS,
+    OUTCOME_WRAPPERS,
+    PUBLIC_TOOL_NAMES,
+    codex_tool_class,
+    validated_syntax_parts,
+)
 
 ContentState = tuple[str, str]
 
@@ -331,8 +339,6 @@ class _MeasuredPath:
             raise ValueError("path count effects require their original selected joint")
         if selected_count is not None and (type(selected_count) is not int or not 0 <= selected_count <= count):
             raise ValueError("selected message count contradicts its physical record count")
-        if count_effects is not None and resource_effects is not None:
-            raise ValueError("combined count/resource path requires exact joint feasibility")
         self.edges = edges
         self.states = sorted(
             set(starts)
@@ -350,14 +356,19 @@ class _MeasuredPath:
             raise ValueError("public content state has neither a measured successor nor an ending")
         self.layers = owner.new_array()
         mask = (1 << (selected_count + 1)) - 1 if selected_count is not None else 0
-        previous: dict[ContentState, tuple[float, int, int]] = {}
+        previous: dict[ContentState, tuple[float, int, int, dict[int, int]]] = {}
         for state, weight in endings.items():
             required = resource_effects.get(state, (0, 0))[0] if resource_effects is not None else 0
             support = (1 << count_effects[state]) & mask if count_effects is not None else 0
-            previous[state] = math.log(weight) - math.log(self.denominators[state]), required, support
+            joint = (
+                {count_effects[state]: required}
+                if resource_effects is not None and count_effects is not None and support
+                else {}
+            )
+            previous[state] = math.log(weight) - math.log(self.denominators[state]), required, support, joint
         self._retain_layer(0, previous)
         for remaining in range(1, count):
-            current: dict[ContentState, tuple[float, int, int]] = {}
+            current: dict[ContentState, tuple[float, int, int, dict[int, int]]] = {}
             for state in self.states:
                 successors = [
                     (destination, weight)
@@ -382,7 +393,17 @@ class _MeasuredPath:
                         for destination, _ in successors:
                             support |= previous[destination][2]
                         support = (support << count_effects[state]) & mask
-                    current[state] = mass, required, support
+                    joint = {}
+                    if resource_effects is not None and count_effects is not None:
+                        own_required, change = resource_effects.get(state, (0, 0))
+                        assert selected_count is not None
+                        for destination, _ in successors:
+                            for suffix_count, suffix_required in previous[destination][3].items():
+                                quota = suffix_count + count_effects[state]
+                                if quota <= selected_count:
+                                    floor = max(own_required, suffix_required - change)
+                                    joint[quota] = min(joint.get(quota, floor), floor)
+                    current[state] = mass, required, support, joint
             self._retain_layer(remaining, current)
             previous = current
         if (
@@ -397,11 +418,11 @@ class _MeasuredPath:
             raise RuntimeError("public content path lost its original native generation")
         return self.owner._live_tool_owner()
 
-    def _retain_layer(self, remaining: int, values: dict[ContentState, tuple[float, int, int]]) -> None:
+    def _retain_layer(self, remaining: int, values: dict[ContentState, tuple[float, int, int, dict[int, int]]]) -> None:
         # Only the finite grammar's current layer is held in Python. The tape
         # grows with exact length and quota; SQLite owns its physical lifetime.
         self._connection().executemany(
-            "INSERT INTO generated_path_layers VALUES (?,?,?,?,?,?)",
+            "INSERT INTO generated_path_layers VALUES (?,?,?,?,?,?,?)",
             (
                 (
                     self.layers.array_id,
@@ -410,19 +431,26 @@ class _MeasuredPath:
                     mass,
                     required,
                     support.to_bytes((support.bit_length() + 7) // 8, "little"),
+                    json.dumps(joint, separators=(",", ":")),
                 )
-                for state, (mass, required, support) in values.items()
+                for state, (mass, required, support, joint) in values.items()
             ),
         ).close()
 
-    def _layer(self, remaining: int) -> dict[str, tuple[float, int, int]]:
+    def _layer(self, remaining: int) -> dict[str, tuple[float, int, int, dict[int, int]]]:
         cursor = self._connection().execute(
-            "SELECT state,log_mass,required_resource,count_support FROM generated_path_layers WHERE path_id=? AND remaining=?",
+            "SELECT state,log_mass,required_resource,count_support,count_resource FROM generated_path_layers WHERE path_id=? AND remaining=?",
             (self.layers.array_id, remaining),
         )
         try:
             return {
-                state: (mass, required, int.from_bytes(support, "little")) for state, mass, required, support in cursor
+                state: (
+                    mass,
+                    required,
+                    int.from_bytes(support, "little"),
+                    {int(key): value for key, value in json.loads(joint).items()},
+                )
+                for state, mass, required, support, joint in cursor
             }
         finally:
             cursor.close()
@@ -441,7 +469,11 @@ class _MeasuredPath:
                 (state, math.log(weight) + paths[_key(state)][0])
                 for state, weight in candidates.items()
                 if _key(state) in paths
-                and (available is None or paths[_key(state)][1] <= available)
+                and (
+                    available is None
+                    or (paths[_key(state)][3].get(quota, available + 1) if quota is not None else paths[_key(state)][1])
+                    <= available
+                )
                 and (quota is None or (paths[_key(state)][2] >> quota) & 1)
             ]
             if not weighted:
@@ -461,7 +493,11 @@ class _MeasuredPath:
                 assert available is not None
                 following = self._layer(remaining - 1) if remaining else {}
                 required_after = min(
-                    (following[_key(state)][1] for state in self.edges.get(chosen, {}) if _key(state) in following),
+                    (
+                        following[_key(state)][3][quota] if quota is not None else following[_key(state)][1]
+                        for state in self.edges.get(chosen, {})
+                        if _key(state) in following and (quota is None or quota in following[_key(state)][3])
+                    ),
                     default=0,
                 )
                 minimum_content_count = max(0, required_after - available)
@@ -518,6 +554,7 @@ class PublicRecordPlan:
         self.string_exclusions: dict[str, frozenset[str]] = {}
         self.tool_syntax: dict[str, GeneratedString] = {}
         self.tool_tokens: dict[str, dict[str, int]] = {}
+        self.tool_verdicts: dict[str, str] = {}
         self.tool_classes: dict[str, str] = {}
         self.record_tool_class: str | None = None
         self.tool_content_types: dict[str, frozenset[str]] = {}
@@ -822,6 +859,74 @@ class PublicRecordPlan:
             ):
                 eligible.append(form)
         return eligible
+
+    def _codex_native_forms(
+        self, kind: str, mode: str, relation: str, widths: tuple[int, ...] | None
+    ) -> list[SchemaRecord]:
+        native = self.content.get("native_tool_field_forms")
+        forms = native.get(kind) if isinstance(native, dict) else None
+        if not isinstance(forms, list) or not forms:
+            raise ValueError("native tool value-field forms are missing; re-infer the package")
+        eligible: list[SchemaRecord] = []
+        for form in forms:
+            if not isinstance(form, dict) or not isinstance(form.get("syntax"), dict):
+                raise ValueError("native tool syntax evidence is missing; re-infer the package")
+            syntax = form["syntax"]
+            assert isinstance(syntax, dict)
+            call_class = syntax.get("call_class")
+            if not isinstance(call_class, str) or call_class not in {
+                codex_tool_class(kind, name) for name in PUBLIC_TOOL_NAMES | {""}
+            }:
+                raise ValueError("native tool class contains an undeclared public name or family")
+            if form.get("result_mode") != mode:
+                continue
+            if relation in {"call", "result", "both"} and not self.owner.tool_identity_count(
+                relation, widths=widths, tool_class=call_class
+            ):
+                continue
+            eligible.append(form)
+        return eligible
+
+    def _bind_codex_result(self, syntax: SchemaRecord, path: str, mode: str) -> None:
+        field = mode.partition(":")[0].removeprefix("native-")
+        root = path + "." + field
+        outcomes = syntax.get("outcomes")
+        if outcomes is not None:
+            expected = {prefix + field for prefix in OUTCOME_WRAPPERS for field in OUTCOME_FIELDS}
+            if not isinstance(outcomes, dict) or set(outcomes) != expected:
+                raise ValueError("native result verdict fields are malformed")
+            for coordinate, label in outcomes.items():
+                if label not in {"absent", "other", "zero", "nonzero", "true", "false"}:
+                    raise ValueError("native result verdict class is undeclared")
+                target = root + "." + coordinate
+                if label == "absent":
+                    self.absent.add(target)
+                elif label != "other":
+                    if coordinate.endswith("exit_code") != (label in {"zero", "nonzero"}):
+                        raise ValueError("native result verdict class contradicts its field")
+                    self.tool_verdicts[target] = str(label)
+                    self.tool_content_types[target] = frozenset(
+                        {"integer" if label in {"zero", "nonzero"} else "boolean"}
+                    )
+                    self.required_body_fields.add(target)
+                    if "." in coordinate:
+                        parent = root + "." + coordinate.split(".")[0]
+                        self.required_body_fields.add(parent)
+                        self.header_types[parent] = frozenset({"object"})
+        if "output_syntax" in syntax:
+            self.tool_syntax[root] = self._syntax_value(syntax["output_syntax"])
+
+    @staticmethod
+    def _syntax_value(parts: object) -> GeneratedString:
+        values: list[str | SampledText] = []
+        for kind, value in validated_syntax_parts(parts):
+            if kind == "literal":
+                assert isinstance(value, str)
+                values.append(value)
+            else:
+                assert isinstance(value, int)
+                values.append(SampledText(value, {"ascii": "x", "non_ascii": "ñ", "digits": "1", "zeros": "0"}[kind]))
+        return joined_text_value(*values)
 
     def _bind_dispatch_fields(self, rng: random.Random) -> None:
         rows = self.content.get("dispatch_forms")
@@ -1234,6 +1339,14 @@ class PublicRecordPlan:
                     self.record_tool_class,
                 ):
                     continue
+            if (
+                self.provider == "codex"
+                and kind in {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
+                and not self._codex_native_forms(
+                    kind, str(row.get("result_mode")), relation, None if width_support is None else tuple(width_support)
+                )
+            ):
+                continue
             eligible.append(row)
             weights.append(weight)
         if not eligible:
@@ -1293,57 +1406,51 @@ class PublicRecordPlan:
             and kind in {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
             and isinstance(native_forms, dict)
         ):
-            forms = native_forms.get(kind)
-            if not isinstance(forms, list) or not forms:
-                raise ValueError("native tool value-field forms are missing; re-infer the package")
-            field_forms: list[tuple[tuple[str, ...], SchemaRecord]] = []
-            field_form_weights: list[int] = []
-            for form in forms:
-                fields = form.get("fields") if isinstance(form, dict) else None
-                if (
-                    not isinstance(fields, list)
-                    or any(
-                        not isinstance(field, str) or field not in NATIVE_CODEX_TOOL_VALUE_FIELDS for field in fields
-                    )
-                    or len(fields) != len(set(fields))
-                ):
-                    raise ValueError("native tool value-field form is malformed")
-                assert isinstance(form, dict)
-                if not isinstance(form.get("result_mode"), str):
-                    raise ValueError("native tool value-field result mode is missing; re-infer the package")
-                if form["result_mode"] != mode:
-                    continue
-                syntax = form.get("syntax")
-                if not isinstance(syntax, dict):
-                    raise ValueError("native tool syntax evidence is missing; re-infer the package")
-                field_forms.append((tuple(str(field) for field in fields), syntax))
-                field_form_weights.append(_count(form.get("count")))
-            if not field_forms:
-                raise ValueError("native tool value-field form contradicts its measured result mode")
-            selected_fields, selected_syntax = rng.choices(field_forms, weights=field_form_weights, k=1)[0]
-            if selected_syntax:
+            codex_forms = self._codex_native_forms(
+                kind, mode, relation, None if width_support is None else tuple(width_support)
+            )
+            if not codex_forms:
+                raise ValueError("native tool form has no matching original generated call class")
+            selected = rng.choices(codex_forms, weights=[_count(form.get("count")) for form in codex_forms], k=1)[0]
+            selected_fields, selected_syntax = selected.get("fields"), selected.get("syntax")
+            if (
+                not isinstance(selected_fields, list)
+                or any(
+                    not isinstance(field, str) or field not in NATIVE_CODEX_TOOL_VALUE_FIELDS
+                    for field in selected_fields
+                )
+                or len(selected_fields) != len(set(selected_fields))
+                or not isinstance(selected_syntax, dict)
+            ):
+                raise ValueError("native tool value-field form is malformed")
+            call_class = str(selected_syntax["call_class"])
+            self.tool_classes[path + "." + field] = call_class
+            if event == "result":
+                result_class_filter = call_class
+                if set(selected_syntax) - {"call_class", "outcomes", "output_syntax"}:
+                    raise ValueError("native result syntax has undeclared fields")
+                self._bind_codex_result(selected_syntax, path, mode)
+            else:
+                if set(selected_syntax) - {"call_class", "name", "arguments", "input"}:
+                    raise ValueError("native call syntax has undeclared fields")
                 public_name = selected_syntax.get("name")
-                if (
-                    not isinstance(public_name, str)
-                    or public_name not in PUBLIC_TOOL_NAMES
-                    or set(selected_syntax) - {"name", "arguments", "input"}
-                ):
-                    raise ValueError("native tool syntax contains an undeclared public name or field")
-                assert isinstance(public_name, str)
-                self.tool_syntax[path + ".name"] = public_name
+                if public_name is not None:
+                    if (
+                        not isinstance(public_name, str)
+                        or public_name not in PUBLIC_TOOL_NAMES
+                        or call_class != codex_tool_class(kind, public_name)
+                    ):
+                        raise ValueError("native call name contradicts its class")
+                    self.tool_syntax[path + ".name"] = public_name
+                elif call_class != codex_tool_class(kind, None):
+                    raise ValueError("native call class lost its measured public name")
+                else:
+                    self.string_exclusions[path + ".name"] = PUBLIC_TOOL_NAMES
                 for syntax_field in ("arguments", "input"):
                     if syntax_field in selected_syntax:
                         if syntax_field not in selected_fields:
                             raise ValueError("tool syntax contradicts its measured field form")
-                        syntax_parts: list[str | SampledText] = []
-                        for syntax_kind, syntax_value in validated_syntax_parts(selected_syntax[syntax_field]):
-                            if syntax_kind == "literal":
-                                assert isinstance(syntax_value, str)
-                                syntax_parts.append(syntax_value)
-                            else:
-                                assert isinstance(syntax_value, int)
-                                syntax_parts.append(SampledText(syntax_value, "x" if syntax_kind == "ascii" else "ñ"))
-                        self.tool_syntax[path + "." + syntax_field] = joined_text_value(*syntax_parts)
+                        self.tool_syntax[path + "." + syntax_field] = self._syntax_value(selected_syntax[syntax_field])
             for value_field in NATIVE_CODEX_TOOL_VALUE_FIELDS:
                 target = path + "." + value_field
                 if value_field in selected_fields:
@@ -1468,7 +1575,7 @@ class PublicRecordPlan:
                     str(row["prior_result_mode"]) if self.provider == "claude-code" else None,
                     selected_count if self.provider == "claude-code" else None,
                     None if width_support is None else tuple(width_support),
-                    result_class_filter if kind == "tool_result" else None,
+                    result_class_filter if event == "result" else None,
                 )
                 if relation != "new"
                 else (None, None)
@@ -1507,6 +1614,8 @@ class PublicRecordPlan:
         for mapping in (
             self.tool_syntax,
             self.tool_tokens,
+            self.tool_verdicts,
+            self.string_exclusions,
             self.tool_classes,
             self.tool_content_types,
             self.tool_pointer_fields,
@@ -1621,6 +1730,12 @@ class PublicRecordPlan:
                 return False
             if "object" not in self.header_types[path]:
                 return True
+        if path in self.tool_verdicts:
+            verdict = self.tool_verdicts[path]
+            if verdict in {"true", "false"}:
+                return existing_value_is_supported(schema, verdict == "true")
+            types = _schema_types(schema)
+            return "integer" in types and bool(numeric_verdict_support(schema, verdict))
         if path in self.tool_content_types:
             types = _schema_types(schema)
             if types and not types.intersection(self.tool_content_types[path]):
@@ -1760,7 +1875,11 @@ class RecordScopeKinds:
             selected_count=message_count,
             available_resource=None
             if resource is None
-            else lambda: owner.tool_identity_count("call", "", 0, (resource[1],)),
+            else lambda: (
+                sum(owner.tool_identity_count("call", "", 0, (resource[1],), call_class) for call_class in resource[2])
+                if resource[2] is not None
+                else owner.tool_identity_count("call", "", 0, (resource[1],))
+            ),
         )
 
     def sample(self, rng: random.Random) -> Generator[RecordChoice, None, None]:
@@ -1770,7 +1889,7 @@ class RecordScopeKinds:
 
 def _call_resource(
     structure: SchemaRecord, provider: str | None, schema: SchemaRecord | None
-) -> tuple[dict[ContentState, tuple[int, int]], int] | None:
+) -> tuple[dict[ContentState, tuple[int, int]], int, tuple[str, ...] | None] | None:
     """Project a proved fungible call resource, never approximate joint history.
 
     All-tool call arrays supply their maximum measured cardinality during
@@ -1779,7 +1898,7 @@ def _call_resource(
     Repeated results, competing widths, finite literal ID pools and mixed-block
     records retain their original joint owner.
     """
-    if provider != "claude-code" or schema is None:
+    if provider not in {"claude-code", "codex"} or schema is None:
         return None
     pending = [schema]
     while pending:
@@ -1801,6 +1920,84 @@ def _call_resource(
     contents = structure.get("content_blocks_by_record_kind")
     if not isinstance(contents, dict):
         return None
+    if provider == "codex":
+        # Native records carry exactly one tool event. Classes are fungible
+        # only when EVERY measured result mode supports the same call classes.
+        # Competing families, widths or history stay with their joint owner.
+        native_effects: dict[ContentState, tuple[int, int]] = {}
+        native_widths: set[int] = set()
+        families: set[str] = set()
+        call_classes: set[str] = set()
+        result_classes: list[set[str]] = []
+        for record_kind, forms in contents.items():
+            if not isinstance(forms, dict):
+                return None
+            native_record_effects: set[tuple[int, int]] = set()
+            for modes in forms.values():
+                if not isinstance(modes, dict):
+                    return None
+                for profile in modes.values():
+                    if not isinstance(profile, dict):
+                        return None
+                    operands = profile.get("tool_operands")
+                    if not isinstance(operands, dict) or not operands:
+                        native_record_effects.add((0, 0))
+                        continue
+                    if len(operands) != 1 or record_kind not in {
+                        "function_call",
+                        "function_call_output",
+                        "custom_tool_call",
+                        "custom_tool_call_output",
+                    }:
+                        return None
+                    rows = operands.get(record_kind)
+                    native = profile.get("native_tool_field_forms")
+                    native_forms = native.get(record_kind) if isinstance(native, dict) else None
+                    if not isinstance(rows, list) or not rows or not isinstance(native_forms, list) or not native_forms:
+                        return None
+                    event = "result" if record_kind.endswith("_output") else "call"
+                    families.add(record_kind.removesuffix("_output"))
+                    by_mode: dict[str, set[str]] = {}
+                    for form in native_forms:
+                        syntax = form.get("syntax") if isinstance(form, dict) else None
+                        call_class = syntax.get("call_class") if isinstance(syntax, dict) else None
+                        mode = form.get("result_mode") if isinstance(form, dict) else None
+                        if not isinstance(call_class, str) or not isinstance(mode, str):
+                            return None
+                        by_mode.setdefault(mode, set()).add(call_class)
+                    if event == "call":
+                        call_classes.update(*by_mode.values())
+                    else:
+                        result_classes.extend(by_mode.values())
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            return None
+                        measured_event, _, presence, relation, prior_mode, prior_count = _tool_operand_coordinates(
+                            row, record_kind
+                        )
+                        if (
+                            measured_event != event
+                            or presence != "string"
+                            or relation != ("new" if event == "call" else "call")
+                            or prior_mode != ""
+                            or prior_count != 0
+                        ):
+                            return None
+                        width = row.get("identity_width")
+                        support = observed_length_support(width) if isinstance(width, dict) else {}
+                        if len(support) != 1 or min(support) <= 0:
+                            return None
+                        native_widths.update(support)
+                    native_record_effects.add((0, 1) if event == "call" else (1, -1))
+            if len(native_record_effects) != 1:
+                return None
+            native_effects[(record_kind, "record")] = next(iter(native_record_effects))
+        if len(families) != 1 or len(native_widths) != 1 or not result_classes:
+            return None
+        classes = call_classes or result_classes[0]
+        if any(group != classes for group in result_classes):
+            return None
+        return native_effects, next(iter(native_widths)), tuple(sorted(classes))
     effects: dict[ContentState, tuple[int, int]] = {}
     widths: set[int] = set()
     for record_kind, forms in contents.items():
@@ -1875,4 +2072,4 @@ def _call_resource(
         effects[(record_kind, "record")] = next(iter(record_effects))
     if len(widths) != 1:
         return None
-    return effects, next(iter(widths))
+    return effects, next(iter(widths)), None
