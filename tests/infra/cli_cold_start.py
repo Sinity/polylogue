@@ -79,6 +79,7 @@ def assert_served_empty_status(payload: Mapping[str, Any], *, root: Path, daemon
     assert snapshot["frame_error"] is None and snapshot["refresh_error"] is None
     assert Path(payload["archive_root"]).resolve() == root.resolve()
     storage = payload.get("archive_storage") or payload.get("storage")
+    assert isinstance(storage, Mapping)
     assert storage["identity"]["process_id"] == daemon_pid
     assert payload["raw_materialization_readiness"]["raw_artifact_count"] == 0
     # Current EMPTY materialization is honestly unmeasured, never healthy.
