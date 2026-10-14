@@ -104,7 +104,7 @@ def _instrument_sqlite_connections(observer: Callable[[DurabilityFaultPoint], No
             args = (*args[:5], classes[base], *args[6:])
         else:
             kwargs["factory"] = classes[base]
-        connection = original_connect(*args, **kwargs)
+        connection: sqlite3.Connection = original_connect(*args, **kwargs)
         connections.append(connection)
         return connection
 

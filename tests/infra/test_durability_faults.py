@@ -162,7 +162,7 @@ def test_fault_connections_remain_native_backup_endpoints(custom_factory: bool, 
             with registry.installed():
                 factory = CountingConnection if custom_factory else sqlite3.Connection
                 if positional_factory:
-                    connection = sqlite3.connect(":memory:", 5.0, 0, "", True, factory)
+                    connection = sqlite3.connect(":memory:", 5.0, 0, "DEFERRED", True, factory)
                 else:
                     connection = sqlite3.connect(":memory:", factory=factory)
                 assert isinstance(connection, sqlite3.Connection)
