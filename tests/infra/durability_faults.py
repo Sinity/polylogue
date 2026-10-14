@@ -84,37 +84,43 @@ class RecoveryRun:
     events: tuple[FaultEvent, ...]
 
 
-class _ConnectionProxy:
-    """Delegate a SQLite connection while making ``commit`` injectable."""
+@contextmanager
+def _instrument_sqlite_connections(observer: Callable[[DurabilityFaultPoint], None]) -> Iterator[None]:
+    """Release interrupted handles before recovery; retain caller ownership on success."""
+    original_connect = sqlite3.connect
+    connections: list[sqlite3.Connection] = []
+    classes: dict[type[sqlite3.Connection], type[sqlite3.Connection]] = {}
+    active = True
 
-    def __init__(self, connection: sqlite3.Connection, registry: DurabilityFaultRegistry) -> None:
-        self._connection = connection
-        self._registry = registry
+    def observe(point: DurabilityFaultPoint) -> None:
+        if active:
+            observer(point)
 
-    def commit(self) -> Any:
-        self._registry._hit(DurabilityFaultPoint.COMMIT)
-        return self._connection.commit()
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        base = args[5] if len(args) > 5 else kwargs.get("factory", sqlite3.Connection)
+        if base not in classes:
+            classes[base] = _instrumented_connection_class(base, observe)
+        if len(args) > 5:
+            args = (*args[:5], classes[base], *args[6:])
+        else:
+            kwargs["factory"] = classes[base]
+        connection = original_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
 
-    def __enter__(self) -> _ConnectionProxy:
-        self._connection.__enter__()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> Any:
-        # ``with sqlite3.connect(...)`` commits inside the native connection's
-        # ``__exit__`` rather than calling its public ``commit`` method.
-        # Count that boundary too, or context-managed writes would create a
-        # silent hole in the harness.
-        if exc_type is None:
-            self._registry._hit(DurabilityFaultPoint.COMMIT)
-        return self._connection.__exit__(exc_type, exc, traceback)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._connection, name)
+    with patch.object(sqlite3, "connect", connect):
+        try:
+            yield
+        except BaseException:
+            active = False
+            # A simulated process exit must release externally retained handles
+            # too, before the caller opens a connection for recovery.
+            with ExitStack() as cleanup:
+                for connection in connections:
+                    cleanup.callback(connection.close)
+            raise
+        finally:
+            active = False
 
 
 class DurabilityFaultRegistry:
@@ -180,10 +186,6 @@ class DurabilityFaultRegistry:
     @contextmanager
     def installed(self) -> Iterator[DurabilityFaultRegistry]:
         """Patch the seams for one operation and restore them afterwards."""
-        original_connect = sqlite3.connect
-
-        def connect(*args: Any, **kwargs: Any) -> _ConnectionProxy:
-            return _ConnectionProxy(original_connect(*args, **kwargs), self)
 
         def fsync(fd: int) -> None:
             self._hit(DurabilityFaultPoint.FSYNC)
@@ -201,7 +203,7 @@ class DurabilityFaultRegistry:
             stack.enter_context(patch.object(os, "fsync", fsync))
             stack.enter_context(patch.object(os, "replace", replace))
             stack.enter_context(patch.object(os, "unlink", unlink))
-            stack.enter_context(patch.object(sqlite3, "connect", connect))
+            stack.enter_context(_instrument_sqlite_connections(self._hit))
             yield self
 
     def run(
@@ -261,33 +263,22 @@ def durability_faults() -> Iterator[DurabilityFaultRegistry]:
 _MUTATING_STATEMENT = re.compile(r"^\s*(?:insert|update|delete|replace)\b", re.IGNORECASE)
 
 
-def _count_mutation(budget: list[int], sql: object) -> None:
-    if not _MUTATING_STATEMENT.match(str(sql)):
-        return
-    budget[0] += 1
-    if budget[0] == budget[1]:
-        raise InjectedCrash(DurabilityFaultPoint.STATEMENT, budget[1])
-
-
-def _crashing_connection_class(base: type[sqlite3.Connection], budget: list[int]) -> type[sqlite3.Connection]:
-    """Subclass the requested connection factory so the crash counter is native.
-
-    The connection stays a real instance of the factory production asked for
-    (a measured connection keeps its custody, cursor registry and
-    ``blobopen``); only the default cursor counts mutating statements.
-    ``Connection.execute`` and ``executemany`` create their cursor through
-    ``cursor()``, so every statement route is counted once.
-    """
+def _instrumented_connection_class(
+    base: type[sqlite3.Connection], observer: Callable[[DurabilityFaultPoint], None]
+) -> type[sqlite3.Connection]:
+    """Keep the requested factory's methods and native cursor ownership."""
     from polylogue.storage.io_phase_metrics import _MeasuredConnection, _MeasuredCursor
 
     default_cursor: type[sqlite3.Cursor] = _MeasuredCursor if issubclass(base, _MeasuredConnection) else sqlite3.Cursor
 
     def execute(self: sqlite3.Cursor, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
-        _count_mutation(budget, sql)
+        if _MUTATING_STATEMENT.match(sql):
+            observer(DurabilityFaultPoint.STATEMENT)
         return default_cursor.execute(self, sql, parameters)
 
     def executemany(self: sqlite3.Cursor, sql: str, parameters: Any, /) -> sqlite3.Cursor:
-        _count_mutation(budget, sql)
+        if _MUTATING_STATEMENT.match(sql):
+            observer(DurabilityFaultPoint.STATEMENT)
         return default_cursor.executemany(self, sql, parameters)
 
     crashing_cursor = type("CrashingCursor", (default_cursor,), {"execute": execute, "executemany": executemany})
@@ -296,7 +287,22 @@ def _crashing_connection_class(base: type[sqlite3.Connection], budget: list[int]
         selected: sqlite3.Cursor = base.cursor(self, crashing_cursor if factory is None else factory)
         return selected
 
-    namespace: dict[str, Any] = {"cursor": cursor}
+    def commit(self: sqlite3.Connection) -> None:
+        observer(DurabilityFaultPoint.COMMIT)
+        base.commit(self)
+
+    def exit_connection(
+        self: sqlite3.Connection,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Any:
+        # Native context-managed commits bypass the public commit method.
+        if exc_type is None:
+            observer(DurabilityFaultPoint.COMMIT)
+        return base.__exit__(self, exc_type, exc, traceback)
+
+    namespace: dict[str, Any] = {"cursor": cursor, "commit": commit, "__exit__": exit_connection}
     # The native Connection.execute/executemany create their cursor without
     # calling the Python-level cursor(); route those through it, once. A base
     # that already implements them in Python reaches cursor() itself.
@@ -312,7 +318,7 @@ def _crashing_connection_class(base: type[sqlite3.Connection], budget: list[int]
             return cursor(self).executemany(sql, parameters)
 
         namespace["executemany"] = connection_executemany
-    return type(f"Crashing{base.__name__}", (base,), namespace)
+    return type(f"Instrumented{base.__name__}", (base,), namespace)
 
 
 @contextmanager
@@ -329,17 +335,14 @@ def crash_after_mutating_statements(count: int) -> Iterator[list[int]]:
     if count < 1:
         raise ValueError("crash count must be positive")
     budget = [0, count]
-    real_connect = sqlite3.connect
-    classes: dict[type[sqlite3.Connection], type[sqlite3.Connection]] = {}
 
-    def crashing_connect(*args: Any, **kwargs: Any) -> Any:
-        base = kwargs.get("factory") or sqlite3.Connection
-        if base not in classes:
-            classes[base] = _crashing_connection_class(base, budget)
-        kwargs["factory"] = classes[base]
-        return real_connect(*args, **kwargs)
+    def observe(point: DurabilityFaultPoint) -> None:
+        if point is DurabilityFaultPoint.STATEMENT:
+            budget[0] += 1
+            if budget[0] == budget[1]:
+                raise InjectedCrash(point, budget[1])
 
-    with patch.object(sqlite3, "connect", crashing_connect):
+    with _instrument_sqlite_connections(observe):
         yield budget
 
 
