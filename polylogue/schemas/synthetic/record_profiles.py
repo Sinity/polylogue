@@ -26,7 +26,8 @@ from polylogue.schemas.synthetic.observed_values import (
     observed_length_support,
 )
 from polylogue.schemas.synthetic.relations import ForeignKeyGraph
-from polylogue.schemas.synthetic.text_value import JoinedText, SampledText
+from polylogue.schemas.synthetic.text_value import JoinedText, SampledText, joined_text_value
+from polylogue.schemas.tool_input_syntax import PUBLIC_TOOL_NAMES, validated_syntax_parts
 
 ContentState = tuple[str, str]
 
@@ -490,6 +491,7 @@ class PublicRecordPlan:
         self.header_types: dict[str, frozenset[str]] = {}
         self.graph_values: dict[str, str | None] = {}
         self.string_exclusions: dict[str, frozenset[str]] = {}
+        self.tool_syntax: dict[str, GeneratedString] = {}
         self.tool_content_types: dict[str, frozenset[str]] = {}
         self.tool_pointer_fields: dict[str, bool] = {}
         self.tool_widths: dict[str, int] = {}
@@ -1173,7 +1175,7 @@ class PublicRecordPlan:
             forms = native_forms.get(kind)
             if not isinstance(forms, list) or not forms:
                 raise ValueError("native tool value-field forms are missing; re-infer the package")
-            field_forms: list[tuple[str, ...]] = []
+            field_forms: list[tuple[tuple[str, ...], SchemaRecord]] = []
             field_form_weights: list[int] = []
             for form in forms:
                 fields = form.get("fields") if isinstance(form, dict) else None
@@ -1190,11 +1192,37 @@ class PublicRecordPlan:
                     raise ValueError("native tool value-field result mode is missing; re-infer the package")
                 if form["result_mode"] != mode:
                     continue
-                field_forms.append(tuple(str(field) for field in fields))
+                syntax = form.get("syntax")
+                if not isinstance(syntax, dict):
+                    raise ValueError("native tool syntax evidence is missing; re-infer the package")
+                field_forms.append((tuple(str(field) for field in fields), syntax))
                 field_form_weights.append(_count(form.get("count")))
             if not field_forms:
                 raise ValueError("native tool value-field form contradicts its measured result mode")
-            selected_fields = rng.choices(field_forms, weights=field_form_weights, k=1)[0]
+            selected_fields, selected_syntax = rng.choices(field_forms, weights=field_form_weights, k=1)[0]
+            if selected_syntax:
+                public_name = selected_syntax.get("name")
+                if (
+                    not isinstance(public_name, str)
+                    or public_name not in PUBLIC_TOOL_NAMES
+                    or set(selected_syntax) - {"name", "arguments", "input"}
+                ):
+                    raise ValueError("native tool syntax contains an undeclared public name or field")
+                assert isinstance(public_name, str)
+                self.tool_syntax[path + ".name"] = public_name
+                for syntax_field in ("arguments", "input"):
+                    if syntax_field in selected_syntax:
+                        if syntax_field not in selected_fields:
+                            raise ValueError("tool syntax contradicts its measured field form")
+                        syntax_parts: list[str | SampledText] = []
+                        for syntax_kind, syntax_value in validated_syntax_parts(selected_syntax[syntax_field]):
+                            if syntax_kind == "literal":
+                                assert isinstance(syntax_value, str)
+                                syntax_parts.append(syntax_value)
+                            else:
+                                assert isinstance(syntax_value, int)
+                                syntax_parts.append(SampledText(syntax_value, "x" if syntax_kind == "ascii" else "ñ"))
+                        self.tool_syntax[path + "." + syntax_field] = joined_text_value(*syntax_parts)
             for value_field in NATIVE_CODEX_TOOL_VALUE_FIELDS:
                 target = path + "." + value_field
                 if value_field in selected_fields:

@@ -274,6 +274,15 @@ field therefore cannot disappear because another measured carrier was drawn
 independently. Coverage witnesses explicitly select optional field coordinates
 while retaining the same measured body forms and mutual exclusions.
 
+The same native field form carries known public Codex tool names and anonymous
+argument syntax for patch inputs and static `exec` programs. Fixed patch headers,
+call punctuation and public tool tokens remain grammar; paths, commands and
+other text become ASCII or non-ASCII run widths. Publication validates every
+literal against that fixed vocabulary. Generation streams neutral operands
+through the existing field sampler and checks measured length, newline and
+character support. Unknown tool names remain anonymous. This does not execute
+programs or qualify arbitrary JavaScript or every tool's argument semantics.
+
 Original Claude Code child depths remain exact. Each depth's conditional record
 grammar is a row in the existing `record_structures_by_depth` profile object.
 Inference retains its serialized public rows before retiring the private journal;
