@@ -375,9 +375,9 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch, isolate
     # queued rather than executed here.
     monkeypatch.setattr("devtools.run_tests.run_pytest", fake_run_pytest)
     monkeypatch.setattr("devtools.run_tests.git_head", lambda _root: "abc123")
-    monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda payload: captured.update(history=payload))
     monkeypatch.setattr(
-        "devtools.run_tests.append_verification_evidence", lambda payload: captured.update(evidence=payload)
+        "devtools.run_tests.publish_verification_result",
+        lambda payload, **_kwargs: captured.update(history=payload, evidence=payload),
     )
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
     assert "--json" not in captured["cmd"]
@@ -510,7 +510,7 @@ def test_main_preserves_relative_selection_from_subdirectory(
     monkeypatch.chdir(run_tests.ROOT / "tests" / "unit")
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run", _fake_run)
-    monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda _payload: None)
+    monkeypatch.setattr("devtools.run_tests.publish_verification_result", lambda _payload, **_kwargs: None)
 
     assert run_tests.main(["core/test_identity_law.py::test_session_id_is_origin_native_id"]) == 0
 
@@ -535,7 +535,7 @@ def test_main_preserves_path_valued_options_from_subdirectory(
     monkeypatch.chdir(invocation)
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "_run", _fake_run)
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+    monkeypatch.setattr(run_tests, "publish_verification_result", lambda _payload, **_kwargs: None)
 
     assert (
         run_tests.main(
@@ -580,7 +580,7 @@ def test_main_persists_interrupted_direct_cli_result_to_local_run_artifacts(
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "_run", interrupt)
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(run_tests, "publish_verification_result", lambda payload, **_kwargs: history.update(payload))
 
     assert run_tests.main(["tests/unit/example.py"]) == 130
 
@@ -616,8 +616,9 @@ def test_interrupted_focused_run_publishes_an_interrupted_evidence_receipt(
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "_run", interrupt)
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
-    monkeypatch.setattr(run_tests, "append_verification_evidence", lambda payload: published.append(dict(payload)))
+    monkeypatch.setattr(
+        run_tests, "publish_verification_result", lambda payload, **_kwargs: published.append(dict(payload))
+    )
 
     assert run_tests.main(["tests/unit/example.py"]) == 130
 
@@ -638,7 +639,7 @@ def test_main_records_rewritten_focused_exit_and_why_surfaces_the_failure(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(run_tests, "publish_verification_result", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     original_start = VerifyRun.start_step
 
@@ -771,7 +772,7 @@ def test_main_preserves_keyword_and_marker_values_from_tests_directory(
         "_run",
         capture,
     )
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+    monkeypatch.setattr(run_tests, "publish_verification_result", lambda _payload, **_kwargs: None)
 
     assert run_tests.main(["-k", "unit", "-m", "unit"]) == 0
 
@@ -795,7 +796,7 @@ def test_main_finalizes_runner_exception_after_open_step(
     )
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(run_tests, "publish_verification_result", lambda payload, **_kwargs: history.update(payload))
 
     def explode(_label: str, command: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
         raise RuntimeError("focused runner exploded")
@@ -848,7 +849,7 @@ def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory
     )
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
     monkeypatch.setattr(run_tests, "_run", fake_run)
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+    monkeypatch.setattr(run_tests, "publish_verification_result", lambda _payload, **_kwargs: None)
     invocation_directory = subdirectory if invocation_location == "inside" else external_directory
     monkeypatch.chdir(invocation_directory)
 
@@ -973,7 +974,7 @@ def _focused_run(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(run_tests, "publish_verification_result", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     original_start = VerifyRun.start_step
 

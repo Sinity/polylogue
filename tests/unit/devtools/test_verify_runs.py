@@ -664,3 +664,212 @@ def test_abandoned_normal_checkout_publishes_to_both_shared_lanes(
     verify_runs.reconcile_and_record_verify_runs(runs_root=runs_root, state_root=state_root)
     assert len(list(verify_runs._iter_history_pinned(history))) == 1
     assert len(verify_runs.read_verification_evidence(evidence)) == 1
+
+
+def test_finish_reuses_one_history_scan_with_identical_retention_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+    from collections import Counter
+
+    root = tmp_path / "current"
+    root.mkdir()
+    history = tmp_path / "history.jsonl"
+    evidence = tmp_path / "evidence.jsonl"
+    monkeypatch.setenv(verify_runs.VERIFY_EVIDENCE_PATH_ENV, str(evidence))
+    completed = [_finished_run(root, index=index, exit_code=0) for index in range(10)]
+    failure = _finished_run(root, index=11, exit_code=1)
+    orphan = _finished_run(root, index=12, exit_code=0)
+    current = _finished_run(root, index=13, exit_code=0)
+    rows = [verify_runs._semantic_history_row(payload) for payload in (*completed, failure)]
+    rows.extend({"run_id": f"unrelated-{i}", "status": "success"} for i in range(30))
+    rows.append({"run_id": "malformed-metadata", "status": "success", "diagnosis": {"unrecognized": True}})
+    rows.extend(
+        {
+            "run_id": f"global-skip-{i}",
+            "status": "success",
+            "diagnosis": "corpus_already_verified",
+            "finished_at": f"2026-08-24T00:00:{20 + i:02d}+00:00",
+            "pytest_aggregate": {"covered_by_run": completed[i]["run_id"]},
+        }
+        for i in range(10)
+    )
+    # A later non-skip terminal row must remove the old coverage claim.
+    rows.append({"run_id": "global-skip-9", "status": "failed", "finished_at": "2026-08-24T00:00:30+00:00"})
+    history.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    baseline = tmp_path / "baseline"
+    shutil.copytree(root, baseline)
+    baseline_history = tmp_path / "baseline-history.jsonl"
+    shutil.copyfile(history, baseline_history)
+    append_verify_history(current, path=baseline_history)
+    expected = prune_successful_verify_runs(root=baseline, history_path=baseline_history, now=_TEST_NOW)
+
+    traversals: Counter[Path] = Counter()
+    original_iter = verify_runs._iter_history_pinned
+    original_prune = verify_runs.prune_successful_verify_runs
+    observed: dict[str, object] = {}
+
+    def counted(path: Path):
+        traversals[path] += 1
+        yield from original_iter(path)
+
+    def prune(**kwargs):
+        observed.update(original_prune(**kwargs, now=_TEST_NOW))
+        return observed
+
+    # Assert lock order using actual locks, not a replacement locking path.
+    opened: dict[int, Path] = {}
+    original_open = verify_runs._open_retention_lock
+    original_close = verify_runs._close_retention_lock
+
+    def open_lock(directory: Path, *, nonblocking: bool):
+        if directory == root / verify_runs.VERIFY_CACHE:
+            assert history.parent not in opened.values()
+            assert verify_runs._APPEND_LOCK.acquire(blocking=False)
+            verify_runs._APPEND_LOCK.release()
+        fd = original_open(directory, nonblocking=nonblocking)
+        if fd is not None:
+            opened[fd] = directory
+        return fd
+
+    def close_lock(fd):
+        if fd is not None:
+            opened.pop(fd, None)
+        original_close(fd)
+
+    original_connect = verify_runs.sqlite3.connect
+    checked_indexes = []
+
+    class CheckedConnection(verify_runs.sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if sql.startswith("CREATE TABLE identities"):
+                assert self.execute("PRAGMA journal_mode").fetchone() == ("off",)
+                assert self.execute("PRAGMA synchronous").fetchone() == (0,)
+                checked_indexes.append(True)
+            return super().execute(sql, parameters)
+
+    def connect(*args, **kwargs):
+        return original_connect(*args, **kwargs, factory=CheckedConnection)
+
+    monkeypatch.setattr(verify_runs, "_iter_history_pinned", counted)
+    monkeypatch.setattr(verify_runs, "prune_successful_verify_runs", prune)
+    monkeypatch.setattr(verify_runs, "_open_retention_lock", open_lock)
+    monkeypatch.setattr(verify_runs, "_close_retention_lock", close_lock)
+    monkeypatch.setattr(verify_runs.sqlite3, "connect", connect)
+    verify_runs.publish_verification_result(current, root=root, history_path=history)
+
+    assert traversals[history] == 1
+    assert traversals[evidence] == 1
+    assert len(checked_indexes) == 2
+    assert not opened
+    for key in ("retained_run_ids", "retained_failure_run_ids", "pruned_run_ids", "orphaned_detail_run_ids"):
+        assert observed[key] == expected[key]
+    assert orphan["run_id"] in cast(list[str], observed["orphaned_detail_run_ids"])
+    assert len([row for row in original_iter(history) if row.get("run_id") == current["run_id"]]) == 1
+    assert [row["run_id"] for row in original_iter(evidence)] == [current["run_id"]]
+
+
+@pytest.mark.parametrize("when", ["before_prune", "during_inspection"])
+def test_finish_preserves_details_if_shared_history_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, when: str
+) -> None:
+    import threading
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    history = tmp_path / "history.jsonl"
+    evidence = tmp_path / "evidence.jsonl"
+    monkeypatch.setenv(verify_runs.VERIFY_EVIDENCE_PATH_ENV, str(evidence))
+    completed = [_finished_run(root, index=i, exit_code=0) for i in range(10)]
+    verify_runs._append_jsonl_batch((verify_runs._semantic_history_row(row) for row in completed[:-1]), path=history)
+    original_evidence = verify_runs.append_verification_evidence
+    original_size = verify_runs._tree_size_without_links
+    changed = False
+
+    def advance():
+        append_verify_history(
+            {
+                "run_id": "new-global-pin",
+                "status": "success",
+                "diagnosis": "corpus_already_verified",
+                "pytest_aggregate": {"covered_by_run": completed[0]["run_id"]},
+            },
+            path=history,
+        )
+
+    def evidence_append(entry):
+        original_evidence(entry)
+        if when == "before_prune":
+            advance()
+
+    def size(path, **kwargs):
+        nonlocal changed
+        if when == "during_inspection" and not changed:
+            changed = True
+            # A separate publisher never takes this checkout's local lock.
+            publisher = threading.Thread(target=advance)
+            publisher.start()
+            publisher.join(timeout=5)
+            assert not publisher.is_alive()
+        return original_size(path, **kwargs)
+
+    monkeypatch.setattr(verify_runs, "append_verification_evidence", evidence_append)
+    monkeypatch.setattr(verify_runs, "_tree_size_without_links", size)
+    verify_runs.publish_verification_result(completed[-1], root=root, history_path=history)
+    assert all((root / str(row["artifact_dir"])).is_dir() for row in completed)
+
+
+def test_interrupted_finish_recovers_both_lanes_without_repeating_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    history = tmp_path / "history.jsonl"
+    evidence = tmp_path / "evidence.jsonl"
+    monkeypatch.setenv(verify_runs.VERIFY_HISTORY_PATH_ENV, str(history))
+    monkeypatch.setenv(verify_runs.VERIFY_EVIDENCE_PATH_ENV, str(evidence))
+    current = _finished_run(tmp_path, index=0, exit_code=0)
+    original_append = verify_runs.append_verification_evidence
+
+    def interrupted(entry):
+        assert [row["run_id"] for row in verify_runs._iter_history_pinned(history)] == [current["run_id"]]
+        raise OSError("synthetic interrupted evidence publication")
+
+    monkeypatch.setattr(verify_runs, "append_verification_evidence", interrupted)
+    with pytest.raises(OSError, match="synthetic interrupted"):
+        verify_runs.publish_verification_result(current, root=tmp_path, history_path=history)
+    assert (tmp_path / str(current["artifact_dir"])).is_dir()
+    assert not evidence.exists()
+    monkeypatch.setattr(verify_runs, "append_verification_evidence", original_append)
+    for _ in range(2):
+        verify_runs.reconcile_and_record_verify_runs(runs_root=tmp_path / verify_runs.VERIFY_RUNS_DIR)
+    assert [row["run_id"] for row in verify_runs._iter_history_pinned(history)] == [current["run_id"]]
+    assert [row["run_id"] for row in verify_runs.read_verification_evidence(evidence)] == [current["run_id"]]
+
+
+def test_finish_preserves_new_local_details_missing_from_the_publication_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    history = tmp_path / "history.jsonl"
+    evidence = tmp_path / "evidence.jsonl"
+    monkeypatch.setenv(verify_runs.VERIFY_EVIDENCE_PATH_ENV, str(evidence))
+    old = [_finished_run(tmp_path, index=i, exit_code=0) for i in range(10)]
+    verify_runs._append_jsonl_batch((verify_runs._semantic_history_row(row) for row in old[:-1]), path=history)
+    original_append = verify_runs.append_verification_evidence
+    original_prune = verify_runs.prune_successful_verify_runs
+    new: dict[str, object] = {}
+    retained: dict[str, object] = {}
+
+    def append(entry):
+        original_append(entry)
+        # Another run's local terminal receipt precedes its durable publication.
+        new.update(_finished_run(tmp_path, index=11, exit_code=0))
+
+    def prune(**kwargs):
+        retained.update(original_prune(**kwargs))
+        return retained
+
+    monkeypatch.setattr(verify_runs, "append_verification_evidence", append)
+    monkeypatch.setattr(verify_runs, "prune_successful_verify_runs", prune)
+    verify_runs.publish_verification_result(old[-1], root=tmp_path, history_path=history)
+    assert new["run_id"] in cast(list[str], retained["orphaned_detail_run_ids"])
+    assert (tmp_path / str(new["artifact_dir"])).is_dir()
+    assert len(cast(list[str], retained["pruned_run_ids"])) == 2

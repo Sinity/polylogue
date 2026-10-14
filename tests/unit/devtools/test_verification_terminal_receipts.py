@@ -38,7 +38,6 @@ def receipt_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setattr(module, "git_worktree_content_sha256", lambda _root: "fixture-content")
         monkeypatch.setattr(module, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(module, "inspect_testmon_graph", lambda _root: graph)
-        monkeypatch.setattr(module, "prune_successful_verify_runs", lambda **_kwargs: None)
     monkeypatch.setattr(run_tests, "basetemp_root", lambda _env, **_kwargs: tmp_path / "temporary-tests")
     monkeypatch.setattr(run_tests, "_prepare_nodatacow_parent", lambda _path: None)
     monkeypatch.setattr(verify, "refuse_verify_tier", lambda *_args: None)
@@ -547,21 +546,22 @@ def test_terminal_finish_recovers_interrupted_publication(
 ) -> None:
     """Removing terminal recovery loses a real finish verdict at either append boundary."""
     run = verify_runs.VerifyRun(tier="quick", argv=[], git_head="a" * 40, root=receipt_workspace)
-    writer = "append_verify_history" if cut == "history" else "append_verification_evidence"
+    writer = "_append_jsonl_batch_locked" if cut == "history" else "append_verification_evidence"
 
     def interrupt(*_args: Any, **_kwargs: Any) -> None:
         raise SystemExit(143)
 
-    monkeypatch.setattr(verify, writer, interrupt)
-    with pytest.raises(SystemExit):
-        verify._finish_and_record_verification(
-            run=run,
-            exit_code=exit_code,
-            duration_s=1.0,
-            diagnosis="interrupted" if exit_code == 143 else None,
-            final_git_head="a" * 40,
-            workload_receipt={},
-        )
+    with monkeypatch.context() as cut_patch:
+        cut_patch.setattr(verify_runs, writer, interrupt)
+        with pytest.raises(SystemExit):
+            verify._finish_and_record_verification(
+                run=run,
+                exit_code=exit_code,
+                duration_s=1.0,
+                diagnosis="interrupted" if exit_code == 143 else None,
+                final_git_head="a" * 40,
+                workload_receipt={},
+            )
     payload = _only_receipt(receipt_workspace)
     expected = verify_runs.canonical_verification_receipt(payload)
     arguments = {
@@ -694,7 +694,6 @@ def test_focused_completion_prunes_against_the_history_it_published(
         payload = run.finish(exit_code=0, duration_s=0.1, final_git_head="a" * 40)
         verify_runs.append_verify_history(payload, path=history)
         successful.append(payload)
-    monkeypatch.setattr(run_tests, "prune_successful_verify_runs", verify_runs.prune_successful_verify_runs)
     monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (4, 0.1, {"diagnosis": "pytest_failed"}))
 
     assert run_tests.main(["tests/missing-target.py"]) == 4

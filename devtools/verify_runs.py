@@ -965,73 +965,176 @@ def _append_jsonl(entry: Mapping[str, Any], *, path: Path) -> None:
     _append_jsonl_batch((entry,), path=path)
 
 
+def _history_stamp(path: Path) -> tuple[int, int, int, int]:
+    parent_fd = _open_pinned_dir(path.parent)
+    try:
+        info = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("verification history is not a regular file")
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+    finally:
+        os.close(parent_fd)
+
+
+@dataclass
+class _HistorySnapshot:
+    path: Path
+    connection: sqlite3.Connection
+    stamp: tuple[int, int, int, int] | None = None
+
+    def record(self, row: Mapping[str, Any]) -> None:
+        run_id = row.get("run_id")
+        if not isinstance(run_id, str) or row.get("status") == "running":
+            return
+        aggregate = row.get("pytest_aggregate")
+        covered = aggregate.get("covered_by_run") if isinstance(aggregate, Mapping) else None
+        payload = {
+            "status": row.get("status"),
+            "diagnosis": row.get("diagnosis"),
+            "finished_at": row.get("finished_at"),
+            "pytest_aggregate": {"covered_by_run": covered} if isinstance(aggregate, Mapping) else aggregate,
+        }
+        # Retention has always used the latest terminal row for each run.
+        self.connection.execute(
+            "INSERT OR REPLACE INTO terminal_history VALUES (?,?,?,?)",
+            (
+                run_id,
+                json.dumps(payload),
+                str(row.get("finished_at") or ""),
+                row.get("diagnosis") if isinstance(row.get("diagnosis"), str) else None,
+            ),
+        )
+
+    def __bool__(self) -> bool:
+        return self.connection.execute("SELECT 1 FROM terminal_history LIMIT 1").fetchone() is not None
+
+    def get(self, run_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute("SELECT payload FROM terminal_history WHERE run_id=?", (run_id,)).fetchone()
+        return json.loads(row[0]) if row is not None else None
+
+    def skipped(self, limit: int) -> list[tuple[str, str, str]]:
+        rows = self.connection.execute(
+            "SELECT run_id,payload FROM terminal_history WHERE diagnosis='corpus_already_verified' "
+            "ORDER BY finished_at DESC,run_id DESC LIMIT ?",
+            (limit,),
+        )
+        result = []
+        for run_id, payload in rows:
+            row = json.loads(payload)
+            aggregate = row.get("pytest_aggregate")
+            covered = aggregate.get("covered_by_run") if isinstance(aggregate, Mapping) else None
+            result.append((str(row.get("finished_at") or ""), run_id, covered if isinstance(covered, str) else ""))
+        return result
+
+    def current(self, path: Path) -> bool:
+        try:
+            return self.path == path and self.stamp is not None and self.stamp == _history_stamp(path)
+        except (OSError, ValueError):
+            return False
+
+
 def _append_jsonl_batch(entries: Iterable[Mapping[str, Any]], *, path: Path) -> None:
-    # flock is process-scoped on some Unix implementations and is therefore
-    # insufficient to serialize threads in one verifier process. Keep both
-    # guards around the identity scan and every append in this batch.
-    started = time.perf_counter_ns()
-    cpu = time.process_time_ns()
-    with _APPEND_LOCK:
-        with wrapper_phase("history.thread_lock_wait", started_ns=started, started_cpu_ns=cpu):
-            pass
-        _append_jsonl_batch_locked(entries, path=path)
+    with _published_jsonl_batch(entries, path=path):
+        pass
 
 
-def _append_jsonl_batch_locked(entries: Iterable[Mapping[str, Any]], *, path: Path) -> None:
+@contextlib.contextmanager
+def _published_jsonl_batch(
+    entries: Iterable[Mapping[str, Any]], *, path: Path, retain_history: bool = False
+) -> Iterator[_HistorySnapshot | None]:
     path = _validate_history_write_path(_absolute_path(path))
     _mkdir_pinned(path.parent)
+    with (
+        tempfile.TemporaryDirectory(prefix="polylogue-history-identities-") as directory,
+        contextlib.closing(sqlite3.connect(Path(directory) / "identities.sqlite3")) as published,
+    ):
+        # This derived index is discarded even after success. Only the actual
+        # append lanes below require file and directory durability.
+        published.execute("PRAGMA journal_mode=OFF")
+        published.execute("PRAGMA synchronous=OFF")
+        published.execute("CREATE TABLE identities (identity TEXT PRIMARY KEY) WITHOUT ROWID")
+        snapshot = _HistorySnapshot(path, published) if retain_history else None
+        if snapshot is not None:
+            published.execute(
+                "CREATE TABLE terminal_history (run_id TEXT PRIMARY KEY,payload TEXT,finished_at TEXT,diagnosis TEXT) "
+                "WITHOUT ROWID"
+            )
+        started = time.perf_counter_ns()
+        cpu = time.process_time_ns()
+        with _APPEND_LOCK:
+            with wrapper_phase("history.thread_lock_wait", started_ns=started, started_cpu_ns=cpu):
+                pass
+            _append_jsonl_batch_locked(entries, path=path, published=published, snapshot=snapshot)
+        # Both append locks have been released before any caller can acquire
+        # the local retention lock. The connection remains private and alive.
+        yield snapshot
+
+
+def _append_jsonl_batch_locked(
+    entries: Iterable[Mapping[str, Any]],
+    *,
+    path: Path,
+    published: sqlite3.Connection,
+    snapshot: _HistorySnapshot | None,
+) -> None:
     with wrapper_phase("history.process_lock_wait"):
         lock_fd = _open_retention_lock(path.parent, nonblocking=False)
     if lock_fd is None:
         raise RuntimeError("verification retention lock is busy")
     parent_fd = _open_pinned_dir(path.parent)
     try:
-        # One streamed scan per batch. A temporary disk index keeps recovery
-        # memory independent of both lane length and the streamed entry count.
-        with (
-            tempfile.TemporaryDirectory(prefix="polylogue-history-identities-") as directory,
-            contextlib.closing(sqlite3.connect(Path(directory) / "identities.sqlite3")) as published,
-        ):
-            published.execute("CREATE TABLE identities (identity TEXT PRIMARY KEY) WITHOUT ROWID")
-            with wrapper_phase("history.identity_scan"):
-                published.executemany(
-                    "INSERT OR IGNORE INTO identities VALUES (?)",
-                    (
-                        (json.dumps((row["run_id"], row.get("kind")), separators=(",", ":")),)
-                        for row in _iter_history_pinned(path)
-                        if isinstance(row.get("run_id"), str)
-                        and (row.get("kind") is None or isinstance(row.get("kind"), str))
-                    ),
-                )
-            for entry in entries:
-                run_id = entry.get("run_id")
-                identity = json.dumps((run_id, entry.get("kind")), separators=(",", ":"))
-                if (
-                    isinstance(run_id, str)
-                    and published.execute("SELECT 1 FROM identities WHERE identity=?", (identity,)).fetchone()
-                    is not None
-                ):
-                    continue
-                fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW, 0o600, dir_fd=parent_fd)
-                try:
-                    with os.fdopen(fd, "a", encoding="utf-8") as handle:
-                        with wrapper_phase("history.append_flush"):
-                            handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
-                            handle.flush()
-                        with wrapper_phase("history.file_fsync"):
-                            os.fsync(handle.fileno())
-                    # Persist every row and directory entry before advancing the
-                    # batch: interruption leaves a durable prefix for recovery.
-                    with wrapper_phase("history.directory_fsync"):
-                        os.fsync(parent_fd)
-                finally:
-                    with contextlib.suppress(OSError):
-                        os.close(fd)
-                if isinstance(run_id, str):
-                    published.execute("INSERT OR IGNORE INTO identities VALUES (?)", (identity,))
+        with wrapper_phase("history.identity_scan"):
+            for row in _iter_history_pinned(path):
+                if snapshot is not None:
+                    snapshot.record(row)
+                if isinstance(row.get("run_id"), str) and (row.get("kind") is None or isinstance(row.get("kind"), str)):
+                    published.execute(
+                        "INSERT OR IGNORE INTO identities VALUES (?)",
+                        (json.dumps((row["run_id"], row.get("kind")), separators=(",", ":")),),
+                    )
+        for entry in entries:
+            run_id = entry.get("run_id")
+            identity = json.dumps((run_id, entry.get("kind")), separators=(",", ":"))
+            if (
+                isinstance(run_id, str)
+                and published.execute("SELECT 1 FROM identities WHERE identity=?", (identity,)).fetchone() is not None
+            ):
+                continue
+            fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+            try:
+                with os.fdopen(fd, "a", encoding="utf-8") as handle:
+                    with wrapper_phase("history.append_flush"):
+                        handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
+                        handle.flush()
+                    with wrapper_phase("history.file_fsync"):
+                        os.fsync(handle.fileno())
+                with wrapper_phase("history.directory_fsync"):
+                    os.fsync(parent_fd)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            if snapshot is not None:
+                snapshot.record(entry)
+            if isinstance(run_id, str):
+                published.execute("INSERT OR IGNORE INTO identities VALUES (?)", (identity,))
+        if snapshot is not None:
+            snapshot.stamp = _history_stamp(path)
     finally:
         os.close(parent_fd)
         _close_retention_lock(lock_fd)
+
+
+def publish_verification_result(entry: Mapping[str, Any], *, root: Path, history_path: Path) -> None:
+    """Publish durable lanes, then prune using the same transient history view."""
+    with contextlib.ExitStack() as stack:
+        with wrapper_phase("publication.semantic_history"):
+            snapshot = stack.enter_context(
+                _published_jsonl_batch((_semantic_history_row(entry),), path=history_path, retain_history=True)
+            )
+        with wrapper_phase("publication.durable_evidence"):
+            append_verification_evidence(entry)
+        with wrapper_phase("publication.retention"):
+            prune_successful_verify_runs(root=root, history_path=history_path, _history_snapshot=snapshot)
 
 
 def _terminal_status(entry: Mapping[str, Any]) -> str:
@@ -1274,6 +1377,7 @@ def prune_successful_verify_runs(
     max_failed_age_s: float = FAILED_VERIFY_DETAIL_MAX_AGE_S,
     max_failed_bytes: int = FAILED_VERIFY_DETAIL_MAX_BYTES,
     now: float | None = None,
+    _history_snapshot: _HistorySnapshot | None = None,
 ) -> dict[str, object]:
     """Bound terminal verification detail after history is durably appended.
 
@@ -1324,12 +1428,17 @@ def prune_successful_verify_runs(
     try:
         # Only the fields pruning reads are kept per run; the latest row for a
         # run still wins.
-        durable: dict[str, dict[str, Any]] = {}
+        durable: dict[str, dict[str, Any]] | _HistorySnapshot = (
+            _history_snapshot if _history_snapshot is not None else {}
+        )
+        if _history_snapshot is not None and not _history_snapshot.current(resolved_history):
+            return {"pruned_run_ids": [], "history_durable": False, "history_snapshot_stale": True}
         try:
-            for row in _iter_history_pinned(resolved_history):
+            for row in () if _history_snapshot is not None else _iter_history_pinned(resolved_history):
                 run_id = row.get("run_id")
                 if isinstance(run_id, str) and row.get("status") != "running":
                     aggregate = row.get("pytest_aggregate")
+                    assert isinstance(durable, dict)
                     durable[run_id] = {
                         "status": row.get("status"),
                         "diagnosis": row.get("diagnosis"),
@@ -1412,7 +1521,9 @@ def prune_successful_verify_runs(
         # it, so pins are bounded the way retained successes are rather than
         # accumulating with the append-only history.
         skipped: list[tuple[str, str, str]] = []
-        for run_id, row in durable.items():
+        if isinstance(durable, _HistorySnapshot):
+            skipped = durable.skipped(max_successful)
+        for run_id, row in durable.items() if isinstance(durable, dict) else ():
             if row.get("diagnosis") != "corpus_already_verified":
                 continue
             aggregate = row.get("pytest_aggregate")
@@ -1420,6 +1531,12 @@ def prune_successful_verify_runs(
             skipped.append((str(row.get("finished_at") or ""), run_id, covered if isinstance(covered, str) else ""))
         skipped.sort(reverse=True)
         skipped_ids = {run_id for _finished, run_id, _covered in skipped}
+        if isinstance(durable, _HistorySnapshot):
+            skipped_ids.update(
+                candidate["run_id"]
+                for candidate in candidates
+                if (durable.get(candidate["run_id"]) or {}).get("diagnosis") == "corpus_already_verified"
+            )
         pinned_ids = {covered for _finished, _run_id, covered in skipped[:max_successful] if covered}
         successes = sorted(
             (
@@ -1468,6 +1585,10 @@ def prune_successful_verify_runs(
             | keep_failure_names
         )
         pruned: list[str] = []
+        # Append-only history may advance while we inspect local details.
+        # Refuse an observed change rather than deleting against stale pins.
+        if _history_snapshot is not None and not _history_snapshot.current(resolved_history):
+            return {"pruned_run_ids": [], "history_durable": False, "history_snapshot_stale": True}
         for candidate in candidates:
             if candidate["name"] in keep_names:
                 continue

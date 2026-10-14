@@ -210,7 +210,13 @@ receipt also restores missing evidence after successful detail pruning. Both
 append lanes serialize run identity checks with publication, so concurrent
 finish and recovery produce one row per run in each lane. Recovery scans identities once per
 lane for a batch using a temporary disk-backed identity index, keeping memory
-independent of history length. Every appended row becomes durable before advancing.
+independent of history length. Only this disposable derived index has journaling
+and synchronous writes disabled; every actual appended row and its directory
+become durable before advancing. Ordinary finish retains the same temporary
+index for local detail retention, avoiding a second history scan. Append locks
+are released before taking the local retention lock. A changed history snapshot
+or a new local run without a matching durable row preserves affected details;
+standalone retention still reads its own history snapshot.
 
 
 `devtools cache gc` returns one requested artifact page (`--page-size`, default
