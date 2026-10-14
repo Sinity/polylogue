@@ -10,7 +10,7 @@ from time import perf_counter
 import pytest
 
 from devtools.measurement_receipts import emit_receipt
-from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.compute import BoundedComputeAdapter, compute_adapter
 from polylogue.core.enums import ValidationMode
 from polylogue.core.sql_settlement import retain_native_sql_lifetimes
 from polylogue.pipeline.ids import session_revision_projection
@@ -26,7 +26,9 @@ _PAYLOAD_BYTES = 80_000
 async def _time_parse(
     root: Path, raw_ids: list[str], *, sequential: bool
 ) -> tuple[float, dict[str, tuple[str, ...]], int]:
-    async with prepared_live_convergence_owner(root) as owner:
+    # Ordinary law fixtures default to one worker. Borrow the actual shared
+    # daemon capacity here, because the measured window is the intention.
+    async with prepared_live_convergence_owner(root, compute_adapter=compute_adapter()) as owner:
         adapter = owner._compute_adapter
         slots = adapter.snapshot().by_class("incremental-background").ceiling_slots
 
