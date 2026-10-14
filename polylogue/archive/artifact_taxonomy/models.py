@@ -104,6 +104,10 @@ class ArtifactKind(StrEnum):
     UNKNOWN = "unknown"
 
 
+# UNKNOWN records an absence of a classified shape, not proof of a sidecar.
+CLASSIFIED_ARTIFACT_KINDS = frozenset(kind.value for kind in ArtifactKind if kind is not ArtifactKind.UNKNOWN)
+
+
 @dataclass(frozen=True)
 class ArtifactClassification:
     """Taxonomy classification whose caller declares complete or sampled evidence."""

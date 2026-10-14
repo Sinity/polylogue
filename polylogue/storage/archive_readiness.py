@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from polylogue.archive.artifact_taxonomy import CLASSIFIED_ARTIFACT_KINDS
 from polylogue.archive.raw_materialization import source_path_native_id_candidates
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
@@ -401,6 +402,7 @@ def _pinned_parser_census_projection(
                EXISTS(
                    SELECT 1 FROM {source_schema}.raw_artifacts a
                    WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0
+                     AND a.artifact_kind IN ({",".join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))})
                      AND a.schema_eligible = 0 AND a.decode_error IS NULL
                      AND a.malformed_jsonl_lines = 0
                      AND (a.artifact_kind, a.support_status) NOT IN ({terminal_placeholders})
@@ -1369,6 +1371,7 @@ def current_typed_non_session_raw(
               AND EXISTS (
                   SELECT 1 FROM {source_schema}.raw_artifacts AS a
                   WHERE a.raw_id=p.raw_id AND a.parse_as_session=0
+                    AND a.artifact_kind IN ({",".join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))})
                     AND a.schema_eligible=0 AND a.decode_error IS NULL
                     AND a.malformed_jsonl_lines=0
                     AND (a.artifact_kind, a.support_status) NOT IN ({terminal_placeholders})

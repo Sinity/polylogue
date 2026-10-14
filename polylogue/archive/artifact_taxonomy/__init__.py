@@ -7,7 +7,7 @@ subagent streams.
 
 from __future__ import annotations
 
-from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
+from polylogue.archive.artifact_taxonomy.models import CLASSIFIED_ARTIFACT_KINDS, ArtifactClassification, ArtifactKind
 from polylogue.archive.artifact_taxonomy.runtime import (
     ArtifactStreamClassification,
     classify_artifact,
@@ -20,6 +20,7 @@ from polylogue.archive.artifact_taxonomy.runtime import (
 )
 
 __all__ = [
+    "CLASSIFIED_ARTIFACT_KINDS",
     "ArtifactClassification",
     "ArtifactKind",
     "ArtifactStreamClassification",
