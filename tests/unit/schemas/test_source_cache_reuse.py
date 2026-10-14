@@ -225,7 +225,7 @@ def run_chatgpt(root: Path, cache: Path) -> source.SourceInferenceResult:
     return source.infer_sources((source.SchemaSourceInput("chatgpt", root),), cache_path=cache, max_workers=1)
 
 
-@pytest.mark.parametrize(("provider", "revision"), (("chatgpt", 5), ("codex", 6), ("claude-code", 7), ("gemini", 5)))
+@pytest.mark.parametrize(("provider", "revision"), (("chatgpt", 5), ("codex", 6), ("claude-code", 8), ("gemini", 5)))
 def test_structure_recipe_changes_only_for_the_affected_provider(provider: str, revision: int) -> None:
     recipe = SourceEvidenceRecipe.for_provider(provider)
     assert recipe.structure_revision == revision
@@ -257,7 +257,28 @@ def test_existing_chatgpt_five_cache_is_reused_without_relabeling(
     assert current.evidence_by_element == previous.evidence_by_element
 
 
-@pytest.mark.parametrize(("provider", "previous_revision"), (("codex", 5), ("claude-code", 6)))
+def test_existing_codex_six_cache_is_reused_without_relabeling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "inputs"
+    root.mkdir()
+    write_codex(root, "session", "neutral-session", "2025-01-01T00:00:00Z")
+    cache_path = tmp_path / "cache.sqlite"
+    inputs = (source.SchemaSourceInput("codex", root),)
+    with monkeypatch.context() as previous_code:
+        previous_code.setattr(
+            SourceEvidenceRecipe, "for_provider", lambda _provider: SourceEvidenceRecipe(structure_revision=6)
+        )
+        previous = source.infer_sources(inputs, cache_path=cache_path, max_workers=1)
+    previous_recipe = json.loads(json.dumps(previous.recipe))
+    current = source.infer_sources(inputs, cache_path=cache_path, max_workers=1)
+    assert previous.included_candidate_count == current.included_candidate_count == 1
+    assert current.cache_phase_hits == {"structure": 1, "statistics": 1}
+    assert current.cache_phase_misses == {}
+    assert previous.recipe == previous_recipe
+    assert current.recipe == previous_recipe
+    assert current.evidence_by_element == previous.evidence_by_element
+
+
+@pytest.mark.parametrize(("provider", "previous_revision"), (("codex", 5), ("claude-code", 7)))
 def test_changed_tool_provider_invalidates_its_prior_structure_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, previous_revision: int
 ) -> None:
@@ -299,7 +320,7 @@ def test_mixed_provider_batch_keeps_the_highest_applicable_structure_recipe(tmp_
         max_workers=1,
     )
     assert result.included_candidate_count == 2
-    assert result.recipe["structure"] == SourceEvidenceRecipe(structure_revision=7).contract("structure")
+    assert result.recipe["structure"] == SourceEvidenceRecipe.for_provider("claude-code").contract("structure")
     empty = source.infer_sources((), cache_path=tmp_path / "empty.sqlite", max_workers=1)
     assert empty.recipe["structure"] == SourceEvidenceRecipe(structure_revision=5).contract("structure")
 

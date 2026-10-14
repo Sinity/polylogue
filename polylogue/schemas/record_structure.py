@@ -7,6 +7,7 @@ record kind. Observed private discriminator strings are never a vocabulary.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from functools import cache
 from pathlib import Path
@@ -21,6 +22,31 @@ IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,47}$")
 PUBLIC_CONTENT_BODY_FIELDS = ("text", "thinking", "content", "input")
 NATIVE_CODEX_TOOL_VALUE_FIELDS = ("name", "execution", "arguments", "input", "action", "output", "tools", "result")
 PUBLIC_CLAUDE_TOOL_NAMES = frozenset({"Read", "Edit", "Write", "TodoWrite", "Bash", "Agent"})
+PUBLIC_CLAUDE_TODO_TOKENS = {
+    "status": frozenset({"pending", "in_progress", "completed"}),
+    "priority": frozenset({"low", "medium", "high"}),
+}
+
+
+def claude_todo_token_counts(value: object, fields: tuple[str, ...]) -> dict[str, dict[str, int]]:
+    """Count fixed TodoWrite protocol tokens; unknown string values stay anonymous."""
+    counts: dict[str, Counter[str]] = {}
+    if not isinstance(value, Mapping):
+        return {}
+    for field in fields:
+        items = value.get(field)
+        if not isinstance(items, Sequence) or isinstance(items, str | bytes | bytearray):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            for slot, vocabulary in PUBLIC_CLAUDE_TODO_TOKENS.items():
+                token = item.get(slot)
+                if isinstance(token, str):
+                    counts.setdefault(field + "[*]." + slot, Counter())[token if token in vocabulary else ""] += 1
+    return {path: dict(sorted(weights.items())) for path, weights in sorted(counts.items())}
+
+
 PUBLIC_CLAUDE_TOOL_INPUT_FIELDS = (
     "file_path",
     "old_string",
