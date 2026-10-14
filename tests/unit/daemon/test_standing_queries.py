@@ -11,8 +11,8 @@ from polylogue.archive.query.watch_definition import compile_watch_definition
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_standing_query_stage
-from polylogue.daemon.convergence_standing_queries import open_standing_query_evaluator
 from polylogue.operations.operation_context import open_operation_read
+from polylogue.operations.query_evaluation import open_query_evaluator
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -490,9 +490,7 @@ def test_changed_sessions_outside_every_watch_scope_are_not_candidates(tmp_path:
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     _put_watch(root, _ORIGIN_LEAF)
     index_db = root / "index.db"
-    stage = make_standing_query_stage(
-        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
-    )
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: open_query_evaluator(index_db))
 
     retained = seeded["codex"][0]
     dropped = seeded["claude_code"][0]
@@ -514,9 +512,7 @@ def test_a_changed_in_scope_session_still_reports_its_membership_delta(tmp_path:
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     query_hash = _put_watch(root, _ORIGIN_LEAF)
     index_db = root / "index.db"
-    stage = make_standing_query_stage(
-        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
-    )
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: open_query_evaluator(index_db))
 
     _tick(stage, (seeded["codex"][0],))  # baseline: one codex member
     state = _durable_watch_state(root)
@@ -550,9 +546,7 @@ def test_an_unscopable_predicate_retains_the_global_baseline(tmp_path: Path) -> 
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     query_hash = _put_watch(root, _UNSCOPABLE_LEAF)
     index_db = root / "index.db"
-    stage = make_standing_query_stage(
-        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
-    )
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: open_query_evaluator(index_db))
 
     with sqlite3.connect(root / "user.db") as conn:
         query = get_query(conn, query_hash)
@@ -573,9 +567,7 @@ def test_one_unscopable_watch_beside_a_scoped_one_retains_the_global_baseline(tm
     _put_watch(root, _ORIGIN_LEAF, name="scoped")
     _put_watch(root, _UNSCOPABLE_LEAF, name="unscoped")
     index_db = root / "index.db"
-    stage = make_standing_query_stage(
-        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
-    )
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: open_query_evaluator(index_db))
 
     changed = (seeded["codex"][0], seeded["claude_code"][0])
     assert _tick(stage, changed) == set(changed)
@@ -595,9 +587,7 @@ def test_a_watch_without_a_durable_baseline_retains_the_global_baseline(tmp_path
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     index_db = root / "index.db"
     _put_watch(root, _ORIGIN_LEAF)
-    stage = make_standing_query_stage(
-        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
-    )
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: open_query_evaluator(index_db))
 
     assert stage.check_sessions is not None
     out_of_scope = (seeded["claude_code"][0],)
@@ -618,9 +608,7 @@ def test_a_definition_version_change_recomputes_the_scope(tmp_path: Path) -> Non
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     index_db = root / "index.db"
     _put_watch(root, _ORIGIN_LEAF)
-    stage = make_standing_query_stage(
-        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
-    )
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: open_query_evaluator(index_db))
 
     codex, claude = seeded["codex"][0], seeded["claude_code"][0]
     _tick(stage, (codex, claude))
@@ -649,9 +637,7 @@ def test_an_accepted_expected_count_finding_retains_the_global_baseline(tmp_path
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     index_db = root / "index.db"
     query_hash = _put_watch(root, _ORIGIN_LEAF)
-    stage = make_standing_query_stage(
-        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
-    )
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: open_query_evaluator(index_db))
     _tick(stage, (seeded["codex"][0],))
     assert stage.check_sessions is not None
     assert stage.check_sessions((seeded["claude_code"][0],)) == set()

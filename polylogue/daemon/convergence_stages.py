@@ -17,10 +17,11 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
-from polylogue.daemon.convergence_standing_queries import make_standing_query_stage, open_standing_query_evaluator
+from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import INFO, WARNING, emit, span
 from polylogue.operations.claude_workflow_convergence import make_claude_workflow_stage
 from polylogue.operations.lineage_prefix_recompose import make_lineage_prefix_recompose_stage
+from polylogue.operations.query_evaluation import open_query_evaluator
 from polylogue.operations.raw_authority_verdict_cache import (
     RawAuthorityVerdictCacheWork,
     find_raw_authority_verdict_cache_work,
@@ -433,7 +434,6 @@ def make_default_convergence_stages(
     from polylogue.paths import archive_root
     from polylogue.sinex.models import PublicationMode
     from polylogue.sinex.transport import resolve_configured_transport
-    from polylogue.storage.archive_identity import archive_root_for_index_path
 
     mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
     stages: list[ConvergenceStage] = []
@@ -468,9 +468,7 @@ def make_default_convergence_stages(
             # Session-profile publication is no longer a generic stage.  The
             # daemon's typed session owner runs it through the derivation
             # kernel after ingest and from its no-hint periodic sweep.
-            make_standing_query_stage(
-                db_path, evaluator_factory=lambda: open_standing_query_evaluator(archive_root_for_index_path(db_path))
-            ),
+            make_standing_query_stage(db_path, evaluator_factory=lambda: open_query_evaluator(db_path)),
         )
     )
     return tuple(stages)

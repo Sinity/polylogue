@@ -303,6 +303,7 @@ def test_reference_query_keeps_the_admitted_frame_after_a_commit(tmp_path: Path,
 
     root = tmp_path / "archive"
     _seed_archive(root)
+    query: QueryObject | None = None
     if changed_role == "index":
         with sqlite3.connect(root / "user.db") as user:
             query = _origin_query(user, origin="codex-session")
@@ -320,6 +321,7 @@ def test_reference_query_keeps_the_admitted_frame_after_a_commit(tmp_path: Path,
                         ],
                     ),
                 )
+            assert query is not None
             result = _session_reference_payload(
                 {"expression": f"from query:{query.query_hash}"}, archive=pinned.archive
             )

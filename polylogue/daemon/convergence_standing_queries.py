@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, closing, contextmanager
+from contextlib import AbstractContextManager, closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +31,7 @@ from polylogue.core.query_identity import query_ref, result_set_ref
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import INFO, WARNING, emit
+from polylogue.operations.query_evaluation import open_query_evaluator, query_user_path
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     FindingAssertion,
     list_assertion_claims,
@@ -204,15 +205,6 @@ def _clock_due_promoted_findings(
     return due
 
 
-@contextmanager
-def open_standing_query_evaluator(archive_root: Path) -> Iterator[CanonicalPlanEvaluator]:
-    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
-    from polylogue.operations.operation_context import open_operation_read
-
-    with open_operation_read(archive_root) as pinned:
-        yield ArchiveCanonicalPlanEvaluator(pinned.archive)
-
-
 def make_standing_query_stage(
     db_path: Path,
     *,
@@ -229,7 +221,7 @@ def make_standing_query_stage(
         """Whole-archive trigger: a declared clock boundary, not an ingest event."""
         if evaluator_factory is None:
             return False
-        user_db = _standing_user_db_path(db_path)
+        user_db = query_user_path(db_path)
         if not user_db.exists():
             return False
         with closing(open_readonly_connection(user_db)) as conn:
@@ -243,7 +235,7 @@ def make_standing_query_stage(
         """Re-evaluate exactly the watches whose clock boundary has passed."""
         if evaluator_factory is None:
             return True
-        user_db = _standing_user_db_path(db_path)
+        user_db = query_user_path(db_path)
         if not user_db.exists():
             return True
         with evaluator_factory() as evaluator:
@@ -308,7 +300,7 @@ def make_standing_query_stage(
     def check_sessions(session_ids: Sequence[str]) -> set[str]:
         if evaluator_factory is None or not session_ids:
             return set()
-        user_db = _standing_user_db_path(db_path)
+        user_db = query_user_path(db_path)
         if not user_db.exists():
             return set()
         with evaluator_factory() as evaluator:
@@ -341,7 +333,7 @@ def make_standing_query_stage(
     def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
         if evaluator_factory is None:
             return True
-        user_db = _standing_user_db_path(db_path)
+        user_db = query_user_path(db_path)
         if not user_db.exists():
             return True
         with evaluator_factory() as evaluator:
@@ -431,13 +423,13 @@ def establish_watch_baselines(
     ``archive_root`` names the archive whose writer lease the caller holds.
     Returns how many baselines were measured.
     """
-    user_db = _standing_user_db_path(db_path)
+    user_db = query_user_path(db_path)
     if not db_path.exists() or not user_db.exists():
         return 0
     if evaluator_factory is None:
 
         def default_evaluator_factory() -> AbstractContextManager[CanonicalPlanEvaluator]:
-            return open_standing_query_evaluator(archive_root)
+            return open_query_evaluator(db_path)
 
         evaluator_factory = default_evaluator_factory
 
@@ -466,12 +458,6 @@ def establish_watch_baselines(
         finally:
             conn.close()
         return measured
-
-
-def _standing_user_db_path(db_path: Path) -> Path:
-    from polylogue.storage.archive_identity import archive_root_for_index_path
-
-    return archive_root_for_index_path(db_path) / "user.db"
 
 
 def _narrowed_origin_scope(
