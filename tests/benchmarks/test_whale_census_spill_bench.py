@@ -13,14 +13,19 @@ import json
 import resource
 import sqlite3
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 
 import pytest
 
 from devtools.measurement_receipts import emit_receipt
+from polylogue.core.compute import compute_adapter
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
+from polylogue.core.write_lease import coordinator_write_lease_active
 from polylogue.sources import revision_backfill
+from polylogue.sources.prepared_jsonl import PreparedJsonl
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.derived import raw as raw_module
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from tests.infra.retained_replay import replay_retained_components
@@ -55,6 +60,26 @@ def test_managed_whale_replay_records_complete_output_and_actual_resources(
         "parse_retained_raw_sessions",
         lambda *_args: pytest.fail("managed publication parsed inline instead of consuming its sealed worker carrier"),
     )
+    original_parse = raw_module._parse_captured_neutral
+    parsed_raw_ids: set[str] = set()
+    parse_lock = Lock()
+
+    def parse_worker(
+        raw_id: str,
+        captured: raw_module._CapturedNeutralRaw,
+        artifact_key: tuple[object, ...],
+        context: raw_module.NeutralPreparationContext,
+        scratch: Path,
+    ) -> PreparedJsonl:
+        # Observe the current worker as well as refusing the older inline
+        # fallback, so an unused fallback patch cannot satisfy this control.
+        compute_adapter().require_current_creator()
+        assert not coordinator_write_lease_active()
+        with parse_lock:
+            parsed_raw_ids.add(raw_id)
+        return original_parse(raw_id, captured, artifact_key, context, scratch)
+
+    monkeypatch.setattr(raw_module, "_parse_captured_neutral", parse_worker)
     before_cpu = resource.getrusage(resource.RUSAGE_SELF)
     rss_before = read_current_rss_mb()
     started = perf_counter()
@@ -64,6 +89,7 @@ def test_managed_whale_replay_records_complete_output_and_actual_resources(
     peak_process_lifetime = read_peak_rss_self_mb()
     after_cpu = resource.getrusage(resource.RUSAGE_SELF)
     assert result.quarantined == result.adoption_deferred == 0
+    assert parsed_raw_ids == set(hashes)
     observed = {}
     with ArchiveStore.open_existing(root, read_only=True) as archive:
         sessions = tuple(archive._conn.execute("SELECT session_id, raw_id FROM sessions"))
