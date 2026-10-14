@@ -11,18 +11,9 @@ def claude_agent_transcript_stem(agent_id: str) -> str:
     return agent_id if agent_id.startswith("agent-") else f"agent-{agent_id}"
 
 
-def claude_dispatch_operand(record: Mapping[str, object]) -> tuple[str, str] | None:
-    """Borrow the unique tool-result ID and the child named by its user record.
-
-    Duplicate segments with one identical ID still identify one dispatch.
-    Distinct result IDs are ambiguous. The streaming scan needs no set of
-    every segment or any observed private vocabulary.
-    """
+def claude_tool_result_identity(record: Mapping[str, object]) -> str | None:
+    """Borrow one unambiguous result identity from the actual native record."""
     if record.get("type") != "user":
-        return None
-    result = record.get("toolUseResult")
-    agent_id = result.get("agentId") if isinstance(result, Mapping) else None
-    if not isinstance(agent_id, str) or not agent_id:
         return None
     message = record.get("message")
     content = message.get("content") if isinstance(message, Mapping) else None
@@ -38,6 +29,16 @@ def claude_dispatch_operand(record: Mapping[str, object]) -> tuple[str, str] | N
         if identity is not None and value != identity:
             return None
         identity = value
+    return identity
+
+
+def claude_dispatch_operand(record: Mapping[str, object]) -> tuple[str, str] | None:
+    """Borrow the unique result ID and the child named by its user record."""
+    result = record.get("toolUseResult")
+    agent_id = result.get("agentId") if isinstance(result, Mapping) else None
+    if not isinstance(agent_id, str) or not agent_id:
+        return None
+    identity = claude_tool_result_identity(record)
     return None if identity is None else (identity, claude_agent_transcript_stem(agent_id))
 
 

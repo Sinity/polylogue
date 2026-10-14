@@ -17,6 +17,7 @@ def bookkeeping_records(provider: str, number: int) -> list[JSONDocument]:
                 "type": "user",
                 "uuid": user_id,
                 "parentUuid": None,
+                "origin": {"kind": "human"},
                 "sessionId": session_id,
                 "message": {"role": "user", "content": [{"type": "text", "text": "Neutral question."}]},
             },

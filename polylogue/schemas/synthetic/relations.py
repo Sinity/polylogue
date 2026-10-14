@@ -124,8 +124,14 @@ class ForeignKeyGraph:
                     "tool_use_id TEXT NOT NULL) STRICT, WITHOUT ROWID"
                 )
                 connection.execute(
-                    "CREATE TABLE generated_tool_identities(value_json TEXT PRIMARY KEY,calls INTEGER NOT NULL,results INTEGER NOT NULL,schema_json TEXT NOT NULL,first_event TEXT NOT NULL,result_mode TEXT NOT NULL,tool_class TEXT NOT NULL) STRICT, WITHOUT ROWID"
+                    "CREATE TABLE generated_tool_identities(value_json TEXT PRIMARY KEY,calls INTEGER NOT NULL,results INTEGER NOT NULL,schema_json TEXT NOT NULL,first_event TEXT NOT NULL,result_mode TEXT NOT NULL,tool_class TEXT NOT NULL,agent_record_id INTEGER,task_record_id INTEGER,task_value_json TEXT) STRICT, WITHOUT ROWID"
                 )
+                connection.execute(
+                    "CREATE INDEX generated_background_task_identity ON generated_tool_identities(task_value_json,value_json,task_record_id) WHERE task_record_id IS NOT NULL"
+                ).close()
+                connection.execute(
+                    "CREATE INDEX generated_background_task_width ON generated_tool_identities(generated_string_length(task_value_json),generated_string_length(value_json),value_json) WHERE task_record_id IS NOT NULL"
+                ).close()
                 # Keep inventory eligibility on a covering native index. The
                 # original table also retains schema payloads; repeated count
                 # and rank selection must not read those payloads for every ID.
@@ -235,7 +241,7 @@ class ForeignKeyGraph:
         from polylogue.schemas.synthetic.categorical_values import _string_shape_candidates
         from polylogue.schemas.synthetic.text_value import text_equals
 
-        if kind not in {"tool", "agent"}:
+        if kind not in {"tool", "agent", "task"}:
             raise ValueError("unknown original identity inventory")
         connection = self._live_tool_owner()
         if character_class not in (None, "ascii", "non_ascii"):
@@ -259,6 +265,8 @@ class ForeignKeyGraph:
             is_new = (
                 self.tool_identity_is_new(value)
                 if kind == "tool"
+                else self.background_task_is_new(value)
+                if kind == "task"
                 else (
                     isinstance(value, str)
                     and value.startswith("agent-") == bool(prefix)
@@ -385,7 +393,7 @@ class ForeignKeyGraph:
         if actual != relation:
             raise ValueError("sampled tool identity contradicts the selected original relation")
         self._live_tool_owner().execute(
-            "INSERT INTO generated_tool_identities VALUES (?,?,?,?,?,?,?) ON CONFLICT(value_json) DO UPDATE SET calls=excluded.calls,results=excluded.results,result_mode=excluded.result_mode,tool_class=excluded.tool_class",
+            "INSERT INTO generated_tool_identities(value_json,calls,results,schema_json,first_event,result_mode,tool_class) VALUES (?,?,?,?,?,?,?) ON CONFLICT(value_json) DO UPDATE SET calls=excluded.calls,results=excluded.results,result_mode=excluded.result_mode,tool_class=excluded.tool_class",
             (
                 state,
                 calls + (event == "call"),
@@ -396,6 +404,105 @@ class ForeignKeyGraph:
                 prior_class if tool_class is None else tool_class,
             ),
         ).close()
+
+    def agent_progress_cell(self, identity: GeneratedString) -> GeneratedRecord | None:
+        state = json.dumps(_string_state(identity), separators=(",", ":"), ensure_ascii=True)
+        with closing(
+            self._live_tool_owner().execute(
+                "SELECT agent_record_id FROM generated_tool_identities WHERE value_json=?", (state,)
+            )
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            raise ValueError("Agent progress lost its original generated call")
+        return None if row[0] is None else GeneratedRecord(self, row[0], self._generation)
+
+    def retain_agent_progress_cell(self, identity: GeneratedString, record: GeneratedRecord) -> None:
+        if record.owner is not self or record.generation != self._generation:
+            raise RuntimeError("Agent progress field lost its original native owner")
+        state = json.dumps(_string_state(identity), separators=(",", ":"), ensure_ascii=True)
+        self._live_tool_owner().execute(
+            "UPDATE generated_tool_identities SET agent_record_id=COALESCE(agent_record_id,?) WHERE value_json=?",
+            (record.record_id, state),
+        ).close()
+
+    def background_task_is_new(self, value: GeneratedString) -> bool:
+        state = json.dumps(_string_state(value), separators=(",", ":"), ensure_ascii=True)
+        with closing(
+            self._live_tool_owner().execute(
+                "SELECT 1 FROM generated_tool_identities WHERE task_value_json=? LIMIT 1", (state,)
+            )
+        ) as cursor:
+            return cursor.fetchone() is None
+
+    def retain_background_task_cell(
+        self, identity: GeneratedString, record: GeneratedRecord, value: GeneratedString
+    ) -> None:
+        if record.owner is not self or record.generation != self._generation:
+            raise RuntimeError("background task lost its original generated result cell")
+        state = json.dumps(_string_state(identity), separators=(",", ":"), ensure_ascii=True)
+        task = json.dumps(_string_state(value), separators=(",", ":"), ensure_ascii=True)
+        with closing(
+            self._live_tool_owner().execute(
+                "SELECT results FROM generated_tool_identities WHERE value_json=?", (state,)
+            )
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is not None and row[0] > 1:
+            raise ValueError("repeated background acknowledgement has no supported executable generation")
+        self._live_tool_owner().execute(
+            "UPDATE generated_tool_identities SET task_record_id=?,task_value_json=? WHERE value_json=?",
+            (record.record_id, task, state),
+        ).close()
+
+    def _background_tasks(
+        self, relation: str, width: int, tool_width: int | None = None
+    ) -> tuple[str, tuple[object, ...]]:
+        if relation not in {"any", "exact", "unique", "ambiguous"}:
+            raise ValueError("background task relation is undeclared")
+        predicate = "task_record_id IS NOT NULL AND generated_string_length(task_value_json)=?"
+        values: tuple[object, ...] = (width,)
+        if tool_width is not None:
+            predicate += " AND generated_string_length(value_json)=?"
+            values += (tool_width,)
+        if relation in {"unique", "ambiguous"}:
+            predicate += (
+                " AND task_value_json IN (SELECT task_value_json FROM generated_tool_identities WHERE task_record_id IS NOT NULL GROUP BY task_value_json HAVING count(*)"
+                + ("=1" if relation == "unique" else ">1")
+                + ")"
+            )
+        return predicate, values
+
+    def background_task_count(self, relation: str, width: int, tool_width: int | None = None) -> int:
+        predicate, values = self._background_tasks(relation, width, tool_width)
+        with closing(
+            self._live_tool_owner().execute("SELECT count(*) FROM generated_tool_identities WHERE " + predicate, values)
+        ) as cursor:
+            return int(cursor.fetchone()[0])
+
+    def select_background_task(
+        self, relation: str, width: int, rng: random.Random, tool_width: int | None = None
+    ) -> tuple[GeneratedString, GeneratedString, GeneratedRecord]:
+        predicate, values = self._background_tasks(relation, width, tool_width)
+        count = self.background_task_count(relation, width, tool_width)
+        if not count:
+            raise ValueError("background notification has no original eligible task cell")
+        with closing(
+            self._live_tool_owner().execute(
+                "SELECT value_json,task_value_json,task_record_id FROM generated_tool_identities WHERE "
+                + predicate
+                + " ORDER BY value_json LIMIT 1 OFFSET ?",
+                values + (rng.randrange(count),),
+            )
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("background notification lost its original task cell")
+        return (
+            _string_from_state(json.loads(row[0])),
+            _string_from_state(json.loads(row[1])),
+            GeneratedRecord(self, row[2], self._generation),
+        )
 
     def observe_missing_tool_identity(self, event: str) -> None:
         self._live_tool_owner()

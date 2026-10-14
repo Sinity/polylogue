@@ -66,6 +66,13 @@ def _enum_values(
             if min_freq and (count / total) < min_freq:
                 continue
         values.append(value)
+    # A retained safe counter is a projection, not the complete vocabulary.
+    # x-polylogue-values constrains string draws only; null/numeric branches
+    # retain their separate type support. Never turn a filtered subset into
+    # the field's exhaustive string domain.
+    string_count = field_stats.type_counts.get("string", field_stats.value_count if not field_stats.type_counts else 0)
+    if sum(field_stats.observed_values[value] for value in values if isinstance(value, str)) != string_count:
+        return []
     return values
 
 
@@ -242,6 +249,13 @@ def _annotate_node(
         # and no value-shape heuristic can tell a wire constant from a
         # recurring private token.
         sem_role = schema_node.get("x-polylogue-semantic-role")
+        if (
+            isinstance(sem_role, str)
+            and sem_role in PUBLISHABLE_VOCABULARY_ROLES
+            and fmt not in id_formats
+            and not _is_content_field(path)
+        ):
+            schema_node.pop("x-polylogue-values", None)
         if (
             isinstance(sem_role, str)
             and sem_role in PUBLISHABLE_VOCABULARY_ROLES

@@ -309,3 +309,90 @@ def measured_result_syntax(value: object) -> dict[str, object]:
             pass
         result["output_syntax"] = parts
     return result
+
+
+_NOTIFICATION_LITERALS = frozenset(
+    {
+        "<task-notification>\n<task-id>",
+        "</task-id>\n",
+        "<tool-use-id>",
+        "</tool-use-id>\n",
+        "<output-file>",
+        "</output-file>\n<status>",
+        "failed",
+        '</status>\n<summary>Background command "',
+        '" failed with exit code ',
+        "</summary>\n</task-notification>",
+        "\n",
+        "\r",
+    }
+)
+_NOTIFICATION = re.compile(
+    r"<task-notification>\n<task-id>(?P<task>[^<>&]+)</task-id>\n"
+    r"(?:<tool-use-id>(?P<tool>[^<>&]+)</tool-use-id>\n)?"
+    r"<output-file>(?P<output>[^<>&]+)</output-file>\n<status>failed</status>\n"
+    r'<summary>Background command "(?P<command>[^"<>&]*)" failed with exit code (?P<exit>[0-9]+)</summary>\n</task-notification>'
+)
+
+
+def measured_claude_notification(record: Mapping[str, object]) -> tuple[dict[str, object], str, str | None] | None:
+    """Reduce one trusted native protocol spelling to fixed tokens and anonymous widths.
+
+    Other admitted spellings retain ordinary field evidence, without claiming
+    a measured executable notification grammar.
+    """
+    origin, message = record.get("origin"), record.get("message")
+    value = message.get("content") if isinstance(message, Mapping) else None
+    if not isinstance(origin, Mapping) or origin.get("kind") != "task-notification" or not isinstance(value, str):
+        return None
+    match = _NOTIFICATION.fullmatch(value)
+    if match is None:
+        return None
+    parts: list[list[object]] = [
+        ["literal", "<task-notification>\n<task-id>"],
+        ["task", match.end("task") - match.start("task")],
+        ["literal", "</task-id>\n"],
+    ]
+    if match.start("tool") >= 0:
+        parts.extend(
+            [
+                ["literal", "<tool-use-id>"],
+                ["tool", match.end("tool") - match.start("tool")],
+                ["literal", "</tool-use-id>\n"],
+            ]
+        )
+    parts.append(["literal", "<output-file>"])
+    _anonymous(parts, value, *match.span("output"))
+    parts.extend(
+        [
+            ["literal", "</output-file>\n<status>"],
+            ["literal", "failed"],
+            ["literal", '</status>\n<summary>Background command "'],
+        ]
+    )
+    _anonymous(parts, value, *match.span("command"))
+    parts.append(["literal", '" failed with exit code '])
+    zero = all(value[index] == "0" for index in range(*match.span("exit")))
+    parts.extend(
+        [
+            ["zeros" if zero else "digits", match.end("exit") - match.start("exit")],
+            ["literal", "</summary>\n</task-notification>"],
+        ]
+    )
+    list(validated_notification_parts(parts))
+    return {"parts": parts}, match.group("task"), match.group("tool")
+
+
+def validated_notification_parts(parts: object) -> Iterator[tuple[str, str | int]]:
+    if not isinstance(parts, list):
+        raise ValueError("notification syntax must contain anonymous runs")
+    for part in parts:
+        if not isinstance(part, list) or len(part) != 2:
+            raise ValueError("notification syntax run is malformed")
+        kind, value = part
+        if kind == "literal" and isinstance(value, str) and value in _NOTIFICATION_LITERALS:
+            yield "literal", value
+        elif kind in {"ascii", "non_ascii", "digits", "zeros", "task", "tool"} and type(value) is int and value > 0:
+            yield kind, value
+        else:
+            raise ValueError("notification syntax contains a private or unsupported token")

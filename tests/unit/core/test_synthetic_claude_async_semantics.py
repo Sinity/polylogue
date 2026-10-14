@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import uuid
 from collections import defaultdict
+from html import unescape
 from pathlib import Path
-from xml.etree import ElementTree
+
+import pytest
 
 from polylogue.core.enums import BlockType
 from polylogue.scenarios import CorpusSpec
@@ -14,9 +19,10 @@ from polylogue.schemas.generation.workflow import build_provider_bundle_from_sou
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.source_inference import SchemaSourceInput
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.schemas.synthetic.models import SyntheticSchemaSelection
 from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.sources.dispatch import parse_payload
-from tests.infra.claude_async_sources import write_claude_async_sources
+from tests.infra.claude_async_sources import claude_async_records, write_claude_async_sources
 
 _REQUIRED = {"foreground", "failed_completion", "unknown_ack", "ambiguous_completion", "open_agent", "no_child_claim"}
 
@@ -46,16 +52,20 @@ def _notification(record: dict[str, object]) -> dict[str, str] | None:
     content = message.get("content") if isinstance(message, dict) else record.get("content")
     if not isinstance(content, str):
         return None
-    try:
-        envelope = ElementTree.fromstring(content)
-    except ElementTree.ParseError:
+    # The native carrier uses HTML text semantics, including raw ampersands.
+    # Read its fixed direct fields independently of production notification helpers.
+    envelope = re.fullmatch(r"\s*<task-notification>\s*(.*?)\s*</task-notification>\s*", content, re.DOTALL)
+    if envelope is None:
         return None
-    if envelope.tag != "task-notification":
-        return None
+    body = envelope.group(1)
     fields: dict[str, str] = {}
-    for field in envelope:
-        assert field.tag not in fields and not list(field)
-        fields[field.tag] = (field.text or "").strip()
+    offset = 0
+    for field in re.finditer(r"<([a-z-]+)>([^<]*)</\1>\s*", body):
+        assert not body[offset : field.start()].strip()
+        assert field.group(1) not in fields
+        fields[field.group(1)] = unescape(field.group(2)).strip()
+        offset = field.end()
+    assert not body[offset:].strip()
     assert {"task-id", "output-file", "status", "summary"} <= fields.keys()
     assert all(fields.values())
     return fields
@@ -165,6 +175,8 @@ def _native_async_oracle(main: Path) -> set[str]:
         notification_exits[task, tool] = exit_code
         candidates = start_pairs[task, tool] if tool is not None else starts[task]
         if len(candidates) != 1:
+            if not candidates:
+                witnesses.add("unmatched_pair" if tool is not None else "unmatched_task")
             if tool is None and len(candidates) > 1:
                 witnesses.add("ambiguous_completion")
             continue
@@ -188,7 +200,11 @@ def _native_async_oracle(main: Path) -> set[str]:
     assert expected.keys() <= actual.keys()
     for key, outcome in expected.items():
         block = actual[key]
-        assert (block.is_error, block.exit_code, block.outcome_unknown_reason) == outcome
+        assert (block.is_error, block.exit_code, block.outcome_unknown_reason) == outcome, (
+            key,
+            outcome,
+            (block.is_error, block.exit_code, block.outcome_unknown_reason),
+        )
     events = {
         event.payload["parent_tool_use_id"]: event.payload
         for session in parsed
@@ -222,14 +238,53 @@ def _native_async_oracle(main: Path) -> set[str]:
 
 
 def test_neutral_async_sources_have_real_native_task_and_child_joins(tmp_path: Path) -> None:
-    mains = write_claude_async_sources(tmp_path / "sources")
+    mains = write_claude_async_sources(tmp_path / "sources", unmatched=True)
     for main in mains:
-        assert _native_async_oracle(main) == _REQUIRED
+        assert _native_async_oracle(main) == _REQUIRED | {"unmatched_pair", "unmatched_task"}
 
 
-def test_inferred_claude_async_records_keep_task_and_open_child_joins(tmp_path: Path) -> None:
+def _selection_from_sources(
+    tmp_path: Path, *, unmatched: bool = False, repeated_ack: bool = False, ambiguous_only: bool = False
+) -> SyntheticSchemaSelection:
     sources = tmp_path / "sources"
-    write_claude_async_sources(sources)
+    if ambiguous_only:
+        sources.mkdir()
+        isolated: list[Path] = []
+        for number in range(1, 4):
+            rows = claude_async_records(number)
+            selected = [rows[0]]
+            for row in rows[1:]:
+                message = row.get("message")
+                content = message.get("content") if isinstance(message, dict) else None
+                if (
+                    isinstance(content, list)
+                    and any(
+                        isinstance(block, dict)
+                        and str(block.get("id", block.get("tool_use_id", ""))).startswith("call-ambiguous-")
+                        for block in content
+                    )
+                    or isinstance(content, str)
+                    and "<task-id>task-ambiguous</task-id>" in content
+                ):
+                    selected.append(row)
+            main = sources / f"neutral-parent-{number}.jsonl"
+            main.write_text("".join(json.dumps(row) + "\n" for row in selected))
+            assert "ambiguous_completion" in _native_async_oracle(main)
+            isolated.append(main)
+        mains = tuple(isolated)
+    else:
+        mains = write_claude_async_sources(sources, unmatched=unmatched)
+    if repeated_ack:
+        for index, main in enumerate(mains):
+            records = _records(main)
+            position = next(
+                i for i, row in enumerate(records) if row.get("toolUseResult") == {"backgroundTaskId": "task-failure"}
+            )
+            duplicate = dict(records[position])
+            duplicate["uuid"] = str(uuid.UUID(int=9000 + index, version=4))
+            records.insert(position + 1, duplicate)
+            main.write_text("".join(json.dumps(row) + "\n" for row in records))
+            assert "failed_completion" not in _native_async_oracle(main)
     bundle = build_provider_bundle_from_sources(
         "claude-code",
         source_inputs=(SchemaSourceInput("claude-code", sources),),
@@ -247,10 +302,108 @@ def test_inferred_claude_async_records_keep_task_and_open_child_joins(tmp_path: 
     audit = audit_schema_bundle_privacy(registry=registry)
     assert audit.failed == 0, audit.format_text()
     selection = select_synthetic_schema("claude-code", registry_factory=lambda: registry)
+    return selection
+
+
+@pytest.fixture(scope="module")
+def generated_async(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("inferred-async")
+    selection = _selection_from_sources(root)
+    written = SyntheticCorpus.write_selection_artifacts(
+        selection, CorpusSpec(provider="claude-code", count=8, seed=31), root / "generated", prefix="parent"
+    )
+    assert len(written.session_files) == 8
+    return root / "generated"
+
+
+def _check_generated_cohort(root: Path) -> None:
+    observed: set[str] = set()
+    mains = sorted(root.glob("*/parent-*.jsonl"))
+    assert len(mains) == 8
+    for main in mains:
+        observed.update(_native_async_oracle(main))
+    # Mixed finite samples need not visit every support class. The isolated
+    # ambiguous source below proves that class without a visitation guarantee.
+    assert _REQUIRED - {"ambiguous_completion"} <= observed <= _REQUIRED, observed
+
+
+def test_inferred_claude_async_records_keep_task_and_open_child_joins(generated_async: Path) -> None:
+    _check_generated_cohort(generated_async)
+
+
+@pytest.mark.parametrize("loss", ("open_parent", "metadata_dispatch", "notification_provenance"))
+def test_generated_native_oracle_rejects_lost_async_relations(generated_async: Path, tmp_path: Path, loss: str) -> None:
+    root = tmp_path / "mutated"
+    shutil.copytree(generated_async, root)
+    changed = False
+    for main in sorted(root.glob("*/parent-*.jsonl")):
+        records = _records(main)
+        calls = {
+            block["id"]: block
+            for record in records
+            for message in [record.get("message")]
+            if isinstance(message, dict)
+            for block in message.get("content", [])
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+        }
+        other_call = next((identity for identity, block in calls.items() if block["name"] != "Agent"), None)
+        for record in records:
+            data = record.get("data")
+            if loss == "open_parent" and not changed and isinstance(data, dict) and data.get("agentId") and other_call:
+                record["parentToolUseID"] = other_call
+                changed = True
+            if loss == "notification_provenance" and _notification(record) is not None:
+                record["origin"] = {"kind": "human"}
+                changed = True
+        if loss == "metadata_dispatch" and not changed and other_call:
+            files = list((main.parent / main.stem / "subagents").glob("*.meta.json"))
+            if files:
+                metadata = json.loads(files[0].read_text())
+                metadata["toolUseId"] = other_call
+                files[0].write_text(json.dumps(metadata))
+                changed = True
+        main.write_text("".join(json.dumps(record) + "\n" for record in records))
+    assert changed
+    with pytest.raises(AssertionError):
+        _check_generated_cohort(root)
+
+
+def test_unmatched_notification_evidence_is_not_promoted_to_an_executable_pair(tmp_path: Path) -> None:
+    selection = _selection_from_sources(tmp_path, unmatched=True)
+    with pytest.raises(ValueError, match="unmatched notification relation"):
+        SyntheticCorpus.write_selection_artifacts(
+            selection, CorpusSpec(provider="claude-code", count=8, seed=31), tmp_path / "generated", prefix="parent"
+        )
+
+
+def test_repeated_background_acknowledgements_are_not_one_completion(tmp_path: Path) -> None:
+    selection = _selection_from_sources(tmp_path, repeated_ack=True)
+    with pytest.raises(ValueError, match="repeated(_ack notification relation| background acknowledgement)"):
+        SyntheticCorpus.write_selection_artifacts(
+            selection, CorpusSpec(provider="claude-code", count=8, seed=31), tmp_path / "generated", prefix="parent"
+        )
+
+
+@pytest.mark.parametrize("escaped", (False, True))
+def test_native_notification_text_keeps_raw_and_escaped_ampersand_identity(tmp_path: Path, escaped: bool) -> None:
+    mains = write_claude_async_sources(tmp_path / "sources")
+    main = mains[0]
+    text = main.read_text().replace("call-failure----", "&!!!!!!!!!!!!!!!")
+    if escaped:
+        text = text.replace(
+            "<tool-use-id>&!!!!!!!!!!!!!!!</tool-use-id>", "<tool-use-id>&amp;!!!!!!!!!!!!!!!</tool-use-id>"
+        )
+    main.write_text(text)
+    assert "failed_completion" in _native_async_oracle(main)
+
+
+def test_inferred_ambiguous_task_only_source_keeps_acknowledgements_unknown(tmp_path: Path) -> None:
+    selection = _selection_from_sources(tmp_path, ambiguous_only=True)
     written = SyntheticCorpus.write_selection_artifacts(
         selection, CorpusSpec(provider="claude-code", count=8, seed=31), tmp_path / "generated", prefix="parent"
     )
     observed: set[str] = set()
     for main in written.session_files:
         observed.update(_native_async_oracle(main))
-    assert observed == _REQUIRED
+    assert "ambiguous_completion" in observed
+    assert "failed_completion" not in observed

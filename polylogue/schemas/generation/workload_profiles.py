@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections import Counter
@@ -36,6 +37,7 @@ from polylogue.schemas.record_structure import (
     claude_agent_metadata_field_forms,
     claude_dispatch_field_forms,
     claude_todo_token_counts,
+    claude_tool_class,
     codex_message_record,
     codex_parent_field_forms,
     codex_session_header,
@@ -45,6 +47,7 @@ from polylogue.schemas.record_structure import (
     iter_provider_records,
     iter_public_content_kinds,
     iter_tool_records,
+    native_record_field_forms,
     public_role_carriers,
     record_content,
     record_form,
@@ -53,7 +56,12 @@ from polylogue.schemas.record_structure import (
     tool_identity_operand,
     tool_result_content_mode,
 )
-from polylogue.schemas.tool_input_syntax import codex_tool_class, measured_result_syntax, measured_tool_syntax
+from polylogue.schemas.tool_input_syntax import (
+    codex_tool_class,
+    measured_claude_notification,
+    measured_result_syntax,
+    measured_tool_syntax,
+)
 from polylogue.schemas.workload_profile_rows import DepthGrammars, WorkloadProfile, workload_profile_digest
 from polylogue.sources.live.tool_result_sidecars import ToolResultIndexAccumulator
 
@@ -644,6 +652,7 @@ def _agent_child_population(memberships: JournalMemberships) -> Iterator[None]:
                                         "fields": claude_agent_metadata_field_forms(original.sample),
                                         "carrier": identity[0] if identity is not None else None,
                                         "private_value": identity[1] if identity is not None else None,
+                                        "private_tool_use_id": original.sample.get("toolUseId"),
                                     },
                                     ensure_ascii=True,
                                     sort_keys=True,
@@ -753,6 +762,14 @@ def _original_agent_children(
         else:
             original_metadata = json.loads(row[1])
             value = original_metadata.pop("private_value")
+            tool_use_id = original_metadata.pop("private_tool_use_id")
+            original_metadata["tool_use_id_relation"] = (
+                "dispatch"
+                if tool_use_id == operand[0]
+                else "independent"
+                if isinstance(tool_use_id, str) and tool_use_id
+                else "absent"
+            )
             original_metadata["relation"] = (
                 "filename_only"
                 if value is None
@@ -770,6 +787,8 @@ def _original_agent_children(
 class _ContentStructure:
     role_carriers: Counter[tuple[str, str]] = field(default_factory=Counter)
     dispatch_forms: Counter[str] = field(default_factory=Counter)
+    carrier_forms: Counter[str] = field(default_factory=Counter)
+    instruction_relations: Counter[str] = field(default_factory=Counter)
     agent_counts: dict[str, AgentChildCounts] = field(default_factory=dict)
     representations: Counter[str] = field(default_factory=Counter)
     kinds: Counter[str] = field(default_factory=Counter)
@@ -823,8 +842,39 @@ class _ContentStructure:
         envelope: Mapping[str, object],
         tool_owner: sqlite3.Connection,
         original_scope: str,
+        instruction_relation: str = "",
     ) -> None:
+        if instruction_relation:
+            self.instruction_relations[instruction_relation] += 1
+        if provider in {"codex", "claude-code"}:
+            self.carrier_forms[json.dumps(native_record_field_forms(provider, envelope), sort_keys=True)] += 1
         if provider == "claude-code":
+            notification = measured_claude_notification(envelope)
+            notification_syntax = None
+            if notification is not None:
+                notification_syntax, task, notification_tool = notification
+                with closing(
+                    tool_owner.execute(
+                        "SELECT COALESCE(SUM(results),0) FROM workload_record_tool_ids WHERE task_id=?",
+                        (task.encode("utf-8", "surrogatepass"),),
+                    )
+                ) as cursor:
+                    task_count = cursor.fetchone()[0]
+                if notification_tool is not None:
+                    with closing(
+                        tool_owner.execute(
+                            "SELECT COALESCE(SUM(results),0) FROM workload_record_tool_ids WHERE task_id=? AND identity=? AND calls>0 AND results>0",
+                            (task.encode("utf-8", "surrogatepass"), notification_tool.encode("utf-8", "surrogatepass")),
+                        )
+                    ) as cursor:
+                        matching_pair = cursor.fetchone()[0]
+                    notification_syntax["relation"] = (
+                        "exact" if matching_pair == 1 else "repeated_ack" if matching_pair > 1 else "unmatched"
+                    )
+                else:
+                    notification_syntax["relation"] = (
+                        "ambiguous" if task_count > 1 else "unique" if task_count == 1 else "unmatched"
+                    )
             self.role_carriers[public_role_carriers(envelope)] += 1
             status, counts, metadata_class = _original_agent_children(tool_owner, original_scope, envelope)
             result_classes: set[str] = set()
@@ -843,6 +893,7 @@ class _ContentStructure:
             dispatch_class = json.dumps(
                 {
                     "fields": claude_dispatch_field_forms(envelope),
+                    "notification": notification_syntax,
                     "roles": list(public_role_carriers(envelope)),
                     "children": status,
                     "metadata_class": metadata_class,
@@ -891,6 +942,7 @@ class _ContentStructure:
                     json.dumps(
                         {
                             "name": name,
+                            "class": claude_tool_class(name, tool_input),
                             "input_mode": "absent"
                             if "input" not in tool
                             else "null"
@@ -945,7 +997,7 @@ class _ContentStructure:
                 calls, results, prior_mode, prior_class = (0, 0, "", "") if before is None else before
                 name = tool.get("name")
                 tool_class = (
-                    (name if isinstance(name, str) and name in PUBLIC_CLAUDE_TOOL_NAMES else "")
+                    claude_tool_class(name, tool.get("input"))
                     if event == "call" and provider == "claude-code"
                     else tool_class
                     if event == "call" and provider == "codex"
@@ -954,7 +1006,7 @@ class _ContentStructure:
                 prior_count = _bucket_index(float(results))
                 relation = "both" if calls and results else "call" if calls else "result" if results else "new"
                 tool_owner.execute(
-                    "INSERT INTO workload_record_tool_ids VALUES (?,?,?,?,?) ON CONFLICT(identity) DO UPDATE SET calls=excluded.calls,results=excluded.results,result_mode=excluded.result_mode,tool_class=excluded.tool_class",
+                    "INSERT INTO workload_record_tool_ids(identity,calls,results,result_mode,tool_class) VALUES (?,?,?,?,?) ON CONFLICT(identity) DO UPDATE SET calls=excluded.calls,results=excluded.results,result_mode=excluded.result_mode,tool_class=excluded.tool_class",
                     (
                         identity,
                         calls + (event == "call"),
@@ -986,9 +1038,31 @@ class _ContentStructure:
                     for field in PUBLIC_CLAUDE_TOOL_RESULT_FIELDS
                     if isinstance(evidence, Mapping) and field in evidence
                 )
+                background_task = evidence.get("backgroundTaskId") if isinstance(evidence, Mapping) else None
+                task_descriptor = None
+                if (
+                    tool_class == "Bash:background"
+                    and isinstance(background_task, str)
+                    and background_task
+                    and isinstance(value, str)
+                ):
+                    with closing(
+                        tool_owner.execute(
+                            "SELECT count(*) FROM workload_record_tool_ids WHERE task_id=?",
+                            (background_task.encode("utf-8", "surrogatepass"),),
+                        )
+                    ) as cursor:
+                        previous_tasks = cursor.fetchone()[0]
+                    task_descriptor = {"relation": "repeat" if previous_tasks else "new", "width": len(background_task)}
+                    tool_owner.execute(
+                        "UPDATE workload_record_tool_ids SET task_id=? WHERE identity=?",
+                        (background_task.encode("utf-8", "surrogatepass"), value.encode("utf-8", "surrogatepass")),
+                    ).close()
                 syntax = json.dumps(
                     {
-                        "name": tool_class,
+                        "task": task_descriptor,
+                        "name": tool_class.partition(":")[0],
+                        "class": tool_class,
                         "envelope_mode": "absent"
                         if "toolUseResult" not in envelope
                         else "null"
@@ -1086,6 +1160,10 @@ class _ContentStructure:
                 ]
                 for kind, rows in sorted(self.tool_operands.items())
             },
+            "instruction_relations": dict(sorted(self.instruction_relations.items())),
+            "carrier_forms": [
+                {"fields": json.loads(fields), "count": count} for fields, count in sorted(self.carrier_forms.items())
+            ],
             "dispatch_forms": [
                 {**json.loads(fields), "count": count, "child_count_joint": self.agent_counts[fields].to_payload()}
                 for fields, count in sorted(self.dispatch_forms.items())
@@ -1139,7 +1217,10 @@ def _record_structure(
 ) -> JSONDocument:
     tool_owner = memberships._journal._connection
     tool_owner.execute(
-        "CREATE TEMP TABLE workload_record_tool_ids(identity BLOB PRIMARY KEY,calls INTEGER NOT NULL,results INTEGER NOT NULL,result_mode TEXT NOT NULL,tool_class TEXT NOT NULL) STRICT, WITHOUT ROWID"
+        "CREATE TEMP TABLE workload_record_tool_ids(identity BLOB PRIMARY KEY,calls INTEGER NOT NULL,results INTEGER NOT NULL,result_mode TEXT NOT NULL,tool_class TEXT NOT NULL,task_id BLOB) STRICT, WITHOUT ROWID"
+    ).close()
+    tool_owner.execute(
+        "CREATE INDEX workload_record_task_ids ON workload_record_tool_ids(task_id) WHERE task_id IS NOT NULL"
     ).close()
     try:
         return _record_structure_with_tool_owner(
@@ -1174,6 +1255,7 @@ def _record_structure_with_tool_owner(
     forms: dict[str, Counter[str]] = {}
     current_scope: tuple[str, str, str] | None = None
     previous_kind: str | None = None
+    instruction_digest: bytes | None = None
     previous_timestamp: float | None = None
     record_count = 0
     missing_timestamps = 0
@@ -1194,6 +1276,7 @@ def _record_structure_with_tool_owner(
                 scope_counts.observe(record_count)
                 record_count = 0
                 previous_kind = None
+                instruction_digest = None
                 previous_timestamp = None
                 tool_owner.execute("DELETE FROM workload_record_tool_ids").close()
             current_scope = scope
@@ -1201,6 +1284,19 @@ def _record_structure_with_tool_owner(
                 continue
             for record in iter_provider_records(provider, sample):
                 kind = record_kind(provider, record)
+                instruction_relation = ""
+                payload = record.get("payload")
+                instruction = payload.get("user_instructions") if isinstance(payload, Mapping) else None
+                if provider == "codex" and kind == "turn_context" and isinstance(instruction, str) and instruction:
+                    digest = hashlib.sha256(instruction.encode("utf-8", "surrogatepass")).digest()
+                    instruction_relation = (
+                        "initial"
+                        if instruction_digest is None
+                        else "same"
+                        if digest == instruction_digest
+                        else "changed"
+                    )
+                    instruction_digest = digest
                 kinds[kind] += 1
                 content = record_content(provider, record)
                 mode = content_representation(content)
@@ -1215,6 +1311,7 @@ def _record_structure_with_tool_owner(
                     envelope=record,
                     tool_owner=tool_owner,
                     original_scope=original.bundle_scope,
+                    instruction_relation=instruction_relation,
                 )
                 if previous_kind is None:
                     starts[kind] += 1

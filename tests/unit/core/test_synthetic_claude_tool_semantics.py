@@ -254,7 +254,7 @@ def _qualify_mixed_tools(
             multicall_seen |= any(len(_tool_calls([record])) > 1 for record in records)
             if todo_tokens:
                 _assert_todo_tokens(records)
-            if mixed_private_todo:
+            if mixed_private_todo or private_todo:
                 for call in _tool_calls(records):
                     if call["name"] == "TodoWrite":
                         operand = call["input"]
@@ -291,7 +291,11 @@ def _qualify_mixed_tools(
     if multiple_calls:
         assert multicall_seen
     if mixed_private_todo:
-        assert todo_classes == {"completed", "anonymous"}
+        # Class support is independently qualified by the genuine all-public
+        # and all-private source controls, not chance attendance in eight draws.
+        assert todo_classes and todo_classes <= {"completed", "anonymous"}, todo_classes
+    if private_todo:
+        assert todo_classes == {"anonymous"}, todo_classes
 
 
 def test_inferred_mixed_claude_tools_preserve_named_semantics(tmp_path: Path) -> None:

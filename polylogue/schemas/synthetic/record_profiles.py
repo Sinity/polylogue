@@ -13,9 +13,12 @@ from polylogue.core.tool_result_pointer import pointer_width_relation
 from polylogue.schemas.field_stats.distributions import _bucket_index
 from polylogue.schemas.field_stats.models import FilenameWidthStats, PointerShapeStats
 from polylogue.schemas.record_structure import (
+    CLAUDE_BOOKKEEPING_FIELDS,
+    CODEX_BOOKKEEPING_FIELDS,
     CODEX_PUBLIC_MESSAGE_ROLES,
     NATIVE_CODEX_TOOL_VALUE_FIELDS,
     PUBLIC_CLAUDE_TODO_TOKENS,
+    PUBLIC_CLAUDE_TOOL_CLASSES,
     PUBLIC_CLAUDE_TOOL_INPUT_FIELDS,
     PUBLIC_CLAUDE_TOOL_NAMES,
     PUBLIC_CLAUDE_TOOL_RESULT_FIELDS,
@@ -39,6 +42,7 @@ from polylogue.schemas.tool_input_syntax import (
     OUTCOME_WRAPPERS,
     PUBLIC_TOOL_NAMES,
     codex_tool_class,
+    validated_notification_parts,
     validated_syntax_parts,
 )
 
@@ -540,6 +544,7 @@ class PublicRecordPlan:
         metadata_class: SchemaRecord | None = None,
         agent_id: str | None = None,
         agent_stem: str | None = None,
+        dispatch_tool_id: str | None = None,
         minimum_content_count: int | None = None,
     ) -> None:
         self.owner = owner
@@ -549,8 +554,11 @@ class PublicRecordPlan:
         self.agent_children: tuple[str, tuple[int, ...]] | None = None
         self.agent_metadata: SchemaRecord | None = None
         self.agent_identity_prefix: bool | None = None
+        self.progress_identity_prefix: bool | None = None
+        self.progress_parent: GeneratedString | None = None
+        self.new_background_task = False
         self.header_types: dict[str, frozenset[str]] = {}
-        self.graph_values: dict[str, str | None] = {}
+        self.graph_values: dict[str, GeneratedString | None] = {}
         self.string_exclusions: dict[str, frozenset[str]] = {}
         self.tool_syntax: dict[str, GeneratedString] = {}
         self.tool_tokens: dict[str, dict[str, int]] = {}
@@ -576,7 +584,9 @@ class PublicRecordPlan:
             self.content = {}
             self.content_path = ""
             self.content_type = None
-            self.bind_agent_metadata(metadata_class, agent_id=agent_id, agent_stem=agent_stem)
+            self.bind_agent_metadata(
+                metadata_class, agent_id=agent_id, agent_stem=agent_stem, dispatch_tool_id=dispatch_tool_id
+            )
             return
         forms = structure.get("record_forms_by_kind")
         form_weights = forms.get(self.kind) if isinstance(forms, dict) else None
@@ -721,6 +731,8 @@ class PublicRecordPlan:
         if self.mode not in modes:
             raise ValueError("content has no declared representation; re-infer the package")
         self.content_type = modes[self.mode]
+        if provider in {"codex", "claude-code"}:
+            self._bind_native_carriers(rng)
         if provider == "claude-code":
             self._bind_dispatch_fields(rng)
         if provider == "codex" and self.kind in {
@@ -846,9 +858,21 @@ class PublicRecordPlan:
                 raise ValueError("Claude result form is malformed")
             syntax = form["syntax"]
             assert isinstance(syntax, dict)
-            name = syntax.get("name")
-            if not isinstance(name, str) or name and name not in PUBLIC_CLAUDE_TOOL_NAMES:
+            name = syntax.get("class")
+            if (
+                not isinstance(name, str)
+                or name
+                and name not in PUBLIC_CLAUDE_TOOL_CLASSES
+                or syntax.get("name") != name.partition(":")[0]
+            ):
                 raise ValueError("Claude result form contains an undeclared public call class")
+            task = syntax.get("task")
+            if (
+                isinstance(task, dict)
+                and task.get("relation") == "repeat"
+                and not self.owner.background_task_count("any", _count(task.get("width")))
+            ):
+                continue
             if (
                 form.get("result_mode") == mode
                 and (tool_class is None or name == tool_class)
@@ -928,6 +952,59 @@ class PublicRecordPlan:
                 values.append(SampledText(value, {"ascii": "x", "non_ascii": "ñ", "digits": "1", "zeros": "0"}[kind]))
         return joined_text_value(*values)
 
+    def _bind_native_carriers(self, rng: random.Random) -> None:
+        rows = self.content.get("carrier_forms")
+        if not isinstance(rows, list) or not rows:
+            raise ValueError("original native carrier forms are missing; re-infer the package")
+        allowed = CODEX_BOOKKEEPING_FIELDS if self.provider == "codex" else CLAUDE_BOOKKEEPING_FIELDS
+        carrier_rows: list[tuple[SchemaRecord, SchemaRecord]] = []
+        for row in rows:
+            fields = row.get("fields") if isinstance(row, dict) else None
+            if not isinstance(row, dict) or not isinstance(fields, dict) or set(fields) != set(allowed):
+                raise ValueError("native carrier form contains an undeclared coordinate")
+            carrier_rows.append((row, fields))
+        eligible = carrier_rows
+        if self.provider == "claude-code" and self.kind == "record:progress:agent_progress":
+            open_agent = bool(self.owner.tool_identity_count("call", tool_class="Agent"))
+            eligible = [
+                (row, fields)
+                for row, fields in carrier_rows
+                if (fields["data.agentId"] in {"agent:plain", "agent:prefixed"}) == open_agent
+            ]
+        if not eligible:
+            raise ValueError("native progress has no measured form for its original open-call context")
+        selected, selected_fields = rng.choices(
+            eligible, weights=[_count(row.get("count")) for row, _ in eligible], k=1
+        )[0]
+        for field, shape in selected_fields.items():
+            path = "$." + field
+            if shape == "absent":
+                self.absent.add(path)
+            elif shape == "null" or shape == "empty":
+                self.graph_values[path] = None if shape == "null" else ""
+            elif isinstance(shape, str) and shape.startswith("public:"):
+                token = shape.removeprefix("public:")
+                if token not in {"CommandExecution", "FileChange", "summary_text"}:
+                    raise ValueError("native carrier contains an unpublished token")
+                self.scalars[path] = token
+            elif shape in {"agent:plain", "agent:prefixed"}:
+                self.progress_identity_prefix = shape == "agent:prefixed"
+                self.header_types[path] = frozenset({"string"})
+            elif shape in {"string", "object", "array", "boolean", "integer", "number"}:
+                self.header_types[path] = frozenset({shape})
+            else:
+                raise ValueError("native carrier has no single measured shape")
+        if self.progress_identity_prefix is not None:
+            parent, _schema = self.owner.select_tool_identity("call", rng, tool_class="Agent")
+            self.progress_parent = parent
+            self.graph_values["$.parentToolUseID"] = parent
+            cell = self.owner.agent_progress_cell(parent)
+            if cell is not None:
+                value = cell.get("agentId")
+                if not isinstance(value, str):
+                    raise ValueError("original progress child identity is not a native filename")
+                self.graph_values["$.data.agentId"] = value
+
     def _bind_dispatch_fields(self, rng: random.Random) -> None:
         rows = self.content.get("dispatch_forms")
         if not isinstance(rows, list) or not rows:
@@ -940,7 +1017,11 @@ class PublicRecordPlan:
             if not isinstance(row, dict) or not isinstance(row.get("fields"), dict):
                 raise ValueError("original dispatcher field form is malformed")
             tool_class = row.get("tool_class")
-            if not isinstance(tool_class, str) or tool_class and tool_class not in PUBLIC_CLAUDE_TOOL_NAMES | {"mixed"}:
+            if (
+                not isinstance(tool_class, str)
+                or tool_class
+                and tool_class not in PUBLIC_CLAUDE_TOOL_CLASSES | {"mixed"}
+            ):
                 raise ValueError("dispatcher tool class contains an undeclared public name")
             if isinstance(result_rows, list) and result_rows:
                 supported = False
@@ -958,12 +1039,53 @@ class PublicRecordPlan:
                         break
                 if not supported:
                     continue
+            notification = row.get("notification")
+            if notification is not None:
+                if not isinstance(notification, dict):
+                    raise ValueError("notification form is malformed")
+                parts = list(validated_notification_parts(notification.get("parts")))
+                task_width = next((int(width) for kind, width in parts if kind == "task"), 0)
+                tool_width = next((int(width) for kind, width in parts if kind == "tool"), None)
+                notification_relation = notification.get("relation")
+                if notification_relation in {"unmatched", "repeated_ack"}:
+                    raise ValueError(
+                        f"{notification_relation} notification relation has no supported executable generation"
+                    )
+                if notification_relation not in {
+                    "exact",
+                    "unique",
+                    "ambiguous",
+                } or not self.owner.background_task_count(str(notification_relation), task_width, tool_width):
+                    continue
             eligible.append(row)
             weights.append(_count(row.get("count")))
         if not eligible:
             raise ValueError("dispatcher form has no matching original generated call class")
         selected = rng.choices(eligible, weights=weights, k=1)[0]
         assert isinstance(selected, dict)
+        notification = selected.get("notification")
+        if isinstance(notification, dict):
+            parts = list(validated_notification_parts(notification.get("parts")))
+            task_width = next(int(width) for kind, width in parts if kind == "task")
+            tool_width = next((int(width) for kind, width in parts if kind == "tool"), None)
+            tool, task, _cell = self.owner.select_background_task(
+                str(notification["relation"]), task_width, rng, tool_width
+            )
+            values: list[GeneratedString] = []
+            for kind, value in parts:
+                if kind == "literal":
+                    assert isinstance(value, str)
+                    values.append(value)
+                elif kind in {"task", "tool"}:
+                    values.append(task if kind == "task" else tool)
+                else:
+                    assert isinstance(value, int)
+                    values.append(
+                        SampledText(value, {"ascii": "x", "non_ascii": "ñ", "digits": "1", "zeros": "0"}[kind])
+                    )
+            self.tool_syntax["$.message.content"] = joined_text_value(*values)
+            self.header_types["$.origin"] = frozenset({"object"})
+            self.scalars["$.origin.kind"] = "task-notification"
         selected_class = str(selected["tool_class"])
         self.record_tool_class = selected_class if result_rows and selected_class != "mixed" else None
         from polylogue.schemas.generation.workload_profiles import AgentChildCounts
@@ -1006,19 +1128,27 @@ class PublicRecordPlan:
         if not isinstance(roles, list) or len(roles) != 2 or any(not isinstance(role, str) for role in roles):
             raise ValueError("dispatcher class lacks its original role carriers")
         self._bind_role_carriers((str(roles[0]), str(roles[1])))
-        required = {"toolUseResult"}
+        required = {"toolUseResult", "origin"}
+        if fields.get("origin") == "object":
+            required.add("origin.kind")
         if fields.get("toolUseResult") == "object":
             required.add("toolUseResult.agentId")
         if set(fields) != required:
             raise ValueError("dispatcher form contains an undeclared coordinate")
-        for field, value in fields.items():
+        for field, field_shape in fields.items():
             path = "$." + field
-            if value == "absent":
+            if field_shape == "absent":
                 self.absent.add(path)
-            elif value in {"null", "empty"}:
-                self.graph_values[path] = None if value == "null" else ""
-            elif value in {"string", "object", "array", "boolean", "integer", "number"}:
-                self.header_types[path] = frozenset({str(value)})
+            elif field_shape in {"null", "empty"}:
+                self.graph_values[path] = None if field_shape == "null" else ""
+            elif (
+                isinstance(field_shape, str)
+                and field_shape.startswith("public:")
+                and field_shape.removeprefix("public:") in published_kind_tokens()
+            ):
+                self.scalars[path] = field_shape.removeprefix("public:")
+            elif field_shape in {"string", "object", "array", "boolean", "integer", "number"}:
+                self.header_types[path] = frozenset({str(field_shape)})
             else:
                 raise ValueError("original dispatcher field form is unsupported")
         if not self.compatible(self.schema, "$"):
@@ -1027,7 +1157,9 @@ class PublicRecordPlan:
                 f"at $ (kind={self.kind}, form={self.form}); re-infer the package"
             )
 
-    def bind_agent_metadata(self, metadata: SchemaRecord, *, agent_id: str, agent_stem: str) -> None:
+    def bind_agent_metadata(
+        self, metadata: SchemaRecord, *, agent_id: str, agent_stem: str, dispatch_tool_id: str | None = None
+    ) -> None:
         from polylogue.core.claude_code_children import CLAUDE_AGENT_ID_FIELDS
 
         fields = metadata.get("fields")
@@ -1057,6 +1189,10 @@ class PublicRecordPlan:
             self.string_exclusions["$." + str(carrier)] = frozenset({"", agent_id, agent_stem})
         else:
             raise ValueError("original metadata identity relation is unsupported")
+        if metadata.get("tool_use_id_relation") == "dispatch":
+            if dispatch_tool_id is None:
+                raise ValueError("original metadata dispatch alias has no generated tool identity")
+            self.graph_values["$.toolUseId"] = dispatch_tool_id
         if not self.compatible(self.schema, "$"):
             raise ValueError("original metadata binding conflicts with selected schema support")
 
@@ -1478,13 +1614,24 @@ class PublicRecordPlan:
                     not isinstance(name, str)
                     or name not in PUBLIC_CLAUDE_TOOL_NAMES
                     or set(syntax)
-                    != ({"name", "input_mode", "todo_tokens"} if name == "TodoWrite" else {"name", "input_mode"})
+                    != (
+                        {"name", "class", "input_mode", "todo_tokens"}
+                        if name == "TodoWrite"
+                        else {"name", "class", "input_mode"}
+                    )
                     or not isinstance(input_mode, str)
                     or input_mode not in {"absent", "null", "object", "array", "string", "other"}
                 ):
                     raise ValueError("Claude tool input form contains undeclared public syntax")
                 self.tool_syntax[path + ".name"] = name
-                self.tool_classes[path + ".id"] = name
+                native_call_class = syntax.get("class")
+                if (
+                    not isinstance(native_call_class, str)
+                    or native_call_class not in PUBLIC_CLAUDE_TOOL_CLASSES
+                    or native_call_class.partition(":")[0] != name
+                ):
+                    raise ValueError("Claude call class contradicts its measured public name")
+                self.tool_classes[path + ".id"] = native_call_class
                 self.required_body_fields.add(path + ".name")
                 input_path = path + ".input"
                 if name == "TodoWrite":
@@ -1518,14 +1665,30 @@ class PublicRecordPlan:
             selected = rng.choices(result_forms, weights=[_count(form.get("count")) for form in result_forms], k=1)[0]
             syntax, fields = selected["syntax"], selected.get("fields")
             assert isinstance(syntax, dict)
-            result_class_filter = str(syntax["name"])
+            result_class_filter = str(syntax["class"])
+            task = syntax.get("task")
+            if task is not None:
+                if (
+                    not isinstance(task, dict)
+                    or set(task) != {"relation", "width"}
+                    or task["relation"] not in {"new", "repeat"}
+                    or type(task["width"]) is not int
+                    or task["width"] <= 0
+                ):
+                    raise ValueError("background task form is malformed")
+                self.tool_widths["$.toolUseResult.backgroundTaskId"] = task["width"]
+                if task["relation"] == "repeat":
+                    _call, task_id, _cell = self.owner.select_background_task("any", task["width"], rng)
+                    self.graph_values["$.toolUseResult.backgroundTaskId"] = task_id
+                else:
+                    self.new_background_task = True
             envelope_mode = syntax.get("envelope_mode")
             if (
                 set(syntax)
                 != (
-                    {"name", "envelope_mode", "todo_tokens"}
+                    {"name", "class", "task", "envelope_mode", "todo_tokens"}
                     if result_class_filter == "TodoWrite"
-                    else {"name", "envelope_mode"}
+                    else {"name", "class", "task", "envelope_mode"}
                 )
                 or not isinstance(envelope_mode, str)
                 or envelope_mode not in {"absent", "null", "object", "array", "string", "other"}
@@ -1581,6 +1744,18 @@ class PublicRecordPlan:
                 else (None, None)
             )
             self.tool_fields[coordinate] = event, relation, presence, value, schema, mode
+            if (
+                self.provider == "claude-code"
+                and event == "result"
+                and result_class_filter == "Agent"
+                and value is not None
+            ):
+                cell = self.owner.agent_progress_cell(value)
+                if cell is not None:
+                    child_id = cell.get("agentId")
+                    if not isinstance(child_id, str):
+                        raise ValueError("original progress child identity is not a native filename")
+                    self.graph_values["$.toolUseResult.agentId"] = child_id
             if width_support is not None:
                 self.tool_widths[coordinate] = (
                     len(value)
@@ -1688,7 +1863,7 @@ class PublicRecordPlan:
 
     def child_fields(self, path: str) -> set[str]:
         keys = {
-            key[len(path) + 1 :].split(".", 1)[0]
+            key[len(path) + 1 :].split(".", 1)[0].removesuffix("[*]")
             for key in (
                 *self.scalars,
                 *self.tool_fields,

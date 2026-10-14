@@ -72,6 +72,8 @@ class SyntheticCorpus:
         self._public_record_plan: PublicRecordPlan | None = None
         self._agent_depth = 0
         self._session_header_class: SchemaRecord | None = None
+        self._session_turn_id: GeneratedString | None = None
+        self._session_instruction: GeneratedString | None = None
         self._session_header_bound = False
         self._session_parent_id: str | None = None
         self._session_native_id: str | None = None
@@ -209,16 +211,67 @@ class SyntheticCorpus:
         if header_class is not None:
             plan.bind_session_header(header_class, native_id=self._session_native_id, parent_id=self._session_parent_id)
             self._session_header_bound = True
+        if self.provider == "codex":
+            if kind == "turn_context" and self._session_instruction is not None:
+                relations = plan.content.get("instruction_relations")
+                # Reuse only a measured constant scope. Mixed revisions are
+                # not a declaration that every generated turn repeats.
+                if (
+                    plan.header_types.get("$.payload.user_instructions") == frozenset({"string"})
+                    and isinstance(relations, dict)
+                    and relations.get("same", 0)
+                    and not relations.get("changed", 0)
+                ):
+                    plan.graph_values["$.payload.user_instructions"] = self._session_instruction
+            aliases = {
+                "$.payload.thread_id": self._session_native_id,
+                "$.payload.turn_id": self._session_turn_id,
+                "$.payload.metadata.turn_id": self._session_turn_id,
+                "$.payload.internal_chat_message_metadata_passthrough.turn_id": self._session_turn_id,
+            }
+            if kind != "turn_context":
+                for path, value in aliases.items():
+                    if path in plan.header_types and value is not None:
+                        plan.graph_values[path] = value
         self._public_record_plan = plan
         self._public_record_counts[plan.kind] += 1
 
     def _finish_public_record(self, record: dict[str, JSONValue] | GeneratedObject) -> None:
         """Settle a selected dispatcher on its exact original generated row."""
-        from polylogue.core.claude_code_children import claude_dispatch_operand
+        from polylogue.core.claude_code_children import claude_dispatch_operand, claude_tool_result_identity
         from polylogue.schemas.synthetic.models import GeneratedRecord
 
         plan = self._public_record_plan
-        if plan is None or plan.agent_children is None:
+        if plan is None:
+            return
+        if self.provider == "codex":
+            payload = record.get("payload")
+            if isinstance(payload, Mapping):
+                native_id = payload.get("id")
+                if plan.kind == "session_meta" and isinstance(native_id, str):
+                    self._session_native_id = native_id
+                if plan.kind == "turn_context":
+                    value = payload.get("turn_id")
+                    self._session_turn_id = value if isinstance(value, str | SampledText | JoinedText) else None
+                    instruction = payload.get("user_instructions")
+                    if isinstance(instruction, str | SampledText | JoinedText):
+                        self._session_instruction = instruction
+        if plan.record_tool_class == "Bash:background":
+            result = record.get("toolUseResult")
+            identity = claude_tool_result_identity(record)
+            task = result.get("backgroundTaskId") if isinstance(result, GeneratedRecord) else None
+            if (
+                identity is not None
+                and isinstance(result, GeneratedRecord)
+                and isinstance(task, str | SampledText | JoinedText)
+            ):
+                plan.owner.retain_background_task_cell(identity, result, task)
+        if plan.progress_parent is not None:
+            data = record.get("data")
+            if not isinstance(data, GeneratedRecord):
+                raise ValueError("progress child requires its original generated data cell")
+            plan.owner.retain_agent_progress_cell(plan.progress_parent, data)
+        if plan.agent_children is None:
             return
         owner = self._relation_solver.fk_graph
         if plan.owner is not owner or plan.generation != owner._generation:
@@ -301,7 +354,13 @@ class SyntheticCorpus:
             solver.select_element(self.schema)
 
     def _generate_agent_metadata(
-        self, schema: SchemaRecord, metadata_class: SchemaRecord, agent_id: str, stem: str, rng: random.Random
+        self,
+        schema: SchemaRecord,
+        metadata_class: SchemaRecord,
+        agent_id: str,
+        stem: str,
+        rng: random.Random,
+        dispatch_tool_id: str | None = None,
     ) -> GeneratedObject:
         from polylogue.schemas.synthetic.models import GeneratedRecord
 
@@ -320,6 +379,7 @@ class SyntheticCorpus:
                 metadata_class=metadata_class,
                 agent_id=agent_id,
                 agent_stem=stem,
+                dispatch_tool_id=dispatch_tool_id,
             )
             result = self._generate_from_schema(schema, rng)
             if not isinstance(result, GeneratedRecord) or result.owner is not solver.fk_graph:

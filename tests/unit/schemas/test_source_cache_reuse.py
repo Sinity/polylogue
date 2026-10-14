@@ -225,7 +225,7 @@ def run_chatgpt(root: Path, cache: Path) -> source.SourceInferenceResult:
     return source.infer_sources((source.SchemaSourceInput("chatgpt", root),), cache_path=cache, max_workers=1)
 
 
-@pytest.mark.parametrize(("provider", "revision"), (("chatgpt", 5), ("codex", 9), ("claude-code", 8), ("gemini", 5)))
+@pytest.mark.parametrize(("provider", "revision"), (("chatgpt", 5), ("codex", 10), ("claude-code", 10), ("gemini", 5)))
 def test_structure_recipe_changes_only_for_the_affected_provider(provider: str, revision: int) -> None:
     recipe = SourceEvidenceRecipe.for_provider(provider)
     assert recipe.structure_revision == revision
@@ -257,7 +257,7 @@ def test_existing_chatgpt_five_cache_is_reused_without_relabeling(
     assert current.evidence_by_element == previous.evidence_by_element
 
 
-def test_existing_claude_eight_cache_is_reused_without_relabeling(
+def test_existing_claude_current_cache_is_reused_without_relabeling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "inputs"
@@ -267,7 +267,7 @@ def test_existing_claude_eight_cache_is_reused_without_relabeling(
     inputs = (source.SchemaSourceInput("claude-code", root),)
     with monkeypatch.context() as previous_code:
         previous_code.setattr(
-            SourceEvidenceRecipe, "for_provider", lambda _provider: SourceEvidenceRecipe(structure_revision=8)
+            SourceEvidenceRecipe, "for_provider", lambda _provider: SourceEvidenceRecipe(structure_revision=10)
         )
         previous = source.infer_sources(inputs, cache_path=cache_path, max_workers=1)
     previous_recipe = json.loads(json.dumps(previous.recipe))
@@ -280,7 +280,7 @@ def test_existing_claude_eight_cache_is_reused_without_relabeling(
     assert current.evidence_by_element == previous.evidence_by_element
 
 
-@pytest.mark.parametrize(("provider", "previous_revision"), (("codex", 6), ("claude-code", 7)))
+@pytest.mark.parametrize(("provider", "previous_revision"), (("codex", 9), ("claude-code", 8)))
 def test_changed_tool_provider_invalidates_its_prior_structure_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, previous_revision: int
 ) -> None:

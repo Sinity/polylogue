@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 from polylogue.core.json import JSONDocument, JSONValue
 
 
-def claude_async_records(number: int) -> list[JSONDocument]:
+def claude_async_records(number: int, *, unmatched: bool = False) -> list[JSONDocument]:
     session = f"neutral-parent-{number}"
     rows: list[JSONDocument] = []
 
     def append(kind: str, content: JSONValue = None, **fields: JSONValue) -> None:
         row: JSONDocument = {
             "type": kind,
-            "uuid": f"neutral-{number}-{len(rows)}",
+            "uuid": str(uuid.UUID(int=number * 100 + len(rows), version=4)),
             "sessionId": session,
             "timestamp": f"2025-01-01T00:00:{len(rows):02d}Z",
             **fields,
@@ -48,44 +49,50 @@ def claude_async_records(number: int) -> list[JSONDocument]:
         )
 
     append("user", "Review the neutral asynchronous work.")
-    call("call-foreground", "Bash", {"command": "printf neutral"})
+    call("call-foreground-", "Bash", {"command": "printf neutral"})
     # No Agent is open. A progress record may exist without claiming a child.
-    append("progress", parentToolUseID="call-foreground", data={"type": "agent_progress"})
-    result("call-foreground", {"stdout": "neutral", "stderr": "", "interrupted": False})
+    append("progress", parentToolUseID="call-foreground-", data={"type": "agent_progress"})
+    result("call-foreground-", {"stdout": "neutral", "stderr": "", "interrupted": False})
     for identity, task in (
-        ("call-failure", "task-failure"),
-        ("call-unknown", "task-unknown"),
+        ("call-failure----", "task-failure"),
+        ("call-unknown----", "task-unknown"),
         ("call-ambiguous-a", "task-ambiguous"),
         ("call-ambiguous-b", "task-ambiguous"),
     ):
         call(identity, "Bash", {"command": "false", "run_in_background": True})
         result(identity, {"backgroundTaskId": task})
-    notification("task-failure", "call-failure")
+    notification("task-failure", "call-failure----")
     notification("task-ambiguous", None)
-    call("call-agent", "Agent", {"prompt": "Review the neutral child.", "subagent_type": "general-purpose"})
+    if unmatched:
+        notification("task-failure", "call-unknown----")
+        notification("task-unmatched", None)
+    call("call-agent------", "Agent", {"prompt": "Review the neutral child.", "subagent_type": "general-purpose"})
     for _ in range(2):
         append(
             "progress",
-            parentToolUseID="call-agent",
+            parentToolUseID="call-agent------",
             agentId=f"neutral-parent-emitter-{number}",
             data={"type": "agent_progress", "agentId": f"neutral-child-{number}"},
         )
-    result("call-agent", {"agentId": f"neutral-child-{number}"})
+    result("call-agent------", {"agentId": f"neutral-child-{number}"})
     append("assistant", "Neutral work complete.")
     return rows
 
 
-def write_claude_async_sources(root: Path) -> tuple[Path, ...]:
+def write_claude_async_sources(root: Path, *, unmatched: bool = False) -> tuple[Path, ...]:
     root.mkdir()
     mains: list[Path] = []
     for number in range(1, 4):
         main = root / f"neutral-parent-{number}.jsonl"
-        main.write_text("".join(json.dumps(row) + "\n" for row in claude_async_records(number)), encoding="utf-8")
+        main.write_text(
+            "".join(json.dumps(row) + "\n" for row in claude_async_records(number, unmatched=unmatched)),
+            encoding="utf-8",
+        )
         child_root = root / main.stem / "subagents"
         child_root.mkdir(parents=True)
         child = {
             "type": "assistant",
-            "uuid": f"neutral-child-message-{number}",
+            "uuid": str(uuid.UUID(int=1000 + number, version=4)),
             "sessionId": f"neutral-parent-{number}",
             "agentId": f"neutral-child-{number}",
             "isSidechain": True,
@@ -94,7 +101,7 @@ def write_claude_async_sources(root: Path) -> tuple[Path, ...]:
         }
         (child_root / f"agent-neutral-child-{number}.jsonl").write_text(json.dumps(child) + "\n", encoding="utf-8")
         (child_root / f"agent-neutral-child-{number}.meta.json").write_text(
-            json.dumps({"agentId": f"neutral-child-{number}", "toolUseId": "call-agent"}), encoding="utf-8"
+            json.dumps({"agentId": f"neutral-child-{number}", "toolUseId": "call-agent------"}), encoding="utf-8"
         )
         mains.append(main)
     return tuple(mains)

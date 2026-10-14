@@ -63,12 +63,20 @@ class _SyntheticBatchContext(Protocol):
     ) -> GeneratedArray: ...
 
     def _generate_agent_metadata(
-        self, schema: SchemaRecord, metadata_class: SchemaRecord, agent_id: str, stem: str, rng: random.Random
+        self,
+        schema: SchemaRecord,
+        metadata_class: SchemaRecord,
+        agent_id: str,
+        stem: str,
+        rng: random.Random,
+        dispatch_tool_id: str | None = None,
     ) -> JSONValue: ...
 
     _coverage_witness_mode: bool
     _coverage_header_form: str | None
     _session_header_class: SchemaRecord | None
+    _session_turn_id: GeneratedString | None
+    _session_instruction: GeneratedString | None
     _session_header_bound: bool
     _session_parent_id: str | None
     _session_native_id: str | None
@@ -394,6 +402,8 @@ def iter_sessions(
             self._public_record_plan = None
             self._session_record_structure = None
             self._session_header_bound = False
+            self._session_turn_id = None
+            self._session_instruction = None
             header_class, active_prefix, parent_id, own_records, expected_messages = _select_session_header(
                 self, profile_rng, index
             )
