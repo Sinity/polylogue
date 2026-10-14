@@ -9,8 +9,10 @@ and its parent claims from the production retained parse.
 
 The replay laws drive the canonical retained owner
 (``tests.infra.retained_replay``) over the same graph acquired in different
-orders, and require the same index outcome whichever order was used. The
-fixed examples in ``tests/unit/sources/test_revision_backfill.py`` cover one
+orders, and require the same index outcome whichever order was used. Bounded
+controls also permute the scheduler actually consumed by prepared replay while
+preserving its topology, and require an omitted key to refuse publication.
+The fixed examples in ``tests/unit/sources/test_revision_backfill.py`` cover one
 parent with five children; these cover the shapes that family never reaches
 -- cycles, self-parents, absent parents, aliased spellings, contested claims
 and reordered source items.
@@ -20,7 +22,7 @@ from __future__ import annotations
 
 import random
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -28,13 +30,22 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.core.enums import Provider
+from polylogue.sources import revision_backfill
 from polylogue.sources.parsers.base_models import ParsedSession
 from polylogue.sources.revision_backfill import (
     ReplaySchedule,
     ReplayTopologyState,
+    RetainedPreparationRetryableError,
+    RetainedReplayScheduleRead,
     _lineage_aware_replay_schedule,
     _PreparedReplayInputs,
     parse_retained_raw_sessions,
+)
+from polylogue.storage.derived.raw import (
+    NeutralRawPreparation,
+    RawFrame,
+    RawObservationDerivation,
+    RawObservationReplacement,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -418,3 +429,125 @@ def test_leaving_a_member_out_changes_what_gets_replayed(tmp_path: Path) -> None
     assert dropped_native_id in native_ids(complete_manifest)
     assert dropped_native_id not in native_ids(index_content_manifest(partial_root))
     assert partial_run.replayed_logical_sources < complete_run.replayed_logical_sources
+
+
+@pytest.mark.parametrize("forest", [False, True], ids=["pathological-membership", "forest-full-output"])
+@pytest.mark.timeout(ARCHIVE_HEAVY_TIMEOUT_S)
+def test_actual_prepared_replay_order_preserves_selected_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, forest: bool
+) -> None:
+    """Permute the actual compute schedule, retaining its truthful graph metadata.
+
+    Pathological graphs owe membership, not full-output equivalence. Only a
+    shallow fork forest owes the stronger complete-content law.
+    """
+    graph = generate_fork_forest(0, node_count=6) if forest else generate_lineage_graph(13, node_count=6)
+    canonical_scheduler = revision_backfill._lineage_aware_replay_schedule
+    original_compute = RawObservationDerivation.compute
+    observed: dict[str, tuple[dict[str, list[tuple[object, ...]]], tuple[int, int, int]]] = {}
+    for variant in ("canonical", "reversed", "shuffled"):
+        root = tmp_path / variant
+        seed_lineage_graph(root, graph)
+        calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+
+        def schedule(
+            logical_keys: set[str],
+            evidence_reader: RetainedReplayScheduleRead,
+            spill: _PreparedReplayInputs,
+            *,
+            variant: str = variant,
+            calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = calls,
+        ) -> ReplaySchedule:
+            original = canonical_scheduler(logical_keys, evidence_reader, spill)
+            order = list(original.order)
+            if variant == "reversed":
+                order.reverse()
+            elif variant == "shuffled":
+                random.Random(104729).shuffle(order)
+                if len(order) > 1 and tuple(order) == original.order:
+                    order.reverse()
+            calls.append((tuple(original.order), tuple(order)))
+            return ReplaySchedule(order=tuple(order), topology=original.topology, parent_of=original.parent_of)
+
+        with sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True) as source:
+            selected_raw_ids = tuple(
+                str(row[0]) for row in source.execute("SELECT raw_id FROM raw_sessions ORDER BY rowid")
+            )
+
+        def compute(
+            owner: RawObservationDerivation,
+            frame: RawFrame,
+            key: str,
+            *,
+            replay_current: bool = False,
+            select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
+            neutral_page: NeutralRawPreparation | None = None,
+            selected_raw_ids: tuple[str, ...] = selected_raw_ids,
+        ) -> RawObservationReplacement:
+            # Select one finite real scope, rather than permuting singleton
+            # units. Deferred child retries keep the owner's narrower selection.
+            return original_compute(
+                owner,
+                frame,
+                key,
+                replay_current=replay_current,
+                select_retained_raw_ids=(
+                    (lambda _read: selected_raw_ids) if select_retained_raw_ids is None else select_retained_raw_ids
+                ),
+                neutral_page=neutral_page,
+            )
+
+        with monkeypatch.context() as patch:
+            patch.setattr(revision_backfill, "_lineage_aware_replay_schedule", schedule)
+            if forest:
+                patch.setattr(RawObservationDerivation, "compute", compute)
+            run = replay_retained_components(root)
+        assert calls, "the current compute owner must actually call the observed scheduler"
+        if variant != "canonical":
+            assert any(len(before) >= 2 and before != after for before, after in calls)
+        manifest = index_content_manifest(root)
+        assert frozenset(row[0] for row in manifest["sessions"]) == graph.logical_keys
+        observed[variant] = manifest, _outcome(run)
+    if forest:
+        assert observed["reversed"] == observed["shuffled"] == observed["canonical"]
+    else:
+        memberships = {
+            variant: (frozenset(row[0] for row in manifest["sessions"]), outcome)
+            for variant, (manifest, outcome) in observed.items()
+        }
+        assert memberships["reversed"] == memberships["shuffled"] == memberships["canonical"]
+
+
+@pytest.mark.timeout(ARCHIVE_HEAVY_TIMEOUT_S)
+def test_incomplete_prepared_schedule_is_refused_without_losing_source_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selected key cannot disappear behind a successful partial publication."""
+    graph = generate_fork_forest(0, node_count=6)
+    seed_lineage_graph(tmp_path, graph)
+    with sqlite3.connect(f"file:{tmp_path / 'source.db'}?mode=ro", uri=True) as source:
+        originals = tuple(source.execute("SELECT raw_id, blob_hash, blob_size FROM raw_sessions ORDER BY raw_id"))
+    canonical_scheduler = revision_backfill._lineage_aware_replay_schedule
+    dropped: list[str] = []
+
+    def incomplete(
+        logical_keys: set[str], evidence_reader: RetainedReplayScheduleRead, spill: _PreparedReplayInputs
+    ) -> ReplaySchedule:
+        original = canonical_scheduler(logical_keys, evidence_reader, spill)
+        assert original.order
+        dropped.append(original.order[-1])
+        return ReplaySchedule(order=original.order[:-1], topology=original.topology, parent_of=original.parent_of)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(revision_backfill, "_lineage_aware_replay_schedule", incomplete)
+        with pytest.raises(RetainedPreparationRetryableError):
+            replay_retained_components(tmp_path)
+    assert dropped, "the current compute owner must actually consume the incomplete schedule"
+    assert index_content_manifest(tmp_path)["sessions"] == []
+    with sqlite3.connect(f"file:{tmp_path / 'source.db'}?mode=ro", uri=True) as source:
+        assert (
+            tuple(source.execute("SELECT raw_id, blob_hash, blob_size FROM raw_sessions ORDER BY raw_id")) == originals
+        )
+    run = replay_retained_components(tmp_path)
+    assert run.quarantined == run.adoption_deferred == 0
+    assert frozenset(row[0] for row in index_content_manifest(tmp_path)["sessions"]) == graph.logical_keys
