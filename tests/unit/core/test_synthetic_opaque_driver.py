@@ -269,13 +269,20 @@ def test_collector_fixture_writer_and_fresh_build_consume_the_same_original_file
     )
     assert len(written.files) == 6
     assert len(written.session_files) == len(written.facts) == 2
-    assert all(path.suffix == ".jsonl" and path.parent == tmp_path / "writer" for path in written.session_files)
+    project = tmp_path / "writer" / "-synthetic-project"
+    assert all(path.suffix == ".jsonl" and path.parent == project for path in written.session_files)
     assert len(written.facts) == 2
     for index, artifact in enumerate(collected.artifacts):
-        main = tmp_path / "writer" / f"session-{index:06d}.jsonl"
+        main = project / f"session-{index:06d}.jsonl"
         assert main.read_bytes() == artifact.raw_bytes
         for file in artifact.adjuncts:
             assert (main.parent / main.stem / "tool-results" / file.name).read_bytes() == file.raw_bytes
+    from polylogue.core.enums import Provider
+    from polylogue.sources.source_walk import census_source_root
+
+    census = census_source_root(tmp_path / "writer", provider=Provider.CLAUDE_CODE)
+    assert census.candidate_count == 6
+    assert census.disposition_counts["session"] == 2
     # Benchmark corpus creation owns a real /realm output. Its sealed manifest
     # must include opaque files as well as the original session byte stream.
     with TemporaryDirectory(prefix="polylogue-opaque-driver-", dir="/realm/tmp/work") as temporary:
