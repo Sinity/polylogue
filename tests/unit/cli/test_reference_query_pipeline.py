@@ -76,7 +76,9 @@ def test_find_from_query_without_a_daemon_is_a_typed_refusal(tmp_path: Path, mon
     assert "session.reference" in result.output
 
 
-@pytest.mark.parametrize("root_options", [("--tag", "absent"), ("--id", "missing"), ("--origin", "claude-ai-export")])
+@pytest.mark.parametrize(
+    "root_options", [("--tag", "absent"), ("--id", "missing"), ("--origin", "claude-code-session")]
+)
 def test_reference_member_query_refuses_root_predicates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root_options: tuple[str, ...]
 ) -> None:
@@ -108,6 +110,8 @@ def test_reference_member_query_refuses_root_predicates(
 
             refused = runner.invoke(cli, ["--plain", *root_options, *arguments])
             assert refused.exit_code == 2, refused.output
+            assert isinstance(refused.exception, SystemExit)
+            assert refused.exception.code == 2
             assert "root predicates" in refused.output
 
             selected = runner.invoke(
