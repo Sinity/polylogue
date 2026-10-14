@@ -851,7 +851,6 @@ def generate_coverage_witnesses(
             corpus._generation_state = replace(corpus._generation_state)
             corpus._categorical_pools = dict(corpus._categorical_pools)
             corpus.schema = prepared_schema
-            corpus.workload_profile = None
             corpus._coverage_branch_choices = branches
             corpus._coverage_type_choices = types
             corpus._coverage_null_paths = set()

@@ -232,7 +232,7 @@ def _wire_default(
     schema = _wire_schema(self, record, fields)
     origin = record.original_path if isinstance(record, GeneratedRecord) else None
     coordinate = origin + "." + ".".join(fields) if origin is not None else None
-    plan = None if self._coverage_witness_mode else self._public_record_plan
+    plan = self._public_record_plan
     if coordinate is not None and plan is not None and coordinate in plan.scalars:
         selected = plan.scalars[coordinate]
         if schema and not existing_value_is_supported(schema, selected):
@@ -433,7 +433,13 @@ def _ensure_wire_claude_code(
             msg["content"] = _wire_default(self, data, ("message", "content"), rng, proposal)
         else:
             _normalize_claude_code_content(
-                self, msg, rng, role, index, theme, flatten_nested=self._coverage_witness_mode
+                self,
+                msg,
+                rng,
+                role,
+                index,
+                theme,
+                flatten_nested=self._coverage_witness_mode and self._public_record_plan is None,
             )
     if "timestamp" not in data:
         data["timestamp"] = _wire_default(
