@@ -16,9 +16,11 @@ import os as os
 import platform
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -984,36 +986,49 @@ def _append_jsonl_batch_locked(entries: Iterable[Mapping[str, Any]], *, path: Pa
         raise RuntimeError("verification retention lock is busy")
     parent_fd = _open_pinned_dir(path.parent)
     try:
-        # One scan per batch: a recovery backlog must not rescan the growing
-        # lane for every missing receipt. Full receipt payloads stay streamed.
-        with wrapper_phase("history.identity_scan"):
-            published = {
-                (row["run_id"], row.get("kind"))
-                for row in _iter_history_pinned(path)
-                if isinstance(row.get("run_id"), str) and (row.get("kind") is None or isinstance(row.get("kind"), str))
-            }
-        for entry in entries:
-            run_id = entry.get("run_id")
-            identity = (run_id, entry.get("kind"))
-            if isinstance(run_id, str) and identity in published:
-                continue
-            fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW, 0o600, dir_fd=parent_fd)
-            try:
-                with os.fdopen(fd, "a", encoding="utf-8") as handle:
-                    with wrapper_phase("history.append_flush"):
-                        handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
-                        handle.flush()
-                    with wrapper_phase("history.file_fsync"):
-                        os.fsync(handle.fileno())
-                # Persist every row and directory entry before advancing the
-                # batch: interruption leaves a durable prefix for recovery.
-                with wrapper_phase("history.directory_fsync"):
-                    os.fsync(parent_fd)
-            finally:
-                with contextlib.suppress(OSError):
-                    os.close(fd)
-            if isinstance(run_id, str):
-                published.add(identity)
+        # One streamed scan per batch. A temporary disk index keeps recovery
+        # memory independent of both lane length and the streamed entry count.
+        with (
+            tempfile.TemporaryDirectory(prefix="polylogue-history-identities-") as directory,
+            contextlib.closing(sqlite3.connect(Path(directory) / "identities.sqlite3")) as published,
+        ):
+            published.execute("CREATE TABLE identities (identity TEXT PRIMARY KEY) WITHOUT ROWID")
+            with wrapper_phase("history.identity_scan"):
+                published.executemany(
+                    "INSERT OR IGNORE INTO identities VALUES (?)",
+                    (
+                        (json.dumps((row["run_id"], row.get("kind")), separators=(",", ":")),)
+                        for row in _iter_history_pinned(path)
+                        if isinstance(row.get("run_id"), str)
+                        and (row.get("kind") is None or isinstance(row.get("kind"), str))
+                    ),
+                )
+            for entry in entries:
+                run_id = entry.get("run_id")
+                identity = json.dumps((run_id, entry.get("kind")), separators=(",", ":"))
+                if (
+                    isinstance(run_id, str)
+                    and published.execute("SELECT 1 FROM identities WHERE identity=?", (identity,)).fetchone()
+                    is not None
+                ):
+                    continue
+                fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+                try:
+                    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+                        with wrapper_phase("history.append_flush"):
+                            handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
+                            handle.flush()
+                        with wrapper_phase("history.file_fsync"):
+                            os.fsync(handle.fileno())
+                    # Persist every row and directory entry before advancing the
+                    # batch: interruption leaves a durable prefix for recovery.
+                    with wrapper_phase("history.directory_fsync"):
+                        os.fsync(parent_fd)
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+                if isinstance(run_id, str):
+                    published.execute("INSERT OR IGNORE INTO identities VALUES (?)", (identity,))
     finally:
         os.close(parent_fd)
         _close_retention_lock(lock_fd)
