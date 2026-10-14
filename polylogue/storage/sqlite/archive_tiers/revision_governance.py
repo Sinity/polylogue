@@ -88,6 +88,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Literal, Protocol, cast
 
+from polylogue.archive.artifact_taxonomy import CLASSIFIED_ARTIFACT_KINDS
 from polylogue.archive.revision_authority import (
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
@@ -1087,17 +1088,11 @@ def admit_raw_artifact_payload(
     raw_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
 ) -> RawAdmissionResult:
-    """Commit a non-conversational artifact payload through the raw-admission chokepoint.
+    """Retain artifact bytes and their captured classification at admission.
 
-    polylogue-1fijp arm 4: routes a payload already classified as
-    ``not classification.parse_as_session`` (the omsw artifact taxonomy --
-    tool-results/*.json, subagents/workflows/*/journal.jsonl,
-    file-history-snapshot, etc) through :func:`admit_raw_observation` so its
-    ``raw_artifacts`` classification is attached at admission time rather
-    than deferred to the next offline ``materialize_artifact_observations``
-    sweep. A ``raw_sessions`` row is still written (the acquisition-evidence
-    ledger; ``raw_artifacts.raw_id`` has a NOT NULL FK to it), but this arm
-    guarantees the payload never reaches any index-tier writer.
+    This arm writes Source evidence and no Index rows. The resident Source
+    phase decides session membership from the retained bytes: UNKNOWN is an
+    absence of a classified shape and cannot certify non-session membership.
     """
     policy_snapshot = _policy_snapshot_for_store(store)
     if store._blob_publisher is None:
@@ -2158,9 +2153,10 @@ def record_current_parser_source_census(
     if parser_sessions is not None and inherited_logical_keys is not None:
         raise ValueError("parser census cannot combine parsed and inherited identities")
     with seal.source_rows(
-        """
+        f"""
         SELECT logical_source_key, revision_kind,
-               EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0),
+               EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0
+                      AND artifact_kind IN ({", ".join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))})),
                source_index
         FROM raw_sessions WHERE raw_id = ?
         """,
@@ -2188,9 +2184,10 @@ def record_current_parser_source_census(
                 witness=singleton_witness,
             )
         with seal.source_rows(
-            """
+            f"""
             SELECT logical_source_key, revision_kind,
-                   EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0),
+                   EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0
+                      AND artifact_kind IN ({", ".join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))})),
                    source_index
             FROM raw_sessions WHERE raw_id = ?
             """,
@@ -3896,11 +3893,12 @@ def _raw_replay_representative_query(keys: Sequence[str]) -> tuple[str, tuple[ob
     )
 
 
-_RAW_MEMBERSHIP_CENSUS_COLUMNS = """
+_RAW_MEMBERSHIP_CENSUS_COLUMNS = f"""
     r.raw_id,
     r.source_index,
     (
-        EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
+        EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0
+               AND a.artifact_kind IN ({",".join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))}))
         OR EXISTS(
             SELECT 1 FROM raw_membership_census AS c
             WHERE c.raw_id = r.raw_id

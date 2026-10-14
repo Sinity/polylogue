@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from polylogue.archive.artifact_taxonomy import CLASSIFIED_ARTIFACT_KINDS
 from polylogue.archive.revision_authority import (
     WORK_EVENT_RAW_ID_PREFIX,
     is_work_event_raw_id,
@@ -598,7 +599,8 @@ def raw_term_case(conn: sqlite3.Connection, *, cte_name: str = "heads") -> tuple
             WHEN instr(parse_error, '{VALUE_BOUND_REFUSED_HEAD}') > 0 THEN '{_TERM_VALUE_BOUND_REFUSED}'
             WHEN parse_error IS NOT NULL THEN '{_TERM_PARSE_FAILURE}'
             WHEN validation_status = 'failed' THEN '{_TERM_VALIDATION_REJECTED}'
-            WHEN parse_as_session = 0 AND artifact_kind IS NOT NULL AND artifact_kind != 'unknown'
+            WHEN parse_as_session = 0
+                 AND artifact_kind IN ({",".join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))})
                 THEN '{_TERM_NON_SESSION_ARTIFACT}'
             WHEN support_status = 'decode_failed' THEN '{_TERM_DECODE_FAILED}'
             WHEN census_status IN ('non_session', 'failed') THEN '{_TERM_CENSUS_NON_SESSION}'
@@ -775,12 +777,7 @@ def audit_source_conservation(
         """
     ):
         lineage_class: str | None = None
-        if (
-            parse_as_session == 0
-            and artifact_kind is not None
-            and artifact_kind != "unknown"
-            and artifact_kind != "terminal_superseded_deferred_cas_frontier"
-        ):
+        if parse_as_session == 0 and artifact_kind in CLASSIFIED_ARTIFACT_KINDS:
             lineage_class = f"artifact:{artifact_kind}"
         else:
             if artifact_kind in {

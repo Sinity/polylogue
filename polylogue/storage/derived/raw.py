@@ -28,6 +28,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, BinaryIO, Literal, Protocol, TypeVar, cast
 
+from polylogue.archive.artifact_taxonomy import CLASSIFIED_ARTIFACT_KINDS
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionKind,
@@ -1241,7 +1242,8 @@ class RawObservationInspection:
             return "stale"
         non_session = (
             conn.execute(
-                "SELECT 1 FROM raw_artifacts WHERE raw_id = ? AND parse_as_session = 0 LIMIT 1",
+                f"SELECT 1 FROM raw_artifacts WHERE raw_id = ? AND parse_as_session = 0 "
+                f"AND artifact_kind IN ({','.join(repr(kind) for kind in sorted(CLASSIFIED_ARTIFACT_KINDS))}) LIMIT 1",
                 (key,),
             ).fetchone()
             is not None

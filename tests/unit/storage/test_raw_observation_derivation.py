@@ -2383,3 +2383,64 @@ def test_membership_expansion_and_replay_page_both_source_connections(tmp_path: 
                 seal._scratch.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, selected_limit)
 
     _run_raw_law(tmp_path, exercise)
+
+
+def test_unknown_admitted_artifact_is_not_positive_non_session_evidence(tmp_path: Path) -> None:
+    """A valid unknown classifier result must remain work for the real parser."""
+    from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact
+    from polylogue.core.json import JSONValue
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    bootstrap_archive_root(tmp_path)
+
+    def exercise(_compute: BoundedComputeAdapter) -> None:
+        classification = classify_artifact(42, provider=Provider.CLAUDE_AI, source_path="unknown.json")
+        assert classification.kind is ArtifactKind.UNKNOWN
+        assert not classification.parse_as_session
+        with _fixture_archive(tmp_path) as archive:
+            admitted = archive.admit_raw_artifact_payload(
+                provider=Provider.CLAUDE_AI,
+                payload=b"42",
+                source_path="unknown.json",
+                canonical_source_path="unknown.json",
+                acquired_at_ms=1,
+                classification=classification,
+            )
+            archive.commit()
+            assert admitted.raw_id is not None
+            rows = archive.raw_membership_census_rows((admitted.raw_id,))
+            assert len(rows) == 1
+            assert rows[0][0] == admitted.raw_id
+            assert not rows[0][2]
+            sidecar_payload: JSONValue = {"result": "neutral"}
+            sidecar = classify_artifact(
+                sidecar_payload, provider=Provider.CLAUDE_CODE, source_path="tool-results/result.json"
+            )
+            assert sidecar.kind is ArtifactKind.TOOL_RESULT_SIDECAR
+            known = archive.admit_raw_artifact_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=json.dumps(sidecar_payload).encode(),
+                source_path="tool-results/result.json",
+                canonical_source_path="tool-results/result.json",
+                acquired_at_ms=2,
+                classification=sidecar,
+            )
+            archive.commit()
+            assert known.raw_id is not None
+            expected = {admitted.raw_id: False, known.raw_id: True}
+            assert {row[0]: row[2] for row in archive.raw_membership_census_rows(tuple(expected))} == expected
+        with (
+            PreparedIndexMutation.source_only(archive_root=tmp_path) as seal,
+            seal.original_read_snapshot(),
+            seal.source_producer(),
+        ):
+            reader = PreparedSessionSourceRead(seal, blob_store=BlobStore(tmp_path / "blob"))
+            assert {row[0]: row[2] for row in reader.raw_membership_census_rows(tuple(expected))} == expected
+            for raw_id in expected:
+                record_current_parser_source_census(seal, raw_id)
+            with seal.source_rows("SELECT raw_id, status FROM raw_authority_parser_census ORDER BY raw_id") as receipts:
+                assert dict(receipts) == {admitted.raw_id: "failed", known.raw_id: "complete"}
+
+    _run_raw_law(tmp_path, exercise)

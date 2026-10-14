@@ -19,6 +19,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.archive.artifact_taxonomy import CLASSIFIED_ARTIFACT_KINDS
 from polylogue.core.enums import TopologyEdgeStatus
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.sqlite_introspection import table_exists
@@ -221,7 +222,7 @@ def _raw_disposition(row: sqlite3.Row, *, source_available: bool) -> tuple[str, 
         return ("parse_failure", "raw_sessions.parse_error records a parser refusal")
     if validation_status == "failed":
         return ("validation_rejected", "raw_sessions.validation_status=failed records schema refusal")
-    if parse_as_session == 0 and artifact_kind and artifact_kind != "unknown":
+    if parse_as_session == 0 and artifact_kind in CLASSIFIED_ARTIFACT_KINDS:
         return ("non_session_artifact", f"raw_artifacts declares {artifact_kind}")
     if parsed_at_ms is None:
         return ("pending", "raw is acquired but has not reached the parse boundary")
