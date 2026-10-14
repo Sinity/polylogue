@@ -372,3 +372,13 @@ per-origin workload extractor, loader, profiles and hand renderer are retired.
 Packages missing measured evidence require reinference and publication before
 they can supply the driver. Neutral publication controls qualify this path;
 they do not stand in for operator package publication.
+
+`SyntheticComposition` selects providers by exact published main-session
+revision counts, using the same seeded session driver for each selection. The
+producer excludes separately typed Claude child transcripts and Codex headers
+that declare a parent, including missing and ambiguous parent associations.
+The population counts retained original revisions or neutral scopes, not unique
+conversations. The fresh-build corpus writer records populations, normalized
+weights, profile identities and actual selection counts. Composition refuses
+packages without this measured denominator; it never substitutes byte sizes or
+bundle totals. Session artifact writes refuse existing targets.
