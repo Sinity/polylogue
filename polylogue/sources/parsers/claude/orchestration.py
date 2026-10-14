@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.core.claude_code_children import claude_agent_id_from_path, claude_agent_identity_operand
 from polylogue.core.enums import Provider
 from polylogue.core.json import decode_provider_utf8
 from polylogue.sources.origin_specs import artifact_rule_for_path
@@ -100,13 +101,6 @@ def _first_string(payload: Mapping[str, object], *keys: str) -> str | None:
         if value := _string(payload.get(key)):
             return value
     return None
-
-
-def _agent_id_from_path(source_path: str) -> str | None:
-    name = Path(source_path).name
-    if not name.startswith("agent-"):
-        return None
-    return name.removesuffix(".meta.json").removesuffix(".jsonl").removesuffix(".ndjson")
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,9 +244,10 @@ def _document_fact(kind: str, source_path: str, payload: Mapping[str, object]) -
         )
         or fallback_run_id
     )
-    agent_id = _first_string(payload, "agentId", "agent_id", "sessionId", "session_id")
+    agent_operand = claude_agent_identity_operand(payload)
+    agent_id = agent_operand[1] if agent_operand is not None else None
     if kind == "agent_sidecar_meta":
-        agent_id = agent_id or _agent_id_from_path(source_path)
+        agent_id = agent_id or claude_agent_id_from_path(source_path)
     content_key = _first_string(payload, "contentKey", "content_key", "callKey", "call_key", "key")
     retained = _retained_fields(payload, _DOCUMENT_FIELDS)
     return ClaudeOrchestrationFact(kind, source_path, None, run_id, agent_id, content_key, retained)
@@ -269,7 +264,8 @@ def _journal_fact(source_path: str, line: int, payload: Mapping[str, object]) ->
         )
         or Path(source_path).parent.name
     )
-    agent_id = _first_string(payload, "agentId", "agent_id", "sessionId", "session_id")
+    agent_operand = claude_agent_identity_operand(payload)
+    agent_id = agent_operand[1] if agent_operand is not None else None
     content_key = _first_string(payload, "contentKey", "content_key", "callKey", "call_key", "key")
     retained = _retained_fields(payload, _JOURNAL_FIELDS)
     return ClaudeOrchestrationFact(

@@ -34,6 +34,11 @@ from ..base_models import ParseAccounting, upgrade_chat_export_user_authorship
 from ..base_support import tool_result_media_attachments
 from .lineage_graph import ClaudeLineageGraph, LineageNode
 
+# Public segment forms with semantic handlers in the canonical Claude parser.
+CLAUDE_CONTENT_SEGMENT_TYPES = frozenset(
+    {"text", "thinking", "tool_use", "tool_result", "image", "document", "token_budget", "voice_note", "code"}
+)
+
 CLAUDE_MISSING_MESSAGE_ID_INGEST_FLAG = "degraded:claude-missing-message-id"
 CLAUDE_DUPLICATE_MESSAGE_ID_INGEST_FLAG = "diagnostic:claude-duplicate-message-id"
 CLAUDE_LINEAGE_CYCLE_INGEST_FLAG = "degraded:claude-lineage-cycle"
@@ -613,17 +618,6 @@ def _claude_content_blocks(content: object, *, admission: AdmissionLedger | None
     if not isinstance(content, list):
         return content_blocks_from_segments(content, admission=admission)
 
-    known_segment_types = {
-        "text",
-        "thinking",
-        "tool_use",
-        "tool_result",
-        "image",
-        "document",
-        "token_budget",
-        "voice_note",
-        "code",
-    }
     blocks: list[ParsedContentBlock] = []
     for raw_segment in content:
         if not isinstance(raw_segment, Mapping):
@@ -632,7 +626,7 @@ def _claude_content_blocks(content: object, *, admission: AdmissionLedger | None
 
         segment = dict(raw_segment)
         provider_type = segment.get("type")
-        if isinstance(provider_type, str) and provider_type not in known_segment_types:
+        if isinstance(provider_type, str) and provider_type not in CLAUDE_CONTENT_SEGMENT_TYPES:
             # Keep a non-semantic structural witness for provider block types
             # Polylogue does not yet understand. Raw source evidence remains
             # authoritative for the opaque fields.

@@ -14,6 +14,7 @@ from polylogue.archive.message.artifacts import classify_material_origin, classi
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.claude_code_children import claude_agent_transcript_stem, claude_dispatch_operand
 from polylogue.core.enums import (
     BlockType,
     MaterialOrigin,
@@ -1067,17 +1068,6 @@ class _DelegationProgressStats:
     description: str | None = None
 
 
-def _subagent_transcript_stem(agent_id: str) -> str:
-    """Return the provider name a dispatched child claims for itself.
-
-    Claude Code writes a subagent's transcript to
-    ``<session>/subagents/agent-<agentId>.jsonl`` and the child parser claims
-    that file stem as its provider alias; parent-side records carry the bare
-    ``agentId``. The stem is the provider's own naming, not an inference.
-    """
-    return agent_id if agent_id.startswith("agent-") else f"agent-{agent_id}"
-
-
 def _accumulate_dispatch_result(
     item: dict[str, object],
     timestamp: str | None,
@@ -1090,31 +1080,14 @@ def _accumulate_dispatch_result(
     ``tool_use_id``: exact parent-side evidence binding one tool-use block to
     one child. Returns whether the record carried such evidence.
     """
-    if item.get("type") != "user":
+    operand = claude_dispatch_operand(item)
+    if operand is None:
         return False
-    tool_result = item.get("toolUseResult")
-    if not isinstance(tool_result, dict):
-        return False
-    agent_id = _string_field(tool_result, "agentId")
-    if not agent_id:
-        return False
-    message = item.get("message")
-    content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, list):
-        return False
-    tool_use_ids = {
-        str(segment["tool_use_id"])
-        for segment in content
-        if isinstance(segment, dict)
-        and segment.get("type") == "tool_result"
-        and isinstance(segment.get("tool_use_id"), str)
-        and segment["tool_use_id"]
-    }
-    if len(tool_use_ids) != 1:
-        return False
-    tool_use_id = next(iter(tool_use_ids))
+    tool_use_id, child_stem = operand
+    tool_result = item["toolUseResult"]
+    assert isinstance(tool_result, Mapping)
     entry = accumulator.setdefault(tool_use_id, _DelegationProgressStats())
-    entry.child_provider_ids.add(_subagent_transcript_stem(agent_id))
+    entry.child_provider_ids.add(child_stem)
     entry.result_count += 1
     entry.agent_type = _string_field(tool_result, "agentType") or entry.agent_type
     entry.description = _string_field(tool_result, "description") or entry.description
@@ -1160,7 +1133,7 @@ def _accumulate_delegation_progress(
     for key in ("agentId", "agent_id"):
         value = _string_field(data, key)
         if value:
-            entry.child_provider_ids.add(_subagent_transcript_stem(value))
+            entry.child_provider_ids.add(claude_agent_transcript_stem(value))
     entry.count += 1
     if timestamp:
         if entry.first_seen is None or timestamp < entry.first_seen:

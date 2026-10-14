@@ -22,7 +22,7 @@ from pathlib import Path
 #: Claude Code names todo files by the owning session's UUID, optionally
 #: suffixed with the delegated subagent's own UUID (``agent-*.jsonl``
 #: transcripts follow the identical ``-agent-<uuid>`` convention elsewhere in
-#: this package, e.g. ``orchestration.py:_agent_id_from_path``).
+#: this package, e.g. ``core/claude_code_children.py:claude_agent_id_from_path``).
 _FILENAME_RE = re.compile(
     r"^(?P<session_id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
     r"(?:-agent-(?P<agent_id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}))?$"
