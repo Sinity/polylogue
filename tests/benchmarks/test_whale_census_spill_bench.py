@@ -99,7 +99,9 @@ def test_managed_whale_replay_records_complete_output_and_actual_resources(
             assert page is not None and page.lineage_complete
             assert len(page.messages) == 1
             assert len(page.messages[0].blocks) == 1
-            observed[str(raw_id)] = hashlib.sha256(page.messages[0].blocks[0].text.encode()).hexdigest()
+            observed_text = page.messages[0].blocks[0].text
+            assert observed_text is not None
+            observed[str(raw_id)] = hashlib.sha256(observed_text.encode()).hexdigest()
     assert observed == expected
     receipt = emit_receipt(
         f"managed-retained-whale-{whale_payload_bytes}",
