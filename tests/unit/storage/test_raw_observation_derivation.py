@@ -2234,3 +2234,63 @@ def test_typed_raw_only_replay_refreshes_non_session_receipt_atomically(tmp_path
         assert _snapshot(tmp_path) == settled
 
     _run_raw_law(tmp_path, exercise)
+
+
+def test_raw_census_selection_pages_against_each_executing_connection(tmp_path: Path) -> None:
+    """A smaller prepared connection still returns the entire unordered SQL set."""
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError
+
+    bootstrap_archive_root(tmp_path)
+
+    def exercise(_compute: BoundedComputeAdapter) -> None:
+        with _fixture_archive(tmp_path) as archive:
+            raw_ids = tuple(
+                archive.write_raw_payload(
+                    provider=Provider.CLAUDE_AI,
+                    payload=json.dumps({"uuid": f"selection-{i}", "chat_messages": []}).encode(),
+                    source_path=f"selection-{i}.json",
+                    canonical_source_path=f"selection-{i}.json",
+                    acquired_at_ms=i + 1,
+                )
+                for i in range(80)
+            )
+            archive.commit()
+            selected = (*reversed(raw_ids), raw_ids[0], "absent-raw")
+            expected = archive.raw_membership_census_rows(selected)
+            assert tuple(row[0] for row in expected) == tuple(sorted(raw_ids))
+            sizes = archive.raw_payload_sizes(raw_ids)
+            assert set(sizes) == set(raw_ids)
+            connection = archive.source_connection
+            previous = connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 17)
+            try:
+                assert archive.raw_membership_census_rows(selected) == expected
+                assert archive.raw_payload_sizes(selected) == sizes
+                assert archive.raw_membership_census_rows(()) == ()
+                assert archive.raw_payload_sizes(()) == {}
+                connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 1)
+                assert archive.raw_membership_census_rows(None) == expected
+                with pytest.raises(sqlite3.OperationalError, match="variable limit"):
+                    archive.raw_membership_census_rows(raw_ids[:1])
+            finally:
+                connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous)
+
+        with (
+            PreparedIndexMutation.source_only(archive_root=tmp_path) as seal,
+            seal.original_read_snapshot(),
+            seal.source_producer(),
+        ):
+            reader = PreparedSessionSourceRead(seal, blob_store=BlobStore(tmp_path / "blob"))
+            # The selected Source SQL runs on scratch, not the original observer.
+            previous = seal._scratch.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 64)
+            try:
+                assert seal.source_parameter_limit() == 64
+                assert reader.raw_membership_census_rows(selected) == expected
+                assert reader.raw_membership_census_rows(()) == ()
+                with seal.source_rows("SELECT 1"):
+                    with pytest.raises(ReferenceSealError, match="idle original producer"):
+                        seal.source_parameter_limit()
+            finally:
+                seal._scratch.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous)
+
+    _run_raw_law(tmp_path, exercise)

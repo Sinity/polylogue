@@ -82,7 +82,7 @@ import sqlite3
 import time
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1822,51 +1822,50 @@ def raw_revision_rebuild_logical_keys(
     )
 
 
+def _raw_selection_pages(
+    raw_ids: Sequence[str], variable_limit: int, *, fixed_parameters: int = 0
+) -> Iterator[tuple[str, ...]]:
+    """Page a SQL set selection against the executing connection's bind limit."""
+    selected = sorted(set(raw_ids))
+    if not selected:
+        return
+    page_size = min(128, variable_limit - fixed_parameters)
+    if page_size < 1:
+        raise sqlite3.OperationalError("SQLite variable limit cannot fit the raw selection parameters")
+    for offset in range(0, len(selected), page_size):
+        check_compute_cancelled()
+        yield tuple(selected[offset : offset + page_size])
+
+
 def raw_membership_census_rows(
     store: RawRevisionGovernanceHost, raw_ids: Sequence[str] | None = None
 ) -> tuple[tuple[str, int, bool, int], ...]:
     """Return retained raws and whether durable evidence says they are non-sessions."""
     conn = store._ensure_source_conn()
-    columns = """
-        r.raw_id,
-        r.source_index,
-        (
-            EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0)
-            OR EXISTS(
-                SELECT 1 FROM raw_membership_census AS c
-                WHERE c.raw_id = r.raw_id
-                  AND c.parser_fingerprint = ?
-                  AND c.status = 'non_session'
-                  AND r.parsed_at_ms IS NOT NULL
-                  AND r.parse_error IS NULL
-            )
-        ),
-        r.rowid
-    """
     if raw_ids is None:
-        rows = conn.execute(
-            f"SELECT {columns} FROM raw_sessions AS r ORDER BY r.raw_id", (raw_authority_parser_fingerprint(),)
-        ).fetchall()
-    elif raw_ids:
-        placeholders = ",".join("?" for _ in raw_ids)
-        rows = conn.execute(
-            f"SELECT {columns} FROM raw_sessions AS r WHERE r.raw_id IN ({placeholders}) ORDER BY r.raw_id",
-            (raw_authority_parser_fingerprint(), *raw_ids),
-        ).fetchall()
-    else:
-        rows = []
-    return tuple((str(row[0]), int(row[1]), bool(row[2]), int(row[3])) for row in rows)
+        with closing(conn.execute(*_raw_membership_census_query(None))) as rows:
+            return _raw_membership_census_rows_from_rows(rows)
+    result: list[tuple[str, int, bool, int]] = []
+    for page in _raw_selection_pages(raw_ids, conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER), fixed_parameters=1):
+        with closing(conn.execute(*_raw_membership_census_query(page))) as rows:
+            result.extend(_raw_membership_census_rows_from_rows(rows))
+    return tuple(result)
 
 
 def raw_payload_sizes(store: RawRevisionGovernanceHost, raw_ids: Sequence[str]) -> dict[str, int]:
     if not raw_ids:
         return {}
-    placeholders = ",".join("?" for _ in raw_ids)
-    rows = store._ensure_source_conn().execute(
-        f"SELECT raw_id, blob_size FROM raw_sessions WHERE raw_id IN ({placeholders})",
-        tuple(raw_ids),
-    )
-    return {str(row[0]): int(row[1] or 0) for row in rows}
+    conn = store._ensure_source_conn()
+    result: dict[str, int] = {}
+    for page in _raw_selection_pages(raw_ids, conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)):
+        placeholders = ",".join("?" for _ in page)
+        with closing(
+            conn.execute(f"SELECT raw_id, blob_size FROM raw_sessions WHERE raw_id IN ({placeholders})", page)
+        ) as rows:
+            for row in rows:
+                check_compute_cancelled()
+                result[str(row[0])] = int(row[1] or 0)
+    return result
 
 
 _RAW_BYTE_REVISION_DEPENDENTS_FILTER_SQL = """WHERE raw_id != ?
