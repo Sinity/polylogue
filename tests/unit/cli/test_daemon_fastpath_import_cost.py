@@ -148,6 +148,21 @@ def test_daemon_served_query_does_not_import_heavy_local_execution_stack(
 @pytest.mark.parametrize(
     "probe,forbidden",
     [
+        pytest.param(
+            "from polylogue.cli.commands.status import normalize_raw_frontier_status_payload; "
+            "payload = {'ok': False, 'status_snapshot': {'state': 'unavailable'}, 'marker': {'nested': [1, None, 'synthetic']}}; "
+            "result = normalize_raw_frontier_status_payload(payload, require_fresh_snapshot=True); "
+            "assert result['ok'] is False; "
+            "assert result['status_snapshot'] == payload['status_snapshot']; "
+            "assert result['marker'] == payload['marker']; "
+            "assert result['raw_frontier_integrity']['overall_status'] == 'unknown'",
+            (
+                "polylogue.storage.derived.session.status",
+                "polylogue.analysis.archive",
+                "polylogue.storage.sqlite.archive_tiers.user_write",
+            ),
+            id="status-normalization-without-insight-sql",
+        ),
         (
             "from polylogue.surfaces.machine_envelope import success; assert success({'value': 1}).to_dict()['result'] == {'value': 1}",
             ("polylogue.surfaces.authority",),
