@@ -58,6 +58,7 @@ UnsupportedCorpusReason: TypeAlias = Literal[
     "unsupported_element",
     "missing_schema",
     "unsupported_json_schema_construct",
+    "missing_workload_profile",
 ]
 PackageReceipt: TypeAlias = JSONDocument
 
@@ -796,6 +797,14 @@ def _compile_entry(
         raise AssertionError("supported manifest entry lost schema or wire format")
     profile_loader = getattr(registry, "get_workload_profile", None)
     workload_profile = profile_loader(provider, package.version) if callable(profile_loader) else None
+    if not isinstance(workload_profile, Mapping):
+        return InferredCorpusManifestEntry(
+            key=key,
+            unsupported=UnsupportedCorpusRecord(
+                "missing_workload_profile",
+                ("catalog metadata has no measured generation evidence; re-infer the package",),
+            ),
+        )
     spec = CorpusSpec.for_provider(
         provider,
         package_version=package.version,
@@ -808,8 +817,8 @@ def _compile_entry(
         tags=("inferred", "schema", "synthetic", "manifest"),
     )
     # Construct the production generator against the exact package/version/
-    # element.  No generation is performed here, so compiling the receipt does
-    # not turn an unverified catalog into an inference claim.
+    # element and require a real witness. Catalog identity alone cannot supply
+    # the measured evidence needed by the generator.
     selection = SyntheticSchemaSelection(
         provider=provider,
         package_version=package.version,

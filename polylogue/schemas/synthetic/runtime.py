@@ -537,7 +537,16 @@ def _walk_object(
             if name not in candidate_keys:
                 continue
             field_schema = _schema_record(properties.get(name, schema.get("additionalProperties")))
-            forced = name in schema_required or plan is not None and plan.requires_field(plan_path + "." + name)
+            forced = (
+                name in schema_required
+                or plan is not None
+                and plan.requires_field(plan_path + "." + name)
+                or self._coverage_witness_mode
+                and any(
+                    selected == path + ".properties." + name or selected.startswith(path + ".properties." + name + ".")
+                    for selected in self._coverage_type_choices
+                )
+            )
             if not field_schema and not forced:
                 continue
             frequency = field_schema.get("x-polylogue-frequency")
@@ -554,7 +563,17 @@ def _walk_object(
         if prop_name not in candidate_keys:
             continue
         prop_schema = _schema_record(properties.get(prop_name, schema.get("additionalProperties")))
-        forced = prop_name in schema_required or plan is not None and plan.requires_field(plan_path + "." + prop_name)
+        forced = (
+            prop_name in schema_required
+            or plan is not None
+            and plan.requires_field(plan_path + "." + prop_name)
+            or self._coverage_witness_mode
+            and any(
+                selected == path + ".properties." + prop_name
+                or selected.startswith(path + ".properties." + prop_name + ".")
+                for selected in self._coverage_type_choices
+            )
+        )
         if not prop_schema and not forced:
             continue
 

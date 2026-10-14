@@ -425,6 +425,16 @@ def _codex_record_stream_corpus(*, lineage: bool = False) -> SyntheticCorpus:
             element_schemas={"session_record_stream": schema},
             privacy_policy="standard",
         )
+        # This replay canary declares parent then child; the measured classes
+        # and prefix counts still come from the two neutral physical scopes.
+        profile["profile_kind"] = "authored-fixture"
+        classes = profile["session_lineage"]["header_classes"]
+        profile["authored_session_cycle"] = [
+            {"class": index, "prefix_point": row["prefix_joint"][0]["points"][0]}
+            for outcome in ("no_explicit_parent", "matched")
+            for index, row in enumerate(classes)
+            if row["outcome"] == outcome
+        ]
     else:
         profile = inferred_record_profile("codex", schema, samples, element="session_record_stream")
     return SyntheticCorpus(

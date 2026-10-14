@@ -724,7 +724,9 @@ def _collect_type_choices(schema: object) -> list[tuple[str, str]]:
         if not isinstance(node, Mapping):
             continue
         schema_type = node.get("type")
-        if isinstance(schema_type, list):
+        if isinstance(schema_type, str):
+            choices.append((path, schema_type))
+        elif isinstance(schema_type, list):
             choices.extend((path, item) for item in schema_type if isinstance(item, str))
         pending.extend(reversed(_coverage_children(node, path)))
     return choices

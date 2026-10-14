@@ -786,7 +786,7 @@ def _select_session_header(
     if not points:
         if row.get("outcome") == "missing_header":
             row = None
-        if self.workload_profile.get("profile_kind") == "authored-fixture":
+        if self.workload_profile.get("profile_kind") == "authored-fixture" and selected_point is None:
             # Explicit fixture record cycles own their declared request count;
             # they do not claim to sample an operator root-length population.
             return row, None, None, None, None
@@ -796,7 +796,9 @@ def _select_session_header(
         if not joint.bins:
             raise ValueError("original root header count joint is missing; re-infer the package")
         key = rng.choices(list(joint.bins), weights=[value[1] for value in joint.bins.values()], k=1)[0]
-        point = rng.choice(joint.extrema[key])
+        point = selected_point if selected_point is not None else rng.choice(joint.extrema[key])
+        if point not in joint.extrema[key]:
+            raise ValueError("authored root count declaration is absent from measured header evidence")
         return row, None, None, point[0], point[2]
     point = rng.choices([item[0] for item in points], weights=[item[1] for item in points], k=1)[0]
     query = (

@@ -1174,7 +1174,7 @@ class PublicRecordPlan:
             if not isinstance(forms, list) or not forms:
                 raise ValueError("native tool value-field forms are missing; re-infer the package")
             field_forms: list[tuple[str, ...]] = []
-            weights: list[int] = []
+            field_form_weights: list[int] = []
             for form in forms:
                 fields = form.get("fields") if isinstance(form, dict) else None
                 if (
@@ -1186,9 +1186,15 @@ class PublicRecordPlan:
                 ):
                     raise ValueError("native tool value-field form is malformed")
                 assert isinstance(form, dict)
+                if not isinstance(form.get("result_mode"), str):
+                    raise ValueError("native tool value-field result mode is missing; re-infer the package")
+                if form["result_mode"] != mode:
+                    continue
                 field_forms.append(tuple(str(field) for field in fields))
-                weights.append(_count(form.get("count")))
-            selected_fields = rng.choices(field_forms, weights=weights, k=1)[0]
+                field_form_weights.append(_count(form.get("count")))
+            if not field_forms:
+                raise ValueError("native tool value-field form contradicts its measured result mode")
+            selected_fields = rng.choices(field_forms, weights=field_form_weights, k=1)[0]
             for value_field in NATIVE_CODEX_TOOL_VALUE_FIELDS:
                 target = path + "." + value_field
                 if value_field in selected_fields:

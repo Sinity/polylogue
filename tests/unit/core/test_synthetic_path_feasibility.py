@@ -146,6 +146,10 @@ def test_measured_main_driver_conditions_the_whole_four_record_path() -> None:
         for identifier in ("call0001", "call0002")
     ]
     samples.extend(result_samples)
+    from polylogue.schemas.field_stats.collection import _collect_field_stats
+    from polylogue.schemas.generation.field_annotations import annotate_schema
+
+    annotate_schema(identity, _collect_field_stats(["call0001", "call0002"]))
     profile = inferred_record_profile("claude-code", schema, samples, element="session_record_stream")
     corpus = SyntheticCorpus(
         schema,
@@ -349,7 +353,15 @@ def test_actual_codex_header_joint_conditions_messages_before_field_draws() -> N
     context: JSONDocument = {"type": "turn_context", "payload": {}}
     samples: list[JSONDocument] = [message, message, context, context]
     schema, profile = inferred_codex_session_profile(
-        {"type": "object", "properties": {"payload": {"type": "object"}}},
+        {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "properties": {"content": {"type": "array", "items": {"type": "object"}}},
+                }
+            },
+        },
         samples,
         native_id="neutral-session",
     )

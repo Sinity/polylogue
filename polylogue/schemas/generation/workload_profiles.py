@@ -770,7 +770,7 @@ class _ContentStructure:
     kinds: Counter[str] = field(default_factory=Counter)
     discriminator_fields: dict[str, Counter[str]] = field(default_factory=dict)
     body_field_forms: dict[str, Counter[tuple[str, ...]]] = field(default_factory=dict)
-    native_tool_field_forms: dict[str, Counter[tuple[str, ...]]] = field(default_factory=dict)
+    native_tool_field_forms: dict[str, Counter[tuple[str, tuple[str, ...]]]] = field(default_factory=dict)
     starts: Counter[tuple[str, str]] = field(default_factory=Counter)
     ends: Counter[tuple[str, str]] = field(default_factory=Counter)
     transitions: Counter[tuple[str, str, str, str]] = field(default_factory=Counter)
@@ -840,7 +840,8 @@ class _ContentStructure:
                 "custom_tool_call_output",
             }:
                 fields = tuple(field for field in NATIVE_CODEX_TOOL_VALUE_FIELDS if field in tool)
-                self.native_tool_field_forms.setdefault(kind, Counter())[fields] += 1
+                mode = tool_result_content_mode(tool) if kind.endswith("_output") else ""
+                self.native_tool_field_forms.setdefault(kind, Counter())[(mode, fields)] += 1
             presence = (
                 "absent"
                 if field_name not in tool
@@ -978,7 +979,10 @@ class _ContentStructure:
             "representations": dict(sorted(self.representations.items())),
             "block_kinds": dict(sorted(self.kinds.items())),
             "native_tool_field_forms": {
-                kind: [{"fields": list(fields), "count": count} for fields, count in sorted(forms.items())]
+                kind: [
+                    {"result_mode": mode, "fields": list(fields), "count": count}
+                    for (mode, fields), count in sorted(forms.items())
+                ]
                 for kind, forms in sorted(self.native_tool_field_forms.items())
             },
             "block_body_field_forms": {
