@@ -7,6 +7,7 @@ import json
 import sqlite3
 import tracemalloc
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pytest
 
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.derivation import Budget, DerivationFrame, DerivationReport, Outcome
+from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 from polylogue.storage.fts.derivation import (
     GLOBAL_PARTITION,
     FtsDerivationAdapter,
@@ -22,6 +24,8 @@ from polylogue.storage.fts.derivation import (
     FtsPartitionReplacement,
 )
 from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync, suspend_fts_triggers_sync
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection, owned_daemon_connection
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write, run_off_event_loop
 from tests.infra.identity import fixture_block_content_identity
 
 
@@ -102,6 +106,35 @@ def test_valid_empty_partition_is_done_without_a_fake_row(test_conn: sqlite3.Con
     assert report.done == 0
     assert report.made_no_publication_attempts
     assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_fts_publication_uses_the_daemon_writer_with_an_active_read_snapshot(tmp_path: Path) -> None:
+    """Publishing through a readonly snapshot would fail or leave FTS missing."""
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
+    index = tmp_path / "index.db"
+
+    def prepare() -> str:
+        with owned_daemon_connection(index, archive_root=tmp_path) as conn:
+            session_id, rowid = _seed_session(conn)
+            conn.execute("DELETE FROM messages_fts WHERE rowid=?", (rowid,))
+            conn.execute("DELETE FROM messages_fts_identity WHERE rowid=?", (rowid,))
+            conn.commit()
+            return session_id
+
+    session_id = await run_archive_fixture_write(tmp_path, prepare)
+    adapter = make_fts_derivation(index, archive_root=tmp_path, orphan_interval_s=None)
+    frame = make_fts_frame(index, archive_root=tmp_path, scope=(session_id,))
+    with closing(open_readonly_connection(index)) as reader:
+        reader.execute("BEGIN")
+        assert reader.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
+        report = await run_archive_fixture_write(tmp_path, lambda: _converge(adapter, frame))
+        assert report.done == 1 and report.failed == report.pending == 0
+        # The still-open reader retains its old view while the separate writer committed.
+        assert reader.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
+        reader.rollback()
+        assert reader.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+        assert adapter.inspect_partition(reader, session_id).valid
 
 
 def test_kernel_repairs_one_stale_partition_without_rewriting_a_healthy_sibling(
