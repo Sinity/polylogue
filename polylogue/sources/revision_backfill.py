@@ -4439,7 +4439,7 @@ def apply_prepared_revision_classification(
 class RetainedReplayScheduleRead(Protocol):
     """The canonical representative-raw selector on the parent's Source view."""
 
-    def replay_representative_rows(self, keys: Sequence[str]) -> AbstractContextManager[sqlite3.Cursor]: ...
+    def replay_representative_rows(self, keys: Sequence[str]) -> AbstractContextManager[Iterable[sqlite3.Row]]: ...
 
 
 @dataclass(frozen=True, slots=True)

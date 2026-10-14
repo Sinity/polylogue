@@ -2294,3 +2294,92 @@ def test_raw_census_selection_pages_against_each_executing_connection(tmp_path: 
                 seal._scratch.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous)
 
     _run_raw_law(tmp_path, exercise)
+
+
+def test_membership_expansion_and_replay_page_both_source_connections(tmp_path: Path) -> None:
+    import threading
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.io_phase_metrics import live_connection_cursors
+    from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    bootstrap_archive_root(tmp_path)
+
+    def exercise(_compute: BoundedComputeAdapter) -> None:
+        keys = tuple(f"selection-key-{i:03}" for i in range(40))
+        with _fixture_archive(tmp_path) as archive:
+            raw_ids = tuple(
+                archive.write_raw_payload(
+                    provider=Provider.CLAUDE_AI,
+                    payload=json.dumps({"uuid": f"selection-{i}", "chat_messages": []}).encode(),
+                    source_path=f"selection-{i // 2}.json",
+                    canonical_source_path=f"selection-{i // 2}.json",
+                    acquired_at_ms=i + 1,
+                )
+                for i in range(80)
+            )
+            connection = archive.source_connection
+            connection.executemany(
+                "UPDATE raw_sessions SET logical_source_key=? WHERE raw_id=?",
+                ((keys[i // 2], raw_id) for i, raw_id in enumerate(raw_ids)),
+            )
+            archive.commit()
+            selected = (*reversed(raw_ids[::2]), raw_ids[0], "absent-raw")
+            expected_expansion = (tuple(sorted((*raw_ids, "absent-raw"))), keys)
+            requested_keys = (*reversed(keys), keys[0])
+            reader = ConnectionSessionSourceRead(connection)
+            with reader.replay_representative_rows(requested_keys) as rows:
+                expected_replay = tuple((str(row[0]), str(row[1])) for row in rows)
+            assert expected_replay == tuple(
+                (key, raw_ids[2 * i + offset]) for i, key in enumerate(keys) for offset in (1, 0)
+            )
+            previous = connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 17)
+            try:
+                assert archive.expand_raw_membership_selection(list(selected)) == expected_expansion
+                assert reader.raw_revision_rebuild_logical_keys(raw_ids) == keys
+                with reader.replay_representative_rows(requested_keys) as rows:
+                    assert tuple((str(row[0]), str(row[1])) for row in rows) == expected_replay
+                with reader.replay_representative_rows(requested_keys) as rows:
+                    assert next(rows) is not None
+                assert not live_connection_cursors(connection)
+            finally:
+                connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous)
+
+        with (
+            PreparedIndexMutation.source_only(archive_root=tmp_path) as seal,
+            seal.original_read_snapshot(),
+            seal.source_producer(),
+        ):
+            reader = PreparedSessionSourceRead(seal, blob_store=BlobStore(tmp_path / "blob"))
+            original = seal.observer("source")
+            original_limit = original.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 17)
+            selected_limit = seal._scratch.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 64)
+            try:
+                assert reader.expand_raw_membership_selection(selected) == expected_expansion
+                assert reader.raw_revision_rebuild_logical_keys(raw_ids) == keys
+                with reader.replay_representative_rows(requested_keys) as rows:
+                    assert tuple((str(row[0]), str(row[1])) for row in rows) == expected_replay
+                with reader.replay_representative_rows(requested_keys) as rows:
+                    assert next(rows) is not None
+                assert not live_connection_cursors(seal._scratch)
+                cancelled = threading.Event()
+                token = compute_cancel.set(cancelled)
+                try:
+                    with pytest.raises(DaemonOperationCancelled):
+                        with reader.replay_representative_rows(requested_keys) as rows:
+                            assert next(rows) is not None
+                            cancelled.set()
+                            next(rows)
+                finally:
+                    compute_cancel.reset(token)
+                assert not live_connection_cursors(seal._scratch)
+                with reader.replay_representative_rows(requested_keys) as rows:
+                    assert tuple((str(row[0]), str(row[1])) for row in rows) == expected_replay
+            finally:
+                original.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, original_limit)
+                seal._scratch.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, selected_limit)
+
+    _run_raw_law(tmp_path, exercise)

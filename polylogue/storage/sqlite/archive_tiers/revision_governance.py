@@ -1823,13 +1823,15 @@ def raw_revision_rebuild_logical_keys(
 
 
 def _raw_selection_pages(
-    raw_ids: Sequence[str], variable_limit: int, *, fixed_parameters: int = 0
+    raw_ids: Sequence[str], variable_limit: int, *, fixed_parameters: int = 0, repeated_values: int = 1
 ) -> Iterator[tuple[str, ...]]:
     """Page a SQL set selection against the executing connection's bind limit."""
+    if fixed_parameters < 0 or repeated_values < 1:
+        raise ValueError("invalid raw selection parameter accounting")
     selected = sorted(set(raw_ids))
     if not selected:
         return
-    page_size = min(128, variable_limit - fixed_parameters)
+    page_size = min(128, (variable_limit - fixed_parameters) // repeated_values)
     if page_size < 1:
         raise sqlite3.OperationalError("SQLite variable limit cannot fit the raw selection parameters")
     for offset in range(0, len(selected), page_size):
