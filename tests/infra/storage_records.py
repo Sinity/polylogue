@@ -24,10 +24,13 @@ from polylogue.core.enums import (
     ValidationMode,
     ValidationStatus,
 )
+from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import dumps, loads, require_json_document, require_json_value
+from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import _timestamp_sort_key
 from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
+from polylogue.core.web_urls import native_id_from_session_id
 from polylogue.pipeline.ids import block_content_identity
 from polylogue.pipeline.services.acquisition_records import pending_pre_parse_raw_admission_request
 from polylogue.sources.parsers.base import (
@@ -49,6 +52,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionExecution,
 )
 from polylogue.storage.sqlite.connection import connection_context, open_connection
+from tests.infra.frozen_clock import fixed_now
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.live_ingest import write_session_counts_sync
 
@@ -78,8 +82,8 @@ _AUTO_MESSAGE_ID: Final = _AutoMessageIdSentinel()
 #: message id, so they declare ``NATIVE_IDENTITY``; pass
 #: ``identity_source=CONTENT_DERIVED_IDENTITY`` to seed the other shape -- an
 #: id-less export whose identity is the digest of its own declared semantics.
-#: That digest covers ``timestamp``/``occurred_at_ms``, so a content-derived
-#: message needs an explicit timestamp to get a reproducible id.
+#: That digest covers ``timestamp``/``occurred_at_ms``. Content-derived
+#: messages use the fixed fixture clock unless the caller supplies a timestamp.
 NATIVE_IDENTITY: Final = "native"
 CONTENT_DERIVED_IDENTITY: Final = "content"
 
@@ -155,8 +159,15 @@ def _origin_value(provider: str) -> Origin:
     return origin_from_provider(Provider.from_string(provider))
 
 
-def _resolve_timestamp(value: str | None | _AutoTimestampSentinel) -> str | None:
-    return datetime.now(UTC).isoformat() if isinstance(value, _AutoTimestampSentinel) else value
+def _resolve_timestamp(
+    value: str | None | _AutoTimestampSentinel,
+    *,
+    identity_source: object = NATIVE_IDENTITY,
+) -> str | None:
+    if not isinstance(value, _AutoTimestampSentinel):
+        return value
+    now = fixed_now() if identity_source == CONTENT_DERIVED_IDENTITY else datetime.now(UTC)
+    return now.isoformat()
 
 
 def _resolve_attachment_message_id(
@@ -528,6 +539,28 @@ def _record_to_parsed_session(
             return ""
         return _provider_message_id(message.provider_message_id or message.message_id) or str(message.message_id)
 
+    # Fixture IDs name local messages, never provider-native identity. Resolve
+    # them before handing ownership to the production parser-to-writer bridge.
+    local_messages = {_provider_message_id(message.message_id): message for message in messages}
+    local_coordinates = {
+        _provider_message_id(message.message_id): MessageOwnerCoordinate(
+            position=position, variant_index=message.branch_index
+        )
+        for position, message in enumerate(messages)
+    }
+
+    def native_reference(value: object) -> str | None:
+        reference = _provider_message_id(value)
+        message = local_messages.get(reference)
+        return (_seeded_provider_message_id(message) or None) if message is not None else reference
+
+    def parent_position(value: object) -> int | None:
+        reference = _provider_message_id(value)
+        message = local_messages.get(reference)
+        if message is None or message.identity_source != CONTENT_DERIVED_IDENTITY:
+            return None
+        return local_coordinates[reference].position
+
     parsed_messages = [
         ParsedMessage(
             provider_message_id=_seeded_provider_message_id(message),
@@ -536,7 +569,8 @@ def _record_to_parsed_session(
             blocks=_blocks(message),
             message_type=message.message_type,
             material_origin=message.material_origin,
-            parent_message_provider_id=_provider_message_id(message.parent_message_id),
+            parent_message_provider_id=native_reference(message.parent_message_id),
+            parent_message_position=parent_position(message.parent_message_id),
             position=position,
             branch_index=message.branch_index,
             variant_index=message.branch_index,
@@ -555,7 +589,8 @@ def _record_to_parsed_session(
     parsed_attachments = [
         ParsedAttachment(
             provider_attachment_id=str(attachment.attachment_native_id or attachment.attachment_id),
-            message_provider_id=_provider_message_id(attachment.message_id),
+            message_provider_id=native_reference(attachment.message_id),
+            owner_coordinate=local_coordinates.get(_provider_message_id(attachment.message_id)),
             name=attachment.display_name,
             mime_type=attachment.mime_type,
             size_bytes=attachment.size_bytes,
@@ -568,6 +603,12 @@ def _record_to_parsed_session(
     working_directories_raw = session.working_directories_json
     parsed_wds = loads(working_directories_raw) if isinstance(working_directories_raw, str) else None
     working_directories = [item for item in parsed_wds if isinstance(item, str)] if isinstance(parsed_wds, list) else []
+
+    parent_native_id = str(session.parent_session_id) if session.parent_session_id is not None else None
+    if parent_native_id is not None:
+        decoded_parent = native_id_from_session_id(parent_native_id)
+        if decoded_parent is not None and archive_session_id(session.origin.value, decoded_parent) == parent_native_id:
+            parent_native_id = decoded_parent
 
     return ParsedSession(
         source_name=provider_from_origin(session.origin),
@@ -587,7 +628,7 @@ def _record_to_parsed_session(
         updated_at=session.updated_at,
         messages=parsed_messages,
         attachments=parsed_attachments,
-        parent_session_provider_id=(str(session.parent_session_id) if session.parent_session_id is not None else None),
+        parent_session_provider_id=parent_native_id,
         branch_type=session.branch_type,
         reported_duration_ms=None,
         reported_cost_usd=session.reported_cost_usd,
@@ -745,7 +786,7 @@ class SessionBuilder:
         **kwargs: object,
     ) -> SessionBuilder:
         msg_id = f"m{len(self.messages) + 1}" if message_id is None else message_id
-        ts = _resolve_timestamp(timestamp)
+        ts = _resolve_timestamp(timestamp, identity_source=kwargs.get("identity_source", NATIVE_IDENTITY))
 
         existing_blocks = _normalize_content_blocks(
             raw_blocks=kwargs.pop("blocks", []),
@@ -833,8 +874,6 @@ class SessionBuilder:
 
     def native_session_id(self) -> str:
         """The archive's deterministic session id for the built session."""
-        from polylogue.core.identity_law import session_id as archive_session_id
-
         return archive_session_id(self.conv.origin.value, self.conv.native_id)
 
     async def build(self) -> Session | None:
@@ -892,7 +931,10 @@ def make_message(
     timestamp: str | None = None,
     **kwargs: object,
 ) -> MessageRecord:
-    ts = timestamp or datetime.now(UTC).isoformat()
+    ts = _resolve_timestamp(
+        timestamp if timestamp is not None else _AUTO_TIMESTAMP,
+        identity_source=kwargs.get("identity_source", NATIVE_IDENTITY),
+    )
     if "provider_meta" in kwargs:
         require_json_value(kwargs["provider_meta"], context="message provider_meta")
     existing_blocks = _normalize_content_blocks(
