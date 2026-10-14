@@ -1389,6 +1389,36 @@ def test_receiver_rejects_malformed_capture_payloads(
     assert list(tmp_path.rglob("*.json")) == []
 
 
+@pytest.mark.parametrize("path", ["/v1/browser-actions", "/v1/assertion-candidates"])
+@pytest.mark.parametrize("raw_body", [b"{not-json", b"\xff"])
+def test_receiver_reports_invalid_control_json_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str, raw_body: bytes
+) -> None:
+    from polylogue.browser_capture import server
+
+    events: list[tuple[str, dict[str, object]]] = []
+    errors: list[str] = []
+    original_error = BrowserCaptureHandler._safe_error
+
+    def observe_error(handler: BrowserCaptureHandler, status: HTTPStatus, error: str) -> None:
+        errors.append(error)
+        original_error(handler, status, error)
+
+    monkeypatch.setattr(server, "emit", lambda name, **fields: events.append((name, fields)))
+    monkeypatch.setattr(BrowserCaptureHandler, "_safe_error", observe_error)
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(host, port, "POST", path, body=raw_body, origin=_EXTENSION_ORIGIN)
+        payload = json.loads(response.read())
+
+    assert response.status == HTTPStatus.BAD_REQUEST
+    assert payload["error"] == "invalid_json"
+    assert errors == ["invalid_json"]
+    invalid = [(name, fields) for name, fields in events if name == "browser_capture.invalid_json"]
+    assert invalid == [
+        ("browser_capture.invalid_json", {"level": server.WARNING, "request_id": response.getheader("X-Request-ID")})
+    ]
+
+
 def test_receiver_streams_captures_past_the_control_bound_byte_identically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

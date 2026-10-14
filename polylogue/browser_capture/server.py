@@ -796,8 +796,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         try:
             parsed: object = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("browser_capture.invalid_json", request_id=self._request_id())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            emit("browser_capture.invalid_json", level=WARNING, request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_json")
             return None
         return parsed
@@ -1019,6 +1019,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
     def _assertion_candidate_capture(self) -> None:
         payload = self._read_json_body()
+        if getattr(self, "_polylogue_status", None) is not None:
+            return
         policy = payload.get("context_policy") if isinstance(payload, dict) else None
         if not isinstance(payload, dict) or not isinstance(policy, dict) or policy.get("inject") is not False:
             self._safe_error(HTTPStatus.BAD_REQUEST, "candidate_policy_required")
