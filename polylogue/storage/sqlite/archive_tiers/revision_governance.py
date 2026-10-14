@@ -3214,28 +3214,12 @@ def _index_parsed_for_retained_raw(
             prepared_write=prepared_write,
             content_hash=content_hash,
         )
-    except PreparedSessionWriteRefusedError:
-        # A required prepared carrier moving is a retryable admission refusal,
-        # never parser-failure evidence for retained durable bytes.
-        raise
-    except Exception as exc:
-        from polylogue.core.compute import DaemonBackpressureError
-        from polylogue.core.storage_faults import storage_fault_kind
-
-        if isinstance(exc, DaemonBackpressureError | sqlite3.Error) or storage_fault_kind(exc) is not None:
-            # Parsing and validation already settled before this Index write.
-            # A SQLite failure says nothing about those retained bytes, so it
-            # must not replace Source authority with parser-failure evidence.
-            raise
+    except RawCASFrontierError as exc:
+        # This explicit writer-authority refusal keeps its existing durable
+        # carrier. Every other Index failure says nothing about bytes that
+        # already passed preparation, parsing and validation.
         if not _is_frozen_candidate(store):
-            if isinstance(exc, RawCASFrontierError):
-                # A retained-raw CAS refusal is retryable authority evidence.
-                # Persist that carrier with the first source-tier failure
-                # mutation so a crash cannot leave only the generic parse
-                # diagnostic behind.
-                mark_raw_parse_failed(store, raw_id, provider=provider, error=exc)
-            else:
-                finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, exc))
+            mark_raw_parse_failed(store, raw_id, provider=provider, error=exc)
         raise
     if finalize_raw_parse and not _is_frozen_candidate(store):
         success_state = _raw_parse_success_state(provider)

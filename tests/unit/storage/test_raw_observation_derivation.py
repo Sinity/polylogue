@@ -2492,10 +2492,13 @@ def test_source_census_sql_failure_rolls_back_selected_facts_and_retries(tmp_pat
     _run_raw_law(tmp_path, run_phase)
 
 
-def test_index_sql_failure_keeps_committed_source_classification_for_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("failure_kind", ["sql", "value", "sql_close"])
+def test_index_failure_keeps_committed_source_classification_for_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_kind: str
 ) -> None:
     """Later Index refusal cannot erase already committed Source authority."""
+    from builtins import BaseExceptionGroup
+
     from polylogue.storage.io_phase_metrics import connection_cursor
     from polylogue.storage.sqlite.archive_tiers import revision_governance
     from polylogue.storage.sqlite.connection_profile import native_sql_owner_for_connection
@@ -2516,6 +2519,23 @@ def test_index_sql_failure_keeps_committed_source_classification_for_retry(
             writer = native_sql_owner_for_connection(scope.conn)
             assert writer is not None
             writers.append(writer)
+            if failure_kind == "value":
+                raise ValueError("synthetic post-parse writer refusal")
+            if failure_kind == "sql_close":
+                probe = scope.conn.cursor()
+                cursor_type = type(probe)
+                probe.close()
+                original_close = cursor_type.close
+                close_failed = False
+
+                def fail_close_once(cursor: sqlite3.Cursor) -> None:
+                    nonlocal close_failed
+                    if cursor.connection is scope.conn and not close_failed:
+                        close_failed = True
+                        raise OSError("synthetic native Index cursor close refusal")
+                    original_close(cursor)
+
+                monkeypatch.setattr(cursor_type, "close", fail_close_once)
             # Refuse on the actual admitted writer without changing its schema.
             with connection_cursor(scope.conn, "SELECT abs(-9223372036854775808)"):
                 raise AssertionError("SQLite integer overflow did not refuse")
@@ -2524,9 +2544,15 @@ def test_index_sql_failure_keeps_committed_source_classification_for_retry(
         assert not replacement.needs_source_census and not replacement.needs_source_classification
         with monkeypatch.context() as fault:
             fault.setattr(revision_governance, "_write_parsed_precedence_result", fail_index)
-            with pytest.raises(sqlite3.OperationalError) as refused:
+            error_type = {"sql": sqlite3.OperationalError, "value": ValueError, "sql_close": BaseExceptionGroup}[
+                failure_kind
+            ]
+            with pytest.raises(error_type) as refused:
                 _publish(adapter, frame, replacement)
-            assert refused.value.sqlite_errorcode == sqlite3.SQLITE_ERROR
+            if failure_kind == "sql":
+                assert refused.value.sqlite_errorcode == sqlite3.SQLITE_ERROR
+            elif failure_kind == "sql_close":
+                assert [type(error) for error in refused.value.exceptions] == [sqlite3.OperationalError, OSError]
         assert writers and all(writer.connection is None for writer in writers)
         assert _source_progress(tmp_path, (raw_id,)) == committed
         with sqlite3.connect(tmp_path / "index.db") as index:
