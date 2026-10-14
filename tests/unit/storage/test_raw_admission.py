@@ -845,37 +845,37 @@ def test_append_capture_identity_preserves_family_native_presence_and_exact_retr
     )
     with closing(_connect(tmp_path / "source.db")) as conn:
         identifiers = []
+
+        def retain(
+            *,
+            raw_id: str | None = None,
+            family: Provider | None,
+            native: str | None,
+        ) -> str:
+            return admit_raw_observation(
+                conn,
+                origin=Origin.AISTUDIO_DRIVE,
+                capture_mode=family,
+                source_path="synthetic/declared.jsonl",
+                canonical_source_path="synthetic/declared.jsonl",
+                source_index=-1,
+                payload=payload,
+                acquired_at_ms=1,
+                native_id=native,
+                raw_id=raw_id,
+                post_parse=True,
+                append_revision=revision,
+            ).raw_id
+
         for family, native in ((Provider.GEMINI, None), (Provider.DRIVE, None), (Provider.GEMINI, ""), (None, None)):
-
-            def retain(
-                *,
-                raw_id: str | None = None,
-                family: Provider | None = family,
-                native: str | None = native,
-            ) -> str:
-                return admit_raw_observation(
-                    conn,
-                    origin=Origin.AISTUDIO_DRIVE,
-                    capture_mode=family,
-                    source_path="synthetic/declared.jsonl",
-                    canonical_source_path="synthetic/declared.jsonl",
-                    source_index=-1,
-                    payload=payload,
-                    acquired_at_ms=1,
-                    native_id=native,
-                    raw_id=raw_id,
-                    post_parse=True,
-                    append_revision=revision,
-                ).raw_id
-
-            identifier = retain()
-            assert retain() == identifier
-            assert retain(raw_id=identifier) == identifier
+            identifier = retain(family=family, native=native)
+            assert retain(family=family, native=native) == identifier
+            assert retain(raw_id=identifier, family=family, native=native) == identifier
             identifiers.append(identifier)
         assert len(set(identifiers)) == 4
         assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == 4
         with pytest.raises(ValueError):
-            retain(raw_id=identifiers[0])
+            retain(raw_id=identifiers[0], family=None, native=None)
         assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == 4
 
 

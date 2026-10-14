@@ -4073,15 +4073,15 @@ def prepare_revision_source_census(
         outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
         if source_index < 0 and not isinstance(outcome, Exception):
             stage_current_parser_followup(raw_id, source_index)
-            prepared = prepared_inputs[raw_id]
-            artifact = prepared.prepared_artifact
+            fragment_input = prepared_inputs[raw_id]
+            artifact = fragment_input.prepared_artifact
             stream = artifact.stream_classification() if artifact is not None else None
             if (
                 stream is not None
                 and stream.proved_non_session
                 and stream.classification.cohort in CLASSIFIED_ARTIFACT_KINDS
                 and not stream.classification.parse_as_session
-                and stream.classification.provider is prepared.provider
+                and stream.classification.provider is fragment_input.provider
                 and not outcome[0]
             ):
                 # Negative coordinates cannot mint an artifact observation,
