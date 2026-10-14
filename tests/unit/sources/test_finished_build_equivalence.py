@@ -1,37 +1,8 @@
-"""Equivalent finished builds across two configurations of the production replay route.
+"""Four independently sealed retained builds preserve complete output and lineage.
 
-The sealed 516-raw measurement in
-``tests/benchmarks/test_finished_build_measurement.py`` runs ONE selected
-production profile and declares the others non-cells. It therefore never
-compares two arms, and the finished-build comparator
-(``assert_finished_builds_equivalent``) had no consumer at all.
-
-This module is the comparison, at a synthetic scale that runs without live
-data or a dedicated measurement host: one sealed raw population, cloned into
-two isolated arms, each completed through the canonical retained replay
-route (``RawObservationDerivation`` compute and publish on the daemon raw
-owner's admitted worker) --
-
-* baseline: retained replay into the active Index;
-* replacement: retained replay into an owned inactive Index generation.
-
-Both arms call the same replay entry point. They do not execute live intake
-or cold-start orchestration; equivalence of those drivers is not established
-by this fixture.
-
-Equivalence is over the completed logical output (every comparable index
-table, the public insight reads, FTS readiness, open debt and the canonical
-digest), not over a database page image, and each arm keeps its own
-production callable identity and resource receipt. Scale is deliberately not
-a claim here: this fixes *what* the arms must agree on, so a host-window
-measurement run only has to add the scale.
-
-Anti-vacuity: ``test_finished_build_comparison_rejects_a_diverged_or_indebted_arm``
-executes both mutations a hollow comparator would survive -- one unresolved
-convergence-debt row and one deleted ``blocks`` row.
-
-Both arms use the production retained-parse route and encode no timing
-tolerance. Runtime measurements remain separate from output equivalence.
+Owned, active, active and owned destinations execute the current admitted Raw
+route. Each completed arm carries logical/schema/FTS/debt and resource evidence;
+timing describes its work without ranking configurations.
 """
 
 from __future__ import annotations
@@ -62,19 +33,24 @@ from tests.infra.reindex_differential import (
     SealedRawInput,
     assert_finished_builds_equivalent,
     capture_finished_build_output,
+    capture_streamed_finished_build_fingerprint,
     clone_sealed_arm,
     finished_build_work_identity,
     seal_raw_input,
 )
 from tests.infra.retained_replay import replay_retained_components
-from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
+from tests.infra.revision_backfill_benchmark import (
+    build_independent_raw_corpus,
+    build_large_parent_shared_prefix_raw_corpus,
+)
 from tests.infra.workload_artifacts import FinishedBuildResourceProbe
 
 # Small enough to run in an ordinary selection, large enough that the replay
-# phase does real per-cohort work in both arms. The scale is not the claim.
+# phase does real per-cohort work in every arm. The scale is not the claim.
 _RAW_COUNT = 8
 _RAW_PAYLOAD_BYTES = 2_000
-_WORK_PROFILE = "finished-build-equivalence:synthetic-8-raw:codex"
+_TOTAL_RAW_COUNT = _RAW_COUNT + 9
+_WORK_PROFILE = "finished-build-equivalence:synthetic-17-raw:codex"
 #: The measurement-receipt name this comparison emits under. It is an
 #: observation, not a committed baseline: promoting one is the deliberate
 #: ``devtools bench baseline --record`` step.
@@ -95,7 +71,7 @@ class _Arm:
 
 _BASELINE_ARM = _Arm(name="retained-active-index", owned_inactive_generation=False)
 _REPLACEMENT_ARM = _Arm(name="fresh-owned-generation", owned_inactive_generation=True)
-#: The production callable both arms execute, and the code the work identity binds.
+#: The production callable all arms execute, and the code the work identity binds.
 _REPLAY_ROUTE = RawObservationDerivation.publish
 _ROUTE_CODE = (make_raw_observation_derivation, RawObservationDerivation)
 
@@ -169,6 +145,7 @@ def _merged_publication_ledger(receipts: tuple[object, ...]) -> tuple[dict[str, 
 def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Arm) -> _ArmRun:
     """Complete one replay configuration over an isolated clone of the sealed input."""
     archive_root = clone_sealed_arm(template, destination, sealed)
+    probe = FinishedBuildResourceProbe.start()
     cold_build: ColdBuildGeneration | None = None
     if arm.owned_inactive_generation:
         # The owned generation is the registered cold-build destination, as the
@@ -196,7 +173,6 @@ def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Ar
         ):
             pass
 
-    probe = FinishedBuildResourceProbe.start()
     try:
         run = replay_retained_components(archive_root, owned_generation=generation)
         if cold_build is not None:
@@ -241,7 +217,7 @@ def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Ar
 
 @pytest.fixture(scope="module")
 def _sealed_template(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, SealedRawInput]:
-    """Build, census and seal one raw population both arms then clone."""
+    """Seal one synthetic population for four independent arm clones."""
     template = tmp_path_factory.mktemp("finished-build-equivalence") / "sealed-input"
     bootstrap_archive_root(template)
     build_independent_raw_corpus(
@@ -250,24 +226,78 @@ def _sealed_template(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Se
         avg_payload_bytes=_RAW_PAYLOAD_BYTES,
         authoritative_source=True,
     )
+    build_large_parent_shared_prefix_raw_corpus(template)
     sealed = seal_raw_input(template)
-    assert sealed.raw_count == _RAW_COUNT
+    assert sealed.raw_count == _TOTAL_RAW_COUNT
     finalize_archive_template(template)
     return template, sealed
 
 
 @pytest.fixture(scope="module")
-def _arms(
+def _ordered_arms(
     _sealed_template: tuple[Path, SealedRawInput],
     tmp_path_factory: pytest.TempPathFactory,
-) -> tuple[_ArmRun, _ArmRun]:
-    """Complete both replay configurations once over the same sealed input."""
+) -> tuple[_ArmRun, ...]:
     template, sealed = _sealed_template
     root = tmp_path_factory.mktemp("finished-build-arms")
-    return (
-        _run_arm(template, root / _BASELINE_ARM.name, sealed, _BASELINE_ARM),
-        _run_arm(template, root / _REPLACEMENT_ARM.name, sealed, _REPLACEMENT_ARM),
+    return tuple(
+        _run_arm(template, root / f"{ordinal}-{arm.name}", sealed, arm)
+        for ordinal, arm in enumerate((_REPLACEMENT_ARM, _BASELINE_ARM, _BASELINE_ARM, _REPLACEMENT_ARM))
     )
+
+
+@pytest.fixture(scope="module")
+def _arms(_ordered_arms: tuple[_ArmRun, ...]) -> tuple[_ArmRun, _ArmRun]:
+    return _ordered_arms[1], _ordered_arms[0]
+
+
+def test_four_independent_arms_preserve_schema_census_and_shared_prefix_lineage(
+    _sealed_template: tuple[Path, SealedRawInput], _ordered_arms: tuple[_ArmRun, ...]
+) -> None:
+    template, sealed = _sealed_template
+    assert [run.arm.owned_inactive_generation for run in _ordered_arms] == [True, False, False, True]
+    assert len({run.archive_root for run in _ordered_arms}) == 4
+    with sqlite3.connect(template / "index.db") as conn:
+        expected_schema = tuple(
+            conn.execute("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
+        )
+        expected_identity = str(conn.execute("SELECT identity FROM schema_identity WHERE tier = 'index'").fetchone()[0])
+    for run in _ordered_arms:
+        assert run.output.schema_identity == expected_identity
+        assert_finished_builds_equivalent(_ordered_arms[0].output, run.output)
+        assert run.output.output_session_count == sealed.raw_count == _TOTAL_RAW_COUNT
+        assert run.output.output_message_count == _RAW_COUNT + 24 + 8
+        assert run.replayed_logical_sources == sealed.raw_count
+        streamed = capture_streamed_finished_build_fingerprint(
+            run.archive_root,
+            run.index_path,
+            scratch_root=run.archive_root,
+            session_ids=run.session_ids,
+            search_queries=run.search_queries,
+            include_threads=True,
+        )
+        assert streamed.canonical_logical_digest == run.output.canonical_logical_digest
+        assert streamed.schema_identity == run.output.schema_identity
+        assert streamed.schema_object_census == run.output.schema_object_census
+        assert streamed.output_session_count == run.output.output_session_count
+        assert streamed.output_message_count == run.output.output_message_count
+        assert streamed.output_block_count == run.output.output_block_count
+        assert run.adoption_deferred == run.quarantined == 0
+        with sqlite3.connect(run.index_path) as conn:
+            assert (
+                tuple(
+                    conn.execute(
+                        "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+                    )
+                )
+                == expected_schema
+            )
+            assert (
+                conn.execute(
+                    "SELECT count(*) FROM session_links WHERE inheritance = 'prefix-sharing' AND resolved_dst_session_id IS NOT NULL"
+                ).fetchone()[0]
+                == 8
+            )
 
 
 def test_both_replay_configurations_finish_the_same_work(
@@ -302,7 +332,7 @@ def test_neither_arm_hides_residual_or_refused_work(_arms: tuple[_ArmRun, _ArmRu
     """A partially finished or partly refused arm is not a comparable build."""
     for run in _arms:
         classified = run.replayed_logical_sources + run.adoption_deferred + run.quarantined
-        assert classified == _RAW_COUNT, f"{run.arm.name} left raws unclassified"
+        assert classified == _TOTAL_RAW_COUNT, f"{run.arm.name} left raws unclassified"
         assert run.adoption_deferred == 0
         assert run.quarantined == 0
         # ``capture_finished_build_output`` already refuses a stale or
@@ -317,18 +347,18 @@ def test_neither_arm_hides_residual_or_refused_work(_arms: tuple[_ArmRun, _ArmRu
 
 def test_each_arm_attributes_its_elapsed_time_to_a_named_phase(
     _sealed_template: tuple[Path, SealedRawInput],
-    _arms: tuple[_ArmRun, _ArmRun],
+    _ordered_arms: tuple[_ArmRun, ...],
 ) -> None:
     """Record whole-operation cost per arm and name its expensive phase.
 
     Timing is descriptive: this asserts that each arm carries a complete,
     attributable receipt, not that either arm is faster. A ranking needs the
     dedicated measurement host, and this deliberately does not manufacture
-    one from an 8-raw fixture.
+    one from this finite synthetic fixture.
     """
     _template, sealed = _sealed_template
     receipts = []
-    for run in _arms:
+    for run in _ordered_arms:
         resources = run.output.resources
         assert resources.elapsed_seconds > 0
         assert resources.storage_bytes > 0
@@ -345,6 +375,14 @@ def test_each_arm_attributes_its_elapsed_time_to_a_named_phase(
         receipts.append(
             {
                 "arm": run.arm.name,
+                "fresh_build": run.arm.owned_inactive_generation,
+                "schema_identity": run.output.schema_identity,
+                "schema_objects": run.output.schema_object_census,
+                "stage_counts": run.stage_counts,
+                "offered": sealed.raw_count,
+                "ingested": run.replayed_logical_sources,
+                "refused": run.quarantined,
+                "deferred": run.adoption_deferred,
                 "replay_callable": run.output.route.callable_identity,
                 "input_digest": sealed.digest,
                 "input_bytes": sealed.byte_count,
@@ -381,7 +419,9 @@ def test_each_arm_attributes_its_elapsed_time_to_a_named_phase(
     # The receipt must attribute the callable we actually executed, never
     # claim that an uncalled live-intake/cold-start driver was exercised.
     observed_arms = json.loads(emitted.read_text(encoding="utf-8"))["measurement"]["arms"]
-    assert [arm["replay_callable"] for arm in observed_arms] == [run.output.route.callable_identity for run in _arms]
+    assert [arm["replay_callable"] for arm in observed_arms] == [
+        run.output.route.callable_identity for run in _ordered_arms
+    ]
 
 
 def test_finished_build_comparison_rejects_a_diverged_or_indebted_arm(tmp_path: Path) -> None:
