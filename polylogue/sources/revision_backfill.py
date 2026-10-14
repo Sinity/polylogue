@@ -4964,7 +4964,13 @@ def prepare_retained_replay_source(
                     )
                 stage_bridge_session(bridge_session, accepted)
             for raw_id in outcome.plan.accepted_raw_ids:
-                retain_accepted_marker_session(raw_id, adoption.session_id)
+                if is_separator_only_append(raw_id, outcome.plan, prepared_inputs):
+                    # This Raw's marker input is genuinely empty. Retain its
+                    # request acknowledgement without borrowing the composed
+                    # session from a predecessor's parsed output.
+                    marker_sessions_by_raw.setdefault(raw_id, set())
+                else:
+                    retain_accepted_marker_session(raw_id, adoption.session_id)
                 retain_attachment_carrier(raw_id)
             for raw_id in revision_replay_terminal_raw_ids(outcome.plan):
                 prepare_raw_parse_success(seal, raw_id, provider=prepared_inputs[raw_id].provider)
