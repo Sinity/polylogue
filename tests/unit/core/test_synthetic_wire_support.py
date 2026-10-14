@@ -627,9 +627,15 @@ def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_iden
         nonlocal inserted_segment, dropped_segment
         if provider == "codex" and fallback_id.endswith(":0") and isinstance(payload, list):
             for record in payload:
-                if not isinstance(record, dict) or not isinstance(record.get("content"), list):
+                if not isinstance(record, Mapping):
                     continue
-                record["content"].append({"type": "input_text", "text": segment})
+                native_message = record.get("payload") if record.get("type") == "response_item" else record
+                if not isinstance(native_message, Mapping):
+                    continue
+                content = native_message.get("content")
+                if not isinstance(content, list):
+                    continue
+                content.append({"type": "input_text", "text": segment})
                 inserted_segment = True
                 break
         sessions = original_parse_payload(
@@ -1892,14 +1898,18 @@ def test_codex_native_tool_receipt_checks_both_record_sides_and_outcomes(envelop
     assert [message.role for message in messages] == [Role.ASSISTANT, Role.TOOL]
     assert messages[1].blocks[0].is_error is False
     assert messages[1].blocks[0].exit_code == 0
-    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "codex", payload, "neutral-fallback")
-    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "codex", payload, "neutral-fallback")
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "codex", cast(GeneratedValue, payload), "neutral-fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "codex", cast(GeneratedValue, payload), "neutral-fallback"
+    )
     for mutation in ({"tool_id": None}, {"is_error": True}, {"exit_code": 1}):
         block = messages[1].blocks[0].model_copy(update=mutation)
         changed = messages[1].model_copy(update={"blocks": [block]})
         corrupted = [sessions[0].model_copy(update={"messages": [messages[0], changed]})]
         assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
-            corrupted, "codex", payload, "neutral-fallback"
+            corrupted, "codex", cast(GeneratedValue, payload), "neutral-fallback"
         )
 
 
