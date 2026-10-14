@@ -60,10 +60,7 @@ from polylogue.storage.source_blob_restoration import (
     RetainedBlobSource,
     RetainedBlobSourceKind,
     is_legacy_append_without_window,
-    read_prior_full_source_receipts,
-    read_raw_source_evidence,
-    retained_blob_source_candidates,
-    retained_source_location,
+    retained_blob_sources_many,
     source_window_holds_blob,
     stage_exact_blob,
 )
@@ -764,7 +761,7 @@ def _source_recoverability_proofs(
     """Prove missing source-owned bytes by replaying their acquisition payload.
 
     The candidate source windows of each row come from
-    ``retained_blob_source_candidates``, the owner raw derivation's blob
+    ``retained_blob_sources_many``, the owner raw derivation's blob
     restoration reads too. With ``recover``, a replayed payload is a proof
     only once ``recover`` accepted it as the blob's exact bytes
     (``recover(blob_hash, size, stream)``, read from the ZIP member value or
@@ -776,7 +773,6 @@ def _source_recoverability_proofs(
         return []
     zip_payload_cache = zip_payload_cache if zip_payload_cache is not None else {}
     by_hash: dict[str, list[dict[str, object]]] = {}
-    prior_full_receipts: dict[str, tuple[tuple[int, int], ...]] = {}
     with closing(
         _open_backup_readonly_connection(
             source_db,
@@ -804,12 +800,11 @@ def _source_recoverability_proofs(
         for row in reference_rows:
             blob_hash = str(row.get("blob_hash") or "")
             if blob_hash in missing_hashes:
-                if is_legacy_append_without_window(row):
-                    evidence = read_raw_source_evidence(conn, str(row["raw_id"]))
-                    row["receipt_order"] = None if evidence is None else evidence["receipt_order"]
                 by_hash.setdefault(blob_hash, []).append(row)
-                if is_legacy_append_without_window(row):
-                    prior_full_receipts[str(row["raw_id"])] = read_prior_full_source_receipts(conn, row)
+
+        resolved_sources = retained_blob_sources_many(
+            conn, [row for rows in by_hash.values() for row in rows], root=root
+        )
     proofs: list[dict[str, str]] = []
     for blob_hash in sorted(missing_hashes):
         rows = by_hash.get(blob_hash, [])
@@ -819,12 +814,9 @@ def _source_recoverability_proofs(
             if not isinstance(source_path, str) or not source_path:
                 errors.append("no_source_path")
                 continue
-            resolved, is_container = retained_source_location(row, root)
-            candidates = retained_blob_source_candidates(
-                row,
-                container_member=is_container,
-                prior_full_observations=prior_full_receipts.get(str(row["raw_id"]), ()),
-            )
+            sources = resolved_sources[str(row["raw_id"])]
+            resolved = sources.source_path
+            candidates = sources.candidates
             if not candidates:
                 errors.append(
                     "legacy_append_window_missing" if is_legacy_append_without_window(row) else "no_replay_candidate"

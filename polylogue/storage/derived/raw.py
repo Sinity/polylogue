@@ -68,7 +68,11 @@ from polylogue.storage.raw_authority import (
     assess_raw_replay_materialization,
     iter_parser_census_logical_keys,
 )
-from polylogue.storage.source_blob_restoration import stage_blob_from_recorded_source
+from polylogue.storage.source_blob_restoration import (
+    read_raw_source_evidence,
+    retained_blob_sources_many,
+    stage_blob_from_sources,
+)
 from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
@@ -4184,27 +4188,34 @@ class RawObservationDerivation(RawObservationInspection):
         blob_store = BlobStore(self.archive_root / "blob")
         staged: list[tuple[str, PreparedBlob]] = []
         staged_hashes: set[str] = set()
+        missing_rows: dict[str, Mapping[str, object]] = {}
+        for raw_id in raw_ids:
+            check_compute_cancelled()
+            _provider, blob_hash, _path, _kind, _size = descriptors[raw_id]
+            try:
+                self._blob_stat_identity(blob_store.blob_path(blob_hash))
+            except FileNotFoundError:
+                row = read_raw_source_evidence(archive.source_connection, raw_id)
+                if row is None:
+                    raise KeyError(raw_id) from None
+                missing_rows[raw_id] = row
+            except OSError:
+                # Preparation retains the existing retryable I/O failure.
+                continue
+        sources = retained_blob_sources_many(
+            archive.source_connection, tuple(missing_rows.values()), root=self.archive_root
+        )
         try:
-            for raw_id in raw_ids:
-                _provider, blob_hash, path, _kind, _size = descriptors[raw_id]
+            for raw_id, row in missing_rows.items():
+                check_compute_cancelled()
+                _provider, blob_hash, _path, _kind, _size = descriptors[raw_id]
                 if blob_hash in staged_hashes:
                     continue
-                try:
-                    self._blob_stat_identity(blob_store.blob_path(blob_hash))
-                    continue
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    # Present but unreadable: preparation reports it as a
-                    # retryable disappearance, not as lost bytes.
-                    continue
-                prepared, reason = stage_blob_from_recorded_source(
-                    archive.source_connection,
-                    self.archive_root,
+                prepared, reason = stage_blob_from_sources(
+                    row,
                     blob_store,
-                    raw_id,
+                    sources[raw_id],
                     blob_hash=blob_hash,
-                    source_path=path,
                     stop=compute_cancel_requested,
                 )
                 if prepared is None:

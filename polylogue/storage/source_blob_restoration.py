@@ -20,13 +20,15 @@ import os
 import sqlite3
 import stat
 import zipfile
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
 from polylogue.archive.revision_authority import raw_receipt_order_sql
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import (
@@ -234,44 +236,192 @@ def is_legacy_append_without_window(row: Mapping[str, object]) -> bool:
     )
 
 
-def read_prior_full_source_receipts(conn: sqlite3.Connection, row: Mapping[str, object]) -> tuple[tuple[int, int], ...]:
-    """The latest proven full receipt before this windowless append receipt."""
-    order = _optional_int(row.get("receipt_order"))
-    if order is None or not is_legacy_append_without_window(row):
-        return ()
-    rank = raw_receipt_order_sql("prior")
-    cursor = conn.execute(
-        f"SELECT {rank}, prior.blob_size FROM raw_sessions AS prior "
-        "WHERE prior.source_path = ? AND prior.source_index = 0 "
-        "AND prior.revision_kind IN ('full', 'unknown') "
-        f"AND {rank} < ? ORDER BY {rank} DESC LIMIT 1",
-        (row["source_path"], order),
-    )
-    try:
-        predecessor = cursor.fetchone()
-        return () if predecessor is None else ((int(predecessor[0]), int(predecessor[1])),)
-    finally:
-        cursor.close()
+def _legacy_append_starts(
+    conn: sqlite3.Connection,
+    rows: tuple[Mapping[str, object], ...],
+    *,
+    resolved_path: str,
+) -> dict[str, tuple[int, ...]]:
+    """Return hash-verifiable window hypotheses for requested legacy appends.
+
+    A raw row's first-retention order is immutable, but a content-addressed
+    raw can later receive a new ``blob_refs.rowid`` after another observation.
+    Neither order alone fully recovers repeated window-less append history:
+    the first order can miss a re-observed append after a later full anchor,
+    while the latest receipt order can move an anchor past its original
+    append. Produce candidates from both orders and let the retained hash and
+    size prove the bytes. Neither chronology is itself restoration authority.
+    Each ordered pass retains starts only for requested raw ids, keeping the
+    work linear without caching the whole source history.
+    """
+    requested: dict[str, Mapping[str, object]] = {}
+    path_values = {resolved_path}
+    for row in rows:
+        raw_id = row.get("raw_id") or row.get("ref_id")
+        source_path = row.get("source_path")
+        if isinstance(raw_id, str) and isinstance(source_path, str):
+            requested[raw_id] = row
+            path_values.add(source_path)
+    if not requested:
+        return {}
+    starts: dict[str, list[int]] = {raw_id: [] for raw_id in requested}
+    for order in ("first_retained", "latest_receipt"):
+        check_compute_cancelled()
+        placeholders = ", ".join("?" for _ in path_values)
+        cursor = conn.execute(
+            f"""
+            WITH raw_cohort AS MATERIALIZED (
+                SELECT rowid AS first_retained_order, raw_id, blob_size, source_index, revision_kind,
+                       append_start_offset, append_end_offset, capture_mode,
+                       origin, source_path
+                FROM raw_sessions
+                WHERE source_path IN ({placeholders})
+            ), receipt_order AS (
+                SELECT ref_id, MAX(rowid) AS latest_receipt
+                FROM blob_refs
+                WHERE ref_type = 'raw_payload'
+                  AND ref_id IN (SELECT raw_id FROM raw_cohort)
+                GROUP BY ref_id
+            )
+            SELECT raw_cohort.first_retained_order, raw_cohort.raw_id,
+                   raw_cohort.blob_size, raw_cohort.source_index,
+                   raw_cohort.revision_kind, raw_cohort.append_start_offset,
+                   raw_cohort.append_end_offset, raw_cohort.capture_mode,
+                   raw_cohort.origin, receipt_order.latest_receipt
+            FROM raw_cohort
+            JOIN receipt_order ON receipt_order.ref_id = raw_cohort.raw_id
+            ORDER BY {"raw_cohort.first_retained_order" if order == "first_retained" else "receipt_order.latest_receipt"}
+            """,
+            tuple(sorted(path_values)),
+        )
+        with closing(cursor):
+            anchor_offset: int | None = None
+            legacy_bytes = 0
+            for (
+                _first_retained_order,
+                raw_id,
+                blob_size,
+                source_index,
+                revision_kind,
+                append_start,
+                append_end,
+                capture_mode,
+                origin,
+                _latest_receipt,
+            ) in cursor:
+                check_compute_cancelled()
+                row = {
+                    "raw_id": raw_id,
+                    "blob_size": blob_size,
+                    "source_index": source_index,
+                    "revision_kind": revision_kind,
+                    "append_start_offset": append_start,
+                    "append_end_offset": append_end,
+                    "capture_mode": capture_mode,
+                    "origin": origin,
+                }
+                if is_legacy_append_without_window(row):
+                    size = _optional_int(blob_size)
+                    if size is None or size < 0:
+                        continue
+                    if raw_id in requested and anchor_offset is not None:
+                        candidate = anchor_offset + legacy_bytes
+                        if candidate not in starts[str(raw_id)]:
+                            starts[str(raw_id)].append(candidate)
+                    if anchor_offset is not None:
+                        legacy_bytes += size
+                    continue
+                is_anchor = append_end is not None or (
+                    _optional_int(source_index) == 0
+                    and str(revision_kind or "") in {"full", "unknown"}
+                    and append_start is None
+                )
+                if is_anchor:
+                    anchor_offset = _optional_int(append_end if append_end is not None else blob_size)
+                    legacy_bytes = 0
+    return {raw_id: tuple(candidates) for raw_id, candidates in starts.items()}
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedBlobSources:
+    """Where one retained raw's bytes can be replayed from under the archive root in force."""
+
+    #: The recorded source path re-anchored at the root in force.
+    source_path: str
+    container_member: bool
+    candidates: tuple[RetainedBlobSource, ...]
+
+
+def retained_blob_sources(conn: sqlite3.Connection, row: Mapping[str, object], *, root: Path) -> RetainedBlobSources:
+    """Every candidate source window that may prove one raw's retained bytes.
+
+    This is the one owner of that decision: backup recoverability and raw
+    derivation's blob restoration both read their candidates here, so a raw
+    one route can prove is one the other can restore. It re-anchors the
+    recorded path at the archive root in force, decides whether the row is a
+    ZIP member, and, for a window-less append row, finds where its bytes
+    start (:func:`_legacy_append_starts`). ``row`` is the raw's recorded evidence
+    (:func:`read_raw_source_evidence`, or a row of the same shape) and
+    ``conn`` reads the source tier. Candidates are proofs only once the bytes
+    read from them hash to the raw's recorded identity; the caller checks
+    that.
+    """
+    raw_id = row.get("raw_id") or row.get("ref_id")
+    if not isinstance(raw_id, str):
+        return RetainedBlobSources("", False, ())
+    return retained_blob_sources_many(conn, (row,), root=root).get(raw_id, RetainedBlobSources("", False, ()))
+
+
+def retained_blob_sources_many(
+    conn: sqlite3.Connection, rows: Sequence[Mapping[str, object]], *, root: Path
+) -> dict[str, RetainedBlobSources]:
+    """Resolve candidates for a batch with one receipt-order scan per path.
+
+    Only starts for requested rows are retained. This gives backup and raw
+    derivation a linear pass over each relevant source history without a
+    cache whose size grows with every raw in the archive.
+    """
+    prepared: dict[str, tuple[Mapping[str, object], bool, str]] = {}
+    groups: dict[tuple[str, str], list[Mapping[str, object]]] = {}
+    for row in rows:
+        raw_id = row.get("raw_id") or row.get("ref_id")
+        recorded = row.get("source_path")
+        if not isinstance(raw_id, str) or not isinstance(recorded, str) or not recorded:
+            continue
+        resolved, container_member = retained_source_location(row, root)
+        prepared[raw_id] = (row, container_member, resolved)
+        if not container_member and is_legacy_append_without_window(row):
+            groups.setdefault((recorded, resolved), []).append(row)
+
+    starts: dict[str, tuple[int, ...]] = {}
+    for (_recorded, resolved), group_rows in groups.items():
+        starts.update(_legacy_append_starts(conn, tuple(group_rows), resolved_path=resolved))
+
+    return {
+        raw_id: RetainedBlobSources(
+            resolved,
+            container_member,
+            retained_blob_source_candidates(
+                row,
+                container_member=container_member,
+                legacy_append_starts=starts.get(raw_id, ()),
+            ),
+        )
+        for raw_id, (row, container_member, resolved) in prepared.items()
+    }
 
 
 def retained_blob_source_candidates(
     row: Mapping[str, object],
     *,
     container_member: bool,
-    prior_full_observations: Iterable[tuple[int, int]] = (),
+    legacy_append_starts: tuple[int, ...],
 ) -> tuple[RetainedBlobSource, ...]:
     """Every recorded source window that can prove one raw's retained bytes.
 
-    This is the one owner of that decision: backup recoverability and raw
-    derivation's blob restoration both read their candidates here, so a raw
-    one route can prove is one the other can restore. ``row`` is the raw's
-    recorded evidence (:func:`read_raw_source_evidence`); ``container_member``
-    is the caller's container decision (a relocated archive root can move
-    the container). ``prior_full_observations`` are ``(receipt_order,
-    size)`` of the full observations at the same path, read only for a
-    legacy append row. The order is the latest durable raw-payload receipt order, not their possibly inverted wall-clock timestamps.
-    Candidates are proofs only once the bytes read from
-    them hash to the raw's recorded identity; the caller checks that.
+    Recorded append offsets are direct candidates. Windowless append starts
+    are only hypotheses from the retained history; size and digest still
+    decide whether any candidate contains the requested bytes.
     """
     if container_member:
         return (RetainedBlobSource(RetainedBlobSourceKind.ZIP_MEMBER),)
@@ -288,20 +438,12 @@ def retained_blob_source_candidates(
             windows.append(SourceByteWindow(0, end))
         return tuple(RetainedBlobSource(RetainedBlobSourceKind.APPEND_WINDOW, window) for window in windows)
     if is_legacy_append_without_window(row):
-        receipt_order = _optional_int(row.get("receipt_order"))
-        predecessors = (
-            [(order, full_size) for order, full_size in prior_full_observations if order < receipt_order]
-            if receipt_order is not None
-            else []
-        )
-        if not predecessors:
-            return ()
-        _timestamp, predecessor_end = max(predecessors)
-        return (
+        return tuple(
             RetainedBlobSource(
                 RetainedBlobSourceKind.LEGACY_APPEND_WINDOW,
-                SourceByteWindow(predecessor_end, predecessor_end + size),
-            ),
+                SourceByteWindow(start, start + size),
+            )
+            for start in legacy_append_starts
         )
     full_at_origin = (
         str(row.get("revision_kind") or "") in {"full", "unknown"} and _optional_int(row.get("source_index")) == 0
@@ -384,45 +526,33 @@ __all__ = [
     "is_legacy_append_without_window",
     "is_recorded_container_member",
     "read_raw_source_evidence",
-    "read_prior_full_source_receipts",
     "source_window_holds_blob",
-    "retained_blob_source_candidates",
+    "retained_blob_sources",
+    "retained_blob_sources_many",
+    "RetainedBlobSources",
     "retained_source_location",
-    "stage_blob_from_recorded_source",
+    "stage_blob_from_sources",
     "stage_exact_blob",
     "stage_exact_source_window_blob",
 ]
 
 
-def stage_blob_from_recorded_source(
-    conn: sqlite3.Connection,
-    archive_root: Path,
+def stage_blob_from_sources(
+    row: Mapping[str, object],
     blob_store: BlobStore,
-    raw_id: str,
+    sources: RetainedBlobSources,
     *,
     blob_hash: str,
-    source_path: str,
     stop: Callable[[], bool] | None = None,
 ) -> tuple[PreparedBlob | None, str | None]:
-    """Stage one absent blob from the first recorded source window holding its exact bytes.
+    """Stage the first selected source window holding the exact retained bytes.
 
-    The candidate windows come from ``retained_blob_source_candidates``,
-    the owner backup recoverability reads too. A ZIP member is replayed
-    through acquisition's ZIP admission (``zip_reacquired_unit``)
-    and staged only when the replayed value is byte-identical to the
-    blob; a structural-only match is ``inexact_payload``. Returns the
-    staged blob, or ``None`` with the last candidate's refusal reason.
+    Candidate resolution stays with the caller's Source snapshot so a batch
+    can share each path's history scan. ZIP members pass through acquisition's
+    ZIP admission; byte size and SHA-256 decide every staged candidate.
     """
-    row = read_raw_source_evidence(conn, raw_id)
-    if row is None:
-        raise KeyError(raw_id)
-    prior_full_observations = read_prior_full_source_receipts(conn, row)
-    source_path, container_member = retained_source_location(row, archive_root)
-    candidates = retained_blob_source_candidates(
-        row,
-        container_member=container_member,
-        prior_full_observations=prior_full_observations,
-    )
+    source_path = sources.source_path
+    candidates = sources.candidates
     if not candidates:
         return None, "no_source_window"
     reason: str | None = None
