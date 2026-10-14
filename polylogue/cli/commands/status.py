@@ -304,7 +304,7 @@ def status_command(
         # A failed status read proves nothing about daemon liveness; it
         # must never be rendered as a reachable daemon.
         if output_format == "json":
-            _show_daemon_status_unavailable_json()
+            _show_daemon_status_unavailable_json(env)
         else:
             _show_daemon_status_unavailable(env, compact=not full_payload)
         raise click.exceptions.Exit(1) from None
@@ -319,7 +319,7 @@ def status_command(
         # A failed status read proves nothing about daemon liveness; it
         # must never be rendered as a reachable daemon.
         if output_format == "json":
-            _show_daemon_status_unavailable_json()
+            _show_daemon_status_unavailable_json(env)
         else:
             _show_daemon_status_unavailable(env, compact=not full_payload)
         raise click.exceptions.Exit(1) from None
@@ -895,7 +895,7 @@ def _raw_failure_lifecycle_is_healthy(status: dict[str, Any]) -> bool:
     )
 
 
-def _show_daemon_status_unavailable_json() -> None:
+def _show_daemon_status_unavailable_json(_env: AppEnv) -> None:
     payload = {
         # Unreachable, not running: the status read failed, so liveness was
         # never observed and cannot be published as true (polylogue-2d8oq).
