@@ -21,6 +21,7 @@ from polylogue.operations.session_contracts import SessionRead
 from polylogue.operations.transcript_window import read_transcript_window_sync
 from polylogue.surfaces.temporal_evidence import (
     TemporalEvidenceEvent,
+    TemporalEvidenceWindow,
     action_row_to_temporal_event,
     build_temporal_evidence_window,
     message_row_to_temporal_event,
@@ -163,6 +164,13 @@ def _occurrence_events(
     return list(events.values()), tuple(dict.fromkeys(gaps))
 
 
+def temporal_window_for_summaries(archive: ArchiveStore, summaries: list[SessionSummary]) -> TemporalEvidenceWindow:
+    """Project all composed occurrences through the shared temporal owner."""
+    session_events = [event for summary in summaries if (event := summary_to_temporal_event(summary)) is not None]
+    occurrence_events, gaps = _occurrence_events(archive, summaries)
+    return build_temporal_evidence_window([*session_events, *occurrence_events], gaps=gaps)
+
+
 def execute_temporal_read(
     payload: Mapping[str, object], *, archive: ArchiveStore, vector_provider: VectorProvider | None = None
 ) -> dict[str, object]:
@@ -181,10 +189,8 @@ def execute_temporal_read(
     else:
         plan = spec.to_plan(vector_provider=vector_provider)
         summaries = select_read_view_summaries(plan, archive=archive, default_limit=50)
-    session_events = [event for summary in summaries if (event := summary_to_temporal_event(summary)) is not None]
-    occurrence_events, gaps = _occurrence_events(archive, summaries)
-    window = build_temporal_evidence_window([*session_events, *occurrence_events], gaps=gaps)
+    window = temporal_window_for_summaries(archive, summaries)
     return {"view": "temporal", "payload": {"temporal_window": window.model_dump(mode="json")}}
 
 
-__all__ = ["execute_dialogue_read", "execute_temporal_read"]
+__all__ = ["execute_dialogue_read", "execute_temporal_read", "temporal_window_for_summaries"]

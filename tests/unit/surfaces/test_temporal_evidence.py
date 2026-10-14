@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -136,3 +136,46 @@ def test_temporal_events_and_bounds_must_be_timezone_aware() -> None:
         )
     with pytest.raises(ValueError, match="since must be timezone-aware"):
         build_temporal_evidence_window([], since=datetime(2026, 6, 30, 10, 0))
+
+
+def test_temporal_activity_bands_represent_every_bucket_beyond_five() -> None:
+    """A fixed five-band slice loses declared bucket facts."""
+    events = [_event(f"bucket-{hour}", hour, 0, family="archive-message", kind="message") for hour in range(9)]
+    window = build_temporal_evidence_window(events)
+    assert len(window.events) == 9
+    assert len(window.activity_bands) == 9
+    assert [band.bucket_start.hour for band in window.activity_bands] == list(range(9))
+    assert sum(band.event_count for band in window.activity_bands) == 9
+
+
+def test_temporal_markdown_and_context_retain_all_selected_events() -> None:
+    from polylogue.cli.read_views.standard import _render_temporal_window_markdown
+    from polylogue.context.compiler import compile_temporal_context_segment
+
+    start = datetime(2026, 6, 30, tzinfo=UTC)
+    window = build_temporal_evidence_window(
+        TemporalEvidenceEvent(
+            event_id=f"message-{number}",
+            occurred_at=start + timedelta(hours=number),
+            family="archive-message",
+            kind="message",
+            label=f"Synthetic event {number}",
+            source_ref=f"message:message-{number}",
+            evidence_refs=("session:synthetic", f"message:message-{number}"),
+        )
+        for number in range(60)
+    )
+    segment = compile_temporal_context_segment(session_id="synthetic", window=window)
+    assert segment.markdown is not None
+    compiled_events = segment.markdown.split("## Events\n", 1)[1].strip().splitlines()
+    assert len(compiled_events) == window.event_count
+    for event, line in zip(window.events, compiled_events, strict=True):
+        assert event.occurred_at.isoformat() in line
+        assert f"[{event.family}/{event.kind}]" in line
+    assert "temporal_events_omitted_after_50" not in segment.caveats
+    markdown = _render_temporal_window_markdown(window)
+    buckets, events = markdown.split("## Buckets\n", 1)[1].split("## Events\n", 1)
+    assert len(buckets.strip().splitlines()) == len(window.buckets) == 60
+    assert len(events.strip().splitlines()) == window.event_count == 60
+    for event in window.events:
+        assert f"({event.source_ref})" in events

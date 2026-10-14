@@ -29,6 +29,87 @@ pytestmark = pytest.mark.uses_real_clock(
 )
 
 
+def test_temporal_route_retains_every_activity_bucket(tmp_path: Path) -> None:
+    """The native temporal payload retains all bucket facts, beyond display summaries."""
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    selected: list[str] = []
+
+    def seed(root: Path) -> None:
+        parsed = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="synthetic-temporal-buckets",
+            created_at="2026-09-01T00:00:00+00:00",
+            messages=[
+                ParsedMessage(
+                    provider_message_id=f"message-{number}",
+                    role="assistant",
+                    occurred_at_ms=1788220800000 + number * 3600000,
+                    text=f"Synthetic timestamped message {number}",
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE,
+                            tool_id=f"synthetic-tool-{number}",
+                            tool_name="Read",
+                            tool_input={"path": f"/synthetic/file-{number}.txt"},
+                        )
+                    ]
+                    if number < 111
+                    else [],
+                )
+                for number in range(201)
+            ],
+        )
+        with ArchiveStore(root) as archive:
+            selected.append(write_index_session(archive, parsed))
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        response = stack.client.operation(
+            "read.temporal", {"session_id": selected[0]}, archive_root=str(stack.archive_root)
+        )
+        from polylogue.api.archive import _archive_context_temporal_window
+        from polylogue.archive.hydration import archive_summary_to_domain
+        from polylogue.config import Config
+        from polylogue.operations.operation_context import open_operation_read
+
+        with open_operation_read(stack.archive_root) as pinned:
+            summary = archive_summary_to_domain(pinned.archive.read_summary(selected[0]))
+        api_window = _archive_context_temporal_window(
+            Config(
+                archive_root=stack.archive_root,
+                db_path=stack.archive_root / "index.db",
+                render_root=tmp_path / "render",
+                sources=[],
+            ),
+            summary,
+        )
+        budgeted = stack.client.operation(
+            "read.context-image",
+            {
+                "seed_session_ids": [selected[0]],
+                "read_views": ["temporal"],
+                "include_assertions": False,
+                "max_tokens": 1,
+                "observed_at_ms": 1_700_000_000_000,
+            },
+            archive_root=str(stack.archive_root),
+        )
+    assert response is not None and response["outcome"] == "completed"
+    window = response["result"]["payload"]["temporal_window"]
+    assert window["family_counts"] == {"archive-session": 1, "archive-message": 201, "archive-action": 111}
+    assert window["event_count"] == len({event["event_id"] for event in window["events"]}) == 313
+    assert api_window.model_dump(mode="json") == window
+    assert len(window["activity_bands"]) == 201
+    assert sum(band["event_count"] for band in window["activity_bands"]) == 313
+    assert budgeted is not None and budgeted["outcome"] == "completed"
+    image = budgeted["result"]["payload"]
+    assert image["segments"] == []
+    assert any(item["view"] == "temporal" and item["reason"] == "budget" for item in image["omitted"])
+
+
 def test_failed_embedding_receipt_decodes_without_fabricated_counters() -> None:
     """Anti-vacuity: requiring integer counters turns accepted failures into indeterminate replay."""
     from polylogue.operations.daemon_protocol import EmbeddingBackfillResult

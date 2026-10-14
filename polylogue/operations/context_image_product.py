@@ -14,7 +14,6 @@ from polylogue.archive.context_models import (
     ContextSpec,
 )
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
-from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
 from polylogue.context.product_image import compile_context_image
 from polylogue.core.async_bridge import complete_without_suspension
 from polylogue.core.enums import Origin
@@ -26,52 +25,20 @@ from polylogue.surfaces.chronicle import (
 )
 from polylogue.surfaces.payloads import AssertionClaimPayload
 from polylogue.surfaces.projection_spec import projection_from_views
-from polylogue.surfaces.temporal_evidence import (
-    TemporalEvidenceEvent,
-    TemporalEvidenceWindow,
-    action_row_to_temporal_event,
-    build_temporal_evidence_window,
-    message_row_to_temporal_event,
-    summary_to_temporal_event,
-)
+from polylogue.surfaces.temporal_evidence import TemporalEvidenceWindow
 
 if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.archive.session.domain_models import SessionSummary
 
-#: A context segment is a bounded excerpt of one session's temporal evidence,
-#: not its full timeline; the caveats on the window name each cut it makes.
-CONTEXT_TEMPORAL_MESSAGE_EVENTS = 8
-CONTEXT_TEMPORAL_ACTION_EVENTS = 4
 CONTEXT_CHRONICLE_EDGE_LIMIT = 8
 
 
 def context_temporal_window(archive: ArchiveStore, summary: SessionSummary) -> TemporalEvidenceWindow:
-    """The temporal context excerpt for one session, read from ``archive``."""
-    session_id = str(summary.id)
-    events: list[TemporalEvidenceEvent] = []
-    if session_event := summary_to_temporal_event(summary):
-        events.append(session_event)
-    predicate = QueryFieldPredicate(field="session.id", values=(session_id,), op="=").with_field_ref(
-        QueryFieldRef(scope="session", name="id", source_name="session.id")
-    )
-    message_rows = archive.query_messages(
-        predicate, limit=CONTEXT_TEMPORAL_MESSAGE_EVENTS, sort="time", sort_direction="asc"
-    )
-    action_rows = archive.query_session_actions(
-        [session_id], limit=CONTEXT_TEMPORAL_ACTION_EVENTS, sort_direction="asc"
-    )
-    events.extend(event for row in message_rows if (event := message_row_to_temporal_event(row)) is not None)
-    events.extend(event for row in action_rows if (event := action_row_to_temporal_event(row)) is not None)
-    caveats: list[str] = []
-    if (
-        len(message_rows) >= CONTEXT_TEMPORAL_MESSAGE_EVENTS
-        and (summary.message_count or 0) > CONTEXT_TEMPORAL_MESSAGE_EVENTS
-    ):
-        caveats.append("message_events_capped")
-    if len(action_rows) >= CONTEXT_TEMPORAL_ACTION_EVENTS:
-        caveats.append("action_events_capped")
-    return build_temporal_evidence_window(events, caveats=caveats)
+    """Complete selected-session evidence; requested token budgets apply downstream."""
+    from polylogue.operations.read_view_dialogue_temporal import temporal_window_for_summaries
+
+    return temporal_window_for_summaries(archive, [summary])
 
 
 def context_chronicle_payload(

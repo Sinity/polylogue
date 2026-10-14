@@ -73,7 +73,7 @@ class TemporalPhaseSpan(SurfacePayloadModel):
 
 
 class TemporalActivityBand(SurfacePayloadModel):
-    """Dense activity bucket with compositional family/kind counts."""
+    """One activity bucket with compositional family/kind counts."""
 
     bucket_start: _PublicInstant
     event_count: int = Field(ge=0)
@@ -261,20 +261,24 @@ def _activity_bands(
     events: tuple[TemporalEvidenceEvent, ...],
     *,
     bucket: TemporalBucket,
-    limit: int = 5,
 ) -> tuple[TemporalActivityBand, ...]:
-    grouped: dict[datetime, list[TemporalEvidenceEvent]] = {}
+    counts: Counter[datetime] = Counter()
+    families: dict[datetime, Counter[str]] = {}
+    kinds: dict[datetime, Counter[str]] = {}
     for event in events:
-        grouped.setdefault(_bucket_start(event.occurred_at, bucket), []).append(event)
-    ranked = sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))[:limit]
+        start = _bucket_start(event.occurred_at, bucket)
+        counts[start] += 1
+        families.setdefault(start, Counter())[event.family] += 1
+        kinds.setdefault(start, Counter())[event.kind] += 1
+    ranked = sorted(counts, key=lambda start: (-counts[start], start))
     return tuple(
         TemporalActivityBand(
             bucket_start=start,
-            event_count=len(bucket_events),
-            family_counts=dict(sorted(Counter(event.family for event in bucket_events).items())),
-            kind_counts=dict(sorted(Counter(event.kind for event in bucket_events).items())),
+            event_count=counts[start],
+            family_counts=dict(sorted(families[start].items())),
+            kind_counts=dict(sorted(kinds[start].items())),
         )
-        for start, bucket_events in ranked
+        for start in ranked
     )
 
 
