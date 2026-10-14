@@ -184,7 +184,9 @@ excluded from that tier's cut. Backup page batches provide cancellation points;
 physical connection settlement precedes publication. The recorded source
 fingerprint retains the original physical main-file identity and hash plus
 nonempty WAL bytes, separately from its `snapshot` image fingerprint used by
-package verification. Data-version reobservation after releasing the pinned
+package verification. Main-file identity is selected before opening SQLite;
+a replacement during opening or copying refuses before package publication.
+Data-version reobservation after releasing the pinned
 read records whether those live bytes still describe the selected cut. Only a
 stable cut can authorize migration, whose pre-lock and post-lock checks compare
 both physical carriers. A concurrent commit leaves valid recovery evidence but

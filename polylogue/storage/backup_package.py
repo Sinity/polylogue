@@ -359,11 +359,14 @@ def _readable_sqlite_index(path: Path) -> bool:
     return True
 
 
-def _sqlite_source_fingerprint(path: Path, *, snapshot_path: Path, user_version: int) -> dict[str, object]:
+def _sqlite_source_fingerprint(
+    path: Path, *, snapshot_path: Path, user_version: int, selected_metadata: os.stat_result
+) -> dict[str, object]:
     from polylogue.storage.sqlite.physical_file import physical_file_sha256
 
-    metadata = path.stat()
-    physical = physical_file_sha256(path, expected_device=metadata.st_dev, expected_inode=metadata.st_ino)
+    physical = physical_file_sha256(
+        path, expected_device=selected_metadata.st_dev, expected_inode=selected_metadata.st_ino
+    )
     wal_path = path.with_name(f"{path.name}-wal")
     try:
         wal_metadata = wal_path.stat()
@@ -377,8 +380,8 @@ def _sqlite_source_fingerprint(path: Path, *, snapshot_path: Path, user_version:
         wal = {"size_bytes": wal_digest.size_bytes, "sha256": wal_digest.sha256}
     return {
         "path": str(path),
-        "device": metadata.st_dev,
-        "inode": metadata.st_ino,
+        "device": physical.device,
+        "inode": physical.inode,
         "size_bytes": physical.size_bytes,
         "sha256": physical.sha256,
         "user_version": user_version,
@@ -601,6 +604,7 @@ def _backup_sqlite(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[in
     require_write_lease("archive backup snapshot", archive_root=archive_root_path)
     check_compute_cancelled()
     live_path = src.resolve(strict=True)
+    selected_metadata = live_path.stat()
     conn = _open_backup_readonly_connection(live_path, immutable=False, timeout_class="offline-bulk")
     source_owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=(dst,))
     try:
@@ -634,7 +638,9 @@ def _backup_sqlite(src: Path, dst: Path, *, archive_root_path: Path) -> tuple[in
         conn.rollback()
         with connection_cursor(conn, "PRAGMA data_version") as cursor:
             before_fingerprint = int(cursor.fetchone()[0])
-        fingerprint = _sqlite_source_fingerprint(live_path, snapshot_path=dst, user_version=user_version)
+        fingerprint = _sqlite_source_fingerprint(
+            live_path, snapshot_path=dst, user_version=user_version, selected_metadata=selected_metadata
+        )
         with connection_cursor(conn, "PRAGMA data_version") as cursor:
             after_fingerprint = int(cursor.fetchone()[0])
         # A changing live tier is still a valid recovery image. It cannot
