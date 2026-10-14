@@ -31,9 +31,9 @@ def test_currently_eligible_fork_keeps_the_required_result_suffix() -> None:
             # Either event is locally possible with the original call. Only
             # creating another call leaves the required result suffix feasible.
             assert owner.tool_identity_count("call", "", 0, (8,)) == 1
-            assert next(path) == "call"
+            assert next(path) == ("call", 0)
             owner.observe_tool_identity("nextcall", "call", "new", schema)
-            assert next(path) == "result"
+            assert next(path) == ("result", None)
             identity, captured = owner.select_tool_identity("call", random.Random(31), "", 0, (8,))
             owner.observe_tool_identity(identity, "result", "call", captured, "string:inline")
             with pytest.raises(StopIteration):
@@ -301,7 +301,7 @@ def test_selected_message_quota_filters_a_locally_weighted_infeasible_fork() -> 
                 count_effects={quiet: 0, message: 1},
                 selected_count=1,
             )
-            assert list(path.sample(random.Random(seed))) == ["message", "quiet", "quiet"]
+            assert list(path.sample(random.Random(seed))) == [("message", None), ("quiet", None), ("quiet", None)]
     finally:
         owner.close()
 

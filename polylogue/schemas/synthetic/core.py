@@ -30,7 +30,7 @@ from polylogue.schemas.synthetic.models import (
     SyntheticStyle,
     SyntheticWrittenBatch,
 )
-from polylogue.schemas.synthetic.record_profiles import PublicRecordPlan, RecordScopeKinds
+from polylogue.schemas.synthetic.record_profiles import PublicRecordPlan, RecordChoice, RecordScopeKinds
 from polylogue.schemas.synthetic.relations import RelationConstraintSolver
 from polylogue.schemas.synthetic.selection import available_synthetic_providers, select_synthetic_schema
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
@@ -77,7 +77,7 @@ class SyntheticCorpus:
         self._session_native_id: str | None = None
         self._session_record_structure: SchemaRecord | None = None
         self._public_record_counts: Counter[str] = Counter()
-        self._public_scope: Generator[str, None, None] | None = None
+        self._public_scope: Generator[RecordChoice, None, None] | None = None
         self._coverage_branch_choices: dict[str, int] = {}
         self._coverage_type_choices: dict[str, str] = {}
         self._coverage_null_paths: set[str] = set()
@@ -155,11 +155,11 @@ class SyntheticCorpus:
             kinds = tuple(str(row["kind"]) for row in cycle if isinstance(row, dict))
             if self.workload_profile.get("authored_session_header") is True:
                 self._public_scope = (
-                    kinds[0] if index == 0 else kinds[1 + (index - 1) % (len(kinds) - 1)]
+                    RecordChoice(kinds[0] if index == 0 else kinds[1 + (index - 1) % (len(kinds) - 1)])
                     for index in range(requested + 1)
                 )
                 return requested + 1
-            self._public_scope = (kinds[index % len(kinds)] for index in range(requested))
+            self._public_scope = (RecordChoice(kinds[index % len(kinds)]) for index in range(requested))
             return requested
         value = synthetic_runtime._sampled_length(
             {"x-polylogue-observed-distribution": {"array_length": structure.get("scope_record_count")}},
@@ -193,10 +193,18 @@ class SyntheticCorpus:
             if not isinstance(selected, dict):
                 raise ValueError("authored record conditional structure is malformed")
             structure = selected
-        kind = next(self._public_scope)
+        choice = next(self._public_scope)
+        kind = choice.kind
         header_class = self._session_header_class if kind == "session_meta" and not self._session_header_bound else None
         plan = PublicRecordPlan(
-            self.provider, structure, kind, rng, self._relation_solver.fk_graph, schema, header_class=header_class
+            self.provider,
+            structure,
+            kind,
+            rng,
+            self._relation_solver.fk_graph,
+            schema,
+            header_class=header_class,
+            minimum_content_count=choice.minimum_content_count,
         )
         if header_class is not None:
             plan.bind_session_header(header_class, native_id=self._session_native_id, parent_id=self._session_parent_id)

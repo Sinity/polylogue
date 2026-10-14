@@ -9,7 +9,9 @@ from pathlib import Path
 from polylogue.core.json import JSONDocument, JSONValue
 
 
-def mixed_claude_tool_records(number: int) -> list[JSONDocument]:
+def mixed_claude_tool_records(
+    number: int, *, multiple_calls: bool = False, result_arrays: bool = False
+) -> list[JSONDocument]:
     session = str(uuid.UUID(int=number, version=4))
     rows: list[JSONDocument] = []
 
@@ -71,8 +73,23 @@ def mixed_claude_tool_records(number: int) -> list[JSONDocument]:
     )
     for index, (name, tool_input, result) in enumerate(cases):
         tool_id = f"call-neutral-{index}"
-        append("assistant", [{"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}])
-        content = "Command running in background with ID: task-neutral." if index == 5 else "Neutral tool result."
+        if multiple_calls and index == 0:
+            append(
+                "assistant",
+                [
+                    {"type": "tool_use", "id": tool_id, "name": name, "input": tool_input},
+                    {"type": "tool_use", "id": "call-neutral-7", "name": "private_tool_neutral", "input": {}},
+                ],
+            )
+        elif not multiple_calls or index != 7:
+            append("assistant", [{"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}])
+        content: JSONValue = (
+            [{"type": "text", "text": "Neutral tool result."}]
+            if result_arrays and name == "Edit"
+            else "Command running in background with ID: task-neutral."
+            if index == 5
+            else "Neutral tool result."
+        )
         append(
             "user",
             [{"type": "tool_result", "tool_use_id": tool_id, "content": content, "is_error": False}],
@@ -82,9 +99,14 @@ def mixed_claude_tool_records(number: int) -> list[JSONDocument]:
     return rows
 
 
-def write_mixed_claude_tool_sources(root: Path) -> list[list[JSONDocument]]:
+def write_mixed_claude_tool_sources(
+    root: Path, *, multiple_calls: bool = False, result_arrays: bool = False
+) -> list[list[JSONDocument]]:
     root.mkdir()
-    sessions = [mixed_claude_tool_records(number) for number in range(1, 4)]
+    sessions = [
+        mixed_claude_tool_records(number, multiple_calls=multiple_calls, result_arrays=result_arrays)
+        for number in range(1, 4)
+    ]
     for number, records in enumerate(sessions, 1):
         (root / f"session-{number}.jsonl").write_text(
             "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"

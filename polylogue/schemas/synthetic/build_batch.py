@@ -42,7 +42,7 @@ from polylogue.schemas.synthetic.models import (
 )
 from polylogue.schemas.synthetic.models import GeneratedValue as JSONValue
 from polylogue.schemas.synthetic.opaque_adjuncts import prepare_opaque_adjuncts
-from polylogue.schemas.synthetic.record_profiles import PublicRecordPlan
+from polylogue.schemas.synthetic.record_profiles import PublicRecordPlan, RecordChoice
 from polylogue.schemas.synthetic.relations import ForeignKeyGraph, RelationConstraintSolver
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 from polylogue.schemas.synthetic.text_value import JoinedText, SampledText
@@ -75,7 +75,7 @@ class _SyntheticBatchContext(Protocol):
     _session_record_structure: SchemaRecord | None
     _public_record_plan: PublicRecordPlan | None
     _public_record_counts: Counter[str]
-    _public_scope: Generator[str, None, None] | None
+    _public_scope: Generator[RecordChoice, None, None] | None
     _relation_solver: RelationConstraintSolver
     _semantic_gen: SemanticValueGenerator | None
     _generation_state: SyntheticGenerationState

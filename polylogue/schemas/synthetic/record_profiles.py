@@ -6,6 +6,7 @@ import math
 import random
 import sqlite3
 from collections.abc import Callable, Generator
+from dataclasses import dataclass
 
 from polylogue.core.tool_result_pointer import pointer_width_relation
 from polylogue.schemas.field_stats.distributions import _bucket_index
@@ -33,6 +34,12 @@ from polylogue.schemas.synthetic.text_value import JoinedText, SampledText, join
 from polylogue.schemas.tool_input_syntax import PUBLIC_TOOL_NAMES, validated_syntax_parts
 
 ContentState = tuple[str, str]
+
+
+@dataclass(frozen=True)
+class RecordChoice:
+    kind: str
+    minimum_content_count: int | None = None
 
 
 def _count(value: object) -> int:
@@ -156,7 +163,7 @@ class ConditionalContentKinds:
         self.path = _MeasuredPath(self.starts, endings, self.edges, count, owner)
 
     def sample(self, rng: random.Random) -> Generator[str, None, None]:
-        for kind in self.path.sample(rng):
+        for kind, _minimum in self.path.sample(rng):
             if kind == "block:other":
                 raise ValueError("content has no published discriminator; re-infer the package")
             yield kind.removeprefix("block:")
@@ -234,7 +241,8 @@ class OpaqueReferenceKinds:
         self.path = _MeasuredPath(starts, endings, edges, count, owner)
 
     def sample(self, rng: random.Random) -> Generator[str, None, None]:
-        yield from self.path.sample(rng)
+        for kind, _minimum in self.path.sample(rng):
+            yield kind
 
 
 class OpaqueResultHistoryKinds:
@@ -285,7 +293,8 @@ class OpaqueResultHistoryKinds:
         self.path = _MeasuredPath(starts, endings, edges, count, owner)
 
     def sample(self, rng: random.Random) -> Generator[str, None, None]:
-        yield from self.path.sample(rng)
+        for kind, _minimum in self.path.sample(rng):
+            yield kind
 
 
 class _MeasuredPath:
@@ -417,7 +426,7 @@ class _MeasuredPath:
         finally:
             cursor.close()
 
-    def sample(self, rng: random.Random) -> Generator[str, None, None]:
+    def sample(self, rng: random.Random) -> Generator[tuple[str, int | None], None, None]:
         if not self.count:
             return
         previous: ContentState | None = None
@@ -426,11 +435,12 @@ class _MeasuredPath:
             remaining = self.count - ordinal - 1
             paths = self._layer(remaining)
             candidates = self.starts if previous is None else self.edges.get(previous, {})
+            available = self.available_resource() if self.available_resource is not None else None
             weighted = [
                 (state, math.log(weight) + paths[_key(state)][0])
                 for state, weight in candidates.items()
                 if _key(state) in paths
-                and (self.available_resource is None or paths[_key(state)][1] <= self.available_resource())
+                and (available is None or paths[_key(state)][1] <= available)
                 and (quota is None or (paths[_key(state)][2] >> quota) & 1)
             ]
             if not weighted:
@@ -445,7 +455,16 @@ class _MeasuredPath:
             if quota is not None:
                 assert self.count_effects is not None
                 quota -= self.count_effects[chosen]
-            yield chosen[0]
+            minimum_content_count = None
+            if self.resource_effects is not None and self.resource_effects.get(chosen, (0, 0))[1] > 0:
+                assert available is not None
+                following = self._layer(remaining - 1) if remaining else {}
+                required_after = min(
+                    (following[_key(state)][1] for state in self.edges.get(chosen, {}) if _key(state) in following),
+                    default=0,
+                )
+                minimum_content_count = max(0, required_after - available)
+            yield chosen[0], minimum_content_count
 
 
 def _weights(value: object) -> dict[str, int]:
@@ -484,10 +503,12 @@ class PublicRecordPlan:
         metadata_class: SchemaRecord | None = None,
         agent_id: str | None = None,
         agent_stem: str | None = None,
+        minimum_content_count: int | None = None,
     ) -> None:
         self.owner = owner
         self.generation = owner._generation
         self.schema = schema
+        self.minimum_content_count = minimum_content_count
         self.agent_children: tuple[str, tuple[int, ...]] | None = None
         self.agent_metadata: SchemaRecord | None = None
         self.agent_identity_prefix: bool | None = None
@@ -749,6 +770,39 @@ class PublicRecordPlan:
         if not self.compatible(self.schema, "$"):
             raise ValueError("original header class has no declared schema branch; re-infer the package")
 
+    def _claude_result_forms(
+        self,
+        mode: str,
+        relation: str,
+        prior_mode: str,
+        prior_count: int,
+        widths: tuple[int, ...] | None,
+        tool_class: str | None,
+    ) -> list[SchemaRecord]:
+        native = self.content.get("native_tool_field_forms")
+        forms = native.get("tool_result") if isinstance(native, dict) else None
+        if not isinstance(forms, list) or not forms:
+            raise ValueError("Claude tool result forms are missing; re-infer the package")
+        eligible: list[SchemaRecord] = []
+        for form in forms:
+            if not isinstance(form, dict) or not isinstance(form.get("syntax"), dict):
+                raise ValueError("Claude result form is malformed")
+            syntax = form["syntax"]
+            assert isinstance(syntax, dict)
+            name = syntax.get("name")
+            if not isinstance(name, str) or name and name not in PUBLIC_CLAUDE_TOOL_NAMES:
+                raise ValueError("Claude result form contains an undeclared public call class")
+            if (
+                form.get("result_mode") == mode
+                and (tool_class is None or name == tool_class)
+                and (
+                    relation not in {"call", "result", "both"}
+                    or self.owner.tool_identity_count(relation, prior_mode, prior_count, widths, name)
+                )
+            ):
+                eligible.append(form)
+        return eligible
+
     def _bind_dispatch_fields(self, rng: random.Random) -> None:
         rows = self.content.get("dispatch_forms")
         if not isinstance(rows, list) or not rows:
@@ -769,8 +823,11 @@ class PublicRecordPlan:
                     if not isinstance(operand, dict):
                         raise ValueError("tool relation evidence is malformed")
                     _, _, _, relation, prior_mode, prior_count = _tool_operand_coordinates(operand, "tool_result")
-                    if relation in {"new", "missing"} or self.owner.tool_identity_count(
-                        relation, prior_mode, prior_count, tool_class=None if tool_class == "mixed" else tool_class
+                    mode = operand.get("result_mode")
+                    if not isinstance(mode, str):
+                        raise ValueError("tool result shape is missing; re-infer the package")
+                    if self._claude_result_forms(
+                        mode, relation, prior_mode, prior_count, None, None if tool_class == "mixed" else tool_class
                     ):
                         supported = True
                         break
@@ -1144,6 +1201,19 @@ class PublicRecordPlan:
                 continue
             if relation == "new" and not self._new_tool_field_is_supported(path + "." + str(field)):
                 continue
+            if self.provider == "claude-code" and kind == "tool_result":
+                mode = row.get("result_mode")
+                if not isinstance(mode, str):
+                    raise ValueError("tool result shape is missing; re-infer the package")
+                if not self._claude_result_forms(
+                    mode,
+                    relation,
+                    prior_mode,
+                    prior_count,
+                    None if width_support is None else tuple(width_support),
+                    self.record_tool_class,
+                ):
+                    continue
             eligible.append(row)
             weights.append(weight)
         if not eligible:
@@ -1305,38 +1375,17 @@ class PublicRecordPlan:
                             else:
                                 self.absent.add(target)
         elif self.provider == "claude-code" and kind == "tool_result":
-            forms = native_forms.get(kind) if isinstance(native_forms, dict) else None
-            if not isinstance(forms, list) or not forms:
-                raise ValueError("Claude tool result forms are missing; re-infer the package")
-            result_forms: list[SchemaRecord] = []
-            result_weights: list[int] = []
-            for form in forms:
-                if not isinstance(form, dict) or not isinstance(form.get("syntax"), dict):
-                    raise ValueError("Claude result form is malformed")
-                syntax = form["syntax"]
-                assert isinstance(syntax, dict)
-                name = syntax.get("name")
-                if not isinstance(name, str) or name and name not in PUBLIC_CLAUDE_TOOL_NAMES:
-                    raise ValueError("Claude result form contains an undeclared public call class")
-                if (
-                    form.get("result_mode") == mode
-                    and (self.record_tool_class is None or name == self.record_tool_class)
-                    and (
-                        relation not in {"call", "result", "both"}
-                        or self.owner.tool_identity_count(
-                            relation,
-                            str(row["prior_result_mode"]),
-                            selected_count,
-                            None if width_support is None else tuple(width_support),
-                            name,
-                        )
-                    )
-                ):
-                    result_forms.append(form)
-                    result_weights.append(_count(form.get("count")))
+            result_forms = self._claude_result_forms(
+                mode,
+                relation,
+                str(row["prior_result_mode"]),
+                selected_count,
+                None if width_support is None else tuple(width_support),
+                self.record_tool_class,
+            )
             if not result_forms:
                 raise ValueError("Claude result form has no original matching call class")
-            selected = rng.choices(result_forms, weights=result_weights, k=1)[0]
+            selected = rng.choices(result_forms, weights=[_count(form.get("count")) for form in result_forms], k=1)[0]
             syntax, fields = selected["syntax"], selected.get("fields")
             assert isinstance(syntax, dict)
             result_class_filter = str(syntax["name"])
@@ -1655,7 +1704,7 @@ class RecordScopeKinds:
             if target in destinations:
                 raise ValueError("public record transition occurs twice")
             destinations[target] = _count(row.get("count"))
-        resource = _single_call_resource(structure, provider, schema)
+        resource = _call_resource(structure, provider, schema)
         self.path = _MeasuredPath(
             starts,
             endings,
@@ -1680,19 +1729,21 @@ class RecordScopeKinds:
             else lambda: owner.tool_identity_count("call", "", 0, (resource[1],)),
         )
 
-    def sample(self, rng: random.Random) -> Generator[str, None, None]:
-        yield from self.path.sample(rng)
+    def sample(self, rng: random.Random) -> Generator[RecordChoice, None, None]:
+        for kind, minimum in self.path.sample(rng):
+            yield RecordChoice(kind, minimum)
 
 
-def _single_call_resource(
+def _call_resource(
     structure: SchemaRecord, provider: str | None, schema: SchemaRecord | None
 ) -> tuple[dict[ContentState, tuple[int, int]], int] | None:
     """Project a proved fungible call resource, never approximate joint history.
 
-    One new call creates one call-only identity; its first result consumes it.
-    This projection applies only when every original form/operand of a record
-    has that same effect and width. Repeated results, competing widths, finite
-    literal ID pools and multi-block records retain their original joint owner.
+    All-tool call arrays supply their maximum measured cardinality during
+    feasibility planning; the selected record carries the minimum actual draw
+    needed for its suffix. A single first result consumes one identity.
+    Repeated results, competing widths, finite literal ID pools and mixed-block
+    records retain their original joint owner.
     """
     if provider != "claude-code" or schema is None:
         return None
@@ -1734,18 +1785,31 @@ def _single_call_resource(
                     continue
                 if mode not in {"array", "object"}:
                     return None
+                content_count = 1
                 if mode == "array":
                     count = profile.get("array_block_count")
-                    if not isinstance(count, dict) or set(observed_length_support(count)) != {1}:
+                    if not isinstance(count, dict):
                         return None
+                    counts = observed_length_support(count)
+                    if not counts or min(counts) <= 0:
+                        return None
+                    content_count = max(counts)
                 rows_by_kind = list(operands.items())
                 if len(rows_by_kind) != 1:
                     return None
                 tool_kind, rows = rows_by_kind[0]
                 if not isinstance(rows, list) or not rows:
                     return None
-                expected = (0, 1) if tool_kind == "tool_use" else (1, -1) if tool_kind == "tool_result" else None
+                expected = (
+                    (0, content_count)
+                    if tool_kind == "tool_use"
+                    else (1, -1)
+                    if tool_kind == "tool_result" and content_count == 1
+                    else None
+                )
                 if expected is None:
+                    return None
+                if set(_weights(profile.get("block_kinds"))) != {"block:" + tool_kind}:
                     return None
                 endings = _state_rows(profile, "terminal_states")
                 if any(state[0] != "block:" + tool_kind for state in endings):
@@ -1757,8 +1821,8 @@ def _single_call_resource(
                         row, tool_kind
                     )
                     if (
-                        relation != ("new" if expected[1] == 1 else "call")
-                        or event != ("call" if expected[1] == 1 else "result")
+                        relation != ("new" if expected[1] > 0 else "call")
+                        or event != ("call" if expected[1] > 0 else "result")
                         or presence != "string"
                         or prior_mode != ""
                         or prior_count != 0

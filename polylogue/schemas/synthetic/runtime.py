@@ -691,7 +691,13 @@ def _schema_allows_null(schema: SchemaRecord) -> bool:
     return False
 
 
-def _sampled_length(schema: SchemaRecord, name: str, rng: random.Random) -> int | None:
+def _sampled_length(schema: SchemaRecord, name: str, rng: random.Random, *, minimum: int = 0) -> int | None:
+    if minimum > 0:
+        support = observed_length_support(_observed_distribution(schema, name))
+        candidates = [value for value in support if value >= minimum]
+        if not candidates:
+            raise ValueError("observed count cannot satisfy the selected path's remaining tool demand")
+        return rng.choices(candidates, weights=[support[value] for value in candidates], k=1)[0]
     sampled = _sample_observed_distribution(schema, name, rng)
     if sampled is not None and sampled < 0:
         raise ValueError("observed length or count is negative")
@@ -1431,7 +1437,12 @@ def _walk_array(
         if conditioned and plan is not None
         else schema
     )
-    observed_length = _sampled_length(length_schema, "array_length", rng)
+    observed_length = _sampled_length(
+        length_schema,
+        "array_length",
+        rng,
+        minimum=plan.minimum_content_count or 0 if conditioned and plan is not None else 0,
+    )
     if conditioned and observed_length is None:
         raise ValueError("conditional public block count is missing; re-infer the package")
     lengths = schema.get("x-polylogue-array-lengths")
