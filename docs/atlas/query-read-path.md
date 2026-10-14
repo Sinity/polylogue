@@ -441,3 +441,7 @@ read as NUL-delimited filesystem bytes and compared to repository-relative
 session paths without changing the reported original paths. Every admitted
 7–40-character commit prefix resolves through Git object identity; ambiguity
 is an explicit refusal rather than an arbitrary attributed commit.
+
+CLI open and stream actions retain the supplied read outcome. A successful URL
+launch does not clear a selection gap; an empty selection retains its supplied
+terminal status and total, including an unknown total.
