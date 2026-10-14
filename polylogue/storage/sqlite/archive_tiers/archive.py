@@ -1209,6 +1209,7 @@ class ArchiveStore:
         #: Read paths that would otherwise end a stale transaction must leave
         #: a caller-owned snapshot alone.
         self._read_snapshot_owned = False
+        self._source_read_snapshot_owned = False
         self.operation_schema_versions: dict[str, int] | None = None
         self._operation_materialization: RawMaterializationAssessment | None = None
         self.operation_degraded_components: tuple[str, ...] = ()
@@ -1966,7 +1967,7 @@ class ArchiveStore:
 
         if self._read_snapshot_owned:
             check_owned_read_transaction(self._conn)
-            if self._source_conn is not None:
+            if self._source_read_snapshot_owned and self._source_conn is not None:
                 check_owned_read_transaction(self._source_conn)
         checkpoint = getattr(self, "_operation_read_checkpoint", None)
         if checkpoint is not None:
@@ -2045,6 +2046,8 @@ class ArchiveStore:
             raise RuntimeError("operation snapshots require a read-only archive")
         if self._conn.in_transaction and not self._read_snapshot_owned:
             raise RuntimeError("operation pin requires an owned read transaction")
+        if self._source_conn is not None and self._source_conn.in_transaction and not self._source_read_snapshot_owned:
+            raise RuntimeError("operation pin requires an owned Source read transaction")
         attached = {str(row[1]) for row in self._conn.execute("PRAGMA database_list")}
         schemas = {"index": "main", "user": "user_tier"}
         degraded: list[str] = []
@@ -2072,6 +2075,9 @@ class ArchiveStore:
             source = self.source_connection
             if not source.in_transaction:
                 source.execute("BEGIN")
+                self._source_read_snapshot_owned = True
+            elif not self._source_read_snapshot_owned:
+                raise RuntimeError("operation pin requires an owned Source read transaction")
             from polylogue.storage.sqlite.connection_profile import protect_owned_read_transaction
 
             protect_owned_read_transaction(source, active=True)
@@ -2097,12 +2103,13 @@ class ArchiveStore:
             index_settled = True
         except BaseException as exc:
             first_error = exc
-        if self._source_conn is not None:
+        if self._source_read_snapshot_owned and self._source_conn is not None:
             try:
                 protect_owned_read_transaction(self._source_conn, active=False)
                 self._source_conn.set_progress_handler(None, 0)
                 if self._source_conn.in_transaction:
                     self._source_conn.rollback()
+                self._source_read_snapshot_owned = False
             except BaseException as exc:
                 if first_error is None:
                     first_error = exc

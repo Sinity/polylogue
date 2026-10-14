@@ -363,3 +363,32 @@ def test_readonly_attachment_setup_retains_owned_transaction_policy(tmp_path: Pa
         assert connection.in_transaction
         with pytest.raises(OperationReadSnapshotUnavailableError):
             pinned.archive.check_operation_read()
+
+
+def test_source_borrowed_pin_refusal_preserves_the_callers_authorizer(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        connection = archive.source_connection
+        connection.execute("BEGIN")
+
+        def borrowed_policy(action: int, *_args: object) -> int:
+            return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_SELECT else sqlite3.SQLITE_OK
+
+        connection.set_authorizer(borrowed_policy)
+        with pytest.raises(RuntimeError, match="owned Source read transaction"):
+            archive.pin_operation_snapshot()
+        assert connection.in_transaction
+        with pytest.raises(sqlite3.DatabaseError):
+            connection.execute("SELECT 1")
+        archive.end_read_snapshot()
+        assert connection.in_transaction
+        with pytest.raises(sqlite3.DatabaseError):
+            connection.execute("SELECT 1")
+        connection.rollback()
+        connection.set_authorizer(None)
+        archive.pin_operation_snapshot()
+        archive.check_operation_read()
+        archive.end_read_snapshot()
+        assert not connection.in_transaction
