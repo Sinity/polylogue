@@ -53,6 +53,8 @@ if TYPE_CHECKING:
 
     from polylogue.archive.models import Session
     from polylogue.config import Source
+    from polylogue.schemas.runtime_registry import SchemaRegistry
+    from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.runtime import RawSessionRecord
     from polylogue.storage.sqlite import SQLiteBackend
@@ -1257,7 +1259,72 @@ def cli_runner() -> CliRunner:
 
 
 @pytest.fixture(scope="session")
-def raw_synthetic_samples() -> list[RawSessionRecord]:
+def qualified_schema_registry(tmp_path_factory: pytest.TempPathFactory) -> SchemaRegistry:
+    """Fresh published evidence; committed catalogue qualification stays separate."""
+    from tests.infra.qualified_schema_registry import build_qualified_schema_registry
+
+    return build_qualified_schema_registry(tmp_path_factory.mktemp("qualified-schemas"))
+
+
+@pytest.fixture(scope="session")
+def qualified_tool_schema_registry(tmp_path_factory: pytest.TempPathFactory) -> SchemaRegistry:
+    """Infer tool-bearing source streams with authored structured outcomes."""
+    from tests.infra.qualified_schema_registry import build_qualified_schema_registry
+
+    return build_qualified_schema_registry(
+        tmp_path_factory.mktemp("qualified-tool-schemas"), providers=("claude-code", "codex"), tool_cases=True
+    )
+
+
+@pytest.fixture(scope="session")
+def qualified_schema_catalog(
+    qualified_schema_registry: SchemaRegistry, tmp_path_factory: pytest.TempPathFactory
+) -> SchemaRegistry:
+    """One snapshot: freshly observed supported routes and declared unsupported metadata."""
+    from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
+    from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_ROUTES
+
+    root = tmp_path_factory.mktemp("qualified-catalog")
+    for provider in qualified_schema_registry.list_providers():
+        route = PROVIDER_WIRE_ROUTES[provider]
+        source = (
+            qualified_schema_registry.storage_root / provider if route.status == "supported" else SCHEMA_DIR / provider
+        )
+        assert source.is_dir(), provider
+        shutil.copytree(source, root / provider)
+    return SchemaRegistry(storage_root=root)
+
+
+@pytest.fixture
+def qualified_provider_defaults(qualified_schema_registry: SchemaRegistry, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise ordinary spec APIs against explicitly selected neutral evidence."""
+    from polylogue.schemas.synthetic import core
+
+    monkeypatch.setattr(core, "SchemaRegistry", lambda: qualified_schema_registry)
+
+
+@pytest.fixture
+def qualified_provider_corpus(
+    qualified_schema_registry: SchemaRegistry,
+) -> Iterator[Callable[[str], SyntheticCorpus]]:
+    from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.schemas.synthetic.selection import select_synthetic_schema
+
+    corpora: list[SyntheticCorpus] = []
+
+    def create(provider: str) -> SyntheticCorpus:
+        selection = select_synthetic_schema(provider, registry_factory=lambda: qualified_schema_registry)
+        corpus = SyntheticCorpus.from_selection(selection)
+        corpora.append(corpus)
+        return corpus
+
+    yield create
+    for corpus in corpora:
+        corpus._relation_solver.close()
+
+
+@pytest.fixture(scope="session")
+def raw_synthetic_samples(qualified_schema_registry: SchemaRegistry) -> list[RawSessionRecord]:
     """Generate synthetic raw session records for all providers.
 
     Uses SyntheticCorpus to generate wire-format bytes, wrapped in
@@ -1278,7 +1345,10 @@ def raw_synthetic_samples() -> list[RawSessionRecord]:
 
     samples: list[RawSessionRecord] = []
     for spec in specs:
-        batch = SyntheticCorpus.generate_batch_for_spec(spec)
+        from polylogue.schemas.synthetic.selection import select_synthetic_schema
+
+        selection = select_synthetic_schema(spec.provider, registry_factory=lambda: qualified_schema_registry)
+        batch = SyntheticCorpus.generate_batch_for_selection(selection, spec)
         for idx, raw_bytes in enumerate(batch.raw_items):
             raw_id = hashlib.sha256(raw_bytes).hexdigest()
             samples.append(
@@ -1301,6 +1371,7 @@ def raw_synthetic_samples() -> list[RawSessionRecord]:
 
 @pytest.fixture
 def synthetic_source(
+    qualified_schema_registry: SchemaRegistry,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Callable[[str, int, range, int], Source]:
@@ -1341,7 +1412,10 @@ def synthetic_source(
             tags=("synthetic", "test", "source"),
         )
         provider_dir = tmp_path / "synthetic" / provider
-        written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="synth")
+        from polylogue.schemas.synthetic.selection import select_synthetic_schema
+
+        selection = select_synthetic_schema(provider, registry_factory=lambda: qualified_schema_registry)
+        written = SyntheticCorpus.write_selection_artifacts(selection, spec, provider_dir, prefix="synth")
 
         if provider == "antigravity":
             monkeypatch.setattr(
@@ -1351,9 +1425,9 @@ def synthetic_source(
             return Source(name=provider, path=provider_dir)
 
         if count == 1:
-            return Source(name=f"{provider}-test", path=written.files[0])
+            return Source(name=f"{provider}-test", path=written.session_files[0])
         # For multiple files, return Source pointing to first file
         # (pipeline processes individual files, not directories)
-        return Source(name=f"{provider}-test", path=written.files[0])
+        return Source(name=f"{provider}-test", path=written.session_files[0])
 
     return _factory

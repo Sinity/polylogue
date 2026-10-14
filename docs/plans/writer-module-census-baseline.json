@@ -169,6 +169,11 @@
     "tiers": []
   },
   {
+    "file": "polylogue/schemas/generation/workload_profiles.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/schemas/observation_spill.py",
     "tiers": [],
     "authority": "scratch"
@@ -187,10 +192,45 @@
     "tiers": []
   },
   {
+    "file": "polylogue/schemas/synthetic/agent_adjuncts.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/schemas/synthetic/core.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/schemas/synthetic/opaque_adjuncts.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/schemas/synthetic/record_profiles.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/schemas/synthetic/relation_solver_runtime.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/schemas/synthetic/relations.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/schemas/validation/corpus.py",
     "tiers": [
       "source"
     ]
+  },
+  {
+    "file": "polylogue/schemas/workload_profile_rows.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/security/excision.py",

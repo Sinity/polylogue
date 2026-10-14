@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from pathlib import Path
 
 from polylogue.core.enums import Provider
@@ -25,7 +26,7 @@ from polylogue.schemas.generation.provider_bundle_packages import (
     build_success_provider_bundle,
 )
 from polylogue.schemas.generation.support import GENSON_AVAILABLE
-from polylogue.schemas.observation import PROVIDERS, ProviderConfig, resolve_provider_config
+from polylogue.schemas.observation import PROVIDERS, ProviderConfig, SchemaUnit, resolve_provider_config
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.registry import ClusterManifest, SchemaCluster
 from polylogue.storage.archive_identity import ArchiveLocation
@@ -75,6 +76,7 @@ def _build_provider_bundle(
     full_corpus: bool = False,
     progress_callback: GenerationProgressCallback | None = None,
     archive_location: ArchiveLocation | None = None,
+    observed_units: Iterable[SchemaUnit] | None = None,
 ) -> _ProviderBundle:
     """Generate all inferred schema versions plus the default result for a provider."""
     provider_token = Provider.from_string(provider)
@@ -150,6 +152,7 @@ def _build_provider_bundle(
                 progress_callback=observe_progress,
                 allow_session_dir_fallback=allow_session_dir_fallback,
                 archive_location=archive_location,
+                observed_units=observed_units,
             )
             complete_phase(
                 "observe_and_cluster",

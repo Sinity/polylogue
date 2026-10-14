@@ -11,6 +11,7 @@ from polylogue.core.json import JSONDocument
 from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.observation import resolve_provider_config
 from polylogue.schemas.observation_models import (
+    ObservationPayloadRecorder,
     ObservationTerminalRecorder,
     ObservationTerminalStatus,
     SchemaUnit,
@@ -35,6 +36,7 @@ def iter_schema_units(
     max_samples: int | None = None,
     full_corpus: bool = False,
     terminal_recorder: ObservationTerminalRecorder | None = None,
+    payload_recorder: ObservationPayloadRecorder | None = None,
     allow_session_dir_fallback: bool = False,
     archive_location: ArchiveLocation | None = None,
 ) -> Iterator[SchemaUnit]:
@@ -84,6 +86,7 @@ def iter_schema_units(
             max_samples=max_samples,
             full_corpus=full_corpus,
             terminal_recorder=_observing_terminal_recorder,
+            payload_recorder=payload_recorder,
             archive_location=archive_location,
         ):
             yielded_any = True

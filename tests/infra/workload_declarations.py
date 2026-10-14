@@ -103,7 +103,7 @@ class WorkloadSessionShape:
     messages_min: int
     messages_max: int
     seed_offset: int = 0
-    style: str = "tool-heavy"
+    style: str | None = None
 
     def __post_init__(self) -> None:
         validate_workload_provider(self.provider)
@@ -165,7 +165,13 @@ class WorkloadProfile:
                 messages_min=shape.messages_min,
                 messages_max=shape.messages_max,
                 seed=self.seed + shape.seed_offset,
-                style=shape.style,
+                style=(
+                    shape.style
+                    if shape.style is not None
+                    else "tool-heavy"
+                    if shape.provider in {"claude-code", "codex"}
+                    else "default"
+                ),
                 profile=corpus_profile,
                 origin=self.origin,
                 tags=self.tags,

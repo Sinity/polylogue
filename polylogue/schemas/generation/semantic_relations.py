@@ -25,7 +25,6 @@ def _relation_payloads(
 ) -> tuple[
     JSONDocumentList,
     JSONDocumentList,
-    JSONDocumentList,
 ]:
     return (
         [
@@ -43,16 +42,6 @@ def _relation_payloads(
             }
             for relation in relations.mutual_exclusions
         ],
-        [
-            {
-                "path": relation.path,
-                "min": relation.min_length,
-                "max": relation.max_length,
-                "avg": round(relation.avg_length, 1),
-                "stddev": round(relation.stddev, 1),
-            }
-            for relation in relations.string_lengths
-        ],
     )
 
 
@@ -62,6 +51,7 @@ def annotate_semantic_and_relational(
     field_stats: Mapping[str, FieldStats],
     *,
     artifact_kind: str | None = None,
+    provider: str | None = None,
     pins: dict[str, set[str]] | None = None,
 ) -> JSONDocument: ...
 
@@ -72,6 +62,7 @@ def annotate_semantic_and_relational(
     field_stats: Mapping[str, FieldStats],
     *,
     artifact_kind: str | None = None,
+    provider: str | None = None,
     pins: dict[str, set[str]] | None = None,
 ) -> JSONValue: ...
 
@@ -81,6 +72,7 @@ def annotate_semantic_and_relational(
     field_stats: Mapping[str, FieldStats],
     *,
     artifact_kind: str | None = None,
+    provider: str | None = None,
     pins: dict[str, set[str]] | None = None,
 ) -> JSONValue:
     """Attach semantic-role and relational annotations to a schema."""
@@ -97,6 +89,7 @@ def annotate_semantic_and_relational(
     _attach_semantic_roles(schema_node, role_by_path)
     relations = infer_relations(stats_by_path)
     _attach_relational_annotations(schema_node, relations)
+    _attach_declared_codex_numeric_orders(schema_node, provider=provider)
     return schema_node
 
 
@@ -134,13 +127,50 @@ def _attach_semantic_roles(
 
 
 def _attach_relational_annotations(schema: JSONDocument, relations: RelationalAnnotations) -> None:
-    foreign_keys, mutual_exclusions, string_lengths = _relation_payloads(relations)
+    foreign_keys, mutual_exclusions = _relation_payloads(relations)
     if foreign_keys:
         schema["x-polylogue-foreign-keys"] = _json_value(foreign_keys)
     if mutual_exclusions:
         schema["x-polylogue-mutually-exclusive"] = _json_value(mutual_exclusions)
-    if string_lengths:
-        schema["x-polylogue-string-lengths"] = _json_value(string_lengths)
+
+
+def _attach_declared_codex_numeric_orders(schema: JSONDocument, *, provider: str | None) -> None:
+    """Raw Codex input includes cache reads; reasoning is a subset of output.
+
+    These are provider structural laws, not correlations inferred from marginal
+    sketches. Only the actual raw token-usage carrier receives the declaration.
+    """
+    if provider != "codex":
+        return
+    pending = [(schema, "$")]
+    while pending:
+        node, path = pending.pop()
+        if path in {"$.payload.info.last_token_usage", "$.payload.info.total_token_usage"}:
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                pairs: JSONDocumentList = []
+                for lower, upper in (
+                    ("cached_input_tokens", "input_tokens"),
+                    ("reasoning_output_tokens", "output_tokens"),
+                ):
+                    left, right = properties.get(lower), properties.get(upper)
+                    if isinstance(left, dict) and isinstance(right, dict):
+                        # Mixed or absent carrier branches retain their schema
+                        # types. No field is created by the structural law.
+                        kinds = [item.get("type") for item in (left, right)]
+                        if all(kind in {"integer", "number"} for kind in kinds if isinstance(kind, str)) and all(
+                            isinstance(kind, str) for kind in kinds
+                        ):
+                            pairs.append({"lower": lower, "upper": upper})
+                if pairs:
+                    node["x-polylogue-numeric-order"] = _json_value(pairs)
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            pending.extend((child, path + "." + name) for name, child in properties.items() if isinstance(child, dict))
+        for keyword in ("anyOf", "oneOf"):
+            branches = node.get(keyword)
+            if isinstance(branches, list):
+                pending.extend((child, path) for child in branches if isinstance(child, dict))
 
 
 __all__ = ["annotate_semantic_and_relational"]

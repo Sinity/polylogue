@@ -4,23 +4,29 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Generator, Iterable, Mapping
 from functools import lru_cache
 from typing import TypeAlias
 
+from polylogue.core.tool_result_pointer import persisted_output_shape
 from polylogue.schemas.field_stats.detection import (
     _detect_numeric_format,
     _detect_string_format,
     is_dynamic_key,
     should_collapse_observed_keys,
 )
+from polylogue.schemas.field_stats.distributions import categorical_bucket
 from polylogue.schemas.field_stats.models import (
     ENUM_MAX_CARDINALITY,
     ENUM_VALUE_CAP,
     REF_MATCH_THRESHOLD,
     SESSION_EVIDENCE_CAP,
     FieldStats,
+    StringCategoryStats,
+    StringCharacterStats,
+    StringFormatStats,
 )
+from polylogue.schemas.json_walk import require_finite_json
 
 SampleMapping: TypeAlias = Mapping[str, object]
 FieldStatsByPath: TypeAlias = dict[str, FieldStats]
@@ -62,7 +68,6 @@ def _collect_field_stats(
     session_ids: Iterable[str | None] | None = None,
     observed_ats: Iterable[str | None] | None = None,
     dynamic_paths: Collection[str] = (),
-    max_depth: int = 15,
 ) -> FieldStatsByPath:
     """Walk all samples and collect per-JSON-path statistics.
 
@@ -89,11 +94,8 @@ def _collect_field_stats(
     def _collapse_key_tuple(keys: tuple[str, ...]) -> bool:
         return should_collapse_observed_keys(keys)
 
-    def _walk(value: object, path: str, depth: int, sample_idx: int) -> None:
+    def _walk(value: object, path: str, depth: int, sample_idx: int) -> Generator[tuple[object, str, int], None, None]:
         nonlocal current_session_token, token_session_id
-        if depth > max_depth:
-            return
-
         stats = _ensure_stats(path)
         stats.total_samples = max(stats.total_samples, sample_idx + 1)
         stats.max_depth_seen = max(stats.max_depth_seen, depth)
@@ -143,7 +145,7 @@ def _collect_field_stats(
 
             for key, item in items:
                 child_path = f"{path}.*" if collapse_all or is_dynamic_key(key) else f"{path}.{key}"
-                _walk(item, child_path, depth + 1, sample_idx)
+                yield item, child_path, depth + 1
             return
 
         if isinstance(value, list):
@@ -160,7 +162,7 @@ def _collect_field_stats(
                             if fval >= previous_numeric:
                                 numeric_increasing_pair_count += 1
                         previous_numeric = fval
-                _walk(item, f"{path}[*]", depth + 1, sample_idx)
+                yield item, f"{path}[*]", depth + 1
             if numeric_pair_count:
                 item_stats = _ensure_stats(f"{path}[*]")
                 item_stats.ordered_pair_count += numeric_pair_count
@@ -212,6 +214,31 @@ def _collect_field_stats(
                 stats.detected_formats[fmt] += 1
 
             newline_count = value.count("\n")
+            # The marginal length histogram cannot tell a UUID from another
+            # spelling in the same field. Retain that measured conditioning
+            # before the literal leaves the collector.
+            shape = stats.string_formats.setdefault(fmt or "", StringFormatStats())
+            shape.length.observe(len(value))
+            shape.newlines.observe(newline_count)
+            shape.categorical.observe(value, digest=value_digest)
+            category = shape.categories.setdefault(
+                categorical_bucket(value, digest=value_digest), StringCategoryStats()
+            )
+            category.length.observe(len(value))
+            category.newlines.observe(newline_count)
+            character_class = "ascii" if value.isascii() else "non_ascii"
+            for partition in (shape, category):
+                character_shape = partition.character_shapes.setdefault(character_class, StringCharacterStats())
+                character_shape.length.observe(len(value))
+                character_shape.newlines.observe(newline_count)
+                if fmt == "persisted-tool-output":
+                    point = persisted_output_shape(value)
+                    assert point is not None
+                    character_shape.pointer_shapes.observe(point)
+            if fmt == "persisted-tool-output":
+                pointer_shape = persisted_output_shape(value)
+                assert pointer_shape is not None
+                category.pointer_shapes.observe(pointer_shape)
             if newline_count > 0:
                 stats.is_multiline += 1
             stats.newline_distribution.observe(newline_count)
@@ -239,7 +266,19 @@ def _collect_field_stats(
     for idx, sample in enumerate(samples):
         current_session_id = next(session_id_iterator, None) if session_id_iterator is not None else None
         current_observed_at = next(observed_at_iterator, None) if observed_at_iterator is not None else None
-        _walk(sample, "$", 0, idx)
+        require_finite_json(sample)
+        frames = [_walk(sample, "$", 0, idx)]
+        try:
+            while frames:
+                try:
+                    value, path, depth = next(frames[-1])
+                except StopIteration:
+                    frames.pop()
+                else:
+                    frames.append(_walk(value, path, depth, idx))
+        finally:
+            for frame in reversed(frames):
+                frame.close()
         total_samples = idx + 1
 
     for stats in all_stats.values():

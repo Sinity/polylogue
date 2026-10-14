@@ -6,25 +6,34 @@ tree vs. linear vs. JSONL, and message location paths.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import re
 from collections import Counter
-from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
+from itertools import chain
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast
 
-from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Role
+from polylogue.schemas.json_walk import clone_finite_json, require_finite_json
+from polylogue.schemas.synthetic.array_value import GeneratedArray, walk_generated_values
 from polylogue.schemas.synthetic.conservation import (
     ConservationResult,
     check_conservation,
     excluded_paths_from_pins,
 )
+from polylogue.schemas.synthetic.models import GeneratedRecord
+from polylogue.schemas.synthetic.models import GeneratedValue as JSONValue
 
 if TYPE_CHECKING:
-    from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticGenerationBatch
+    from polylogue.schemas.synthetic.models import (
+        GeneratedString,
+        SchemaRecord,
+        SyntheticGenerationBatch,
+        SyntheticGenerationState,
+    )
+    from polylogue.schemas.synthetic.record_profiles import PublicRecordPlan
     from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedSession
 
 WireEncoding: TypeAlias = Literal["json", "jsonl"]
@@ -66,6 +75,7 @@ class WireFormat:
     encoding: WireEncoding
     tree: TreeConfig | None = None
     messages_path: str | None = None  # Dot-path to messages array
+    document_session_field: str | None = None  # Original document's native identity address
 
 
 @dataclass(frozen=True)
@@ -295,6 +305,7 @@ class WireSupportReceipt:
 PROVIDER_WIRE_FORMATS: dict[str, WireFormat] = {
     "chatgpt": WireFormat(
         encoding="json",
+        document_session_field="id",
         tree=TreeConfig(
             container_path="mapping",
             key_field="id",
@@ -313,6 +324,7 @@ PROVIDER_WIRE_FORMATS: dict[str, WireFormat] = {
     "claude-ai": WireFormat(
         encoding="json",
         messages_path="chat_messages",
+        document_session_field="uuid",
     ),
     "codex": WireFormat(
         encoding="jsonl",
@@ -320,6 +332,7 @@ PROVIDER_WIRE_FORMATS: dict[str, WireFormat] = {
     "gemini": WireFormat(
         encoding="json",
         messages_path="chunkedPrompt.chunks",
+        document_session_field="id",
     ),
 }
 
@@ -392,15 +405,19 @@ _STRUCTURAL_SCHEMA_KEYWORDS = frozenset(
 
 
 class _CoverageCorpus(Protocol):
+    _generation_state: SyntheticGenerationState
+    _categorical_pools: dict[str, tuple[str, list[tuple[GeneratedString, float]]]]
+    _public_record_plan: PublicRecordPlan | None
     schema: SchemaRecord
     wire_format: WireFormat
     provider: str
     package_version: str
-    workload_profile: SchemaRecord | None
+    workload_profile: Mapping[str, object] | None
     _coverage_branch_choices: dict[str, int]
     _coverage_type_choices: dict[str, str]
     _coverage_null_paths: set[str]
     _coverage_witness_mode: bool
+    _coverage_header_form: str | None
 
     def generate_batch(
         self,
@@ -421,7 +438,7 @@ def _json_type_name(value: JSONValue) -> str:
         return "string"
     if value is None:
         return "null"
-    if isinstance(value, list):
+    if isinstance(value, list | GeneratedArray):
         return "array"
     return "object"
 
@@ -489,9 +506,7 @@ def _route_nonrepresentable_reasons(
     reasons: dict[str, str] = {}
     excluded_roots = _route_excluded_root_properties(provider, schema)
     prefixes: tuple[tuple[str, str], ...]
-    if provider == "codex":
-        prefixes = (("$.properties.payload", "Codex flat-record shaping removes the payload envelope"),)
-    elif provider == "claude-ai":
+    if provider == "claude-ai":
         prefixes = (
             (
                 "$.properties.chat_messages.items[*]",
@@ -607,7 +622,9 @@ def _matching_variants(schema: Mapping[str, object], payload: JSONValue) -> list
             required_names = (
                 {item for item in required if isinstance(item, str)} if isinstance(required, list) else set()
             )
-            if required_names and (not isinstance(payload, dict) or not required_names <= payload.keys()):
+            if required_names and (
+                not isinstance(payload, dict | GeneratedRecord) or not required_names <= payload.keys()
+            ):
                 continue
             matches.append((index, variant))
         if matches:
@@ -616,168 +633,102 @@ def _matching_variants(schema: Mapping[str, object], payload: JSONValue) -> list
     return []
 
 
-def _collect_schema_obligations(
-    schema: object,
-    *,
-    path: str,
-    obligations: set[str],
-) -> None:
-    """Collect node-local obligations without consulting generated payloads."""
-    if not isinstance(schema, Mapping):
-        return
-
-    for schema_type in _schema_type_names(schema):
-        obligations.add(_coverage_key(f"type:{schema_type}", path))
-
-    for keyword in ("anyOf", "oneOf"):
-        variants = schema.get(keyword)
-        if not isinstance(variants, list):
+def _collect_schema_obligations(schema: object, *, path: str, obligations: set[str]) -> None:
+    """Collect every node-local obligation with an explicit traversal stack."""
+    pending = [(schema, path)]
+    while pending:
+        node, node_path = pending.pop()
+        if not isinstance(node, Mapping):
             continue
-        obligations.add(_coverage_key(keyword, path))
-        for index, variant in enumerate(variants):
-            if isinstance(variant, Mapping):
-                _collect_schema_obligations(
-                    variant,
-                    path=f"{path}.{keyword}[{index}]",
-                    obligations=obligations,
-                )
+        for schema_type in _schema_type_names(node):
+            obligations.add(_coverage_key(f"type:{schema_type}", node_path))
+        for keyword in ("anyOf", "oneOf"):
+            if isinstance(node.get(keyword), list):
+                obligations.add(_coverage_key(keyword, node_path))
+        if isinstance(node.get("properties"), Mapping):
+            obligations.add(_coverage_key("properties", node_path))
+        for keyword in ("required", "additionalProperties"):
+            if keyword in node:
+                obligations.add(_coverage_key(keyword, node_path))
+        if isinstance(node.get("items"), Mapping):
+            obligations.add(_coverage_key("items", node_path))
+        pending.extend(_coverage_children(node, node_path))
 
+
+def _coverage_children(
+    schema: Mapping[str, object], path: str, *, include_unions: bool = True
+) -> list[tuple[object, str]]:
+    children: list[tuple[object, str]] = []
     properties = schema.get("properties")
     if isinstance(properties, Mapping):
-        obligations.add(_coverage_key("properties", path))
-        for name, child_schema in properties.items():
-            if isinstance(name, str):
-                _collect_schema_obligations(
-                    child_schema,
-                    path=f"{path}.properties.{name}",
-                    obligations=obligations,
-                )
-
-    if "required" in schema:
-        obligations.add(_coverage_key("required", path))
-
-    if "additionalProperties" in schema:
-        obligations.add(_coverage_key("additionalProperties", path))
-        additional_schema = schema.get("additionalProperties")
-        if isinstance(additional_schema, Mapping):
-            _collect_schema_obligations(
-                additional_schema,
-                path=f"{path}.additionalProperties.*",
-                obligations=obligations,
-            )
-
-    items = schema.get("items")
-    if isinstance(items, Mapping):
-        obligations.add(_coverage_key("items", path))
-        _collect_schema_obligations(items, path=f"{path}.items[*]", obligations=obligations)
-
-
-def _coverage_branch_plans(
-    schema: object,
-    *,
-    path: str = "$",
-    choices: Mapping[str, int] | None = None,
-    plans: list[dict[str, int]] | None = None,
-) -> list[dict[str, int]]:
-    """Return one bounded branch-choice plan per schema union branch."""
-    if plans is None:
-        plans = []
-    if choices is None:
-        choices = {}
-    if not isinstance(schema, Mapping):
-        return plans
-
-    for keyword in ("anyOf", "oneOf"):
-        variants = schema.get(keyword)
-        if not isinstance(variants, list):
-            continue
-        for index, variant in enumerate(variants):
-            if not isinstance(variant, Mapping):
-                continue
-            branch_choices = dict(choices)
-            branch_choices[_runtime_coverage_path(path)] = index
-            plans.append(branch_choices)
-            _coverage_branch_plans(
-                variant,
-                path=f"{path}.{keyword}[{index}]",
-                choices=branch_choices,
-                plans=plans,
-            )
-
-    properties = schema.get("properties")
-    if isinstance(properties, Mapping):
-        for name, child_schema in properties.items():
-            if isinstance(name, str):
-                _coverage_branch_plans(
-                    child_schema,
-                    path=f"{path}.properties.{name}",
-                    choices=choices,
-                    plans=plans,
-                )
-
-    additional_schema = schema.get("additionalProperties")
-    if isinstance(additional_schema, Mapping):
-        _coverage_branch_plans(
-            additional_schema,
-            path=f"{path}.additionalProperties.*",
-            choices=choices,
-            plans=plans,
+        children.extend(
+            (child, f"{path}.properties.{name}") for name, child in properties.items() if isinstance(name, str)
         )
-
+    additional = schema.get("additionalProperties")
+    if isinstance(additional, Mapping):
+        children.append((additional, f"{path}.additionalProperties.*"))
     items = schema.get("items")
     if isinstance(items, Mapping):
-        _coverage_branch_plans(items, path=f"{path}.items[*]", choices=choices, plans=plans)
+        children.append((items, f"{path}.items[*]"))
+    for keyword in ("anyOf", "oneOf"):
+        if not include_unions:
+            break
+        variants = schema.get(keyword)
+        if isinstance(variants, list):
+            children.extend((variant, f"{path}.{keyword}[{index}]") for index, variant in enumerate(variants))
+    return children
+
+
+def _coverage_branch_plans(schema: object) -> list[dict[str, int]]:
+    """Return one finite ancestor-bound plan per schema union branch."""
+    plans: list[dict[str, int]] = []
+    pending: list[tuple[object, str, dict[str, int], bool]] = [(schema, "$", {}, False)]
+    while pending:
+        node, path, choices, emit = pending.pop()
+        if not isinstance(node, Mapping):
+            continue
+        if emit:
+            plans.append(choices)
+        children: list[tuple[object, str, dict[str, int], bool]] = []
+        for keyword in ("anyOf", "oneOf"):
+            variants = node.get(keyword)
+            if isinstance(variants, list):
+                for index, variant in enumerate(variants):
+                    if isinstance(variant, Mapping):
+                        assignment = {**choices, _runtime_coverage_path(path): index}
+                        children.append((variant, f"{path}.{keyword}[{index}]", assignment, True))
+        children.extend(
+            (child, child_path, choices, False)
+            for child, child_path in _coverage_children(node, path, include_unions=False)
+        )
+        pending.extend(reversed(children))
     return plans
 
 
 def _force_coverage_frequencies(value: object) -> None:
-    if not isinstance(value, dict):
-        return
-    if "x-polylogue-frequency" in value:
-        value["x-polylogue-frequency"] = 1.0
-    properties = value.get("properties")
-    if isinstance(properties, Mapping):
-        for child in properties.values():
-            _force_coverage_frequencies(child)
-    additional_schema = value.get("additionalProperties")
-    _force_coverage_frequencies(additional_schema)
-    _force_coverage_frequencies(value.get("items"))
-    for keyword in ("anyOf", "oneOf"):
-        variants = value.get(keyword)
-        if isinstance(variants, list):
-            for variant in variants:
-                _force_coverage_frequencies(variant)
+    pending = [value]
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, dict | GeneratedRecord):
+            continue
+        if "x-polylogue-frequency" in node:
+            node["x-polylogue-frequency"] = 1.0
+        pending.extend(child for child, _ in _coverage_children(node, "$"))
 
 
-def _collect_type_choices(
-    schema: object,
-    *,
-    path: str = "$",
-    choices: list[tuple[str, str]] | None = None,
-) -> list[tuple[str, str]]:
-    if choices is None:
-        choices = []
-    if not isinstance(schema, Mapping):
-        return choices
-    schema_type = schema.get("type")
-    if isinstance(schema_type, list):
-        choices.extend((path, item) for item in schema_type if isinstance(item, str))
-    properties = schema.get("properties")
-    if isinstance(properties, Mapping):
-        for name, child in properties.items():
-            if isinstance(name, str):
-                _collect_type_choices(child, path=f"{path}.properties.{name}", choices=choices)
-    additional_schema = schema.get("additionalProperties")
-    if isinstance(additional_schema, Mapping):
-        _collect_type_choices(additional_schema, path=f"{path}.additionalProperties.*", choices=choices)
-    items = schema.get("items")
-    if isinstance(items, Mapping):
-        _collect_type_choices(items, path=f"{path}.items[*]", choices=choices)
-    for keyword in ("anyOf", "oneOf"):
-        variants = schema.get(keyword)
-        if isinstance(variants, list):
-            for index, variant in enumerate(variants):
-                _collect_type_choices(variant, path=f"{path}.{keyword}[{index}]", choices=choices)
+def _collect_type_choices(schema: object) -> list[tuple[str, str]]:
+    choices: list[tuple[str, str]] = []
+    pending = [(schema, "$")]
+    while pending:
+        node, path = pending.pop()
+        if not isinstance(node, Mapping):
+            continue
+        schema_type = node.get("type")
+        if isinstance(schema_type, str):
+            choices.append((path, schema_type))
+        elif isinstance(schema_type, list):
+            choices.extend((path, item) for item in schema_type if isinstance(item, str))
+        pending.extend(reversed(_coverage_children(node, path)))
     return choices
 
 
@@ -835,9 +786,9 @@ def generate_coverage_witnesses(
     corpus: _CoverageCorpus,
     *,
     seed: int,
-    max_witnesses: int = 128,
-) -> list[bytes]:
-    """Generate bounded, route-shaped witnesses for schema-node coverage."""
+) -> Iterator[bytes]:
+    """Stream finite schema branch/type plans, restoring corpus state before yielding."""
+    require_finite_json(corpus.schema)
     plans: list[dict[str, int]] = [{}] + _coverage_branch_plans(corpus.schema)
     unique_plans: list[dict[str, int]] = []
     seen: set[tuple[tuple[str, int], ...]] = set()
@@ -863,94 +814,79 @@ def generate_coverage_witnesses(
     choice_groups = {
         plan_index: _type_choice_witness_groups(choices) for plan_index, choices in choices_by_plan.items()
     }
-    witness_count = len(unique_plans) + sum(len(groups) for groups in choice_groups.values())
-    if witness_count > max_witnesses:
-        raise ValueError(f"coverage witness plan has {witness_count} witnesses, exceeding bound {max_witnesses}")
-
-    original_schema = corpus.schema
-    original_profile = corpus.workload_profile
-    original_choices = corpus._coverage_branch_choices
-    original_type_choices = corpus._coverage_type_choices
-    original_null_paths = corpus._coverage_null_paths
-    original_mode = corpus._coverage_witness_mode
-    raw_items: list[bytes] = []
-    from polylogue.schemas.synthetic.runtime import SCHEMA_CONSTRUCT_HANDLERS
-
-    handlers = set(SCHEMA_CONSTRUCT_HANDLERS)
-    obligations: set[str] = set()
-    _collect_schema_obligations(original_schema, path="$", obligations=obligations)
-    required_handlers = {
-        keyword.removeprefix("type:")
-        for obligation in obligations
-        if (keyword := obligation.split("@", 1)[0]).startswith("type:") or keyword in {"anyOf", "oneOf"}
-    }
-    nonrepresentable = _route_nonrepresentable_reasons(
-        corpus.provider, obligations, package_version=corpus.package_version, schema=original_schema
-    )
-    exercised: set[str] = set()
-
-    def record_coverage(items: Sequence[bytes]) -> None:
-        for raw in items:
-            payloads = (
-                [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
-                if corpus.wire_format.encoding == "jsonl"
-                else [json.loads(raw)]
-            )
-            for payload in payloads:
-                _collect_payload_coverage(
-                    original_schema,
-                    payload,
-                    path="$",
-                    handlers=handlers,
-                    schema_keywords=obligations,
-                    exercised_keywords=exercised,
-                )
-
-    try:
-        corpus.schema = copy.deepcopy(original_schema)
-        _force_coverage_frequencies(corpus.schema)
-        corpus.workload_profile = None
-        corpus._coverage_witness_mode = True
-        corpus._coverage_type_choices = {}
-        corpus._coverage_null_paths = set()
-        plan_type_choices = {
-            index: {
-                key: value
-                for branch_path in plan
-                for key, value in _required_structural_type_choices(branch_path, type_options).items()
-            }
-            for index, plan in enumerate(unique_plans)
+    prepared_schema = cast("SchemaRecord", clone_finite_json(corpus.schema))
+    if corpus.workload_profile is None:
+        _force_coverage_frequencies(prepared_schema)
+    plan_type_choices = {
+        index: {
+            key: value
+            for branch_path in plan
+            for key, value in _required_structural_type_choices(branch_path, type_options).items()
         }
-        for index, plan in enumerate(unique_plans):
-            corpus._coverage_branch_choices = plan
-            corpus._coverage_type_choices = plan_type_choices[index]
+        for index, plan in enumerate(unique_plans)
+    }
+    assignments = [(plan, plan_type_choices[index]) for index, plan in enumerate(unique_plans)]
+    assignments.extend(
+        (
+            unique_plans[plan_index],
+            {
+                **plan_type_choices[plan_index],
+                **{path: type_name for _, choices in group for path, type_name in choices.items()},
+            },
+        )
+        for plan_index, groups in choice_groups.items()
+        for group in groups
+    )
+    header_forms: tuple[str | None, ...] = (None,)
+    profile = corpus.workload_profile
+    if corpus.provider == "codex" and profile is not None and profile.get("profile_kind") != "authored-fixture":
+        lineage = profile.get("session_lineage")
+        classes = lineage.get("header_classes") if isinstance(lineage, Mapping) else None
+        forms: set[str] = set()
+        for row in classes if isinstance(classes, list) else ():
+            form = row.get("form") if isinstance(row, Mapping) else None
+            if isinstance(form, str):
+                forms.add(form)
+        if forms:
+            header_forms = tuple(sorted(forms))
+    conditioned_assignments = [(branches, types, form) for branches, types in assignments for form in header_forms]
+    for index, (branches, types, header_form) in enumerate(conditioned_assignments):
+        original = (
+            corpus.schema,
+            corpus.workload_profile,
+            corpus._coverage_branch_choices,
+            corpus._coverage_type_choices,
+            corpus._coverage_null_paths,
+            corpus._coverage_witness_mode,
+            corpus._generation_state,
+            corpus._categorical_pools,
+            corpus._public_record_plan,
+            corpus._coverage_header_form,
+        )
+        try:
+            corpus._generation_state = replace(corpus._generation_state)
+            corpus._categorical_pools = dict(corpus._categorical_pools)
+            corpus.schema = prepared_schema
+            corpus._coverage_branch_choices = branches
+            corpus._coverage_type_choices = types
+            corpus._coverage_null_paths = set()
+            corpus._coverage_witness_mode = True
+            corpus._coverage_header_form = header_form
             batch = corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed + index)
-            raw_items.extend(batch.raw_items)
-        for plan_index, groups in choice_groups.items():
-            for group in groups:
-                group_type_choices = {path: type_name for _, choices in group for path, type_name in choices.items()}
-                corpus._coverage_type_choices = {**plan_type_choices[plan_index], **group_type_choices}
-                corpus._coverage_branch_choices = unique_plans[plan_index]
-                batch = corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed + len(raw_items))
-                raw_items.extend(batch.raw_items)
-        corpus._coverage_branch_choices = {}
-        corpus._coverage_type_choices = {}
-        corpus._coverage_null_paths = set()
-        record_coverage(raw_items)
-        for index in range(len(raw_items), max_witnesses):
-            if required_handlers - handlers or not obligations - exercised - nonrepresentable.keys():
-                break
-            batch = corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed + index)
-            raw_items.extend(batch.raw_items)
-            record_coverage(batch.raw_items)
-    finally:
-        corpus.schema = original_schema
-        corpus.workload_profile = original_profile
-        corpus._coverage_branch_choices = original_choices
-        corpus._coverage_type_choices = original_type_choices
-        corpus._coverage_null_paths = original_null_paths
-        corpus._coverage_witness_mode = original_mode
-    return raw_items
+        finally:
+            (
+                corpus.schema,
+                corpus.workload_profile,
+                corpus._coverage_branch_choices,
+                corpus._coverage_type_choices,
+                corpus._coverage_null_paths,
+                corpus._coverage_witness_mode,
+                corpus._generation_state,
+                corpus._categorical_pools,
+                corpus._public_record_plan,
+                corpus._coverage_header_form,
+            ) = original
+        yield from batch.raw_items
 
 
 def _collect_payload_coverage(
@@ -962,101 +898,76 @@ def _collect_payload_coverage(
     schema_keywords: set[str],
     exercised_keywords: set[str],
 ) -> None:
-    if not isinstance(schema, Mapping):
-        return
-
-    declared_types = _schema_type_names(schema)
-    actual_type = _json_type_name(payload)
-    if declared_types:
-        matched_types = tuple(expected for expected in declared_types if _type_matches(expected, actual_type))
-        types_to_report = matched_types or declared_types
-        for expected in types_to_report:
-            key = _coverage_key(f"type:{expected}", path)
-            schema_keywords.add(key)
-            if expected in handlers and _type_matches(expected, actual_type):
-                exercised_keywords.add(key)
-
-    for keyword in ("anyOf", "oneOf"):
-        if not isinstance(schema.get(keyword), list):
+    pending = [(schema, payload, path)]
+    while pending:
+        schema, payload, path = pending.pop()
+        if not isinstance(schema, Mapping):
             continue
-        matches = _matching_variants(schema, payload)
-        key = _coverage_key(keyword, path)
-        if keyword in handlers and matches:
-            exercised_keywords.add(key)
-        for index, variant in matches:
-            _collect_payload_coverage(
-                variant,
-                payload,
-                path=f"{path}.{keyword}[{index}]",
-                handlers=handlers,
-                schema_keywords=schema_keywords,
-                exercised_keywords=exercised_keywords,
-            )
 
-    if isinstance(payload, dict):
-        properties = schema.get("properties")
-        property_names = set(properties) if isinstance(properties, Mapping) else set()
-        if isinstance(properties, Mapping):
-            key = _coverage_key("properties", path)
-            exercised_keywords.add(key)
-
-        if "required" in schema:
-            key = _coverage_key("required", path)
-            required = schema.get("required")
-            required_names = (
-                {item for item in required if isinstance(item, str)} if isinstance(required, list) else set()
-            )
-            if required_names <= payload.keys():
-                exercised_keywords.add(key)
-
-        if "additionalProperties" in schema:
-            extra_names = payload.keys() - property_names
-            additional_schema = schema.get("additionalProperties")
-            key = _coverage_key("additionalProperties", path)
-            if additional_schema is False:
-                if not extra_names:
+        declared_types = _schema_type_names(schema)
+        actual_type = _json_type_name(payload)
+        if declared_types:
+            matched_types = tuple(expected for expected in declared_types if _type_matches(expected, actual_type))
+            types_to_report = matched_types or declared_types
+            for expected in types_to_report:
+                key = _coverage_key(f"type:{expected}", path)
+                schema_keywords.add(key)
+                if expected in handlers and _type_matches(expected, actual_type):
                     exercised_keywords.add(key)
-            elif additional_schema is True or extra_names:
+
+        for keyword in ("anyOf", "oneOf"):
+            if not isinstance(schema.get(keyword), list):
+                continue
+            matches = _matching_variants(schema, payload)
+            key = _coverage_key(keyword, path)
+            if keyword in handlers and matches:
+                exercised_keywords.add(key)
+            for index, variant in matches:
+                pending.append((variant, payload, f"{path}.{keyword}[{index}]"))
+
+        if isinstance(payload, dict | GeneratedRecord):
+            properties = schema.get("properties")
+            property_names = set(properties) if isinstance(properties, Mapping) else set()
+            if isinstance(properties, Mapping):
+                key = _coverage_key("properties", path)
                 exercised_keywords.add(key)
 
-        if isinstance(properties, Mapping):
-            for name, child_schema in properties.items():
-                if isinstance(name, str) and name in payload:
-                    _collect_payload_coverage(
-                        child_schema,
-                        payload[name],
-                        path=f"{path}.properties.{name}",
-                        handlers=handlers,
-                        schema_keywords=schema_keywords,
-                        exercised_keywords=exercised_keywords,
-                    )
+            if "required" in schema:
+                key = _coverage_key("required", path)
+                required = schema.get("required")
+                required_names = (
+                    {item for item in required if isinstance(item, str)} if isinstance(required, list) else set()
+                )
+                if required_names <= payload.keys():
+                    exercised_keywords.add(key)
 
-        additional_schema = schema.get("additionalProperties")
-        if isinstance(additional_schema, Mapping):
-            for name, item in payload.items():
-                if name not in property_names:
-                    _collect_payload_coverage(
-                        additional_schema,
-                        item,
-                        path=f"{path}.additionalProperties.*",
-                        handlers=handlers,
-                        schema_keywords=schema_keywords,
-                        exercised_keywords=exercised_keywords,
-                    )
+            if "additionalProperties" in schema:
+                extra_names = payload.keys() - property_names
+                additional_schema = schema.get("additionalProperties")
+                key = _coverage_key("additionalProperties", path)
+                if additional_schema is False:
+                    if not extra_names:
+                        exercised_keywords.add(key)
+                elif additional_schema is True or extra_names:
+                    exercised_keywords.add(key)
 
-    if isinstance(payload, list) and isinstance(schema.get("items"), Mapping):
-        key = _coverage_key("items", path)
-        if payload:
-            exercised_keywords.add(key)
-        for item in payload:
-            _collect_payload_coverage(
-                schema["items"],
-                item,
-                path=f"{path}.items[*]",
-                handlers=handlers,
-                schema_keywords=schema_keywords,
-                exercised_keywords=exercised_keywords,
-            )
+            if isinstance(properties, Mapping):
+                for name, child_schema in properties.items():
+                    if isinstance(name, str) and name in payload:
+                        pending.append((child_schema, payload[name], f"{path}.properties.{name}"))
+
+            additional_schema = schema.get("additionalProperties")
+            if isinstance(additional_schema, Mapping):
+                for name, item in payload.items():
+                    if name not in property_names:
+                        pending.append((additional_schema, item, f"{path}.additionalProperties.*"))
+
+        if isinstance(payload, list | GeneratedArray) and isinstance(schema.get("items"), Mapping):
+            key = _coverage_key("items", path)
+            if payload:
+                exercised_keywords.add(key)
+            for item in payload:
+                pending.append((schema["items"], item, f"{path}.items[*]"))
 
 
 def construct_coverage(
@@ -1079,6 +990,10 @@ def construct_coverage(
         from polylogue.schemas.synthetic.runtime import SCHEMA_CONSTRUCT_HANDLERS
 
         handler_names = SCHEMA_CONSTRUCT_HANDLERS.keys()
+    require_finite_json(schema)
+    for payload in payloads:
+        for _ in walk_generated_values(payload):
+            pass
     handlers = set(handler_names)
     schema_keywords: set[str] = set()
     _collect_schema_obligations(schema, path="$", obligations=schema_keywords)
@@ -1122,80 +1037,103 @@ def _normalise_evidence_text(value: str) -> str:
     return " ".join(value.split())
 
 
+_CODEX_TOOL_CALL_TYPES = frozenset({"function_call", "custom_tool_call"})
+_CODEX_TOOL_OUTPUT_TYPES = frozenset({"function_call_output", "custom_tool_call_output"})
+
+
+def _codex_tool_output(node: Mapping[str, JSONValue]) -> object:
+    for key in ("output", "tools", "result"):
+        if node.get(key) is not None:
+            return node[key]
+    return None
+
+
 def _parser_evidence_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[str, JSONValue], ...]:
     """Return the route-owned conversational nodes from one wire artifact."""
     from polylogue.browser_capture.models import looks_like_browser_capture
 
     nodes: list[Mapping[str, JSONValue]] = []
-    if isinstance(payload, dict):
+    if isinstance(payload, dict | GeneratedRecord):
         session = payload.get("session")
-        turns = session.get("turns") if isinstance(session, dict) and looks_like_browser_capture(payload) else None
-        if isinstance(turns, list):
+        turns = (
+            session.get("turns")
+            if isinstance(session, dict | GeneratedRecord) and looks_like_browser_capture(payload)
+            else None
+        )
+        if isinstance(turns, list | GeneratedArray):
             nodes.extend(
                 turn
                 for turn in turns
-                if isinstance(turn, dict)
+                if isinstance(turn, dict | GeneratedRecord)
                 and isinstance(turn.get("provider_turn_id"), str)
                 and isinstance(turn.get("role"), str)
                 and isinstance(turn.get("text"), str)
             )
         raw_provider_payload = payload.get("raw_provider_payload")
-        if isinstance(raw_provider_payload, (dict, list)):
+        if isinstance(raw_provider_payload, (dict, list, GeneratedArray, GeneratedRecord)):
             nodes.extend(_parser_evidence_nodes(provider, raw_provider_payload))
-    if provider == "chatgpt" and isinstance(payload, dict):
+    if provider == "chatgpt" and isinstance(payload, dict | GeneratedRecord):
         mapping = payload.get("mapping")
-        if isinstance(mapping, dict):
+        if isinstance(mapping, dict | GeneratedRecord):
             for node in mapping.values():
-                if not isinstance(node, dict):
+                if not isinstance(node, dict | GeneratedRecord):
                     continue
                 message = node.get("message")
                 if (
-                    isinstance(message, dict)
+                    isinstance(message, dict | GeneratedRecord)
                     and isinstance(message.get("author"), dict)
                     and isinstance(message.get("content"), dict)
                 ):
                     nodes.append(node)
-    if provider == "claude-ai" and isinstance(payload, dict):
+    if provider == "claude-ai" and isinstance(payload, dict | GeneratedRecord):
         messages = payload.get("chat_messages")
-        if isinstance(messages, list):
+        if isinstance(messages, list | GeneratedArray):
             nodes.extend(
                 message
                 for message in messages
-                if isinstance(message, dict)
+                if isinstance(message, dict | GeneratedRecord)
                 and isinstance(message.get("uuid"), str)
                 and isinstance(message.get("sender"), str)
                 and isinstance(message.get("text"), str)
             )
-    if provider == "gemini" and isinstance(payload, dict):
+    if provider == "gemini" and isinstance(payload, dict | GeneratedRecord):
         prompt = payload.get("chunkedPrompt")
-        chunks = prompt.get("chunks") if isinstance(prompt, dict) else None
-        if isinstance(chunks, list):
+        chunks = prompt.get("chunks") if isinstance(prompt, dict | GeneratedRecord) else None
+        if isinstance(chunks, list | GeneratedArray):
             nodes.extend(
                 chunk
                 for chunk in chunks
-                if isinstance(chunk, dict) and isinstance(chunk.get("role"), str) and isinstance(chunk.get("text"), str)
+                if isinstance(chunk, dict | GeneratedRecord)
+                and isinstance(chunk.get("role"), str)
+                and isinstance(chunk.get("text"), str)
             )
-    if provider in {"claude-code", "codex"} and isinstance(payload, list):
+    if provider in {"claude-code", "codex"} and isinstance(payload, list | GeneratedArray):
         for record in payload:
-            if not isinstance(record, dict):
+            if not isinstance(record, dict | GeneratedRecord):
                 continue
             if provider == "claude-code":
                 if record.get("type") in {"user", "assistant", "system"} and isinstance(record.get("message"), dict):
                     nodes.append(record)
                 continue
             record_type = record.get("type")
-            if record_type == "message" and isinstance(record.get("content"), list):
+            if record_type in _CODEX_TOOL_CALL_TYPES | _CODEX_TOOL_OUTPUT_TYPES:
+                nodes.append(record)
+                continue
+            if record_type == "message" and isinstance(record.get("content"), list | GeneratedArray):
                 nodes.append(record)
                 continue
             nested = record.get("payload")
             if (
                 record_type == "response_item"
-                and isinstance(nested, dict)
-                and nested.get("type") == "message"
-                and isinstance(nested.get("content"), list)
+                and isinstance(nested, dict | GeneratedRecord)
+                and (
+                    nested.get("type") in _CODEX_TOOL_CALL_TYPES | _CODEX_TOOL_OUTPUT_TYPES
+                    or nested.get("type") == "message"
+                    and isinstance(nested.get("content"), list | GeneratedArray)
+                )
             ) or (
                 record_type == "event_msg"
-                and isinstance(nested, dict)
+                and isinstance(nested, dict | GeneratedRecord)
                 and nested.get("type") in {"user_message", "agent_message"}
             ):
                 nodes.append(nested)
@@ -1219,12 +1157,12 @@ def _parser_artifact_evidence(
 
     from polylogue.sources.dispatch import message_carries_authored_content
 
-    evidence_nodes = _parser_evidence_nodes(provider, payload)
+    evidence_nodes = _parser_artifact_expected_nodes(provider, payload)
     evidence: list[str] = []
     seen: set[str] = set()
     for session in sessions:
         session_identity = session.provider_session_id
-        session_is_bound = session_identity == fallback_id or session_identity in _payload_string_values(payload)
+        session_is_bound = session_identity == _parser_artifact_expected_session_id(provider, payload, fallback_id)
         if not session_is_bound:
             continue
         for message in session.messages:
@@ -1291,41 +1229,60 @@ def _parser_artifact_message_semantic_witnesses(
     )
 
 
+def _parser_artifact_projection(provider: str, payload: JSONValue, fallback_id: str = "witness") -> JSONValue:
+    """Project only the conversational tree selected by the production parser."""
+    from polylogue.browser_capture.identity import legacy_browser_capture_native_id
+    from polylogue.browser_capture.models import (
+        BrowserCaptureEnvelope,
+        has_claude_ai_native_payload,
+        looks_like_browser_capture,
+    )
+    from polylogue.sources.dispatch import lower_chatgpt_documents
+    from polylogue.sources.parsers.browser_capture import _claude_fallback_turn_payload
+
+    if provider == "chatgpt":
+        documents = lower_chatgpt_documents(payload, fallback_id)
+        if len(documents) == 1:
+            document = documents[0]
+            return cast(JSONValue, {"id": document.document_id, "mapping": document.mapping})
+    if isinstance(payload, dict | GeneratedRecord) and looks_like_browser_capture(payload):
+        envelope = BrowserCaptureEnvelope.model_validate(payload)
+        native = envelope.raw_provider_payload
+        if provider == "claude-ai":
+            if has_claude_ai_native_payload(native):
+                return cast(JSONValue, native)
+            session_id = legacy_browser_capture_native_id(
+                envelope.session.provider, envelope.session.provider_session_id
+            )
+            return cast(
+                JSONValue,
+                {
+                    "uuid": session_id or fallback_id,
+                    "chat_messages": [_claude_fallback_turn_payload(turn) for turn in envelope.session.turns],
+                },
+            )
+        return {key: value for key, value in payload.items() if key != "raw_provider_payload"}
+    if isinstance(payload, dict | GeneratedRecord):
+        # Incidental provider metadata is not a browser-capture envelope.
+        return {key: value for key, value in payload.items() if key != "raw_provider_payload"}
+    return payload
+
+
 def _parser_artifact_expected_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[str, JSONValue], ...]:
     """Return the parser-owned raw nodes used for message coverage."""
-    from polylogue.browser_capture.models import looks_like_browser_capture
-
-    native_payload = payload.get("raw_provider_payload") if isinstance(payload, dict) else None
-    if provider == "claude-ai" and isinstance(native_payload, (dict, list)):
-        nodes = _parser_evidence_nodes(provider, native_payload)
-    elif isinstance(payload, dict) and looks_like_browser_capture(payload):
-        session = payload.get("session")
-        turns = session.get("turns") if isinstance(session, dict) else None
-        if isinstance(turns, list):
-            nodes = tuple(
-                turn
-                for turn in turns
-                if isinstance(turn, dict)
-                and isinstance(turn.get("provider_turn_id"), str)
-                and isinstance(turn.get("role"), str)
-                and isinstance(turn.get("text"), str)
-            )
-        else:
-            nodes = ()
-    else:
-        nodes = ()
-    if (
-        provider != "claude-ai"
-        and isinstance(payload, dict)
-        and isinstance(payload.get("raw_provider_payload"), (dict, list))
-    ):
-        payload = {key: value for key, value in payload.items() if key != "raw_provider_payload"}
-    return nodes or _parser_evidence_nodes(provider, payload)
+    return _parser_evidence_nodes(provider, _parser_artifact_projection(provider, payload))
 
 
 def _parser_artifact_node_identity(provider: str, node: Mapping[str, JSONValue]) -> str | None:
     """Extract the provider message identity from one parser-owned raw node."""
     identity: object = None
+    if provider == "codex" and node.get("type") in _CODEX_TOOL_CALL_TYPES | _CODEX_TOOL_OUTPUT_TYPES:
+        if native_id := node.get("id"):
+            return str(native_id)
+        if call_id := node.get("call_id"):
+            side = "call" if node.get("type") in _CODEX_TOOL_CALL_TYPES else "output"
+            return f"{call_id}::{side}"
+        return None
     if provider == "chatgpt":
         message = node.get("message")
         if isinstance(message, Mapping):
@@ -1346,6 +1303,11 @@ def _parser_artifact_node_identity(provider: str, node: Mapping[str, JSONValue])
 def _parser_artifact_node_role(provider: str, node: Mapping[str, JSONValue]) -> Role:
     """Normalize the role asserted by one raw parser-owned message node."""
     raw_role: object = None
+    if provider == "codex":
+        if node.get("type") in _CODEX_TOOL_CALL_TYPES:
+            return Role.ASSISTANT
+        if node.get("type") in _CODEX_TOOL_OUTPUT_TYPES:
+            return Role.TOOL
     if provider == "chatgpt":
         message = node.get("message")
         author = message.get("author") if isinstance(message, Mapping) else None
@@ -1373,7 +1335,7 @@ def _parser_artifact_node_role(provider: str, node: Mapping[str, JSONValue]) -> 
                 tool_envelope = nested_message
         content = tool_envelope.get("content")
         if (
-            isinstance(content, list)
+            isinstance(content, list | GeneratedArray)
             and content
             and all(isinstance(item, Mapping) and item.get("type") == "tool_result" for item in content)
         ):
@@ -1418,6 +1380,16 @@ def _parser_artifact_node_tool_witnesses(
             identity = message.get("id")
             return ((BlockType.TOOL_USE, str(identity), None, None),) if identity is not None else ()
         return ()
+    if provider == "codex" and node.get("type") in _CODEX_TOOL_CALL_TYPES | _CODEX_TOOL_OUTPUT_TYPES:
+        identity = node.get("call_id") or node.get("id")
+        if not identity:
+            return ()
+        if node.get("type") in _CODEX_TOOL_CALL_TYPES:
+            return ((BlockType.TOOL_USE, str(identity), None, None),)
+        from polylogue.sources.parsers.codex import _codex_tool_result_outcome
+
+        is_error, exit_code, _reason = _codex_tool_result_outcome(_codex_tool_output(node))
+        return ((BlockType.TOOL_RESULT, str(identity), is_error, exit_code),)
     if provider not in {"claude-ai", "claude-code", "codex"}:
         return ()
     if provider == "claude-code":
@@ -1435,7 +1407,7 @@ def _parser_artifact_node_tool_witnesses(
     else:
         content = node.get("content")
         background_task = False
-    if not isinstance(content, list):
+    if not isinstance(content, list | GeneratedArray):
         return ()
 
     witnesses: list[tuple[BlockType, str, bool | None, int | None]] = []
@@ -1483,7 +1455,7 @@ def _parser_artifact_node_message_type(
                 for text in (item.get("text"),)
                 if isinstance(text, str)
             )
-            if isinstance(content, list)
+            if isinstance(content, list | GeneratedArray)
             else ""
         )
         if artifact_type := classify_text_message_type(prose):
@@ -1536,6 +1508,21 @@ def _codex_node_content_blocks(node: Mapping[str, JSONValue], text: str) -> list
     from polylogue.sources.parsers.base_models import ParsedContentBlock
     from polylogue.sources.parsers.base_support import content_blocks_from_segments
 
+    if node.get("type") in _CODEX_TOOL_CALL_TYPES:
+        return [ParsedContentBlock(type=BlockType.TOOL_USE)]
+    if node.get("type") in _CODEX_TOOL_OUTPUT_TYPES:
+        from polylogue.sources.parsers.codex import _codex_tool_result_outcome
+
+        is_error, exit_code, reason = _codex_tool_result_outcome(_codex_tool_output(node))
+        return [
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                text=text,
+                is_error=is_error,
+                exit_code=exit_code,
+                outcome_unknown_reason=reason,
+            )
+        ]
     blocks = content_blocks_from_segments(node.get("content"), lower_transport_text=True)
     if not blocks and text:
         blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
@@ -1592,7 +1579,7 @@ def _parser_artifact_node_material_origin(
         return material_origin
     message = node.get("message")
     content = message.get("content") if isinstance(message, Mapping) else None
-    has_tool_result = isinstance(content, list) and any(
+    has_tool_result = isinstance(content, list | GeneratedArray) and any(
         isinstance(item, Mapping) and item.get("type") == "tool_result" for item in content
     )
     if (
@@ -1659,30 +1646,36 @@ def _parser_artifact_expected_session_id(provider: str, payload: JSONValue, fall
     """Return the one provider session identity asserted by this wire artifact."""
     from polylogue.browser_capture.models import looks_like_browser_capture
 
+    payload = _parser_artifact_projection(provider, payload, fallback_id)
+
     if isinstance(payload, Mapping):
-        native_payload = payload.get("raw_provider_payload")
-        if provider == "claude-ai" and isinstance(native_payload, Mapping):
-            for field in ("uuid", "id", "conversation_id", "conversationId"):
-                session_id = native_payload.get(field)
-                if isinstance(session_id, str) and session_id:
-                    return session_id
         captured_session = payload.get("session")
-        captured_session_id = (
-            captured_session.get("provider_session_id") if isinstance(captured_session, Mapping) else None
-        )
-        if isinstance(captured_session_id, str) and captured_session_id and looks_like_browser_capture(payload):
-            return captured_session_id
+        if isinstance(captured_session, Mapping) and looks_like_browser_capture(payload):
+            captured_id = captured_session.get("provider_session_id")
+            if isinstance(captured_id, str) and captured_id:
+                return captured_id
         if provider == "chatgpt":
             for field in ("id", "uuid", "conversation_id", "conversationId"):
                 session_id = payload.get(field)
                 if isinstance(session_id, str) and session_id:
                     return session_id
+        if provider == "gemini":
+            identity = payload.get("id")
+            if isinstance(identity, str) and identity:
+                return identity
         if provider == "claude-ai":
             for field in ("uuid", "id", "conversation_id", "conversationId"):
                 session_id = payload.get(field)
                 if isinstance(session_id, str) and session_id:
                     return session_id
-    if provider == "claude-code" and isinstance(payload, list):
+    if provider == "codex" and isinstance(payload, list | GeneratedArray):
+        from polylogue.schemas.record_structure import codex_session_header
+
+        for record in payload:
+            if isinstance(record, Mapping) and (header := codex_session_header(record)) is not None:
+                header_identity = header.get("id")
+                return header_identity if isinstance(header_identity, str) and header_identity else fallback_id
+    if provider == "claude-code" and isinstance(payload, list | GeneratedArray):
         session_ids = {
             session_id
             for record in payload
@@ -1782,7 +1775,7 @@ def _parser_artifact_observed_text_segments(text: str) -> tuple[str, ...]:
         decoded = json.loads(text)
     except json.JSONDecodeError:
         return tuple(segments)
-    if isinstance(decoded, (dict, list)):
+    if isinstance(decoded, (dict, list, GeneratedArray)):
         segments.extend(
             normalized_value
             for value in _payload_string_values(decoded)
@@ -1804,7 +1797,7 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
                 for text in (part.get("text") if isinstance(part, Mapping) else part,)
                 if isinstance(text, str) and text
             )
-            if isinstance(parts, list)
+            if isinstance(parts, list | GeneratedArray)
             else ()
         )
         if not values and isinstance(content, Mapping):
@@ -1817,7 +1810,7 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
                 (),
             )
             thoughts = content.get("thoughts")
-            if not values and isinstance(thoughts, list):
+            if not values and isinstance(thoughts, list | GeneratedArray):
                 values = tuple(
                     text
                     for thought in thoughts
@@ -1826,6 +1819,14 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
                     if isinstance(text, str) and text
                 )
     elif provider == "codex":
+        if node.get("type") in _CODEX_TOOL_CALL_TYPES:
+            name = node.get("name") or node.get("execution") or node.get("type")
+            return (_normalise_evidence_text(str(name)),)
+        if node.get("type") in _CODEX_TOOL_OUTPUT_TYPES:
+            from polylogue.sources.parsers.codex import _codex_tool_output_text
+
+            output_text = _codex_tool_output_text(_codex_tool_output(node))
+            return (_normalise_evidence_text(output_text),) if output_text else ()
         content = node.get("content")
         content_values = (
             tuple(
@@ -1835,7 +1836,7 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
                 for text in (item.get("text"), item.get("thinking"))
                 if isinstance(text, str)
             )
-            if isinstance(content, list)
+            if isinstance(content, list | GeneratedArray)
             else ()
         )
         message = node.get("message")
@@ -1848,7 +1849,7 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
         content = message.get("content") if isinstance(message, Mapping) else None
         if isinstance(content, str):
             values = (content,)
-        elif isinstance(content, list):
+        elif isinstance(content, list | GeneratedArray):
             values = tuple(
                 text
                 for item in content
@@ -2035,8 +2036,9 @@ def build_wire_support_receipt(
                 continue
 
             schema_valid = False
-            parsed_sessions = []
-            payloads: list[JSONValue] = []
+            parsed_session_count = 0
+            parsed_message_count = 0
+            retained_constructs: set[str] = set()
             validation_error: str | None = None
             selection = None
             parser_witnesses: list[WireParserWitness] = []
@@ -2057,10 +2059,10 @@ def build_wire_support_receipt(
                     raise ValueError("synthetic selection wire format diverged from declared route")
 
                 corpus = SyntheticCorpus.from_selection(selection)
-                raw_items = [
-                    corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed).raw_items[0],
-                    *generate_coverage_witnesses(corpus, seed=seed + 1),
-                ]
+                raw_items = chain(
+                    corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed).raw_items,
+                    generate_coverage_witnesses(corpus, seed=seed + 1),
+                )
                 validator = SchemaValidator(selection.schema, strict=False)
                 validation_results: list[ValidationResult] = []
                 schema_resolution = None
@@ -2080,10 +2082,12 @@ def build_wire_support_receipt(
                         payload: JSONValue = [
                             json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()
                         ]
-                        payload_items = payload if isinstance(payload, list) else []
+                        payload_items = payload if isinstance(payload, list | GeneratedArray) else []
                     else:
                         payload = json.loads(raw)
-                        payload_items = [payload] if isinstance(payload, (dict, list)) else []
+                        payload_items = (
+                            [payload] if isinstance(payload, (dict, list, GeneratedArray, GeneratedRecord)) else []
+                        )
                     artifact_results = [validator.validate(item) for item in payload_items]
                     validation_results.extend(artifact_results)
                     artifact_validation_error = (
@@ -2094,13 +2098,6 @@ def build_wire_support_receipt(
                     artifact_sessions = []
                     parser_payload: JSONValue = payload
                     try:
-                        if provider == "chatgpt" and isinstance(payload, dict):
-                            # Validate and account for the complete envelope, but
-                            # keep the optional native subpayload from selecting a
-                            # second schema-shaped tree during parser dispatch.
-                            parser_payload = {
-                                key: value for key, value in payload.items() if key != "raw_provider_payload"
-                            }
                         parsed_sessions_for_artifact = parse_payload(
                             provider,
                             parser_payload,
@@ -2129,7 +2126,8 @@ def build_wire_support_receipt(
                     ):
                         artifact_evidence = ()
                         coverage_error = "artifact message coverage is incomplete"
-                    parsed_sessions.extend(artifact_sessions)
+                    parsed_session_count += len(artifact_sessions)
+                    parsed_message_count += sum(len(session.messages) for session in artifact_sessions)
                     artifact_kind: Literal["baseline", "coverage"] = "baseline" if index == 0 else "coverage"
                     conservation = check_conservation(
                         selection.schema,
@@ -2161,7 +2159,7 @@ def build_wire_support_receipt(
                         and artifact_validation_error is None
                         and parse_error is None
                     ):
-                        payloads.extend(payload_items)
+                        retained_constructs.update(artifact_coverage.exercised_keywords)
                     if parse_error is not None:
                         label = "baseline" if index == 0 else f"coverage witness {index - 1}"
                         parser_errors.append(f"{label} parser: {parse_error}")
@@ -2178,18 +2176,20 @@ def build_wire_support_receipt(
                 validation_error = "; ".join((*parser_errors, *((validation_error,) if validation_error else ())))
 
             if selection is not None:
-                witnessed = construct_coverage(selection.schema, payloads)
+                obligations = construct_coverage(selection.schema, ())
+                missing = set(obligations.schema_keywords) - retained_constructs
                 nonrepresentable_reasons = _route_nonrepresentable_reasons(
                     provider,
-                    witnessed.missing_keywords,
+                    missing,
                     package_version=package.version,
                     schema=selection.schema,
                 )
-                coverage = construct_coverage(
-                    selection.schema,
-                    payloads,
-                    nonrepresentable_keywords=nonrepresentable_reasons,
-                    nonrepresentable_reasons=nonrepresentable_reasons,
+                coverage = replace(
+                    obligations,
+                    exercised_keywords=tuple(sorted(retained_constructs)),
+                    missing_keywords=tuple(sorted(missing - nonrepresentable_reasons.keys())),
+                    nonrepresentable_keywords=tuple(sorted(nonrepresentable_reasons)),
+                    nonrepresentable_reasons=tuple(sorted(nonrepresentable_reasons.items())),
                 )
             else:
                 coverage = None
@@ -2201,8 +2201,8 @@ def build_wire_support_receipt(
                     package_version=selection.package_version if selection is not None else package_version,
                     element_kind=selection.element_kind if selection is not None else element_kind,
                     schema_valid=schema_valid,
-                    parsed_session_count=len(parsed_sessions),
-                    parsed_message_count=sum(len(session.messages) for session in parsed_sessions),
+                    parsed_session_count=parsed_session_count,
+                    parsed_message_count=parsed_message_count,
                     construct_coverage=coverage,
                     validation_error=validation_error,
                     parser_witnesses=tuple(parser_witnesses),

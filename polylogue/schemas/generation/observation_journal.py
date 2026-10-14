@@ -11,7 +11,7 @@ import tempfile
 import threading
 import uuid
 from collections import Counter
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Generator, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -57,6 +57,21 @@ class RecordStreamDecodeError(Exception):
     it is never a silent skip, and it never aborts the whole generation run:
     only this one raw artifact's remaining contribution is dropped.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedStreamSample:
+    """One original sample with its private bundle and physical stream coordinates.
+
+    These coordinates remain inside the inference owner. Published profiles
+    contain only aggregate counts and public artifact kinds.
+    """
+
+    bundle_scope: str
+    stream_key: str
+    artifact_kind: str
+    source_path: str | None
+    sample: JSONDocument | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,6 +329,14 @@ class ObservationJournal:
                         ON DELETE CASCADE
                 ) STRICT, WITHOUT ROWID;
 
+                CREATE TABLE opaque_payloads (
+                    raw_id TEXT PRIMARY KEY,
+                    artifact_kind TEXT NOT NULL,
+                    bundle_scope TEXT,
+                    byte_count INTEGER NOT NULL CHECK (byte_count >= 0)
+                ) STRICT, WITHOUT ROWID;
+                CREATE INDEX opaque_payloads_scope ON opaque_payloads(bundle_scope, artifact_kind);
+
                 CREATE TABLE artifact_terminals (
                     raw_id TEXT PRIMARY KEY,
                     status TEXT NOT NULL CHECK (status IN (
@@ -443,6 +466,16 @@ class ObservationJournal:
         self._pending_unit_count += 1
         self._record_pending_write(len(cluster_payload_json) + len(profile_tokens_json))
         return unit_id
+
+    def record_payload(self, *, raw_id: str, artifact_kind: str, bundle_scope: str | None, byte_count: int) -> None:
+        """Keep exact opaque payload metrics in the original private observation pass."""
+        if type(byte_count) is not int or byte_count < 0:
+            raise ValueError("opaque payload byte count must be a nonnegative integer")
+        self._connection.execute(
+            "INSERT INTO opaque_payloads(raw_id, artifact_kind, bundle_scope, byte_count) VALUES (?, ?, ?, ?)",
+            (raw_id, artifact_kind, bundle_scope, byte_count),
+        )
+        self._record_pending_write(len(raw_id) + len(artifact_kind) + len(bundle_scope or ""))
 
     def record_terminal(
         self,
@@ -1183,6 +1216,164 @@ class JournalMemberships(Sequence[_UnitMembership]):
             package_family_id=self._package_family_id,
             artifact_kind=self._artifact_kind,
         )
+
+    def iter_scope_samples(
+        self,
+        *,
+        order: Literal["bundle", "stream"],
+        _session_carrier: str | None = None,
+        _session_header_form: str | None = None,
+        _agent_depth: int | None = None,
+    ) -> Generator[ObservedStreamSample, None, None]:
+        """Replay original samples in scope/ingestion order, one sample at a time.
+
+        A scope can have noncontiguous units. The original journal ordinals,
+        rather than a timestamp sort or a compact schema sample, decide their
+        order. Bundle traversal retains that global order; stream traversal
+        groups a physical transcript's fragments without joining an adjacent
+        agent transcript into its timeline. Neither view hydrates a whole unit.
+        """
+        where, membership_parameters = self._journal._membership_where(
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        )
+        parameters: list[str | int] = list(membership_parameters)
+        if order not in {"bundle", "stream"}:
+            raise ValueError("original sample traversal requires a declared order")
+        ordering = (
+            "workload_scope, unit_id, position"
+            if order == "bundle"
+            else "workload_scope, artifact_kind, stream_key, unit_id, position"
+        )
+        if _session_carrier is not None:
+            # The producer's original TEMP match table lives on this journal
+            # owner only for its conditional record-structure pass.
+            where += (
+                " AND EXISTS (SELECT 1 FROM workload_session_headers header "
+                "WHERE header.bundle_scope=COALESCE(units.bundle_scope,units.raw_id,units.source_path,"
+                "units.session_id,'unit:' || units.unit_id) "
+                "AND header.stream_key=COALESCE(units.raw_id,units.source_path,units.bundle_scope,'unit:' || units.unit_id) "
+                "AND header.artifact_kind=units.artifact_kind AND header.carrier=?"
+                + (" AND header.header_form=?" if _session_header_form is not None else "")
+                + ")"
+            )
+            parameters = [*parameters, _session_carrier]
+            if _session_header_form is not None:
+                parameters.append(_session_header_form)
+        elif _session_header_form is not None:
+            raise ValueError("header form requires its original session carrier")
+        if _agent_depth is not None:
+            if type(_agent_depth) is not int or _agent_depth < 0:
+                raise ValueError("original agent depth must be a nonnegative exact integer")
+            where += (
+                " AND EXISTS(SELECT 1 FROM workload_agent_depths depth "
+                "WHERE depth.scope=COALESCE(units.bundle_scope,units.raw_id,units.source_path,units.session_id,'unit:' || units.unit_id) "
+                "AND depth.stream=COALESCE(units.raw_id,units.source_path,units.bundle_scope,'unit:' || units.unit_id) "
+                "AND depth.depth=?)"
+            )
+            parameters = [*parameters, _agent_depth]
+        query = (
+            "SELECT COALESCE(bundle_scope, raw_id, source_path, session_id, "
+            "'unit:' || unit_id) AS workload_scope, "
+            "COALESCE(raw_id, source_path, bundle_scope, 'unit:' || unit_id) AS stream_key, "
+            "artifact_kind, source_path, sample_json "
+            "FROM units LEFT JOIN samples USING(unit_id) "
+            f"WHERE {where} ORDER BY {ordering}"
+        )
+        cursor = self._journal._connection.execute(query, parameters)
+        try:
+            for row in cursor:
+                if row["sample_json"] is None:
+                    sample: JSONDocument | None = None
+                else:
+                    decoded = _decode_json(row["sample_json"])
+                    if not isinstance(decoded, dict):
+                        raise TypeError("Observation journal schema sample is not an object")
+                    sample = decoded
+                yield ObservedStreamSample(
+                    bundle_scope=str(row["workload_scope"]),
+                    stream_key=str(row["stream_key"]),
+                    artifact_kind=str(row["artifact_kind"]),
+                    source_path=row["source_path"],
+                    sample=sample,
+                )
+        finally:
+            cursor.close()
+
+    def iter_scope_file_counts(self) -> Generator[tuple[str, int, int, int, int, int, int], None, None]:
+        """Exact original file-count joints, streamed in the original owner.
+
+        Raw identity distinguishes retained revisions; source paths or an
+        explicitly declared scope identify inputs without a Raw identity.
+        Several schema fragments of that same input count once.
+        """
+        where, parameters = self._journal._membership_where(
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        )
+        cursor = self._journal._connection.execute(
+            "WITH streams AS (SELECT " + _SCOPE_KEY_SQL + " AS scope, artifact_kind, "
+            "COALESCE(raw_id, source_path, bundle_scope, 'unit:' || unit_id) AS stream_key "
+            "FROM units WHERE " + where + " GROUP BY scope, artifact_kind, stream_key), "
+            "counts AS (SELECT scope, SUM(artifact_kind='session_document') AS documents, "
+            "SUM(artifact_kind='session_record_stream') AS transcripts, "
+            "SUM(artifact_kind='agent_transcript') AS agents, "
+            "SUM(artifact_kind='agent_sidecar_meta') AS metadata, "
+            "SUM(artifact_kind NOT IN ('session_document','session_record_stream','agent_transcript','agent_sidecar_meta')) AS other "
+            "FROM streams GROUP BY scope), opaque AS (SELECT bundle_scope, COUNT(*) AS count "
+            "FROM opaque_payloads GROUP BY bundle_scope) "
+            "SELECT scope,documents,transcripts,agents,metadata,other,COALESCE(opaque.count,0) "
+            "FROM counts LEFT JOIN opaque ON opaque.bundle_scope=counts.scope ORDER BY scope",
+            parameters,
+        )
+        try:
+            for row in cursor:
+                yield str(row[0]), int(row[1]), int(row[2]), int(row[3]), int(row[4]), int(row[5]), int(row[6])
+        finally:
+            cursor.close()
+
+    def iter_scope_payloads(self) -> Generator[tuple[str, str | None, int | None], None, None]:
+        """One exact opaque byte metric per selected scope, including empty scopes.
+
+        Opaque bytes never become schema samples. Unowned payloads stay outside
+        a package rather than being assigned from provider-wide marginal counts.
+        """
+        where, parameters = self._journal._membership_where(
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        )
+        cursor = self._journal._connection.execute(
+            "WITH scopes AS (SELECT DISTINCT bundle_scope FROM units WHERE " + where + " AND bundle_scope IS NOT NULL) "
+            "SELECT scopes.bundle_scope, opaque_payloads.artifact_kind, opaque_payloads.byte_count "
+            "FROM scopes LEFT JOIN opaque_payloads USING(bundle_scope) "
+            "ORDER BY scopes.bundle_scope, opaque_payloads.artifact_kind, opaque_payloads.raw_id",
+            parameters,
+        )
+        try:
+            for row in cursor:
+                yield str(row[0]), row[1], None if row[2] is None else int(row[2])
+        finally:
+            cursor.close()
+
+    def iter_payload_references(self, scope: str) -> Generator[tuple[str, int], None, None]:
+        """Replay exact retained filenames for a single original ownership scope."""
+        cursor = self._journal._connection.execute(
+            "SELECT artifact_terminals.source_path, opaque_payloads.byte_count FROM opaque_payloads "
+            "LEFT JOIN artifact_terminals USING(raw_id) "
+            "WHERE opaque_payloads.bundle_scope = ? AND opaque_payloads.artifact_kind = 'tool_result_sidecar' "
+            "ORDER BY artifact_terminals.source_path, opaque_payloads.raw_id",
+            (scope,),
+        )
+        try:
+            for row in cursor:
+                if row[0] is None:
+                    raise ValueError("retained opaque tool result has no original filename")
+                yield Path(str(row[0])).name, int(row[1])
+        finally:
+            cursor.close()
 
     def iter_session_ids(self) -> Iterator[str | None]:
         return self._journal.iter_membership_session_ids(

@@ -377,7 +377,67 @@ def test_synthetic_session_native_ids_reach_provider_parsers(provider: str, tmp_
         seed=42,
         session_native_ids=(native_id,),
     )
-    written = SyntheticCorpus.write_spec_artifacts(spec, tmp_path, prefix="pinned")
+    # This control owns the native-ID/parser law, not the measurements of a
+    # published operator package. Declare its neutral operands before draws.
+    from polylogue.schemas.synthetic.authored_selection import authored_schema_selection
+
+    if provider in {"chatgpt", "claude-code", "codex"}:
+        style = "demo" if provider == "chatgpt" else "tool-heavy"
+        selection = authored_schema_selection(provider, style, session_native_ids=(native_id,))
+        spec = CorpusSpec.for_provider(
+            provider, count=1, messages_min=2, messages_max=2, seed=42, style=style, session_native_ids=(native_id,)
+        )
+    else:
+        from polylogue.schemas.generation.schema_builder import generate_schema_from_samples
+        from polylogue.schemas.synthetic.models import SyntheticSchemaSelection
+        from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS
+        from tests.infra.schema_workload_profiles import inferred_record_profile
+
+        samples: list[JSONDocument] = (
+            [
+                {
+                    "uuid": native_id,
+                    "chat_messages": [
+                        {
+                            "uuid": "neutral-user",
+                            "sender": "human",
+                            "text": "Neutral question",
+                            "created_at": "2025-06-01T00:00:00Z",
+                        },
+                        {
+                            "uuid": "neutral-assistant",
+                            "sender": "assistant",
+                            "text": "Neutral reply",
+                            "created_at": "2025-06-01T00:00:01Z",
+                        },
+                    ],
+                }
+            ]
+            if provider == "claude-ai"
+            else [
+                {
+                    "id": native_id,
+                    "chunkedPrompt": {
+                        "chunks": [
+                            {"role": "user", "text": "Neutral question"},
+                            {"role": "model", "text": "Neutral reply"},
+                        ]
+                    },
+                }
+            ]
+        )
+        schema = generate_schema_from_samples(samples, provider=provider, max_stats_samples=0)
+        profile = inferred_record_profile(provider, schema, samples, element="session_document")
+        selection = SyntheticSchemaSelection(
+            provider=provider,
+            package_version="declared-neutral",
+            element_kind="session_document",
+            schema=schema,
+            wire_format=PROVIDER_WIRE_FORMATS[provider],
+            workload_profile=profile,
+            element_schemas={"session_document": schema},
+        )
+    written = SyntheticCorpus.write_selection_artifacts(selection, spec, tmp_path, prefix="pinned")
 
     parsed = tuple(
         session for path in written.files for session in iter_source_sessions(Source(name=provider, path=path))

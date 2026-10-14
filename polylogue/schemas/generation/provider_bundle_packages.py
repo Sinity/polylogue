@@ -57,7 +57,7 @@ class ProviderCatalogArtifacts:
     catalog: SchemaPackageCatalog
     package_schemas: dict[str, dict[str, JSONDocument]]
     package_reports: dict[str, dict[str, SchemaReport | None]]
-    package_workload_profiles: dict[str, JSONDocument]
+    package_workload_profiles: dict[str, Mapping[str, object]]
     manifest: ClusterManifest
 
 
@@ -191,7 +191,7 @@ def build_provider_catalog_artifacts(
     total_units = max(sum(acc.sample_count for acc in clusters.values()), 1)
     package_schemas: dict[str, dict[str, JSONDocument]] = {}
     package_reports: dict[str, dict[str, SchemaReport | None]] = {}
-    package_workload_profiles: dict[str, JSONDocument] = {}
+    package_workload_profiles: dict[str, Mapping[str, object]] = {}
     catalog_packages: list[SchemaVersionPackage] = []
     cluster_to_package_version: dict[str, str] = {}
 

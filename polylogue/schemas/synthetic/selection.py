@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Protocol, TypeAlias
 
 from polylogue.schemas.packages import SchemaVersionPackage
@@ -31,7 +31,7 @@ class _SchemaRegistryLike(Protocol):
 
     def get_schema(self, provider: str, version: str = "default") -> SchemaRecord | None: ...
 
-    def get_workload_profile(self, provider: str, version: str = "default") -> SchemaRecord | None: ...
+    def get_workload_profile(self, provider: str, version: str = "default") -> Mapping[str, object] | None: ...
 
     def list_providers(self) -> list[str]: ...
 
@@ -102,8 +102,25 @@ def select_synthetic_schema(
     if wire_format is None:
         raise UnsupportedSyntheticWireRouteError(canonical_provider, "supported route has no wire format")
 
-    profile_loader = getattr(registry, "get_workload_profile", None)
-    workload_profile = profile_loader(canonical_provider, canonical_version) if callable(profile_loader) else None
+    workload_profile = registry.get_workload_profile(canonical_provider, canonical_version)
+    element_schemas: dict[str, SchemaRecord] = {}
+    if resolved_element_kind is not None:
+        element_schemas[resolved_element_kind] = schema
+    if workload_profile is not None:
+        declared = workload_profile.get("elements")
+        if not isinstance(declared, dict):
+            raise ValueError("package workload has no declared element structures")
+        if package is None:
+            raise ValueError("a package workload requires its original package manifest")
+        for kind in sorted(declared):
+            if kind in element_schemas:
+                continue
+            if package.element(kind) is None:
+                raise ValueError("package workload names an element outside its original manifest")
+            owned = registry.get_element_schema(canonical_provider, version=canonical_version, element_kind=kind)
+            if owned is None:
+                raise FileNotFoundError(f"Declared workload element {kind!r} has no original package schema")
+            element_schemas[kind] = owned
     return SyntheticSchemaSelection(
         provider=canonical_provider,
         package_version=canonical_version,
@@ -111,6 +128,7 @@ def select_synthetic_schema(
         schema=schema,
         wire_format=wire_format,
         workload_profile=workload_profile,
+        element_schemas=element_schemas,
     )
 
 

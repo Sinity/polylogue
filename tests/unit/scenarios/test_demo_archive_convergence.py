@@ -45,9 +45,9 @@ EXPECTED_DEMO_SESSIONS = (
         "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
         "claude-code-session",
         "63705dcc-f3e5-4378-8118-8bc21e53bbb6",
-        # The generated transcript starts with a tool-result user record;
-        # this is its first authored user message and the assembled title.
-        "I need to implement a function that processes this data.",
+        # The assembled title is the transcript's first authored user message,
+        # not a leading tool-result user record.
+        "Could you review this code for potential issues?",
         1730589115737,
         1730589655737,
         12,
@@ -57,7 +57,7 @@ EXPECTED_DEMO_SESSIONS = (
         "codex-session",
         "demo-00",
         # Codex assembly derives its title from the first user prompt.
-        "Could you review this code for potential issues?",
+        "Can you help me debug this issue?",
         # Session timestamps use the available message timestamp evidence.
         1705985222161,
         1705985522161,

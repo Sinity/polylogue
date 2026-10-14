@@ -42,6 +42,7 @@ def _collect_cluster_accumulators(
     progress_callback: Callable[[JSONDocument], None] | None = None,
     allow_session_dir_fallback: bool = False,
     archive_location: ArchiveLocation | None = None,
+    observed_units: Iterable[SchemaUnit] | None = None,
 ) -> tuple[dict[str, _ClusterAccumulator], Sequence[_UnitMembership], int, dict[str, int]]:
     result = collect_cluster_analysis(
         provider,
@@ -52,6 +53,7 @@ def _collect_cluster_accumulators(
         allow_session_dir_fallback=allow_session_dir_fallback,
         archive_location=archive_location,
         progress_callback=progress_callback,
+        observed_units=observed_units,
     )
     return result.clusters, result.memberships, result.sample_count, result.artifact_counts
 
@@ -66,6 +68,7 @@ def collect_cluster_analysis(
     progress_callback: Callable[[JSONDocument], None] | None = None,
     allow_session_dir_fallback: bool = False,
     archive_location: ArchiveLocation | None = None,
+    observed_units: Iterable[SchemaUnit] | None = None,
 ) -> ClusterCollectionResult:
     from polylogue.schemas.sampling import iter_schema_units
 
@@ -108,14 +111,19 @@ def collect_cluster_analysis(
             summary.representative_paths.append(unit.source_path)
         total_schema_samples += count
 
-    observed_units = iter_schema_units(
-        provider,
-        db_path=db_path,
-        max_samples=max_samples,
-        full_corpus=full_corpus,
-        terminal_recorder=journal.record_terminal if journal is not None else None,
-        allow_session_dir_fallback=allow_session_dir_fallback,
-        archive_location=archive_location,
+    observed_units = (
+        observed_units
+        if observed_units is not None
+        else iter_schema_units(
+            provider,
+            db_path=db_path,
+            max_samples=max_samples,
+            full_corpus=full_corpus,
+            terminal_recorder=journal.record_terminal if journal is not None else None,
+            payload_recorder=journal.record_payload if journal is not None else None,
+            allow_session_dir_fallback=allow_session_dir_fallback,
+            archive_location=archive_location,
+        )
     )
     if journal is None:
         retained_units = list(observed_units)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,11 +18,19 @@ from polylogue.schemas.generation.archive_workload_profile import (
 from polylogue.schemas.generation.cluster_support import _artifact_priority
 from polylogue.schemas.generation.dynamic_keys import canonicalize_structure_schema, retain_exact_structure_witnesses
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
-from polylogue.schemas.generation.models import GenerationProgressCallback, GenerationResult, _ProviderBundle
+from polylogue.schemas.generation.models import (
+    GenerationProgressCallback,
+    GenerationResult,
+    _PackageAccumulator,
+    _ProviderBundle,
+)
+from polylogue.schemas.generation.observation_journal import ObservationJournal
 from polylogue.schemas.generation.provider_bundle import _build_provider_bundle
 from polylogue.schemas.generation.provider_bundle_packages import allocate_package_versions
 from polylogue.schemas.generation.schema_builder import emit_schema_from_evidence, generate_schema_from_samples
-from polylogue.schemas.observation import PROVIDERS, resolve_provider_config
+from polylogue.schemas.generation.workload_profiles import build_package_workload_profile
+from polylogue.schemas.observation import PROVIDERS, SchemaUnit, resolve_provider_config
+from polylogue.schemas.observation_identity import profile_cluster_id
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.registry import ClusterManifest, SchemaRegistry
@@ -38,9 +46,9 @@ def _package_schemas(bundle: _ProviderBundle) -> dict[str, ElementSchemaMap]:
     }
 
 
-def _package_workload_profiles(bundle: _ProviderBundle) -> dict[str, JSONDocument]:
+def _package_workload_profiles(bundle: _ProviderBundle) -> dict[str, Mapping[str, object]]:
     profiles = getattr(bundle, "package_workload_profiles", {})
-    return {version: dict(profile) for version, profile in profiles.items()}
+    return dict(profiles)
 
 
 def persist_generated_provider_bundle(output_dir: Path, provider: str, bundle: _ProviderBundle) -> None:
@@ -96,6 +104,31 @@ def build_provider_bundle_from_sources(
     prior_catalog: SchemaPackageCatalog | None,
     progress_callback: GenerationProgressCallback | None = None,
 ) -> _ProviderBundle:
+    """Observe selected current workloads on the original private journal."""
+    with ObservationJournal.create() as journal:
+        return _build_provider_bundle_from_selected_sources(
+            provider,
+            journal=journal,
+            source_inputs=source_inputs,
+            cache_path=cache_path,
+            max_workers=max_workers,
+            privacy_config=privacy_config,
+            prior_catalog=prior_catalog,
+            progress_callback=progress_callback,
+        )
+
+
+def _build_provider_bundle_from_selected_sources(
+    provider: str,
+    *,
+    journal: ObservationJournal,
+    source_inputs: tuple[SchemaSourceInput, ...],
+    cache_path: Path | None,
+    max_workers: int,
+    privacy_config: SchemaPrivacyConfig | None,
+    prior_catalog: SchemaPackageCatalog | None,
+    progress_callback: GenerationProgressCallback | None = None,
+) -> _ProviderBundle:
     """Build a multi-element package with identity independent of statistics."""
     provider_token = str(canonical_schema_provider(provider))
     inputs = tuple(item for item in source_inputs if str(canonical_schema_provider(item.provider)) == provider_token)
@@ -106,11 +139,17 @@ def build_provider_bundle_from_sources(
     provider = provider_token
     if progress_callback is not None:
         progress_callback("source_inventory", {"state": "started"})
+
+    def record_current(unit: SchemaUnit) -> None:
+        unit_id = journal.append_unit(unit, retain_cluster_payload=False)
+        journal.assign_profile_family(unit_id, profile_cluster_id(unit.artifact_kind, unit.profile_tokens))
+
     source = infer_sources(
         inputs,
         cache_path=cache_path or cache_home() / "schema-source-evidence.sqlite3",
         max_workers=max_workers,
         progress=progress_callback,
+        observation_recorder=record_current,
     )
     if progress_callback is not None:
         progress_callback("source_evidence", {"state": "completed", **source.provenance()})
@@ -207,6 +246,23 @@ def build_provider_bundle_from_sources(
         anchor_profile_family_id=family,
         canonical_anchor_profile_family_id=canonical_family if family != canonical_family else None,
         elements=elements,
+        workload_profile_file="workload-profile.json.gz",
+    )
+    profile = build_package_workload_profile(
+        provider=provider,
+        version=version,
+        package=_PackageAccumulator(
+            provider=provider,
+            anchor_family_id=family,
+            anchor_kind=anchor,
+            memberships=journal.memberships(),
+            journal_bundle_scope_count=journal.memberships().scope_count(),
+            first_seen=first_seen,
+            last_seen=now,
+        ),
+        element_schemas=emitted,
+        privacy_policy=privacy_config.level if privacy_config is not None else "standard",
+        observation_outcomes=source.provenance(),
     )
     catalog = SchemaPackageCatalog(
         provider=provider,
@@ -228,7 +284,13 @@ def build_provider_bundle_from_sources(
         artifact_counts=counts,
         phase_receipt={"source": source.provenance()},
     )
-    return _ProviderBundle(result, catalog=catalog, package_schemas={version: emitted}, manifest=manifest)
+    return _ProviderBundle(
+        result,
+        catalog=catalog,
+        package_schemas={version: emitted},
+        package_workload_profiles={version: profile},
+        manifest=manifest,
+    )
 
 
 def generate_all_schemas(

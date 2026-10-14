@@ -7,8 +7,10 @@ import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Self
 
-from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch
+from polylogue.core.json import JSONValue
+from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch, _bucket_index
 
 ENUM_MAX_CARDINALITY = 50
 ENUM_VALUE_CAP = 200
@@ -38,12 +40,160 @@ def _parse_record_timestamp(value: str | None) -> datetime | None:
 
 
 @dataclass
+class PointerShapeStats:
+    """Fixed-log numeric joint retaining actual coordinate-extreme witnesses.
+
+    Bin mass is measured exactly. Each coordinate's minimum/maximum tuple is
+    retained (at most twelve tuples per bin), so scalar and path tails survive
+    replay and merge without names or an impossible marginal combination.
+    """
+
+    bins: dict[tuple[int, ...], tuple[tuple[int, ...], int]] = field(default_factory=dict)
+    extrema: dict[tuple[int, ...], tuple[tuple[int, ...], ...]] = field(default_factory=dict)
+
+    def _retain(self, key: tuple[int, ...], point: tuple[int, ...]) -> None:
+        candidates = (*self.extrema.get(key, ()), point)
+        witnesses = set()
+        for axis in range(len(point)):
+            witnesses.add(min(candidates, key=lambda value: (value[axis], value)))
+            witnesses.add(max(candidates, key=lambda value: (value[axis], value)))
+        self.extrema[key] = tuple(sorted(witnesses))
+
+    def observe(self, shape: tuple[int, ...], count: int = 1) -> None:
+        self._validate_point(list(shape))
+        if type(count) is not int or count <= 0:
+            raise ValueError("numeric joint count must be a positive exact integer")
+        key = tuple(_bucket_index(float(value)) for value in shape)
+        previous = self.bins.get(key)
+        self.bins[key] = (shape, count) if previous is None else (min(shape, previous[0]), previous[1] + count)
+        self._retain(key, shape)
+
+    def merge(self, other: PointerShapeStats) -> None:
+        for key, (shape, count) in other.bins.items():
+            self.observe(shape, count)
+            for point in other.extrema[key]:
+                self._retain(key, point)
+
+    def to_payload(self) -> list[JSONValue]:
+        return [
+            {"count": count, "points": [list(point) for point in self.extrema[key]]}
+            for key, (_point, count) in sorted(self.bins.items())
+        ]
+
+    @staticmethod
+    def _validate_point(point: object) -> None:
+        from polylogue.core.tool_result_pointer import PERSISTED_OUTPUT_PREFIX
+
+        if not isinstance(point, list) or len(point) != 6 or any(type(item) is not int or item < 0 for item in point):
+            raise ValueError("pointer shape joint is malformed")
+        length, newlines, start, prefix_newlines, width, basename = point
+        if (
+            start - prefix_newlines < len(PERSISTED_OUTPUT_PREFIX)
+            or width < 1
+            or basename > width
+            or length - start - width < 0
+            or newlines < prefix_newlines
+            or newlines - prefix_newlines > length - start - width
+        ):
+            raise ValueError("pointer shape joint cannot represent its original token")
+
+    @classmethod
+    def from_payload(cls, value: object) -> Self:
+        result = cls()
+        if value is None:
+            return result
+        if not isinstance(value, list):
+            raise ValueError("pointer shape joint is malformed")
+        for row in value:
+            if (
+                not isinstance(row, dict)
+                or set(row) != {"count", "points"}
+                or type(row["count"]) is not int
+                or row["count"] <= 0
+            ):
+                raise ValueError("pointer shape joint is malformed")
+            points = row["points"]
+            if not isinstance(points, list) or not points:
+                raise ValueError("pointer shape witnesses are missing")
+            key = None
+            shapes: list[tuple[int, ...]] = []
+            for point in points:
+                cls._validate_point(point)
+                assert isinstance(point, list)
+                shape = tuple(point)
+                current = tuple(_bucket_index(float(item)) for item in shape)
+                if key is not None and key != current:
+                    raise ValueError("pointer shape witnesses span different bins")
+                key = current
+                shapes.append(shape)
+            assert key is not None
+            if key in result.bins or len(set(shapes)) != len(shapes):
+                raise ValueError("pointer shape joint repeats a bin or witness")
+            result.observe(min(shapes), row["count"])
+            for shape in shapes:
+                result._retain(key, shape)
+            if result.extrema[key] != tuple(sorted(shapes)):
+                raise ValueError("pointer shape witnesses are not its coordinate extremes")
+        return result
+
+
+class FilenameWidthStats(PointerShapeStats):
+    """Original ID/basename width coupling on the same fixed-log sketch owner.
+
+    Four actual extrema per two-axis bin preserve joint tails. This restricts
+    field sampling to measured combinations; field annotations retain numeric
+    shape and format ownership. No filename spelling is retained.
+    """
+
+    @staticmethod
+    def _validate_point(point: object) -> None:
+        if (
+            not isinstance(point, list)
+            or len(point) != 2
+            or any(type(item) is not int or item < 0 for item in point)
+            or point[0] == 0
+        ):
+            raise ValueError("identity/filename width joint is malformed")
+
+
+@dataclass
+class StringCharacterStats:
+    """Measured anonymous character class on the existing shape sketches."""
+
+    length: DistributionSketch = field(default_factory=DistributionSketch)
+    newlines: DistributionSketch = field(default_factory=DistributionSketch)
+    pointer_shapes: PointerShapeStats = field(default_factory=PointerShapeStats)
+
+
+@dataclass
+class StringCategoryStats:
+    """Shape measured for one existing anonymous categorical bucket."""
+
+    length: DistributionSketch = field(default_factory=DistributionSketch)
+    newlines: DistributionSketch = field(default_factory=DistributionSketch)
+    pointer_shapes: PointerShapeStats = field(default_factory=PointerShapeStats)
+    character_shapes: dict[str, StringCharacterStats] = field(default_factory=dict)
+
+
+@dataclass
+class StringFormatStats:
+    """Measured string shapes within one detected format, without literals."""
+
+    length: DistributionSketch = field(default_factory=DistributionSketch)
+    newlines: DistributionSketch = field(default_factory=DistributionSketch)
+    categorical: CategoricalSketch = field(default_factory=CategoricalSketch)
+    categories: dict[int, StringCategoryStats] = field(default_factory=dict)
+    character_shapes: dict[str, StringCharacterStats] = field(default_factory=dict)
+
+
+@dataclass
 class FieldStats:
     """Statistics collected for a single JSON path across all samples."""
 
     path: str
     observed_values: Counter[str] = field(default_factory=Counter)
     detected_formats: Counter[str] = field(default_factory=Counter)
+    string_formats: dict[str, StringFormatStats] = field(default_factory=dict)
     num_min: float | None = None
     num_max: float | None = None
     total_samples: int = 0

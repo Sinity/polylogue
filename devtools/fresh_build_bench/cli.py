@@ -122,6 +122,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     explicit.add_argument("files", nargs="*", type=Path)
 
+    synthetic = corpus_kinds.add_parser("synthetic", help="stream a measured schema package into a sealed corpus")
+    synthetic.add_argument("--out", type=Path, required=True)
+    synthetic.add_argument("--home", type=Path, default=Path.home())
+    synthetic.add_argument("--provider", choices=("claude-code", "codex", "chatgpt", "claude-ai"), required=True)
+    synthetic.add_argument("--version", default="default")
+    synthetic.add_argument("--element-kind")
+    synthetic.add_argument("--seed", type=int, default=1)
+    extent = synthetic.add_mutually_exclusive_group(required=True)
+    extent.add_argument("--sessions", type=int)
+    extent.add_argument("--bytes", dest="target_bytes", type=int)
+
     run = commands.add_parser("run", help="run one measured fresh build through polylogued run")
     _run_arguments(run)
     experiment = commands.add_parser("experiment", help="paired fresh-state ordinary-daemon builds")
@@ -240,6 +251,21 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
                 fraction=args.fraction,
                 sources=default_sample_sources(args.home),
+            )
+        elif args.kind == "synthetic":
+            from devtools.fresh_build_bench.corpus import corpus_from_synthetic
+            from polylogue.schemas.synthetic import SyntheticCorpus
+
+            manifest = corpus_from_synthetic(
+                args.out,
+                corpus=SyntheticCorpus.for_provider(
+                    args.provider,
+                    version=args.version,
+                    element_kind=args.element_kind,
+                ),
+                seed=args.seed,
+                count=args.sessions,
+                target_bytes=args.target_bytes,
             )
         else:
             from devtools.fresh_build_bench.corpus import corpus_from_files

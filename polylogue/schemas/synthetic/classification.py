@@ -8,7 +8,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from polylogue.schemas.json_walk import require_finite_json
 from polylogue.schemas.synthetic.models import SchemaRecord
+from polylogue.schemas.synthetic.observed_values import (
+    format_text_shape_is_representable,
+    measured_string_formats,
+    observed_length_support,
+)
 
 ConstructSupportState = Literal["supported", "unsupported"]
 
@@ -37,9 +43,11 @@ _SUPPORTED_SCHEMA_CONSTRUCTS = frozenset(
         "description",
         "examples",
         "items",
+        "prefixItems",
         "oneOf",
         "properties",
         "readOnly",
+        "required",
         "title",
         "type",
         "writeOnly",
@@ -142,13 +150,25 @@ _SUPPORTED_SYNTHETIC_ANNOTATIONS = frozenset(
         "x-polylogue-observed-distribution",
         "x-polylogue-range",
         "x-polylogue-semantic-role",
-        "x-polylogue-string-lengths",
         "x-polylogue-time-deltas",
+        "x-polylogue-numeric-order",
         "x-polylogue-values",
     }
 )
 _SUPPORTED_FORMAT_VALUES = frozenset(
-    {"uuid4", "uuid", "hex-id", "iso8601", "unix-epoch", "unix-epoch-str", "url", "email", "mime-type", "base64"}
+    {
+        "uuid4",
+        "uuid",
+        "hex-id",
+        "iso8601",
+        "unix-epoch",
+        "unix-epoch-str",
+        "url",
+        "email",
+        "mime-type",
+        "base64",
+        "persisted-tool-output",
+    }
 )
 _SUPPORTED_SEMANTIC_ROLE_VALUES = frozenset({"message_role", "message_body", "message_timestamp", "session_title"})
 _PERSISTED_SCHEMA_METADATA_ANNOTATIONS = frozenset(
@@ -159,10 +179,17 @@ _PERSISTED_SCHEMA_METADATA_ANNOTATIONS = frozenset(
         "x-polylogue-element-first-seen",
         "x-polylogue-element-kind",
         "x-polylogue-element-last-seen",
+        "x-polylogue-authored-fixture",
+        "x-polylogue-authored-record-branch",
         "x-polylogue-evidence",
         "x-polylogue-evidence-confidence",
         "x-polylogue-exact-structure-ids",
+        "x-polylogue-field-first-seen",
+        "x-polylogue-field-last-seen",
         "x-polylogue-generated-at",
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
         "x-polylogue-generator",
         "x-polylogue-high-cardinality-keys",
         "x-polylogue-observation-status",
@@ -226,47 +253,139 @@ def _histogram_bucket_is_safe(index: int, log_base: int | float) -> bool:
     return math.isfinite(sampled_value)
 
 
-def _valid_observed_distribution(value: object) -> bool:
-    if not isinstance(value, Mapping) or not value:
+def _valid_histogram(distribution: Mapping[str, object]) -> bool:
+    """A log-bucketed histogram distribution, if it carries one, is well formed."""
+    histogram = distribution.get("histogram")
+    if histogram is None:
+        return True
+    log_base = _number(distribution.get("log_base"))
+    if not isinstance(histogram, list) or not histogram or log_base is None or log_base <= 1:
         return False
-    for distribution in value.values():
-        if not isinstance(distribution, Mapping):
+    if not all(
+        isinstance(bucket, list)
+        and len(bucket) == 2
+        and isinstance(bucket[0], int)
+        and not isinstance(bucket[0], bool)
+        and isinstance(bucket[1], int)
+        and not isinstance(bucket[1], bool)
+        and bucket[1] > 0
+        and _histogram_bucket_is_safe(bucket[0], float(log_base))
+        for bucket in histogram
+    ):
+        return False
+    values = tuple(_number(distribution.get(key)) for key in ("p0", "p50", "p90", "p95", "p99", "p100"))
+    present = tuple(item for item in values if item is not None)
+    minimum = _number(distribution.get("min"))
+    maximum = _number(distribution.get("max"))
+    if minimum is not None and maximum is not None and minimum > maximum:
+        return False
+    if any(left > right for left, right in zip(present, present[1:], strict=False)):
+        return False
+    if any((minimum is not None and item < minimum) or (maximum is not None and item > maximum) for item in present):
+        return False
+    for key in ("min", "max", "mean", "p0", "p50", "p90", "p95", "p99", "p100", "stddev"):
+        if key in distribution and _number(distribution[key]) is None:
             return False
-        histogram = distribution.get("histogram")
-        log_base = _number(distribution.get("log_base"))
-        if not isinstance(histogram, list) or not histogram or log_base is None or log_base <= 1:
-            return False
-        if not all(
+    stddev = _number(distribution.get("stddev"))
+    return stddev is None or stddev >= 0
+
+
+#: Distribution kinds the runtime samples, and the schema type that consumes each.
+_HISTOGRAM_DISTRIBUTIONS = frozenset({"numeric", "array_length", "string_length", "newline_count", "object_fanout"})
+_COUNT_DISTRIBUTIONS = frozenset({"type_counts", "boolean_counts", "co_occurring_fields"})
+_CONSUMED_DISTRIBUTIONS: dict[str, tuple[str, ...]] = {
+    "array": ("array_length",),
+    "boolean": ("boolean_counts",),
+    "integer": ("numeric",),
+    "number": ("numeric",),
+    "object": ("object_fanout",),
+    "string": ("string_length", "newline_count", "categorical"),
+}
+
+
+def _valid_counts(value: object) -> bool:
+    return isinstance(value, Mapping) and all(
+        isinstance(count, int) and not isinstance(count, bool) and count >= 0 for count in value.values()
+    )
+
+
+def normalized_observed_type_counts(observed: Mapping[str, object]) -> dict[str, int] | None:
+    """Include a separately declared null count only when the type map omits it."""
+    types = observed.get("type_counts", {})
+    if not isinstance(types, Mapping) or not _valid_counts(types):
+        return None
+    counts = {str(kind): count for kind, count in types.items() if isinstance(count, int)}
+    nulls = observed.get("null_observations")
+    if "null" not in counts and isinstance(nulls, int) and not isinstance(nulls, bool) and nulls >= 0:
+        counts["null"] = nulls
+    return counts
+
+
+def cooccurrence_observation_count(observed: Mapping[str, object]) -> int | None:
+    """Match the normalized occurrence counts, or an explicit document-only measurement."""
+    if "type_counts" in observed:
+        counts = normalized_observed_type_counts(observed)
+        return sum(counts.values()) if counts is not None else None
+    documents = observed.get("encountered_documents")
+    return documents if isinstance(documents, int) and not isinstance(documents, bool) and documents >= 0 else None
+
+
+def _valid_categorical(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    buckets = value.get("bucket_histogram")
+    count = value.get("bucket_count")
+    return (
+        isinstance(count, int)
+        and not isinstance(count, bool)
+        and count > 0
+        and isinstance(buckets, list)
+        and all(
             isinstance(bucket, list)
             and len(bucket) == 2
-            and isinstance(bucket[0], int)
-            and not isinstance(bucket[0], bool)
-            and isinstance(bucket[1], int)
-            and not isinstance(bucket[1], bool)
+            and all(isinstance(part, int) and not isinstance(part, bool) for part in bucket)
+            and 0 <= bucket[0] < count
             and bucket[1] > 0
-            and _histogram_bucket_is_safe(bucket[0], float(log_base))
-            for bucket in histogram
-        ):
-            return False
-        values = tuple(_number(distribution.get(key)) for key in ("p0", "p50", "p90", "p95", "p99", "p100"))
-        present = tuple(item for item in values if item is not None)
-        minimum = _number(distribution.get("min"))
-        maximum = _number(distribution.get("max"))
-        if minimum is not None and maximum is not None and minimum > maximum:
-            return False
-        if any(left > right for left, right in zip(present, present[1:], strict=False)):
-            return False
-        if any(
-            (minimum is not None and item < minimum) or (maximum is not None and item > maximum) for item in present
-        ):
-            return False
-        for key in ("min", "max", "mean", "p0", "p50", "p90", "p95", "p99", "p100", "stddev"):
-            if key in distribution and _number(distribution[key]) is None:
+            for bucket in buckets
+        )
+    )
+
+
+def _valid_observed_distribution(value: object) -> bool:
+    """Every distribution kind the runtime reads is well formed; other entries are inference metadata."""
+    if not isinstance(value, Mapping) or not value:
+        return False
+    for name, distribution in value.items():
+        if name in _HISTOGRAM_DISTRIBUTIONS:
+            if not isinstance(distribution, Mapping) or not _valid_histogram(distribution):
                 return False
-        stddev = _number(distribution.get("stddev"))
-        if stddev is not None and stddev < 0:
+            if name != "numeric" and any(
+                isinstance(item, (int, float)) and item < 0
+                for key in ("min", "max")
+                if (item := distribution.get(key)) is not None
+            ):
+                return False
+        elif name in _COUNT_DISTRIBUTIONS:
+            if not _valid_counts(distribution):
+                return False
+        elif name == "categorical" and not _valid_categorical(distribution):
             return False
-    return True
+    together = value.get("co_occurring_fields")
+    observations = cooccurrence_observation_count(value)
+    return not (
+        isinstance(together, Mapping)
+        and observations is not None
+        and any(isinstance(count, int) and count > observations for count in together.values())
+    )
+
+
+def _sampleable_distribution(value: Mapping[str, object], name: str) -> bool:
+    distribution = value.get(name)
+    if name == "categorical":
+        return _valid_categorical(distribution)
+    if name in _COUNT_DISTRIBUTIONS:
+        return _valid_counts(distribution) and bool(distribution)
+    return isinstance(distribution, Mapping) and isinstance(distribution.get("histogram"), list)
 
 
 def _schema_nodes_at_path(schema: SchemaRecord, path: object) -> tuple[SchemaRecord, ...]:
@@ -314,18 +433,24 @@ def _schema_nodes_at_path(schema: SchemaRecord, path: object) -> tuple[SchemaRec
 
 
 def _schema_types(node: Mapping[str, object]) -> set[str]:
-    schema_type = node.get("type")
-    if isinstance(schema_type, str):
-        return {schema_type}
-    if isinstance(schema_type, list):
-        return {item for item in schema_type if isinstance(item, str)}
     types: set[str] = set()
-    for keyword in ("anyOf", "oneOf"):
-        variants = node.get(keyword)
-        if isinstance(variants, list):
-            for variant in variants:
-                if isinstance(variant, Mapping):
-                    types.update(_schema_types(variant))
+    pending = [node]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        schema_type = current.get("type")
+        if isinstance(schema_type, str):
+            types.add(schema_type)
+        elif isinstance(schema_type, list):
+            types.update(item for item in schema_type if isinstance(item, str))
+        else:
+            for keyword in ("anyOf", "oneOf"):
+                variants = current.get(keyword)
+                if isinstance(variants, list):
+                    pending.extend(variant for variant in variants if isinstance(variant, Mapping))
     return types
 
 
@@ -367,7 +492,6 @@ def _annotation_supported(key: str, value: object, root_schema: SchemaRecord) ->
         "x-polylogue-foreign-keys": ("source", "target"),
         "x-polylogue-time-deltas": ("field_a", "field_b"),
         "x-polylogue-mutually-exclusive": ("parent",),
-        "x-polylogue-string-lengths": ("path",),
     }.get(key)
     if required is None:
         return False
@@ -422,29 +546,155 @@ def _annotation_is_supported_at_node(
 ) -> bool:
     schema_type = _schema_type(node)
     schema_types = _schema_types(node)
+    if key == "x-polylogue-numeric-order":
+        properties = node.get("properties")
+        if not isinstance(properties, dict) or not isinstance(value, list) or not value:
+            return False
+        seen: set[str] = set()
+        for row in value:
+            if not isinstance(row, dict):
+                return False
+            lower, upper = row.get("lower"), row.get("upper")
+            if (
+                not isinstance(lower, str)
+                or not isinstance(upper, str)
+                or (lower, upper)
+                not in {("cached_input_tokens", "input_tokens"), ("reasoning_output_tokens", "output_tokens")}
+                or lower in seen
+                or upper in seen
+            ):
+                return False
+            if any(
+                not isinstance(properties.get(name), dict) or properties[name].get("type") not in {"integer", "number"}
+                for name in (lower, upper)
+            ):
+                return False
+            seen.update((lower, upper))
+        return True
     union_path = ".anyOf[" in path or ".oneOf[" in path
     if key in {
         "x-polylogue-foreign-keys",
         "x-polylogue-time-deltas",
         "x-polylogue-mutually-exclusive",
-        "x-polylogue-string-lengths",
     }:
         if key in {"x-polylogue-foreign-keys", "x-polylogue-time-deltas"}:
             return False
         return path == "$" and _annotation_supported(key, value, root_schema)
     if key == "x-polylogue-frequency":
-        return path != "$" and _annotation_supported(key, value, root_schema)
+        # A root/alias operand is already present. At properties this controls
+        # presence; at union variants the same valid declaration is a weight.
+        return _annotation_supported(key, value, root_schema)
     if key == "x-polylogue-array-lengths":
         return _annotation_supported(key, value, root_schema) and ("array" in schema_types or union_path)
     if key == "x-polylogue-observed-distribution":
-        if schema_type not in {"array", "number", "integer"} or not isinstance(value, Mapping):
+        if not isinstance(value, Mapping) or not _annotation_supported(key, value, root_schema):
             return False
-        expected_distribution = "array_length" if schema_type == "array" else "numeric"
-        return expected_distribution in value and _annotation_supported(key, value, root_schema)
+        length_distribution = value.get("string_length")
+        try:
+            lengths = observed_length_support(length_distribution) if isinstance(length_distribution, Mapping) else {}
+            newline_distribution = value.get("newline_count")
+            newlines = (
+                observed_length_support(newline_distribution) if isinstance(newline_distribution, Mapping) else {}
+            )
+        except ValueError:
+            return False
+        if lengths and newlines and not any(count <= length for length in lengths for count in newlines):
+            return False
+        categorical = value.get("categorical")
+        declared_values = node.get("x-polylogue-values")
+        vocabulary_authority = (isinstance(declared_values, list) and bool(declared_values)) or node.get(
+            "x-polylogue-semantic-role"
+        ) == "message_role"
+        if "string_formats" in value:
+            try:
+                partitions = measured_string_formats(node)
+                for fmt, shape in partitions.items():
+                    length_shape = shape.get("string_length")
+                    newline_shape = shape.get("newline_count")
+                    if not isinstance(length_shape, Mapping) or not isinstance(newline_shape, Mapping):
+                        return False
+                    lengths_for_format = observed_length_support(length_shape)
+                    newlines_for_format = observed_length_support(newline_shape)
+                    categories = shape.get("categories")
+                    shape_rows = categories.values() if isinstance(categories, dict) else (shape,)
+                    for partition in shape_rows:
+                        if not isinstance(partition, Mapping):
+                            return False
+                        partition_lengths = partition.get("string_length")
+                        partition_newlines = partition.get("newline_count")
+                        if not isinstance(partition_lengths, Mapping) or not isinstance(partition_newlines, Mapping):
+                            return False
+                        lengths_for_format = observed_length_support(partition_lengths)
+                        newlines_for_format = observed_length_support(partition_newlines) or {0: 1}
+                        if (
+                            not lengths_for_format
+                            or not all(
+                                any(
+                                    format_text_shape_is_representable(fmt, length, count)
+                                    for count in newlines_for_format
+                                )
+                                for length in lengths_for_format
+                            )
+                            or not all(
+                                any(
+                                    format_text_shape_is_representable(fmt, length, count)
+                                    for length in lengths_for_format
+                                )
+                                for count in newlines_for_format
+                            )
+                        ):
+                            return False
+            except (TypeError, ValueError):
+                return False
+            # Conditional evidence owns format/shape compatibility; the
+            # unchanged marginal is intentionally allowed to mix formats.
+            return bool(partitions) and "string" in schema_types
+        effective_format = node.get("x-polylogue-format")
+        if (
+            effective_format is None
+            and node.get("x-polylogue-semantic-role") == "message_timestamp"
+            and "string" in schema_types
+        ):
+            effective_format = "iso8601"
+        if not vocabulary_authority and lengths == {0: sum(lengths.values())} and isinstance(categorical, Mapping):
+            histogram = categorical.get("bucket_histogram")
+            if isinstance(histogram, list) and len({row[0] for row in histogram if isinstance(row, list) and row}) > 1:
+                return False
+        if (
+            not vocabulary_authority
+            and lengths
+            and not all(
+                any(
+                    format_text_shape_is_representable(effective_format, length, count)
+                    for count in (newlines or {0: 1})
+                )
+                for length in lengths
+            )
+        ):
+            return False
+        if (
+            not vocabulary_authority
+            and newlines
+            and not all(
+                any(format_text_shape_is_representable(effective_format, length, count) for length in lengths)
+                for count in newlines
+            )
+        ):
+            return False
+        consumed = {name for kind in schema_types for name in _CONSUMED_DISTRIBUTIONS.get(kind, ())}
+        return (
+            any(_sampleable_distribution(value, name) for name in consumed)
+            or ((len(schema_types) > 1 or schema_types == {"null"}) and _sampleable_distribution(value, "type_counts"))
+            or _sampleable_distribution(value, "co_occurring_fields")
+        )
     if key == "x-polylogue-range":
-        return schema_type in {"number", "integer"} and _annotation_supported(key, value, root_schema)
+        return (
+            bool(schema_types - {"null"})
+            and schema_types - {"null"} <= {"number", "integer"}
+            and _annotation_supported(key, value, root_schema)
+        )
     if key in {"x-polylogue-format", "x-polylogue-values", "x-polylogue-multiline"}:
-        if key == "x-polylogue-format" and schema_type in {"number", "integer"}:
+        if key == "x-polylogue-format" and schema_types - {"null"} and schema_types - {"null"} <= {"number", "integer"}:
             return value == "unix-epoch"
         return _annotation_supported(key, value, root_schema) and (
             schema_type == "string" or "string" in schema_types or union_path
@@ -456,12 +706,27 @@ def _annotation_is_supported_at_node(
                 key, value, root_schema
             )
         if role == "message_container":
-            return "object" in schema_types
-        return schema_type == "string" and _annotation_supported(key, value, root_schema)
+            return bool(schema_types & {"object", "array"})
+        return "string" in schema_types and _annotation_supported(key, value, root_schema)
     return key in _PERSISTED_SCHEMA_METADATA_ANNOTATIONS
 
 
-def classify_schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
+def declared_required_properties(schema: Mapping[str, object]) -> frozenset[str]:
+    """Narrow the required fields this runtime can draw from declared properties."""
+    raw = schema.get("required", [])
+    properties = schema.get("properties", {})
+    if (
+        not isinstance(raw, list)
+        or any(not isinstance(name, str) for name in raw)
+        or len(set(raw)) != len(raw)
+        or not isinstance(properties, Mapping)
+        or any(name not in properties or not isinstance(properties[name], Mapping) for name in raw)
+    ):
+        raise ValueError("required fields need unique names and declared property schemas")
+    return frozenset(raw)
+
+
+def classify_schema_constructs(schema: object, *, _descend: bool = True) -> tuple[ConstructSupport, ...]:
     """Classify exactly what the production synthetic runtime can consume."""
 
     found: dict[str, ConstructSupportState] = {}
@@ -488,27 +753,42 @@ def classify_schema_constructs(schema: object) -> tuple[ConstructSupport, ...]:
                         else "unsupported",
                     )
                 continue
-            record(key, "supported" if key in _SUPPORTED_SCHEMA_CONSTRUCTS else "unsupported")
+            if key == "required":
+                try:
+                    declared_required_properties(node)
+                except ValueError:
+                    record(key, "unsupported")
+                else:
+                    record(key, "supported")
+            else:
+                record(key, "supported" if key in _SUPPORTED_SCHEMA_CONSTRUCTS else "unsupported")
             if key in _SCHEMA_MAPPING_KEYWORDS and isinstance(value, Mapping):
                 if key in {"$defs", "dependentSchemas", "dependencies", "patternProperties", "properties"}:
                     for child_name, child in value.items():
                         child_path = f"{path}.{child_name}" if key == "properties" else f"{path}.{key}.{child_name}"
-                        visit(child, child_path)
+                        pending.append((child, child_path))
                 else:
-                    visit(value, f"{path}.{key}")
+                    pending.append((value, f"{path}.{key}"))
             elif key in _SCHEMA_ARRAY_KEYWORDS and isinstance(value, Sequence) and not isinstance(value, str):
                 for index, child in enumerate(value):
-                    visit(child, f"{path}.{key}[{index}]")
+                    pending.append((child, f"{path}.{key}[{index}]"))
             elif key == "items":
                 if isinstance(value, Sequence) and not isinstance(value, str):
                     for index, child in enumerate(value):
-                        visit(child, f"{path}.items[{index}]")
+                        pending.append((child, f"{path}.items[{index}]"))
                 else:
-                    visit(value, f"{path}.items")
+                    pending.append((value, f"{path}.items"))
             elif key == "additionalProperties" and isinstance(value, Mapping):
-                visit(value, f"{path}.additionalProperties")
+                pending.append((value, f"{path}.additionalProperties"))
 
-    visit(schema)
+    if _descend:
+        require_finite_json(schema)
+    pending: list[tuple[object, str]] = [(schema, "$")]
+    while pending:
+        node, path = pending.pop()
+        visit(node, path)
+        if not _descend:
+            break
     return tuple(ConstructSupport(construct, found[construct]) for construct in sorted(found))
 
 
@@ -518,4 +798,12 @@ def unsupported_schema_constructs(schema: object) -> tuple[str, ...]:
     return tuple(item.construct for item in classify_schema_constructs(schema) if item.state == "unsupported")
 
 
-__all__ = ["ConstructSupport", "ConstructSupportState", "classify_schema_constructs", "unsupported_schema_constructs"]
+__all__ = [
+    "ConstructSupport",
+    "ConstructSupportState",
+    "classify_schema_constructs",
+    "declared_required_properties",
+    "cooccurrence_observation_count",
+    "normalized_observed_type_counts",
+    "unsupported_schema_constructs",
+]

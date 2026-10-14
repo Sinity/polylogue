@@ -25,7 +25,6 @@ from polylogue.schemas.generation.evidence import (
     merge_evidence,
 )
 from polylogue.schemas.generation.schema_builder import emit_schema_from_evidence
-from polylogue.schemas.generation.workload_profiles import _field_profiles
 from polylogue.schemas.inference.relational.foreign_keys import detect_foreign_keys
 from polylogue.schemas.inference.relational.time import detect_time_deltas
 from polylogue.schemas.inference.semantic.message_scoring import score_role
@@ -499,9 +498,7 @@ def test_public_numeric_annotations_exclude_magnitudes_and_preserve_private_evid
         assert "string_length" in text_distribution
         items_distribution = _object(_object(properties["items"])["x-polylogue-observed-distribution"])
         assert "array_length" in items_distribution
-        profile = _field_profiles(schema)
-        assert profile["$.latitude"]["numeric"] == summary["numeric"]
-        assert str(number) not in json.dumps({"schema": schema, "profile": profile})
+        assert str(number) not in json.dumps(schema)
     assert summaries[0] == summaries[1]
 
 

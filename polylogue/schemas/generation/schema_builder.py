@@ -93,7 +93,9 @@ def emit_schema_from_evidence(
         schema.pop("required", None)
     field_stats = evidence.field_stats
     pins = _load_rejected_pins(provider)
-    schema = _annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind, pins=pins)
+    schema = _annotate_semantic_and_relational(
+        schema, field_stats, artifact_kind=artifact_kind, provider=provider, pins=pins
+    )
     schema = _annotate_schema(
         schema,
         field_stats,
@@ -170,7 +172,7 @@ def generate_schema_from_samples(
         field_stats = _collect_field_stats(stats_samples)
         schema = _annotate_schema(schema, field_stats, privacy_config=privacy_config)
         pins = _load_rejected_pins(provider) if provider else {}
-        schema = _annotate_semantic_and_relational(schema, field_stats, pins=pins)
+        schema = _annotate_semantic_and_relational(schema, field_stats, provider=provider, pins=pins)
 
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
     return schema

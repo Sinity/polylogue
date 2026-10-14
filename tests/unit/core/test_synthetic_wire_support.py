@@ -11,29 +11,154 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.config import Source
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas import validator as validator_module
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, wire_formats
 from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
-from polylogue.schemas.synthetic.conservation import ConservationFinding, ConservationResult
-from polylogue.schemas.synthetic.models import SchemaRecord
+from polylogue.schemas.synthetic.conservation import (
+    ConservationFinding,
+    ConservationResult,
+)
+from polylogue.schemas.synthetic.models import GeneratedValue, SchemaRecord
 from polylogue.schemas.synthetic.runtime import SCHEMA_CONSTRUCT_HANDLERS
 from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.schemas.synthetic.wire_formats import UnsupportedSyntheticWireRouteError
 from polylogue.schemas.validator import SchemaValidator
+from polylogue.schemas.workload_profile_rows import WorkloadProfile
 from polylogue.sources import dispatch as dispatch_module
-from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base_models import (
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+)
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 from tests.infra import wire_support as wire_support_infra
 from tests.infra.wire_support import shared_wire_generation, shared_wire_support_receipt
+
+
+@pytest.mark.parametrize("capture_kind", ["direct", "native", "fallback"])
+def test_claude_witness_uses_actual_parser_capture_authority(capture_kind: str) -> None:
+    from polylogue.browser_capture.models import (
+        BROWSER_CAPTURE_KIND,
+        BROWSER_CAPTURE_SCHEMA_VERSION,
+    )
+
+    native: JSONDocument = {
+        "uuid": "native-session",
+        "chat_messages": [{"uuid": "native-message", "sender": "human", "text": "native body"}],
+    }
+    if capture_kind == "direct":
+        payload: JSONValue = {
+            **native,
+            "raw_provider_payload": {
+                "uuid": "unrelated-session",
+                "chat_messages": [
+                    {
+                        "uuid": "unrelated-message",
+                        "sender": "human",
+                        "text": "unrelated",
+                    }
+                ],
+            },
+        }
+    else:
+        payload = {
+            "polylogue_capture_kind": BROWSER_CAPTURE_KIND,
+            "schema_version": BROWSER_CAPTURE_SCHEMA_VERSION,
+            "provenance": {
+                "source_url": "https://example.test/conversation",
+                "adapter_name": "synthetic",
+                "captured_at": "2026-01-01T00:00:00Z",
+            },
+            "session": {
+                "provider": "claude-ai",
+                "provider_session_id": "native-session" if capture_kind == "native" else "capture-session",
+                "turns": [{"provider_turn_id": "turn", "role": "user", "text": "capture body"}],
+            },
+            "raw_provider_payload": native if capture_kind == "native" else {"unrelated": "metadata"},
+        }
+    sessions = dispatch_module.parse_payload("claude-ai", payload, "fallback")
+    assert len(sessions) == 1 and sessions[0].messages
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "claude-ai", cast(GeneratedValue, payload), "fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "claude-ai", cast(GeneratedValue, payload), "fallback"
+    )
+    sessions[0].messages[0].text = "lost content"
+    sessions[0].messages[0].blocks = []
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "claude-ai", cast(GeneratedValue, payload), "fallback"
+    )
+    if capture_kind == "native":
+        from polylogue.sources.parsers.browser_capture import (
+            NativeCaptureIdentityMismatchError,
+        )
+
+        mismatched = deepcopy(payload)
+        assert isinstance(mismatched, dict)
+        envelope = mismatched["session"]
+        assert isinstance(envelope, dict)
+        envelope["provider_session_id"] = "different-session"
+        with pytest.raises(NativeCaptureIdentityMismatchError):
+            dispatch_module.parse_payload("claude-ai", mismatched, "fallback")
+
+
+@pytest.mark.parametrize("schema", [{}, {"type": "integer"}, {"type": ["integer", "null"]}])
+def test_finite_witness_plan_is_deterministic_for_empty_and_single_choices(
+    schema: SchemaRecord,
+) -> None:
+    corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
+    first = list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
+    second = list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
+    assert first == second
+    assert first
+    assert wire_formats.construct_coverage(schema, [json.loads(raw) for raw in first]).complete
+
+
+def test_witness_generation_failure_restores_corpus_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema: SchemaRecord = {"type": "integer"}
+    corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
+
+    def fail(**kwargs: object) -> None:
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(corpus, "generate_batch", fail)
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        next(wire_formats.generate_coverage_witnesses(corpus, seed=31))
+    assert corpus.schema is schema
+    assert not corpus._coverage_witness_mode
+    assert not corpus._coverage_branch_choices
+    assert not corpus._coverage_type_choices
+
+
+def test_coverage_witness_stream_has_no_plan_cap_and_restores_state_before_yield() -> None:
+    schema: SchemaRecord = {"anyOf": [{"type": "integer", "x-polylogue-range": [index, index]} for index in range(140)]}
+    corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
+    state = corpus._generation_state
+    pools = corpus._categorical_pools
+    stream = wire_formats.generate_coverage_witnesses(corpus, seed=31)
+    first = next(stream)
+    assert corpus.schema is schema
+    assert corpus._generation_state is state
+    assert corpus._categorical_pools is pools
+    assert not corpus._coverage_witness_mode
+    assert not corpus._coverage_branch_choices
+    payloads = [json.loads(first), *(json.loads(raw) for raw in stream)]
+    assert len(payloads) > 128
+    assert set(payloads) == set(range(140))
+    assert wire_formats.construct_coverage(schema, payloads).complete
 
 
 def test_chatgpt_native_witness_does_not_select_unmarked_capture_fields() -> None:
@@ -53,14 +178,22 @@ def test_chatgpt_native_witness_does_not_select_unmarked_capture_fields() -> Non
         "session": {
             "provider_session_id": "unrelated-session",
             "turns": [
-                {"provider_turn_id": "unrelated-message", "role": "user", "text": "unrelated body"},
+                {
+                    "provider_turn_id": "unrelated-message",
+                    "role": "user",
+                    "text": "unrelated body",
+                },
             ],
         },
     }
     sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
     assert len(sessions) == 1 and sessions[0].messages
-    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "chatgpt", payload, "fallback")
-    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "chatgpt", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
 
 
 @pytest.mark.parametrize("origin_kind", ["human", "runtime"])
@@ -72,15 +205,20 @@ def test_claude_code_witness_retains_declared_authorship(origin_kind: str) -> No
             "uuid": "message",
             "sessionId": "session",
             "origin": {"kind": origin_kind},
-            "message": {"role": "user", "content": [{"type": "text", "text": "authored body"}]},
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "authored body"}],
+            },
         }
     ]
     sessions = dispatch_module.parse_payload("claude-code", payload, "fallback")
     assert len(sessions) == 1 and sessions[0].messages
-    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "claude-code", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "claude-code", cast(GeneratedValue, payload), "fallback"
+    )
     sessions[0].messages[0].material_origin = MaterialOrigin.UNKNOWN
     assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
-        sessions, "claude-code", payload, "fallback"
+        sessions, "claude-code", cast(GeneratedValue, payload), "fallback"
     )
 
 
@@ -97,7 +235,10 @@ def test_chatgpt_witness_checks_tool_identity_and_text_parts() -> None:
                     "metadata": {"command": "lookup", "args": {"query": "synthetic"}},
                     "content": {
                         "content_type": "text",
-                        "parts": ["first body", {"text": "second body", "asset_pointer": "asset-reference"}],
+                        "parts": [
+                            "first body",
+                            {"text": "second body", "asset_pointer": "asset-reference"},
+                        ],
                     },
                 },
             }
@@ -105,18 +246,26 @@ def test_chatgpt_witness_checks_tool_identity_and_text_parts() -> None:
     }
     sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
     assert len(sessions) == 1 and sessions[0].messages
-    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "chatgpt", payload, "fallback")
-    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "chatgpt", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
     tool = next(block for block in sessions[0].messages[0].blocks if block.type is BlockType.TOOL_USE)
     tool.tool_id = "wrong-tool"
-    assert not wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "chatgpt", payload, "fallback")
+    assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
     # The parts' text survives on the message and on its tool block, and
     # either one covers it, so drop the second part from both.
     sessions[0].messages[0].text = "first body"
     for block in sessions[0].messages[0].blocks:
         if block.text is not None:
             block.text = "first body"
-    assert not wire_formats._parser_artifact_has_complete_message_coverage(sessions, "chatgpt", payload, "fallback")
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
 
 
 def test_codex_witness_checks_content_when_native_message_id_is_null() -> None:
@@ -131,16 +280,25 @@ def test_codex_witness_checks_content_when_native_message_id_is_null() -> None:
     ]
     sessions = dispatch_module.parse_payload("codex", payload, "fallback")
     assert len(sessions) == 1 and sessions[0].messages
-    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "codex", payload, "fallback")
-    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "codex", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "codex", cast(GeneratedValue, payload), "fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "codex", cast(GeneratedValue, payload), "fallback"
+    )
     sessions[0].messages[0].text = "unrelated body"
     sessions[0].messages[0].blocks = []
-    assert not wire_formats._parser_artifact_has_complete_message_coverage(sessions, "codex", payload, "fallback")
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "codex", cast(GeneratedValue, payload), "fallback"
+    )
 
 
 def test_generated_browser_capture_attachment_strings_become_valid_bytes() -> None:
     """The production capture parser rejects unencoded generated attachment strings."""
-    from polylogue.browser_capture.models import BROWSER_CAPTURE_KIND, BROWSER_CAPTURE_SCHEMA_VERSION
+    from polylogue.browser_capture.models import (
+        BROWSER_CAPTURE_KIND,
+        BROWSER_CAPTURE_SCHEMA_VERSION,
+    )
 
     payload: JSONValue = {
         "polylogue_capture_kind": BROWSER_CAPTURE_KIND,
@@ -158,14 +316,24 @@ def test_generated_browser_capture_attachment_strings_become_valid_bytes() -> No
                     "provider_turn_id": "turn",
                     "role": "user",
                     "text": "body",
-                    "attachments": [{"provider_attachment_id": "turn-file", "inline_base64": "turn bytes!"}],
+                    "attachments": [
+                        {
+                            "provider_attachment_id": "turn-file",
+                            "inline_base64": "turn bytes!",
+                        }
+                    ],
                 }
             ],
-            "attachments": [{"provider_attachment_id": "session-file", "inline_base64": "session bytes!"}],
+            "attachments": [
+                {
+                    "provider_attachment_id": "session-file",
+                    "inline_base64": "session bytes!",
+                }
+            ],
         },
     }
     corpus = SyntheticCorpus({"type": "object"}, wire_formats.WireFormat(encoding="json"), "chatgpt")
-    wire = json.loads(corpus._serialize(payload))
+    wire = json.loads(corpus._serialize(cast(GeneratedValue, payload)))
     session = wire["session"]
     assert base64.b64decode(session["attachments"][0]["inline_base64"], validate=True) == b"session bytes!"
     assert base64.b64decode(session["turns"][0]["attachments"][0]["inline_base64"], validate=True) == b"turn bytes!"
@@ -173,6 +341,7 @@ def test_generated_browser_capture_attachment_strings_become_valid_bytes() -> No
     assert len(sessions) == 1 and len(sessions[0].attachments) == 2
 
 
+@pytest.mark.timeout(600)  # Includes waiting for the shared full-catalog build.
 def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> None:
     registry = SchemaRegistry(storage_root=SCHEMA_DIR)
     receipt = shared_wire_support_receipt()
@@ -208,8 +377,10 @@ def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> No
     assert all(entry.reason for entry in receipt.entries if entry.status == "unsupported")
 
 
-def test_support_receipt_does_not_substitute_a_default_selection() -> None:
-    registry = SchemaRegistry()
+def test_support_receipt_does_not_substitute_a_default_selection(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    registry = qualified_schema_registry
     with shared_wire_generation():
         receipt = wire_formats.build_wire_support_receipt(registry=registry)
 
@@ -217,16 +388,20 @@ def test_support_receipt_does_not_substitute_a_default_selection() -> None:
     assert len(receipt.entries) > len(receipt.catalog_providers)
 
 
-def test_support_receipt_preserves_an_explicitly_empty_provider_selection() -> None:
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=())
+def test_support_receipt_preserves_an_explicitly_empty_provider_selection(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=())
 
     assert receipt.catalog_providers == ()
     assert receipt.entries == ()
     assert receipt.missing_routes == ()
 
 
-def test_support_receipt_deduplicates_sorted_provider_selection() -> None:
-    registry = SchemaRegistry()
+def test_support_receipt_deduplicates_sorted_provider_selection(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    registry = qualified_schema_registry
     available = registry.list_providers()
     providers = (available[1], available[0], available[1])
 
@@ -240,16 +415,19 @@ def test_support_receipt_deduplicates_sorted_provider_selection() -> None:
 
 
 def test_support_receipt_counts_a_missing_route_before_skipping_unsupported_elements(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, qualified_schema_registry: SchemaRegistry
 ) -> None:
-    registry = SchemaRegistry()
+    registry = qualified_schema_registry
     provider = next(name for name in registry.list_providers() if name in wire_formats.PROVIDER_WIRE_ROUTES)
     catalog = registry.load_package_catalog(provider)
     assert catalog is not None
     unsupported_catalog = replace(
         catalog,
         packages=[
-            replace(package, elements=[replace(element, supported=False) for element in package.elements])
+            replace(
+                package,
+                elements=[replace(element, supported=False) for element in package.elements],
+            )
             for package in catalog.packages
         ],
     )
@@ -265,17 +443,16 @@ def test_support_receipt_counts_a_missing_route_before_skipping_unsupported_elem
     assert not receipt.complete
 
 
-def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> None:
-    receipt = shared_wire_support_receipt()
+def test_supported_routes_validate_selected_schema_and_parser_entry_point(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    receipt = shared_wire_support_receipt(storage_root=qualified_schema_registry.storage_root)
 
     supported = [entry for entry in receipt.entries if entry.status == "supported"]
     assert supported
     assert all(entry.schema_valid is True for entry in supported)
     assert all(entry.parsed_session_count > 0 for entry in supported)
     assert all(entry.parsed_message_count > 0 for entry in supported)
-    complete_supported = [
-        entry for entry in supported if not (entry.provider == "chatgpt" and entry.package_version == "v1")
-    ]
     incomplete = [
         (
             entry.provider,
@@ -283,7 +460,7 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
             entry.element_kind,
             entry.construct_coverage.missing_keywords if entry.construct_coverage else None,
         )
-        for entry in complete_supported
+        for entry in supported
         if entry.construct_coverage is None or not entry.construct_coverage.complete
     ]
     assert not incomplete, incomplete
@@ -292,13 +469,12 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
         for entry in supported
     )
     assert all(all(witness.artifact_evidence for witness in entry.parser_witnesses) for entry in supported)
-    assert not receipt.complete
-    chatgpt_v1 = next(entry for entry in supported if entry.provider == "chatgpt" and entry.package_version == "v1")
-    assert chatgpt_v1.construct_coverage is not None
-    assert not chatgpt_v1.construct_coverage.complete
+    assert receipt.complete
 
 
-def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(
+    monkeypatch: pytest.MonkeyPatch, qualified_schema_registry: SchemaRegistry
+) -> None:
     original_parse_payload = dispatch_module.parse_payload
 
     def drop_first_coverage_witness(
@@ -321,7 +497,7 @@ def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatc
 
     monkeypatch.setattr(dispatch_module, "parse_payload", drop_first_coverage_witness)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+        receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     dropped = next(witness for witness in entry.parser_witnesses if witness.index == 0)
@@ -333,7 +509,9 @@ def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatc
     assert not receipt.complete
 
 
-def test_parser_witness_partial_output_is_not_accepted_as_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parser_witness_partial_output_is_not_accepted_as_complete(
+    monkeypatch: pytest.MonkeyPatch, qualified_schema_registry: SchemaRegistry
+) -> None:
     original_parse_payload = dispatch_module.parse_payload
 
     def return_only_first_message(
@@ -357,7 +535,7 @@ def test_parser_witness_partial_output_is_not_accepted_as_complete(monkeypatch: 
 
     monkeypatch.setattr(dispatch_module, "parse_payload", return_only_first_message)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+        receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.package_version == "v1")
     baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
@@ -373,6 +551,7 @@ def test_parser_witness_partial_output_is_not_accepted_as_complete(monkeypatch: 
 def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_every_supported_route(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
+    qualified_schema_registry: SchemaRegistry,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
 
@@ -399,7 +578,10 @@ def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_ever
                 for message in session.messages:
                     has_body = any(
                         isinstance(text, str) and text.strip()
-                        for text in (message.text, *(block.text for block in message.blocks))
+                        for text in (
+                            message.text,
+                            *(block.text for block in message.blocks),
+                        )
                     )
                     if has_body and not retained_body:
                         retained_body = True
@@ -412,7 +594,7 @@ def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_ever
 
     monkeypatch.setattr(dispatch_module, "parse_payload", replace_all_but_one_message_body)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+        receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=(provider,))
 
     supported_entries = [entry for entry in receipt.entries if entry.status == "supported"]
     assert supported_entries
@@ -427,7 +609,7 @@ def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_ever
 
 
 def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_identity(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, qualified_schema_registry: SchemaRegistry
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
     inserted_segment = False
@@ -445,9 +627,15 @@ def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_iden
         nonlocal inserted_segment, dropped_segment
         if provider == "codex" and fallback_id.endswith(":0") and isinstance(payload, list):
             for record in payload:
-                if not isinstance(record, dict) or not isinstance(record.get("content"), list):
+                if not isinstance(record, Mapping):
                     continue
-                record["content"].append({"type": "input_text", "text": segment})
+                native_message = record.get("payload") if record.get("type") == "response_item" else record
+                if not isinstance(native_message, Mapping):
+                    continue
+                content = native_message.get("content")
+                if not isinstance(content, list):
+                    continue
+                content.append({"type": "input_text", "text": segment})
                 inserted_segment = True
                 break
         sessions = original_parse_payload(
@@ -480,7 +668,7 @@ def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_iden
 
     monkeypatch.setattr(dispatch_module, "parse_payload", drop_one_text_segment)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("codex",))
+        receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=("codex",))
 
     assert inserted_segment
     assert dropped_segment
@@ -499,6 +687,7 @@ def test_parser_witness_authoredness_loss_is_not_accepted_for_every_supported_ro
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
     artifact_index: int,
+    qualified_schema_registry: SchemaRegistry,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
     mutated_messages = 0
@@ -543,7 +732,7 @@ def test_parser_witness_authoredness_loss_is_not_accepted_for_every_supported_ro
 
     monkeypatch.setattr(dispatch_module, "parse_payload", corrupt_authoredness)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+        receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=(provider,))
 
     assert mutated_messages > 0
     supported_entries = [entry for entry in receipt.entries if entry.status == "supported"]
@@ -563,6 +752,7 @@ def test_parser_witness_tool_identity_loss_is_not_accepted(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
     artifact_index: int,
+    qualified_tool_schema_registry: SchemaRegistry,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
     mutated_blocks = 0
@@ -602,7 +792,9 @@ def test_parser_witness_tool_identity_loss_is_not_accepted(
 
     monkeypatch.setattr(dispatch_module, "parse_payload", drop_tool_identity)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+        receipt = wire_formats.build_wire_support_receipt(
+            registry=qualified_tool_schema_registry, providers=(provider,)
+        )
 
     assert mutated_blocks > 0
     assert not receipt.complete
@@ -621,6 +813,7 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
     artifact_index: int,
+    qualified_tool_schema_registry: SchemaRegistry,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
     mutated_outcomes = 0
@@ -634,50 +827,6 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
         source_path: str | None = None,
     ) -> list[ParsedSession]:
         nonlocal mutated_outcomes
-        if parsed_provider == provider and fallback_id.endswith(f":{artifact_index}") and isinstance(payload, list):
-            injected_outcome = False
-            for record in payload:
-                if not isinstance(record, dict):
-                    continue
-                container = record.get("message") if provider == "claude-code" else record
-                content = container.get("content") if isinstance(container, dict) else None
-                if not isinstance(content, list):
-                    continue
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "tool_result":
-                        item["is_error"] = False
-                        injected_outcome = True
-                        break
-                if injected_outcome:
-                    break
-            if not injected_outcome:
-                for record in payload:
-                    if not isinstance(record, dict):
-                        continue
-                    container = record.get("message") if provider == "claude-code" else record
-                    content = container.get("content") if isinstance(container, dict) else None
-                    if not isinstance(content, list):
-                        continue
-                    tool_use = next(
-                        (
-                            item
-                            for item in content
-                            if isinstance(item, dict)
-                            and item.get("type") == "tool_use"
-                            and isinstance(item.get("id"), str)
-                        ),
-                        None,
-                    )
-                    if isinstance(tool_use, dict):
-                        content.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_use["id"],
-                                "content": "synthetic structured outcome",
-                                "is_error": False,
-                            }
-                        )
-                        break
         sessions = original_parse_payload(
             parsed_provider,
             payload,
@@ -713,7 +862,9 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
 
     monkeypatch.setattr(dispatch_module, "parse_payload", corrupt_structured_tool_outcome)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+        receipt = wire_formats.build_wire_support_receipt(
+            registry=qualified_tool_schema_registry, providers=(provider,)
+        )
 
     assert mutated_outcomes > 0
     assert not receipt.complete
@@ -728,6 +879,7 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
 def test_parser_witness_rejects_messages_rehomed_to_another_raw_identity(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
+    qualified_schema_registry: SchemaRegistry,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
     rehomed_sessions = 0
@@ -769,7 +921,7 @@ def test_parser_witness_rejects_messages_rehomed_to_another_raw_identity(
 
     monkeypatch.setattr(dispatch_module, "parse_payload", rehome_to_message_id)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+        receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=(provider,))
 
     assert rehomed_sessions > 0
     assert not receipt.complete
@@ -782,11 +934,17 @@ def test_parser_witness_rejects_messages_rehomed_to_another_raw_identity(
 
 @pytest.mark.parametrize(
     "returned_session",
-    ["empty", "unrelated", "metadata", pytest.param("id_only", marks=pytest.mark.load_sensitive)],
+    [
+        "empty",
+        "unrelated",
+        "metadata",
+        pytest.param("id_only", marks=pytest.mark.load_sensitive),
+    ],
 )
 def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
     monkeypatch: pytest.MonkeyPatch,
     returned_session: str,
+    qualified_schema_registry: SchemaRegistry,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
 
@@ -800,7 +958,13 @@ def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
     ) -> list[ParsedSession]:
         if provider == "chatgpt" and fallback_id.endswith(":1"):
             if returned_session == "empty":
-                return [ParsedSession(source_name=Provider.CHATGPT, provider_session_id="empty", messages=[])]
+                return [
+                    ParsedSession(
+                        source_name=Provider.CHATGPT,
+                        provider_session_id="empty",
+                        messages=[],
+                    )
+                ]
             if returned_session == "metadata":
                 payload_record = payload if isinstance(payload, Mapping) else {}
                 metadata_id = str(payload_record.get("id", "metadata-session"))
@@ -862,7 +1026,7 @@ def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
 
     monkeypatch.setattr(dispatch_module, "parse_payload", return_non_evidence_for_first_coverage_witness)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+        receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry)
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     witness = next(item for item in entry.parser_witnesses if item.artifact_kind == "coverage" and item.index == 0)
@@ -873,7 +1037,9 @@ def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
     assert not receipt.complete
 
 
-def test_baseline_parser_failure_reaches_support_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_baseline_parser_failure_reaches_support_receipt(
+    monkeypatch: pytest.MonkeyPatch, qualified_schema_registry: SchemaRegistry
+) -> None:
     original_parse_payload = dispatch_module.parse_payload
 
     def fail_baseline(
@@ -896,7 +1062,7 @@ def test_baseline_parser_failure_reaches_support_receipt(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(dispatch_module, "parse_payload", fail_baseline)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+        receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
@@ -908,7 +1074,9 @@ def test_baseline_parser_failure_reaches_support_receipt(monkeypatch: pytest.Mon
     assert not receipt.complete
 
 
-def test_baseline_schema_failure_reaches_support_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_baseline_schema_failure_reaches_support_receipt(
+    monkeypatch: pytest.MonkeyPatch, qualified_schema_registry: SchemaRegistry
+) -> None:
     original_validate = validator_module.SchemaValidator.validate
     failed_baseline = False
 
@@ -920,7 +1088,7 @@ def test_baseline_schema_failure_reaches_support_receipt(monkeypatch: pytest.Mon
         return original_validate(self, payload)
 
     monkeypatch.setattr(validator_module.SchemaValidator, "validate", fail_chatgpt_baseline)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+    receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
@@ -949,11 +1117,15 @@ def test_support_receipt_is_deterministic() -> None:
 def test_codex_flat_and_envelope_records_cannot_be_mixed() -> None:
     mixed: JSONValue = [
         {"type": "session_meta", "payload": {"id": "mixed-session"}},
-        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}],
+        },
     ]
 
     with pytest.raises(ValueError, match="cannot mix flat records"):
-        validate_wire_payload("codex", mixed)
+        validate_wire_payload("codex", cast(GeneratedValue, mixed))
 
 
 def test_catalog_unsupported_routes_fail_selection_with_typed_reason() -> None:
@@ -973,8 +1145,10 @@ def test_catalog_unsupported_routes_fail_selection_with_typed_reason() -> None:
         assert exc_info.value.reason == wire_formats.PROVIDER_WIRE_ROUTES[provider].reason
 
 
-def test_supported_selection_uses_declared_route_format() -> None:
-    registry = SchemaRegistry()
+def test_supported_selection_uses_declared_route_format(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    registry = qualified_schema_registry
     for provider, route in wire_formats.PROVIDER_WIRE_ROUTES.items():
         if route.status != "supported":
             continue
@@ -1011,7 +1185,7 @@ def test_selection_reuses_resolved_default_package_for_schema_and_profile(
                 return original_get_element_schema(provider, version="v2", element_kind=element_kind)
         return original_get_element_schema(provider, version=version, element_kind=element_kind)
 
-    def record_profile_version(provider: str, version: str = "default") -> SchemaRecord | None:
+    def record_profile_version(provider: str, version: str = "default") -> WorkloadProfile | None:
         if provider == "chatgpt":
             requested_profile_versions.append(version)
         return original_get_workload_profile(provider, version=version)
@@ -1033,10 +1207,15 @@ def test_selection_reuses_resolved_default_package_for_schema_and_profile(
     assert requested_profile_versions == [resolved_package.version]
 
 
-def test_antigravity_metadata_only_source_has_no_language_server_session(tmp_path: Path) -> None:
+def test_antigravity_metadata_only_source_has_no_language_server_session(
+    tmp_path: Path,
+) -> None:
     metadata_path = tmp_path / "brain" / "work-session" / "plan.md.metadata.json"
     metadata_path.parent.mkdir(parents=True)
-    metadata_path.write_text(json.dumps({"artifactType": "plan", "summary": "metadata only"}), encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps({"artifactType": "plan", "summary": "metadata only"}),
+        encoding="utf-8",
+    )
 
     sessions = list(iter_antigravity_language_server_sessions(Source(name="antigravity", path=tmp_path)))
 
@@ -1051,13 +1230,19 @@ def test_antigravity_metadata_only_source_has_no_language_server_session(tmp_pat
 _COVERAGE_PROVIDERS = ("chatgpt", "codex")
 
 
-def test_construct_handler_removal_changes_coverage_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_construct_handler_removal_changes_coverage_receipt(
+    monkeypatch: pytest.MonkeyPatch, qualified_schema_registry: SchemaRegistry
+) -> None:
     with shared_wire_generation():
-        before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
+        before = wire_formats.build_wire_support_receipt(
+            registry=qualified_schema_registry, providers=_COVERAGE_PROVIDERS
+        )
 
     monkeypatch.delitem(SCHEMA_CONSTRUCT_HANDLERS, "array")
     with shared_wire_generation():
-        after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
+        after = wire_formats.build_wire_support_receipt(
+            registry=qualified_schema_registry, providers=_COVERAGE_PROVIDERS
+        )
 
     assert before.to_dict() != after.to_dict()
     assert not after.complete
@@ -1069,12 +1254,17 @@ def test_construct_handler_removal_changes_coverage_receipt(monkeypatch: pytest.
     )
 
 
-def test_missing_handler_stops_random_witnesses_without_waiving_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
-    schema: SchemaRecord = {"type": "object", "properties": {"values": {"type": "array", "items": {"type": "string"}}}}
+def test_missing_handler_remains_missing_in_finite_witness_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema: SchemaRecord = {
+        "type": "object",
+        "properties": {"values": {"type": "array", "items": {"type": "string"}}},
+    }
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="jsonl"), "claude-code")
     monkeypatch.delitem(SCHEMA_CONSTRUCT_HANDLERS, "array")
 
-    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=31, max_witnesses=8)
+    raw_items = list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
     payloads = [json.loads(line) for raw in raw_items for line in raw.splitlines()]
     coverage = wire_formats.construct_coverage(schema, payloads)
 
@@ -1141,7 +1331,7 @@ def test_coverage_witnesses_select_nested_array_union_branches() -> None:
     }
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
 
-    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=31)
+    raw_items = list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
     payloads = [json.loads(raw) for raw in raw_items]
 
     assert {type(payload["choice"]) for payload in payloads} >= {int, str}
@@ -1160,7 +1350,7 @@ def test_coverage_witnesses_keep_nested_union_choices_independent() -> None:
     }
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
 
-    payloads = [json.loads(raw) for raw in wire_formats.generate_coverage_witnesses(corpus, seed=17, max_witnesses=8)]
+    payloads = [json.loads(raw) for raw in wire_formats.generate_coverage_witnesses(corpus, seed=17)]
 
     assert any(isinstance(payload, str) for payload in payloads)
     assert 0 in payloads
@@ -1168,7 +1358,7 @@ def test_coverage_witnesses_keep_nested_union_choices_independent() -> None:
 
 
 def test_claude_nested_array_content_is_explicitly_unrepresentable() -> None:
-    """The wire normalizer removes nested arrays; extra witnesses cannot recover them."""
+    """Witness generation must refuse nested arrays rather than flatten selected values."""
     schema: SchemaRecord = {
         "type": "object",
         "properties": {
@@ -1181,8 +1371,11 @@ def test_claude_nested_array_content_is_explicitly_unrepresentable() -> None:
                             "type": "object",
                             "properties": {
                                 "content": {
-                                    "type": ["string", "array"],
-                                    "items": {"type": "object", "properties": {"text": {"type": "string"}}},
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {"text": {"type": "string"}},
+                                    },
                                 }
                             },
                         },
@@ -1192,22 +1385,26 @@ def test_claude_nested_array_content_is_explicitly_unrepresentable() -> None:
         },
     }
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="jsonl"), "claude-code")
-    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=31, max_witnesses=8)
-    payloads = [json.loads(line) for raw in raw_items for line in raw.splitlines()]
-    coverage = wire_formats.construct_coverage(schema, payloads)
+    try:
+        with pytest.raises(ValueError, match="nested Claude Code content cannot be flattened"):
+            list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
+    finally:
+        corpus._relation_solver.close()
+    coverage = wire_formats.construct_coverage(schema, ())
     assert coverage.missing_keywords
     omitted_role = "type:string@$.properties.message.properties.role"
     reasons = wire_formats._route_nonrepresentable_reasons(
         "claude-code", (*coverage.missing_keywords, omitted_role), package_version="v2"
     )
-    assert set(reasons) == set(coverage.missing_keywords)
-    assert len(raw_items) < 8
+    assert reasons
+    assert all(".properties.content.items[*].properties.content" in keyword for keyword in reasons)
+    assert omitted_role not in reasons
 
 
 def test_receipt_generation_and_validation_use_injected_registry_schema(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, qualified_schema_registry: SchemaRegistry
 ) -> None:
-    registry = SchemaRegistry()
+    registry = qualified_schema_registry
     selected_schema = registry.get_element_schema("chatgpt", version="default", element_kind="session_document")
     assert selected_schema is not None
     divergent_schema = deepcopy(selected_schema)
@@ -1251,7 +1448,7 @@ def test_receipt_generation_and_validation_use_injected_registry_schema(
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     assert entry.schema_valid is True
-    assert entry.healthy
+    assert entry.healthy, (entry.validation_error, entry.construct_coverage)
     assert any(schema is divergent_schema for schema in captured_schemas)
     assert entry.construct_coverage is not None
     marker = "type:integer@$.properties.registry_only_marker"
@@ -1259,9 +1456,13 @@ def test_receipt_generation_and_validation_use_injected_registry_schema(
     assert marker in entry.construct_coverage.exercised_keywords
 
 
-def test_claude_code_route_only_waives_unrepresentable_nested_content() -> None:
+def test_claude_code_route_only_waives_unrepresentable_nested_content(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("claude-code",))
+        receipt = wire_formats.build_wire_support_receipt(
+            registry=qualified_schema_registry, providers=("claude-code",)
+        )
     entry = next(item for item in receipt.entries if item.provider == "claude-code")
 
     assert entry.construct_coverage is not None
@@ -1280,8 +1481,12 @@ def test_chatgpt_v1_media_waiver_does_not_hide_parser_relevant_omissions() -> No
     registry = SchemaRegistry()
     selection = select_synthetic_schema("chatgpt", version="v1", registry_factory=lambda: registry)
     corpus = SyntheticCorpus.from_selection(selection)
-    payload = corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=20260805).raw_items[0]
-    payloads: tuple[JSONValue, ...] = (json.loads(payload),)
+    try:
+        with pytest.raises(ValueError, match="selected wire carrier must be an object"):
+            corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=20260805)
+    finally:
+        corpus._relation_solver.close()
+    payloads: tuple[GeneratedValue, ...] = ()
     witnessed = wire_formats.construct_coverage(selection.schema, payloads)
     parser_relevant = next(
         keyword
@@ -1311,12 +1516,14 @@ def test_chatgpt_v1_media_waiver_does_not_hide_parser_relevant_omissions() -> No
     assert not final.complete
 
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=registry)
+        receipt = wire_formats.build_wire_support_receipt(registry=registry, providers=("chatgpt",))
     receipt_entry = next(
         entry
         for entry in receipt.entries
         if (entry.provider, entry.package_version, entry.element_kind) == ("chatgpt", "v1", selection.element_kind)
     )
+    assert receipt_entry.validation_error is not None
+    assert "selected wire carrier must be an object" in receipt_entry.validation_error
     assert receipt_entry.construct_coverage is not None
     assert parser_relevant in receipt_entry.construct_coverage.missing_keywords
     assert not receipt_entry.healthy
@@ -1363,7 +1570,9 @@ def test_missing_required_and_additional_property_evidence_makes_receipt_incompl
     assert not receipt.complete
 
 
-def test_wire_support_run_cache_round_trips_full_conservation_evidence(tmp_path: Path) -> None:
+def test_wire_support_run_cache_round_trips_full_conservation_evidence(
+    tmp_path: Path,
+) -> None:
     """The cross-process cache preserves evidence rather than a lossy summary."""
     finding = ConservationFinding(
         path="$.messages[0]",
@@ -1503,13 +1712,19 @@ def test_wire_support_run_cache_is_reused_by_a_second_process(tmp_path: Path, mo
     assert result.stdout.strip() == "cached"
 
 
-def test_removed_provider_route_changes_explicit_support_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_removed_provider_route_changes_explicit_support_receipt(
+    monkeypatch: pytest.MonkeyPatch, qualified_schema_registry: SchemaRegistry
+) -> None:
     with shared_wire_generation():
-        before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
+        before = wire_formats.build_wire_support_receipt(
+            registry=qualified_schema_registry, providers=_COVERAGE_PROVIDERS
+        )
 
     monkeypatch.delitem(wire_formats.PROVIDER_WIRE_ROUTES, "codex")
     with shared_wire_generation():
-        after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
+        after = wire_formats.build_wire_support_receipt(
+            registry=qualified_schema_registry, providers=_COVERAGE_PROVIDERS
+        )
 
     assert before.to_dict() != after.to_dict()
     assert after.missing_routes == ("codex",)
@@ -1520,17 +1735,28 @@ def test_removed_provider_route_changes_explicit_support_receipt(monkeypatch: py
         SyntheticCorpus.for_provider("codex")
 
 
-def test_codex_native_id_pinning_preserves_one_wire_shape() -> None:
-    corpus = SyntheticCorpus.for_provider("codex")
-    [raw] = corpus.generate(count=1, seed=73, messages_per_session=range(3, 4), session_native_ids=("pinned",))
+def test_codex_native_id_binding_preserves_original_declared_wire_shape() -> None:
+    from polylogue.schemas.synthetic.authored_selection import authored_schema_selection
+
+    selection = authored_schema_selection("codex", "tool-heavy", session_native_ids=("pinned",))
+    corpus = SyntheticCorpus.from_selection(selection)
+    [raw] = corpus.generate(
+        count=1,
+        seed=73,
+        messages_per_session=range(3, 4),
+        session_native_ids=("pinned",),
+    )
     records = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line]
 
     assert all(record.get("type") != "message" for record in records)
     assert any(record.get("type") == "session_meta" for record in records)
     assert all(record.get("type") in {"session_meta", "response_item"} for record in records)
+    assert records[0]["payload"]["id"] == "pinned"
 
 
-def test_shared_wire_generation_observes_provider_parser_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_shared_wire_generation_observes_provider_parser_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Rebuilding identical input must execute a changed provider parser."""
     from polylogue.sources.parsers import codex
 
@@ -1562,10 +1788,12 @@ def test_shared_wire_generation_observes_provider_parser_mutation(monkeypatch: p
         monkeypatch.setattr(codex, "parse", drop_messages)
         second = dispatch_module.parse_payload("codex", payload, "w1-codex")
         assert calls == 1
-        assert second and not second[0].messages
+        assert second == []
 
 
-def test_shared_wire_generation_observes_implicit_filesystem_sidecars(tmp_path: Path) -> None:
+def test_shared_wire_generation_observes_implicit_filesystem_sidecars(
+    tmp_path: Path,
+) -> None:
     """New sidecar bytes at the same source path must change the actual parse."""
     source_path = tmp_path / "w1-sidecars.jsonl"
     sidecar = tmp_path / "w1-sidecars" / "tool-results" / "toolu_W1.txt"
@@ -1609,14 +1837,10 @@ def test_shared_wire_generation_observes_implicit_filesystem_sidecars(tmp_path: 
         )
 
 
-def test_claude_ai_v2_witnesses_render_one_coherent_shape_the_parser_reads() -> None:
-    """The v2 package unions the export, a capture envelope, and Claude Design.
-
-    Anti-vacuity: generate coverage witnesses without the root exclusion filter
-    and a witness carries ``uuid``/``chat_messages`` beside
-    ``raw_provider_payload``; the parser then reads the top-level messages
-    while message coverage reads the envelope's, and they disagree.
-    """
+def test_claude_ai_witnesses_render_one_coherent_shape_the_parser_reads(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    """Keep catalogue exclusions distinct from genuinely measured native generation."""
     registry = SchemaRegistry()
     schema = registry.get_element_schema("claude-ai", version="v2", element_kind="session_document")
     assert schema is not None
@@ -1628,14 +1852,106 @@ def test_claude_ai_v2_witnesses_render_one_coherent_shape_the_parser_reads() -> 
         if isinstance(group, dict) and group["parent"] == "$" and isinstance(group["fields"], list)
     ]
     assert exclusions
-    corpus = SyntheticCorpus(schema, wire_formats.PROVIDER_WIRE_FORMATS["claude-ai"], "claude-ai", package_version="v2")
-    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=7)
-    assert raw_items
-    for index, raw in enumerate(raw_items):
-        payload = json.loads(raw)
-        assert all(not group <= set(payload) for group in exclusions), sorted(payload)
-        assert "chat_messages" in payload and "raw_provider_payload" not in payload
-        sessions = dispatch_module.parse_payload("claude-ai", payload, f"coherent-{index}")
-        assert wire_formats._parser_artifact_has_complete_message_coverage(
-            sessions, "claude-ai", payload, f"coherent-{index}"
+    assert registry.get_workload_profile("claude-ai", version="v2") is None
+    selection = select_synthetic_schema("claude-ai", registry_factory=lambda: qualified_schema_registry)
+    corpus = SyntheticCorpus.from_selection(selection)
+    witnessed = 0
+    try:
+        raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=7)
+        for index, raw in enumerate(raw_items):
+            witnessed += 1
+            payload = json.loads(raw)
+            assert all(not group <= set(payload) for group in exclusions), sorted(payload)
+            assert "chat_messages" in payload and "raw_provider_payload" not in payload
+            sessions = dispatch_module.parse_payload("claude-ai", payload, f"coherent-{index}")
+            assert wire_formats._parser_artifact_has_complete_message_coverage(
+                sessions, "claude-ai", payload, f"coherent-{index}"
+            )
+    finally:
+        corpus._relation_solver.close()
+    assert witnessed > 0
+
+
+@pytest.mark.parametrize("enveloped", (False, True))
+def test_codex_native_tool_receipt_checks_both_record_sides_and_outcomes(enveloped: bool) -> None:
+    header: JSONDocument = {"type": "session_meta", "id": "neutral-session"}
+    call: JSONDocument = {"type": "function_call", "call_id": "neutral-call", "name": "Read", "arguments": "{}"}
+    output: JSONDocument = {
+        "type": "function_call_output",
+        "call_id": "neutral-call",
+        "output": {"output": "neutral result", "exit_code": 0, "is_error": False},
+    }
+    payload: list[JSONValue] = (
+        [
+            {"type": "session_meta", "payload": {"id": "neutral-session"}},
+            {"type": "response_item", "payload": cast(JSONValue, call)},
+            {"type": "response_item", "payload": cast(JSONValue, output)},
+        ]
+        if enveloped
+        else [cast(JSONValue, header), cast(JSONValue, call), cast(JSONValue, output)]
+    )
+    sessions = dispatch_module.parse_payload("codex", payload, "neutral-fallback")
+    assert len(sessions) == 1
+    messages = sessions[0].messages
+    assert len(messages) == 2
+    assert [message.provider_message_id for message in messages] == ["neutral-call::call", "neutral-call::output"]
+    assert [message.role for message in messages] == [Role.ASSISTANT, Role.TOOL]
+    assert messages[1].blocks[0].is_error is False
+    assert messages[1].blocks[0].exit_code == 0
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "codex", cast(GeneratedValue, payload), "neutral-fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "codex", cast(GeneratedValue, payload), "neutral-fallback"
+    )
+    for mutation in ({"tool_id": None}, {"is_error": True}, {"exit_code": 1}):
+        block = messages[1].blocks[0].model_copy(update=mutation)
+        changed = messages[1].model_copy(update={"blocks": [block]})
+        corrupted = [sessions[0].model_copy(update={"messages": [messages[0], changed]})]
+        assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
+            corrupted, "codex", cast(GeneratedValue, payload), "neutral-fallback"
         )
+
+
+def test_neutral_tool_source_profiles_have_nonvacuous_healthy_receipts(
+    qualified_tool_schema_registry: SchemaRegistry,
+) -> None:
+    for provider, filename in (("claude-code", "blocks.jsonl"), ("codex", "enveloped.jsonl")):
+        source = qualified_tool_schema_registry.storage_root.parent / "sources" / provider / filename
+        rows = [json.loads(line) for line in source.read_text().splitlines()]
+        sessions = dispatch_module.parse_payload(provider, rows, "neutral-source")
+        assert len(sessions) == 1 and len(sessions[0].messages) == 4
+        results = [
+            block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+        ]
+        assert len(results) == 1
+        assert results[0].tool_id == "call-neutral"
+        assert results[0].is_error is False
+        assert results[0].exit_code == (0 if provider == "codex" else None)
+    receipt = shared_wire_support_receipt(
+        storage_root=qualified_tool_schema_registry.storage_root, providers=("claude-code", "codex")
+    )
+    assert receipt.complete
+    assert len(receipt.entries) == 2
+    assert all(
+        witness.healthy and witness.parsed_message_count == 4
+        for entry in receipt.entries
+        for witness in entry.parser_witnesses
+    )
+
+
+def test_codex_receipt_witnesses_both_original_measured_record_families(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
+    receipt = shared_wire_support_receipt(storage_root=qualified_schema_registry.storage_root, providers=("codex",))
+    assert receipt.complete and len(receipt.entries) == 1
+    entry = receipt.entries[0]
+    assert entry.construct_coverage is not None
+    assert entry.construct_coverage.complete
+    assert not any("payload" in keyword for keyword in entry.construct_coverage.nonrepresentable_keywords)
+    assert any("type:array@$.properties.content" in witness.exercised_keywords for witness in entry.parser_witnesses)
+    assert any(
+        "type:array@$.properties.payload.properties.content" in witness.exercised_keywords
+        for witness in entry.parser_witnesses
+    )
+    assert all(witness.healthy for witness in entry.parser_witnesses)

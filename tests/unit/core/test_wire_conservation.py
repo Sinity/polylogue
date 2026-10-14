@@ -23,6 +23,7 @@ import pytest
 
 from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.schemas.pinning import PinDecision, PinSet
+from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic.conservation import (
     COVERAGE_EXTRA_KEY,
     check_conservation,
@@ -35,7 +36,11 @@ from polylogue.schemas.synthetic.wire_formats import (
     CONSERVATION_BLOCKING_PROVIDERS,
     WireParserWitness,
 )
-from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base_models import (
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+)
 from tests.infra.wire_support import shared_wire_support_receipt
 
 BODY_SCHEMA = {
@@ -46,8 +51,14 @@ BODY_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "x-polylogue-semantic-role": "message_body"},
-                    "at": {"type": "string", "x-polylogue-semantic-role": "message_timestamp"},
+                    "text": {
+                        "type": "string",
+                        "x-polylogue-semantic-role": "message_body",
+                    },
+                    "at": {
+                        "type": "string",
+                        "x-polylogue-semantic-role": "message_timestamp",
+                    },
                     "note": {"type": "string"},
                 },
             },
@@ -96,7 +107,12 @@ def test_dynamic_properties_are_planted() -> None:
             "mapping": {
                 "type": "object",
                 "additionalProperties": {
-                    "properties": {"text": {"type": "string", "x-polylogue-semantic-role": "message_body"}}
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "x-polylogue-semantic-role": "message_body",
+                        }
+                    }
                 },
             }
         },
@@ -108,7 +124,13 @@ def test_message_text_without_blocks_is_counted() -> None:
     """Compact parsers may retain authored text on message.text only."""
     message = ParsedMessage(provider_message_id="message-text", role=Role.ASSISTANT, text="alpha", blocks=[])
     assert parsed_block_texts(
-        [ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="message-text", messages=[message])]
+        [
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="message-text",
+                messages=[message],
+            )
+        ]
     ) == {"alpha": 1}
 
 
@@ -149,7 +171,10 @@ CLAUDE_CODE_BLOCK_SCHEMA = {
                             "text": {"type": "string"},
                             "thinking": {"type": "string"},
                             "input": {"type": "object"},
-                            "content": {"type": "string", "x-polylogue-semantic-role": "message_body"},
+                            "content": {
+                                "type": "string",
+                                "x-polylogue-semantic-role": "message_body",
+                            },
                         },
                     },
                 }
@@ -164,10 +189,15 @@ CLAUDE_CODE_BLOCK_SCHEMA = {
     [
         pytest.param({"type": "text", "text": "kept", "content": "lost"}, id="text"),
         pytest.param({"type": "thinking", "thinking": "kept", "content": "lost"}, id="thinking"),
-        pytest.param({"type": "tool_use", "input": {"content": "kept"}, "content": "lost"}, id="tool_use"),
+        pytest.param(
+            {"type": "tool_use", "input": {"content": "kept"}, "content": "lost"},
+            id="tool_use",
+        ),
     ],
 )
-def test_claude_code_block_content_beside_its_typed_body_is_conserved(block: dict[str, object]) -> None:
+def test_claude_code_block_content_beside_its_typed_body_is_conserved(
+    block: dict[str, object],
+) -> None:
     """An annotated ``content`` independent of the block's typed body is planted, and dropping it is loss.
 
     Anti-vacuity: skipping ``content`` for text, thinking and tool-use blocks
@@ -256,7 +286,10 @@ def test_values_under_the_coverage_extra_key_are_out_of_scope() -> None:
     """
     schema = {
         "type": "object",
-        "additionalProperties": {"type": "string", "x-polylogue-semantic-role": "message_body"},
+        "additionalProperties": {
+            "type": "string",
+            "x-polylogue-semantic-role": "message_body",
+        },
     }
 
     result = check_conservation(schema, [{COVERAGE_EXTRA_KEY: "alpha"}], [_session()])
@@ -266,7 +299,12 @@ def test_values_under_the_coverage_extra_key_are_out_of_scope() -> None:
 
     declared = {
         "type": "object",
-        "properties": {COVERAGE_EXTRA_KEY: {"type": "string", "x-polylogue-semantic-role": "message_body"}},
+        "properties": {
+            COVERAGE_EXTRA_KEY: {
+                "type": "string",
+                "x-polylogue-semantic-role": "message_body",
+            }
+        },
     }
     assert not check_conservation(declared, [{COVERAGE_EXTRA_KEY: "alpha"}], [_session()]).conserved
 
@@ -323,6 +361,34 @@ def test_reject_pin_excludes_a_path_from_conservation() -> None:
     assert declared.excluded_paths == ("$.turns[0].text",)
 
 
+def test_a_dynamic_key_pin_excludes_the_dynamic_value_not_a_declared_sibling() -> None:
+    """A dynamic key has no schema position of its own, so its value sits at ``*``.
+
+    A pin on ``$.*`` excludes what a dynamic key carries and nothing a
+    declared property carries. Anti-vacuity: plant the value at ``$.<key>``
+    and the pin excludes nothing, so the dynamic title is reported lost; plant
+    the declared sibling under ``*`` too and the declared title is excluded.
+    """
+    title = {"type": "string", "x-polylogue-semantic-role": "session_title"}
+    schema = {
+        "type": "object",
+        "properties": {"title": title},
+        "additionalProperties": {"type": "object", "properties": {"title": title}},
+    }
+    payload = {"title": "declared title", "asset-1": {"title": "asset title"}}
+
+    result = check_conservation(
+        schema,
+        [payload],
+        [_session(title="declared title")],
+        excluded_paths=frozenset({"$.*"}),
+    )
+
+    assert result.excluded_paths == ("$.*.title",)
+    assert result.planted_count == 1
+    assert result.conserved
+
+
 @pytest.mark.parametrize("enforced", [True, False])
 def test_conservation_gates_health_only_where_enforced(enforced: bool) -> None:
     """Report-only providers are measured without deciding an exit code."""
@@ -349,7 +415,9 @@ def _pinned(monkeypatch: pytest.MonkeyPatch, *pins: PinDecision) -> None:
     )
 
 
-def test_unexplained_reject_pin_excludes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unexplained_reject_pin_excludes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The written reason is the exclusion, not the ``reject`` action."""
     explained = PinDecision(
         path="$.turns[].text",
@@ -367,7 +435,9 @@ def test_unexplained_reject_pin_excludes_nothing(monkeypatch: pytest.MonkeyPatch
     assert excluded_paths_from_pins(Provider.CLAUDE_CODE) == frozenset({"$.turns[].text"})
 
 
-def test_a_pin_covers_every_element_the_schema_generates(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_pin_covers_every_element_the_schema_generates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A pin names a schema position; planted values carry array indices.
 
     Without the index erased, a pin written against an array position matches
@@ -402,15 +472,24 @@ def test_confirmed_pin_is_not_an_exclusion(monkeypatch: pytest.MonkeyPatch) -> N
     """Confirming an annotation asserts the value is content, not that it may vanish."""
     _pinned(
         monkeypatch,
-        PinDecision(path="$.turns[].text", role="message_body", action="confirm", reason="this is the body"),
+        PinDecision(
+            path="$.turns[].text",
+            role="message_body",
+            action="confirm",
+            reason="this is the body",
+        ),
     )
 
     assert excluded_paths_from_pins(Provider.CLAUDE_CODE) == frozenset()
 
 
-def test_receipt_measures_conservation_for_every_provider() -> None:
+def test_receipt_measures_conservation_for_every_provider(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
     """The production route measures every provider and gates adjudicated ones."""
-    receipt = shared_wire_support_receipt()
+    receipt = shared_wire_support_receipt(
+        storage_root=qualified_schema_registry.storage_root,
+    )
 
     witnesses = [witness for entry in receipt.entries for witness in entry.parser_witnesses]
     assert witnesses, "receipt produced no parser witnesses to measure"
@@ -446,9 +525,13 @@ def test_receipt_measures_conservation_for_every_provider() -> None:
     assert not unconserved, "adjudicated providers still report unexplained conservation findings"
 
 
-def test_receipt_payload_carries_the_findings_it_measured() -> None:
+def test_receipt_payload_carries_the_findings_it_measured(
+    qualified_schema_registry: SchemaRegistry,
+) -> None:
     """A finding no reader can see is not a report."""
-    payload = shared_wire_support_receipt().to_dict()
+    payload = shared_wire_support_receipt(
+        storage_root=qualified_schema_registry.storage_root,
+    ).to_dict()
 
     entries = payload["entries"]
     assert isinstance(entries, list)
@@ -469,15 +552,21 @@ def test_receipt_payload_carries_the_findings_it_measured() -> None:
 
 
 @pytest.mark.parametrize("version", ["v2", "v3"])
-def test_chatgpt_capture_receipt_keeps_parser_owned_content_in_denominator(version: str) -> None:
-    """The capture envelope's mapping and title reach the parser, so they are measured.
+def test_chatgpt_capture_catalog_retains_parser_owned_mapping_and_title(version: str) -> None:
+    registry = SchemaRegistry()
+    schema = registry.get_element_schema("chatgpt", version=version, element_kind="session_document")
+    assert schema is not None
+    properties = schema.get("properties")
+    assert isinstance(properties, dict)
+    assert {"mapping", "title"} <= properties.keys()
+    assert registry.get_workload_profile("chatgpt", version=version) is None
+    assert not any(path == "$.title" or path.startswith("$.mapping") for path in excluded_paths_from_pins("chatgpt"))
 
-    Anti-vacuity: excluding ``$.mapping`` and ``$.title`` for capture envelopes
-    moves every planted message body and the title out of the denominator, so
-    the excluded paths name them and the baseline plants nothing.
-    """
-    receipt = shared_wire_support_receipt()
-    entries = [entry for entry in receipt.entries if entry.provider == "chatgpt" and entry.package_version == version]
+
+def test_chatgpt_receipt_keeps_parser_owned_content_in_denominator(qualified_schema_registry: SchemaRegistry) -> None:
+    """Actual neutral mapping/title evidence remains in the measured denominator."""
+    receipt = shared_wire_support_receipt(storage_root=qualified_schema_registry.storage_root, providers=("chatgpt",))
+    entries = [entry for entry in receipt.entries if entry.provider == "chatgpt"]
     assert entries
     witnesses = [witness for entry in entries for witness in entry.parser_witnesses]
     assert witnesses
@@ -490,6 +579,7 @@ def test_chatgpt_capture_receipt_keeps_parser_owned_content_in_denominator(versi
             if path == "$.title" or path.startswith(("$.mapping.", "$.mapping["))
         ]
         assert not leaked, f"parser-owned paths excluded from conservation: {leaked}"
+        assert conservation.conserved
     baseline = [witness for witness in witnesses if witness.artifact_kind == "baseline"]
     assert baseline
     assert all(witness.conservation is not None and witness.conservation.planted_count > 0 for witness in baseline)

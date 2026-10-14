@@ -36,6 +36,7 @@ from polylogue.core.schema_subjects import inference_exclusion_reason, subject_a
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.schemas.generation.evidence import SchemaEvidence
 from polylogue.schemas.observation import (
+    SchemaUnit,
     declared_observation_non_applicable,
     declared_structured_observation_config,
     extract_schema_units_from_payload,
@@ -999,6 +1000,7 @@ def _collect_payload_evidence(
     spool_path: Path | None = None,
     spool_partition: str = "",
     replay_payloads: Callable[[], Iterable[JSONValue | _SizedPayload]] | None = None,
+    observation_recorder: Callable[[str, str, SchemaUnit], None] | None = None,
 ) -> tuple[tuple[_SourceContribution, ...], int, tuple[str, ...], bool]:
     """Reduce each native source revision without retaining decoded records."""
     from polylogue.schemas.generation.evidence import SchemaEvidenceAccumulator, collect_source_evidence
@@ -1194,6 +1196,18 @@ def _collect_payload_evidence(
                 if not isinstance(payload, dict):
                     raise SourceInferenceError("admitted checkpoint contains a non-object record")
                 observed_units = ((admitted_artifact_kind, [payload]),)
+                if observation_recorder is not None:
+                    observation_recorder(
+                        declared_source_id,
+                        revision.revision_sha256,
+                        SchemaUnit(
+                            cluster_payload=payload,
+                            schema_samples=[payload],
+                            artifact_kind=admitted_artifact_kind,
+                            source_path=str(candidate.path),
+                            bundle_scope=str(candidate.path.parent),
+                        ),
+                    )
             else:
                 units = extract_schema_units_from_payload(
                     [payload] if config.sample_granularity == "record" else payload,
@@ -1205,7 +1219,16 @@ def _collect_payload_evidence(
                     compact_values=False,
                     admitted_artifact_kind=admitted_artifact_kind,
                 )
-                observed_units = ((unit.artifact_kind, list(unit.schema_samples)) for unit in units)
+
+                def original_unit_samples(
+                    original_units: Iterable[SchemaUnit], source_id: str
+                ) -> Iterator[tuple[str, list[JSONValue]]]:
+                    for unit in original_units:
+                        if observation_recorder is not None:
+                            observation_recorder(source_id, revision.revision_sha256, unit)
+                        yield unit.artifact_kind, list(unit.schema_samples)
+
+                observed_units = original_unit_samples(units, declared_source_id)
             for artifact_kind, samples in observed_units:
                 if spool is None:
                     record_counts[declared_source_id] += len(samples)
@@ -1292,6 +1315,7 @@ def _collect_candidate(
     include_statistics: bool = True,
     metadata_only: bool = False,
     spool_path: Path | None = None,
+    observation_recorder: Callable[[str, str, SchemaUnit], None] | None = None,
 ) -> _CollectedCandidate:
     """Read one member fully and construct one-pass evidence observations."""
     dynamic_paths_by_element = dynamic_paths_by_element or {}
@@ -1316,6 +1340,7 @@ def _collect_candidate(
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
             metadata_only=metadata_only,
+            observation_recorder=observation_recorder,
         )
     try:
         digest, byte_count = _stable_file_digest(candidate.path)
@@ -1338,6 +1363,7 @@ def _collect_candidate(
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
             metadata_only=metadata_only,
+            observation_recorder=observation_recorder,
         )
         try:
             after_digest, _after_bytes = _stable_file_digest(candidate.path)
@@ -1353,6 +1379,7 @@ def _collect_candidate(
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
             metadata_only=metadata_only,
+            observation_recorder=observation_recorder,
             spool_path=spool_path,
         )
         try:
@@ -1378,6 +1405,7 @@ def _collect_candidate(
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
             metadata_only=metadata_only,
+            observation_recorder=observation_recorder,
             spool_path=spool_path,
             replay_payloads=partial(
                 _iter_file_payloads,
@@ -1425,6 +1453,7 @@ def _collect_database_schema_candidate(
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
     include_statistics: bool,
     metadata_only: bool,
+    observation_recorder: Callable[[str, str, SchemaUnit], None] | None = None,
 ) -> _CollectedCandidate:
     """Observe declared SQLite member structure without retaining row values.
 
@@ -1517,11 +1546,26 @@ def _collect_database_schema_candidate(
             SourceTerminal("unsupported", revision.byte_count, reason="no_schema_database"),
         )
 
+    if observation_recorder is not None:
+        observation_recorder(
+            candidate.logical_source_id,
+            revision.revision_sha256,
+            SchemaUnit(
+                cluster_payload=records[0],
+                schema_samples=records,
+                artifact_kind=element_kind,
+                source_path=str(candidate.path),
+                bundle_scope=str(candidate.path.parent),
+            ),
+        )
     if metadata_only:
         return _CollectedCandidate(
             candidate,
             revision,
             SourceTerminal("included", revision.byte_count, len(records)),
+            (_SourceContribution(candidate.logical_source_id, revision.revision_sha256, {}, len(records), None),)
+            if observation_recorder is not None
+            else (),
         )
     from polylogue.schemas.generation.evidence import collect_source_evidence
 
@@ -1560,6 +1604,7 @@ def _collect_zip_candidate(
     include_statistics: bool,
     metadata_only: bool,
     spool_path: Path | None,
+    observation_recorder: Callable[[str, str, SchemaUnit], None] | None = None,
 ) -> _CollectedCandidate:
     """Reduce ZIP members as independent source revisions."""
     contributions: list[_SourceContribution] = []
@@ -1614,6 +1659,7 @@ def _collect_zip_candidate(
                                 dynamic_paths_by_element=dynamic_paths_by_element,
                                 include_statistics=include_statistics,
                                 metadata_only=metadata_only,
+                                observation_recorder=observation_recorder,
                                 spool_path=spool_path,
                                 spool_partition=str(member_index),
                             )
@@ -1629,6 +1675,7 @@ def _collect_zip_candidate(
                             dynamic_paths_by_element=dynamic_paths_by_element,
                             include_statistics=include_statistics,
                             metadata_only=metadata_only,
+                            observation_recorder=observation_recorder,
                             spool_path=spool_path,
                             spool_partition=str(member_index),
                         )
@@ -2157,6 +2204,7 @@ def infer_sources(
     cache_path: Path,
     max_workers: int = 2,
     progress: Callable[[str, JSONDocument], None] | None = None,
+    observation_recorder: Callable[[SchemaUnit], None] | None = None,
 ) -> SourceInferenceResult:
     """Collect complete source evidence without retaining every reduced member."""
     from polylogue.schemas.generation.dynamic_keys import dynamic_object_paths
@@ -2776,6 +2824,41 @@ def infer_sources(
             ),
         ):
             selected_contributions = selected_by_candidate[descriptor]
+            if observation_recorder is not None and any(selected_contributions.values()):
+                current_identities = frozenset(
+                    identity for identity, current in selected_contributions.items() if current
+                )
+
+                def record_current(
+                    source_id: str,
+                    revision_sha256: str,
+                    unit: SchemaUnit,
+                    identities: frozenset[tuple[str, str]] = current_identities,
+                ) -> None:
+                    if (source_id, revision_sha256) in identities:
+                        # Fragments retain their original native stream coordinate;
+                        # they are not independent files or session histories.
+                        observation_recorder(
+                            replace(unit, raw_id=hash_payload({"source": source_id, "revision": revision_sha256}))
+                        )
+
+                observed = _collect_candidate(
+                    descriptor.candidate,
+                    include_statistics=False,
+                    metadata_only=True,
+                    observation_recorder=record_current,
+                )
+                if observed.terminal.outcome != "included" or observed.revision is None:
+                    raise SourceInferenceError("selected workload input could not be completely observed")
+                expected_record_counts = {
+                    (item.logical_source_id, item.revision_sha256): item.record_count
+                    for item in descriptor.contributions
+                }
+                actual = {
+                    (item.logical_source_id, item.revision_sha256): item.record_count for item in observed.contributions
+                }
+                if observed.revision.revision_sha256 != descriptor.revision_sha256 or actual != expected_record_counts:
+                    raise SourceInferenceError("selected workload input changed after source evidence selection")
             for contribution_descriptor in descriptor.contributions:
                 report(
                     "fold",

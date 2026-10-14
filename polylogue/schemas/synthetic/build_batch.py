@@ -2,27 +2,51 @@
 
 from __future__ import annotations
 
-import base64
-import copy
 import hashlib
 import random
 from collections import Counter
-from collections.abc import Mapping
-from typing import Protocol
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from itertools import count as ordinal_sequence
+from typing import Protocol, TypeVar, cast
 
-from polylogue.core.json import JSONValue, is_json_value
+from polylogue.schemas.record_structure import (
+    codex_message_record,
+    codex_session_header,
+    iter_provider_records,
+    iter_tool_records,
+    record_kind,
+    tool_identity_operand,
+    tool_result_content_mode,
+)
+from polylogue.schemas.synthetic.agent_adjuncts import (
+    iter_session_adjuncts,
+    prepare_agent_adjuncts,
+    settle_agent_adjuncts,
+)
+from polylogue.schemas.synthetic.array_value import GeneratedArray, walk_generated_values
+from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
 from polylogue.schemas.synthetic.demo_themes import _DEMO_THEMES, SessionTheme
 from polylogue.schemas.synthetic.models import (
+    GeneratedRecord,
+    GeneratedString,
     SchemaRecord,
+    SyntheticAdjunct,
+    SyntheticAdjunctChunks,
     SyntheticArtifact,
     SyntheticArtifactFacts,
     SyntheticGenerationBatch,
     SyntheticGenerationReport,
+    SyntheticGenerationState,
+    SyntheticSessionChunks,
     SyntheticStyle,
 )
-from polylogue.schemas.synthetic.relations import RelationConstraintSolver
+from polylogue.schemas.synthetic.models import GeneratedValue as JSONValue
+from polylogue.schemas.synthetic.opaque_adjuncts import prepare_opaque_adjuncts
+from polylogue.schemas.synthetic.record_profiles import PublicRecordPlan
+from polylogue.schemas.synthetic.relations import ForeignKeyGraph, RelationConstraintSolver
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
-from polylogue.schemas.synthetic.wire_formats import WireFormat
+from polylogue.schemas.synthetic.text_value import JoinedText, SampledText
+from polylogue.schemas.synthetic.wire_formats import PROVIDER_WIRE_FORMATS, WireFormat
 
 
 class _SyntheticBatchContext(Protocol):
@@ -31,12 +55,30 @@ class _SyntheticBatchContext(Protocol):
     provider: str
     package_version: str
     element_kind: str | None
-    workload_profile: SchemaRecord | None
-    _active_profile_tokens: tuple[str, ...]
-    _active_record_bucket: tuple[str, str] | None
-    _max_synthetic_string_length: int | None
+    workload_profile: Mapping[str, object] | None
+    element_schemas: dict[str, SchemaRecord]
+
+    def _generate_agent_transcript(
+        self, schema: SchemaRecord, structure: SchemaRecord, count: int, depth: int, rng: random.Random
+    ) -> GeneratedArray: ...
+
+    def _generate_agent_metadata(
+        self, schema: SchemaRecord, metadata_class: SchemaRecord, agent_id: str, stem: str, rng: random.Random
+    ) -> JSONValue: ...
+
+    _coverage_witness_mode: bool
+    _coverage_header_form: str | None
+    _session_header_class: SchemaRecord | None
+    _session_header_bound: bool
+    _session_parent_id: str | None
+    _session_native_id: str | None
+    _session_record_structure: SchemaRecord | None
+    _public_record_plan: PublicRecordPlan | None
+    _public_record_counts: Counter[str]
+    _public_scope: Generator[str, None, None] | None
     _relation_solver: RelationConstraintSolver
     _semantic_gen: SemanticValueGenerator | None
+    _generation_state: SyntheticGenerationState
 
     def _generate_jsonl_records(
         self,
@@ -44,7 +86,7 @@ class _SyntheticBatchContext(Protocol):
         rng: random.Random,
         *,
         theme: SessionTheme | None = None,
-    ) -> list[dict[str, JSONValue]]: ...
+    ) -> GeneratedArray: ...
 
     def _generate_tree_json(
         self,
@@ -52,7 +94,7 @@ class _SyntheticBatchContext(Protocol):
         rng: random.Random,
         *,
         theme: SessionTheme | None = None,
-    ) -> dict[str, JSONValue]: ...
+    ) -> dict[str, JSONValue] | GeneratedRecord: ...
 
     def _generate_linear_json(
         self,
@@ -60,15 +102,17 @@ class _SyntheticBatchContext(Protocol):
         rng: random.Random,
         *,
         theme: SessionTheme | None = None,
-    ) -> dict[str, JSONValue]: ...
+    ) -> dict[str, JSONValue] | GeneratedRecord: ...
 
     def _generate_from_schema(self, schema: SchemaRecord, rng: random.Random) -> JSONValue: ...
 
     def _role_cycle(self) -> list[str]: ...
 
-    def _serialize(self, data: JSONValue) -> bytes: ...
+    def _profile_message_count(self, rng: random.Random, requested: int) -> int: ...
 
-    def _select_structural_variant(self, rng: random.Random) -> str | None: ...
+    def iter_metadata_document_chunks(self, data: JSONValue) -> Generator[bytes, None, None]: ...
+
+    def iter_serialized_chunks(self, data: JSONValue) -> Generator[bytes, None, None]: ...
 
 
 def _resolve_style(style: str) -> SyntheticStyle:
@@ -86,9 +130,15 @@ def _resolve_style(style: str) -> SyntheticStyle:
 
 
 def _as_json_value(value: object) -> JSONValue:
-    if is_json_value(value):
-        return value
-    raise TypeError(f"Generated payload is not JSON-compatible: {type(value).__name__}")
+    for current in walk_generated_values(value):
+        if current is None or isinstance(current, str | SampledText | JoinedText | int | float | bool):
+            continue
+        if isinstance(current, list | GeneratedArray):
+            continue
+        if isinstance(current, dict | GeneratedRecord) and all(isinstance(key, str) for key in current):
+            continue
+        raise TypeError(f"Generated payload is not JSON-compatible: {type(current).__name__}")
+    return cast(JSONValue, value)
 
 
 def _expected_session_id(provider: str, native_session_id: str | None) -> str | None:
@@ -112,33 +162,17 @@ def _planted_artifact_facts(
     provider: str,
     data: JSONValue,
     *,
-    raw_bytes: bytes,
+    raw_sha256: str,
     native_session_id: str | None,
     message_count: int,
+    inherited_tool_ids: tuple[Iterable[GeneratedString], Iterable[GeneratedString]] = ((), ()),
 ) -> SyntheticArtifactFacts:
     """Record wire-level facts without consulting production normalization."""
-    tool_uses: list[str] = []
-    tool_results: list[str] = []
+    tool_uses = [_fact_identity(value) for value in inherited_tool_ids[0]]
+    tool_results = [_fact_identity(value) for value in inherited_tool_ids[1]]
 
-    def visit(value: JSONValue) -> None:
-        if isinstance(value, list):
-            for item in value:
-                visit(item)
-            return
-        if not isinstance(value, Mapping):
-            return
-        block_type = value.get("type")
-        tool_use_id = value.get("id")
-        tool_result_id = value.get("tool_use_id")
-        if block_type == "tool_use" and isinstance(tool_use_id, str):
-            tool_uses.append(tool_use_id)
-        if block_type == "tool_result" and isinstance(tool_result_id, str):
-            tool_results.append(tool_result_id)
-        for child in value.values():
-            if is_json_value(child):
-                visit(child)
-
-    visit(data)
+    for event, identity in _iter_planted_tool_ids(data):
+        (tool_uses if event == "call" else tool_results).append(_fact_identity(identity))
     return SyntheticArtifactFacts(
         provider=provider,
         native_session_id=native_session_id,
@@ -146,8 +180,50 @@ def _planted_artifact_facts(
         message_count=message_count,
         tool_use_ids=tuple(tool_uses),
         tool_result_ids=tuple(tool_results),
-        raw_sha256=hashlib.sha256(raw_bytes).hexdigest(),
+        raw_sha256=raw_sha256,
     )
+
+
+def _fact_identity(value: GeneratedString) -> str:
+    # Explicit fixture/fact collection opts into concrete identities, just as
+    # it opts into full artifact bytes. The lazy driver retains the recipe.
+    return value if isinstance(value, str) else "".join(value.pieces())
+
+
+def _iter_planted_tool_ids(data: JSONValue) -> Iterator[tuple[str, GeneratedString]]:
+    for value in walk_generated_values(data):
+        if not isinstance(value, dict | GeneratedRecord):
+            continue
+        if value.get("type") == "tool_use" and isinstance(identity := value.get("id"), str | SampledText | JoinedText):
+            yield "call", identity
+        if value.get("type") == "tool_result" and isinstance(
+            identity := value.get("tool_use_id"), str | SampledText | JoinedText
+        ):
+            yield "result", identity
+
+
+class _RetainedToolIds:
+    """Borrow prefix facts on the original native cohort and current session scope."""
+
+    def __init__(self, owner: ForeignKeyGraph, prefix: int, messages: int, event: str) -> None:
+        self.owner = owner
+        self.connection = owner._live_tool_owner()
+        self.generation = owner._generation
+        self.prefix = prefix
+        self.messages = messages
+        self.event = event
+
+    def __iter__(self) -> Iterator[GeneratedString]:
+        if self.owner._connection is not self.connection or self.owner._generation != self.generation:
+            raise RuntimeError("inherited tool identities lost their original prefix owner")
+        identities = self.owner.iter_prefix_tools(self.prefix, self.messages, self.event)
+        try:
+            for identity in identities:
+                if self.owner._connection is not self.connection or self.owner._generation != self.generation:
+                    raise RuntimeError("inherited tool identities lost their original prefix owner")
+                yield identity
+        finally:
+            identities.close()
 
 
 def _profile_mapping(profile: SchemaRecord | None, *path: str) -> dict[str, JSONValue]:
@@ -164,288 +240,410 @@ def _positive_profile_count(profile: dict[str, JSONValue], name: str) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
-def _tool_relationship_variants(profile: SchemaRecord | None) -> tuple[tuple[str, int], ...]:
-    relationships = _profile_mapping(profile, "relationships", "tool_results")
-    names = (
-        "paired",
-        "missing",
-        "orphan",
-        "duplicate_calls",
-        "duplicate_results",
-        "out_of_order",
-        "call_without_id",
-        "result_without_id",
-    )
-    return tuple((name, count) for name in names if (count := _positive_profile_count(relationships, name)))
-
-
-def _relationship_variant_sequence(
-    variants: tuple[tuple[str, int], ...],
-    *,
-    count: int,
-    rng: random.Random,
-) -> list[str]:
-    """Choose weighted states while retaining every positive class when possible."""
-    if count <= 0 or not variants:
-        return []
-    selected = [name for name, _weight in variants] if count >= len(variants) else []
-    selected.extend(
-        rng.choices(
-            [item[0] for item in variants],
-            weights=[item[1] for item in variants],
-            k=count - len(selected),
-        )
-    )
-    rng.shuffle(selected)
-    return selected
-
-
-def _profile_result_distance(profile: SchemaRecord | None) -> int:
-    relationships = _profile_mapping(profile, "relationships", "tool_results")
-    distance = relationships.get("result_record_distance")
-    if not isinstance(distance, dict):
-        return 1
-    quantiles = distance.get("quantiles")
-    candidate: object = quantiles.get("p99") if isinstance(quantiles, dict) else None
-    if not isinstance(candidate, (int, float)) or isinstance(candidate, bool):
-        candidate = distance.get("max")
-    if not isinstance(candidate, (int, float)) or isinstance(candidate, bool):
-        return 1
-    return max(1, int(round(candidate)))
-
-
-def _tool_result_payload(call_id: str | None, *, failed: bool) -> dict[str, JSONValue]:
-    payload: dict[str, JSONValue] = {
-        "type": "custom_tool_call_output",
-        "output": {
-            "output": "synthetic command failed" if failed else "synthetic command succeeded",
-            "metadata": {"exit_code": 1 if failed else 0},
-        },
-    }
-    if call_id is not None:
-        payload["call_id"] = call_id
-    return payload
-
-
-def _codex_tool_records(
-    variant: str,
-    *,
-    call_id: str,
-    functions_exec: bool,
-    failed: bool,
-    result_distance: int,
-) -> list[dict[str, JSONValue]]:
-    call_payload: dict[str, JSONValue] = {
-        "type": "custom_tool_call",
-        "name": "exec" if functions_exec else "synthetic_tool",
-        "input": "printf synthetic",
-    }
-    if variant != "call_without_id":
-        call_payload["call_id"] = call_id
-    call: dict[str, JSONValue] = {"type": "response_item", "payload": call_payload}
-    result_id = None if variant == "result_without_id" else call_id
-    result: dict[str, JSONValue] = {
-        "type": "response_item",
-        "payload": _tool_result_payload(result_id, failed=failed),
-    }
-    fillers: list[dict[str, JSONValue]] = [
-        {
-            "type": "event_msg",
-            "payload": {"type": "agent_message", "message": f"synthetic intervening event {index}"},
-        }
-        for index in range(max(0, result_distance - 1))
-    ]
-
-    if variant in {"missing", "call_without_id"}:
-        return [call]
-    if variant in {"orphan", "result_without_id"}:
-        return [result]
-    if variant == "duplicate_calls":
-        return [call, copy.deepcopy(call), *fillers, result]
-    if variant == "duplicate_results":
-        return [call, *fillers, result, copy.deepcopy(result)]
-    if variant == "out_of_order":
-        return [result, call]
-    return [call, *fillers, result]
-
-
-def _claude_code_tool_records(
-    variant: str,
-    *,
-    call_id: str,
-    functions_exec: bool,
-    failed: bool,
-    session_id: str,
-    rng: random.Random,
-    result_distance: int,
-) -> list[dict[str, JSONValue]]:
-    call_block: dict[str, JSONValue] = {
-        "type": "tool_use",
-        "name": "Bash" if functions_exec else "SyntheticTool",
-        "input": {"command": "printf synthetic"},
-    }
-    if variant != "call_without_id":
-        call_block["id"] = call_id
-    result_block: dict[str, JSONValue] = {
-        "type": "tool_result",
-        "content": "synthetic command failed" if failed else "synthetic command succeeded",
-        "is_error": failed,
-    }
-    if variant != "result_without_id":
-        result_block["tool_use_id"] = call_id
-
-    def record(role: str, block: dict[str, JSONValue]) -> dict[str, JSONValue]:
-        return {
-            "type": role,
-            "sessionId": session_id,
-            "uuid": str(rng.getrandbits(128)),
-            "parentUuid": None,
-            "message": {"role": role, "content": [block]},
-        }
-
-    call = record("assistant", call_block)
-    result = record("user", result_block)
-    fillers = [
-        record(
-            "assistant",
-            {"type": "text", "text": f"synthetic intervening message {index}"},
-        )
-        for index in range(max(0, result_distance - 1))
-    ]
-    if variant in {"missing", "call_without_id"}:
-        return [call]
-    if variant in {"orphan", "result_without_id"}:
-        return [result]
-    if variant == "duplicate_calls":
-        return [call, copy.deepcopy(call), *fillers, result]
-    if variant == "duplicate_results":
-        return [call, *fillers, result, copy.deepcopy(result)]
-    if variant == "out_of_order":
-        return [result, call]
-    return [call, *fillers, result]
-
-
 def _session_native_id(provider: str, data: JSONValue) -> str | None:
-    if not isinstance(data, list):
+    wire_format = PROVIDER_WIRE_FORMATS.get(provider)
+    if (
+        wire_format is not None
+        and wire_format.document_session_field is not None
+        and isinstance(data, dict | GeneratedRecord)
+    ):
+        document_native_id = data.get(wire_format.document_session_field)
+        return document_native_id if isinstance(document_native_id, str) else None
+    if not isinstance(data, list | GeneratedArray):
         return None
     if provider == "codex":
         for record in data:
-            if not isinstance(record, dict) or record.get("type") != "session_meta":
+            if not isinstance(record, dict | GeneratedRecord):
                 continue
-            payload = record.get("payload")
-            if isinstance(payload, dict):
-                native_id = payload.get("id")
+            header = codex_session_header(record)
+            if header is not None:
+                native_id = header.get("id")
                 if isinstance(native_id, str):
                     return native_id
     if provider == "claude-code":
         for record in data:
-            if isinstance(record, dict):
+            if isinstance(record, dict | GeneratedRecord):
                 native_id = record.get("sessionId")
                 if isinstance(native_id, str):
                     return native_id
     return None
 
 
-def _apply_tool_relationship(
-    provider: str,
+_ArtifactResult = TypeVar("_ArtifactResult")
+
+
+def _is_codex_message(record: JSONValue) -> bool:
+    return isinstance(record, dict | GeneratedRecord) and codex_message_record(record)
+
+
+def _session_chunks(
+    self: _SyntheticBatchContext, data: JSONValue, prefix: tuple[int, int] | None
+) -> Generator[bytes, None, None]:
+    if prefix is None:
+        yield from self.iter_serialized_chunks(data)
+        return
+    if not isinstance(data, list | GeneratedArray):
+        raise ValueError("inherited Codex records require their declared JSONL carrier")
+    inserted = False
+    validate_wire_payload(self.provider, data)
+    for record in data:
+        yield from self.iter_serialized_chunks([record])
+        if not inserted and isinstance(record, dict | GeneratedRecord) and codex_session_header(record) is not None:
+            # The same retained bytes, after the original child header. No
+            # decoder or re-sampling may change the parent's inherited prefix.
+            yield from self._relation_solver.fk_graph.iter_prefix_chunks(*prefix)
+            inserted = True
+
+
+def _settled_session_chunks(
+    self: _SyntheticBatchContext,
     data: JSONValue,
+    prefix: tuple[int, int] | None,
+    consumed: list[bool],
+    emitted_bytes: list[int],
+) -> Generator[bytes, None, None]:
+    for chunk in _session_chunks(self, data, prefix):
+        emitted_bytes[0] += len(chunk)
+        yield chunk
+    consumed[0] = True
+
+
+def iter_sessions(
+    self: _SyntheticBatchContext,
     *,
-    variant: str,
-    profile: SchemaRecord | None,
-    rng: random.Random,
-) -> tuple[bool, bool]:
-    if not isinstance(data, list):
-        return False, False
-    relationships = _profile_mapping(profile, "relationships", "tool_results")
-    call_count = max(_positive_profile_count(relationships, "calls"), 1)
-    functions_exec = rng.randrange(call_count) < _positive_profile_count(relationships, "functions_exec_calls")
-    result_count = max(_positive_profile_count(relationships, "results"), 1)
-    failed = rng.randrange(result_count) < _positive_profile_count(relationships, "error_results")
-    result_distance = _profile_result_distance(profile)
-    call_id = f"synthetic-call-{rng.getrandbits(64):016x}"
-    if provider == "codex":
-        data.extend(
-            _codex_tool_records(
-                variant,
-                call_id=call_id,
-                functions_exec=functions_exec,
-                failed=failed,
-                result_distance=result_distance,
+    count: int | None = None,
+    target_bytes: int | None = None,
+    messages_per_session: range = range(3, 15),
+    seed: int | None = None,
+    style: str = "default",
+    session_native_ids: tuple[str, ...] = (),
+) -> Generator[SyntheticSessionChunks, None, SyntheticGenerationReport]:
+    """The sole lazy session/chunk producer for every workload consumer."""
+    state = self._generation_state
+    if state.driver_active:
+        raise ValueError("the original session driver is already active")
+    state.driver_active = True
+    original_selection = (
+        self.schema,
+        self.wire_format,
+        self.package_version,
+        self.element_kind,
+        self.workload_profile,
+        self.element_schemas,
+    )
+    try:
+        resolved_style = _resolve_style(style)
+        if (
+            resolved_style in {"tool-heavy", "demo-tool-heavy", "demo-attachments"}
+            or resolved_style == "demo"
+            and self.provider == "chatgpt"
+        ):
+            from polylogue.schemas.synthetic.authored_selection import authored_schema_selection
+
+            selected = authored_schema_selection(
+                self.provider,
+                resolved_style,
+                session_native_ids=session_native_ids,
+                theme_index=random.Random(seed).randrange(len(_DEMO_THEMES)) if resolved_style == "demo" else 0,
             )
+            self.schema = selected.schema
+            self.wire_format = selected.wire_format
+            self.package_version = selected.package_version
+            self.element_kind = selected.element_kind
+            self.workload_profile = selected.workload_profile
+            self.element_schemas = dict(selected.element_schemas)
+        # Selected field support is captured once for this driver lifetime.
+        # Schema fragments/union overlays keep native child coordinates rather
+        # than serializing the entire selected schema for every generated row.
+        owner = self._relation_solver.fk_graph
+        captured: dict[int, SchemaRecord] = {}
+        for original in (self.schema, *self.element_schemas.values()):
+            if id(original) not in captured:
+                captured[id(original)] = owner.capture_schema(original)
+        self.schema = captured[id(self.schema)]
+        self.element_schemas = {kind: captured[id(schema)] for kind, schema in self.element_schemas.items()}
+        if count is not None and (type(count) is not int or count < 0):
+            raise ValueError("session count must be nonnegative")
+        if target_bytes is not None and (type(target_bytes) is not int or target_bytes < 0):
+            raise ValueError("byte target must be a nonnegative exact integer")
+        if session_native_ids and len(session_native_ids) != count:
+            raise ValueError("session_native_ids must contain exactly one id per generated session")
+        rng = random.Random(seed)
+        profile_id = (
+            str(self.workload_profile.get("profile_id"))
+            if isinstance(self.workload_profile, Mapping) and self.workload_profile.get("profile_id") is not None
+            else "no-profile"
         )
-        return functions_exec, failed
-    if provider == "claude-code":
-        session_id = _session_native_id(provider, data)
-        if session_id is None:
-            return False, False
-        data.extend(
-            _claude_code_tool_records(
-                variant,
-                call_id=call_id,
-                functions_exec=functions_exec,
-                failed=failed,
-                session_id=session_id,
-                rng=rng,
-                result_distance=result_distance,
+        profile_rng = random.Random(f"{seed!r}\x1f{self.provider}\x1f{self.package_version}\x1f{profile_id}")
+        self._public_record_counts.clear()
+        selected_relationships: Counter[str] = Counter()
+        inherited = self.provider == "codex" and self.workload_profile is not None
+        lineage_edge_count = 0
+        generated_count = 0
+        emitted_bytes = [0]
+        for index in ordinal_sequence():
+            if self._generation_state is not state:
+                raise RuntimeError("session driver lost its original generation state")
+            if count is not None and index >= count or target_bytes is not None and emitted_bytes[0] >= target_bytes:
+                break
+            if self._public_scope is not None:
+                self._public_scope.close()
+                self._public_scope = None
+            self._relation_solver.begin_scope(self.schema)
+            self._semantic_gen = None
+            self._public_record_plan = None
+            self._session_record_structure = None
+            self._session_header_bound = False
+            header_class, active_prefix, parent_id, own_records, expected_messages = _select_session_header(
+                self, profile_rng, index
             )
+            self._session_header_class = header_class
+            self._session_parent_id = parent_id
+            native_id = session_native_ids[index] if session_native_ids else None
+            self._session_native_id = native_id
+            if active_prefix is not None:
+                self._relation_solver.fk_graph.restore_prefix_tool_context(*active_prefix)
+            if own_records is None:
+                n_messages = self._profile_message_count(profile_rng, rng.choice(messages_per_session))
+            else:
+                from polylogue.schemas.synthetic.record_profiles import RecordScopeKinds
+
+                # This original header/count joint already selects the scope
+                # length. Do not sample and prepare a discarded marginal path.
+
+                assert self._session_record_structure is not None
+                self._public_scope = RecordScopeKinds(
+                    self._session_record_structure,
+                    own_records,
+                    self._relation_solver.fk_graph,
+                    provider=self.provider,
+                    schema=self.schema,
+                    message_count=expected_messages,
+                ).sample(profile_rng)
+                n_messages = own_records
+            authored_theme = self.workload_profile.get("authored_theme_index") if self.workload_profile else None
+            theme = (
+                _DEMO_THEMES[authored_theme]
+                if type(authored_theme) is int
+                else rng.choice(_DEMO_THEMES)
+                if resolved_style == "demo"
+                else None
+            )
+            data = _generate_session(self, n_messages, rng, theme=theme)
+            if header_class is not None and not self._session_header_bound:
+                raise ValueError("selected first-header class was not drawn from the original schema")
+            if native_id is not None and _session_native_id(self.provider, data) != native_id:
+                raise ValueError("original record graph did not bind its selected session identity")
+            if own_records is not None and (
+                not isinstance(data, list | GeneratedArray)
+                or len(data) != own_records
+                or sum(_is_codex_message(record) for record in data) != expected_messages
+            ):
+                raise ValueError("selected header count joint conflicts with its original record grammar")
+            selected_relationships.update(self._relation_solver.fk_graph.tool_relationship_counts())
+            owner = self._relation_solver.fk_graph
+            prepare_agent_adjuncts(self, rng)
+            prepare_opaque_adjuncts(self._relation_solver, self.workload_profile, rng)
+            settle_agent_adjuncts(self)
+            current_id = _session_native_id(self.provider, data)
+            if active_prefix is not None:
+                lineage_edge_count += 1
+            if inherited and current_id is not None and isinstance(data, list | GeneratedArray):
+                own_messages = sum(_is_codex_message(record) for record in data)
+                inherited_messages = active_prefix[1] if active_prefix is not None else 0
+                prefix_id = owner.retain_session_prefix(
+                    current_id,
+                    parent_prefix=active_prefix[0] if active_prefix is not None else None,
+                    inherited_messages=inherited_messages,
+                    own_messages=own_messages,
+                    record_count=len(data) + inherited_messages,
+                )
+                message = 0
+                for record in data:
+                    if not _is_codex_message(record):
+                        continue
+                    assert isinstance(record, dict | GeneratedRecord)
+                    for ordinal, block in enumerate(iter_tool_records("codex", record)):
+                        operand = tool_identity_operand(block)
+                        if operand is None:
+                            continue
+                        _, event, field, identity = operand
+                        if not isinstance(identity, str | SampledText | JoinedText):
+                            continue
+                        if not isinstance(block, GeneratedRecord):
+                            raise ValueError("prefix tool identity lacks its original generated field schema")
+                        properties = block.selected_schema.get("properties")
+                        schema = properties.get(field) if isinstance(properties, dict) else None
+                        if not isinstance(schema, dict):
+                            raise ValueError("prefix identity field schema was not retained")
+                        mode = tool_result_content_mode(block) if event == "result" else ""
+                        if event == "result":
+                            cursor = owner._live_tool_owner().execute(
+                                "SELECT mode FROM generated_tool_reference_events WHERE record_id=?", (block.record_id,)
+                            )
+                            try:
+                                observed = cursor.fetchone()
+                            finally:
+                                cursor.close()
+                            if observed is not None:
+                                mode = observed[0]
+                        owner.retain_prefix_tool(
+                            prefix_id, event, message, ordinal, identity, schema=schema, result_mode=mode
+                        )
+                    with_chunks = self.iter_serialized_chunks([record])
+                    try:
+                        for ordinal, chunk in enumerate(with_chunks):
+                            owner.retain_prefix_chunk(prefix_id, message, ordinal, chunk)
+                    finally:
+                        with_chunks.close()
+                    message += 1
+                owner.complete_session_prefix(prefix_id)
+
+            observed_message_count = (
+                sum(_is_codex_message(record) for record in data) + (active_prefix[1] if active_prefix else 0)
+                if self.provider == "codex" and isinstance(data, list | GeneratedArray)
+                else sum(isinstance(node.get("message"), Mapping) for node in iter_provider_records("chatgpt", data))
+                if self.provider == "chatgpt" and isinstance(data, Mapping)
+                else sum(
+                    record_kind("claude-code", record).startswith(("user_", "assistant_"))
+                    for record in data
+                    if isinstance(record, Mapping)
+                )
+                if self.provider == "claude-code" and isinstance(data, list | GeneratedArray)
+                else n_messages
+            )
+            reported_native_id = current_id if self.provider == "codex" else native_id
+            consumed = [False]
+            owner = self._relation_solver.fk_graph
+            connection = owner._owner()
+            cursor = connection.execute(
+                "SELECT 1 FROM generated_adjuncts UNION ALL SELECT 1 FROM generated_structured_adjuncts LIMIT 1"
+            )
+            try:
+                has_adjuncts = cursor.fetchone() is not None
+            finally:
+                cursor.close()
+            adjunct_consumed = [not has_adjuncts]
+            adjuncts = iter_session_adjuncts(self._relation_solver, adjunct_consumed, emitted_bytes)
+            chunks = _settled_session_chunks(self, data, active_prefix, consumed, emitted_bytes)
+            try:
+                yield SyntheticSessionChunks(
+                    index=index,
+                    data=data,
+                    message_count=observed_message_count,
+                    style=resolved_style,
+                    native_session_id=reported_native_id,
+                    chunks=chunks,
+                    inherited_tool_ids=(
+                        (
+                            _RetainedToolIds(owner, *active_prefix, "call"),
+                            _RetainedToolIds(owner, *active_prefix, "result"),
+                        )
+                        if active_prefix is not None
+                        else ((), ())
+                    ),
+                    adjuncts=adjuncts,
+                )
+                if self._generation_state is not state:
+                    raise RuntimeError("session driver lost its original generation state")
+                if not consumed[0]:
+                    raise ValueError("consume the original session chunks before advancing the driver")
+                if not adjunct_consumed[0]:
+                    raise ValueError("consume the original adjunct files before advancing the session driver")
+                generated_count += 1
+            finally:
+                chunks.close()
+                adjuncts.close()
+        report = SyntheticGenerationReport(
+            provider=self.provider,
+            package_version=self.package_version,
+            element_kind=self.element_kind,
+            wire_encoding=self.wire_format.encoding,
+            requested_count=count,
+            generated_count=generated_count,
+            requested_bytes=target_bytes,
+            generated_bytes=emitted_bytes[0],
+            style=resolved_style,
+            seed=seed,
+            workload_profile_id=None if profile_id == "no-profile" else profile_id,
+            sampled_record_kind_counts=dict(sorted(self._public_record_counts.items())),
+            relationship_variant_counts=dict(sorted(selected_relationships.items())),
+            lineage_edge_count=lineage_edge_count,
         )
-        return functions_exec, failed
-    return False, False
+        return report
+    finally:
+        if self._public_scope is not None:
+            self._public_scope.close()
+            self._public_scope = None
+        self._public_record_plan = None
+        self._session_header_class = None
+        self._session_record_structure = None
+        self._session_native_id = None
+        self._session_parent_id = None
+        state.relation_solver.close()
+        state.driver_active = False
+        (
+            self.schema,
+            self.wire_format,
+            self.package_version,
+            self.element_kind,
+            self.workload_profile,
+            self.element_schemas,
+        ) = original_selection
 
 
-def _codex_message_records(data: JSONValue) -> list[dict[str, JSONValue]]:
-    if not isinstance(data, list):
-        return []
-    records: list[dict[str, JSONValue]] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") == "response_item":
-            payload = item.get("payload")
-            if isinstance(payload, dict) and payload.get("type") == "message":
-                records.append(copy.deepcopy(item))
-        elif item.get("type") == "message":
-            records.append(copy.deepcopy(item))
-    return records
-
-
-def _apply_profile_lineage(provider: str, data_items: list[JSONValue], profile: SchemaRecord | None) -> int:
-    if provider != "codex" or len(data_items) < 2:
-        return 0
-    lineage = _profile_mapping(profile, "relationships", "lineage")
-    if _positive_profile_count(lineage, "parent_references") == 0:
-        return 0
-    edge_count = 0
-    for index in range(1, len(data_items)):
-        parent = data_items[index - 1]
-        child = data_items[index]
-        parent_id = _session_native_id(provider, parent)
-        if parent_id is None or not isinstance(child, list):
-            continue
-        prefix = _codex_message_records(parent)
-        if not prefix:
-            continue
-        meta_index = next(
-            (
-                record_index
-                for record_index, record in enumerate(child)
-                if isinstance(record, dict) and record.get("type") == "session_meta"
-            ),
-            None,
-        )
-        if meta_index is None:
-            continue
-        meta = child[meta_index]
-        if not isinstance(meta, dict):
-            continue
-        payload = meta.get("payload")
-        if not isinstance(payload, dict):
-            payload = {}
-            meta["payload"] = payload
-        payload["forked_from_id"] = parent_id
-        child[meta_index + 1 : meta_index + 1] = prefix
-        edge_count += 1
-    return edge_count
+def _produce_artifacts(
+    self: _SyntheticBatchContext,
+    emit: Callable[
+        [
+            int,
+            JSONValue,
+            int,
+            SyntheticStyle,
+            str | None,
+            Generator[bytes, None, None],
+            tuple[Iterable[GeneratedString], Iterable[GeneratedString]],
+            Generator[SyntheticAdjunctChunks, None, None],
+        ],
+        _ArtifactResult,
+    ],
+    *,
+    count: int,
+    messages_per_session: range,
+    seed: int | None,
+    style: str,
+    session_native_ids: tuple[str, ...],
+) -> tuple[list[_ArtifactResult], SyntheticGenerationReport]:
+    """Collect explicit callback results from the same lazy original producer."""
+    sessions = iter_sessions(
+        self,
+        count=count,
+        messages_per_session=messages_per_session,
+        seed=seed,
+        style=style,
+        session_native_ids=session_native_ids,
+    )
+    results: list[_ArtifactResult] = []
+    try:
+        while True:
+            try:
+                session = next(sessions)
+            except StopIteration as complete:
+                return results, complete.value
+            results.append(
+                emit(
+                    session.index,
+                    session.data,
+                    session.message_count,
+                    session.style,
+                    session.native_session_id,
+                    session.chunks,
+                    session.inherited_tool_ids,
+                    session.adjuncts,
+                )
+            )
+    finally:
+        sessions.close()
 
 
 def generate_batch(
@@ -456,318 +654,173 @@ def generate_batch(
     style: str = "default",
     session_native_ids: tuple[str, ...] = (),
 ) -> SyntheticGenerationBatch:
-    resolved_style = _resolve_style(style)
-    if session_native_ids and len(session_native_ids) != count:
-        raise ValueError("session_native_ids must contain exactly one id per generated session")
-
-    rng = random.Random(seed)
-    profile_id = (
-        str(self.workload_profile.get("profile_id"))
-        if isinstance(self.workload_profile, dict) and self.workload_profile.get("profile_id") is not None
-        else "no-profile"
-    )
-    profile_rng = random.Random(f"{seed!r}\x1f{self.provider}\x1f{self.package_version}\x1f{profile_id}")
-    generated_data: list[JSONValue] = []
-    generated_message_counts: list[int] = []
-    selected_variants: Counter[str] = Counter()
-    for index in range(count):
-        self._relation_solver = RelationConstraintSolver(
-            self.schema,
-            max_string_length=self._max_synthetic_string_length,
-        )
-        self._semantic_gen = None
-        selected_variant = self._select_structural_variant(profile_rng)
-        if selected_variant is not None:
-            selected_variants[selected_variant] += 1
-        n_messages = rng.choice(messages_per_session)
-        theme = rng.choice(_DEMO_THEMES) if resolved_style == "demo" else None
-        data = _generate_session(self, n_messages, rng, theme=theme)
-        if resolved_style in {"tool-heavy", "demo-tool-heavy"}:
-            data = _add_tool_heavy_blocks(
+    def collect(
+        index: int,
+        data: JSONValue,
+        message_count: int,
+        resolved_style: SyntheticStyle,
+        native_id: str | None,
+        chunks: Generator[bytes, None, None],
+        inherited_tool_ids: tuple[Iterable[GeneratedString], Iterable[GeneratedString]],
+        adjuncts: Generator[SyntheticAdjunctChunks, None, None],
+    ) -> SyntheticArtifact:
+        raw_bytes = b"".join(chunks)
+        return SyntheticArtifact(
+            raw_bytes=raw_bytes,
+            adjuncts=tuple(
+                SyntheticAdjunct(
+                    file.name, file.reference_kind, b"".join(file.chunks), file.directory, file.artifact_kind
+                )
+                for file in adjuncts
+            ),
+            message_count=message_count,
+            style=resolved_style,
+            facts=_planted_artifact_facts(
                 self.provider,
                 data,
-                include_failure_followups=resolved_style == "demo-tool-heavy",
-            )
-        if resolved_style == "demo-attachments":
-            data = _add_demo_attachment_blocks(self.provider, data)
-        if session_native_ids:
-            data = _pin_session_native_id(self.provider, data, session_native_ids[index])
-        generated_data.append(data)
-        generated_message_counts.append(n_messages)
-
-    relationship_variants = _tool_relationship_variants(self.workload_profile)
-    selected_relationships: Counter[str] = Counter()
-    if relationship_variants:
-        variants = _relationship_variant_sequence(
-            relationship_variants,
-            count=len(generated_data),
-            rng=profile_rng,
-        )
-        result_distance = _profile_result_distance(self.workload_profile)
-        for data, variant in zip(generated_data, variants, strict=True):
-            functions_exec, failed = _apply_tool_relationship(
-                self.provider,
-                data,
-                variant=variant,
-                profile=self.workload_profile,
-                rng=profile_rng,
-            )
-            selected_relationships[variant] += 1
-            if functions_exec:
-                selected_relationships["functions_exec"] += 1
-            if failed:
-                selected_relationships["error_result"] += 1
-            if result_distance > 1 and variant not in {
-                "missing",
-                "orphan",
-                "out_of_order",
-                "call_without_id",
-                "result_without_id",
-            }:
-                selected_relationships["late_result"] += 1
-
-    lineage_edge_count = _apply_profile_lineage(self.provider, generated_data, self.workload_profile)
-    artifacts: list[SyntheticArtifact] = []
-    for index, (data, message_count) in enumerate(zip(generated_data, generated_message_counts, strict=True)):
-        raw_bytes = self._serialize(data)
-        artifacts.append(
-            SyntheticArtifact(
-                raw_bytes=raw_bytes,
+                raw_sha256=hashlib.sha256(raw_bytes).hexdigest(),
+                native_session_id=native_id,
                 message_count=message_count,
-                style=resolved_style,
-                facts=_planted_artifact_facts(
-                    self.provider,
-                    data,
-                    raw_bytes=raw_bytes,
-                    native_session_id=session_native_ids[index] if session_native_ids else None,
-                    message_count=message_count,
-                ),
-            )
+                inherited_tool_ids=inherited_tool_ids,
+            ),
         )
 
-    report = SyntheticGenerationReport(
-        provider=self.provider,
-        package_version=self.package_version,
-        element_kind=self.element_kind,
-        wire_encoding=self.wire_format.encoding,
-        requested_count=count,
-        generated_count=len(artifacts),
-        style=resolved_style,
+    artifacts, report = _produce_artifacts(
+        self,
+        collect,
+        count=count,
+        messages_per_session=messages_per_session,
         seed=seed,
-        workload_profile_id=None if profile_id == "no-profile" else profile_id,
-        structural_variant_counts=dict(sorted(selected_variants.items())),
-        relationship_variant_counts=dict(sorted(selected_relationships.items())),
-        lineage_edge_count=lineage_edge_count,
+        style=style,
+        session_native_ids=session_native_ids,
     )
     return SyntheticGenerationBatch(artifacts=artifacts, report=report)
 
 
-def _pin_session_native_id(provider: str, data: JSONValue, native_id: str) -> JSONValue:
-    """Apply an authored fixture identity after stochastic schema generation.
+def _select_session_header(
+    self: _SyntheticBatchContext, rng: random.Random, index: int
+) -> tuple[SchemaRecord | None, tuple[int, int] | None, str | None, int | None, int | None]:
+    """Select only original header/count joints with an exact retained parent.
 
-    Scenario identity is a workload contract, not an emergent consequence of
-    random-call order. Provider-specific wire shaping keeps the override on the
-    same production field each parser treats as authoritative.
+    Parent candidates stay on the original native graph. Counting and an
+    ordinal lookup do not turn a cohort into a Python identity population.
     """
-    if not native_id:
-        raise ValueError("session native ids must not be empty")
-    if provider == "chatgpt" and isinstance(data, dict):
-        data["id"] = native_id
-        if "conversation_id" in data:
-            data["conversation_id"] = native_id
-        return data
-    if provider == "claude-ai" and isinstance(data, dict):
-        data["uuid"] = native_id
-        return data
-    if provider == "gemini" and isinstance(data, dict):
-        data["id"] = native_id
-        return data
-    if provider == "antigravity" and isinstance(data, dict):
-        data["cascadeId"] = native_id
-        return data
-    if provider == "claude-code" and isinstance(data, list):
-        for record in data:
-            if isinstance(record, dict):
-                record["sessionId"] = native_id
-        return data
-    if provider == "codex" and isinstance(data, list):
-        # A native id is only authoritative in Codex's session_meta envelope.
-        # Convert generated flat messages before adding that header so the
-        # result remains one supported stream shape instead of mixing direct
-        # messages with envelope records, which the parser rejects.
-        for index, record in enumerate(data):
-            if not isinstance(record, dict) or record.get("type") != "message":
+    if self.provider != "codex" or self.workload_profile is None:
+        return None, None, None, None, None
+    from polylogue.schemas.generation.workload_profiles import SessionPrefixCounts
+
+    lineage = self.workload_profile.get("session_lineage")
+    classes = lineage.get("header_classes") if isinstance(lineage, dict) else None
+    structures = lineage.get("record_structures") if isinstance(lineage, dict) else None
+    if not isinstance(classes, list) or not classes or not isinstance(structures, dict):
+        raise ValueError("first-header joint evidence is missing; re-infer the package")
+    owner = self._relation_solver.fk_graph._owner()
+    feasible: list[tuple[SchemaRecord, list[tuple[tuple[int, ...], float]]]] = []
+    weights: list[int] = []
+    selected_point: tuple[int, ...] | None = None
+    authored_cycle = self.workload_profile.get("authored_session_cycle")
+    if authored_cycle is not None:
+        if (
+            self.workload_profile.get("profile_kind") != "authored-fixture"
+            or not isinstance(authored_cycle, list)
+            or not authored_cycle
+        ):
+            raise ValueError("session declarations require an authored neutral fixture profile")
+        declaration = authored_cycle[index % len(authored_cycle)]
+        if not isinstance(declaration, dict):
+            raise ValueError("authored first-header declaration is malformed")
+        selected_class = declaration.get("class")
+        if "prefix_point" in declaration:
+            declared_point = declaration["prefix_point"]
+            SessionPrefixCounts._validate_point(declared_point)
+            assert isinstance(declared_point, list)
+            selected_point = tuple(cast(int, value) for value in declared_point)
+        if type(selected_class) is not int or not 0 <= selected_class < len(classes):
+            raise ValueError("authored first-header declaration is malformed")
+        classes = [classes[selected_class]]
+    if self._coverage_witness_mode and self._coverage_header_form is not None:
+        classes = [row for row in classes if isinstance(row, dict) and row.get("form") == self._coverage_header_form]
+    for row in classes:
+        if not isinstance(row, dict):
+            raise ValueError("first-header class is malformed")
+        mass_count = row.get("count")
+        if type(mass_count) is not int or mass_count <= 0:
+            raise ValueError("first-header class is malformed")
+        outcome = row.get("outcome")
+        points: list[tuple[tuple[int, ...], float]] = []
+        if outcome == "matched":
+            joint = SessionPrefixCounts.from_payload(row.get("prefix_joint"))
+            for key, (_, mass) in joint.bins.items():
+                compatible_points: list[tuple[int, ...]] = []
+                for point in joint.extrema[key]:
+                    if selected_point is not None and point != selected_point:
+                        continue
+                    cursor = owner.execute(
+                        "SELECT COALESCE(MAX(selection_ordinal)+1,0) FROM generated_session_prefixes WHERE completed=1 "
+                        "AND record_count=? AND inherited_messages+own_messages=?",
+                        (point[1], point[3]),
+                    )
+                    try:
+                        if cursor.fetchone()[0]:
+                            compatible_points.append(point)
+                    finally:
+                        cursor.close()
+                if compatible_points:
+                    points.extend((point, mass / len(compatible_points)) for point in compatible_points)
+            if not points:
                 continue
-            response_payload = dict(record)
-            response_payload["type"] = "message"
-            data[index] = {"type": "response_item", "payload": response_payload}
-        for record in data:
-            if not isinstance(record, dict) or record.get("type") != "session_meta":
-                continue
-            payload: dict[str, JSONValue]
-            payload_value = record.get("payload")
-            if isinstance(payload_value, dict):
-                payload = payload_value
-            else:
-                payload = {}
-                record["payload"] = payload
-            payload["id"] = native_id
-            return data
-        data.insert(0, {"type": "session_meta", "payload": {"id": native_id}})
-        return data
-    raise ValueError(f"Provider {provider!r} does not support pinned synthetic session identities")
-
-
-def _tool_use_blocks(provider: str, index: int, *, include_failures: bool = False) -> list[JSONValue]:
-    read_id = f"{provider}-read-{index:04d}"
-    bash_id = f"{provider}-bash-{index:04d}"
-    bash_failed = include_failures and index in {1, 3}
-    return [
-        {"type": "text", "text": f"Inspecting generated workload record {index}."},
-        {
-            "type": "tool_use",
-            "id": read_id,
-            "name": "Read",
-            "input": {"file_path": f"fixtures/generated-{index:04d}.jsonl"},
-        },
-        {
-            "type": "tool_use",
-            "id": bash_id,
-            "name": "Bash",
-            "input": {"command": f"python -m pytest tests/generated/test_{index:04d}.py -q"},
-        },
-        {
-            "type": "tool_result",
-            "tool_use_id": read_id,
-            "content": "read 4096 bytes",
-        },
-        {
-            "type": "tool_result",
-            "tool_use_id": bash_id,
-            "content": "AssertionError: generated fixture mismatch",
-            "is_error": True,
-        }
-        if bash_failed
-        else {
-            "type": "tool_result",
-            "tool_use_id": bash_id,
-            "content": "1 passed",
-        },
-    ]
-
-
-def _add_tool_heavy_blocks(
-    provider: str,
-    data: JSONValue,
-    *,
-    include_failure_followups: bool = False,
-) -> JSONValue:
-    if provider not in {"claude-code", "codex"} or not isinstance(data, list):
-        return data
-    followups: list[tuple[int, dict[str, JSONValue]]] = []
-    for index, record in enumerate(data):
-        if not isinstance(record, dict):
-            continue
-        role = _record_role(provider, record)
-        if role not in {"assistant", "model"}:
-            continue
-        blocks = _tool_use_blocks(provider, index, include_failures=include_failure_followups)
-        if provider == "claude-code":
-            message = record.get("message")
-            if not isinstance(message, dict):
-                message = {}
-                record["message"] = message
-            message["content"] = blocks
-            message["role"] = "assistant"
-            record["type"] = "assistant"
-            if include_failure_followups and index in {1, 3}:
-                followups.append((index + 1, _demo_failure_followup(provider, record, index)))
-            continue
-        record["content"] = blocks
-        record["role"] = "assistant"
-        record["type"] = "message"
-        if include_failure_followups and index in {1, 3}:
-            followups.append((index + 1, _demo_failure_followup(provider, record, index)))
-    for insert_at, followup in reversed(followups):
-        data.insert(insert_at, followup)
-    return data
-
-
-def _add_demo_attachment_blocks(provider: str, data: JSONValue) -> JSONValue:
-    """Add one inline attachment family to demo Gemini chunks."""
-
-    if provider != "gemini" or not isinstance(data, dict):
-        return data
-    chunked_prompt = data.get("chunkedPrompt")
-    if not isinstance(chunked_prompt, dict):
-        return data
-    chunks = chunked_prompt.get("chunks")
-    if not isinstance(chunks, list):
-        return data
-    for chunk in chunks:
-        if not isinstance(chunk, dict) or chunk.get("role") != "user":
-            continue
-        payload = b"demo attachment bytes for Polylogue fixture coverage\n"
-        chunk["inlineFile"] = {
-            "mimeType": "text/plain",
-            "data": base64.b64encode(payload).decode("ascii"),
-        }
-        chunk["text"] = "Please inspect the attached fixture note."
-        return data
-    return data
-
-
-def _demo_failure_followup(provider: str, record: dict[str, JSONValue], index: int) -> dict[str, JSONValue]:
-    text = (
-        "The pytest command failed with exit code 1; I will inspect the assertion before retrying."
-        if index == 1
-        else "I will inspect the generated fixture and adjust the next command."
+        elif outcome not in {"no_explicit_parent", "spawn:missing_parent", "missing_header"}:
+            raise ValueError("original first-header identity is unresolved; no generated parent is declared")
+        feasible.append((row, points))
+        weights.append(mass_count)
+    if not feasible:
+        raise ValueError("original first-header joint has no realizable retained parent")
+    row, points = rng.choices(feasible, weights=weights, k=1)[0]
+    carrier = row.get("carrier")
+    by_form = structures.get(carrier) if isinstance(carrier, str) else None
+    structure = by_form.get(row.get("form")) if isinstance(by_form, dict) else None
+    if not isinstance(structure, dict):
+        raise ValueError("first-header conditional record grammar is missing")
+    self._session_record_structure = structure
+    selected_class_row = row
+    if not points:
+        if row.get("outcome") == "missing_header":
+            row = None
+        if self.workload_profile.get("profile_kind") == "authored-fixture" and selected_point is None:
+            # Explicit fixture record cycles own their declared request count;
+            # they do not claim to sample an operator root-length population.
+            return row, None, None, None, None
+        joint = SessionPrefixCounts.from_payload(
+            selected_class_row.get("prefix_joint") if row is None else row.get("prefix_joint")
+        )
+        if not joint.bins:
+            raise ValueError("original root header count joint is missing; re-infer the package")
+        eligible_bins = [key for key in joint.bins if selected_point is None or selected_point in joint.extrema[key]]
+        if not eligible_bins:
+            raise ValueError("authored root count declaration is absent from measured header evidence")
+        key = rng.choices(eligible_bins, weights=[joint.bins[key][1] for key in eligible_bins], k=1)[0]
+        point = selected_point if selected_point is not None else rng.choice(joint.extrema[key])
+        if point not in joint.extrema[key]:
+            raise ValueError("authored root count declaration is absent from measured header evidence")
+        return row, None, None, point[0], point[2]
+    point = rng.choices([item[0] for item in points], weights=[item[1] for item in points], k=1)[0]
+    query = (
+        " FROM generated_session_prefixes WHERE completed=1 AND record_count=? AND inherited_messages+own_messages=?"
     )
-    if provider == "claude-code":
-        followup = dict(record)
-        previous_uuid = record.get("uuid")
-        followup["uuid"] = f"demo-{provider}-failure-followup-{index:04d}"
-        if isinstance(previous_uuid, str):
-            followup["parentUuid"] = previous_uuid
-        followup["type"] = "assistant"
-        followup["message"] = {
-            "role": "assistant",
-            "content": [{"type": "text", "text": text}],
-        }
-        return followup
-    followup = dict(record)
-    followup["id"] = f"demo-{provider}-failure-followup-{index:04d}"
-    followup["type"] = "message"
-    followup["role"] = "assistant"
-    followup["content"] = [{"type": "text", "text": text}]
-    return followup
-
-
-def _record_role(provider: str, record: dict[str, JSONValue]) -> str | None:
-    if provider == "claude-code":
-        message = record.get("message")
-        if isinstance(message, dict):
-            role = message.get("role")
-            if isinstance(role, str):
-                return role
-        role = record.get("type")
-        return role if isinstance(role, str) else None
-    if provider == "codex":
-        # Codex has two legitimate record shapes the real parser accepts
-        # (``sources/parsers/codex.py``): a ``payload``-wrapped
-        # ``response_item`` (role under ``payload.role``) and a flat
-        # ``{"type": "message", "role": ...}`` record (role at the top
-        # level). Check both so tool-heavy-block placement finds the
-        # assistant turn regardless of which shape generation produced.
-        payload = record.get("payload")
-        if isinstance(payload, dict):
-            role = payload.get("role")
-            if isinstance(role, str):
-                return role
-        role = record.get("role")
-        return role if isinstance(role, str) else None
-    role = record.get("role")
-    return role if isinstance(role, str) else None
+    cursor = owner.execute("SELECT COALESCE(MAX(selection_ordinal)+1,0)" + query, (point[1], point[3]))
+    try:
+        candidates = cursor.fetchone()[0]
+    finally:
+        cursor.close()
+    cursor = owner.execute(
+        "SELECT prefix_id,native_id" + query + " AND selection_ordinal=?",
+        (point[1], point[3], rng.randrange(candidates)),
+    )
+    try:
+        parent = cursor.fetchone()
+    finally:
+        cursor.close()
+    return row, (parent[0], point[4]), parent[1], point[0] - point[4], point[2] - point[4]
 
 
 def _generate_session(

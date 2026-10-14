@@ -19,7 +19,13 @@ from polylogue.schemas.synthetic.core import (
     SyntheticGenerationBatch,
     SyntheticGenerationReport,
 )
-from polylogue.schemas.synthetic.models import SyntheticArtifact, SyntheticArtifactFacts
+from polylogue.schemas.synthetic.models import (
+    SyntheticAdjunct,
+    SyntheticAdjunctChunks,
+    SyntheticArtifact,
+    SyntheticArtifactFacts,
+    SyntheticSessionChunks,
+)
 from polylogue.schemas.synthetic.wire_formats import (
     PROVIDER_WIRE_FORMATS,
     TreeConfig,
@@ -29,8 +35,11 @@ from polylogue.schemas.synthetic.wire_formats import (
 __all__ = [
     # Core
     "SyntheticCorpus",
+    "SyntheticAdjunct",
+    "SyntheticAdjunctChunks",
     "SyntheticArtifact",
     "SyntheticArtifactFacts",
+    "SyntheticSessionChunks",
     "SyntheticGenerationBatch",
     "SyntheticGenerationReport",
     # Wire formats

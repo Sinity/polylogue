@@ -25,9 +25,12 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, TypeAlias
+
+from polylogue.schemas.json_walk import require_finite_json
+from polylogue.schemas.synthetic.array_value import walk_generated_values
 
 if TYPE_CHECKING:
     from polylogue.core.enums import Provider
@@ -43,8 +46,6 @@ TITLE_ROLE = "session_title"
 CONTENT_BEARING_ROLES: frozenset[str] = frozenset({BODY_ROLE, TITLE_ROLE})
 
 ConservationVerdict: TypeAlias = Literal["loss", "duplication", "mutation"]
-
-_MAX_WALK_DEPTH = 12
 
 #: Key the coverage-witness generator invents to exercise a schema's
 #: ``additionalProperties``. It names no provider field, so no parser can be
@@ -117,11 +118,17 @@ def _normalise(text: str) -> str:
 
 def _schema_variants(schema: Mapping[str, object]) -> list[Mapping[str, object]]:
     """Return ``schema`` plus any ``anyOf``/``oneOf`` branches under it."""
-    variants: list[Mapping[str, object]] = [schema]
-    for keyword in ("anyOf", "oneOf"):
-        raw = schema.get(keyword)
-        if isinstance(raw, list):
-            variants.extend(item for item in raw if isinstance(item, Mapping))
+    variants: list[Mapping[str, object]] = []
+    pending = [schema]
+    while pending:
+        node = pending.pop()
+        variants.append(node)
+        children: list[Mapping[str, object]] = []
+        for keyword in ("anyOf", "oneOf"):
+            raw_children = node.get(keyword)
+            if isinstance(raw_children, list):
+                children.extend(item for item in raw_children if isinstance(item, Mapping))
+        pending.extend(reversed(children))
     return variants
 
 
@@ -195,8 +202,37 @@ def collect_planted_values(
     payload: object,
     *,
     path: str = "$",
-    depth: int = 0,
 ) -> tuple[PlantedValue, ...]:
+    """Collect every finite annotated position without a depth cutoff."""
+    require_finite_json(schema)
+    for _ in walk_generated_values(payload):
+        pass
+    frames = [_collect_planted_frame(schema, payload, path=path)]
+    result: tuple[PlantedValue, ...] | None = None
+    try:
+        while frames:
+            try:
+                child_schema, child_payload, child_path = (
+                    next(frames[-1]) if result is None else frames[-1].send(result)
+                )
+            except StopIteration as completed:
+                frames.pop()
+                result = completed.value
+            else:
+                frames.append(_collect_planted_frame(child_schema, child_payload, path=child_path))
+                result = None
+        return result or ()
+    finally:
+        for frame in reversed(frames):
+            frame.close()
+
+
+_PlantedFrame: TypeAlias = Generator[
+    tuple[Mapping[str, object], object, str], tuple[PlantedValue, ...], tuple[PlantedValue, ...]
+]
+
+
+def _collect_planted_frame(schema: Mapping[str, object], payload: object, *, path: str) -> _PlantedFrame:
     """Walk schema and payload together, collecting content-bearing values.
 
     The schema supplies the role annotation; the payload supplies the value.
@@ -209,9 +245,6 @@ def collect_planted_values(
     distinct so that a legitimately repeated body is expected twice rather
     than collapsing into one.
     """
-    if depth > _MAX_WALK_DEPTH:
-        return ()
-
     variants = _schema_variants(schema)
 
     role = _content_role(variants)
@@ -239,12 +272,7 @@ def collect_planted_values(
                 if key in visited_keys or not isinstance(child_schema, Mapping) or key not in payload:
                     continue
                 visited_keys.add(key)
-                planted = collect_planted_values(
-                    child_schema,
-                    payload[key],
-                    path=f"{path}.{key}",
-                    depth=depth + 1,
-                )
+                planted = yield (child_schema, payload[key], f"{path}.{key}")
                 if key == "content" and block_bodies:
                     # A text, thinking or tool-use block's annotated
                     # ``content`` is its own content unless it only repeats
@@ -261,14 +289,10 @@ def collect_planted_values(
                 if key in declared_properties or key in visited_keys or _is_coverage_extra_key(key):
                     continue
                 visited_keys.add(key)
-                found.extend(
-                    collect_planted_values(
-                        additional_properties,
-                        value,
-                        path=f"{path}.{key}",
-                        depth=depth + 1,
-                    )
-                )
+                # A dynamic key names no schema position, so the value sits at
+                # the schema's ``*`` position, where a pin can address it
+                # without also covering a declared sibling.
+                found.extend((yield (additional_properties, value, f"{path}.*")))
 
         items = variant.get("items")
         if (
@@ -279,14 +303,7 @@ def collect_planted_values(
         ):
             walked_items = True
             for position, item in enumerate(payload):
-                found.extend(
-                    collect_planted_values(
-                        items,
-                        item,
-                        path=f"{path}[{position}]",
-                        depth=depth + 1,
-                    )
-                )
+                found.extend((yield (items, item, f"{path}[{position}]")))
 
     return tuple(found)
 
@@ -395,16 +412,18 @@ def _mutation_detail(value: str, observed: Counter[str]) -> str | None:
 def _wire_string_occurrences(payloads: Sequence[object]) -> Counter[str]:
     """Count every non-empty string in the wire payloads, at any position."""
     counter: Counter[str] = Counter()
-    stack: list[tuple[object, int]] = [(payload, 0) for payload in payloads]
+    for _ in walk_generated_values(payloads):
+        pass
+    stack: list[object] = list(payloads)
     while stack:
-        value, depth = stack.pop()
+        value = stack.pop()
         if isinstance(value, str):
             if _normalise(value):
                 counter[_normalise(value)] += 1
-        elif depth < _MAX_WALK_DEPTH and isinstance(value, Mapping):
-            stack.extend((item, depth + 1) for item in value.values())
-        elif depth < _MAX_WALK_DEPTH and isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
-            stack.extend((item, depth + 1) for item in value)
+        elif isinstance(value, Mapping):
+            stack.extend(value.values())
+        elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            stack.extend(value)
     return counter
 
 

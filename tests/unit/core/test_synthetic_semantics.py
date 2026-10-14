@@ -16,8 +16,10 @@ Consolidated from:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
+import tracemalloc
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -33,19 +35,19 @@ from polylogue.schemas.synthetic import (
     SyntheticCorpus,
     WireFormat,
 )
-from polylogue.schemas.synthetic.build_batch import _tool_use_blocks
 from polylogue.schemas.synthetic.build_wire_formats import (
     _claude_code_content_fallback,
     _codex_content_fallback,
 )
 from polylogue.schemas.synthetic.demo_themes import _DEMO_THEMES
-from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
+from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue, SyntheticSchemaSelection
 from polylogue.schemas.synthetic.semantic_values import (
     _ROLE_TEXTS,
     SemanticValueGenerator,
     _text_for_role,
 )
 from polylogue.sources.dispatch import parse_payload
+from tests.infra.qualified_schema_registry import QUALIFIED_SCHEMA_PROVIDERS
 from tests.infra.schema_access import fail_missing_schema
 
 
@@ -128,6 +130,9 @@ class _FakeRegistry:
     def get_schema(self, provider: str, version: str = "default") -> SchemaRecord | None:
         self.schema_calls.append((provider, version))
         return self._schema
+
+    def get_workload_profile(self, provider: str, version: str = "default") -> SchemaRecord | None:
+        return None
 
     def list_providers(self) -> list[str]:
         return ["chatgpt"]
@@ -219,8 +224,10 @@ class TestSemanticValueGeneratorBasics:
 
 
 class TestSyntheticSessionEnvelope:
-    def test_chatgpt_tree_generation_produces_clean_session_id(self) -> None:
-        corpus = SyntheticCorpus.for_provider("chatgpt")
+    def test_chatgpt_tree_generation_produces_clean_session_id(
+        self, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus("chatgpt")
         payload = json.loads(corpus.generate(count=1, seed=42, messages_per_session=range(3, 4))[0])
 
         session_id = payload.get("id")
@@ -228,7 +235,7 @@ class TestSyntheticSessionEnvelope:
         assert session_id
         assert " " not in session_id
 
-    def test_synthetic_corpus_from_spec_reuses_schema_selection(self) -> None:
+    def test_synthetic_corpus_from_spec_reuses_schema_selection(self, qualified_provider_defaults: None) -> None:
         spec = CorpusSpec.for_provider(
             "chatgpt",
             package_version="default",
@@ -245,7 +252,7 @@ class TestSyntheticSessionEnvelope:
         assert batch.report.provider == "chatgpt"
         assert batch.report.generated_count == 2
 
-    def test_generation_plants_independent_wire_facts_before_ingest(self) -> None:
+    def test_generation_plants_independent_wire_facts_before_ingest(self, qualified_provider_defaults: None) -> None:
         native_id = "c03-planted-target"
         spec = CorpusSpec.for_provider(
             "codex",
@@ -268,7 +275,9 @@ class TestSyntheticSessionEnvelope:
         assert set(facts.paired_tool_ids) <= set(facts.tool_result_ids)
         assert facts.raw_sha256
 
-    def test_write_spec_artifacts_returns_written_paths(self, tmp_path: Path) -> None:
+    def test_write_spec_artifacts_returns_written_paths(
+        self, tmp_path: Path, qualified_provider_defaults: None
+    ) -> None:
         spec = CorpusSpec.for_provider(
             "chatgpt",
             count=1,
@@ -280,10 +289,12 @@ class TestSyntheticSessionEnvelope:
         written = SyntheticCorpus.write_spec_artifacts(spec, tmp_path, prefix="sample")
 
         assert len(written.files) == 1
-        assert written.files[0].exists()
-        assert written.batch.report.generated_count == 1
+        assert written.session_files[0].exists()
+        assert written.report.generated_count == 1
 
-    def test_write_specs_artifacts_avoids_same_source_name_collisions(self, tmp_path: Path) -> None:
+    def test_write_specs_artifacts_avoids_same_source_name_collisions(
+        self, tmp_path: Path, qualified_provider_defaults: None
+    ) -> None:
         specs = (
             CorpusSpec(
                 provider="chatgpt",
@@ -587,10 +598,16 @@ class TestWireFormatShape:
                 return
         pytest.fail("fallback did not produce a tool_result witness")
 
-    def test_tool_heavy_batch_can_emit_unknown_tool_result_shape(self) -> None:
+    def test_tool_heavy_batch_can_emit_unknown_tool_result_shape(self, qualified_provider_defaults: None) -> None:
         """Tool-heavy batches retain at least one result without a verdict."""
-        results = [block for block in _tool_use_blocks("codex", 0) if isinstance(block, dict)]
-        result_blocks = [block for block in results if block.get("type") == "tool_result"]
+        spec = CorpusSpec.for_provider("codex", count=1, messages_min=4, messages_max=4, seed=71, style="tool-heavy")
+        records = [json.loads(line) for line in SyntheticCorpus.generate_for_spec(spec)[0].splitlines()]
+        result_blocks = [
+            block
+            for record in records
+            for block in record.get("payload", {}).get("content", [])
+            if block.get("type") == "tool_result"
+        ]
         assert result_blocks
         assert any("is_error" not in block for block in result_blocks)
 
@@ -598,22 +615,22 @@ class TestWireFormatShape:
 class TestCorpusSeedDeterminism:
     """Corpus generation is deterministic with same seed."""
 
-    def test_same_seed_same_output(self) -> None:
+    def test_same_seed_same_output(self, qualified_provider_corpus: Callable[[str], SyntheticCorpus]) -> None:
         """Two generations with the same seed produce identical bytes."""
         available = SyntheticCorpus.available_providers()
         if not available:
             fail_missing_schema("No schemas available")
-        corpus = SyntheticCorpus.for_provider(available[0])
+        corpus = qualified_provider_corpus(available[0])
         a = corpus.generate(count=2, seed=99)
         b = corpus.generate(count=2, seed=99)
         assert a == b
 
-    def test_different_seed_different_output(self) -> None:
+    def test_different_seed_different_output(self, qualified_provider_corpus: Callable[[str], SyntheticCorpus]) -> None:
         """Two generations with different seeds produce different bytes."""
         available = SyntheticCorpus.available_providers()
         if not available:
             fail_missing_schema("No schemas available")
-        corpus = SyntheticCorpus.for_provider(available[0])
+        corpus = qualified_provider_corpus(available[0])
         a = corpus.generate(count=2, seed=1)
         b = corpus.generate(count=2, seed=2)
         assert a != b
@@ -646,11 +663,13 @@ class TestCorpusParseRoundtrip:
 class TestSeedDeterminism:
     """Corpus generation is deterministic given the same seed."""
 
-    @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_same_seed_produces_identical_output(self, provider: str) -> None:
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_same_seed_produces_identical_output(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
         """Two generate() calls with same seed → identical byte output."""
         try:
-            corpus = SyntheticCorpus.for_provider(provider)
+            corpus = qualified_provider_corpus(provider)
         except FileNotFoundError:
             fail_missing_schema(f"No schema for {provider}")
 
@@ -662,11 +681,13 @@ class TestSeedDeterminism:
 class TestMessageCountContract:
     """Generated sessions respect the message count range."""
 
-    @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_generate_count_matches_requested(self, provider: str) -> None:
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_generate_count_matches_requested(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
         """generate(count=N) returns exactly N items."""
         try:
-            corpus = SyntheticCorpus.for_provider(provider)
+            corpus = qualified_provider_corpus(provider)
         except FileNotFoundError:
             fail_missing_schema(f"No schema for {provider}")
 
@@ -674,23 +695,25 @@ class TestMessageCountContract:
             items = corpus.generate(count=count, seed=0)
             assert len(items) == count, f"{provider}: requested {count}, got {len(items)}"
 
-    def test_generate_zero_returns_empty(self) -> None:
+    def test_generate_zero_returns_empty(self, qualified_provider_corpus: Callable[[str], SyntheticCorpus]) -> None:
         """generate(count=0) returns an empty list."""
         available = SyntheticCorpus.available_providers()
         if not available:
             fail_missing_schema("No schemas available")
 
-        corpus = SyntheticCorpus.for_provider(available[0])
+        corpus = qualified_provider_corpus(available[0])
         items = corpus.generate(count=0, seed=0)
         assert items == []
 
-    def test_generate_batch_reports_provider_and_count(self) -> None:
+    def test_generate_batch_reports_provider_and_count(
+        self, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
         """generate_batch() exposes a typed report aligned with raw output."""
         available = SyntheticCorpus.available_providers()
         if not available:
             fail_missing_schema("No schemas available")
 
-        corpus = SyntheticCorpus.for_provider(available[0])
+        corpus = qualified_provider_corpus(available[0])
         batch = corpus.generate_batch(count=2, seed=7, messages_per_session=range(4, 5))
         assert len(batch.artifacts) == 2
         assert batch.report.generated_count == 2
@@ -702,7 +725,7 @@ class TestMessageCountContract:
 class TestParseRoundtrip:
     """Synthetic data round-trips through the actual provider parsers."""
 
-    @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
     def test_synthetic_parses_to_sessions(self, provider: str, synthetic_source: SyntheticSourceFactory) -> None:
         """Synthetic corpus for each provider parses into valid sessions."""
         from polylogue.sources import iter_source_sessions
@@ -780,10 +803,6 @@ def _deserialize_for_parser(provider: str, raw: bytes) -> object:
         return json.loads(raw)
 
 
-def _available_providers() -> list[str]:
-    return SyntheticCorpus.available_providers()
-
-
 # ---------------------------------------------------------------------------
 # Core roundtrip: generate → parse for every provider
 # ---------------------------------------------------------------------------
@@ -793,9 +812,11 @@ class TestSyntheticRoundtrip:
     """For every provider with a schema and wire format, synthetic data must
     be parseable by the real provider parser."""
 
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_roundtrip_produces_messages(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_roundtrip_produces_messages(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         results = corpus.generate(count=3, seed=42, messages_per_session=range(4, 8))
         assert len(results) == 3
 
@@ -810,9 +831,11 @@ class TestSyntheticRoundtrip:
             conv = sessions[0]
             assert len(conv.messages) > 0, f"Provider {provider}: parsed session has no messages (index {i})"
 
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_parsed_messages_have_roles(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_parsed_messages_have_roles(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         [raw] = corpus.generate(count=1, seed=7, messages_per_session=range(5, 6))
 
         runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
@@ -824,9 +847,11 @@ class TestSyntheticRoundtrip:
             assert msg.role is not None
             assert str(msg.role) != ""
 
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_parsed_messages_have_text_content(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_parsed_messages_have_text_content(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         [raw] = corpus.generate(count=1, seed=99, messages_per_session=range(4, 5))
 
         runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
@@ -844,16 +869,20 @@ class TestSyntheticRoundtrip:
 
 
 class TestSyntheticDeterminism:
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_same_seed_same_output(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_same_seed_same_output(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         result_a = corpus.generate(count=3, seed=123)
         result_b = corpus.generate(count=3, seed=123)
         assert result_a == result_b
 
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_different_seeds_different_output(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_different_seeds_different_output(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         result_a = corpus.generate(count=2, seed=1)
         result_b = corpus.generate(count=2, seed=2)
         # At least one session should differ
@@ -866,16 +895,20 @@ class TestSyntheticDeterminism:
 
 
 class TestSyntheticEdgeCases:
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_count_zero_produces_empty_list(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_count_zero_produces_empty_list(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         result = corpus.generate(count=0, seed=0)
         assert result == []
 
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_single_message_session(self, provider: str) -> None:
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_single_message_session(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
         """A session with exactly 1 message should still parse."""
-        corpus = SyntheticCorpus.for_provider(provider)
+        corpus = qualified_provider_corpus(provider)
         [raw] = corpus.generate(count=1, seed=55, messages_per_session=range(1, 2))
 
         runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
@@ -963,10 +996,12 @@ class TestProviderAvailability:
 
 
 class TestDemoStyleRoundtrip:
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_demo_style_roundtrips(self, provider: str) -> None:
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_demo_style_roundtrips(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
         """Demo-style synthetic data should also parse correctly."""
-        corpus = SyntheticCorpus.for_provider(provider)
+        corpus = qualified_provider_corpus(provider)
         results = corpus.generate(
             count=2,
             seed=42,
@@ -982,3 +1017,583 @@ class TestDemoStyleRoundtrip:
             sessions = parse_payload(runtime_provider, payload, f"demo-{provider}-{i}")
             assert len(sessions) >= 1
             assert len(sessions[0].messages) > 0
+
+
+def test_file_writer_streams_the_same_seeded_fixture_program(tmp_path: Path) -> None:
+    """An output-sized buffer or a separate writer sampler turns this red."""
+    length = 2_000_003
+    schema: SchemaRecord = {
+        "type": "object",
+        "properties": {
+            "body": {
+                "type": "string",
+                "x-polylogue-observed-distribution": {
+                    "string_length": {"count": 1, "histogram": [[20, 1]], "log_base": 2, "min": length, "max": length},
+                },
+            },
+        },
+    }
+    selection = SyntheticSchemaSelection("chatgpt", "neutral", None, schema, WireFormat(encoding="json"))
+    spec = CorpusSpec.for_provider("chatgpt", count=3, messages_min=1, messages_max=1, seed=97)
+    tracemalloc.start()
+    try:
+        written = SyntheticCorpus.write_selection_artifacts(selection, spec, tmp_path, prefix="streamed")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * 1024 * 1024
+    assert written.report.generated_count == 3
+    fixture = SyntheticCorpus.generate_batch_for_selection(selection, spec)
+    assert written.facts == tuple(artifact.facts for artifact in fixture.artifacts)
+    for path, artifact in zip(written.session_files, fixture.artifacts, strict=True):
+        raw = path.read_bytes()
+        assert raw == artifact.raw_bytes
+        assert len(json.loads(raw)["body"]) == length
+        assert hashlib.sha256(raw).hexdigest() == artifact.facts.raw_sha256
+
+
+def test_streamed_codex_lineage_retains_the_original_complete_prefix(tmp_path: Path) -> None:
+    """Dropping an ancestor or copying only the latest tail turns this red."""
+    import uuid
+    from copy import deepcopy
+
+    from polylogue.schemas.generation.workload_profiles import workload_profile_identity
+    from polylogue.schemas.synthetic.authored_selection import authored_schema_selection
+
+    # Explicit authored lineage operands borrow the same inferred neutral tool
+    # program. An authored style must not replace a separately selected profile.
+    authored = authored_schema_selection("codex", "tool-heavy")
+    from polylogue.schemas.workload_profile_rows import WorkloadProfile
+
+    assert isinstance(authored.workload_profile, WorkloadProfile)
+    profile = WorkloadProfile(deepcopy(authored.workload_profile._fields), authored.workload_profile.depth_grammars)
+    from polylogue.core.json import JSONDocument, json_document
+    from polylogue.schemas.generation.models import _PackageAccumulator
+    from polylogue.schemas.generation.observation_journal import ObservationJournal
+    from polylogue.schemas.generation.workload_profiles import build_package_workload_profile
+    from polylogue.schemas.observation import SchemaUnit
+
+    native_ids = tuple(str(uuid.UUID(int=ordinal + 100, version=4)) for ordinal in range(4))
+    own: list[JSONDocument] = [
+        {
+            "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "neutral"}]},
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "neutral"}],
+            },
+        },
+    ]
+    with ObservationJournal.create(root=tmp_path / "declared-lineage") as journal:
+        previous: list[JSONDocument] = []
+        for ordinal, identity in enumerate(native_ids):
+            header: JSONDocument = {
+                "type": "session_meta",
+                "payload": {
+                    "id": identity,
+                    "timestamp": "2025-06-01T00:00:00Z",
+                    **({"forked_from_id": native_ids[ordinal - 1]} if ordinal else {}),
+                },
+            }
+            original_records = [header, *previous, *own]
+            unit = journal.append_unit(
+                SchemaUnit(
+                    cluster_payload={},
+                    schema_samples=original_records,
+                    artifact_kind="session_record_stream",
+                    raw_id=f"neutral-{ordinal}",
+                    bundle_scope="declared-neutral",
+                )
+            )
+            journal.assign_profile_family(unit, "lineage")
+            previous = [*previous, *own]
+        measured = build_package_workload_profile(
+            provider="codex",
+            version="neutral",
+            package=_PackageAccumulator(
+                provider="codex",
+                anchor_family_id="lineage",
+                anchor_kind="session_record_stream",
+                memberships=journal.memberships(),
+            ),
+            element_schemas={"session_record_stream": authored.schema},
+            privacy_policy="standard",
+        )
+    lineage = json_document(measured["session_lineage"])
+    rows = lineage["header_classes"]
+    assert isinstance(rows, list)
+    root_class = next(
+        index for index, row in enumerate(rows) if isinstance(row, dict) and row["outcome"] == "no_explicit_parent"
+    )
+    child_class = next(index for index, row in enumerate(rows) if isinstance(row, dict) and row["outcome"] == "matched")
+    profile["session_lineage"] = lineage
+    declarations: list[JSONValue] = [{"class": root_class}]
+    for ordinal in range(1, 4):
+        declarations.append(
+            {
+                "class": child_class,
+                "prefix_point": [2 * ordinal + 3, 2 * ordinal + 1, 2 * ordinal + 2, 2 * ordinal, 2 * ordinal],
+            }
+        )
+    profile["authored_session_cycle"] = declarations
+    profile["profile_id"] = workload_profile_identity(profile)
+    selection = SyntheticSchemaSelection(
+        "codex", "neutral", "session_record_stream", authored.schema, authored.wire_format, workload_profile=profile
+    )
+    spec = CorpusSpec.for_provider(
+        "codex",
+        count=4,
+        messages_min=2,
+        messages_max=2,
+        seed=71,
+        style="default",
+        session_native_ids=native_ids,
+    )
+    written = SyntheticCorpus.write_selection_artifacts(selection, spec, tmp_path, prefix="lineage")
+    fixture = SyntheticCorpus.generate_batch_for_selection(selection, spec)
+    assert written.report == fixture.report
+    assert written.report.lineage_edge_count == 3
+    assert written.facts == tuple(artifact.facts for artifact in fixture.artifacts)
+    previous_messages: list[dict[str, object]] = []
+    for ordinal, (path, artifact) in enumerate(zip(written.session_files, fixture.artifacts, strict=True)):
+        raw = path.read_bytes()
+        assert raw == artifact.raw_bytes
+        records = [json.loads(line) for line in raw.splitlines()]
+        assert records[0]["type"] == "session_meta"
+        if ordinal:
+            assert records[0]["payload"]["forked_from_id"] == spec.session_native_ids[ordinal - 1]
+        messages = [record for record in records if record.get("payload", {}).get("type") == "message"]
+        assert messages[: len(previous_messages)] == previous_messages
+        assert len(messages) == (ordinal + 1) * 2
+        assert artifact.message_count == artifact.facts.message_count == len(messages)
+        tool_ids = tuple(
+            block["id"]
+            for record in messages
+            for block in record["payload"]["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+        )
+        assert tool_ids
+        assert artifact.facts.tool_use_ids == tool_ids
+        previous_messages = messages
+
+    # The lazy driver borrows inherited identities from the same physical
+    # prefix owner. Only explicit fixture/facts collection builds tuples.
+    lazy = SyntheticCorpus.from_selection(selection).iter_sessions(
+        count=2, messages_per_session=range(2, 3), seed=71, session_native_ids=native_ids[:2]
+    )
+    try:
+        original = next(lazy)
+        for _chunk in original.chunks:
+            pass
+        for adjunct in original.adjuncts:
+            for _chunk in adjunct.chunks:
+                pass
+        child = next(lazy)
+        borrowed_calls = child.inherited_tool_ids[0]
+        assert not isinstance(borrowed_calls, tuple | list)
+        assert tuple(borrowed_calls) == written.facts[0].tool_use_ids
+        for _chunk in child.chunks:
+            pass
+        for adjunct in child.adjuncts:
+            for _chunk in adjunct.chunks:
+                pass
+    finally:
+        lazy.close()
+    with pytest.raises(RuntimeError, match="original prefix owner"):
+        tuple(borrowed_calls)
+
+
+def test_generated_arrays_retain_original_children_and_bound_serialization() -> None:
+    import json
+    import tracemalloc
+
+    from polylogue.schemas.synthetic.array_value import walk_generated_values
+    from polylogue.schemas.synthetic.models import GeneratedRecord
+    from polylogue.schemas.synthetic.relations import ForeignKeyGraph
+    from polylogue.schemas.synthetic.runtime import _json_chunks
+
+    owner = ForeignKeyGraph()
+    sampled = owner.new_array()
+    schema: SchemaRecord = {"type": "object", "properties": {"ordinal": {"type": "integer"}}}
+    try:
+        tracemalloc.start()
+        for index in range(10_003):
+            record = owner.new_record(schema)
+            record["ordinal"] = index
+            owner.append_array_item(sampled, record)
+        for child in sampled:
+            assert isinstance(child, GeneratedRecord)
+            assert child.selected_schema == schema
+            child["adapted"] = True
+        # Encoding consumes one retained child at a time; fixture collection
+        # below is deliberately separate from the measured streaming path.
+        byte_count = sum(len(piece) for piece in _json_chunks(sampled, pretty=False))
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        assert peak < 4 * 1024 * 1024
+        assert byte_count > 300_000
+        decoded = json.loads("".join(_json_chunks(sampled, pretty=False)))
+        assert len(decoded) == 10_003
+        assert decoded[0] == {"ordinal": 0, "adapted": True}
+        assert decoded[-1] == {"ordinal": 10_002, "adapted": True}
+        assert sum(isinstance(value, GeneratedRecord) for value in walk_generated_values(sampled)) == 10_003
+    finally:
+        if tracemalloc.is_tracing():
+            tracemalloc.stop()
+        owner.close()
+    with pytest.raises(RuntimeError, match="original relation owner"):
+        len(sampled)
+
+
+def test_generated_array_depth_numeric_order_and_cycle_refusal() -> None:
+    from polylogue.schemas.synthetic.array_value import walk_generated_values
+    from polylogue.schemas.synthetic.models import GeneratedValue
+    from polylogue.schemas.synthetic.relations import ForeignKeyGraph
+    from polylogue.schemas.synthetic.runtime import _json_chunks
+
+    owner = ForeignKeyGraph()
+    try:
+        numbers = owner.new_array()
+        for value in (2**61 + 1, 1.5, 2**61, -2, 1.0):
+            owner.append_array_item(numbers, value)
+        assert list(owner.sorted_numeric_array(numbers)) == [-2, 1.0, 1.5, 2**61, 2**61 + 1]
+        replaced = owner.new_array()
+        replaced.append({"original": True})
+        borrowed = iter(replaced)
+        stale = next(borrowed)
+        replaced[0] = {"replacement": True}
+        assert isinstance(stale, dict)
+        stale["stale"] = True
+        borrowed.close()
+        assert replaced[0] == {"replacement": True}
+        replaced.insert(0, {"header": True})
+        assert list(replaced) == [{"header": True}, {"replacement": True}]
+        nested: GeneratedValue = 7
+        for _ in range(2_003):
+            nested = {"child": nested}
+        deep = owner.new_array()
+        owner.append_array_item(deep, nested)
+        pieces = list(_json_chunks(deep, pretty=False))
+        assert pieces.count("{") == 2_003
+        assert pieces.count("}") == 2_003
+        assert "7" in pieces
+        repeated = {"leaf": True}
+        assert sum(isinstance(value, dict) for value in walk_generated_values([repeated, repeated])) == 2
+        cyclic = owner.new_array()
+        owner.append_array_item(cyclic, cyclic)
+        with pytest.raises(ValueError, match="cyclic"):
+            list(walk_generated_values(cyclic))
+        ordinary: list[object] = []
+        ordinary.append(ordinary)
+        with pytest.raises(ValueError, match="cyclic"):
+            list(walk_generated_values(ordinary))
+    finally:
+        owner.close()
+
+
+# This bounded-memory trace includes thousands of native field draws and the
+# final streaming serialization. Its execution budget remains finite.
+@pytest.mark.parametrize(
+    "provider",
+    [
+        "claude-ai",
+        pytest.param("codex", marks=pytest.mark.timeout(600)),
+        pytest.param("chatgpt", marks=pytest.mark.timeout(600)),
+    ],
+)
+def test_record_containers_use_the_original_native_session_driver(tmp_path: Path, provider: str) -> None:
+    import tracemalloc
+
+    count = 6_003
+    from polylogue.schemas.generation.schema_builder import generate_schema_from_samples
+    from polylogue.schemas.synthetic.authored_selection import authored_schema_selection
+
+    if provider == "claude-ai":
+        # This neutral container contract declares its actual native envelope
+        # and message fields before draws; it is not an operator population.
+        schema = generate_schema_from_samples(
+            [
+                {
+                    "uuid": "native-records",
+                    "chat_messages": [
+                        {
+                            "uuid": "00000000-0000-4000-8000-000000000001",
+                            "sender": "human",
+                            "text": "neutral message",
+                        }
+                    ],
+                }
+            ],
+            provider=provider,
+            max_stats_samples=0,
+        )
+        selection = SyntheticSchemaSelection(
+            provider, "neutral-native-records", None, schema, PROVIDER_WIRE_FORMATS[provider]
+        )
+    else:
+        selection = authored_schema_selection(
+            provider, "demo" if provider == "chatgpt" else "tool-heavy", session_native_ids=("native-records",)
+        )
+    spec = CorpusSpec.for_provider(
+        provider, count=1, messages_min=count, messages_max=count, seed=19, session_native_ids=("native-records",)
+    )
+    tracemalloc.start()
+    try:
+        written = SyntheticCorpus.write_selection_artifacts(selection, spec, tmp_path, prefix=provider)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * 1024 * 1024
+    assert written.report.generated_count == 1
+    assert written.facts[0].message_count == count
+    raw = written.session_files[0].read_bytes()
+    if provider == "claude-ai":
+        document = json.loads(raw)
+        assert len(document["chat_messages"]) == count
+        assert document["uuid"] == "native-records"
+        assert document["chat_messages"][-1]["sender"] == "human"
+    elif provider == "chatgpt":
+        document = json.loads(raw)
+        nodes = document["mapping"]
+        assert len(nodes) == count
+        assert document["id"] == "native-records"
+        assert document["current_node"] in nodes
+        roots = 0
+        for key, node in nodes.items():
+            assert node["id"] == key
+            if node["parent"] is None:
+                roots += 1
+            else:
+                assert key in nodes[node["parent"]]["children"]
+            for child in node["children"]:
+                assert nodes[child]["parent"] == key
+        assert roots == 1
+    else:
+        records = [json.loads(line) for line in raw.splitlines()]
+        assert len(records) == count + 1
+        assert records[0]["payload"]["id"] == "native-records"
+        assert all(record["type"] == "response_item" for record in records[1:])
+        assert records[-1]["payload"]["role"] == "user"
+
+
+def test_dynamic_object_fanout_is_retained_and_streamed_on_the_original_owner() -> None:
+    import random
+    import tracemalloc
+
+    from polylogue.schemas.synthetic.models import GeneratedRecord
+    from polylogue.schemas.synthetic.text_value import JoinedText, SampledText
+
+    count = 10_003
+    length = 4_099
+    schema: SchemaRecord = {
+        "type": "object",
+        "additionalProperties": {
+            "type": "string",
+            "x-polylogue-observed-distribution": {
+                "string_length": {"count": 1, "histogram": [[12, 1]], "log_base": 2, "min": length, "max": length},
+            },
+        },
+        "x-polylogue-observed-distribution": {
+            "object_fanout": {"count": 1, "histogram": [[13, 1]], "log_base": 2, "min": count, "max": count},
+        },
+    }
+    corpus = SyntheticCorpus(schema, WireFormat(encoding="json"), "chatgpt")
+    tracemalloc.start()
+    try:
+        data = corpus._generate_from_schema(schema, random.Random(31))
+        assert isinstance(data, GeneratedRecord)
+        assert len(data) == count
+        final_value = data["key-10002"]
+        assert isinstance(final_value, str | SampledText | JoinedText) and len(final_value) == length
+        encoded = sum(len(chunk) for chunk in corpus.iter_serialized_chunks(data))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+        corpus._relation_solver.close()
+    assert peak < 4 * 1024 * 1024
+    assert encoded > count * length
+    with pytest.raises(RuntimeError, match="original relation owner"):
+        len(data)
+
+
+def test_lazy_session_driver_requires_consumption_and_closes_the_original_owner() -> None:
+    from itertools import islice
+
+    from polylogue.schemas.synthetic.models import GeneratedRecord
+    from polylogue.schemas.synthetic.text_value import SampledText
+
+    length = 2_000_000_003
+    schema: SchemaRecord = {
+        "type": "object",
+        "properties": {
+            "body": {
+                "type": "string",
+                "x-polylogue-observed-distribution": {
+                    "string_length": {
+                        "count": 1,
+                        "histogram": [[30, 1]],
+                        "log_base": 2,
+                        "min": length,
+                        "max": length,
+                    }
+                },
+            }
+        },
+    }
+    corpus = SyntheticCorpus(schema, WireFormat(encoding="json"), "test")
+    tracemalloc.start()
+    try:
+        sessions = corpus.iter_sessions(seed=113)
+        first = next(sessions)
+        assert isinstance(first.data, GeneratedRecord)
+        body = first.data["body"]
+        assert isinstance(body, SampledText) and len(body) == length
+        prefix = list(islice(first.chunks, 4))
+        assert sum(map(len, prefix)) < 10_000
+        competing = corpus.iter_sessions(count=1, seed=114)
+        with pytest.raises(ValueError, match="already active"):
+            next(competing)
+        assert first.data["body"] == body
+        with pytest.raises(ValueError, match="consume"):
+            next(sessions)
+        with pytest.raises(RuntimeError, match="original"):
+            first.data["body"]
+        assert next(first.chunks, None) is None
+        # A fresh original scope is lawful after the failed partial consumer.
+        retry = corpus.iter_sessions(count=1, seed=113)
+        retried = next(retry)
+        assert list(islice(retried.chunks, 4)) == prefix
+        retry.close()
+        assert isinstance(retried.data, GeneratedRecord)
+        with pytest.raises(RuntimeError, match="original"):
+            retried.data["body"]
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * 1024 * 1024
+
+
+def test_lazy_session_driver_returns_actual_finite_completion_and_matches_fixture_bytes() -> None:
+    from polylogue.schemas.synthetic.models import GeneratedRecord, SyntheticGenerationReport
+
+    schema: SchemaRecord = {
+        "type": "object",
+        "properties": {
+            "body": {
+                "type": "string",
+                "x-polylogue-values": ["neutral body"],
+            }
+        },
+    }
+    corpus = SyntheticCorpus(schema, WireFormat(encoding="json"), "test")
+    sessions = corpus.iter_sessions(count=3, seed=127)
+    raw_items: list[bytes] = []
+    report: SyntheticGenerationReport | None = None
+    while True:
+        try:
+            item = next(sessions)
+        except StopIteration as completed:
+            report = completed.value
+            break
+        assert item.index == len(raw_items)
+        raw_items.append(b"".join(item.chunks))
+    assert isinstance(report, SyntheticGenerationReport)
+    assert report.requested_count == report.generated_count == 3
+    assert all(json.loads(raw) == {"body": "neutral body"} for raw in raw_items)
+    assert isinstance(item.data, GeneratedRecord)
+    with pytest.raises(RuntimeError, match="original"):
+        item.data["body"]
+    assert corpus.generate_batch(count=3, seed=127).raw_items == raw_items
+
+
+def test_original_cohort_prefix_cells_survive_scope_advance_without_repointing() -> None:
+    from polylogue.schemas.synthetic.relations import ForeignKeyGraph
+
+    owner = ForeignKeyGraph()
+    try:
+        original = owner.new_record({})
+        original["value"] = "first scope"
+        connection = owner._connection
+        root = owner.retain_session_prefix(
+            "root", parent_prefix=None, inherited_messages=0, own_messages=2, record_count=3
+        )
+        owner.retain_prefix_chunk(
+            root, 0, 0, b'{"role":"assistant","content":[{"type":"tool_use","id":"first-tool"}]}\n'
+        )
+        owner.retain_prefix_chunk(
+            root, 1, 0, b'{"role":"assistant","content":[{"type":"tool_use","id":"second-tool"}]}\n'
+        )
+        owner.retain_prefix_tool(root, "call", 0, 0, "first-tool")
+        owner.retain_prefix_tool(root, "call", 1, 0, "second-tool")
+        owner.complete_session_prefix(root)
+        owner.advance_scope()
+        assert owner._connection is connection
+        with pytest.raises(RuntimeError):
+            original["value"]
+
+        child = owner.retain_session_prefix(
+            "child", parent_prefix=root, inherited_messages=1, own_messages=1, record_count=3
+        )
+        owner.retain_prefix_chunk(
+            child, 0, 0, b'{"role":"assistant","content":[{"type":"tool_use","id":"child-tool"}]}\n'
+        )
+        owner.retain_prefix_tool(child, "call", 0, 0, "child-tool")
+        with pytest.raises(ValueError):
+            list(owner.iter_prefix_chunks(child, 2))
+        owner.complete_session_prefix(child)
+        owner.advance_scope()
+        neighbour = owner.retain_session_prefix(
+            "neighbour", parent_prefix=None, inherited_messages=0, own_messages=1, record_count=2
+        )
+        owner.retain_prefix_chunk(neighbour, 0, 0, b'{"role":"user","content":["neighbour"]}\n')
+        owner.complete_session_prefix(neighbour)
+        owner.advance_scope()
+        assert owner._connection is connection
+        assert (
+            b"".join(owner.iter_prefix_chunks(child, 2))
+            == b'{"role":"assistant","content":[{"type":"tool_use","id":"first-tool"}]}\n{"role":"assistant","content":[{"type":"tool_use","id":"child-tool"}]}\n'
+        )
+        assert tuple(owner.iter_prefix_tools(child, 2, "call")) == ("first-tool", "child-tool")
+        assert b"second-tool" not in b"".join(owner.iter_prefix_chunks(child, 1))
+        assert b"".join(owner.iter_prefix_chunks(neighbour, 1)) == b'{"role":"user","content":["neighbour"]}\n'
+        with pytest.raises(ValueError):
+            list(owner.iter_prefix_chunks(child, 3))
+    finally:
+        owner.close()
+    with pytest.raises(RuntimeError):
+        list(owner.iter_prefix_chunks(child, 1))
+
+
+def test_prefix_identity_recipe_keeps_original_shape_and_history_without_hydration() -> None:
+    from polylogue.schemas.synthetic.relations import ForeignKeyGraph
+    from polylogue.schemas.synthetic.text_value import SampledText
+
+    owner = ForeignKeyGraph()
+    identity = SampledText(2_000_000_000, "neutral")
+    schema: SchemaRecord = {"type": "string"}
+    try:
+        prefix = owner.retain_session_prefix(
+            "neutral-parent", parent_prefix=None, inherited_messages=0, own_messages=1, record_count=2
+        )
+        owner.retain_prefix_chunk(prefix, 0, 0, b"neutral original message\n")
+        owner.retain_prefix_tool(prefix, "call", 0, 0, identity, schema=schema)
+        owner.retain_prefix_tool(prefix, "result", 0, 1, identity, schema=schema, result_mode="null:inline")
+        owner.complete_session_prefix(prefix)
+        owner.advance_scope()
+        tracemalloc.start()
+        owner.restore_prefix_tool_context(prefix, 1)
+        selected, selected_schema = owner.select_tool_identity(
+            "both", random.Random(11), prior_result_mode="null:inline"
+        )
+        assert selected == identity and selected_schema == schema
+        assert len(selected) == 2_000_000_000
+        assert tuple(owner.iter_prefix_tools(prefix, 1, "call")) == (identity,)
+        _, peak = tracemalloc.get_traced_memory()
+        assert peak < 1024 * 1024
+    finally:
+        tracemalloc.stop()
+        owner.close()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import gzip
+import io
 import json
 import shutil
 import tempfile
@@ -47,6 +48,7 @@ from polylogue.schemas.packages import (
     SchemaVersionPackage,
 )
 from polylogue.schemas.privacy import sanitize_committed_elements, strip_unpublishable_vocabularies
+from polylogue.schemas.workload_profile_rows import WorkloadProfile, iter_workload_profile_chunks, read_workload_profile
 
 SCHEMA_DIR = Path(__file__).parent / "providers"
 SchemaProvider = Provider | str
@@ -339,7 +341,7 @@ class SchemaRegistry:
         self._storage_root = storage_root
         self._catalog_cache: dict[str, SchemaPackageCatalog | None] = {}
         self._schema_cache: dict[SchemaCacheKey, PublicSchemaDocument | None] = {}
-        self._workload_profile_cache: dict[WorkloadProfileCacheKey, PublicSchemaDocument | None] = {}
+        self._workload_profile_cache: dict[WorkloadProfileCacheKey, WorkloadProfile | None] = {}
         self._snapshots: dict[Path, dict[str, bytes]] = {}
         self._current_snapshot_roots: dict[str, tuple[Path, ...]] = {}
         self._fixed_snapshot: ProviderSchemaSnapshot | None = None
@@ -406,6 +408,16 @@ class SchemaRegistry:
         if not isinstance(value, dict):
             raise ValueError(f"Expected JSON object in {relative}")
         return {str(key): item for key, item in value.items()}
+
+    def _snapshot_workload_profile(self, provider_dir: Path, relative: str) -> WorkloadProfile | None:
+        payload = self._snapshot(provider_dir).get(relative)
+        if payload is None:
+            return None
+        with io.BytesIO(payload) as retained:
+            if relative.endswith(".gz"):
+                with gzip.GzipFile(fileobj=retained, mode="rb") as decoded:
+                    return read_workload_profile(decoded)
+            return read_workload_profile(retained)
 
     def clear_cache(self) -> None:
         """Clear internal caches. Call after modifying schema packages."""
@@ -548,7 +560,7 @@ class SchemaRegistry:
         self,
         provider: str,
         version: str = "default",
-    ) -> PublicSchemaDocument | None:
+    ) -> WorkloadProfile | None:
         """Load the privacy-safe workload profile carried by a package."""
         provider_token = _provider_token(provider)
         cache_key = (provider_token, version)
@@ -559,14 +571,21 @@ class SchemaRegistry:
             self._workload_profile_cache[cache_key] = profile
             return profile
 
-    def _load_workload_profile(self, provider_token: str, *, version: str) -> PublicSchemaDocument | None:
+    def _load_workload_profile(self, provider_token: str, *, version: str) -> WorkloadProfile | None:
         package = self.get_package(provider_token, version=version)
         if package is None or package.workload_profile_file is None:
             return None
         provider_dir = self._provider_dir_for_package(provider_token, package.version)
         if provider_dir is None:
             return None
-        return self._snapshot_json(provider_dir, f"versions/{package.version}/{package.workload_profile_file}")
+        profile = self._snapshot_workload_profile(
+            provider_dir, f"versions/{package.version}/{package.workload_profile_file}"
+        )
+        if profile is not None:
+            from polylogue.schemas.generation.workload_profiles import require_cross_record_profile
+
+            require_cross_record_profile(profile)
+        return profile
 
     def list_versions(self, provider: str) -> list[str]:
         provider_token = _provider_token(provider)
@@ -616,8 +635,13 @@ class SchemaRegistry:
     def load_committed_schema_file(self, provider: str, version: str, schema_file: str) -> PublicSchemaDocument | None:
         return self._snapshot_json(self._committed_provider_dir(provider), f"versions/{version}/elements/{schema_file}")
 
-    def load_committed_version_document(self, provider: str, version: str, name: str) -> PublicSchemaDocument | None:
+    def load_committed_version_document(
+        self, provider: str, version: str, name: str
+    ) -> PublicSchemaDocument | WorkloadProfile | None:
         """Read a version-level committed artifact (e.g. a workload profile)."""
+        package = self.load_committed_package(provider, version)
+        if package is not None and name == package.workload_profile_file:
+            return self._snapshot_workload_profile(self._committed_provider_dir(provider), f"versions/{version}/{name}")
         return self._snapshot_json(self._committed_provider_dir(provider), f"versions/{version}/{name}")
 
     def list_providers(self) -> list[str]:
@@ -689,12 +713,12 @@ class SchemaRegistry:
                     f"{package.workload_profile_file} but no workload profile was supplied"
                 )
             profile_path = package_dir / package.workload_profile_file
-            profile_path.write_bytes(
-                gzip.compress(
-                    json.dumps(dict(workload_profile), indent=2, sort_keys=True).encode("utf-8"),
-                    mtime=0,
-                )
-            )
+            with (
+                profile_path.open("wb") as destination,
+                gzip.GzipFile(fileobj=destination, mode="wb", mtime=0, filename="") as compressed,
+            ):
+                for chunk in iter_workload_profile_chunks(workload_profile):
+                    compressed.write(chunk)
 
         manifest_path = self._package_manifest_path(provider_token, package.version)
         manifest_path.write_text(json.dumps(package.to_dict(), indent=2), encoding="utf-8")
@@ -723,8 +747,12 @@ class SchemaRegistry:
                 f"{package.workload_profile_file} but no workload profile was supplied"
             )
         if workload_profile is not None:
+            from polylogue.schemas.generation.workload_profiles import require_cross_record_profile
+
+            require_cross_record_profile(workload_profile)
             try:
-                json.dumps(dict(workload_profile), sort_keys=True)
+                for _ in iter_workload_profile_chunks(workload_profile):
+                    pass
             except (TypeError, ValueError) as exc:
                 raise ValueError(
                     f"Package {package.provider}/{package.version} has a non-JSON workload profile"
@@ -959,14 +987,9 @@ class SchemaRegistry:
                     package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
                 )
                 if redact_observed_numeric_values:
-                    from polylogue.schemas.numeric_privacy import (
-                        redact_observed_numeric_schema,
-                        redact_observed_numeric_workload,
-                    )
+                    from polylogue.schemas.numeric_privacy import redact_observed_numeric_schema
 
                     merged = {kind: redact_observed_numeric_schema(value) for kind, value in merged.items()}
-                    if profile is not None:
-                        profile = redact_observed_numeric_workload(profile)
                 self._preflight_package_write(package, element_schemas=merged, workload_profile=profile)
                 prepared.append((package, merged, profile))
 
@@ -984,7 +1007,7 @@ class SchemaRegistry:
                         raise ValueError(f"Existing package {provider_token}/{prior.version} is incomplete")
                     historical_schemas[element.element_kind] = value
                 profile = (
-                    self._snapshot_json(
+                    self._snapshot_workload_profile(
                         self._provider_dir(provider_token), f"versions/{prior.version}/{prior.workload_profile_file}"
                     )
                     if prior.workload_profile_file is not None

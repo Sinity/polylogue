@@ -4,25 +4,32 @@ from __future__ import annotations
 
 import random
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Protocol, TypeAlias
 
-from polylogue.archive.raw_payload.decode import JSONValue
+from polylogue.schemas.synthetic.array_value import GeneratedArray
+from polylogue.schemas.synthetic.build_wire_formats import _wire_field, _wire_record, _wire_schema
+from polylogue.schemas.synthetic.classification import _schema_types
 from polylogue.schemas.synthetic.demo_themes import SessionTheme
-from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
+from polylogue.schemas.synthetic.models import GeneratedRecord, SchemaRecord, SchemaValue, SyntheticGenerationState
+from polylogue.schemas.synthetic.models import GeneratedValue as JSONValue
+from polylogue.schemas.synthetic.record_profiles import PublicRecordPlan
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 from polylogue.schemas.synthetic.wire_formats import WireFormat
 
-SyntheticRecord: TypeAlias = dict[str, JSONValue]
+SyntheticRecord: TypeAlias = dict[str, JSONValue] | GeneratedRecord
 
 
 class _WireFormatContext(Protocol):
     provider: str
     schema: SchemaRecord
+    workload_profile: Mapping[str, object] | None
     wire_format: WireFormat
     _semantic_gen: SemanticValueGenerator | None
-    _active_record_bucket: tuple[str, str] | None
+    _public_record_plan: PublicRecordPlan | None
     _coverage_witness_mode: bool
+    _session_native_id: str | None
+    _generation_state: SyntheticGenerationState
 
     def _generate_from_schema(
         self,
@@ -30,8 +37,6 @@ class _WireFormatContext(Protocol):
         rng: random.Random,
         *,
         skip_keys: set[str] | None = ...,
-        depth: int = ...,
-        max_depth: int = ...,
         path: str = ...,
     ) -> JSONValue: ...
 
@@ -47,28 +52,65 @@ class _WireFormatContext(Protocol):
 
     def _role_cycle(self) -> list[str]: ...
 
-    def _profile_record_buckets(self) -> tuple[tuple[str, str], ...]: ...
+    def _start_public_record(self, rng: random.Random, schema: SchemaRecord) -> None: ...
+
+    def _finish_public_record(self, record: SyntheticRecord) -> None: ...
 
 
 def _coerce_record(value: JSONValue) -> SyntheticRecord:
-    return value if isinstance(value, dict) else {}
+    if not isinstance(value, dict | GeneratedRecord):
+        raise ValueError("selected record carrier must be an object")
+    return value
 
 
 def _coerce_schema(value: SchemaValue | object) -> SchemaRecord:
     return value if isinstance(value, dict) else {}
 
 
+def _wire_link(self: _WireFormatContext, record: SyntheticRecord, field: str, value: JSONValue) -> None:
+    """The graph owns links, conditioned on declared types and vocabulary."""
+    schema = _wire_schema(self, record, (field,))
+    if field in record and record[field] is None and value is not None:
+        raise ValueError("selected null conflicts with a required graph link")
+    pending: list[Iterator[tuple[SchemaRecord, JSONValue]]] = [iter(((schema, value),))]
+    while pending:
+        try:
+            current, chosen = next(pending[-1])
+        except StopIteration:
+            pending.pop()
+            continue
+        kinds = _schema_types(current)
+        kind = (
+            "null"
+            if chosen is None
+            else "boolean"
+            if isinstance(chosen, bool)
+            else "string"
+            if isinstance(chosen, str)
+            else "array"
+            if isinstance(chosen, list | GeneratedArray)
+            else "object"
+            if isinstance(chosen, dict | GeneratedRecord)
+            else "integer"
+            if isinstance(chosen, int)
+            else "number"
+        )
+        if kinds and kind not in kinds and not (kind == "integer" and "number" in kinds):
+            raise ValueError("graph link conflicts with the declared wire type")
+        labels = current.get("x-polylogue-values")
+        if isinstance(labels, list) and labels and chosen not in labels:
+            raise ValueError("graph link conflicts with the declared vocabulary")
+        if isinstance(chosen, list | GeneratedArray):
+            items = _coerce_schema(current.get("items"))
+            pending.append((items, item) for item in chosen)
+    record[field] = value
+
+
 def _child_id_list(record: SyntheticRecord, field_name: str) -> list[JSONValue]:
     existing = record.get(field_name)
     if isinstance(existing, list) and all(isinstance(item, str) for item in existing):
         return existing
-    children: list[JSONValue] = []
-    record[field_name] = children
-    return children
-
-
-def _message_payloads(records: list[SyntheticRecord]) -> list[JSONValue]:
-    return list(records)
+    raise ValueError("selected graph children must be a string list")
 
 
 def _reset_semantic_generator(
@@ -131,56 +173,82 @@ def _generate_tree_json(
     base_ts = rng.uniform(1670000000, 1760000000)
     _reset_semantic_generator(self, rng=rng, theme=theme, base_ts=base_ts, roles=roles)
 
-    top = self._generate_from_schema(self.schema, rng, skip_keys={tree_cfg.container_path})
-    if not isinstance(top, dict):
-        top = {}
-    top_record = _coerce_record(top)
     properties = _coerce_schema(self.schema.get("properties"))
+    original_identity = self._session_native_id
+    identity_field = self.wire_format.document_session_field
+    identity_fields = (
+        {identity_field}
+        if original_identity is not None and identity_field is not None and identity_field in properties
+        else set()
+    )
+    if original_identity is not None and not identity_fields:
+        raise ValueError("selected original document declares no native session identity")
+    top = self._generate_from_schema(
+        self.schema, rng, skip_keys={tree_cfg.container_path, "current_node", *identity_fields}
+    )
+    top_record = _coerce_record(top)
+    for field in identity_fields:
+        _wire_link(self, top_record, field, original_identity)
 
     container_schema = _coerce_schema(properties.get(tree_cfg.container_path))
     node_schema = _coerce_schema(container_schema.get("additionalProperties"))
-    nodes: list[SyntheticRecord] = []
+    owner = self._generation_state.relation_solver.fk_graph
+    nodes = owner.new_array()
+    graph_fields = {tree_cfg.parent_field}
+    if tree_cfg.children_field:
+        graph_fields.add(tree_cfg.children_field)
 
     for i in range(n_messages):
+        from polylogue.schemas.synthetic.authored_selection import authored_record_schema
+
+        original_node_schema = authored_record_schema(self.workload_profile, node_schema, i)
+        self._start_public_record(rng, original_node_schema)
         node_path = "$.properties." + tree_cfg.container_path + ".additionalProperties.*"
         node = _coerce_record(
             self._generate_from_schema(
-                node_schema,
+                original_node_schema,
                 rng,
+                skip_keys=graph_fields,
                 path=node_path if self._coverage_witness_mode else "$",
             )
         )
 
-        node_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
-        node[tree_cfg.key_field] = node_id
+        node_id = _wire_field(self, node, tree_cfg.key_field, rng, str(uuid.UUID(int=rng.getrandbits(128), version=4)))
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("tree node identity must be a unique nonempty string")
+        owner.claim_record_id(nodes, node_id)
 
         if i == 0:
-            node[tree_cfg.parent_field] = None
+            _wire_link(self, node, tree_cfg.parent_field, None)
             if tree_cfg.children_field:
-                node[tree_cfg.children_field] = []
+                _wire_link(self, node, tree_cfg.children_field, [])
         else:
             parent_idx = rng.randint(max(0, i - 3), i - 1)
-            parent = nodes[parent_idx]
-            node[tree_cfg.parent_field] = parent[tree_cfg.key_field]
+            parent = _coerce_record(nodes[parent_idx])
+            _wire_link(self, node, tree_cfg.parent_field, parent[tree_cfg.key_field])
             if tree_cfg.children_field:
-                _child_id_list(parent, tree_cfg.children_field).append(node_id)
-                node[tree_cfg.children_field] = []
+                _wire_link(
+                    self, parent, tree_cfg.children_field, [*_child_id_list(parent, tree_cfg.children_field), node_id]
+                )
+                _wire_link(self, node, tree_cfg.children_field, [])
 
         role = roles[i % len(roles)]
         self._ensure_wire_format(node, role, rng, i, base_ts=base_ts, theme=theme)
         _advance_semantic_turn(self)
         nodes.append(node)
 
-    children_by_id: SyntheticRecord = {}
-    for node in nodes:
+    self._public_record_plan = None
+    children_by_id: SyntheticRecord = owner.new_record({})
+    for raw_node in nodes:
+        node = _coerce_record(raw_node)
         node_id_value = node.get(tree_cfg.key_field)
         if isinstance(node_id_value, str):
             children_by_id[node_id_value] = node
     top_record[tree_cfg.container_path] = children_by_id
     if "current_node" in properties:
-        top_record["current_node"] = nodes[-1][tree_cfg.key_field]
+        _wire_link(self, top_record, "current_node", _coerce_record(nodes[-1])[tree_cfg.key_field])
     if self.provider == "chatgpt":
-        top_record["id"] = str(uuid.UUID(int=rng.getrandbits(128), version=4))
+        _wire_field(self, top_record, "id", rng, str(uuid.UUID(int=rng.getrandbits(128), version=4)))
         # Conversation timestamps are epoch floats, but only where the selected
         # element declares a numeric field; other ChatGPT elements (the export
         # asset index) type these fields differently, and a default must not
@@ -189,9 +257,14 @@ def _generate_tree_json(
         for field_name, value in defaults.items():
             numeric = None if field_name in top_record else _declared_numeric(properties.get(field_name))
             if numeric is not None:
-                top_record[field_name] = int(value) if numeric == "integer" else value
-    if theme is not None and "title" in _coerce_schema(self.schema.get("properties")):
-        top_record["title"] = theme.title
+                _wire_field(
+                    self,
+                    top_record,
+                    field_name,
+                    rng,
+                    int(value) if numeric == "integer" else value,
+                    semantic_role="message_timestamp",
+                )
     return top_record
 
 
@@ -210,23 +283,37 @@ def _generate_linear_json(
 
     if schema_has_path:
         item_schema = _coerce_schema(msgs_schema.get("items"))
-        top = self._generate_from_schema(self.schema, rng, skip_keys={msgs_parts[0]})
+        identity_field = self.wire_format.document_session_field
+        identity_fields = (
+            {identity_field} if self._session_native_id is not None and identity_field is not None else set()
+        )
+        properties = _coerce_schema(self.schema.get("properties"))
+        if identity_fields and identity_field not in properties:
+            raise ValueError("selected original document declares no native session identity")
+        top = self._generate_from_schema(self.schema, rng, skip_keys={msgs_parts[0], *identity_fields})
     else:
         item_schema = self.schema
         top = {}
 
-    if not isinstance(top, dict):
-        top = {}
     top_record = _coerce_record(top)
+    if self._session_native_id is not None:
+        identity_field = self.wire_format.document_session_field
+        if not schema_has_path or identity_field is None:
+            raise ValueError("selected original document declares no native session identity")
+        _wire_link(self, top_record, identity_field, self._session_native_id)
 
-    messages: list[SyntheticRecord] = []
+    messages = self._generation_state.relation_solver.fk_graph.new_array()
     for i in range(n_messages):
+        from polylogue.schemas.synthetic.authored_selection import authored_record_schema
+
+        original_item_schema = authored_record_schema(self.workload_profile, item_schema, i)
+        self._start_public_record(rng, original_item_schema)
         item_path = (
             "$.properties." + ".properties.".join(msgs_parts) + ".items[*]" if self._coverage_witness_mode else "$"
         )
         msg = _coerce_record(
             self._generate_from_schema(
-                item_schema,
+                original_item_schema,
                 rng,
                 path=item_path,
             )
@@ -236,64 +323,60 @@ def _generate_linear_json(
         _advance_semantic_turn(self)
         messages.append(msg)
 
+    self._public_record_plan = None
     target: SyntheticRecord = top_record
     for index, part in enumerate(msgs_parts):
         if index == len(msgs_parts) - 1:
-            target[part] = _message_payloads(messages)
+            target[part] = messages
         else:
-            nested = _coerce_record(target.get(part))
-            target[part] = nested
-            target = nested
+            target = _wire_record(self, top_record, tuple(msgs_parts[: index + 1]), rng)
 
-    if theme is not None and self.provider == "claude-ai" and "name" in _coerce_schema(self.schema.get("properties")):
-        top_record["name"] = theme.title
     return top_record
 
 
 def _generate_jsonl_records(
     self: _WireFormatContext, n_messages: int, rng: random.Random, *, theme: SessionTheme | None = None
-) -> list[SyntheticRecord]:
+) -> GeneratedArray:
     tree_cfg = self.wire_format.tree
-    records: list[SyntheticRecord] = []
+    owner = self._generation_state.relation_solver.fk_graph
+    records = owner.new_array()
+    graph_fields = {tree_cfg.parent_field} if tree_cfg else set()
+    if tree_cfg and tree_cfg.session_field:
+        graph_fields.add(tree_cfg.session_field)
     roles = self._role_cycle()
-    session_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
+    session_id = self._session_native_id or str(uuid.UUID(int=rng.getrandbits(128), version=4))
     base_ts = rng.uniform(1670000000, 1760000000)
     _reset_semantic_generator(self, rng=rng, theme=theme, base_ts=base_ts, roles=roles)
 
-    profile_buckets = self._profile_record_buckets()
-    record_count = max(n_messages, len(profile_buckets))
-    for i in range(record_count):
-        self._active_record_bucket = profile_buckets[i % len(profile_buckets)] if profile_buckets else None
-        record = _coerce_record(self._generate_from_schema(self.schema, rng))
+    for i in range(n_messages):
+        from polylogue.schemas.synthetic.authored_selection import authored_record_schema
 
-        if self._active_record_bucket is not None:
-            discriminator, value = self._active_record_bucket
-            record[discriminator] = value
+        record_schema = authored_record_schema(self.workload_profile, self.schema, i)
+        self._start_public_record(rng, record_schema)
+        record = _coerce_record(self._generate_from_schema(record_schema, rng, skip_keys=graph_fields))
 
         role = roles[i % len(roles)]
         self._ensure_wire_format(record, role, rng, i, base_ts=base_ts, theme=theme)
         _advance_semantic_turn(self)
 
         if tree_cfg:
-            node_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
-            record[tree_cfg.key_field] = node_id
+            node_id = _wire_field(
+                self, record, tree_cfg.key_field, rng, str(uuid.UUID(int=rng.getrandbits(128), version=4))
+            )
+            if not isinstance(node_id, str) or not node_id:
+                raise ValueError("record node identity must be a unique nonempty string")
+            owner.claim_record_id(records, node_id)
             if i == 0:
-                record[tree_cfg.parent_field] = None
+                _wire_link(self, record, tree_cfg.parent_field, None)
             else:
-                record[tree_cfg.parent_field] = records[i - 1].get(tree_cfg.key_field)
+                _wire_link(self, record, tree_cfg.parent_field, _coerce_record(records[i - 1]).get(tree_cfg.key_field))
             if tree_cfg.session_field:
-                record[tree_cfg.session_field] = session_id
+                _wire_link(self, record, tree_cfg.session_field, session_id)
 
-        if theme is not None:
-            payload = record.get("payload")
-            if isinstance(payload, dict) and "instructions" in payload:
-                payload["instructions"] = theme.instructions
-            if "instructions" in record:
-                record["instructions"] = theme.instructions
-
+        self._finish_public_record(record)
         records.append(record)
 
-    self._active_record_bucket = None
+    self._public_record_plan = None
     return records
 
 

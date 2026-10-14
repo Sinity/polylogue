@@ -9,10 +9,8 @@ from polylogue.schemas.inference.relational.models import (
     ForeignKeyRelation,
     MutualExclusion,
     RelationalAnnotations,
-    StringLengthProfile,
     TimeDeltaRelation,
 )
-from polylogue.schemas.inference.relational.strings import detect_string_lengths
 from polylogue.schemas.inference.relational.time import detect_time_deltas
 
 
@@ -22,7 +20,6 @@ def infer_relations(stats: dict[str, FieldStats]) -> RelationalAnnotations:
         foreign_keys=detect_foreign_keys(stats),
         time_deltas=detect_time_deltas(stats),
         mutual_exclusions=detect_mutual_exclusions(stats),
-        string_lengths=detect_string_lengths(stats),
     )
 
 
@@ -30,7 +27,6 @@ __all__ = [
     "ForeignKeyRelation",
     "MutualExclusion",
     "RelationalAnnotations",
-    "StringLengthProfile",
     "TimeDeltaRelation",
     "infer_relations",
 ]

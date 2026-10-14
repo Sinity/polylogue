@@ -10,7 +10,6 @@ inference completion.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -48,6 +47,7 @@ from polylogue.schemas.synthetic.wire_formats import (
     wire_support_entry_key,
     wire_support_key,
 )
+from polylogue.schemas.workload_profile_rows import iter_workload_profile_chunks, read_workload_profile_document
 
 INFERRED_CORPUS_MANIFEST_SCHEMA_VERSION = 3
 UnsupportedCorpusReason: TypeAlias = Literal[
@@ -58,6 +58,7 @@ UnsupportedCorpusReason: TypeAlias = Literal[
     "unsupported_element",
     "missing_schema",
     "unsupported_json_schema_construct",
+    "missing_workload_profile",
 ]
 PackageReceipt: TypeAlias = JSONDocument
 
@@ -99,7 +100,7 @@ class InferredCorpusManifestEntry:
     spec: CorpusSpec | None = None
     unsupported: UnsupportedCorpusRecord | None = None
     generator_schema: SchemaRecord | None = None
-    workload_profile: SchemaRecord | None = None
+    workload_profile: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if (self.spec is None) == (self.unsupported is None):
@@ -168,13 +169,11 @@ class InferredCorpusManifest:
 
     @property
     def manifest_id(self) -> str:
-        encoded = _canonical_json(self._payload_without_id())
-        return f"manifest:sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+        return f"manifest:sha256:{_payload_digest(self._payload_without_id())}"
 
     @property
     def payload_sha256(self) -> str:
-        encoded = _canonical_json({"manifest_id": self.manifest_id, **self._payload_without_id()})
-        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        return _payload_digest({"manifest_id": self.manifest_id, **self._payload_without_id()})
 
     def _payload_without_id(self) -> dict[str, object]:
         return {
@@ -262,21 +261,11 @@ class InferredCorpusConvergenceHandoff:
     selections: tuple[SyntheticSchemaSelection, ...]
 
 
-def _canonical_json(payload: Mapping[str, object]) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-
-
-def _reject_json_constant(value: str) -> object:
-    raise ValueError(f"non-finite JSON constant is not permitted: {value}")
-
-
-def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON object key: {key!r}")
-        result[key] = value
-    return result
+def _payload_digest(payload: Mapping[str, object]) -> str:
+    hasher = hashlib.sha256()
+    for chunk in iter_workload_profile_chunks(payload, normalize_unicode=False):
+        hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def _manifest_entry_from_payload(payload: object) -> InferredCorpusManifestEntry:
@@ -357,9 +346,7 @@ def _manifest_entry_from_payload(payload: object) -> InferredCorpusManifestEntry
             key=key,
             spec=spec,
             generator_schema=cast(SchemaRecord, dict(raw_schema)),
-            workload_profile=(
-                cast(SchemaRecord, dict(raw_workload_profile)) if isinstance(raw_workload_profile, Mapping) else None
-            ),
+            workload_profile=(raw_workload_profile if isinstance(raw_workload_profile, Mapping) else None),
         )
     if supported is not False:
         raise ValueError("manifest entry supported must be boolean")
@@ -391,9 +378,10 @@ def write_inferred_corpus_manifest(manifest: InferredCorpusManifest, path: Path)
     """Persist one canonical manifest payload with an independently checked hash."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(manifest.to_payload(), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
-    )
+    with path.open("wb") as destination:
+        for chunk in iter_workload_profile_chunks(manifest.to_payload(), normalize_unicode=False):
+            destination.write(chunk)
+        destination.write(b"\n")
 
 
 def read_inferred_corpus_manifest(
@@ -405,12 +393,9 @@ def read_inferred_corpus_manifest(
     """Read and validate a persisted manifest before exposing executable rows."""
 
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=_reject_duplicate_json_keys,
-            parse_constant=_reject_json_constant,
-        )
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        with path.open("rb") as captured:
+            payload = read_workload_profile_document(captured)
+    except (OSError, ValueError) as exc:
         raise ValueError(f"unable to read inferred corpus manifest {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("inferred corpus manifest root must be a JSON object")
@@ -812,6 +797,14 @@ def _compile_entry(
         raise AssertionError("supported manifest entry lost schema or wire format")
     profile_loader = getattr(registry, "get_workload_profile", None)
     workload_profile = profile_loader(provider, package.version) if callable(profile_loader) else None
+    if not isinstance(workload_profile, Mapping):
+        return InferredCorpusManifestEntry(
+            key=key,
+            unsupported=UnsupportedCorpusRecord(
+                "missing_workload_profile",
+                ("catalog metadata has no measured generation evidence; re-infer the package",),
+            ),
+        )
     spec = CorpusSpec.for_provider(
         provider,
         package_version=package.version,
@@ -824,15 +817,15 @@ def _compile_entry(
         tags=("inferred", "schema", "synthetic", "manifest"),
     )
     # Construct the production generator against the exact package/version/
-    # element.  No generation is performed here, so compiling the receipt does
-    # not turn an unverified catalog into an inference claim.
+    # element and require a real witness. Catalog identity alone cannot supply
+    # the measured evidence needed by the generator.
     selection = SyntheticSchemaSelection(
         provider=provider,
         package_version=package.version,
         element_kind=element.element_kind,
         schema=schema,
         wire_format=wire_format,
-        workload_profile=workload_profile if isinstance(workload_profile, dict) else None,
+        workload_profile=workload_profile,
     )
     witness = SyntheticCorpus.from_selection(selection).generate(
         count=1,
@@ -847,7 +840,7 @@ def _compile_entry(
         key=key,
         spec=spec,
         generator_schema=schema,
-        workload_profile=workload_profile if isinstance(workload_profile, dict) else None,
+        workload_profile=workload_profile,
     )
 
 

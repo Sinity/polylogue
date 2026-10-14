@@ -3220,3 +3220,88 @@ def test_incompatible_receipt_format_is_rejected_before_refresh(
         assert not comparable
         assert result == "NOT COMPARABLE: incompatible_receipt_format"
     assert json.loads(path.read_text(encoding="utf-8")) == receipt
+
+
+@pytest.mark.parametrize("provider", ["claude-code", "claude-ai"])
+def test_synthetic_corpus_streams_original_package_sessions_into_real_source_layout(provider: str) -> None:
+
+    from tempfile import TemporaryDirectory
+
+    from devtools.fresh_build_bench.corpus import corpus_from_synthetic
+    from polylogue.core.json import JSONDocument
+    from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.schemas.synthetic.wire_formats import WireFormat
+    from polylogue.sources.dispatch import parse_payload
+    from tests.infra.schema_workload_profiles import inferred_record_profile
+
+    body: JSONDocument = {"type": "string", "x-polylogue-values": ["neutral body"]}
+    identifier: JSONDocument = {"type": "string", "x-polylogue-format": "uuid4"}
+    if provider == "claude-code":
+        schema: JSONDocument = {
+            "type": "object",
+            "properties": {
+                "uuid": identifier,
+                "type": {"type": "string", "x-polylogue-values": ["user", "assistant"]},
+                "message": {"type": "object", "properties": {"content": body}},
+            },
+        }
+        samples: list[JSONDocument] = [
+            {"type": "user", "message": {"content": "neutral body"}},
+            {"type": "assistant", "message": {"content": "neutral body"}},
+        ]
+        element = "session_record_stream"
+        wire = WireFormat(encoding="jsonl")
+    else:
+        schema = {
+            "type": "object",
+            "properties": {
+                "uuid": identifier,
+                "name": {"type": "string", "x-polylogue-values": ["Neutral session"]},
+                "chat_messages": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "uuid": identifier,
+                            "sender": {"type": "string", "x-polylogue-values": ["human", "assistant"]},
+                            "text": body,
+                        },
+                    },
+                },
+            },
+        }
+        samples = [
+            {
+                "chat_messages": [
+                    {"sender": "human", "text": "neutral body"},
+                    {"sender": "assistant", "text": "neutral body"},
+                ]
+            }
+        ]
+        element = "session_document"
+        wire = WireFormat(encoding="json", messages_path="chat_messages")
+    profile = inferred_record_profile(provider, schema, samples, element=element)
+    corpus = SyntheticCorpus(schema, wire, provider, element_kind=element, workload_profile=profile)
+    expected = corpus.generate_batch(count=3, seed=21).raw_items
+    with TemporaryDirectory(
+        prefix="polylogue-synthetic-benchmark-", dir="/realm/tmp/work" if Path("/realm/tmp/work").is_dir() else None
+    ) as temporary:
+        root = Path(temporary)
+        manifest = corpus_from_synthetic(root / "corpus", corpus=corpus, seed=21, count=3)
+        verify_manifest(root / "corpus", manifest)
+        actual = [(root / "corpus" / row[0]).read_bytes() for row in manifest["files"]]
+        assert actual == expected
+        assert manifest["file_count"] == 3
+        assert manifest["total_bytes"] == sum(map(len, expected))
+        assert manifest["parameters"]["profile_id"] == profile["profile_id"]
+        assert not corpus._generation_state.driver_active
+        for raw in actual:
+            payload = [json.loads(line) for line in raw.splitlines()] if provider == "claude-code" else json.loads(raw)
+            sessions = parse_payload(provider, payload, "neutral-benchmark-source")
+            assert sessions and sum(len(session.messages) for session in sessions) == 2
+        with pytest.raises(ValueError):
+            corpus_from_synthetic(root / "corpus", corpus=corpus, seed=21, count=3)
+        missing = SyntheticCorpus(schema, wire, provider, element_kind=element)
+        with pytest.raises(ValueError):
+            corpus_from_synthetic(root / "missing", corpus=missing, seed=21, count=3)
+        assert not (root / "missing").exists()

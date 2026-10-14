@@ -48,7 +48,6 @@ from polylogue.schemas.inference.relational.inference import (
     ForeignKeyRelation,
     MutualExclusion,
     RelationalAnnotations,
-    StringLengthProfile,
     TimeDeltaRelation,
     infer_relations,
 )
@@ -193,7 +192,6 @@ __all__ = [
     "ForeignKeyRelation",
     "MutualExclusion",
     "RelationalAnnotations",
-    "StringLengthProfile",
     "TimeDeltaRelation",
     "infer_relations",
     # From schema_generation

@@ -35,7 +35,12 @@ def detect_mutual_exclusions(stats: dict[str, FieldStats]) -> list[MutualExclusi
                 if not stats_b or stats_b.present_count == 0:
                     continue
 
-                if stats_a.co_occurring_fields.get(name_b, 0) == 0:
+                measured = stats_a.co_occurring_fields.get(name_b)
+                if measured is None and stats_a.truncated_evidence.get("co_occurring_fields", 0):
+                    # An omitted bounded-counter key is unknown, not proof of
+                    # mutual exclusion. Complete raw counters can prove zero.
+                    continue
+                if (measured or 0) == 0:
                     exclusive_pairs.append((name_a, name_b))
 
         for name_a, name_b in exclusive_pairs:

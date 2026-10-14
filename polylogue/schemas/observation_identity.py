@@ -96,6 +96,8 @@ def derive_bundle_scope(
     normalized = str(path)
 
     if provider_token is Provider.CLAUDE_CODE:
+        if path.parent.name == "tool-results":
+            return path.parent.parent.name or None
         if "/subagents/" in normalized:
             return path.parent.parent.name or None
         if path.name in {"bridge-pointer.json", "sessions-index.json"}:
