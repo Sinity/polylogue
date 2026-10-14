@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.compute import BoundedComputeAdapter, retain_current_creator_settlement
 from polylogue.core.enums import Provider
 from polylogue.core.write_lease import coordinator_write_lease_active
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
@@ -712,7 +712,7 @@ async def test_failed_prepared_operation_settles_its_actual_creator_before_retur
         observed_cleanup.set()
 
     monkeypatch.setattr(coordinator, "_terminal_worker_completed", completed)
-    original_retain = coordinator_module.retain_current_creator_settlement
+    original_retain = retain_current_creator_settlement
 
     def retain(
         request: Callable[[], object], *, owner_count: int, failure_types: tuple[str, ...]
