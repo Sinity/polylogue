@@ -272,6 +272,18 @@ class EvidenceWindowBody(BaseModel):
         return self
 
 
+class SessionMetadataPage(_ReadResult):
+    """Independent coordinates for directories and explicitly requested User tags."""
+
+    working_directories_total: int = Field(ge=0)
+    user_tags_total: int | None = Field(default=None, ge=0)
+    limit: int = Field(ge=1)
+    offset: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=1)
+    continuation: str | None = None
+    complete: bool
+
+
 class SessionReadRequest(_ReadRequest):
     """One bounded read for an exact session reference.
 
@@ -288,7 +300,7 @@ class SessionReadRequest(_ReadRequest):
     #: one keeps its continuation's page. A stated limit beside a continuation
     #: narrows that page; the transport serializes every field, so a concrete
     #: default here would read as the caller asking to widen it.
-    limit: int | None = Field(default=None, ge=1, le=2000)
+    limit: int | None = Field(default=None, ge=0, le=2000)
     offset: int = Field(default=0, ge=0)
     #: A message reference whose window is wanted.  Declared here rather than
     #: only on the HTTP route so the CLI, the MCP ``read`` tool and the Python
@@ -300,11 +312,23 @@ class SessionReadRequest(_ReadRequest):
     session_projection: Literal["archive", "domain"] = "archive"
     selection_epoch: str | None = Field(default=None, min_length=1)
     continuation: str | None = None
+    metadata_continuation: str | None = None
+    metadata_limit: int | None = Field(default=None, ge=1)
+    include_user_tags: bool = True
 
     @model_validator(mode="after")
     def domain_projection_names_a_transcript(self) -> SessionReadRequest:
         if self.kind != "transcript" and self.session_projection != "archive":
             raise ValueError("selected domain hydration requires the transcript kind")
+        if self.metadata_continuation is not None and self.kind != "transcript":
+            raise ValueError("metadata continuation requires the transcript kind")
+        if self.limit == 0 and (
+            self.kind != "transcript"
+            or self.metadata_continuation is None
+            or self.continuation is not None
+            or self.around is not None
+        ):
+            raise ValueError("a zero-message window requires only a transcript metadata continuation")
         return self
 
     @model_validator(mode="after")
@@ -334,6 +358,7 @@ class SessionReadResult(_ReadResult):
 
     outcome: dict[str, object]
     session: dict[str, object]
+    metadata_page: SessionMetadataPage | None = None
     selection_epoch: str | None = None
     session_id: str = Field(min_length=1)
     kind: SessionReadKind = "transcript"
@@ -353,7 +378,7 @@ class SessionReadResult(_ReadResult):
     lineage_complete: bool = True
     lineage_truncation_reason: str | None = None
     total: int = Field(ge=0)
-    limit: int = Field(ge=1)
+    limit: int = Field(ge=0)
     offset: int = Field(ge=0)
     next_offset: int | None = Field(default=None, ge=0)
     continuation: str | None = None
@@ -361,6 +386,14 @@ class SessionReadResult(_ReadResult):
 
     @model_validator(mode="after")
     def continuation_accompanies_a_next_window(self) -> SessionReadResult:
+        if self.limit == 0 and (
+            self.kind != "transcript"
+            or self.metadata_page is None
+            or not self.complete
+            or self.offset != self.total
+            or self.session.get("messages") != []
+        ):
+            raise ValueError("a zero-message result must drain metadata at the completed message offset")
         if (self.continuation is None) != (self.next_offset is None):
             raise ValueError("a next window and its continuation are issued together")
         if self.complete != (self.next_offset is None):

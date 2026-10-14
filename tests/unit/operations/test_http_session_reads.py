@@ -54,18 +54,31 @@ def test_session_detail_reads_only_requested_composed_page_and_reports_true_tota
     with (
         patch("polylogue.operations.http_session_reads._semantic_placement", return_value=placement),
         patch("polylogue.operations.http_session_reads._message_payload", return_value={"id": "m1", "attachments": []}),
+        patch(
+            "polylogue.operations.session_metadata.read_session_metadata",
+            return_value=SimpleNamespace(
+                working_directories=("/workspace/project",),
+                user_tags=("review",),
+                page=SimpleNamespace(continuation=None),
+            ),
+        ),
     ):
         result = execute_http_session_detail(
             {"session_id": "child", "shape": "full", "limit": 1, "offset": 200},
             archive=archive,
             adapters=_adapters(),
         )
-    archive.read_session_page.assert_called_once_with("codex-session:child", limit=1, offset=200)
+    archive.read_session_page.assert_called_once_with(
+        "codex-session:child", limit=1, offset=200, include_working_directories=False
+    )
+    archive.read_summary.assert_called_once_with("codex-session:child", include_metadata=False)
     archive.read_session.assert_not_called()
     assert result is not None
     assert result["message_count"] == result["total"] == 201
     assert result["parent_id"] == "codex-session:parent"
     assert result["messages"] == [{"id": "m1", "attachments": []}]
+    assert result["tags"] == ["review"]
+    assert result["cwd_display"] == "/workspace/project"
 
 
 def test_session_summary_shape_does_not_hydrate_messages() -> None:

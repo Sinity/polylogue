@@ -158,7 +158,7 @@ def execute_http_session_detail(
         raise ValueError("session detail shape must be full or summary")
     try:
         session_id = archive.resolve_session_id(session_ref)
-        summary = archive.read_summary(session_id)
+        summary = archive.read_summary(session_id, include_metadata=shape == "summary")
     except KeyError:
         return None
     if shape == "summary":
@@ -185,10 +185,22 @@ def execute_http_session_detail(
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("session detail offset must be a non-negative integer")
     envelope = (
-        archive.read_session_page(session_id, limit=limit, offset=offset)
+        archive.read_session_page(session_id, limit=limit, offset=offset, include_working_directories=False)
         if limit is not None
         else archive.read_session(session_id)
     )
+    from polylogue.operations.session_metadata import read_session_metadata
+
+    directories: list[str] = []
+    tags: list[str] = []
+    token = None
+    while True:
+        metadata = read_session_metadata(archive, session_id, limit=200, continuation=token)
+        directories.extend(metadata.working_directories)
+        tags.extend(metadata.user_tags)
+        token = metadata.page.continuation
+        if token is None:
+            break
     placement = _semantic_placement(envelope)
     messages = [
         _message_payload(
@@ -229,11 +241,11 @@ def execute_http_session_detail(
         "messages": messages,
         "attachments": attachments,
         "semantic_entries": list(placement.session_entries),
-        "tags": list(summary.tags),
+        "tags": tags,
         "branch_type": envelope.branch_type,
         "parent_id": envelope.parent_session_id,
         "repo": envelope.git_repository_url,
-        "cwd_display": next(iter(envelope.working_directories), None),
+        "cwd_display": next(iter(directories), None),
         "model": None,
         "flags": None,
         "summary": None,

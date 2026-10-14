@@ -3308,7 +3308,41 @@ class ArchiveStore:
             include_accounting=include_accounting,
         )
 
-    def read_session_page(self, session_id: str, *, limit: int, offset: int) -> ArchiveSessionEnvelope:
+    def read_session_metadata_window(
+        self, session_id: str, *, limit: int, offset: int, include_user_tags: bool
+    ) -> tuple[tuple[str, ...], tuple[str, ...], int, int | None]:
+        """Read two ordered metadata relations without aggregating their values."""
+        if type(limit) is not int or limit < 1 or type(offset) is not int or offset < 0:
+            raise ValueError("metadata window requires a positive limit and non-negative offset")
+        self.check_operation_read()
+        directory_total = int(
+            self._conn.execute(
+                "SELECT COUNT(*) FROM session_working_dirs WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+        )
+        with closing(
+            self._conn.execute(
+                "SELECT path FROM session_working_dirs WHERE session_id = ? ORDER BY position, path LIMIT ? OFFSET ?",
+                (session_id, limit, offset),
+            )
+        ) as rows:
+            directories = tuple(str(row[0]) for row in rows)
+        tags: tuple[str, ...] = ()
+        tag_total: int | None = None
+        if include_user_tags:
+            self.require_user_tier()
+            relation = f"FROM {self._tags_relation} WHERE session_id = ? AND tag_source = 'user'"
+            tag_total = int(self._conn.execute(f"SELECT COUNT(*) {relation}", (session_id,)).fetchone()[0])
+            with closing(
+                self._conn.execute(f"SELECT tag {relation} ORDER BY tag LIMIT ? OFFSET ?", (session_id, limit, offset))
+            ) as rows:
+                tags = tuple(str(row[0]) for row in rows)
+        self.check_operation_read()
+        return directories, tags, directory_total, tag_total
+
+    def read_session_page(
+        self, session_id: str, *, limit: int, offset: int, include_working_directories: bool = True
+    ) -> ArchiveSessionEnvelope:
         """Read a bounded ``[offset, offset + limit)`` page of a session's transcript.
 
         See ``read_archive_session_page`` for the bounding contract: every
@@ -3317,7 +3351,12 @@ class ArchiveStore:
         the true composed transcript length.
         """
         return read_archive_session_page(
-            self._conn, session_id, limit=limit, offset=offset, blob_store=self._read_blob_store
+            self._conn,
+            session_id,
+            limit=limit,
+            offset=offset,
+            blob_store=self._read_blob_store,
+            include_working_directories=include_working_directories,
         )
 
     def locate_composed_message(self, session_id: str, message_id: str) -> int | None:

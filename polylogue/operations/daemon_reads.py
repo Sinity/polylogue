@@ -1393,22 +1393,53 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         raise ValueError("projection must be an object")
     projection = ProjectionSpec.model_validate(dict(raw_projection)) if raw_projection else None
 
+    metadata_only = payload.get("limit") == 0
     limit = _non_negative_int(payload.get("limit"), default=_SESSION_READ_WINDOW) or _SESSION_READ_WINDOW
     offset = _non_negative_int(payload.get("offset"), default=0)
-    if projection is not None:
+    if projection is not None and not metadata_only:
         limit = projection.body_limit or limit
         offset = projection.body_offset if projection.body_offset is not None else offset
-    request = _session_window_request(ref, payload, limit=limit, offset=offset)
+    request = _session_window_request(ref, payload, limit=limit, offset=offset) if not metadata_only else None
     try:
         session_id = archive.resolve_session_id(ref.removeprefix("session:"))
     except KeyError as exc:
         raise ValueError(f"session not found: {ref}") from exc
+    from polylogue.operations.session_metadata import read_session_metadata
+
+    metadata_token = payload.get("metadata_continuation")
+    metadata_limit = payload.get("metadata_limit")
+    include_user_tags = payload.get("include_user_tags", True)
+    if metadata_token is not None and not isinstance(metadata_token, str):
+        raise ValueError("metadata continuation must be a string")
+    if metadata_limit is not None and (type(metadata_limit) is not int or metadata_limit < 1):
+        raise ValueError("metadata limit must be a positive integer")
+    if type(include_user_tags) is not bool:
+        raise ValueError("include_user_tags must be a boolean")
+    if metadata_only and (
+        metadata_token is None or payload.get("continuation") is not None or payload.get("around") is not None
+    ):
+        raise ValueError("a zero-message window requires only a metadata continuation")
+    metadata = read_session_metadata(
+        archive,
+        session_id,
+        limit=metadata_limit
+        if metadata_limit is not None
+        else None
+        if metadata_token
+        else limit
+        if payload.get("limit")
+        else None,
+        continuation=metadata_token,
+        include_user_tags=include_user_tags,
+    )
     excluded_blocks = frozenset(projection.exclude_block_kinds) if projection is not None else frozenset()
     latest_envelope: ArchiveSessionEnvelope | None = None
 
     def read(window_limit: int, window_offset: int) -> tuple[list[object], int, object]:
         nonlocal latest_envelope
-        latest_envelope = archive.read_session_page(session_id, limit=window_limit, offset=window_offset)
+        latest_envelope = archive.read_session_page(
+            session_id, limit=window_limit, offset=window_offset, include_working_directories=False
+        )
         total = latest_envelope.total_message_count
         if total is None:
             raise ValueError("session.read page omitted its composed message count")
@@ -1426,21 +1457,44 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         window_arguments["session_projection"] = session_projection
     if selection_epoch is not None:
         window_arguments["selection_epoch"] = selection_epoch
-    window = read_transcript_window_sync(
-        archive,
-        request,
-        read=read,
-        transaction_operation="session.read",
-        projection=_SESSION_READ_PROJECTION,
-        extra_arguments=window_arguments,
-    )
-    assert latest_envelope is not None
-    envelope = replace(latest_envelope, messages=tuple(window.rows))
+    if metadata_only:
+        envelope = archive.read_session_page(session_id, limit=0, offset=offset, include_working_directories=False)
+        if envelope.total_message_count is None or offset != envelope.total_message_count:
+            raise ValueError("metadata drain requires the completed message offset")
+        window_total = envelope.total_message_count
+        window_limit = 0
+        window_offset = offset
+        window_next_offset = None
+        window_continuation = None
+        lineage_complete = envelope.lineage_complete
+        lineage_truncation_reason: str | None = envelope.lineage_truncation_reason
+        matched = len(metadata.working_directories) + len(metadata.user_tags)
+    else:
+        assert request is not None
+        window = read_transcript_window_sync(
+            archive,
+            request,
+            read=read,
+            transaction_operation="session.read",
+            projection=_SESSION_READ_PROJECTION,
+            extra_arguments=window_arguments,
+        )
+        assert latest_envelope is not None
+        envelope = replace(latest_envelope, messages=tuple(window.rows))
+        window_total = window.total
+        window_limit = window.limit
+        window_offset = window.offset
+        window_next_offset = window.next_offset
+        window_continuation = window.continuation
+        lineage_complete = window.lineage_complete
+        lineage_truncation_reason = window.lineage_truncation_reason
+        matched = len(window.rows)
+    envelope = replace(envelope, working_directories=metadata.working_directories)
     session_body = _session_identity_projection(envelope, excluded_blocks=excluded_blocks)
     if session_projection == "domain":
         from polylogue.archive.hydration import archive_envelope_to_session
 
-        summary = archive.read_summary(session_id)
+        summary = archive.read_summary(session_id, include_metadata=False)
         if excluded_blocks:
             envelope = replace(
                 envelope,
@@ -1457,23 +1511,28 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
             display_label=summary.display_label,
             display_label_source=summary.display_label_source,
         ).model_dump(mode="json")
+        session_body["tags_m2m"] = list(metadata.user_tags)
+    else:
+        session_body["working_directories"] = list(metadata.working_directories)
+        session_body["user_tags"] = list(metadata.user_tags)
     result: dict[str, object] = {
+        "metadata_page": metadata.page.model_dump(mode="json"),
         "outcome": lineage_page_outcome(
-            matched=len(window.rows),
-            complete=window.lineage_complete,
-            truncation_reason=window.lineage_truncation_reason,
+            matched=matched,
+            complete=lineage_complete,
+            truncation_reason=lineage_truncation_reason,
         ).to_dict(),
         "session": session_body,
         "selection_epoch": selection_epoch,
-        "lineage_complete": window.lineage_complete,
-        "lineage_truncation_reason": window.lineage_truncation_reason,
+        "lineage_complete": lineage_complete,
+        "lineage_truncation_reason": lineage_truncation_reason,
         "session_id": session_id,
-        "total": window.total,
-        "limit": window.limit,
-        "offset": window.offset,
-        "next_offset": window.next_offset,
-        "continuation": window.continuation,
-        "complete": window.complete,
+        "total": window_total,
+        "limit": window_limit,
+        "offset": window_offset,
+        "next_offset": window_next_offset,
+        "continuation": window_continuation,
+        "complete": window_next_offset is None,
     }
     return result
 
