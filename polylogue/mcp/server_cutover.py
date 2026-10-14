@@ -192,8 +192,6 @@ async def _resolve_reference_query_pipeline(
     with stages returns a typed ``not_implemented`` error naming the gap
     rather than silently ignoring the stages or crashing.
     """
-    from contextlib import closing
-
     from polylogue.archive.query.evaluator import RetainedRelationUnavailableError
     from polylogue.archive.query.expression import (
         ExpressionCompileError,
@@ -225,21 +223,18 @@ async def _resolve_reference_query_pipeline(
     if not user_db.exists() or not index_db.exists():
         return hooks.error_json("archive is not initialized", code="not_found", tool="query")
 
-    evaluator = ArchiveCanonicalPlanEvaluator(index_db)
     try:
-        from polylogue.api.archive import open_readonly_connection
+        from polylogue.operations.operation_context import open_operation_read
 
-        with closing(
-            open_readonly_connection(
-                user_db,
-                timeout_class="interactive-read",
-                validate_schema=False,
-            )
-        ) as conn:
+        with open_operation_read(archive_root) as pinned:
             from polylogue.archive.query.evaluator import DurableRefResolver
 
-            resolver = DurableRefResolver(conn, evaluator)
+            conn = pinned.archive.index_connection
+            assert conn is not None
+            evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
+            resolver = DurableRefResolver(conn, evaluator, schema="user_tier")
             resolved = resolve_ref_operand(pipeline.operand, resolver)
+
     except KeyError:
         return hooks.error_json(
             f"reference not found: {pipeline.operand.reference.format()}", code="not_found", tool="query"

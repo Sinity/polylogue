@@ -412,9 +412,14 @@ def get_result_set(
     return _manifest_from_row(row) if row is not None else None
 
 
-def get_result_set_members(conn: sqlite3.Connection, result_set_id: str) -> tuple[str, ...]:
+def get_result_set_members(
+    conn: sqlite3.Connection, result_set_id: str, *, schema: str | None = None
+) -> tuple[str, ...]:
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError("invalid SQLite schema")
+    table = "result_set_members" if schema is None else f"{schema}.result_set_members"
     rows = conn.execute(
-        "SELECT member_ref FROM result_set_members WHERE result_set_id = ? ORDER BY rank",
+        f"SELECT member_ref FROM {table} WHERE result_set_id = ? ORDER BY rank",
         (result_set_id,),
     ).fetchall()
     return tuple(str(row[0]) for row in rows)
@@ -537,10 +542,13 @@ def put_retained_query_run(
     return RetainedQueryRun(run_id, query_hash, result_set_id)
 
 
-def get_retained_query_run(conn: sqlite3.Connection, run_id: str) -> RetainedQueryRun | None:
-    row = conn.execute(
-        "SELECT run_id, query_hash, result_set_id FROM retained_query_runs WHERE run_id = ?", (run_id,)
-    ).fetchone()
+def get_retained_query_run(
+    conn: sqlite3.Connection, run_id: str, *, schema: str | None = None
+) -> RetainedQueryRun | None:
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError("invalid SQLite schema")
+    table = "retained_query_runs" if schema is None else f"{schema}.retained_query_runs"
+    row = conn.execute(f"SELECT run_id, query_hash, result_set_id FROM {table} WHERE run_id = ?", (run_id,)).fetchone()
     return RetainedQueryRun(str(row[0]), str(row[1]), str(row[2])) if row is not None else None
 
 

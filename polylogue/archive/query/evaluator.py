@@ -172,8 +172,10 @@ class DurableRefResolver:
         owner_query_hash: str | None = None,
         created_at_ms: int = 0,
         declared_confirmation: bool = False,
+        schema: str | None = None,
     ) -> None:
         self._conn = conn
+        self._schema = schema
         self._evaluator = evaluator
         self._owner_query_hash = owner_query_hash
         self._created_at_ms = created_at_ms
@@ -182,7 +184,7 @@ class DurableRefResolver:
     def resolve_ref_operand(self, operand: RefOperand) -> ResolvedRefOperand:
         reference = operand.reference
         if reference.kind == "query":
-            query = get_query(self._conn, reference.object_id)
+            query = get_query(self._conn, reference.object_id, schema=self._schema)
             if query is None:
                 raise KeyError(reference.format())
             evaluation = self._evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="reference"))
@@ -194,7 +196,7 @@ class DurableRefResolver:
                 member_refs=evaluation.member_refs,
             )
         if reference.kind == "query-run":
-            retained = get_retained_query_run(self._conn, reference.object_id)
+            retained = get_retained_query_run(self._conn, reference.object_id, schema=self._schema)
             if retained is None:
                 raise RetainedRelationUnavailableError(
                     f"query run {reference.format()} has no retained relation; use query:<hash> to re-evaluate"
@@ -219,7 +221,7 @@ class DurableRefResolver:
         *,
         extra_lineage: tuple[ObjectRef, ...] = (),
     ) -> ResolvedRefOperand:
-        manifest = get_result_set(self._conn, result_set_id)
+        manifest = get_result_set(self._conn, result_set_id, schema=self._schema)
         if manifest is None:
             raise RetainedRelationUnavailableError(f"retained result-set:{result_set_id} is unavailable")
         try:
@@ -227,16 +229,17 @@ class DurableRefResolver:
                 self._conn,
                 result_set_id,
                 declared_confirmation=self._declared_confirmation,
+                schema=self._schema,
             )
         except HoldoutAccessError as exc:
             raise RetainedRelationUnavailableError(str(exc)) from exc
         if extra_lineage:
-            run = get_retained_query_run(self._conn, extra_lineage[0].object_id)
+            run = get_retained_query_run(self._conn, extra_lineage[0].object_id, schema=self._schema)
             if run is None or manifest.query_hash != run.query_hash:
                 raise RetainedRelationUnavailableError(
                     f"query run {extra_lineage[0].format()} does not retain a relation for its query"
                 )
-        members = get_result_set_members(self._conn, result_set_id)
+        members = get_result_set_members(self._conn, result_set_id, schema=self._schema)
         if manifest.member_count != len(members):
             raise RetainedRelationUnavailableError(
                 f"result-set:{result_set_id} has no retained exact relation; use query:<hash> to re-evaluate"
@@ -245,7 +248,7 @@ class DurableRefResolver:
             raise RetainedRelationUnavailableError(
                 f"result-set:{result_set_id} is {manifest.exactness}, not an exact set operand; use query:<hash> to re-evaluate"
             )
-        query = get_query(self._conn, manifest.query_hash)
+        query = get_query(self._conn, manifest.query_hash, schema=self._schema)
         lineage = (*extra_lineage, ObjectRef(kind="result-set", object_id=result_set_id))
         if query is not None:
             lineage = (*lineage, query_ref_for(query))

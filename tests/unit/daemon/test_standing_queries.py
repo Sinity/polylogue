@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
-from polylogue.archive.query.evaluator import QueryEvaluation, QueryEvaluationRequest
+from polylogue.archive.query.evaluator import CanonicalPlanEvaluator, QueryEvaluation, QueryEvaluationRequest
 from polylogue.archive.query.watch_definition import compile_watch_definition
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_standing_query_stage
+from polylogue.daemon.convergence_standing_queries import open_standing_query_evaluator
+from polylogue.operations.operation_context import open_operation_read
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
@@ -86,7 +90,7 @@ def _seed_watch(tmp_path: Path, *, watch: bool = True, plan: object | None = Non
 def test_watched_session_delta_is_candidate_once_and_has_self_firewall(tmp_path: Path) -> None:
     index_db, query_hash = _seed_watch(tmp_path)
     evaluator = _Evaluator(members=("session:one",))
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
 
     assert stage.check_sessions is not None and stage.execute_sessions is not None
     assert stage.check_sessions(("session:changed",)) == {"session:changed"}
@@ -110,7 +114,7 @@ def test_watched_session_delta_is_candidate_once_and_has_self_firewall(tmp_path:
 def test_cache_only_evaluation_after_index_reset_never_compares_baseline(tmp_path: Path) -> None:
     index_db, _ = _seed_watch(tmp_path)
     evaluator = _Evaluator(members=("session:one",))
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
     assert stage.execute_sessions is not None
     assert stage.execute_sessions(("session:changed",)) is True
     evaluator.members = ("session:one", "session:two")
@@ -129,7 +133,7 @@ def test_watched_aliases_materialize_one_query_once_per_convergence(tmp_path: Pa
         conn.commit()
 
     evaluator = _Evaluator(members=("session:one",))
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
     assert stage.execute_sessions is not None
     assert stage.execute_sessions(("session:changed",)) is True
 
@@ -142,7 +146,7 @@ def test_watched_aliases_materialize_one_query_once_per_convergence(tmp_path: Pa
 def test_watch_baseline_tracks_return_to_a_prior_membership(tmp_path: Path) -> None:
     index_db, query_hash = _seed_watch(tmp_path)
     evaluator = _Evaluator(members=("session:a",))
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
     assert stage.execute_sessions is not None
     assert stage.execute_sessions(("session:changed",)) is True  # baseline A
     evaluator.members = ("session:b",)
@@ -175,7 +179,7 @@ def test_watch_baseline_tracks_return_to_a_prior_membership(tmp_path: Path) -> N
 def test_watch_snapshot_metadata_creates_a_new_manifest_without_membership_drift(tmp_path: Path) -> None:
     index_db, query_hash = _seed_watch(tmp_path)
     evaluator = _Evaluator(members=("session:a", "session:b"))
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
     assert stage.execute_sessions is not None
     assert stage.execute_sessions(("session:changed",)) is True
 
@@ -216,7 +220,9 @@ def test_promoted_expected_count_divergence_targets_original_finding_without_wat
         )[0]
         mark_assertion_status(conn, original.assertion_id, AssertionStatus.ACCEPTED, now_ms=2)
         conn.commit()
-    stage = make_standing_query_stage(index_db, evaluator=_Evaluator(members=("session:one", "session:two")))
+    stage = make_standing_query_stage(
+        index_db, evaluator_factory=lambda: nullcontext(_Evaluator(members=("session:one", "session:two")))
+    )
     converger = DaemonConverger(stages=(stage,))
     states, _ = converger.converge_sessions(("session:changed",))
     assert states["session:changed"].stages["standing-queries"].value == "done"
@@ -266,7 +272,7 @@ def test_clock_boundary_rechecks_promoted_relative_finding_without_watch(tmp_pat
         conn.commit()
 
     evaluator = _Evaluator(members=("session:one", "session:two"))
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
     assert stage.check(index_db) is True
     assert stage.execute(index_db) is True
     assert any(request.purpose == "finding-drift" for request in evaluator.requests)
@@ -401,10 +407,10 @@ class _UnscopedEvaluator:
     ``check_sessions`` must keep every changed session.
     """
 
-    def __init__(self, index_db: Path) -> None:
+    def __init__(self, archive: ArchiveStore) -> None:
         from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
 
-        self._inner = ArchiveCanonicalPlanEvaluator(index_db)
+        self._inner = ArchiveCanonicalPlanEvaluator(archive)
 
     def evaluate(self, request: QueryEvaluationRequest) -> QueryEvaluation:
         return self._inner.evaluate(request)
@@ -432,41 +438,42 @@ def test_planner_scope_is_never_narrower_than_the_evaluators_own_membership(tmp_
 
     root = tmp_path / "archive"
     _seed_origin_archive(root, {"codex": 2, "claude_code": 3, "chatgpt": 1})
-    evaluator = ArchiveCanonicalPlanEvaluator(root / "index.db")
+    with open_operation_read(root) as pinned:
+        evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
 
-    claude_leaf = {"kind": "field", "field": "origin", "op": "=", "values": ["claude-code-session"]}
-    shapes: tuple[dict[str, object], ...] = (
-        dict(_ORIGIN_LEAF),
-        {"kind": "or", "children": [dict(_ORIGIN_LEAF), dict(claude_leaf)]},
-        {"kind": "and", "children": [dict(_ORIGIN_LEAF), dict(_UNSCOPABLE_LEAF)]},
-        {"kind": "and", "children": [dict(_ORIGIN_LEAF), dict(claude_leaf)]},
-        {"kind": "or", "children": [dict(_ORIGIN_LEAF), dict(_UNSCOPABLE_LEAF)]},
-        {"kind": "not", "child": dict(_ORIGIN_LEAF)},
-        dict(_UNSCOPABLE_LEAF),
-    )
+        claude_leaf = {"kind": "field", "field": "origin", "op": "=", "values": ["claude-code-session"]}
+        shapes: tuple[dict[str, object], ...] = (
+            dict(_ORIGIN_LEAF),
+            {"kind": "or", "children": [dict(_ORIGIN_LEAF), dict(claude_leaf)]},
+            {"kind": "and", "children": [dict(_ORIGIN_LEAF), dict(_UNSCOPABLE_LEAF)]},
+            {"kind": "and", "children": [dict(_ORIGIN_LEAF), dict(claude_leaf)]},
+            {"kind": "or", "children": [dict(_ORIGIN_LEAF), dict(_UNSCOPABLE_LEAF)]},
+            {"kind": "not", "child": dict(_ORIGIN_LEAF)},
+            dict(_UNSCOPABLE_LEAF),
+        )
 
-    bounded_with_members = 0
-    with sqlite3.connect(root / "user.db") as conn:
-        for index, ast in enumerate(shapes):
-            query = put_query(
-                conn,
-                ast,  # type: ignore[arg-type]
-                grain="session",
-                lane="dialogue",
-                rank_policy="mixed",
-                created_at_ms=index + 1,
-            )
-            conn.commit()
-            scope = declared_origin_scope(query)
-            assert scope == evaluator.session_origin_scope(query)
-            members = evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="standing-watch")).member_refs
-            if scope is None:
-                continue
-            observed = {session_origin(ref.removeprefix("session:")) for ref in members}
-            assert observed <= scope, f"shape {index} matched an origin its declared bound excludes"
-            if members:
-                bounded_with_members += 1
-    assert bounded_with_members >= 2
+        bounded_with_members = 0
+        with sqlite3.connect(root / "user.db") as conn:
+            for index, ast in enumerate(shapes):
+                query = put_query(
+                    conn,
+                    ast,  # type: ignore[arg-type]
+                    grain="session",
+                    lane="dialogue",
+                    rank_policy="mixed",
+                    created_at_ms=index + 1,
+                )
+                conn.commit()
+                scope = declared_origin_scope(query)
+                assert scope == evaluator.session_origin_scope(query)
+                members = evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="standing-watch")).member_refs
+                if scope is None:
+                    continue
+                observed = {session_origin(ref.removeprefix("session:")) for ref in members}
+                assert observed <= scope, f"shape {index} matched an origin its declared bound excludes"
+                if members:
+                    bounded_with_members += 1
+        assert bounded_with_members >= 2
 
 
 def test_changed_sessions_outside_every_watch_scope_are_not_candidates(tmp_path: Path) -> None:
@@ -478,13 +485,14 @@ def test_changed_sessions_outside_every_watch_scope_are_not_candidates(tmp_path:
     origin the old scan needlessly evaluated. A scope that excluded the watched
     origin -- or one that returned an empty bound -- fails on ``retained``.
     """
-    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
 
     root = tmp_path / "archive"
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     _put_watch(root, _ORIGIN_LEAF)
     index_db = root / "index.db"
-    stage = make_standing_query_stage(index_db, evaluator=ArchiveCanonicalPlanEvaluator(index_db))
+    stage = make_standing_query_stage(
+        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
+    )
 
     retained = seeded["codex"][0]
     dropped = seeded["claude_code"][0]
@@ -500,14 +508,15 @@ def test_changed_sessions_outside_every_watch_scope_are_not_candidates(tmp_path:
 
 def test_a_changed_in_scope_session_still_reports_its_membership_delta(tmp_path: Path) -> None:
     """Narrowing must not cost a firing the broad scan would have produced."""
-    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
     from tests.infra.storage_records import SessionBuilder
 
     root = tmp_path / "archive"
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     query_hash = _put_watch(root, _ORIGIN_LEAF)
     index_db = root / "index.db"
-    stage = make_standing_query_stage(index_db, evaluator=ArchiveCanonicalPlanEvaluator(index_db))
+    stage = make_standing_query_stage(
+        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
+    )
 
     _tick(stage, (seeded["codex"][0],))  # baseline: one codex member
     state = _durable_watch_state(root)
@@ -535,14 +544,15 @@ def test_an_unscopable_predicate_retains_the_global_baseline(tmp_path: Path) -> 
     ``declared_origin_scope``) and this reports an empty candidate set.
     """
     from polylogue.archive.query.evaluator import declared_origin_scope
-    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
     from polylogue.storage.sqlite.query_objects import get_query
 
     root = tmp_path / "archive"
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     query_hash = _put_watch(root, _UNSCOPABLE_LEAF)
     index_db = root / "index.db"
-    stage = make_standing_query_stage(index_db, evaluator=ArchiveCanonicalPlanEvaluator(index_db))
+    stage = make_standing_query_stage(
+        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
+    )
 
     with sqlite3.connect(root / "user.db") as conn:
         query = get_query(conn, query_hash)
@@ -557,14 +567,15 @@ def test_an_unscopable_predicate_retains_the_global_baseline(tmp_path: Path) -> 
 
 def test_one_unscopable_watch_beside_a_scoped_one_retains_the_global_baseline(tmp_path: Path) -> None:
     """The bound is the union of *proved* bounds; one gap abandons narrowing."""
-    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
 
     root = tmp_path / "archive"
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     _put_watch(root, _ORIGIN_LEAF, name="scoped")
     _put_watch(root, _UNSCOPABLE_LEAF, name="unscoped")
     index_db = root / "index.db"
-    stage = make_standing_query_stage(index_db, evaluator=ArchiveCanonicalPlanEvaluator(index_db))
+    stage = make_standing_query_stage(
+        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
+    )
 
     changed = (seeded["codex"][0], seeded["claude_code"][0])
     assert _tick(stage, changed) == set(changed)
@@ -579,13 +590,14 @@ def test_a_watch_without_a_durable_baseline_retains_the_global_baseline(tmp_path
     would become the first observation and would record the changed membership
     silently instead of reporting it as a delta.
     """
-    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
 
     root = tmp_path / "archive"
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     index_db = root / "index.db"
     _put_watch(root, _ORIGIN_LEAF)
-    stage = make_standing_query_stage(index_db, evaluator=ArchiveCanonicalPlanEvaluator(index_db))
+    stage = make_standing_query_stage(
+        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
+    )
 
     assert stage.check_sessions is not None
     out_of_scope = (seeded["claude_code"][0],)
@@ -601,13 +613,14 @@ def test_a_definition_version_change_recomputes_the_scope(tmp_path: Path) -> Non
     moves the bound. The newly watched origin becomes a candidate on the very
     next tick without any stored fingerprint to invalidate.
     """
-    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
 
     root = tmp_path / "archive"
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     index_db = root / "index.db"
     _put_watch(root, _ORIGIN_LEAF)
-    stage = make_standing_query_stage(index_db, evaluator=ArchiveCanonicalPlanEvaluator(index_db))
+    stage = make_standing_query_stage(
+        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
+    )
 
     codex, claude = seeded["codex"][0], seeded["claude_code"][0]
     _tick(stage, (codex, claude))
@@ -631,13 +644,14 @@ def test_an_accepted_expected_count_finding_retains_the_global_baseline(tmp_path
     Such a finding can already be drifting before anything in scope changes,
     so its report must not wait for an in-scope session.
     """
-    from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
 
     root = tmp_path / "archive"
     seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 1})
     index_db = root / "index.db"
     query_hash = _put_watch(root, _ORIGIN_LEAF)
-    stage = make_standing_query_stage(index_db, evaluator=ArchiveCanonicalPlanEvaluator(index_db))
+    stage = make_standing_query_stage(
+        index_db, evaluator_factory=lambda: open_standing_query_evaluator(index_db.parent)
+    )
     _tick(stage, (seeded["codex"][0],))
     assert stage.check_sessions is not None
     assert stage.check_sessions((seeded["claude_code"][0],)) == set()
@@ -682,8 +696,13 @@ def test_scoped_and_exhaustive_ticks_record_the_same_membership_and_findings(tmp
         seeded = _seed_origin_archive(root, {"codex": 1, "claude_code": 2})
         index_db = root / "index.db"
         _put_watch(root, _ORIGIN_LEAF)
-        evaluator = ArchiveCanonicalPlanEvaluator(index_db) if scoped else _UnscopedEvaluator(index_db)
-        stage = make_standing_query_stage(index_db, evaluator=evaluator)
+
+        @contextmanager
+        def evaluator_factory() -> Iterator[CanonicalPlanEvaluator]:
+            with open_operation_read(root) as pinned:
+                yield ArchiveCanonicalPlanEvaluator(pinned.archive) if scoped else _UnscopedEvaluator(pinned.archive)
+
+        stage = make_standing_query_stage(index_db, evaluator_factory=evaluator_factory)
 
         _tick(stage, (seeded["codex"][0],))
         for step in range(3):
@@ -706,7 +725,9 @@ def test_scoped_and_exhaustive_ticks_record_the_same_membership_and_findings(tmp
 def test_an_evaluator_without_a_scope_claim_keeps_every_changed_session(tmp_path: Path) -> None:
     """A planner that publishes no bound can never shrink the candidate set."""
     index_db, _ = _seed_watch(tmp_path)
-    stage = make_standing_query_stage(index_db, evaluator=_Evaluator(members=("session:one",)))
+    stage = make_standing_query_stage(
+        index_db, evaluator_factory=lambda: nullcontext(_Evaluator(members=("session:one",)))
+    )
     assert stage.check_sessions is not None
     assert not hasattr(_Evaluator, "session_origin_scope")
     assert stage.check_sessions(("codex-session:a", "claude-code-session:b")) == {
@@ -735,7 +756,7 @@ def test_a_capped_evaluation_claims_no_membership_delta(tmp_path: Path) -> None:
     """
     index_db, query_hash = _seed_watch(tmp_path)
     evaluator = _Evaluator(members=("session:one",))
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
     assert stage.execute_sessions is not None
 
     # An exact tick first, so there is a real drift question to answer.
@@ -804,7 +825,7 @@ def test_legacy_capped_baseline_replaced_silently(tmp_path: Path) -> None:
     index_db, query_hash = _seed_watch(tmp_path)
     legacy_id = _install_legacy_capped_baseline(tmp_path / "user.db", query_hash, ("session:one",))
     evaluator = _Evaluator(members=("session:one", "session:two"))
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
     assert stage.execute_sessions is not None
     assert stage.execute_sessions(("session:changed",)) is True
 
@@ -822,7 +843,7 @@ def test_exact_delta_after_legacy_baseline_replaced(tmp_path: Path) -> None:
     index_db, query_hash = _seed_watch(tmp_path)
     _install_legacy_capped_baseline(tmp_path / "user.db", query_hash, ("session:one",))
     evaluator = _Evaluator(members=("session:one", "session:two"))
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
     assert stage.execute_sessions is not None
     assert stage.execute_sessions(("session:changed",)) is True
     evaluator.members = ("session:one", "session:two", "session:three")
@@ -839,7 +860,7 @@ def test_unmeasured_tick_ignores_legacy_baseline(tmp_path: Path) -> None:
     index_db, query_hash = _seed_watch(tmp_path)
     _install_legacy_capped_baseline(tmp_path / "user.db", query_hash, ("session:one",))
     evaluator = _Evaluator(members=("session:one", "session:two"), exactness="capped")
-    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    stage = make_standing_query_stage(index_db, evaluator_factory=lambda: nullcontext(evaluator))
     assert stage.execute_sessions is not None
     assert stage.execute_sessions(("session:changed",)) is True
 

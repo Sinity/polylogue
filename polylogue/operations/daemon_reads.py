@@ -1743,9 +1743,6 @@ def _session_reference_payload(payload: Mapping[str, object], *, archive: Archiv
     than from configuration.
     """
 
-    from contextlib import closing
-
-    from polylogue.api.archive import open_readonly_connection
     from polylogue.archive.query.evaluator import DurableRefResolver
     from polylogue.archive.query.expression import parse_reference_query_pipeline, resolve_ref_operand
     from polylogue.archive.query.production_evaluator import ArchiveCanonicalPlanEvaluator
@@ -1762,12 +1759,12 @@ def _session_reference_payload(payload: Mapping[str, object], *, archive: Archiv
     if not archive.user_db_path.exists():
         raise ValueError("archive is not initialized")
 
-    evaluator = ArchiveCanonicalPlanEvaluator(archive.index_db_path)
+    evaluator = ArchiveCanonicalPlanEvaluator(archive)
     try:
-        with closing(
-            open_readonly_connection(archive.user_db_path, timeout_class="interactive-read", validate_schema=False)
-        ) as connection:
-            resolved = resolve_ref_operand(pipeline.operand, DurableRefResolver(connection, evaluator))
+        connection = archive.index_connection
+        if connection is None or not connection.in_transaction:
+            raise RuntimeError("reference resolution requires an active pinned read")
+        resolved = resolve_ref_operand(pipeline.operand, DurableRefResolver(connection, evaluator, schema="user_tier"))
     except KeyError as exc:
         raise ValueError(f"reference not found: {pipeline.operand.reference.format()}") from exc
 

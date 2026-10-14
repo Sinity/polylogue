@@ -1,32 +1,16 @@
-"""Real (non-test-double) planner implementation for canonical query plans.
+"""Execute canonical saved-query plans and receipts on one admitted archive read.
 
-Before this module existed, :class:`~polylogue.archive.query.evaluator.
-CanonicalPlanEvaluator` had exactly one kind of implementation anywhere in the
-repository: hand-rolled fakes inside test files. ``ArchiveCanonicalPlanEvaluator``
-is the first production evaluator -- it turns a durable :class:`QueryObject`'s
-canonical, protocol-versioned AST back into an executable
-:class:`~polylogue.archive.query.plan.SessionQueryPlan` and runs it through the
-same :class:`~polylogue.archive.filter.filters.SessionFilter` every other
-surface (CLI/MCP/API) uses.
-
-Only the ``session`` grain and the current (v1) definition protocol are
-evaluated. Legacy protocol v0 identities (opaque saved-view JSON, not this
-predicate grammar) and non-session grains fail closed with a named error
-rather than guessing -- this mirrors the "never reverse-compile lossy
-identity JSON" doctrine: this module only inverts the *same* typed
-``to_payload()`` shape ``polylogue.archive.query.predicate`` itself owns.
+Only session-grain current-protocol definitions execute. Earlier saved-view
+shapes and other grains retain their explicit refusals.
 """
 
 from __future__ import annotations
 
 import sqlite3
 import uuid
-from contextlib import closing
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
-from pathlib import Path
 
-from polylogue.archive.filter.filters import SessionFilter
 from polylogue.archive.query.evaluator import (
     CanonicalPlanEvaluator,
     QueryEvaluation,
@@ -38,6 +22,7 @@ from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.predicate import predicate_from_payload
 from polylogue.core.query_identity import LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.query_objects import EvaluationReceipt, QueryObject
 
 logger = get_logger(__name__)
@@ -60,66 +45,36 @@ def _polylogue_runtime_build_ref() -> str:
         return "polylogue:unknown"
 
 
-def _pragma_user_version(conn: sqlite3.Connection) -> int:
-    row = conn.execute("PRAGMA user_version").fetchone()
-    return int(row[0]) if row is not None else 0
-
-
-def _tier_generation(db_path: Path, *, label: str) -> str:
-    if not db_path.exists():
+def _tier_generation(conn: sqlite3.Connection, *, schema: str, label: str) -> str:
+    aliases = {str(row[1]) for row in conn.execute("PRAGMA database_list")}
+    if schema not in aliases:
         return f"{label}:absent"
-    try:
-        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-        with closing(
-            open_readonly_connection(
-                db_path,
-                timeout_class="background-read",
-                validate_schema=False,
-            )
-        ) as conn:
-            return f"{label}:v{_pragma_user_version(conn)}"
-    except sqlite3.Error:
-        logger.warning("production-evaluator: could not read %s generation", label, exc_info=True)
-        return f"{label}:unknown"
+    version = int(conn.execute(f"PRAGMA {schema}.user_version").fetchone()[0])
+    return f"{label}:v{version}"
 
 
-def _index_epoch(index_db: Path) -> str:
-    """Index generation identifier: schema version plus a session watermark."""
-    if not index_db.exists():
-        return "index:absent"
-    try:
-        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-        with closing(
-            open_readonly_connection(
-                index_db,
-                timeout_class="background-read",
-                validate_schema=False,
-            )
-        ) as conn:
-            version = _pragma_user_version(conn)
-            row = conn.execute("SELECT MAX(updated_at_ms) FROM sessions").fetchone()
-            watermark = int(row[0]) if row is not None and row[0] is not None else 0
-            return f"index:v{version}:{watermark}"
-    except sqlite3.Error:
-        logger.warning("production-evaluator: could not read index epoch", exc_info=True)
-        return "index:unknown"
+def _index_epoch(conn: sqlite3.Connection) -> str:
+    version = int(conn.execute("PRAGMA main.user_version").fetchone()[0])
+    row = conn.execute("SELECT MAX(updated_at_ms) FROM main.sessions").fetchone()
+    watermark = int(row[0]) if row[0] is not None else 0
+    return f"index:v{version}:{watermark}"
 
 
 class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
-    """Evaluate durable canonical query definitions against the live archive.
+    """Evaluate definitions and receipt facts on the caller's admitted reader."""
 
-    ``db_path`` is the ``index.db`` path (the same convention used throughout
-    ``daemon/convergence_stages.py``); ``source.db``/``user.db`` are resolved
-    as siblings.
-    """
+    def __init__(self, archive: ArchiveStore) -> None:
+        self._archive = archive
 
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
-        self._archive_root = db_path.parent
+    def _connection(self) -> sqlite3.Connection:
+        self._archive.check_operation_read()
+        connection = self._archive.index_connection
+        if connection is None or not connection.in_transaction:
+            raise RuntimeError("canonical evaluation requires an active pinned read")
+        return connection
 
     def evaluate(self, request: QueryEvaluationRequest) -> QueryEvaluation:
+        connection = self._connection()
         query = request.query
         if query.definition_protocol_version == LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION:
             raise LegacyQueryDefinitionNotExecutableError(
@@ -141,25 +96,15 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
         predicate = predicate_from_payload(ast)
         bound = _bind_predicate_context(predicate, unit="session")
         plan = SessionQueryPlan(boolean_predicate=bound)
-        session_filter = SessionFilter.from_query_plan(plan, archive_root=self._archive_root)
-
-        from polylogue.api.sync.bridge import run_coroutine_sync
+        from polylogue.archive.query.archive_execution import _list_summaries_in_archive
 
         try:
-            # NOT list_summaries(): that caps at the default page limit (50,
-            # see SessionFilter.list_summaries docstring) and this evaluation
-            # is unconditionally labeled exactness="exact" below. A watched
-            # query matching more than 50 sessions would silently drop
-            # members past the first page from both the returned evaluation
-            # and the enumeration while still claiming an exact enumeration
-            # -- and standing-query drift detection computes its membership
-            # merkle root directly from member_refs, so it would never
-            # notice new members added past the cap. list_all_summaries
-            # resolves every matching summary (default_limit=1_000_000,
-            # functionally unbounded for any real archive), mirroring the
-            # same exact-enumeration requirement count_archive/delete/mark
-            # already rely on (#1873).
-            summaries = run_coroutine_sync(session_filter.list_all_summaries())
+            # The pinned relation count bounds exact enumeration without a
+            # default page cap or a second archive acquisition.
+            count = int(connection.execute("SELECT COUNT(*) FROM main.sessions").fetchone()[0])
+            summaries = _list_summaries_in_archive(
+                plan, self._archive, config=None, archive_root=self._archive.archive_root, default_limit=count
+            )
         except Exception:
             logger.warning("production-evaluator: evaluation failed for query:%s", query.query_hash, exc_info=True)
             raise
@@ -174,11 +119,12 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
         if excluded_refs:
             member_refs = tuple(ref for ref in member_refs if ref not in excluded_refs)
 
-        index_generation = _index_epoch(self._db_path)
+        self._connection()
+        index_generation = _index_epoch(connection)
         receipt = EvaluationReceipt(
             receipt_id=f"receipt-{uuid.uuid4().hex}",
-            source_generation=_tier_generation(self._archive_root / "source.db", label="source"),
-            user_generation=_tier_generation(self._archive_root / "user.db", label="user"),
+            source_generation=_tier_generation(connection, schema="source_tier", label="source"),
+            user_generation=_tier_generation(connection, schema="user_tier", label="user"),
             index_generation=index_generation,
             runtime_build_ref=_polylogue_runtime_build_ref(),
         )
@@ -189,6 +135,7 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
             exactness="exact",
             receipt=receipt,
         )
+        self._connection()
         return evaluation
 
     def session_origin_scope(self, query: QueryObject) -> frozenset[str] | None:

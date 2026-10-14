@@ -1,19 +1,15 @@
-"""Real (non-fake) production evaluator: canonical plan -> live archive rows.
+"""Canonical plans, membership and receipt facts share one admitted reader.
 
-These tests exercise the actual dependency the earlier substrate PRs (#2813,
-#2826) left unwired: ``ArchiveCanonicalPlanEvaluator`` reconstructs a typed
-predicate from a durable ``query:<hash>`` definition and runs it through the
-same ``SessionFilter`` execution path every real surface uses -- no test
-double stands in for the planner. Removing the predicate reconstruction (or
-the ``SessionFilter`` call) makes ``test_evaluate_matches_real_archive_rows``
-fail, since the assertion depends on the archive actually filtering by
-origin.
+The tests use real synthetic archive rows and durable query/reference state.
+Post-pin commits and post-enumeration commits distinguish reopening tier paths
+from evaluating and measuring the reader actually serving the operation.
 """
 
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -26,6 +22,7 @@ from polylogue.archive.query.production_evaluator import (
 )
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.query_identity import LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION, JsonValue
+from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -81,14 +78,15 @@ def test_evaluate_matches_real_archive_rows(tmp_path: Path) -> None:
         query = _origin_query(conn, origin="codex-session")
         conn.commit()
 
-    evaluator = ArchiveCanonicalPlanEvaluator(archive_root / "index.db")
-    evaluation = evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="reference"))
+    with open_operation_read((archive_root / "index.db").parent) as pinned:
+        evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
+        evaluation = evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="reference"))
 
-    assert evaluation.grain == "session"
-    assert evaluation.exactness == "exact"
-    assert len(evaluation.member_refs) == 1
-    assert evaluation.member_refs[0].startswith("session:codex-session:")
-    assert evaluation.receipt.runtime_build_ref.startswith("polylogue:")
+        assert evaluation.grain == "session"
+        assert evaluation.exactness == "exact"
+        assert len(evaluation.member_refs) == 1
+        assert evaluation.member_refs[0].startswith("session:codex-session:")
+        assert evaluation.receipt.runtime_build_ref.startswith("polylogue:")
 
 
 def test_evaluate_does_not_truncate_at_the_default_page_limit(tmp_path: Path) -> None:
@@ -132,11 +130,12 @@ def test_evaluate_does_not_truncate_at_the_default_page_limit(tmp_path: Path) ->
         query = _origin_query(conn, origin="codex-session")
         conn.commit()
 
-    evaluator = ArchiveCanonicalPlanEvaluator(archive_root / "index.db")
-    evaluation = evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="standing-watch"))
+    with open_operation_read((archive_root / "index.db").parent) as pinned:
+        evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
+        evaluation = evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="standing-watch"))
 
-    assert evaluation.exactness == "exact"
-    assert len(evaluation.member_refs) == session_count
+        assert evaluation.exactness == "exact"
+        assert len(evaluation.member_refs) == session_count
 
 
 def test_evaluate_excludes_origin_prefix(tmp_path: Path) -> None:
@@ -147,12 +146,13 @@ def test_evaluate_excludes_origin_prefix(tmp_path: Path) -> None:
         query = _origin_query(conn, origin="codex-session")
         conn.commit()
 
-    evaluator = ArchiveCanonicalPlanEvaluator(archive_root / "index.db")
-    evaluation = evaluator.evaluate(
-        QueryEvaluationRequest(query=query, purpose="standing-watch", excluded_origin_prefixes=("codex-",))
-    )
+    with open_operation_read((archive_root / "index.db").parent) as pinned:
+        evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
+        evaluation = evaluator.evaluate(
+            QueryEvaluationRequest(query=query, purpose="standing-watch", excluded_origin_prefixes=("codex-",))
+        )
 
-    assert evaluation.member_refs == ()
+        assert evaluation.member_refs == ()
 
 
 def test_evaluate_excludes_scope_refs(tmp_path: Path) -> None:
@@ -163,17 +163,21 @@ def test_evaluate_excludes_scope_refs(tmp_path: Path) -> None:
         query = _origin_query(conn, origin="codex-session")
         conn.commit()
 
-    evaluator = ArchiveCanonicalPlanEvaluator(archive_root / "index.db")
-    baseline = evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="reference"))
-    assert len(baseline.member_refs) == 1
+    with open_operation_read((archive_root / "index.db").parent) as pinned:
+        evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
+        baseline = evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="reference"))
+        assert len(baseline.member_refs) == 1
 
-    evaluation = evaluator.evaluate(
-        QueryEvaluationRequest(query=query, purpose="standing-watch", excluded_scope_refs=(baseline.member_refs[0],))
-    )
-    assert evaluation.member_refs == ()
+        evaluation = evaluator.evaluate(
+            QueryEvaluationRequest(
+                query=query, purpose="standing-watch", excluded_scope_refs=(baseline.member_refs[0],)
+            )
+        )
+        assert evaluation.member_refs == ()
 
 
-def test_evaluate_rejects_legacy_protocol_v0() -> None:
+def test_evaluate_rejects_legacy_protocol_v0(tmp_path: Path) -> None:
+    _seed_archive(tmp_path / "archive")
     legacy = QueryObject(
         query_hash="b" * 64,
         canonical_plan={"field": "origin", "value": "codex-session"},
@@ -182,9 +186,10 @@ def test_evaluate_rejects_legacy_protocol_v0() -> None:
         rank_policy="mixed",
         definition_protocol_version=LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION,
     )
-    evaluator = ArchiveCanonicalPlanEvaluator(Path("/nonexistent/index.db"))
-    with pytest.raises(LegacyQueryDefinitionNotExecutableError):
-        evaluator.evaluate(QueryEvaluationRequest(query=legacy, purpose="reference"))
+    with open_operation_read((tmp_path / "archive" / "index.db").parent) as pinned:
+        evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
+        with pytest.raises(LegacyQueryDefinitionNotExecutableError):
+            evaluator.evaluate(QueryEvaluationRequest(query=legacy, purpose="reference"))
 
 
 def test_evaluate_rejects_unsupported_grain(tmp_path: Path) -> None:
@@ -195,23 +200,25 @@ def test_evaluate_rejects_unsupported_grain(tmp_path: Path) -> None:
         query = put_query(conn, ast, grain="action", lane="dialogue", rank_policy="mixed", created_at_ms=1)
         conn.commit()
 
-    evaluator = ArchiveCanonicalPlanEvaluator(archive_root / "index.db")
-    with pytest.raises(UnsupportedEvaluationGrainError):
-        evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="reference"))
+    with open_operation_read((archive_root / "index.db").parent) as pinned:
+        evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
+        with pytest.raises(UnsupportedEvaluationGrainError):
+            evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="reference"))
 
 
 def test_resolve_cohort_is_not_yet_implemented(tmp_path: Path) -> None:
     from polylogue.archive.query.expression import RefOperand
     from polylogue.core.refs import ObjectRef
 
-    evaluator = ArchiveCanonicalPlanEvaluator(tmp_path / "index.db")
-    with pytest.raises(NotImplementedError):
-        evaluator.resolve_cohort(RefOperand(ObjectRef(kind="cohort", object_id="team")))
+    _seed_archive(tmp_path)
+    with open_operation_read((tmp_path / "index.db").parent) as pinned:
+        evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
+        with pytest.raises(NotImplementedError):
+            evaluator.resolve_cohort(RefOperand(ObjectRef(kind="cohort", object_id="team")))
 
 
 def test_saved_exact_id_query_preserves_opaque_unicode_through_selection(tmp_path: Path) -> None:
     """Mutation: canonicalization NFC-folds the ID and selects a different session."""
-    from typing import cast
 
     from polylogue.archive.query.predicate import QueryFieldPredicate
     from polylogue.storage.sqlite.query_objects import get_query
@@ -232,34 +239,34 @@ def test_saved_exact_id_query_preserves_opaque_unicode_through_selection(tmp_pat
                     ],
                 ),
             )
-    evaluator = ArchiveCanonicalPlanEvaluator(archive_root / "index.db")
-    hashes = []
-    for native_id in native_ids:
-        session_id = f"codex-session:{native_id}"
-        predicate = QueryFieldPredicate(field="id", values=(session_id,))
-        with sqlite3.connect(archive_root / "user.db") as conn:
-            saved = put_query(
-                conn,
-                cast(dict[str, JsonValue], predicate.to_payload()),
-                grain="session",
-                lane="dialogue",
-                rank_policy="mixed",
-                created_at_ms=1,
-            )
-            conn.commit()
-            loaded = get_query(conn, saved.query_hash)
-        assert loaded is not None
-        evaluation = evaluator.evaluate(QueryEvaluationRequest(query=loaded, purpose="reference"))
-        assert evaluation.member_refs == (f"session:{session_id}",)
-        assert loaded.canonical_plan["ast"] == predicate.to_payload()
-        hashes.append(loaded.query_hash)
-    assert len(set(hashes)) == 2
+    with open_operation_read((archive_root / "index.db").parent) as pinned:
+        evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
+        hashes = []
+        for native_id in native_ids:
+            session_id = f"codex-session:{native_id}"
+            predicate = QueryFieldPredicate(field="id", values=(session_id,))
+            with sqlite3.connect(archive_root / "user.db") as conn:
+                saved = put_query(
+                    conn,
+                    cast(dict[str, JsonValue], predicate.to_payload()),
+                    grain="session",
+                    lane="dialogue",
+                    rank_policy="mixed",
+                    created_at_ms=1,
+                )
+                conn.commit()
+                loaded = get_query(conn, saved.query_hash)
+            assert loaded is not None
+            evaluation = evaluator.evaluate(QueryEvaluationRequest(query=loaded, purpose="reference"))
+            assert evaluation.member_refs == (f"session:{session_id}",)
+            assert loaded.canonical_plan["ast"] == predicate.to_payload()
+            hashes.append(loaded.query_hash)
+        assert len(set(hashes)) == 2
 
 
 @pytest.mark.parametrize("operator", ["and", "or"])
 def test_saved_boolean_query_uses_real_wire_kind_for_commutative_identity(operator: str) -> None:
     """Mutation: sorting looks for operator/op instead of the actual typed kind."""
-    from typing import cast
 
     from polylogue.archive.query.predicate import QueryBoolOp, QueryBoolPredicate, QueryFieldPredicate
     from polylogue.storage.sqlite.query_objects import list_watched_queries, put_query_name
@@ -288,3 +295,114 @@ def test_saved_boolean_query_uses_real_wire_kind_for_commutative_identity(operat
         put_query_name(conn, name=f"neutral-{index}", query_hash=query.query_hash, updated_at_ms=2, watch=True)
     assert tuple(query.query_hash for query in list_watched_queries(conn)) == (saved[0].query_hash,)
     conn.close()
+
+
+@pytest.mark.parametrize("changed_role", ["index", "user"], ids=["index", "user"])
+def test_reference_query_keeps_the_admitted_frame_after_a_commit(tmp_path: Path, changed_role: str) -> None:
+    from polylogue.operations.daemon_reads import _session_reference_payload
+
+    root = tmp_path / "archive"
+    _seed_archive(root)
+    if changed_role == "index":
+        with sqlite3.connect(root / "user.db") as user:
+            query = _origin_query(user, origin="codex-session")
+    with open_operation_read(root) as pinned:
+        if changed_role == "index":
+            with ArchiveStore(root) as writer:
+                write_index_session(
+                    writer,
+                    ParsedSession(
+                        source_name=Provider.CODEX,
+                        provider_session_id="codex-after-pin",
+                        title="neutral post-pin session",
+                        messages=[
+                            ParsedMessage(provider_message_id="post-pin-message", role=Role.USER, text="neutral")
+                        ],
+                    ),
+                )
+            result = _session_reference_payload(
+                {"expression": f"from query:{query.query_hash}"}, archive=pinned.archive
+            )
+            assert result["member_count"] == 1
+            members = result["members"]
+            assert isinstance(members, list) and len(members) == 1
+        else:
+            with sqlite3.connect(root / "user.db") as user:
+                query = _origin_query(user, origin="codex-session")
+            with pytest.raises(ValueError, match="reference not found"):
+                _session_reference_payload({"expression": f"from query:{query.query_hash}"}, archive=pinned.archive)
+
+
+def test_evaluator_receipt_uses_the_member_read_frame(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.archive.query import archive_execution
+    from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.archive.session.domain_models import SessionSummary
+    from polylogue.operations.operation_context import open_operation_read
+
+    root = tmp_path / "archive"
+    _seed_archive(root)
+    with sqlite3.connect(root / "user.db") as user:
+        query = _origin_query(user, origin="codex-session")
+    real_read = archive_execution._list_summaries_in_archive
+    observed = []
+    with open_operation_read(root) as pinned:
+        connection = pinned.archive.index_connection
+        assert connection is not None
+        watermark = connection.execute("SELECT MAX(updated_at_ms) FROM sessions").fetchone()[0]
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+
+        def commit_after_rows(plan: SessionQueryPlan, archive: ArchiveStore, **kwargs: Any) -> list[SessionSummary]:
+            rows = real_read(plan, archive, **kwargs)
+            observed.append(archive)
+            with sqlite3.connect(root / "index.db") as writer:
+                writer.execute("UPDATE sessions SET updated_at_ms = ?", (watermark + 1,))
+            return rows
+
+        monkeypatch.setattr(archive_execution, "_list_summaries_in_archive", commit_after_rows)
+        evaluator = ArchiveCanonicalPlanEvaluator(pinned.archive)
+        result = evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="reference"))
+        assert len(result.member_refs) == 1
+        assert result.receipt.index_generation == f"index:v{version}:{watermark}"
+        assert observed == [pinned.archive]
+
+
+@pytest.mark.parametrize("restriction", ["holdout", "excised"])
+def test_pinned_reference_preserves_retained_relation_restrictions(tmp_path: Path, restriction: str) -> None:
+    from polylogue.archive.query.evaluator import RetainedRelationUnavailableError
+    from polylogue.operations.daemon_reads import _session_reference_payload
+    from polylogue.security.query_excision import apply_query_excision, plan_query_excision
+    from polylogue.storage.sqlite.holdout_cohorts import mark_holdout
+    from polylogue.storage.sqlite.query_objects import put_result_set
+
+    root = tmp_path / "archive"
+    _seed_archive(root)
+    with sqlite3.connect(root / "user.db") as user:
+        query = _origin_query(user, origin="codex-session")
+        put_result_set(
+            user,
+            result_set_id="neutral-relation",
+            query_hash=query.query_hash,
+            grain="session",
+            corpus_epoch="neutral-frame",
+            member_refs=("session:neutral",),
+            exactness="exact",
+            persistence_class="pinned",
+            created_at_ms=1,
+        )
+        if restriction == "holdout":
+            mark_holdout(
+                user,
+                result_set_id="neutral-relation",
+                frame="neutral-frame",
+                selection_definition={"kind": "neutral"},
+                intended_confirmation_use="neutral confirmation",
+                authority="synthetic-operator",
+                created_epoch="neutral-frame",
+                created_at_ms=2,
+            )
+        else:
+            plan = plan_query_excision(user, "result-set:neutral-relation")
+            apply_query_excision(user, plan, reason="neutral retirement", actor="user:synthetic-operator", now_ms=2)
+    with open_operation_read(root) as pinned:
+        with pytest.raises(RetainedRelationUnavailableError):
+            _session_reference_payload({"expression": "from result-set:neutral-relation"}, archive=pinned.archive)

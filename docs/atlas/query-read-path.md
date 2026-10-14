@@ -66,6 +66,12 @@ classifier without computing a full profile, costs, timing, or topics. Profile
 construction reuses its existing actions with that same classifier. Missing
 structural evidence remains `unknown`.
 
+Saved-query and retained-relation reference reads use the admitted Index/User
+connection. Canonical query evaluation and its receipt read the same ArchiveStore;
+neither reopens tier paths after membership enumeration. Attached User readers
+retain holdout refusal and excision visibility. Standing-query batches and the
+MCP reference adapter own the evaluator's existing operation-reader lifetime.
+
 ## Read identities
 
 Use generated session, message, and block identities for exact reads. Use
