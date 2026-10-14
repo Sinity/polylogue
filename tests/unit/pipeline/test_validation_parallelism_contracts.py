@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -513,3 +514,87 @@ class TestSharedValidationAdmission:
             assert adapter.snapshot().used_units == 0
         finally:
             adapter.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_validation_decode_preserves_cancellation_and_classifies_other_errors(
+    blob_root: Path, monkeypatch: pytest.MonkeyPatch, cancelled: bool
+) -> None:
+    import polylogue.pipeline.services.validation_runtime as runtime
+    from polylogue.core.compute import DaemonOperationCancelled
+
+    failure = DaemonOperationCancelled("validation cancelled") if cancelled else ValueError("synthetic bad payload")
+
+    def refuse_decode(*args: Any, **kwargs: Any) -> Any:
+        raise failure
+
+    monkeypatch.setattr(runtime, "_build_validation_envelope", refuse_decode)
+    record = _seed_records(blob_root, 1)[0]
+    if cancelled:
+        with pytest.raises(DaemonOperationCancelled) as raised:
+            runtime._validate_record_sync(record, ValidationMode.ADVISORY, str(blob_root))
+        assert raised.value is failure
+    else:
+        outcome = runtime._validate_record_sync(record, ValidationMode.ADVISORY, str(blob_root))
+        assert outcome.validation_status is ValidationStatus.FAILED
+        assert outcome.parseable is False
+        assert outcome.counts_delta["errors"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeat_cancel", [False, True])
+async def test_validation_cancellation_waits_for_its_physical_worker_before_returning(
+    blob_root: Path, monkeypatch: pytest.MonkeyPatch, repeat_cancel: bool
+) -> None:
+    import polylogue.pipeline.services.validation_flow as flow
+    from polylogue.core.compute import BoundedComputeAdapter
+
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0, queue_bytes=1024)
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    validate = _validate_record_sync
+
+    def held_validation(*args: Any, **kwargs: Any) -> _ValidationOutcome:
+        entered.set()
+        try:
+            release.wait()
+            return validate(*args, **kwargs)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(flow, "compute_adapter", lambda: adapter)
+    monkeypatch.setattr(flow, "_validate_record_sync", held_validation)
+    store = RecordingStore()
+    validation = asyncio.create_task(
+        evaluate_raw_artifacts(
+            repository=store,
+            raw_artifacts=_seed_records(blob_root, 1),
+            persist=True,
+            mode=ValidationMode.ADVISORY,
+        )
+    )
+    try:
+        await asyncio.to_thread(entered.wait)
+        validation.cancel("validation stopped")
+        # Give the cancelled awaiter a turn; the deliberately held worker
+        # cannot have settled until this test releases it.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not validation.done()
+        assert not finished.is_set()
+        if repeat_cancel:
+            validation.cancel("later cancellation")
+            await asyncio.sleep(0)
+            assert not validation.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError, match="validation stopped"):
+            await validation
+        assert finished.is_set()
+        assert store.validated_calls == []
+        assert store.parsed_calls == []
+        assert adapter.snapshot().used_units == 0
+    finally:
+        release.set()
+        await asyncio.gather(validation, return_exceptions=True)
+        await asyncio.to_thread(adapter.shutdown, wait=True)

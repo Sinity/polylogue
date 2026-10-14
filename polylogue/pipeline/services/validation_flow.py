@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
+from builtins import BaseExceptionGroup
 
 from polylogue.config import load_polylogue_config
-from polylogue.core.compute import compute_adapter
+from polylogue.core.compute import DaemonOperationCancelled, compute_adapter
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.protocols import ProgressCallback, RawValidationStore
 from polylogue.logging import get_logger
@@ -178,16 +181,48 @@ async def evaluate_raw_artifacts(
     blob_root_str = str(blob_store_root())
     t_batch = _time.perf_counter()
 
+    cancel_requested = threading.Event()
+
+    def checkpoint() -> None:
+        if cancel_requested.is_set():
+            raise DaemonOperationCancelled("validation cancelled")
+        check_compute_cancelled()
+
     def _run_batch() -> list[_ValidationOutcome]:
         return list(
             adapter.map(
                 lambda record: _validate_record_sync(record, mode, blob_root_str),
                 raw_artifacts,
                 estimated_bytes=lambda record: record.blob_size,
+                checkpoint=checkpoint,
             )
         )
 
-    outcomes: list[_ValidationOutcome] = await asyncio.to_thread(_run_batch)
+    pending = asyncio.create_task(asyncio.to_thread(_run_batch))
+    cancellation: asyncio.CancelledError | None = None
+    outcomes: list[_ValidationOutcome] | None = None
+    while outcomes is None:
+        try:
+            outcomes = await asyncio.shield(pending)
+        except asyncio.CancelledError as failure:
+            if pending.cancelled():
+                raise cancellation or failure from None
+            if cancellation is None:
+                cancellation = failure
+            cancel_requested.set()
+            # Keep awaiting the original thread. The map cancels and drains
+            # its own operations before this caller can release their inputs.
+        except BaseException as failure:
+            if cancellation is not None:
+                if isinstance(failure, DaemonOperationCancelled):
+                    raise cancellation from failure
+                raise BaseExceptionGroup(
+                    "validation cancellation and worker failure", [cancellation, failure]
+                ) from None
+            raise
+        else:
+            if cancellation is not None:
+                raise cancellation
     batch_elapsed = _time.perf_counter() - t_batch
     total_blob_mb = sum(r.blob_size for r in raw_artifacts) / (1024 * 1024)
     if batch_elapsed > 1.0:
