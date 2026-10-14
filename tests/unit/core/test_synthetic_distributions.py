@@ -610,13 +610,12 @@ def _string_length_fields(node: object, path: str = "$") -> list[tuple[str, dict
     return found
 
 
-def test_real_packages_generate_string_lengths_inside_their_observed_range() -> None:
+def test_fresh_packages_generate_string_lengths_inside_their_observed_range(qualified_schema_registry) -> None:
     """Every top-level string field with an observed length histogram stays inside [min, max]."""
     checked = 0
     for provider in ("chatgpt", "claude-code", "gemini"):
-        element = sorted((_PROVIDERS / provider / "versions").glob("*/elements/*.schema.json.gz"))[-1]
-        with gzip.open(element) as handle:
-            schema = cast(JSONDocument, json.load(handle))
+        schema = qualified_schema_registry.get_element_schema(provider)
+        assert isinstance(schema, dict)
         bounds = {
             path: (distribution.get("min"), distribution.get("max"))
             for path, distribution in _string_length_fields(schema)
@@ -1189,3 +1188,15 @@ def test_selected_schema_binding_dies_with_the_generated_record() -> None:
     del value
     gc.collect()
     assert original() is None
+
+
+def test_old_committed_chatgpt_shape_is_not_qualified_by_format_annotation() -> None:
+    element = sorted((_PROVIDERS / "chatgpt" / "versions").glob("*/elements/*.schema.json.gz"))[-1]
+    with gzip.open(element) as handle:
+        schema = cast(JSONDocument, json.load(handle))
+    corpus = SyntheticCorpus(schema, WireFormat(encoding="json"), "chatgpt")
+    try:
+        with pytest.raises(ValueError, match="observed shape cannot represent original wire format"):
+            corpus._generate_from_schema(schema, random.Random(23))
+    finally:
+        corpus._relation_solver.close()

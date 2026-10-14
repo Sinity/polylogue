@@ -47,6 +47,7 @@ from polylogue.schemas.synthetic.semantic_values import (
     _text_for_role,
 )
 from polylogue.sources.dispatch import parse_payload
+from tests.infra.qualified_schema_registry import QUALIFIED_SCHEMA_PROVIDERS
 from tests.infra.schema_access import fail_missing_schema
 
 
@@ -223,8 +224,10 @@ class TestSemanticValueGeneratorBasics:
 
 
 class TestSyntheticSessionEnvelope:
-    def test_chatgpt_tree_generation_produces_clean_session_id(self) -> None:
-        corpus = SyntheticCorpus.for_provider("chatgpt")
+    def test_chatgpt_tree_generation_produces_clean_session_id(
+        self, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus("chatgpt")
         payload = json.loads(corpus.generate(count=1, seed=42, messages_per_session=range(3, 4))[0])
 
         session_id = payload.get("id")
@@ -232,7 +235,7 @@ class TestSyntheticSessionEnvelope:
         assert session_id
         assert " " not in session_id
 
-    def test_synthetic_corpus_from_spec_reuses_schema_selection(self) -> None:
+    def test_synthetic_corpus_from_spec_reuses_schema_selection(self, qualified_provider_defaults: None) -> None:
         spec = CorpusSpec.for_provider(
             "chatgpt",
             package_version="default",
@@ -249,7 +252,7 @@ class TestSyntheticSessionEnvelope:
         assert batch.report.provider == "chatgpt"
         assert batch.report.generated_count == 2
 
-    def test_generation_plants_independent_wire_facts_before_ingest(self) -> None:
+    def test_generation_plants_independent_wire_facts_before_ingest(self, qualified_provider_defaults: None) -> None:
         native_id = "c03-planted-target"
         spec = CorpusSpec.for_provider(
             "codex",
@@ -272,7 +275,9 @@ class TestSyntheticSessionEnvelope:
         assert set(facts.paired_tool_ids) <= set(facts.tool_result_ids)
         assert facts.raw_sha256
 
-    def test_write_spec_artifacts_returns_written_paths(self, tmp_path: Path) -> None:
+    def test_write_spec_artifacts_returns_written_paths(
+        self, tmp_path: Path, qualified_provider_defaults: None
+    ) -> None:
         spec = CorpusSpec.for_provider(
             "chatgpt",
             count=1,
@@ -591,7 +596,7 @@ class TestWireFormatShape:
                 return
         pytest.fail("fallback did not produce a tool_result witness")
 
-    def test_tool_heavy_batch_can_emit_unknown_tool_result_shape(self) -> None:
+    def test_tool_heavy_batch_can_emit_unknown_tool_result_shape(self, qualified_provider_defaults: None) -> None:
         """Tool-heavy batches retain at least one result without a verdict."""
         spec = CorpusSpec.for_provider("codex", count=1, messages_min=4, messages_max=4, seed=71, style="tool-heavy")
         records = [json.loads(line) for line in SyntheticCorpus.generate_for_spec(spec)[0].splitlines()]
@@ -608,22 +613,22 @@ class TestWireFormatShape:
 class TestCorpusSeedDeterminism:
     """Corpus generation is deterministic with same seed."""
 
-    def test_same_seed_same_output(self) -> None:
+    def test_same_seed_same_output(self, qualified_provider_corpus: Callable[[str], SyntheticCorpus]) -> None:
         """Two generations with the same seed produce identical bytes."""
         available = SyntheticCorpus.available_providers()
         if not available:
             fail_missing_schema("No schemas available")
-        corpus = SyntheticCorpus.for_provider(available[0])
+        corpus = qualified_provider_corpus(available[0])
         a = corpus.generate(count=2, seed=99)
         b = corpus.generate(count=2, seed=99)
         assert a == b
 
-    def test_different_seed_different_output(self) -> None:
+    def test_different_seed_different_output(self, qualified_provider_corpus: Callable[[str], SyntheticCorpus]) -> None:
         """Two generations with different seeds produce different bytes."""
         available = SyntheticCorpus.available_providers()
         if not available:
             fail_missing_schema("No schemas available")
-        corpus = SyntheticCorpus.for_provider(available[0])
+        corpus = qualified_provider_corpus(available[0])
         a = corpus.generate(count=2, seed=1)
         b = corpus.generate(count=2, seed=2)
         assert a != b
@@ -656,11 +661,13 @@ class TestCorpusParseRoundtrip:
 class TestSeedDeterminism:
     """Corpus generation is deterministic given the same seed."""
 
-    @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_same_seed_produces_identical_output(self, provider: str) -> None:
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_same_seed_produces_identical_output(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
         """Two generate() calls with same seed → identical byte output."""
         try:
-            corpus = SyntheticCorpus.for_provider(provider)
+            corpus = qualified_provider_corpus(provider)
         except FileNotFoundError:
             fail_missing_schema(f"No schema for {provider}")
 
@@ -672,11 +679,13 @@ class TestSeedDeterminism:
 class TestMessageCountContract:
     """Generated sessions respect the message count range."""
 
-    @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
-    def test_generate_count_matches_requested(self, provider: str) -> None:
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_generate_count_matches_requested(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
         """generate(count=N) returns exactly N items."""
         try:
-            corpus = SyntheticCorpus.for_provider(provider)
+            corpus = qualified_provider_corpus(provider)
         except FileNotFoundError:
             fail_missing_schema(f"No schema for {provider}")
 
@@ -684,23 +693,25 @@ class TestMessageCountContract:
             items = corpus.generate(count=count, seed=0)
             assert len(items) == count, f"{provider}: requested {count}, got {len(items)}"
 
-    def test_generate_zero_returns_empty(self) -> None:
+    def test_generate_zero_returns_empty(self, qualified_provider_corpus: Callable[[str], SyntheticCorpus]) -> None:
         """generate(count=0) returns an empty list."""
         available = SyntheticCorpus.available_providers()
         if not available:
             fail_missing_schema("No schemas available")
 
-        corpus = SyntheticCorpus.for_provider(available[0])
+        corpus = qualified_provider_corpus(available[0])
         items = corpus.generate(count=0, seed=0)
         assert items == []
 
-    def test_generate_batch_reports_provider_and_count(self) -> None:
+    def test_generate_batch_reports_provider_and_count(
+        self, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
         """generate_batch() exposes a typed report aligned with raw output."""
         available = SyntheticCorpus.available_providers()
         if not available:
             fail_missing_schema("No schemas available")
 
-        corpus = SyntheticCorpus.for_provider(available[0])
+        corpus = qualified_provider_corpus(available[0])
         batch = corpus.generate_batch(count=2, seed=7, messages_per_session=range(4, 5))
         assert len(batch.artifacts) == 2
         assert batch.report.generated_count == 2
@@ -712,7 +723,7 @@ class TestMessageCountContract:
 class TestParseRoundtrip:
     """Synthetic data round-trips through the actual provider parsers."""
 
-    @pytest.mark.parametrize("provider", sorted(SyntheticCorpus.available_providers() or ["chatgpt"]))
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
     def test_synthetic_parses_to_sessions(self, provider: str, synthetic_source: SyntheticSourceFactory) -> None:
         """Synthetic corpus for each provider parses into valid sessions."""
         from polylogue.sources import iter_source_sessions
@@ -803,9 +814,11 @@ class TestSyntheticRoundtrip:
     """For every provider with a schema and wire format, synthetic data must
     be parseable by the real provider parser."""
 
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_roundtrip_produces_messages(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_roundtrip_produces_messages(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         results = corpus.generate(count=3, seed=42, messages_per_session=range(4, 8))
         assert len(results) == 3
 
@@ -820,9 +833,11 @@ class TestSyntheticRoundtrip:
             conv = sessions[0]
             assert len(conv.messages) > 0, f"Provider {provider}: parsed session has no messages (index {i})"
 
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_parsed_messages_have_roles(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_parsed_messages_have_roles(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         [raw] = corpus.generate(count=1, seed=7, messages_per_session=range(5, 6))
 
         runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
@@ -834,9 +849,11 @@ class TestSyntheticRoundtrip:
             assert msg.role is not None
             assert str(msg.role) != ""
 
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_parsed_messages_have_text_content(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_parsed_messages_have_text_content(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         [raw] = corpus.generate(count=1, seed=99, messages_per_session=range(4, 5))
 
         runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
@@ -854,16 +871,20 @@ class TestSyntheticRoundtrip:
 
 
 class TestSyntheticDeterminism:
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_same_seed_same_output(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_same_seed_same_output(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         result_a = corpus.generate(count=3, seed=123)
         result_b = corpus.generate(count=3, seed=123)
         assert result_a == result_b
 
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_different_seeds_different_output(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_different_seeds_different_output(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         result_a = corpus.generate(count=2, seed=1)
         result_b = corpus.generate(count=2, seed=2)
         # At least one session should differ
@@ -876,16 +897,20 @@ class TestSyntheticDeterminism:
 
 
 class TestSyntheticEdgeCases:
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_count_zero_produces_empty_list(self, provider: str) -> None:
-        corpus = SyntheticCorpus.for_provider(provider)
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_count_zero_produces_empty_list(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
+        corpus = qualified_provider_corpus(provider)
         result = corpus.generate(count=0, seed=0)
         assert result == []
 
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_single_message_session(self, provider: str) -> None:
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_single_message_session(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
         """A session with exactly 1 message should still parse."""
-        corpus = SyntheticCorpus.for_provider(provider)
+        corpus = qualified_provider_corpus(provider)
         [raw] = corpus.generate(count=1, seed=55, messages_per_session=range(1, 2))
 
         runtime_provider = _SCHEMA_TO_RUNTIME_PROVIDER.get(provider, provider)
@@ -973,10 +998,12 @@ class TestProviderAvailability:
 
 
 class TestDemoStyleRoundtrip:
-    @pytest.mark.parametrize("provider", _available_providers())
-    def test_demo_style_roundtrips(self, provider: str) -> None:
+    @pytest.mark.parametrize("provider", QUALIFIED_SCHEMA_PROVIDERS)
+    def test_demo_style_roundtrips(
+        self, provider: str, qualified_provider_corpus: Callable[[str], SyntheticCorpus]
+    ) -> None:
         """Demo-style synthetic data should also parse correctly."""
-        corpus = SyntheticCorpus.for_provider(provider)
+        corpus = qualified_provider_corpus(provider)
         results = corpus.generate(
             count=2,
             seed=42,
