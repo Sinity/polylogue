@@ -585,6 +585,34 @@ def test_quiesce_stops_the_worker_clears_routing_and_allows_restart(tmp_path: Pa
         dispatcher.shutdown()
 
 
+def test_sender_thread_does_not_carry_its_first_starters_log_correlation(tmp_path: Path) -> None:
+    """The process-wide sender serves every later call, so it starts with no
+    submitter's context.
+
+    Anti-vacuity: start the thread without an explicit empty ``context`` and,
+    where ``sys.flags.thread_inherit_context`` is on (the free-threading
+    default), every line the sender emits carries the first starter's
+    ``attempt_id``, so the captured correlation is non-empty.
+    """
+    from polylogue.logging import bind, current_context
+
+    dispatcher = call_log._McpCallLogDispatcher()
+    base_config = load_polylogue_config()
+    config = replace(base_config, _data={**base_config.raw, "archive_root": str(tmp_path / "archive")})
+    observed: queue.Queue[dict[str, object]] = queue.Queue()
+
+    def capture() -> None:
+        observed.put(dict(current_context()))
+
+    dispatcher._run = capture  # type: ignore[method-assign]
+    with bind(attempt_id="first-starter"):
+        dispatcher.register(config)
+    try:
+        assert observed.get(timeout=5.0) == {}
+    finally:
+        dispatcher.shutdown()
+
+
 def test_global_dispatcher_is_quiesced_before_every_test() -> None:
     """No test inherits another test's live call-log worker or outbox roots.
 
