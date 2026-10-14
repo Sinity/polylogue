@@ -2548,6 +2548,7 @@ def _finalize_prepared_cohort(
         validation_reuse=original.validation_reuse if isinstance(original, PreparedJsonl) else None,
         observed_parse_key=original.observed_parse_key,
         observed_parse_artifact_ref=original.observed_parse_artifact_ref,
+        jsonl_separators_only=original.jsonl_separators_only,
     )
     if not preserve_parser_stage:
         return result

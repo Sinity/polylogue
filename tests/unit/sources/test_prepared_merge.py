@@ -719,7 +719,7 @@ def test_retained_cohort_fold_observes_owner_cancellation(fold: str) -> None:
 def test_separator_append_keeps_all_aggregate_dependencies_without_a_session(tmp_path: Path, body: bytes) -> None:
     from contextlib import closing
 
-    from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+    from polylogue.sources.prepared_jsonl import _finalize_prepared_cohort, prepare_jsonl_blob
 
     baseline = _chunk_artifact(
         tmp_path / "baseline",
@@ -742,9 +742,20 @@ def test_separator_append_keeps_all_aggregate_dependencies_without_a_session(tmp
         strict_jsonl_records=True,
     )
     aggregate = None
+    bound = None
     try:
         assert tail.jsonl_separators_only and not tail.session_sequence()
-        ordered = [("baseline", baseline), ("tail", tail)]
+        bound = _finalize_prepared_cohort(
+            tail.read_result(),
+            lambda sessions: sessions,
+            artifact_directory=tmp_path / "bound",
+            publication_publisher=None,
+            publication_source_read=None,
+            preparation_dependency=None,
+            preserve_parser_stage=False,
+        )
+        assert bound.jsonl_separators_only and not bound.session_sequence()
+        ordered = [("baseline", baseline), ("tail", bound)]
         aggregate = prepare_retained_cohort_artifact(
             ordered, tmp_path / "aggregate", separator_only_raw_ids=frozenset({"tail"})
         )
@@ -762,6 +773,8 @@ def test_separator_append_keeps_all_aggregate_dependencies_without_a_session(tmp
     finally:
         if aggregate is not None:
             aggregate.discard()
+        if bound is not None:
+            bound.discard()
         tail.discard()
         baseline.discard()
 
