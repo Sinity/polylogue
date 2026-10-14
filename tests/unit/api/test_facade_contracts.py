@@ -30,6 +30,7 @@ import io
 import json
 import shutil
 import sqlite3
+import subprocess
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any, cast, get_type_hints
@@ -2834,6 +2835,7 @@ async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) ->
     assert authored_completeness.complete is True
 
 
+@pytest.mark.uses_real_clock("The synthetic checkout contains a real Git commit.")
 async def test_session_correlation_payload_surfaces_checkout_commit(tmp_path: Path) -> None:
     """polylogue-cijx.3 AC3: session_commits (the parser-reported repo
     checkout HEAD at session capture, written by write_parsed_session_to_archive
@@ -2842,6 +2844,25 @@ async def test_session_correlation_payload_surfaces_checkout_commit(tmp_path: Pa
     GET /api/sessions/:id/correlate surface, daemon/http.py) must now surface
     it as `checkout_commits`, distinct from the on-demand `commits` list."""
 
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "Neutral checkout",
+        ],
+        check=True,
+    )
     archive = _archive(tmp_path)
 
     def _off_loop_15() -> Any:
@@ -2857,6 +2878,7 @@ async def test_session_correlation_payload_surfaces_checkout_commit(tmp_path: Pa
                     git_repository_url="https://github.com/example/repo",
                     git_commit_hash="deadbeefcafe0001",
                     git_branch="main",
+                    working_directories=[str(repo)],
                     messages=[
                         ParsedMessage(
                             provider_message_id="m1",
@@ -2870,9 +2892,8 @@ async def test_session_correlation_payload_surfaces_checkout_commit(tmp_path: Pa
 
     (session_id,) = run_off_event_loop(_off_loop_15)
     try:
-        # No github_api toggle on this facade method -- it never shells to
-        # `gh`, only `git log` against repo_path, which fails harmlessly
-        # against the nonexistent repo path in this fixture.
+        # The local checkout is valid, while its commits are outside the captured
+        # session window. Parser-reported checkout evidence remains independent.
         payload = await archive.session_correlation_payload(session_id)
     finally:
         await archive.close()
