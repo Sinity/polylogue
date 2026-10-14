@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import tempfile
+import zipfile
 from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -1527,3 +1528,97 @@ def test_claude_design_documents_collapse_across_export_snapshots(tmp_path: Path
     assert result.included_native_source_revision_count == 2
     assert evidence.current_source_count == 1
     assert evidence.historical_source_count == 1
+
+
+@pytest.mark.parametrize("zip_member", [False, True])
+@pytest.mark.parametrize("spooled", [False, True])
+@pytest.mark.parametrize("provider", ["chatgpt", "claude-code"])
+def test_disk_backed_document_keeps_evidence_identity_and_final_flush(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, zip_member: bool, spooled: bool, provider: str
+) -> None:
+    """Switching readers must conserve native identity, values and pending evidence."""
+    payload = json.dumps(
+        _chatgpt_conversation("neutral-session", updated=7)
+        if provider == "chatgpt"
+        else {"type": "user", "sessionId": "neutral-session", "message": {"role": "user", "content": "neutral body"}}
+    )
+    source = tmp_path / ("export.zip" if zip_member else "conversation.json")
+    if zip_member:
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("conversations.json", payload)
+    else:
+        source.write_text(payload)
+    candidate = _SourceCandidate(provider, source, source, "neutral-source")
+    ordinary = _collect_candidate(candidate)
+    assert ordinary.terminal.outcome == "included"
+    assert len(ordinary.contributions) == 1
+    monkeypatch.setattr(source_inference_module, "_DOCUMENT_SPILL_THRESHOLD_BYTES", 1)
+    spool = tmp_path / "evidence.sqlite3" if spooled else None
+    streamed = _collect_candidate(candidate, spool_path=spool)
+    assert streamed.terminal == ordinary.terminal
+    rows = tuple(_spooled_contributions(spool)) if spool is not None else streamed.contributions
+    assert rows == ordinary.contributions
+    # These are detached sufficient statistics, usable after the native owner closes.
+    assert json.loads(json.dumps(rows[0].evidence_by_element)) == rows[0].evidence_by_element
+    assert rows[0].declared_updated_at == ordinary.contributions[0].declared_updated_at
+
+
+def test_document_above_previous_refusal_size_is_observed(tmp_path: Path) -> None:
+    """A real document beyond the former cap reaches the evidence collector."""
+    source = tmp_path / "conversation.json"
+    with source.open("w") as handle:
+        handle.write(json.dumps(_chatgpt_conversation("neutral-large", updated=3)))
+        for _ in range(33):
+            handle.write(" " * (1024 * 1024))
+    collected = _collect_candidate(_SourceCandidate("chatgpt", source, source, "neutral-source"))
+    assert collected.terminal.outcome == "included"
+    assert collected.terminal.record_count == 1
+    assert len(collected.contributions) == 1
+
+
+@pytest.mark.parametrize("zip_member", [False, True])
+def test_disk_backed_document_owner_closes_on_evidence_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, zip_member: bool
+) -> None:
+    from polylogue.schemas.generation import evidence as evidence_module
+    from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+    source = tmp_path / ("export.zip" if zip_member else "conversation.json")
+    payload = json.dumps(_chatgpt_conversation("neutral-cancel", updated=1))
+    if zip_member:
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("conversations.json", payload)
+    else:
+        source.write_text(payload)
+    connections: list[sqlite3.Connection] = []
+    scratch_paths: list[Path] = []
+
+    class TrackedDocument(StreamedJSONDocument):
+        def __enter__(self) -> JSONValue:
+            if self._path is not None and self._path != source:
+                assert self._path.stat().st_mode & 0o777 == 0o600
+            value = super().__enter__()
+            connections.append(self.connection)
+            return value
+
+    real_directory = tempfile.TemporaryDirectory
+
+    def track_directory(*args: Any, **kwargs: Any) -> tempfile.TemporaryDirectory[str]:
+        directory = real_directory(*args, **kwargs)
+        scratch_paths.append(Path(directory.name))
+        return directory
+
+    def cancel_evidence(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("neutral evidence cancellation")
+
+    monkeypatch.setattr(source_inference_module, "StreamedJSONDocument", TrackedDocument)
+    monkeypatch.setattr(source_inference_module, "_DOCUMENT_SPILL_THRESHOLD_BYTES", 1)
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", track_directory)
+    monkeypatch.setattr(evidence_module, "collect_source_evidence", cancel_evidence)
+    with pytest.raises(RuntimeError, match="neutral evidence cancellation"):
+        _collect_candidate(_SourceCandidate("chatgpt", source, source, "neutral-source"))
+    assert connections
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+    assert all(not path.exists() for path in scratch_paths)

@@ -63,7 +63,10 @@ Receipt argv alone does not certify the effective policy. Dry runs and
 JSONL and NDJSON records are streamed. JSON export arrays and supported ZIP
 members are observed by logical session. Export evidence is spooled to private
 SQLite files with bounded active contributions. Single-object JSON documents
-above 32 MiB require a streaming adapter and are reported as unsupported. Provider-native identifiers distinguish
+above 32 MiB use the existing disk-backed JSON reader; the threshold selects a
+reader rather than refusing evidence. ZIP objects use private temporary byte
+spools. The source collector keeps borrowed document views alive through the
+final evidence flush and contribution serialization. Provider-native identifiers distinguish
 sessions, including Claude Code subagents. Gemini CLI checkpoint streams retain
 raw headers, turns, and update records; complete checkpoints retain document
 granularity. Current revisions contribute value

@@ -11,6 +11,7 @@ import hashlib
 import json
 import pickle
 import re
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -18,7 +19,7 @@ import zipfile
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from contextlib import closing, suppress
+from contextlib import ExitStack, closing, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC
 from functools import partial
@@ -42,6 +43,7 @@ from polylogue.schemas.observation import (
     extract_schema_units_from_payload,
     resolve_provider_config,
 )
+from polylogue.schemas.observation_spill import StreamedJSONDocument
 from polylogue.schemas.source_cache import CachedContribution, SourceContributionCache
 from polylogue.schemas.source_document_identity import DOCUMENT_UPDATE_FIELDS, native_document_identity
 from polylogue.schemas.source_recipe import (
@@ -79,7 +81,7 @@ SourceOutcome = Literal[
     "too_large",
 ]
 
-_MAX_UNSTREAMABLE_DOCUMENT_BYTES = 32 * 1024 * 1024
+_DOCUMENT_SPILL_THRESHOLD_BYTES = 32 * 1024 * 1024
 _SOURCE_EVIDENCE_CHUNK_RECORD_LIMIT = 32
 _SOURCE_EVIDENCE_CHUNK_BYTE_LIMIT = 16 * 1024 * 1024
 _SOURCE_EVIDENCE_PENDING_RECORD_LIMIT = 128
@@ -850,6 +852,8 @@ def _iter_document_payloads(
     *,
     byte_count: int,
     expand_export_arrays: bool = True,
+    owned: ExitStack,
+    source_path: Path | None = None,
 ) -> Iterator[JSONValue]:
     """Stream export arrays without repeatedly walking one physical document."""
     import ijson
@@ -888,8 +892,21 @@ def _iter_document_payloads(
             raise SourceInferenceError(f"malformed_json:{path_name}") from exc
         if found:
             return
-    if byte_count > _MAX_UNSTREAMABLE_DOCUMENT_BYTES:
-        raise SourceInferenceError("too_large_unstreamable_document")
+    if byte_count > _DOCUMENT_SPILL_THRESHOLD_BYTES:
+        # The consumer owns this borrow through its final pending-record flush
+        # and contribution serialization, after this iterator reaches EOF.
+        if source_path is None:
+            scratch = Path(owned.enter_context(tempfile.TemporaryDirectory(prefix="polylogue-source-document-")))
+            source_path = scratch / "document.json"
+            with open_handle() as handle, source_path.open("xb") as destination:
+                source_path.chmod(0o600)
+                shutil.copyfileobj(handle, destination, length=1024 * 1024)
+        try:
+            value = owned.enter_context(StreamedJSONDocument(source_path))
+        except (ValueError, ijson.JSONError) as exc:
+            raise SourceInferenceError(f"malformed_json:{path_name}") from exc
+        yield value
+        return
     with open_handle() as handle:
         try:
             value = loads(handle.read())
@@ -905,6 +922,7 @@ def _iter_file_payloads(
     *,
     byte_count: int,
     preserve_document: bool = False,
+    owned: ExitStack,
 ) -> Iterator[JSONValue | _SizedPayload]:
     if path.suffix.lower() in {".jsonl", ".ndjson"}:
         with path.open("rb") as handle:
@@ -915,6 +933,8 @@ def _iter_file_payloads(
         str(path),
         byte_count=byte_count,
         expand_export_arrays=not preserve_document,
+        owned=owned,
+        source_path=path,
     )
 
 
@@ -1394,26 +1414,29 @@ def _collect_candidate(
         if candidate.path.suffix.lower() == ".json":
             rule = artifact_rule_for_path(Provider.from_string(candidate.provider), str(candidate.path))
             structured_document_sidecar = rule is not None and rule.observation_strategy == "structured-documents"
-        contributions, record_count, producer_versions, producer_version_unrecognized = _collect_payload_evidence(
-            candidate,
-            revision,
-            _iter_file_payloads(
-                candidate.path,
-                byte_count=byte_count,
-                preserve_document=structured_document_sidecar,
-            ),
-            dynamic_paths_by_element=dynamic_paths_by_element,
-            include_statistics=include_statistics,
-            metadata_only=metadata_only,
-            observation_recorder=observation_recorder,
-            spool_path=spool_path,
-            replay_payloads=partial(
-                _iter_file_payloads,
-                candidate.path,
-                byte_count=byte_count,
-                preserve_document=structured_document_sidecar,
-            ),
-        )
+        with ExitStack() as owned:
+            contributions, record_count, producer_versions, producer_version_unrecognized = _collect_payload_evidence(
+                candidate,
+                revision,
+                _iter_file_payloads(
+                    candidate.path,
+                    byte_count=byte_count,
+                    preserve_document=structured_document_sidecar,
+                    owned=owned,
+                ),
+                dynamic_paths_by_element=dynamic_paths_by_element,
+                include_statistics=include_statistics,
+                metadata_only=metadata_only,
+                observation_recorder=observation_recorder,
+                spool_path=spool_path,
+                replay_payloads=partial(
+                    _iter_file_payloads,
+                    candidate.path,
+                    byte_count=byte_count,
+                    preserve_document=structured_document_sidecar,
+                    owned=owned,
+                ),
+            )
     except SourceInferenceError as exc:
         reason = str(exc)
         outcome: SourceOutcome = (
@@ -1664,21 +1687,30 @@ def _collect_zip_candidate(
                                 spool_partition=str(member_index),
                             )
                     else:
-                        rows, member_records, versions, unrecognized = _collect_payload_evidence(
-                            member_candidate,
-                            member_revision,
-                            _iter_document_payloads(
-                                partial(open_zip_entry, archive, member),
-                                member.filename,
-                                byte_count=member.file_size,
-                            ),
-                            dynamic_paths_by_element=dynamic_paths_by_element,
-                            include_statistics=include_statistics,
-                            metadata_only=metadata_only,
-                            observation_recorder=observation_recorder,
-                            spool_path=spool_path,
-                            spool_partition=str(member_index),
-                        )
+                        with ExitStack() as owned:
+                            rows, member_records, versions, unrecognized = _collect_payload_evidence(
+                                member_candidate,
+                                member_revision,
+                                _iter_document_payloads(
+                                    partial(open_zip_entry, archive, member),
+                                    member.filename,
+                                    byte_count=member.file_size,
+                                    owned=owned,
+                                ),
+                                dynamic_paths_by_element=dynamic_paths_by_element,
+                                include_statistics=include_statistics,
+                                metadata_only=metadata_only,
+                                observation_recorder=observation_recorder,
+                                spool_path=spool_path,
+                                spool_partition=str(member_index),
+                                replay_payloads=partial(
+                                    _iter_document_payloads,
+                                    partial(open_zip_entry, archive, member),
+                                    member.filename,
+                                    byte_count=member.file_size,
+                                    owned=owned,
+                                ),
+                            )
                 except (SourceInferenceError, OSError) as exc:
                     return _CollectedCandidate(
                         candidate, revision, SourceTerminal("decode_failed", byte_count, reason=str(exc))
