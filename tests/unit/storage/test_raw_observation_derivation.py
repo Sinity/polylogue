@@ -2330,8 +2330,8 @@ def test_membership_expansion_and_replay_page_both_source_connections(tmp_path: 
             selected = (*reversed(raw_ids[::2]), raw_ids[0], "absent-raw")
             expected_expansion = (tuple(sorted((*raw_ids, "absent-raw"))), keys)
             requested_keys = (*reversed(keys), keys[0])
-            reader = ConnectionSessionSourceRead(connection)
-            with reader.replay_representative_rows(requested_keys) as rows:
+            connection_reader = ConnectionSessionSourceRead(connection)
+            with connection_reader.replay_representative_rows(requested_keys) as rows:
                 expected_replay = tuple((str(row[0]), str(row[1])) for row in rows)
             assert expected_replay == tuple(
                 (key, raw_ids[2 * i + offset]) for i, key in enumerate(keys) for offset in (1, 0)
@@ -2339,10 +2339,10 @@ def test_membership_expansion_and_replay_page_both_source_connections(tmp_path: 
             previous = connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 17)
             try:
                 assert archive.expand_raw_membership_selection(list(selected)) == expected_expansion
-                assert reader.raw_revision_rebuild_logical_keys(raw_ids) == keys
-                with reader.replay_representative_rows(requested_keys) as rows:
+                assert connection_reader.raw_revision_rebuild_logical_keys(raw_ids) == keys
+                with connection_reader.replay_representative_rows(requested_keys) as rows:
                     assert tuple((str(row[0]), str(row[1])) for row in rows) == expected_replay
-                with reader.replay_representative_rows(requested_keys) as rows:
+                with connection_reader.replay_representative_rows(requested_keys) as rows:
                     assert next(rows) is not None
                 assert not live_connection_cursors(connection)
             finally:

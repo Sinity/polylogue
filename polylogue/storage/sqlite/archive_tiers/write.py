@@ -8285,7 +8285,7 @@ class ConnectionSessionSourceRead:
 
         limit = self._connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
 
-        def read_pages() -> Iterator[sqlite3.Row]:
+        def read_pages() -> Generator[sqlite3.Row, None, None]:
             for key_page in _raw_selection_pages(keys, limit, repeated_values=2):
                 with self._statement(*_raw_replay_representative_query(key_page)) as rows:
                     while True:
@@ -8953,7 +8953,7 @@ class PreparedSessionSourceRead:
 
         limit = self._selection_parameter_limit()
 
-        def read_pages() -> Iterator[sqlite3.Row]:
+        def read_pages() -> Generator[sqlite3.Row, None, None]:
             for key_page in _raw_selection_pages(keys, limit, repeated_values=2, fixed_parameters=2):
                 marks = ",".join("?" for _ in key_page)
                 parameters = tuple(key_page)
