@@ -441,7 +441,8 @@ surfaces:
       are retained. Profiling is separate from timing. The separately named
       unavailable benchmark is a refusal control, not this surface's acceptance.
       Targets remain informational until this exercised route meets them.
-      Separate instrumentation is recorded in cli-status-cold-profile.json.
+      Separate instrumentation is recorded in cli-status-cold-profile.json;
+      command-only samples are recorded in cli-status-cold-after-import.json.
     benchmark_test: "tests/benchmarks/test_cli_cold_start.py::test_bench_cli_status_cold"
     p50_ms: 500
     p95_ms: 800

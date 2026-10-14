@@ -1,0 +1,92 @@
+{
+  "measured_candidate_sha": "027ebc4b791e3ed0a952d9934118d13a9f2f0077",
+  "protected_base_sha": "d11dfe8674f0810c0979f1e2fff58395e2973888",
+  "measured_at": "2026-10-14",
+  "python_version": "3.14.4",
+  "benchmark_job": 7432,
+  "workload": "canonical empty archive; owned resident after cold-build completion; five cold subprocesses per command",
+  "status_semantics": "fresh exact PID/build/archive frame; ordinary status and daemon status rc1/ok=false; local agents coordination rc0",
+  "profiling": false,
+  "cache_policy": "existing owned checkout bytecode cache; no purge or prewarm; separate daemon bytecode prefix; first launches retained",
+  "timing_scope": "subprocess.run with stdout/stderr capture; validation and artifact writes run after the timing loop",
+  "routes": {
+    "status": {
+      "samples_ms": [
+        1209.7851219587028,
+        643.6104190070182,
+        680.0184580497444,
+        653.4832090837881,
+        673.6319880001247
+      ],
+      "median_ms": 673.6319880001247,
+      "maximum_ms": 1209.7851219587028,
+      "modeled_p95_ms": 1175.3177392892244
+    },
+    "agents": {
+      "samples_ms": [
+        1509.515417041257,
+        1425.4631000803784,
+        1436.5414610365406,
+        1437.1737350011244,
+        1460.9059890499339
+      ],
+      "median_ms": 1437.1737350011244,
+      "maximum_ms": 1509.515417041257,
+      "modeled_p95_ms": 1509.29014073255
+    },
+    "daemon": {
+      "samples_ms": [
+        425.3153200261295,
+        437.7934109652415,
+        435.9547720523551,
+        431.9475799566135,
+        473.7450360553339
+      ],
+      "median_ms": 435.9547720523551,
+      "maximum_ms": 473.7450360553339,
+      "modeled_p95_ms": 472.1186295280748
+    }
+  },
+  "targets_ms": {
+    "p50": 500,
+    "p95": 800
+  },
+  "p95_estimator": "mean + 1.645 * sample standard deviation; maximum also recorded; neither estimates a population guarantee from five samples",
+  "native_validation": {
+    "passed_cases": 3,
+    "rounds_per_case": 5,
+    "full_attempted_responses_retained": 15,
+    "empty_before": {
+      "raw_artifacts": 0,
+      "raw_sessions": 0,
+      "sessions": 0
+    },
+    "empty_after": {
+      "raw_artifacts": 0,
+      "raw_sessions": 0,
+      "sessions": 0
+    },
+    "owned_process_group_stopped": true,
+    "forced_cleanup": false
+  },
+  "semantic_controls": {
+    "original_import_negative_job": 7418,
+    "negative_failed_at_unused_module_assertion": true,
+    "fixed_import_and_native_counter_job": 7421,
+    "fixed_cases_passed": 2,
+    "complete_saved_response_normalizations_equal": 4
+  },
+  "change": "Import session_insight_status_sync only inside its existing native readiness counter; payload-only status normalization does not call that counter.",
+  "derived_schema_closure": "IN conservative file membership; automatic semantic identity; no live archive activation or rebuild",
+  "comparability": "Earlier aggregate used an older protected base and included response bookkeeping inside its timed wrapper. Host load was uncontrolled. These results do not establish a pure causal before/after speedup.",
+  "acceptance": {
+    "daemon_status_budget_passed": true,
+    "status_budget_passed": false,
+    "agents_status_budget_passed": false,
+    "whole_cold_budget_passed": false,
+    "catalog_required_promotion": false,
+    "healthy_populated_companion_qualified": false,
+    "rss_measured": false
+  },
+  "prior_profile_artifact": "cli-status-cold-profile.json"
+}
