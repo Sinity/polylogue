@@ -417,6 +417,7 @@ def reconverge_managed_index_on_startup(
                             on_dependency_refusal=None,
                             on_membership_refusal=None,
                             before_publication=None,
+                            settled_offers=frozenset(),
                             neutral_page=page,
                         )
                         # The daemon retains each physical publisher creator.
