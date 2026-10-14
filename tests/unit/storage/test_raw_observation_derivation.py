@@ -2444,3 +2444,127 @@ def test_unknown_admitted_artifact_is_not_positive_non_session_evidence(tmp_path
                 assert dict(receipts) == {admitted.raw_id: "failed", known.raw_id: "complete"}
 
     _run_raw_law(tmp_path, exercise)
+
+
+def test_source_census_sql_failure_rolls_back_selected_facts_and_retries(tmp_path: Path) -> None:
+    """A second membership refusal cannot commit the first selected claim."""
+    from polylogue.storage.io_phase_metrics import connection_cursor
+
+    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
+        bootstrap_archive_root(tmp_path)
+        raw_id = _admit(tmp_path, ("first", "second"))
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
+        frame = raw_observation_frame(tmp_path)
+        original = _source_progress(tmp_path, (raw_id,))
+        with _fixture_archive(tmp_path) as archive:
+            source = archive._ensure_source_conn()
+            with connection_cursor(
+                source,
+                "CREATE TRIGGER refuse_second_member BEFORE INSERT ON raw_session_memberships "
+                "WHEN NEW.logical_source_key='chatgpt-export:second' BEGIN "
+                "SELECT RAISE(ABORT, 'second selected membership refused'); END",
+            ):
+                pass
+            source.commit()
+        # The canonical creator commits Source phases during compute, before
+        # it returns a later Index replacement.
+        with pytest.raises(sqlite3.IntegrityError, match="second selected membership refused"):
+            adapter.compute(frame, raw_id)
+        assert _source_progress(tmp_path, (raw_id,)) == original
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            assert source.execute("SELECT count(*) FROM raw_session_memberships").fetchone() == (0,)
+            assert source.execute("SELECT count(*) FROM raw_membership_census").fetchone() == (0,)
+            assert source.execute("SELECT count(*) FROM raw_authority_parser_census").fetchone() == (0,)
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT count(*) FROM sessions").fetchone() == (0,)
+        with _fixture_archive(tmp_path) as archive:
+            source = archive._ensure_source_conn()
+            with connection_cursor(source, "DROP TRIGGER refuse_second_member"):
+                pass
+            source.commit()
+        _prepare_source_phases(adapter, frame, raw_id)
+        assert _source_progress(tmp_path, (raw_id,)) != original
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            assert source.execute(
+                "SELECT logical_source_key FROM raw_session_memberships ORDER BY logical_source_key"
+            ).fetchall() == [("chatgpt-export:first",), ("chatgpt-export:second",)]
+
+    _run_raw_law(tmp_path, run_phase)
+
+
+@pytest.mark.parametrize("failure_kind", ["sql", "value", "sql_close"])
+def test_index_failure_keeps_committed_source_classification_for_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_kind: str
+) -> None:
+    """Later Index refusal cannot erase already committed Source authority."""
+    from builtins import BaseExceptionGroup
+
+    from polylogue.storage.io_phase_metrics import connection_cursor
+    from polylogue.storage.sqlite.archive_tiers import revision_governance
+    from polylogue.storage.sqlite.connection_profile import native_sql_owner_for_connection
+    from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
+
+    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
+        bootstrap_archive_root(tmp_path)
+        raw_id = _admit(tmp_path, ("retained",))
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
+        frame = raw_observation_frame(tmp_path)
+        _prepare_source_phases(adapter, frame, raw_id)
+        committed = _source_progress(tmp_path, (raw_id,))
+        writers = []
+
+        def fail_index(*args: Any, **kwargs: Any) -> Any:
+            scope = current_index_mutation_scope()
+            assert scope is not None
+            writer = native_sql_owner_for_connection(scope.conn)
+            assert writer is not None
+            writers.append(writer)
+            if failure_kind == "value":
+                raise ValueError("synthetic post-parse writer refusal")
+            if failure_kind == "sql_close":
+                probe = scope.conn.cursor()
+                cursor_type = type(probe)
+                probe.close()
+                original_close = cursor_type.close
+                close_failed = False
+
+                def fail_close_once(cursor: sqlite3.Cursor) -> None:
+                    nonlocal close_failed
+                    if cursor.connection is scope.conn and not close_failed:
+                        close_failed = True
+                        raise OSError("synthetic native Index cursor close refusal")
+                    original_close(cursor)
+
+                monkeypatch.setattr(cursor_type, "close", fail_close_once)
+            # Refuse on the actual admitted writer without changing its schema.
+            with connection_cursor(scope.conn, "SELECT abs(-9223372036854775808)"):
+                raise AssertionError("SQLite integer overflow did not refuse")
+
+        replacement = adapter.compute(frame, raw_id)
+        assert not replacement.needs_source_census and not replacement.needs_source_classification
+        with monkeypatch.context() as fault:
+            fault.setattr(revision_governance, "_write_parsed_precedence_result", fail_index)
+            error_type = {"sql": sqlite3.OperationalError, "value": ValueError, "sql_close": BaseExceptionGroup}[
+                failure_kind
+            ]
+            with pytest.raises(error_type) as refused:
+                _publish(adapter, frame, replacement)
+            if failure_kind == "sql":
+                assert isinstance(refused.value, sqlite3.OperationalError)
+                assert refused.value.sqlite_errorcode == sqlite3.SQLITE_ERROR
+            elif failure_kind == "sql_close":
+                assert isinstance(refused.value, BaseExceptionGroup)
+                assert [type(error) for error in refused.value.exceptions] == [sqlite3.OperationalError, OSError]
+        assert writers and all(writer.connection is None for writer in writers)
+        assert _source_progress(tmp_path, (raw_id,)) == committed
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT count(*) FROM sessions").fetchone() == (0,)
+            assert index.execute("SELECT count(*) FROM messages").fetchone() == (0,)
+        replacement = adapter.compute(frame, raw_id)
+        assert not replacement.needs_source_census and not replacement.needs_source_classification
+        assert _publish(adapter, frame, replacement)
+        assert adapter.inspect(frame, (raw_id,)) == {raw_id: "valid"}
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT native_id FROM sessions").fetchall() == [("retained",)]
+
+    _run_raw_law(tmp_path, run_phase)

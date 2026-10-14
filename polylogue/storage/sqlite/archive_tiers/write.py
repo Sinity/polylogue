@@ -9632,34 +9632,17 @@ def _codex_spawn_edge_parent_claim(
     primary source. A thread id is one install root's own name, so the
     projection is read in the root of the rollout that produced the child
     (``child_source_path``); a child whose rollout path the source tier
-    cannot supply reads the parent every root agrees on. Older source tiers
-    may carry the same evidence in the durable hook spool, which remains a
-    compatible fallback.
+    cannot supply reads the parent every root agrees on. If no projected
+    parent exists, admitted Source hook evidence may provide it. A failed
+    projection read cannot establish that the parent is absent.
     """
     if not child_native_id:
         return None
-    try:
-        from polylogue.sources.codex_state_projection import read_parent_thread_id
+    from polylogue.sources.codex_state_projection import read_parent_thread_id
 
-        projected_parent = read_parent_thread_id(
-            conn, child_native_id, source_path=child_source_path, before_input=before_input, row_read=row_read
-        )
-    except (ImportError, sqlite3.Error) as exc:
-        # Silence here archives a child as a root with no parent edge and no
-        # trace that the projection was ever consulted (polylogue-3r36h). The
-        # spool fallback below may still supply the edge; when it does not,
-        # this line is the only evidence the lineage was lost to a failure
-        # rather than to absent evidence.
-        emit(
-            "storage.codex_spawn_edge.parent_projection_unavailable",
-            level=WARNING,
-            outcome="degraded",
-            reason="the child is archived as a root because its parent projection could not be read",
-            session_id=child_native_id,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        projected_parent = None
+    projected_parent = read_parent_thread_id(
+        conn, child_native_id, source_path=child_source_path, before_input=before_input, row_read=row_read
+    )
     if projected_parent is not None:
         return _HookParentClaim(projected_parent, {"codex_thread_spawn_edge_parent": projected_parent})
     if source_read is None or not _hook_spool_present(source_read):

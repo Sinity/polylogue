@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import sqlite3
+from builtins import BaseExceptionGroup
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -640,3 +641,216 @@ def test_retained_title_tape_cancellation_settles_original_scratch(monkeypatch: 
     assert visited == 3
     assert len(directories) == 1
     assert not directories[0].exists()
+
+
+@pytest.mark.parametrize("close_fault", [False, True])
+def test_streamed_graph_failure_settles_or_retains_exact_writer_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    close_fault: bool,
+) -> None:
+    from contextlib import closing
+
+    from polylogue.storage.io_phase_metrics import (
+        connect_measured,
+        live_connection_cursors,
+        settle_connection_cursors,
+    )
+
+    with closing(connect_measured(":memory:")) as connection:
+        with closing(connection.cursor()) as schema:
+            schema.executescript(INDEX_DDL)
+        with connection:
+            assert _write(connection)
+        body_failure = RuntimeError("synthetic streamed thread failure")
+        cleanup_failure = OSError("synthetic graph cursor close failure")
+        blocked: list[sqlite3.Cursor] = []
+        with closing(connection.cursor()) as probe:
+            cursor_type = type(probe)
+        original_close = cursor_type.close
+
+        def close(cursor: sqlite3.Cursor) -> None:
+            if close_fault and blocked and cursor is blocked[0]:
+                raise cleanup_failure
+            original_close(cursor)
+
+        monkeypatch.setattr(cursor_type, "close", close)
+
+        def threads() -> Iterator[ThreadRecord]:
+            for position in range(258):
+                yield ThreadRecord(f"thread-{position:04d}", f"title-{position:04d}", 0)
+            live = live_connection_cursors(connection)
+            assert len(live) == 1
+            blocked.append(live[0])
+            raise body_failure
+
+        with pytest.raises(BaseExceptionGroup if close_fault else RuntimeError) as caught:
+            with connection:
+                _write(connection, threads=threads(), raw_id="raw-next", blob_hash="blob-next", observation_order=2)
+        if close_fault:
+            assert isinstance(caught.value, BaseExceptionGroup)
+            assert caught.value.exceptions == (body_failure, cleanup_failure)
+            assert live_connection_cursors(connection) == (blocked[0],)
+            monkeypatch.setattr(cursor_type, "close", original_close)
+            settle_connection_cursors(connection)
+        else:
+            assert caught.value is body_failure
+        assert live_connection_cursors(connection) == ()
+        assert read_thread_titles(connection) == {"parent-thread": "Curated title"}
+        provenance = read_provenance(connection)
+        assert provenance is not None and provenance.raw_id == "raw-1"
+        assert live_connection_cursors(connection) == ()
+
+
+def test_thread_state_projection_crosses_keyset_pages_without_duplicate_or_missing_children() -> None:
+    from contextlib import closing
+
+    from polylogue.sources.codex_state_projection import write_thread_state_projection
+    from polylogue.sources.parsers.codex_state import CodexSpawnEdge, CodexStateSnapshot, CodexThreadRecord
+    from polylogue.storage.io_phase_metrics import connect_measured, live_connection_cursors
+
+    count = 257
+    children = tuple(f"child-{position:04d}" for position in range(count))
+    threads = tuple(
+        CodexThreadRecord(child, f"title-{child}", "/synthetic", 1, 1, "synthetic", None, None, None, False)
+        for child in children
+    )
+    with closing(connect_measured(":memory:")) as connection:
+        with closing(connection.cursor()) as schema:
+            schema.executescript(INDEX_DDL)
+        for order, parent in enumerate(("first-parent", "second-parent"), start=1):
+            snapshot = CodexStateSnapshot(
+                threads,
+                tuple(CodexSpawnEdge(parent, child, "closed") for child in children),
+            )
+            with connection:
+                assert write_thread_state_projection(
+                    connection,
+                    snapshot,
+                    raw_id=f"raw-{order}",
+                    blob_hash=f"blob-{order}",
+                    observed_at_ms=order,
+                    observation_order=order,
+                    source_scope="/synthetic",
+                    source_read=None,
+                )
+            assert live_connection_cursors(connection) == ()
+            assert read_thread_titles(connection) == {child: f"title-{child}" for child in children}
+            assert read_spawn_edge_children(connection) == set(children)
+            retained_parents = ("first-parent",) if order == 1 else ("first-parent", "second-parent")
+            assert read_spawn_edges(connection) == {
+                (retained_parent, child): "closed" for retained_parent in retained_parents for child in children
+            }
+            assert all(
+                read_parent_thread_id(connection, child, source_scope="/synthetic") == parent for child in children
+            )
+            assert live_connection_cursors(connection) == ()
+
+
+@pytest.mark.parametrize("older", [False, True])
+def test_prepared_graph_preserves_repeated_endpoint_titles_and_all_257_rows_without_original_writer_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    older: bool,
+) -> None:
+    from polylogue.storage.archive_identity import resolve_active_index_path
+    from polylogue.storage.io_phase_metrics import connection_cursor, live_connection_cursors
+    from polylogue.storage.sqlite.agent_thread_state import prepare_thread_state_graph
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    threads = tuple(
+        ThreadRecord(f"child-{position:04d}", f"exact title {position}", position) for position in range(257)
+    )
+    edges = tuple(SpawnRecord("incoming-parent", thread.thread_id, "closed") for thread in threads)
+    current_order = 2 if older else 0
+    with write_lease("test.prepared-graph-input", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            index = archive.index_connection
+            assert index is not None
+            with archive.index_mutation_scope():
+                write_thread_state_graph(
+                    index,
+                    source_scope="/install",
+                    threads=(ThreadRecord("existing", "held", 1),),
+                    spawn_edges=(),
+                    raw_id="held-raw",
+                    blob_hash="held-hash",
+                    observed_at_ms=1,
+                    observation_order=current_order,
+                    export_order=lambda _raw_id: None,
+                )
+    expected = sqlite3.connect(":memory:")
+    expected.executescript(INDEX_DDL)
+    try:
+        write_thread_state_graph(
+            expected,
+            source_scope="/install",
+            threads=(ThreadRecord("existing", "held", 1),),
+            spawn_edges=(),
+            raw_id="held-raw",
+            blob_hash="held-hash",
+            observed_at_ms=1,
+            observation_order=current_order,
+            export_order=lambda _raw_id: None,
+        )
+        assert write_thread_state_graph(
+            expected,
+            source_scope="/install",
+            threads=threads,
+            spawn_edges=edges,
+            raw_id="incoming-raw",
+            blob_hash="incoming-hash",
+            observed_at_ms=2,
+            observation_order=1,
+            export_order=lambda _raw_id: None,
+        )
+        with PreparedIndexMutation(resolve_active_index_path(tmp_path), archive_root=tmp_path) as seal:
+            with seal.original_read_snapshot():
+                prepared = prepare_thread_state_graph(
+                    seal,
+                    directory=tmp_path,
+                    source_scope="/install",
+                    threads=threads,
+                    spawn_edges=edges,
+                    raw_id="incoming-raw",
+                    blob_hash="incoming-hash",
+                    observed_at_ms=2,
+                    observation_order=1,
+                    export_order=lambda _raw_id: None,
+                )
+                assert live_connection_cursors(seal.observer("index")) == ()
+            try:
+
+                def no_original_lookup(*_args: object, **_kwargs: object) -> None:
+                    raise AssertionError("graph application read an original payload after preparation")
+
+                monkeypatch.setattr("polylogue.storage.sqlite.agent_thread_state.read_provenance", no_original_lookup)
+                monkeypatch.setattr(
+                    "polylogue.storage.sqlite.agent_thread_state._retain_older_export_rows", no_original_lookup
+                )
+                with write_lease("test.prepared-graph-publication", archive_root=tmp_path):
+                    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+                        index = archive.index_connection
+                        assert index is not None
+                        with seal.mutation_scope(index):
+                            assert prepared.apply(index)
+                        for table, order in (
+                            ("work_evidence_graphs", "graph_id"),
+                            ("work_evidence_nodes", "graph_id,node_ref"),
+                            ("work_evidence_edges", "graph_id,edge_ref"),
+                        ):
+                            with connection_cursor(index, f"SELECT * FROM {table} ORDER BY {order}") as rows:
+                                actual = [tuple(row) for row in rows]
+                            with connection_cursor(expected, f"SELECT * FROM {table} ORDER BY {order}") as rows:
+                                assert actual == [tuple(row) for row in rows]
+                        assert len(read_spawn_edge_children(index)) == 257
+                        assert read_thread_titles(index)["child-0256"] == "exact title 256"
+                        assert live_connection_cursors(index) == ()
+                assert live_connection_cursors(prepared.owner.require_connection()) == ()
+            finally:
+                prepared.close()
+    finally:
+        expected.close()
