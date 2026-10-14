@@ -39,6 +39,27 @@ class _ReadResult(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True, strict=True)
 
 
+class ReadMaterialization(_ReadResult):
+    """Raw materialization truth for the same pinned archive serving the rows."""
+
+    scope: Literal["pinned_archive_raw_state"] = "pinned_archive_raw_state"
+    state: Literal["unmeasured", "populated_converged", "populated_unconverged"]
+    reason: str
+    raw_artifact_count: int | None
+    materialized_raw_artifact_count: int | None
+    blocking_counts: dict[str, int] = Field(default_factory=dict)
+    detail: str | None = None
+    raw_state_revision: str | None
+
+    @property
+    def gap_reason(self) -> str | None:
+        if self.state == "populated_unconverged":
+            return "archive_not_converged"
+        if self.state == "unmeasured" and self.reason != "zero_denominator":
+            return "archive_materialization_unmeasured"
+        return None
+
+
 AggregateMode = Literal["count", "stats", "stats_by"]
 
 

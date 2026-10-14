@@ -286,11 +286,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/convergence_feedback.py",
-    "import": "polylogue.storage.archive_readiness"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/query.py",
     "import": "polylogue.storage.search_providers"
   },

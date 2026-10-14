@@ -431,9 +431,11 @@ class TestBoundedReadsDegradeByName:
         family's counts per chunk instead of summing them, and a one-session
         chunk reports one session's families for a two-session archive.
         """
+        bootstrap_archive_root(tmp_path)
         self._seed_sessions(tmp_path, 2)
         params = {"query": "origin:claude-code-session"}
-        with ArchiveStore.open_existing(tmp_path) as archive:
+        with open_operation_read(tmp_path) as pinned:
+            archive = pinned.archive
             uncapped = execute_read_operation("facets", {"params": params}, archive=archive, serving_identity="test")
             assert cast(dict[str, Any], uncapped["outcome"])["state"] == "ok"
             assert uncapped["total_sessions"] == 2
@@ -469,8 +471,10 @@ class TestBoundedReadsDegradeByName:
         ``_attached_units_payload`` call) and this envelope is ``ok`` while
         carrying 200 of 250 rows.
         """
+        bootstrap_archive_root(tmp_path)
         session_id = self._seed_sessions(tmp_path, 1, messages=250)[0]
-        with ArchiveStore.open_existing(tmp_path) as archive:
+        with open_operation_read(tmp_path) as pinned:
+            archive = pinned.archive
             result = execute_read_operation(
                 "cli.query",
                 {"params": {"query": f"id:{session_id}", "with_units": ["message"]}},
@@ -536,8 +540,10 @@ def test_transcript_total_is_the_composed_length(tmp_path: Path) -> None:
     the divergent tail.  A plain (non-lineage) session cannot see this: its
     stored count and its composed length are the same number.
     """
+    bootstrap_archive_root(tmp_path)
     child_id = _seed_lineage_child(tmp_path)
-    with ArchiveStore.open_existing(tmp_path) as archive:
+    with open_operation_read(tmp_path) as pinned:
+        archive = pinned.archive
         stored = archive.read_summary(child_id).message_count
         first = execute_read_operation(
             "session.read",
@@ -577,7 +583,8 @@ def test_transcript_total_is_the_composed_length(tmp_path: Path) -> None:
     continuation = cast(str, filtered_page["continuation"])
     from polylogue.archive.query.transaction import QueryContinuationInvalidError
 
-    with ArchiveStore.open_existing(tmp_path) as archive:
+    with open_operation_read(tmp_path) as pinned:
+        archive = pinned.archive
         with pytest.raises(QueryContinuationInvalidError):
             execute_read_operation(
                 "session.read",
@@ -601,6 +608,7 @@ def test_search_continuation_survives_a_session_grain_total(tmp_path: Path) -> N
     `next_offset` `None` here, ending the walk before the second session's
     hit is ever returned.
     """
+    bootstrap_archive_root(tmp_path)
     from tests.infra.storage_records import SessionBuilder
 
     crowded = SessionBuilder(tmp_path / "index.db", "crowded").provider("claude-code").title("crowded")
@@ -611,7 +619,8 @@ def test_search_continuation_survives_a_session_grain_total(tmp_path: Path) -> N
         "m-0000", role="user", text="needle body tail"
     ).save()
 
-    with ArchiveStore.open_existing(tmp_path) as archive:
+    with open_operation_read(tmp_path) as pinned:
+        archive = pinned.archive
         page = execute_read_operation(
             "cli.query",
             {"params": {"query": "needle", "limit": 4, "offset": 0}},
@@ -644,6 +653,7 @@ def test_a_cursor_page_emits_the_builder_page_its_outcome_describes(tmp_path: Pa
     this page carries two hits under a limit of one, rows the outcome and
     ``authority.matched`` never counted.
     """
+    bootstrap_archive_root(tmp_path)
     from tests.infra.storage_records import SessionBuilder
 
     for name in ("alpha", "beta", "gamma", "delta"):
@@ -651,7 +661,8 @@ def test_a_cursor_page_emits_the_builder_page_its_outcome_describes(tmp_path: Pa
             "m-0000", role="user", text=f"needle body {name}"
         ).save()
 
-    with ArchiveStore.open_existing(tmp_path) as archive:
+    with open_operation_read(tmp_path) as pinned:
+        archive = pinned.archive
         first = execute_read_operation(
             "cli.query",
             {"params": {"query": "needle", "limit": 1}},
@@ -682,6 +693,7 @@ def test_search_authority_counts_the_match_total_and_the_returned_window(tmp_pat
     Anti-vacuity: swap the two counters back and a one-hit page over four
     matching sessions reports ``matched=1, analyzed=4``.
     """
+    bootstrap_archive_root(tmp_path)
     from tests.infra.storage_records import SessionBuilder
 
     for name in ("alpha", "beta", "gamma", "delta"):
@@ -689,7 +701,8 @@ def test_search_authority_counts_the_match_total_and_the_returned_window(tmp_pat
             "m-0000", role="user", text=f"needle body {name}"
         ).save()
 
-    with ArchiveStore.open_existing(tmp_path) as archive:
+    with open_operation_read(tmp_path) as pinned:
+        archive = pinned.archive
         page = execute_read_operation(
             "cli.query",
             {"params": {"query": "needle", "limit": 1}},
@@ -704,13 +717,15 @@ def test_search_authority_counts_the_match_total_and_the_returned_window(tmp_pat
 
 def test_a_short_ranked_page_still_terminates(tmp_path: Path) -> None:
     """The opposite direction: a page under its own bound ends the walk."""
+    bootstrap_archive_root(tmp_path)
     from tests.infra.storage_records import SessionBuilder
 
     SessionBuilder(tmp_path / "index.db", "only").provider("claude-code").title("only").add_message(
         "m-0000", role="user", text="needle body"
     ).save()
 
-    with ArchiveStore.open_existing(tmp_path) as archive:
+    with open_operation_read(tmp_path) as pinned:
+        archive = pinned.archive
         page = execute_read_operation(
             "cli.query",
             {"params": {"query": "needle", "limit": 50, "offset": 0}},
@@ -722,6 +737,7 @@ def test_a_short_ranked_page_still_terminates(tmp_path: Path) -> None:
 
 def test_declared_query_units_replays_the_http_opaque_continuation(tmp_path: Path) -> None:
     """Removing the continuation branch makes the declared operation reject page two."""
+    bootstrap_archive_root(tmp_path)
     from polylogue.archive.query.transaction import QueryContinuationInvalidError
     from tests.infra.storage_records import SessionBuilder
 
@@ -729,7 +745,8 @@ def test_declared_query_units_replays_the_http_opaque_continuation(tmp_path: Pat
         "m-0000", role="user", text="first page"
     ).add_message("m-0001", role="user", text="second page").save()
 
-    with ArchiveStore.open_existing(tmp_path) as archive:
+    with open_operation_read(tmp_path) as pinned:
+        archive = pinned.archive
         first = execute_read_operation(
             "query.units",
             {"params": {"expression": "messages where words >= 0 | sort by time asc", "limit": 1}},

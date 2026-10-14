@@ -189,8 +189,15 @@ def execute_read_operation(
         current_epoch = archive_snapshot_epoch(archive)
         if selected_epoch != current_epoch:
             raise QueryContinuationStaleError(issued_epoch=str(selected_epoch), current_epoch=current_epoch)
+    from polylogue.operations.read_materialization import decorate_materialized_read, pinned_read_materialization
+
+    materialization = None
+    if name != "status" and (name != "completion" or completion_reads_archive(payload)):
+        materialization = pinned_read_materialization(archive)
     cacheable = _cacheable_read(name, payload)
     cache_key_payload = _params(payload) if name in {"cli.query", "facets"} else payload
+    if materialization is not None:
+        cache_key_payload = {"selection": cache_key_payload, "raw_state_revision": materialization.raw_state_revision}
     # A grammar completion is a pure protocol read and deliberately accepts the
     # minimal archive-shaped object used by the public operation seam, so it
     # skips index validation.  A completion that names an archive-backed
@@ -226,7 +233,8 @@ def execute_read_operation(
         if cached is not None and frame_matches:
             if name == "cli.query":
                 _refresh_query_relative_times(cached)
-            return cached
+            archive.check_operation_read()
+            return decorate_materialized_read(cached, materialization) if materialization is not None else cached
 
     if name == "cli.query":
         params = _params(payload)
@@ -374,12 +382,14 @@ def execute_read_operation(
         raise ValueError(f"read operation is not declared: {name}")
 
     dependencies.raise_if_aborted()
+    if materialization is not None:
+        archive.check_operation_read()
     if cacheable:
         assert read_view is not None
         from polylogue.storage.search.cache import put_cached_result
 
         put_cached_result(name, cache_key_payload, result, view=read_view)
-    return result
+    return decorate_materialized_read(result, materialization) if materialization is not None else result
 
 
 def _refresh_query_relative_times(result: dict[str, object]) -> None:

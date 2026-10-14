@@ -1,46 +1,35 @@
-"""Human-facing archive convergence warnings for query result surfaces."""
+"""Render convergence evidence supplied by the read's own pinned frame."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
-from polylogue.logging import get_logger
+from polylogue.operations.read_contracts import ReadMaterialization
+from polylogue.surfaces.outcome import OutcomeEnvelope
 
-logger = get_logger(__name__)
 
-
-def convergence_warning_line(active_archive: Path | None = None) -> str | None:
-    """Return a concise warning when archive results may be partial.
-
-    ``None`` means "checked, and results are complete". Failing to determine
-    readiness is not that: this used to swallow every exception and return
-    ``None``, so a missing table, an unreadable ops tier, or a schema drift
-    rendered exactly like a healthy archive and partial results were presented as
-    complete. An unanswerable check now says so.
-    """
-    try:
-        from polylogue.paths import archive_root
-        from polylogue.storage.archive_readiness import (
-            RawMaterializationAssessmentState,
-            assess_raw_materialization,
-            raw_materialization_readiness_snapshot,
-        )
-
-        root = active_archive or archive_root()
-        raw_readiness = raw_materialization_readiness_snapshot(root)
-        assessment = assess_raw_materialization(raw_readiness)
-        if assessment.state is RawMaterializationAssessmentState.POPULATED_CONVERGED:
-            return None
-        return _raw_materialization_warning(
-            raw_readiness,
-            is_unmeasured=assessment.state is RawMaterializationAssessmentState.UNMEASURED,
-            assessment_reason=assessment.reason,
-            assessment_detail=assessment.detail,
-        )
-    except Exception:
-        logger.warning("convergence warning probe failed; reporting readiness as undetermined", exc_info=True)
+def convergence_warning_line(outcome: OutcomeEnvelope | Mapping[str, object] | None) -> str | None:
+    """A renderer never opens a later archive to qualify an earlier answer."""
+    payload = outcome.to_dict() if isinstance(outcome, OutcomeEnvelope) else outcome
+    detail = payload.get("detail") if isinstance(payload, Mapping) else None
+    raw = detail.get("archive_materialization") if isinstance(detail, Mapping) else None
+    if not isinstance(raw, Mapping):
         return _UNDETERMINED
+    materialization = ReadMaterialization.model_validate(raw)
+    if materialization.gap_reason is None:
+        return None
+    readiness = {
+        **materialization.blocking_counts,
+        "raw_artifact_count": materialization.raw_artifact_count,
+        "materialized_raw_artifact_count": materialization.materialized_raw_artifact_count,
+    }
+    return _raw_materialization_warning(
+        readiness,
+        is_unmeasured=materialization.state == "unmeasured",
+        assessment_reason=materialization.reason,
+        assessment_detail=materialization.detail,
+    )
 
 
 #: The caveat every undeterminable readiness check renders, whether the probe
@@ -49,7 +38,7 @@ _UNDETERMINED = "Archive convergence state could not be determined; results may 
 
 
 def _raw_materialization_warning(
-    readiness: dict[str, object],
+    readiness: Mapping[str, object],
     *,
     is_unmeasured: bool,
     assessment_reason: str,

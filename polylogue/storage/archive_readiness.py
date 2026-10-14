@@ -219,6 +219,19 @@ class RawMaterializationAssessment:
         }
 
 
+class ArchiveMaterializationUnavailableError(RuntimeError):
+    """Exact identity/cardinality requires complete materialization on its frame."""
+
+    def __init__(self, assessment: RawMaterializationAssessment) -> None:
+        self.assessment = assessment
+        self.code = (
+            "archive_not_converged"
+            if assessment.state is RawMaterializationAssessmentState.POPULATED_UNCONVERGED
+            else "archive_materialization_unmeasured"
+        )
+        super().__init__(f"exact archive selection requires materialization: {assessment.reason}")
+
+
 _RAW_MATERIALIZATION_BLOCKING_KEYS: tuple[str, ...] = (
     "critical",
     "warning",

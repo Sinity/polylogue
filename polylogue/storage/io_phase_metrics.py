@@ -187,6 +187,8 @@ class _MeasuredCursor(sqlite3.Cursor):
 
 
 class _MeasuredConnection(sqlite3.Connection):
+    _operation_read_transaction_protected = False
+    _operation_read_transaction_refused = False
     _native_creator: tuple[int, threading.Thread] | None = None
     _metric_tier: Tier | None = None
     _metric_context_exit = False
