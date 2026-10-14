@@ -397,13 +397,19 @@ def test_backup_verification_refuses_linked_sqlite_sidecar(
     result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=False)
     assert result.output_path is not None
     backup_root = Path(result.output_path)
+    backup_mod._verify_backup_result(result)
+    assert result.ok is True
+    assert result.verified is True
+    assert (backup_root / "verification-receipt.json").exists()
+    live_user_bytes = live_user_db.read_bytes()
     (backup_root / "user.db-wal").symlink_to(live_user_db)
 
     backup_mod._verify_backup_result(result)
 
     assert result.ok is False
     assert result.verified is False
-    assert "unbound SQLite sidecar" in str(result.error)
+    assert result.error
+    assert live_user_db.read_bytes() == live_user_bytes
     assert not (backup_root / "verification-receipt.json").exists()
 
 
@@ -1042,7 +1048,7 @@ def test_backup_retains_prefix_mismatch_when_grown_source_fallback_fails(
     """A grown file cannot replace a mismatching historical prefix proof.
 
     The only candidate window of a full observation is its recorded-size
-    prefix (``retained_blob_source_candidates``); a prefix that hashes
+    prefix (``retained_blob_sources_many``); a prefix that hashes
     differently is a typed ``hash_mismatch``, and no whole-file read proves
     the blob instead.
     """

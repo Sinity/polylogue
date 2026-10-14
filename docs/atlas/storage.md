@@ -169,6 +169,10 @@ selection preserves non-absence filesystem faults; every selected byte window
 still requires exact size and SHA-256 proof. ZIP member authority comes from its
 captured acquisition coordinate, while loose colons remain filename data
 (`storage/source_blob_restoration.py:retained_source_location`).
+Windowless Codex and Claude appends share receipt-history scans between backup
+and raw restoration. First-retention and latest-payload-receipt order offer
+candidate offsets, including preceding appends; exact size and SHA-256
+validation select the bytes. Neither ordering alone authorizes restoration.
 
 ## Backup readability
 

@@ -212,7 +212,7 @@ Restore expectations:
   hashes. Which source windows can hold a raw's bytes (the file prefix, a
   recorded append window, a pre-offset append after its preceding full
   observation, or the ZIP member) is decided in one place,
-  `storage/source_blob_restoration.retained_blob_source_candidates`, which
+  `storage/source_blob_restoration.retained_blob_sources_many`, which
   raw derivation also reads when it restores an absent blob before
   preparation. Verification and the migration backup gate derive the required
   blob set from the package's own `source.db`, `index.db`, reservations and
