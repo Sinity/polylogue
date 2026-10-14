@@ -2023,3 +2023,278 @@ def test_restart_census_refuses_multisession_append_without_membership_conversio
             conn.execute("SELECT status FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone()[0] == "failed"
         )
         assert archive.raw_revision_descriptor(raw_id)[4] == len(payload)
+
+
+def _observe_off_writer_retained_parses(monkeypatch: pytest.MonkeyPatch) -> set[str]:
+    """Record actual neutral parser work after checking its compute ownership."""
+    from threading import Lock
+
+    from polylogue.core.compute import compute_adapter
+    from polylogue.core.write_lease import coordinator_write_lease_active
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.storage.derived import raw
+
+    parsed_raw_ids: set[str] = set()
+    lock = Lock()
+    original = raw._parse_captured_neutral
+
+    def observed(
+        raw_id: str, captured: Any, artifact_key: tuple[object, ...], context: Any, scratch: Path
+    ) -> PreparedJsonl:
+        compute_adapter().require_current_creator()
+        assert not coordinator_write_lease_active()
+        with lock:
+            parsed_raw_ids.add(raw_id)
+        return original(raw_id, captured, artifact_key, context, scratch)
+
+    monkeypatch.setattr(raw, "_parse_captured_neutral", observed)
+    return parsed_raw_ids
+
+
+@contextmanager
+def _registered_replay_candidate(root: Path) -> Iterator[IndexGeneration]:
+    """Borrow the production cold destination and discard only that candidate."""
+    with write_lease("test.retained-resume.begin", archive_root=root):
+        build = ColdBuildGeneration.begin(
+            root,
+            reason="test-retained-resume",
+            observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", root / "absent"),)),
+        )
+    register_cold_build_generation(build)
+    try:
+        yield build.generation
+    finally:
+        clear_cold_build_generation()
+        with write_lease("test.retained-resume.discard", archive_root=root):
+            build.discard()
+
+
+def test_owned_nonempty_generation_preserves_published_units_on_resume(tmp_path: Path) -> None:
+    """A registered cold destination preserves earlier output across subset and full replay."""
+    raw_ids = build_independent_raw_corpus(tmp_path, raw_count=2, avg_payload_bytes=1_000, authoritative_source=True)
+    replay_retained_components(tmp_path)
+    with _registered_replay_candidate(tmp_path) as generation:
+        replay_retained_components(tmp_path, selected_raw_ids=[raw_ids[0]], owned_generation=generation)
+        with closing(sqlite3.connect(generation.index_path)) as conn:
+            prior = conn.execute("SELECT session_id, content_hash, raw_id FROM sessions").fetchone()
+        assert prior is not None
+        replay_retained_components(tmp_path, selected_raw_ids=[raw_ids[1]], owned_generation=generation)
+        replay_retained_components(tmp_path, owned_generation=generation)
+        with closing(sqlite3.connect(generation.index_path)) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
+            assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone() == (2,)
+            assert (
+                conn.execute(
+                    "SELECT session_id, content_hash, raw_id FROM sessions WHERE session_id=?", (prior[0],)
+                ).fetchone()
+                == prior
+            )
+
+
+def test_codex_state_replay_keeps_a_large_logical_export_complete(tmp_path: Path) -> None:
+    """The original logical SQLite export retains its complete value and terminal census."""
+    from polylogue.sources.sqlite_export import logical_export_bytes
+    from polylogue.sources.sqlite_snapshot import member_export_scope
+    from polylogue.storage.sqlite.agent_thread_state import read_thread_titles
+    from tests.infra.retained_jsonl import prepared_source_fixture
+    from tests.infra.retained_parser_payloads import _codex_thread_state_snapshot_bytes
+
+    bootstrap_archive_root(tmp_path)
+    _codex_thread_state_snapshot_bytes(tmp_path, "large-state")
+    state_path = tmp_path / "large-state" / "state_5.sqlite"
+    expected_title = "large title " + "x" * 2_000_000
+    with closing(sqlite3.connect(state_path)) as state, state:
+        state.execute("UPDATE threads SET title=?", (expected_title,))
+    payload = logical_export_bytes(state_path, scope=member_export_scope(state_path))
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=str(tmp_path / "codex" / "state_5.sqlite"),
+            canonical_source_path=str(tmp_path / "codex" / "state_5.sqlite"),
+            acquired_at_ms=1,
+        )
+    replay_retained_components(tmp_path, selected_raw_ids=[raw_id])
+    with closing(sqlite3.connect(tmp_path / "index.db")) as index:
+        assert read_thread_titles(index, thread_ids=["codex-state-thread"]) == {"codex-state-thread": expected_title}
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute(
+            "SELECT status FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+        ).fetchone() == ("complete",)
+    with prepared_source_fixture(tmp_path) as reader:
+        assert reader.raw_parser_census_is_current(raw_id)
+
+
+@pytest.mark.parametrize("failure_phase", ["preparation", "publication"])
+def test_retained_failure_preserves_committed_components_and_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_phase: str
+) -> None:
+    """Earlier independent components survive an actual worker or publication failure."""
+    from polylogue.storage.derived import raw
+
+    raw_count = 10
+    raw_ids = build_independent_raw_corpus(tmp_path, raw_count=raw_count, avg_payload_bytes=1_000)
+    if failure_phase == "preparation":
+        # The current owner censuses an identity-opaque scope before replay.
+        # Publish a real earlier scope, then fail while preparing the remainder.
+        replay_retained_components(tmp_path, selected_raw_ids=raw_ids[:5])
+    calls = 0
+    parsed_raw_ids: set[str] = set()
+    crash_at_call = 6
+    owner: Any = raw if failure_phase == "preparation" else ArchiveStore
+    method = "_parse_captured_neutral" if failure_phase == "preparation" else "apply_raw_revision_replay"
+    original = getattr(owner, method)
+
+    def crash_partway(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if failure_phase == "preparation":
+            parsed_raw_ids.add(str(args[0]))
+        if (failure_phase == "preparation" and len(parsed_raw_ids) == crash_at_call) or (
+            failure_phase == "publication" and calls == crash_at_call
+        ):
+            raise RuntimeError("synthetic retained component failure")
+        return original(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(owner, method, crash_partway)
+        with pytest.raises(RuntimeError, match="synthetic retained component failure"):
+            replay_retained_components(tmp_path)
+    assert calls >= crash_at_call
+    with closing(sqlite3.connect(tmp_path / "index.db")) as index:
+        prior = index.execute("SELECT session_id, content_hash, raw_id FROM sessions ORDER BY session_id").fetchall()
+        assert len(prior) == crash_at_call - 1
+        assert index.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone() == (len(prior),)
+    if failure_phase == "preparation":
+        with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+            assert source.execute("SELECT COUNT(*) FROM raw_sessions WHERE revision_kind != 'unknown'").fetchone() == (
+                len(prior),
+            )
+            assert source.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone() == (
+                len(prior),
+            )
+    # The retry consumes the same durable inputs through the same owner.
+    result = replay_retained_components(tmp_path)
+    assert result.quarantined == result.adoption_deferred == 0
+    with closing(sqlite3.connect(tmp_path / "index.db")) as index:
+        final = index.execute("SELECT session_id, content_hash, raw_id FROM sessions ORDER BY session_id").fetchall()
+        assert len(final) == raw_count
+        assert set(prior) <= set(final)
+        assert {row[2] for row in final} == set(raw_ids)
+        assert index.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone() == (raw_count,)
+        assert index.execute(
+            "SELECT COUNT(*) FROM (SELECT raw_id FROM raw_revision_applications GROUP BY raw_id HAVING COUNT(*) != 1)"
+        ).fetchone() == (0,)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions WHERE revision_kind='unknown'").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone() == (
+            raw_count,
+        )
+
+
+def test_retained_replay_keeps_every_large_and_small_message_byte(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Initial and repeated sealed publication retain every original message byte."""
+    import hashlib
+
+    from polylogue.operations.operation_context import open_operation_read
+    from tests.infra.revision_backfill_benchmark import build_whale_bearing_corpus
+
+    small_raw_ids, whale_raw_id = build_whale_bearing_corpus(
+        tmp_path,
+        small_raw_count=6,
+        small_avg_payload_bytes=5_000,
+        whale_payload_bytes=200_000,
+    )
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        hashes = {
+            str(raw_id): bytes(blob_hash).hex()
+            for raw_id, blob_hash in source.execute("SELECT raw_id, blob_hash FROM raw_sessions")
+        }
+    store = BlobStore(tmp_path / "blob")
+    expected = {}
+    for raw_id, blob_hash in hashes.items():
+        records = store.read_all(blob_hash).splitlines()
+        text = json.loads(records[-1])["payload"]["content"][0]["text"]
+        expected[raw_id] = hashlib.sha256(text.encode()).hexdigest()
+
+    def forbid_inline_parse(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("sealed replay reparsed inside its writer")
+
+    monkeypatch.setattr(revision_backfill, "parse_retained_raw_sessions", forbid_inline_parse)
+    parsed_raw_ids = _observe_off_writer_retained_parses(monkeypatch)
+    for _pass in range(2):
+        parsed_raw_ids.clear()
+        result = replay_retained_components(tmp_path)
+        assert parsed_raw_ids == {*small_raw_ids, whale_raw_id}
+        assert result.quarantined == result.adoption_deferred == 0
+        with open_operation_read(tmp_path) as pinned:
+            archive = pinned.archive
+            sessions = tuple(archive._conn.execute("SELECT session_id, raw_id FROM sessions"))
+            assert {str(row[1]) for row in sessions} == {*small_raw_ids, whale_raw_id}
+            for session_id, raw_id in sessions:
+                envelope = archive.read_session(str(session_id))
+                assert envelope.lineage_complete
+                assert len(envelope.messages) == 1
+                text = "".join(block.text or "" for block in envelope.messages[0].blocks)
+                assert hashlib.sha256(text.encode()).hexdigest() == expected[str(raw_id)]
+
+
+def test_owned_generation_replay_keeps_prefix_sharing_child_and_its_complete_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prepared child publication stores its exact tail while retaining its parent edge."""
+    bootstrap_archive_root(tmp_path)
+    parent_texts = [f"parent-{index}" for index in range(4)]
+    raw_ids: list[str] = []
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for native_id, texts, forked_from in (
+            ("zparent", parent_texts, None),
+            ("achild0", [*parent_texts, "child-0-tail"], "zparent"),
+        ):
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=_codex_session_payload(native_id, texts, forked_from_id=forked_from),
+                source_path=f"{native_id}.jsonl",
+                canonical_source_path=f"{native_id}.jsonl",
+                acquired_at_ms=1,
+                revision=RawRevisionEnvelope(
+                    logical_source_key=f"codex-session:{native_id}",
+                    kind=RawRevisionKind.FULL,
+                    source_revision=f"{native_id}-v1",
+                    acquisition_generation=0,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                ),
+            )
+            raw_ids.append(raw_id)
+            publish_fixture_byte_classification(archive, f"codex-session:{native_id}")
+    replay_retained_components(tmp_path)
+
+    def forbid_inline_parse(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("sealed child replay reparsed inside its writer")
+
+    monkeypatch.setattr(revision_backfill, "parse_retained_raw_sessions", forbid_inline_parse)
+    parsed_raw_ids = _observe_off_writer_retained_parses(monkeypatch)
+    with _registered_replay_candidate(tmp_path) as generation:
+        result = replay_retained_components(tmp_path, owned_generation=generation)
+        assert parsed_raw_ids == set(raw_ids)
+        assert result.adoption_deferred == result.quarantined == 0
+        with closing(sqlite3.connect(generation.index_path)) as index:
+            assert {row[0] for row in index.execute("SELECT session_id FROM sessions")} == {
+                "codex-session:zparent",
+                "codex-session:achild0",
+            }
+            link = index.execute(
+                "SELECT resolved_dst_session_id, branch_point_message_id, inheritance FROM session_links WHERE src_session_id=?",
+                ("codex-session:achild0",),
+            ).fetchone()
+            assert link is not None and link[0] == "codex-session:zparent" and link[1] is not None
+            assert link[2] == "prefix-sharing"
+            assert index.execute(
+                "SELECT COUNT(*) FROM messages WHERE session_id=?", ("codex-session:achild0",)
+            ).fetchone() == (1,)
+            assert index.execute(
+                "SELECT text FROM blocks WHERE message_id IN (SELECT message_id FROM messages WHERE session_id=?)",
+                ("codex-session:achild0",),
+            ).fetchall() == [("child-0-tail",)]
