@@ -853,3 +853,32 @@ def test_full_fts_rebuild_preserves_primary_observer_and_cursor_cleanup_failures
             cursor.allow_cleanup.set()
             close_connection_cursor(test_conn, cursor)
         test_conn.rollback()
+
+
+@pytest.mark.parametrize("route", ["restore", "ensure", "replace"])
+def test_trigger_creation_preserves_the_callers_rollback(test_conn: sqlite3.Connection, route: str) -> None:
+    """Trigger body semicolons must not cause an implicit executescript commit."""
+    fts_lifecycle.ensure_fts_index_sync(test_conn)
+    trigger = FTS_TRIGGER_NAMES[0]
+    test_conn.execute(f'DROP TRIGGER "{trigger}"')
+    test_conn.execute("CREATE TABLE fixture_fts_transaction (value TEXT)")
+    test_conn.commit()
+    test_conn.execute("BEGIN")
+    test_conn.execute("INSERT INTO fixture_fts_transaction VALUES ('uncommitted')")
+    creator = {
+        "restore": restore_fts_triggers_sync,
+        "ensure": fts_lifecycle.ensure_fts_index_sync,
+        "replace": replace_fts_triggers_sync,
+    }[route]
+    try:
+        creator(test_conn)
+        assert test_conn.in_transaction
+    finally:
+        test_conn.rollback()
+    assert test_conn.execute("SELECT COUNT(*) FROM fixture_fts_transaction").fetchone()[0] == 0
+    assert (
+        test_conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name=?", (trigger,)).fetchone()[
+            0
+        ]
+        == 0
+    )

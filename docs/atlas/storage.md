@@ -729,6 +729,9 @@ run on their event loop with one settled handoff at a time; observer errors or
 cancellation settle the physical worker before returning and emit no later
 progress (`storage/fts/fts_lifecycle.py`; `pipeline/services/indexing.py`). The
 separately owned resumable bulk generation retains its existing chunk commits.
+Trigger bodies execute as single statements, so their semicolons cannot commit
+the caller. IndexService borrows an active transaction and opens its own only
+when no transaction is active; it never commits a borrowed connection.
 
 ### Provider usage projection
 
