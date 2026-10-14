@@ -84,15 +84,19 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
-from collections.abc import Callable, ItemsView, Iterable, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Generator, ItemsView, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 from polylogue.core.hashing import hash_text
+from polylogue.core.tool_result_pointer import (
+    PERSISTED_OUTPUT_POINTER_PATTERN,
+    SidecarReferenceMatch,
+    matching_tool_result_reference,
+)
 from polylogue.sources import value_bounds
 from polylogue.sources.sidecar_evidence import (
     RetainedSidecarFile,
@@ -106,7 +110,6 @@ from polylogue.sources.sidecar_evidence import (
 # short slug, ``call_NN_...``, ``mcp-<server>-<tool>-<ts>``) for the *file*,
 # while the *owning* tool_result block still carries a real tool_use_id --
 # recovered from this pointer line embedded in the block's own preview text.
-_SAVED_TO_RE = re.compile(r"(?:Full output saved to|Output has been saved to):?\s*(\S+)")
 _HOOK_FILE_PREFIX = "hook-"
 
 #: A ``tool_result`` preview names a persisted output the scope does not hold.
@@ -153,6 +156,16 @@ class SidecarJoinResult:
     debt: tuple[SidecarDebt, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True, slots=True)
+class ToolResultReference:
+    """Original public field shape of one indexed tool-result reference."""
+
+    tool_use_id: str
+    content_representation: str
+    was_truncated: bool
+    inline_length: int
+
+
 class ToolResultIndexAccumulator:
     """Incrementally builds the ``tool_use_id`` index one record at a time.
 
@@ -188,6 +201,9 @@ class ToolResultIndexAccumulator:
         self._by_tool_use_id: MutableMapping[str, tuple[int, bool]] = (
             _SqliteIndexMap(self._db, "tool") if self._db is not None else {}
         )
+        self._by_content_representation: MutableMapping[str, str] = (
+            _SqliteIndexMap(self._db, "content") if self._db is not None else {}
+        )
         self._by_persisted_name: MutableMapping[str, str] = (
             _SqliteIndexMap(self._db, "name") if self._db is not None else {}
         )
@@ -218,9 +234,23 @@ class ToolResultIndexAccumulator:
             if not isinstance(tool_use_id, str) or not tool_use_id:
                 continue
             raw = seg.get("content")
+            representation = (
+                "absent"
+                if "content" not in seg
+                else "null"
+                if raw is None
+                else "string"
+                if isinstance(raw, str)
+                else "array"
+                if isinstance(raw, list)
+                else "object"
+                if isinstance(raw, dict)
+                else "other"
+            )
+            self._by_content_representation[tool_use_id] = representation
             if isinstance(raw, str):
                 inline_len = len(raw)
-                pointer = _SAVED_TO_RE.search(raw)
+                pointer = PERSISTED_OUTPUT_POINTER_PATTERN.search(raw)
                 is_truncated = pointer is not None
                 if pointer:
                     self._by_persisted_name[os.path.basename(pointer.group(1))] = tool_use_id
@@ -232,6 +262,17 @@ class ToolResultIndexAccumulator:
             else:
                 inline_len, is_truncated = 0, False
             self._by_tool_use_id[tool_use_id] = (inline_len, is_truncated)
+
+    def iter_tool_result_references(self) -> Generator[ToolResultReference, None, None]:
+        """Stream original indexed identities and finite content shapes."""
+        for tool_use_id, (inline_length, truncated) in self._by_tool_use_id.items():
+            yield ToolResultReference(
+                tool_use_id, self._by_content_representation[tool_use_id], bool(truncated), inline_length
+            )
+
+    def reference_for_filename(self, filename: str) -> SidecarReferenceMatch | None:
+        """Resolve only the original reference metadata used by the body join."""
+        return matching_tool_result_reference(filename, self._by_tool_use_id.get, self._by_persisted_name.get)
 
     def join(self, scope: RetainedSidecarScope) -> SidecarJoinResult:
         """Join the observed index against ``scope``. See ``join_tool_result_sidecars``."""
@@ -560,8 +601,8 @@ def _join_from_index(
             continue
         present.add(name)
 
-        stem = name.rsplit(".", 1)[0]
-        tool_use_id = stem if stem in by_tool_use_id else by_persisted_name.get(name, by_persisted_name.get(stem))
+        reference = matching_tool_result_reference(name, by_tool_use_id.get, by_persisted_name.get)
+        tool_use_id = None if reference is None else reference.tool_use_id
         byte_size = entry.byte_size
         file_mtime_ms = entry.file_mtime_ms
 
@@ -718,7 +759,9 @@ __all__ = [
     "SidecarDebt",
     "SidecarJoinResult",
     "SidecarMatch",
+    "SidecarReferenceMatch",
     "ToolResultIndexAccumulator",
+    "ToolResultReference",
     "join_tool_result_sidecars",
     "join_tool_result_sidecars_session_scoped",
     "observe_tool_result_stream",

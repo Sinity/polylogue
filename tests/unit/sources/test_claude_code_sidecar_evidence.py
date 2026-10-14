@@ -1835,3 +1835,41 @@ def test_tool_use_result_preserves_complete_filename_evidence_on_eager_and_strea
             stored = json.loads(rows[0][1])
             assert stored["tool_use_id"] == "tool-1"
             assert stored["filenames"] == expected
+
+
+def test_dispatch_result_and_original_child_stem_share_one_unique_operand() -> None:
+    from polylogue.core.claude_code_children import claude_dispatch_operand
+
+    for agent_id in ("neutral-child", "agent-neutral-child"):
+        record: dict[str, object] = {
+            "type": "user",
+            "sessionId": "neutral-parent",
+            "uuid": "neutral-result",
+            "toolUseResult": {"agentId": agent_id},
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "neutral-dispatch", "content": "neutral output"},
+                    {"type": "tool_result", "tool_use_id": "neutral-dispatch", "content": "neutral duplicate"},
+                ],
+            },
+        }
+        assert claude_dispatch_operand(record) == ("neutral-dispatch", "agent-neutral-child")
+        parsed = parse_code([record], "neutral-parent")
+        events = [event for event in parsed.session_events if event.event_type == "claude_delegation_progress"]
+        assert len(events) == 1
+        assert events[0].payload["parent_tool_use_id"] == "neutral-dispatch"
+        assert events[0].payload["child_provider_id"] == "agent-neutral-child"
+        ambiguous = {
+            **record,
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "neutral-dispatch", "content": "neutral output"},
+                    {"type": "tool_result", "tool_use_id": "foreign-dispatch", "content": "neutral other"},
+                ],
+            },
+        }
+        assert claude_dispatch_operand(ambiguous) is None
+        refused = parse_code([ambiguous], "neutral-parent")
+        assert not [event for event in refused.session_events if event.event_type == "claude_delegation_progress"]

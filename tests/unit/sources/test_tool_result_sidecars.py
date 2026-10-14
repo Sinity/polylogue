@@ -12,6 +12,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from polylogue.config import Source
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources import value_bounds
@@ -19,6 +21,7 @@ from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 from polylogue.sources.live.tool_result_sidecars import (
     SidecarDebt,
     SidecarMatch,
+    ToolResultIndexAccumulator,
     join_tool_result_sidecars,
     join_tool_result_sidecars_session_scoped,
     resolve_sibling_transcript_paths,
@@ -624,3 +627,47 @@ def test_large_sidecar_replaces_its_truncated_block_in_full() -> None:
     [event] = [event for event in session.session_events if event.event_type == "claude_tool_result_sidecar"]
     assert event.payload["acquisition_status"] == "matched"
     assert event.payload["content_replaced"] is True
+
+
+@pytest.mark.parametrize("disk_backed", [False, True])
+def test_reference_metadata_preserves_content_shapes_and_latest_duplicate(disk_backed: bool) -> None:
+    segments: list[dict[str, object]] = [
+        {"type": "tool_result", "tool_use_id": "absent"},
+        {"type": "tool_result", "tool_use_id": "null", "content": None},
+        {"type": "tool_result", "tool_use_id": "string", "content": "text"},
+        {"type": "tool_result", "tool_use_id": "array", "content": [{"type": "text", "text": "text"}]},
+        {"type": "tool_result", "tool_use_id": "object", "content": {"text": "text"}},
+        {"type": "tool_result", "tool_use_id": "other", "content": 7},
+    ]
+    with ToolResultIndexAccumulator(disk_backed=disk_backed) as index:
+        index.observe({"type": "user", "message": {"content": segments}})
+        index.observe(_record("newest", "array", "latest"))
+        references = {
+            entry.tool_use_id: (entry.content_representation, entry.was_truncated, entry.inline_length)
+            for entry in index.iter_tool_result_references()
+        }
+    assert references == {
+        "absent": ("absent", False, 0),
+        "null": ("null", False, 0),
+        "string": ("string", False, 4),
+        "array": ("string", False, 6),
+        "object": ("object", False, 0),
+        "other": ("other", False, 0),
+    }
+
+
+@pytest.mark.parametrize("disk_backed", [False, True])
+def test_reference_lookup_keeps_direct_precedence_and_earlier_persisted_names(disk_backed: bool) -> None:
+    from polylogue.core.tool_result_pointer import SidecarReferenceMatch
+
+    with ToolResultIndexAccumulator(disk_backed=disk_backed) as index:
+        index.observe(_record("saved", "pointer-owner", "Full output saved to: /neutral/direct.txt"))
+        index.observe(_record("saved-next", "pointer-owner", "Output has been saved to: /neutral/saved.txt"))
+        index.observe(_record("direct", "direct", "inline"))
+        assert index.reference_for_filename("direct.txt") == SidecarReferenceMatch("direct", "direct", False)
+        assert index.reference_for_filename("saved.txt") == SidecarReferenceMatch("pointer-owner", "persisted", True)
+        index.observe(_record("latest", "pointer-owner", "complete"))
+        assert index.reference_for_filename("saved.txt") == SidecarReferenceMatch("pointer-owner", "persisted", False)
+        assert index.reference_for_filename("saved") is None
+        assert index.reference_for_filename("hook-direct.txt") is None
+        assert index.reference_for_filename("unknown.txt") is None
