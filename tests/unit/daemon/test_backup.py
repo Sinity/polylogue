@@ -397,6 +397,10 @@ def test_backup_verification_refuses_linked_sqlite_sidecar(
     result = backup_archive(output_dir=tmp_path / "backups", profile="user_overlays", verify=False)
     assert result.output_path is not None
     backup_root = Path(result.output_path)
+    backup_mod._verify_backup_result(result)
+    assert result.ok is True
+    assert result.verified is True
+    assert (backup_root / "verification-receipt.json").exists()
     live_user_bytes = live_user_db.read_bytes()
     (backup_root / "user.db-wal").symlink_to(live_user_db)
 
