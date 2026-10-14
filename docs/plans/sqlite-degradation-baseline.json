@@ -750,10 +750,6 @@
       "digest": "30ab552bdc8d752eeca29f832163f1c02c74c5e2"
     },
     {
-      "file": "polylogue/storage/sqlite/archive_tiers/write.py",
-      "digest": "6cb024d5e4962151626476fa9419117a7e6abf4d"
-    },
-    {
       "file": "polylogue/storage/sqlite/connection_profile.py",
       "digest": "d65f6f25331da8af186e0fb925ca6f48905e683c"
     },

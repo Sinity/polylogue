@@ -2550,8 +2550,10 @@ def test_index_failure_keeps_committed_source_classification_for_retry(
             with pytest.raises(error_type) as refused:
                 _publish(adapter, frame, replacement)
             if failure_kind == "sql":
+                assert isinstance(refused.value, sqlite3.OperationalError)
                 assert refused.value.sqlite_errorcode == sqlite3.SQLITE_ERROR
             elif failure_kind == "sql_close":
+                assert isinstance(refused.value, BaseExceptionGroup)
                 assert [type(error) for error in refused.value.exceptions] == [sqlite3.OperationalError, OSError]
         assert writers and all(writer.connection is None for writer in writers)
         assert _source_progress(tmp_path, (raw_id,)) == committed

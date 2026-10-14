@@ -768,9 +768,11 @@ def test_prepared_graph_preserves_repeated_endpoint_titles_and_all_257_rows_with
     with write_lease("test.prepared-graph-input", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
         with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            index = archive.index_connection
+            assert index is not None
             with archive.index_mutation_scope():
                 write_thread_state_graph(
-                    archive.index_connection,
+                    index,
                     source_scope="/install",
                     threads=(ThreadRecord("existing", "held", 1),),
                     spawn_edges=(),
@@ -831,22 +833,22 @@ def test_prepared_graph_preserves_repeated_endpoint_titles_and_all_257_rows_with
                 )
                 with write_lease("test.prepared-graph-publication", archive_root=tmp_path):
                     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-                        with seal.mutation_scope(archive.index_connection):
-                            assert prepared.apply(archive.index_connection)
+                        index = archive.index_connection
+                        assert index is not None
+                        with seal.mutation_scope(index):
+                            assert prepared.apply(index)
                         for table, order in (
                             ("work_evidence_graphs", "graph_id"),
                             ("work_evidence_nodes", "graph_id,node_ref"),
                             ("work_evidence_edges", "graph_id,edge_ref"),
                         ):
-                            with connection_cursor(
-                                archive.index_connection, f"SELECT * FROM {table} ORDER BY {order}"
-                            ) as rows:
+                            with connection_cursor(index, f"SELECT * FROM {table} ORDER BY {order}") as rows:
                                 actual = [tuple(row) for row in rows]
                             with connection_cursor(expected, f"SELECT * FROM {table} ORDER BY {order}") as rows:
                                 assert actual == [tuple(row) for row in rows]
-                        assert len(read_spawn_edge_children(archive.index_connection)) == 257
-                        assert read_thread_titles(archive.index_connection)["child-0256"] == "exact title 256"
-                        assert live_connection_cursors(archive.index_connection) == ()
+                        assert len(read_spawn_edge_children(index)) == 257
+                        assert read_thread_titles(index)["child-0256"] == "exact title 256"
+                        assert live_connection_cursors(index) == ()
                 assert live_connection_cursors(prepared.owner.require_connection()) == ()
             finally:
                 prepared.close()
