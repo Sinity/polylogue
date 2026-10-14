@@ -134,6 +134,28 @@ def test_jsonl_stream_exposes_all_roots_as_one_lazy_sequence(tmp_path: Path) -> 
             pass
 
 
+@pytest.mark.parametrize("text", ["", "\n\n", " \t\r\n" * 20000])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "utf-32"])
+def test_jsonl_empty_sequence_does_not_create_a_value(tmp_path: Path, text: str, encoding: str) -> None:
+    path = tmp_path / "records.jsonl"
+    path.write_text(text, encoding=encoding)
+    with StreamedJSONDocument(path, jsonl=True) as payload:
+        assert isinstance(payload, list)
+        assert len(payload) == 0
+        assert list(payload) == []
+    with pytest.raises(JSONError), StreamedJSONDocument(path):
+        pass
+
+
+@pytest.mark.parametrize("text", ["\n{\n", " \t\r\nnot-json\n", '{"n":1}\n{\n'])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "utf-32"])
+def test_jsonl_nonblank_malformed_input_remains_a_refusal(tmp_path: Path, text: str, encoding: str) -> None:
+    path = tmp_path / "records.jsonl"
+    path.write_text(text, encoding=encoding)
+    with pytest.raises(JSONError), StreamedJSONDocument(path, jsonl=True):
+        pass
+
+
 def test_streamed_dynamic_keys_and_growing_nested_variants_do_not_accumulate_in_memory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
