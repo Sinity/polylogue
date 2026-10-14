@@ -123,8 +123,10 @@ class MembershipClassification:
     #: Raws proven to carry the SAME content as an accepted head (``equal``
     #: per ``_relation``) -- legitimately superseded, not debt.
     equivalent_raw_ids: tuple[str, ...]
-    #: Raws NOT reflected in ``accepted_raw_ids`` because no containment
-    #: relation could order them against it: unresolved conflict debt
+    #: Raws with evidence no containment relation could order against the
+    #: accepted representative. A raw can occur in both sets when its own
+    #: parser occurrences conflict: its representative is materialized while
+    #: the other occurrences remain unresolved conflict debt
     #: attached to the session, retained as raw provenance only (never
     #: deleted, never silently discarded).
     ambiguous_raw_ids: tuple[str, ...]

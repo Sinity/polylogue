@@ -410,8 +410,8 @@ def test_lowered_sink_identity_is_stable_from_preparation_through_rebuild(
     sealed: dict[str, bytes] = {}
     original = archive_write.prepared_session_rows_from_shard
 
-    def record_sealed(shard_path: Path, session_id: str) -> Any:
-        rows = original(shard_path, session_id)
+    def record_sealed(shard_path: Path, session_id: str, *, session_ordinal: int) -> Any:
+        rows = original(shard_path, session_id, session_ordinal=session_ordinal)
         sealed[session_id] = bytes(rows.session_content_hash)
         return rows
 

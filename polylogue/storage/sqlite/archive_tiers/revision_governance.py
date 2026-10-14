@@ -2949,6 +2949,9 @@ def membership_decisions_for_classification(
         decisions[raw_id] = MembershipDecision.SUPERSEDED_PREFIX
     if classification.accepted_raw_ids:
         decisions[classification.accepted_raw_ids[-1]] = MembershipDecision.APPLIED
+    # One raw can publish a representative while its other original
+    # occurrences remain conflicting evidence. Preserve that Source debt.
+    decisions.update(dict.fromkeys(classification.ambiguous_raw_ids, MembershipDecision.AMBIGUOUS))
     return decisions
 
 

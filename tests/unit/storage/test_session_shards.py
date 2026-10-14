@@ -203,12 +203,12 @@ def _session_key(session: ParsedSession) -> str:
 
 def _write_from_shard(conn: sqlite3.Connection, sessions: list[ParsedSession], shard_path: Path) -> None:
     """The writer's half: bind each session's sealed shard rows as its prepared carrier."""
-    for session in sessions:
+    for ordinal, session in enumerate(sessions):
         write_fixture_index_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared_rows=prepared_session_rows_from_shard(shard_path, _session_key(session)),
+            prepared_rows=prepared_session_rows_from_shard(shard_path, _session_key(session), session_ordinal=ordinal),
         )
 
 
@@ -261,7 +261,7 @@ def test_sealed_message_sink_replaces_same_raw_from_streamed_shard(
     conn = _connect(tmp_path / "index.db")
     try:
         write_fixture_index_session(conn, original, raw_id="same-acquisition")
-        prepared = prepared_session_rows_from_shard(shard.path, _session_key(publication))
+        prepared = prepared_session_rows_from_shard(shard.path, _session_key(publication), session_ordinal=0)
 
         def forbid_inline(*_args: object, **_kwargs: object) -> object:
             raise AssertionError("writer rebuilt canonical rows instead of binding the shard rows")
@@ -320,7 +320,7 @@ def test_sealed_message_sink_preserves_attachment_owner_projection(tmp_path: Pat
             streamed,
             publication,
             content_hash=publication.content_hash,
-            prepared_rows=prepared_session_rows_from_shard(shard.path, _session_key(publication)),
+            prepared_rows=prepared_session_rows_from_shard(shard.path, _session_key(publication), session_ordinal=0),
         )
         for table, order_by in (
             ("sessions", "session_id"),
@@ -490,7 +490,7 @@ def test_stale_shard_content_hash_falls_back_to_fresh_content(tmp_path: Path) ->
             conn,
             mutated,
             content_hash=str(session_content_hash(mutated)),
-            prepared_rows=prepared_session_rows_from_shard(shard.path, _session_key(original)),
+            prepared_rows=prepared_session_rows_from_shard(shard.path, _session_key(original), session_ordinal=0),
         )
         envelope = archive_tier_write.read_archive_session_envelope(conn, _session_key(original))
         texts = ["".join(block.text or "" for block in message.blocks) for message in envelope.messages]
@@ -633,7 +633,7 @@ def test_a_shard_built_against_other_columns_is_refused(tmp_path: Path) -> None:
     assert shard_column_signature() != "a-build-with-other-columns"
 
 
-def test_a_shard_preserves_duplicate_ordinals_but_refuses_ambiguous_writer_binding(tmp_path: Path) -> None:
+def test_a_shard_preserves_duplicate_ordinals_and_requires_an_exact_writer_coordinate(tmp_path: Path) -> None:
     """The parser carrier retains outputs; an identity cannot select either duplicate range."""
     session = _synthetic_sessions()[0]
     built = build_session_shard(tmp_path / "shards", [prepare_session_rows(session), prepare_session_rows(session)])
@@ -646,5 +646,7 @@ def test_a_shard_preserves_duplicate_ordinals_but_refuses_ambiguous_writer_bindi
         shard.by_session_id()[first.session_id]
     from polylogue.storage.sqlite.archive_tiers.write import prepared_session_rows_from_shard
 
-    with pytest.raises(ShardRefusedError, match="twice"):
-        prepared_session_rows_from_shard(shard.path, first.session_id)
+    first_rows = prepared_session_rows_from_shard(shard.path, first.session_id, session_ordinal=0)
+    second_rows = prepared_session_rows_from_shard(shard.path, second.session_id, session_ordinal=1)
+    assert tuple(first_rows.block_rows) == tuple(second_rows.block_rows)
+    assert first_rows.session_content_hash == second_rows.session_content_hash

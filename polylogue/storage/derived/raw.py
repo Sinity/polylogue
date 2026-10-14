@@ -2903,7 +2903,7 @@ class RawObservationDerivation(RawObservationInspection):
                 )
                 from polylogue.storage.sqlite.archive_tiers.write import (
                     prepare_session_write,
-                    prepared_session_rows_from_shard,
+                    prepared_session_rows_for_parsed_session,
                 )
 
                 with reference_seal.original_read_snapshot(), reference_seal.source_producer():
@@ -3845,7 +3845,7 @@ class RawObservationDerivation(RawObservationInspection):
                                         prepared_rows=(
                                             None
                                             if event_only
-                                            else prepared_session_rows_from_shard(artifact.shard_path, session_id)
+                                            else prepared_session_rows_for_parsed_session(artifact.shard_path, session)
                                         ),
                                         before_input=reference_seal.before_index_input,
                                     )
@@ -4007,8 +4007,8 @@ class RawObservationDerivation(RawObservationInspection):
                                             source_read=membership_source,
                                             raw_id=accepted_raw_id,
                                             force_replace=True,
-                                            prepared_rows=prepared_session_rows_from_shard(
-                                                membership_artifact.shard_path, member_session_id
+                                            prepared_rows=prepared_session_rows_for_parsed_session(
+                                                membership_artifact.shard_path, accepted_session
                                             ),
                                             before_input=reference_seal.before_index_input,
                                         )
@@ -4067,7 +4067,6 @@ class RawObservationDerivation(RawObservationInspection):
                                     raise RetainedPreparationRetryableError(
                                         f"accepted marker request has no owned prepared shard for {raw_id}"
                                     )
-                                session_id = _session_id(session)
                                 marker_source = PreparedSessionSourceRead(
                                     reference_seal,
                                     blob_store=material_store,
@@ -4080,9 +4079,9 @@ class RawObservationDerivation(RawObservationInspection):
                                     source_read=marker_source,
                                     raw_id=raw_id,
                                     force_replace=True,
-                                    prepared_rows=prepared_session_rows_from_shard(
+                                    prepared_rows=prepared_session_rows_for_parsed_session(
                                         artifact.shard_path,
-                                        session_id,
+                                        session,
                                     ),
                                     before_input=reference_seal.before_index_input,
                                 )

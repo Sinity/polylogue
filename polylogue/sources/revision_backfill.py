@@ -1814,32 +1814,41 @@ def resolve_same_raw_member(
 ) -> SameRawMemberResolution:
     """Resolve raw-internal evidence without authority from an Index head."""
     revisions: list[RevisionEvidence[int]] = []
-    original_sessions: dict[int, ParsedSession] = {}
     primary_failure: BaseException | None = None
     try:
-        for ordinal, session in enumerate(sessions):
-            check_compute_cancelled()
-            if f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}" != logical_source_key:
-                continue
-            original_sessions[ordinal] = session
-            revisions.append(
-                RevisionEvidence(
-                    ordinal,
-                    session_revision_projection(session),
-                    provider_updated_at=session.updated_at if session.updated_at_provenance != "fallback" else None,
-                    browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
-                    provider_message_ids=(
-                        session.messages.provider_message_ids(include_none=False)
-                        if isinstance(session.messages, SqliteMessageSink)
-                        else frozenset(
-                            message.provider_message_id for message in session.messages if message.provider_message_id
-                        )
-                    ),
-                    provider_attachment_ids=frozenset(
-                        attachment.provider_attachment_id for attachment in session.attachments
-                    ),
-                )
+        with ExitStack() as readers:
+            occurrences = (
+                readers.enter_context(closing(sessions.iter_session_occurrences(logical_source_key)))
+                if isinstance(sessions, PreparedSessionSequence)
+                else enumerate(sessions)
             )
+            for ordinal, session in occurrences:
+                check_compute_cancelled()
+                if (
+                    f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+                    != logical_source_key
+                ):
+                    continue
+                revisions.append(
+                    RevisionEvidence(
+                        ordinal,
+                        session_revision_projection(session),
+                        provider_updated_at=session.updated_at if session.updated_at_provenance != "fallback" else None,
+                        browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                        provider_message_ids=(
+                            session.messages.provider_message_ids(include_none=False)
+                            if isinstance(session.messages, SqliteMessageSink)
+                            else frozenset(
+                                message.provider_message_id
+                                for message in session.messages
+                                if message.provider_message_id
+                            )
+                        ),
+                        provider_attachment_ids=frozenset(
+                            attachment.provider_attachment_id for attachment in session.attachments
+                        ),
+                    )
+                )
         if not revisions:
             raise CohortMembershipRefusalError(
                 logical_source_key,
@@ -1852,7 +1861,7 @@ def resolve_same_raw_member(
                 logical_source_key, raw_id, "raw member has no head-independent representative"
             )
         ordinal = classification.accepted_keys[-1]
-        return SameRawMemberResolution(raw_id, logical_source_key, ordinal, original_sessions[ordinal], classification)
+        return SameRawMemberResolution(raw_id, logical_source_key, ordinal, sessions[ordinal], classification)
     except BaseException as failure:
         primary_failure = failure
         raise
@@ -1925,6 +1934,8 @@ def prepare_membership_replay(
     member_sessions: dict[str, ParsedSession] = {}
     revisions: list[MembershipRevision] = []
     projections: dict[str, SessionRevisionProjection] = {}
+    conflicted_raw_ids: set[str] = set()
+    fallback_only_raw_ids: set[str] = set()
     try:
         for raw_id in sorted(candidate_raw_ids):
             if raw_id not in prepared_inputs:
@@ -1937,7 +1948,12 @@ def prepare_membership_replay(
                     logical_key, raw_id, f"selector member did not parse: {outcome}"
                 ) from outcome
             sessions, _size, _kind = outcome
-            session = prepared_session_for_logical_key(sessions, raw_id=raw_id, logical_source_key=logical_key)
+            resolution = resolve_same_raw_member(sessions, raw_id=raw_id, logical_source_key=logical_key)
+            session = resolution.session
+            if resolution.classification.ambiguous_keys:
+                conflicted_raw_ids.add(raw_id)
+            if resolution.classification.requires_absent_head:
+                fallback_only_raw_ids.add(raw_id)
             member_sessions[raw_id] = session
             projections[raw_id] = session_revision_projection(session)
             revisions.append(
@@ -1968,7 +1984,17 @@ def prepare_membership_replay(
                     ),
                 )
             )
-        classification = classify_membership_revisions(revisions, existing_accepted_raw_id=head_raw_id)
+        eligible = (
+            [revision for revision in revisions if revision.raw_id not in fallback_only_raw_ids]
+            if head_raw_id is not None
+            else revisions
+        )
+        classification = classify_membership_revisions(eligible, existing_accepted_raw_id=head_raw_id)
+        if conflicted_raw_ids:
+            classification = dataclasses.replace(
+                classification,
+                ambiguous_raw_ids=tuple(sorted(set(classification.ambiguous_raw_ids) | conflicted_raw_ids)),
+            )
     except BaseException as primary:
         failures: list[BaseException] = [primary]
         for projection in projections.values():
@@ -4538,35 +4564,33 @@ def _prepared_accepted_marker_sessions(
     selected_session_ids: set[str],
     prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
     marker_write_factory: Callable[[str, ParsedSession], PreparedSessionWrite],
-) -> Generator[tuple[str, PreparedSessionWrite, tuple[object, ...]], None, None]:
-    """Stream canonical marker writes, closing each owned temporary after use."""
+) -> Generator[tuple[str, PreparedSessionWrite | None, tuple[object, ...]], None, None]:
+    """Retain every selected occurrence using its own sealed row coordinate."""
     from polylogue.sources.parsers.base_models import ParsedSession as ParsedSessionModel
 
-    found_binding_digests: dict[str, str] = {}
+    cohort = artifact.session_sequence()
+    resolutions = {
+        session_id: resolve_same_raw_member(cohort, raw_id=raw_id, logical_source_key=session_id)
+        for session_id in selected_session_ids
+    }
+    found_session_ids: set[str] = set()
     with closing(artifact.iter_sessions()) as parsed_sessions:
-        for session in parsed_sessions:
+        for ordinal, session in enumerate(parsed_sessions):
             if not isinstance(session, ParsedSessionModel):
                 raise RetainedPreparationRetryableError(
                     f"accepted marker request has an invalid retained session for {raw_id}"
                 )
-            if str(make_session_id(session.source_name, session.provider_session_id)) not in selected_session_ids:
+            session_id = str(make_session_id(session.source_name, session.provider_session_id))
+            if session_id not in selected_session_ids:
                 continue
-            binding = _accepted_marker_request_session_binding(session)
-            session_id = binding["session_id"]
-            if not isinstance(session_id, str) or session_id not in selected_session_ids:
+            found_session_ids.add(session_id)
+            resolution = resolutions[session_id]
+            if ordinal in resolution.classification.equivalent_keys:
+                yield session_id, None, ()
                 continue
-            binding_digest = hashlib.sha256(
-                json.dumps(binding, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-            ).hexdigest()
-            prior_binding_digest = found_binding_digests.get(session_id)
-            if prior_binding_digest is not None:
-                if prior_binding_digest != binding_digest:
-                    raise RetainedPreparationRetryableError(
-                        f"accepted marker request has conflicting parsed session {raw_id}:{session_id}"
-                    )
-                continue
-            found_binding_digests[session_id] = binding_digest
-            prepared = prepared_writes.get((raw_id, session_id))
+            prepared = (
+                prepared_writes.get((raw_id, session_id)) if ordinal == resolution.representative_ordinal else None
+            )
             if prepared is None:
                 prepared = marker_write_factory(raw_id, session)
                 try:
@@ -4575,11 +4599,10 @@ def _prepared_accepted_marker_sessions(
                     prepared.close()
             else:
                 yield session_id, prepared, ()
-    missing = selected_session_ids - found_binding_digests.keys()
+    missing = selected_session_ids - found_session_ids
     if missing:
-        missing_session_id = min(missing)
         raise RetainedPreparationRetryableError(
-            f"accepted marker request lost selected parsed session {raw_id}:{missing_session_id}"
+            f"accepted marker request lost selected parsed session {raw_id}:{min(missing)}"
         )
 
 

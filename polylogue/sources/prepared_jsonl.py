@@ -827,6 +827,7 @@ class PreparedJsonlRead:
             metadata["attachments"] = []
             _restore_spilled_accounting(metadata, self.sessions_path)
             session = ParsedSession.model_validate(metadata)
+            session._prepared_row_coordinate = (self.shard_path, ordinal)
             yield session.model_copy(
                 update={
                     "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
@@ -1001,6 +1002,7 @@ class PreparedJsonlRead:
             metadata["attachments"] = []
             _restore_spilled_accounting(metadata, self.sessions_path)
             session = ParsedSession.model_validate(metadata)
+            session._prepared_row_coordinate = (self.shard_path, ordinal)
             return session.model_copy(
                 update={
                     "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
@@ -1935,6 +1937,25 @@ class PreparedSessionSequence(Sequence[ParsedSession]):
 
     def by_session_id(self, session_id: str) -> ParsedSession:
         return self.artifact.session_by_id(session_id, _shard=self._shard)
+
+    def iter_session_occurrences(self, session_id: str) -> Iterator[tuple[int, ParsedSession]]:
+        """Seek this identity's original ordinal ranges without scanning other members."""
+        if self.artifact.sessions_path is None:
+            raise RuntimeError(self.artifact.error or "JSONL preparation has no sealed artifact")
+        self.artifact.verify_files(full=False)
+        after = -1
+        while True:
+            check_compute_cancelled()
+            with _prepared_reader(self.artifact.sessions_path) as connection:
+                rows = connection.execute(
+                    "SELECT ordinal FROM prepared_session WHERE session_id=? AND ordinal>? ORDER BY ordinal LIMIT 512",
+                    (session_id, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0])
+            for (ordinal,) in rows:
+                yield int(ordinal), self[int(ordinal)]
 
     def iter_provider_session_ids(self) -> Iterator[str]:
         """Read the complete original native-ID scope without hydrating transcripts."""

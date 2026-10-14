@@ -804,7 +804,7 @@ def test_prepared_cross_acquisition_union_matches_inline_and_skips_writer_merge(
         store.close()
         sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
         publication = poor.model_copy(update={"messages": sealed, "content_hash": bound_hash})
-        input_rows = prepared_session_rows_from_shard(shard.path, session_id)
+        input_rows = prepared_session_rows_from_shard(shard.path, session_id, session_ordinal=0)
 
         def forbid_inline(*_args: object, **_kwargs: object) -> object:
             raise AssertionError("writer rebuilt or merged prepared field rows")
