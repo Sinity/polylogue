@@ -1688,7 +1688,7 @@ def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path, mo
         assert repeated.done == 0 and repeated.failed == 1
         failure = next(outcome for outcome in repeated.outcomes if outcome.key.key == poison)
         assert failure.transient is False
-        assert failure.terminal_refusal is not None
+        assert failure.terminal_refusal is not None, failure
 
         from polylogue.daemon.cli import _derivation_admission
         from polylogue.daemon.intake import AdmissionOutcome
