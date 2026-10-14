@@ -1687,7 +1687,7 @@ def _collect_zip_candidate(
                                 spool_partition=str(member_index),
                             )
                     else:
-                        with ExitStack() as owned:
+                        with ExitStack() as document_owner:
                             rows, member_records, versions, unrecognized = _collect_payload_evidence(
                                 member_candidate,
                                 member_revision,
@@ -1695,7 +1695,7 @@ def _collect_zip_candidate(
                                     partial(open_zip_entry, archive, member),
                                     member.filename,
                                     byte_count=member.file_size,
-                                    owned=owned,
+                                    owned=document_owner,
                                 ),
                                 dynamic_paths_by_element=dynamic_paths_by_element,
                                 include_statistics=include_statistics,
@@ -1708,7 +1708,7 @@ def _collect_zip_candidate(
                                     partial(open_zip_entry, archive, member),
                                     member.filename,
                                     byte_count=member.file_size,
-                                    owned=owned,
+                                    owned=document_owner,
                                 ),
                             )
                 except (SourceInferenceError, OSError) as exc:
