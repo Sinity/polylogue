@@ -38,6 +38,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 from polylogue.core.sql_settlement import SQLCustodyOwner, current_native_sql_lifetimes, register_native_sql_census
 from polylogue.storage.io_phase_metrics import (
+    _MeasuredConnection,
     close_connection_cursor,
     connect_measured,
     live_connection_cursors,
@@ -2242,11 +2243,63 @@ def _open_readonly_owner(
             if explicit_timeout and stmt.startswith("PRAGMA busy_timeout"):
                 stmt = f"PRAGMA busy_timeout = {int(timeout * 1000)}"
             conn.execute(stmt)
-        conn.set_authorizer(_authorize_read_operation)
+        _install_read_authorizer(conn)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise
     return owner
+
+
+class OperationReadSnapshotUnavailableError(RuntimeError):
+    """An owned read transaction was ended or a callback attempted to replace it."""
+
+    code = "archive_read_unavailable"
+
+
+def _install_read_authorizer(
+    conn: sqlite3.Connection, *, allow_temp: bool = False, configure_temp: bool = False, allow_attach: bool = False
+) -> None:
+    def authorize(action: int, first: str | None, second: str | None, database: str | None, trigger: str | None) -> int:
+        if (
+            isinstance(conn, _MeasuredConnection)
+            and conn._operation_read_transaction_protected
+            and action
+            in {
+                sqlite3.SQLITE_TRANSACTION,
+                sqlite3.SQLITE_SAVEPOINT,
+            }
+        ):
+            conn._operation_read_transaction_refused = True
+            return sqlite3.SQLITE_DENY
+        if allow_attach and action == sqlite3.SQLITE_ATTACH:
+            return sqlite3.SQLITE_OK
+        if configure_temp and action == sqlite3.SQLITE_PRAGMA and (first or "").lower() in {"query_only", "temp_store"}:
+            return sqlite3.SQLITE_OK
+        policy = _authorize_read_temp_operation if allow_temp else _authorize_read_operation
+        return policy(action, first, second, database, trigger)
+
+    # Replacing the native authorizer expires cached statement authorization.
+    conn.set_authorizer(authorize)
+
+
+def protect_owned_read_transaction(conn: sqlite3.Connection, *, active: bool) -> None:
+    """Change transaction policy only at the read owner's begin/cleanup boundary."""
+    if not isinstance(conn, _MeasuredConnection):
+        raise ValueError("owned operation read requires the native profiled connection")
+    if active and not conn.in_transaction:
+        raise OperationReadSnapshotUnavailableError("owned operation read transaction is absent")
+    conn._operation_read_transaction_protected = active
+    conn._operation_read_transaction_refused = False
+    _install_read_authorizer(conn)
+
+
+def check_owned_read_transaction(conn: sqlite3.Connection) -> None:
+    if (
+        not getattr(conn, "_operation_read_transaction_protected", False)
+        or getattr(conn, "_operation_read_transaction_refused", False)
+        or not conn.in_transaction
+    ):
+        raise OperationReadSnapshotUnavailableError("owned operation read transaction is unavailable")
 
 
 def _authorize_read_operation(
@@ -2333,8 +2386,8 @@ def attach_readonly_database(
     """Attach a second read-only database to a profiled reader.
 
     SQLite's authorizer receives a NULL filename while preparing a
-    parameterized ATTACH, so this tightly scoped helper temporarily removes
-    it for the single ATTACH statement. ``query_only`` remains enabled, and
+    parameterized ATTACH, so this tightly scoped helper admits
+    that ATTACH while retaining the owned transaction policy. ``query_only`` remains enabled, and
     the attached URI is always opened read-only.
     """
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
@@ -2347,12 +2400,12 @@ def attach_readonly_database(
     if immutable:
         _refuse_immutable_over_live_state(path)
     uri = f"file:{quote(str(path))}?mode=ro" + ("&immutable=1" if immutable else "")
-    conn.set_authorizer(None)
+    _install_read_authorizer(conn, allow_attach=True)
     try:
         with closing(conn.execute(f"ATTACH DATABASE ? AS {alias}", (uri,))):
             pass
     finally:
-        conn.set_authorizer(_authorize_read_operation)
+        _install_read_authorizer(conn)
 
 
 def attach_database(conn: sqlite3.Connection, path: str | Path, *, alias: str) -> None:
@@ -2419,19 +2472,19 @@ def readonly_temp_staging(
         raise ValueError("TEMP staging store must be FILE or MEMORY")
     if temp_store is not None and conn.execute("SELECT 1 FROM sqlite_temp_master LIMIT 1").fetchone() is not None:
         raise ValueError("TEMP staging store can only be selected before TEMP objects exist")
-    conn.set_authorizer(None)
+    _install_read_authorizer(conn, configure_temp=True)
     try:
         conn.execute("PRAGMA query_only = OFF")
         if temp_store is not None:
             conn.execute(f"PRAGMA temp_store = {temp_store}")
-        conn.set_authorizer(_authorize_read_temp_operation)
+        _install_read_authorizer(conn, allow_temp=True)
         yield
     finally:
-        conn.set_authorizer(None)
+        _install_read_authorizer(conn, configure_temp=True)
         try:
             conn.execute("PRAGMA query_only = ON")
         finally:
-            conn.set_authorizer(_authorize_read_operation)
+            _install_read_authorizer(conn)
 
 
 @contextmanager

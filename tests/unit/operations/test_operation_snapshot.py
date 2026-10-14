@@ -196,3 +196,170 @@ def test_topology_read_receives_the_declared_abort_checkpoint(tmp_path: Path, mo
             dependencies=DaemonReadDependencies(raise_if_aborted=checkpoint),
         )
     assert received == [checkpoint]
+
+
+@pytest.mark.parametrize("tier", ["index", "source"])
+@pytest.mark.parametrize("route", ["connection", "cursor", "script", "observer"])
+def test_owned_snapshot_refuses_same_handle_transaction_replacement(tmp_path: Path, tier: str, route: str) -> None:
+    from polylogue.storage.sqlite.connection_profile import OperationReadSnapshotUnavailableError
+
+    bootstrap_archive_root(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        connection = pinned.archive.index_connection if tier == "index" else pinned.archive.source_connection
+        assert connection is not None
+        if route == "observer":
+            refused: list[sqlite3.Error] = []
+
+            def restart(_statement: str) -> None:
+                connection.set_trace_callback(None)
+                try:
+                    sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.execute(connection, "BEGIN")
+                except sqlite3.Error as error:
+                    refused.append(error)
+
+            connection.set_trace_callback(restart)
+            connection.execute("SELECT 1").fetchone()
+            assert len(refused) == 1
+        else:
+            with pytest.raises(sqlite3.DatabaseError):
+                if route == "connection":
+                    connection.rollback()
+                    connection.execute("BEGIN")
+                elif route == "cursor":
+                    with closing(connection.cursor()) as cursor:
+                        cursor.execute("ROLLBACK")
+                        cursor.execute("BEGIN")
+                else:
+                    connection.executescript("BEGIN; SELECT 1;")
+        assert connection.in_transaction
+        with pytest.raises(OperationReadSnapshotUnavailableError):
+            pinned.archive.check_operation_read()
+        pinned.archive.end_read_snapshot()
+        pinned.archive.pin_operation_snapshot()
+        pinned.archive.check_operation_read()
+
+
+@pytest.mark.parametrize("statement", ["ROLLBACK", "COMMIT"])
+def test_pin_reauthorizes_cached_transaction_statements(tmp_path: Path, statement: str) -> None:
+    from polylogue.storage.sqlite.connection_profile import OperationReadSnapshotUnavailableError
+
+    bootstrap_archive_root(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        connection = pinned.archive.index_connection
+        assert connection is not None
+        pinned.archive.end_read_snapshot()
+        connection.execute("BEGIN")
+        connection.execute(statement)
+        pinned.archive.pin_operation_snapshot()
+        with pytest.raises(sqlite3.DatabaseError):
+            connection.execute(statement)
+        with pytest.raises(OperationReadSnapshotUnavailableError):
+            pinned.archive.check_operation_read()
+
+
+def test_temp_projection_retains_owned_transaction_policy(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import OperationReadSnapshotUnavailableError, readonly_temp_staging
+
+    bootstrap_archive_root(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        connection = pinned.archive.index_connection
+        assert connection is not None
+        with readonly_temp_staging(connection):
+            connection.execute("CREATE TEMP TABLE synthetic_projection(value INTEGER)")
+            connection.execute("INSERT INTO synthetic_projection VALUES(1)")
+            assert connection.execute("SELECT value FROM synthetic_projection").fetchone()[0] == 1
+            with pytest.raises(sqlite3.DatabaseError):
+                connection.rollback()
+        with pytest.raises(OperationReadSnapshotUnavailableError):
+            pinned.archive.check_operation_read()
+
+
+def test_pin_refuses_borrowed_transaction_without_changing_its_policy(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        connection = archive.index_connection
+        assert connection is not None
+        connection.execute("BEGIN")
+        with pytest.raises(RuntimeError, match="owned read transaction"):
+            archive.pin_operation_snapshot()
+        assert connection.in_transaction
+        connection.rollback()
+        assert not connection.in_transaction
+
+
+def test_operation_pin_refuses_native_callback_transaction_change_between_tier_reads(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import OperationReadSnapshotUnavailableError
+
+    bootstrap_archive_root(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        pinned.archive.end_read_snapshot()
+        connection = pinned.archive.index_connection
+        assert connection is not None
+        refused: list[sqlite3.Error] = []
+
+        def restart(statement: str) -> None:
+            if statement != "PRAGMA user_tier.user_version":
+                return
+            connection.set_trace_callback(None)
+            try:
+                sqlite3.Connection.rollback(connection)
+                sqlite3.Connection.execute(connection, "BEGIN")
+            except sqlite3.Error as error:
+                refused.append(error)
+
+        connection.set_trace_callback(restart)
+        with pytest.raises(OperationReadSnapshotUnavailableError):
+            pinned.archive.pin_operation_snapshot()
+        assert len(refused) == 1
+
+
+def test_borrowed_pin_refusal_preserves_the_callers_authorizer(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        connection = archive.index_connection
+        assert connection is not None
+        connection.execute("BEGIN")
+
+        def borrowed_policy(action: int, *_args: object) -> int:
+            return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_SELECT else sqlite3.SQLITE_OK
+
+        connection.set_authorizer(borrowed_policy)
+        with pytest.raises(RuntimeError, match="owned read transaction"):
+            archive.pin_operation_snapshot()
+        with pytest.raises(sqlite3.DatabaseError):
+            connection.execute("SELECT 1")
+        connection.rollback()
+
+
+def test_readonly_attachment_setup_retains_owned_transaction_policy(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import (
+        OperationReadSnapshotUnavailableError,
+        attach_readonly_database,
+    )
+
+    bootstrap_archive_root(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        connection = pinned.archive.index_connection
+        assert connection is not None
+        refused: list[sqlite3.Error] = []
+
+        def restart(statement: str) -> None:
+            if not statement.startswith("ATTACH DATABASE"):
+                return
+            connection.set_trace_callback(None)
+            try:
+                sqlite3.Connection.rollback(connection)
+            except sqlite3.Error as error:
+                refused.append(error)
+
+        connection.set_trace_callback(restart)
+        attach_readonly_database(connection, tmp_path / "source.db", alias="synthetic_extra_source")
+        assert len(refused) == 1
+        assert connection.in_transaction
+        with pytest.raises(OperationReadSnapshotUnavailableError):
+            pinned.archive.check_operation_read()

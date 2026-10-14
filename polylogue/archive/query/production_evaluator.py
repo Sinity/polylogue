@@ -116,10 +116,24 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
             member_refs = tuple(ref for ref in member_refs if ref not in excluded_refs)
 
         self._connection()
+        from polylogue.storage.archive_readiness import (
+            ArchiveMaterializationUnavailableError,
+            RawMaterializationAssessmentState,
+        )
+
+        assessment = self._archive.read_materialization_assessment()
+        if (
+            assessment.state is not RawMaterializationAssessmentState.POPULATED_CONVERGED
+            and assessment.reason != "zero_denominator"
+        ):
+            raise ArchiveMaterializationUnavailableError(assessment)
+        source_revision = self._archive.raw_state_read_revision()
+        if source_revision is None:
+            raise ArchiveMaterializationUnavailableError(assessment)
         index_generation = _index_epoch(connection)
         receipt = EvaluationReceipt(
             receipt_id=f"receipt-{uuid.uuid4().hex}",
-            source_generation=_tier_generation(connection, schema="source_tier", label="source"),
+            source_generation=source_revision,
             user_generation=_tier_generation(connection, schema="user_tier", label="user"),
             index_generation=index_generation,
             runtime_build_ref=_polylogue_runtime_build_ref(),

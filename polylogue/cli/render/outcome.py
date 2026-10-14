@@ -6,13 +6,9 @@ verb surfaces), ``cli/convergence_feedback.py`` (the partial-archive warning
 line each of them printed), and ``archive_query._emit_no_results`` (the
 envelope-driven empty page of the root query surface).
 
-The convergence *probe* stayed behind in ``cli/convergence_feedback.py`` and is
-imported here. It reads ``storage.archive_readiness`` directly, which is
-exactly what the Seam B import rule forbids a renderer to do, so folding it in
-would have moved a substrate read into the render package to save a module.
-Its real home is behind the ``status`` operation, which already reports
-``component_readiness.raw_materialization``; until a CLI read consumes that,
-this module renders the warning and the probe owns producing it.
+Convergence feedback renders the Source/Index assessment supplied by the
+operation's pinned reader. It never acquires a later archive snapshot to
+qualify an earlier answer.
 
 One rule governs the exit status, and it is why the three were merged: the
 process exit code is computed **only** by
@@ -298,7 +294,7 @@ def emit_empty_page(
     verbosity controlled upstream by the caller's ``--why`` request.
     """
 
-    convergence_warning = convergence_warning_line()
+    convergence_warning = convergence_warning_line(envelope_outcome(envelope))
     diagnostics_payload = diagnostics_dict(diagnostics)
     # Preserve the operation boundary's decision when a daemon supplied one.
     # In particular, a degraded zero-row answer must not be translated into
@@ -339,6 +335,7 @@ def emit_no_results(
     message: str | None = None,
     hint: str | None = None,
     exit_code: int | None = EMPTY_EXIT_CODE,
+    outcome: OutcomeEnvelope | None = None,
 ) -> None:
     """Render a canonical no-results message for the spec-driven verb surfaces.
 
@@ -358,7 +355,7 @@ def emit_no_results(
             diagnostics=diagnostics.to_dict() if diagnostics is not None else None,
         ).emit(exit_code=exit_code or EMPTY_EXIT_CODE)
 
-    warning = convergence_warning_line()
+    warning = convergence_warning_line(outcome)
     if filters and message is None:
         if warning is not None:
             env.ui.console.print(warning)

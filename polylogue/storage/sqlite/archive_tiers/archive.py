@@ -34,6 +34,7 @@ from polylogue.archive.query.search_cursor import SearchPosition, position
 from .source_items import SourceItemAdmission
 
 if TYPE_CHECKING:
+    from polylogue.storage.archive_readiness import RawMaterializationAssessment
     from polylogue.storage.index_generation import ActiveWriterLease, IndexGeneration
     from polylogue.storage.sqlite.reference_seal import (
         IndexMutationDestination,
@@ -1209,6 +1210,7 @@ class ArchiveStore:
         #: a caller-owned snapshot alone.
         self._read_snapshot_owned = False
         self.operation_schema_versions: dict[str, int] | None = None
+        self._operation_materialization: RawMaterializationAssessment | None = None
         self.operation_degraded_components: tuple[str, ...] = ()
         self.source_db_path = archive_root / "source.db"
         self.embeddings_db_path = archive_root / "embeddings.db"
@@ -1960,9 +1962,51 @@ class ArchiveStore:
 
     def check_operation_read(self) -> None:
         """Check Python work without inventing SQLite progress measurements."""
+        from polylogue.storage.sqlite.connection_profile import check_owned_read_transaction
+
+        if self._read_snapshot_owned:
+            check_owned_read_transaction(self._conn)
+            if self._source_conn is not None:
+                check_owned_read_transaction(self._source_conn)
         checkpoint = getattr(self, "_operation_read_checkpoint", None)
         if checkpoint is not None:
             checkpoint()
+
+    def read_materialization_assessment(self) -> RawMaterializationAssessment:
+        """Assess the Source/Index handles serving this owned operation frame."""
+        from polylogue.storage.archive_readiness import (
+            assess_raw_materialization,
+            raw_materialization_readiness_from_pinned_index,
+        )
+
+        self.check_operation_read()
+        if not self._read_snapshot_owned or self.operation_schema_versions is None:
+            raise RuntimeError("materialization assessment requires an owned pinned operation read")
+        if self._operation_materialization is None:
+            readiness = raw_materialization_readiness_from_pinned_index(self._conn, archive_root=self.archive_root)
+            self.check_operation_read()
+            self._operation_materialization = assess_raw_materialization(readiness)
+        return self._operation_materialization
+
+    def raw_state_read_revision(self) -> str | None:
+        """Name the captured raw-state revision, not all unrelated Source tables."""
+        import hashlib
+
+        self.check_operation_read()
+        if not self._read_snapshot_owned or self.operation_schema_versions is None or self.operation_identity is None:
+            raise RuntimeError("raw-state revision requires an owned pinned operation read")
+        version = self.operation_schema_versions.get("source")
+        if version is None:
+            return None
+        row = self._conn.execute(
+            "SELECT seq FROM source_tier.sqlite_sequence WHERE name='raw_existence_changes'"
+        ).fetchone()
+        high = 0 if row is None else int(row[0])
+        physical = hashlib.sha256(
+            self.operation_identity.tier("source").stable_id.encode("utf-8", "surrogatepass")
+        ).hexdigest()
+        self.check_operation_read()
+        return f"source:raw-state:{physical}:v{version}:{high}"
 
     def configure_operation_read_connection(self, connection: sqlite3.Connection) -> None:
         """Extend the current read budget to a newly acquired sibling handle."""
@@ -1983,8 +2027,11 @@ class ArchiveStore:
     def begin_read_snapshot(self) -> None:
         """Begin the owned read transaction used by one controlled query call."""
 
+        from polylogue.storage.sqlite.connection_profile import protect_owned_read_transaction
+
         self._conn.execute("BEGIN")
         self._read_snapshot_owned = True
+        protect_owned_read_transaction(self._conn, active=True)
 
     def pin_operation_snapshot(self) -> tuple[dict[str, int], tuple[str, ...]]:
         """Pin every available tier while the caller holds publication exclusion.
@@ -1996,6 +2043,8 @@ class ArchiveStore:
 
         if not self._read_only:
             raise RuntimeError("operation snapshots require a read-only archive")
+        if self._conn.in_transaction and not self._read_snapshot_owned:
+            raise RuntimeError("operation pin requires an owned read transaction")
         attached = {str(row[1]) for row in self._conn.execute("PRAGMA database_list")}
         schemas = {"index": "main", "user": "user_tier"}
         degraded: list[str] = []
@@ -2013,6 +2062,8 @@ class ArchiveStore:
             degraded.append("user")
         if not self._conn.in_transaction:
             self.begin_read_snapshot()
+        elif not self._read_snapshot_owned:
+            raise RuntimeError("operation pin requires an owned read transaction")
         versions: dict[str, int] = {}
         for tier, alias in schemas.items():
             self._conn.execute(f"SELECT rootpage FROM {alias}.sqlite_schema LIMIT 1").fetchone()
@@ -2021,7 +2072,12 @@ class ArchiveStore:
             source = self.source_connection
             if not source.in_transaction:
                 source.execute("BEGIN")
+            from polylogue.storage.sqlite.connection_profile import protect_owned_read_transaction
+
+            protect_owned_read_transaction(source, active=True)
             source.execute("SELECT rootpage FROM sqlite_schema LIMIT 1").fetchone()
+        self.check_operation_read()
+        self._operation_materialization = None
         self.operation_schema_versions = versions
         self.operation_degraded_components = tuple(degraded)
         return versions, tuple(degraded)
@@ -2029,9 +2085,12 @@ class ArchiveStore:
     def end_read_snapshot(self) -> None:
         """Release the owned read snapshot without ever committing read work."""
 
+        from polylogue.storage.sqlite.connection_profile import protect_owned_read_transaction
+
         first_error: BaseException | None = None
         index_settled = False
         try:
+            protect_owned_read_transaction(self._conn, active=False)
             self._conn.set_progress_handler(None, 0)
             if self._conn.in_transaction:
                 self._conn.rollback()
@@ -2040,6 +2099,7 @@ class ArchiveStore:
             first_error = exc
         if self._source_conn is not None:
             try:
+                protect_owned_read_transaction(self._source_conn, active=False)
                 self._source_conn.set_progress_handler(None, 0)
                 if self._source_conn.in_transaction:
                     self._source_conn.rollback()
@@ -2064,6 +2124,8 @@ class ArchiveStore:
                 self.operation_vector_connection = None
         if index_settled:
             self._read_snapshot_owned = False
+            self._operation_materialization = None
+            self.operation_schema_versions = None
         if self._operation_read_guard is not None:
             guard, opcodes = self._operation_read_guard
             for connection in (self._owned_index_connection, self._source_conn):

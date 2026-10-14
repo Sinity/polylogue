@@ -577,6 +577,7 @@ def _emit_aggregate_result(
         origin=origin,
         query=query,
         fields=fields,
+        supplied_outcome=OutcomeEnvelope.model_validate(payload["outcome"]),
     )
 
 
@@ -1373,16 +1374,12 @@ def _emit_stats(
     origin: str | None,
     query: str,
     fields: str | None,
+    supplied_outcome: OutcomeEnvelope | None = None,
 ) -> None:
     from polylogue.cli.render.outcome import convergence_warning_line
 
-    convergence_warning = convergence_warning_line()
-    # Totals over a partially materialized archive are an undercount, not
-    # a complete census: the warning is a named gap on the outcome.
-    outcome = decide_outcome(
-        matched=stats.total_sessions,
-        degraded=("archive_not_converged",) if convergence_warning is not None else (),
-    )
+    outcome = supplied_outcome or decide_outcome(matched=stats.total_sessions)
+    convergence_warning = convergence_warning_line(outcome) if supplied_outcome is not None else None
     exit_code = outcome_exit_code(outcome)
     payload = {
         "mode": "stats",
