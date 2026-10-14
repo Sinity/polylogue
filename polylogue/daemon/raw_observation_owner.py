@@ -160,6 +160,10 @@ class RawObservationConvergenceOwner:
             raise
         finally:
             if physical is not None:
+                # A refused writer may already be parked on this creator's
+                # cleanup mailbox. Wake that owner before awaiting its exit;
+                # shutdown cannot request cleanup while this call still waits.
+                physical.retry_sql_settlement()
                 try:
                     await physical.wait()
                 except compute.DaemonOperationCancelled:

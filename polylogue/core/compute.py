@@ -319,6 +319,7 @@ class SubmittedOperation(Generic[T]):
     future: Future[T]
     cancellation: CancellationHandle
     _task: _Task | None = None
+    _adapter: BoundedComputeAdapter | None = None
 
     async def wait(self) -> T:
         """Await the physical result, retaining cancellation through SQL settlement."""
@@ -356,7 +357,8 @@ class SubmittedOperation(Generic[T]):
             if not self.future.done():
                 raise ValueError("pending operation has no physical cleanup owner")
             return
-        self._task.sql_retry.request()
+        assert self._adapter is not None
+        self._adapter._retry_task_sql_settlement(self._task)
 
     @property
     def queue_delay_s(self) -> float:
@@ -448,6 +450,7 @@ def retain_current_creator_settlement(
 class _RetainedSQLSettlement:
     retry: SQLSettlementRetry
     evidence: RetainedSQLSettlement
+    creator_task: _Task | None = None
 
 
 def capture_compute_bridge() -> Callable[[], contextlib.AbstractContextManager[None]]:
@@ -1048,7 +1051,7 @@ class BoundedComputeAdapter:
             # Preserve submit's context isolation while reusing the physical
             # worker and reservation. Native cleanup runs in that same context.
             contextvars.copy_context().run(run_nested)
-            return SubmittedOperation(future=future, cancellation=parent or handle, _task=parent_task)
+            return SubmittedOperation(future=future, cancellation=parent or handle, _task=parent_task, _adapter=self)
         future.add_done_callback(lambda done: handle.cancel() if done.cancelled() else None)
         context = contextvars.copy_context()
         task = _Task(
@@ -1102,7 +1105,7 @@ class BoundedComputeAdapter:
         if already_done:
             remove_listener()
         self._run_all(runnable)
-        return SubmittedOperation(future=future, cancellation=handle, _task=task)
+        return SubmittedOperation(future=future, cancellation=handle, _task=task, _adapter=self)
 
     def map(
         self,
@@ -1436,6 +1439,7 @@ class BoundedComputeAdapter:
                 owner_count=owner_count,
                 failure_types=failure_types,
             ),
+            creator_task=task,
         )
         with self._lock:
             self._sql_settlements[id(entry)] = entry
@@ -1453,6 +1457,14 @@ class BoundedComputeAdapter:
         """Return unresolved physical ownership without touching native handles."""
         with self._lock:
             return tuple(entry.evidence for entry in self._sql_settlements.values())
+
+    def _retry_task_sql_settlement(self, task: _Task) -> None:
+        """Reach native and parked cleanup on this same physical creator."""
+        with self._lock:
+            retained = tuple(entry for entry in self._sql_settlements.values() if entry.creator_task is task)
+        task.sql_retry.request()
+        for entry in retained:
+            entry.retry.request()
 
     def retry_sql_settlement(self) -> None:
         """Ask each retained creator worker to retry its own cleanup once."""

@@ -1129,7 +1129,7 @@ async def _run_writer_worker(
 
             def settled() -> None:
                 assert terminal is not None
-                if release_creator_settlement is not None:
+                if terminal.retired and release_creator_settlement is not None:
                     release_creator_settlement()
                 if not loop.is_closed():
                     with contextlib.suppress(RuntimeError):

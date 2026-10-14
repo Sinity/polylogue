@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.compute import BoundedComputeAdapter, retain_current_creator_settlement
 from polylogue.core.enums import Provider
 from polylogue.core.write_lease import coordinator_write_lease_active
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
@@ -665,3 +665,118 @@ async def test_failed_page_cleanup_retains_its_actual_owner_without_caller_refer
                 page.close()
         kernel.shutdown(wait=True)
         await coordinator.shutdown(timeout=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock
+@pytest.mark.parametrize("failed_close,cancelled", [(False, False), (True, False), (True, True)])
+async def test_failed_prepared_operation_settles_its_actual_creator_before_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_close: bool, cancelled: bool
+) -> None:
+    from polylogue.daemon.write_coordinator import DaemonWriterSettlementError, _TerminalWriter
+
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
+    kernel = BoundedComputeAdapter(max_workers=1)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    owner = RawObservationConvergenceOwner(
+        tmp_path,
+        compute_adapter=kernel,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        write_coordinator=coordinator,
+    )
+    seals: list[PreparedIndexMutation] = []
+    original = ValueError("prepared operation failed before closing its seal")
+    creator: list[int] = []
+    close_threads: list[int] = []
+    attempted_close = threading.Event()
+    registered = threading.Event()
+    allow_close = threading.Event()
+    original_close = PreparedIndexMutation.close
+
+    def close(seal: PreparedIndexMutation) -> None:
+        if any(seal is current for current in seals):
+            close_threads.append(threading.get_ident())
+            if failed_close and not allow_close.is_set():
+                attempted_close.set()
+                raise OSError("original native close unavailable")
+        return original_close(seal)
+
+    monkeypatch.setattr(PreparedIndexMutation, "close", close)
+    from polylogue.daemon import write_coordinator as coordinator_module
+
+    observed_cleanup = asyncio.Event()
+    original_completed = coordinator._terminal_worker_completed
+
+    def completed(worker: _TerminalWriter) -> None:
+        original_completed(worker)
+        observed_cleanup.set()
+
+    monkeypatch.setattr(coordinator, "_terminal_worker_completed", completed)
+    original_retain = retain_current_creator_settlement
+
+    def retain(
+        request: Callable[[], object], *, owner_count: int, failure_types: tuple[str, ...]
+    ) -> Callable[[], None] | None:
+        release = original_retain(request, owner_count=owner_count, failure_types=failure_types)
+        registered.set()
+        return release
+
+    monkeypatch.setattr(coordinator_module, "retain_current_creator_settlement", retain)
+
+    def failed() -> None:
+        seal = PreparedIndexMutation.source_only(archive_root=tmp_path)
+        seals.append(seal)
+        creator.append(threading.get_ident())
+        raise original
+
+    pending = asyncio.create_task(owner.run_convergence_sync("test.prepared.failed", failed))
+    try:
+        if failed_close:
+            assert await asyncio.to_thread(registered.wait, 10)
+            assert await asyncio.to_thread(attempted_close.wait, 10)
+            await observed_cleanup.wait()
+            assert not pending.done()
+            assert kernel.retained_sql_settlements()
+            assert kernel.snapshot().used_units == 1
+            if cancelled:
+                pending.cancel()
+                await asyncio.sleep(0)
+                assert not pending.done()
+                assert kernel.retained_sql_settlements()
+            allow_close.set()
+            kernel.retry_sql_settlement()
+        expected = BaseExceptionGroup if cancelled else DaemonWriterSettlementError
+        with pytest.raises(expected) as caught:
+            await pending
+        if cancelled:
+            assert isinstance(caught.value, BaseExceptionGroup)
+            errors: list[BaseException] = []
+
+            def collect(error: BaseException) -> None:
+                if isinstance(error, BaseExceptionGroup):
+                    for child in error.exceptions:
+                        collect(child)
+                else:
+                    errors.append(error)
+
+            collect(caught.value)
+            assert any(
+                isinstance(error, DaemonWriterSettlementError) and error.__cause__ is original for error in errors
+            )
+            assert any(isinstance(error, asyncio.CancelledError) for error in errors)
+        else:
+            assert caught.value.__cause__ is original
+        assert close_threads and all(thread == creator[0] for thread in close_threads)
+        assert len(seals) == 1 and seals[0]._closed
+        assert kernel.snapshot().used_units == 0
+        assert kernel.retained_sql_settlements() == ()
+        assert coordinator.snapshot().unsettled_writer_workers == 0
+    finally:
+        allow_close.set()
+        kernel.retry_sql_settlement()
+        assert await coordinator.shutdown(timeout=float("inf"))
+        try:
+            await pending
+        except BaseException:
+            pass
+        kernel.shutdown(wait=True)

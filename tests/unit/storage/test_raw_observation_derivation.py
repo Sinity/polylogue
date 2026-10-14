@@ -413,7 +413,9 @@ def test_logical_sqlite_export_uses_worker_and_replays_session(tmp_path: Path, r
         with _fixture_archive(tmp_path) as archive:
             raw_id = archive.write_raw_payload(
                 provider=Provider.HERMES,
-                payload=logical_export_bytes(source, scope=member_export_scope(source)),
+                # The retained header must match the acquisition coordinate:
+                # noncanonical names require an unbound full-scope export.
+                payload=logical_export_bytes(source, scope=member_export_scope(source.with_name(retained_name))),
                 source_path=str(source.with_name(retained_name)),
                 canonical_source_path=str(source.with_name(retained_name)),
                 # Hermes acquisition captures the profile identity its
