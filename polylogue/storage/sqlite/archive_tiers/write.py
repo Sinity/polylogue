@@ -8819,12 +8819,16 @@ class PreparedSessionSourceRead:
             _load_parser_census_source_inputs,
             _raw_membership_census_query,
             _raw_membership_census_rows_from_rows,
+            _raw_selection_pages,
         )
 
-        for raw_id in raw_ids:
-            _load_parser_census_source_inputs(self._seal, raw_id)
-        with self._seal.source_rows(*_raw_membership_census_query(raw_ids)) as rows:
-            return _raw_membership_census_rows_from_rows(rows)
+        result: list[tuple[str, int, bool, int]] = []
+        for page in _raw_selection_pages(raw_ids, self._seal.source_parameter_limit(), fixed_parameters=1):
+            for raw_id in page:
+                _load_parser_census_source_inputs(self._seal, raw_id)
+            with self._seal.source_rows(*_raw_membership_census_query(page)) as rows:
+                result.extend(_raw_membership_census_rows_from_rows(rows))
+        return tuple(result)
 
     def membership_key_has_pending_envelope_member(self, logical_source_key: str) -> bool:
         from polylogue.storage.sqlite.archive_tiers.revision_governance import (

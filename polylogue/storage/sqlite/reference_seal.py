@@ -3911,6 +3911,19 @@ class PreparedIndexMutation:
                 )
                 raise NativeConnectionSettlementError(owner, settlement_failure) from cleanup
 
+    def source_parameter_limit(self) -> int:
+        """Report the bind limit of the native connection executing selected Source reads."""
+        self._require_selected_producer("source")
+        if (
+            not self._source_producer_active
+            or self._source_statement_active
+            or self._source_baseline_active
+            or self._source_rows_active
+        ):
+            raise ReferenceSealError("selected Source read requires its idle original producer context")
+        owner = next(child for child in native_sql_children(self) if child.connection is self._scratch)
+        return owner.require_connection().getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+
     @contextmanager
     def source_rows(self, sql: str, parameters: tuple[object, ...] = ()) -> Iterator[sqlite3.Cursor]:
         self._require_selected_producer("source")
