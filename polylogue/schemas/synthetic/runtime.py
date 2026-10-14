@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import random
+import re
 import uuid
 from collections.abc import Generator
 from datetime import datetime, timezone
@@ -117,25 +118,49 @@ def _annotated_variant(parent: SchemaRecord, variant: SchemaRecord) -> SchemaRec
     return {**{key: value for key, value in parent.items() if key.startswith("x-polylogue-")}, **variant}
 
 
+def _record_plan_path(self: _SyntheticRuntimeContext, path: str) -> str:
+    """Keep witness schema addresses separate from measured record addresses."""
+    if not self._coverage_witness_mode:
+        return path
+    path = re.sub(r"\.(?:anyOf|oneOf)\[\d+\]", "", path)
+    path = path.replace(".properties.", ".").replace(".items[*]", "[*]")
+    wire = self.wire_format
+    if wire.tree is not None and wire.tree.container_path:
+        prefix = "$." + wire.tree.container_path + ".additionalProperties.*"
+    elif wire.messages_path:
+        prefix = "$." + wire.messages_path + "[*]"
+    else:
+        return path
+    return "$" + path[len(prefix) :] if path == prefix or path.startswith(prefix + ".") else path
+
+
 def _schema_type(self: _SyntheticRuntimeContext, schema: SchemaRecord, rng: random.Random, path: str) -> str | None:
     schema_type = schema.get("type")
-    plan = None if self._coverage_witness_mode else self._public_record_plan
+    plan_path = _record_plan_path(self, path)
+    plan = self._public_record_plan
     if isinstance(schema_type, str):
-        if plan is not None and not plan.compatible(schema, path):
+        if plan is not None and not plan.compatible(schema, plan_path):
             raise ValueError("selected public record has no compatible original field type")
         return schema_type
     if isinstance(schema_type, list):
         selected_type = self._coverage_type_choices.get(path) if self._coverage_witness_mode else None
-        if selected_type in schema_type:
+        if selected_type in schema_type and (
+            plan is None or plan.compatible({**schema, "type": selected_type}, plan_path)
+        ):
             return selected_type
-        if self._coverage_witness_mode and path in self._coverage_null_paths and "null" in schema_type:
+        if (
+            self._coverage_witness_mode
+            and path in self._coverage_null_paths
+            and "null" in schema_type
+            and (plan is None or plan.compatible({**schema, "type": "null"}, plan_path))
+        ):
             return "null"
         declared = [item for item in schema_type if isinstance(item, str)]
         if plan is not None:
             # The selected form owns required parents and scalar/result types.
             # Condition the existing type draw on that same branch proof;
             # merged nullable fields cannot erase an already selected message.
-            declared = [item for item in declared if plan.compatible({**schema, "type": item}, path)]
+            declared = [item for item in declared if plan.compatible({**schema, "type": item}, plan_path)]
             if not declared:
                 raise ValueError("selected public record has no compatible original field type")
         observed = _observed_type_weights(schema)
@@ -330,13 +355,14 @@ def _walk_node(
     skip_keys: set[str] | None = None,
     path: str = "$",
 ) -> _GenerationFrame:
-    plan = None if self._coverage_witness_mode else self._public_record_plan
-    if plan is not None and plan.requires_field(path) and not plan.compatible(schema, path):
+    plan_path = _record_plan_path(self, path)
+    plan = self._public_record_plan
+    if plan is not None and plan.requires_field(plan_path) and not plan.compatible(schema, plan_path):
         raise ValueError(
             "measured public record conflicts with selected field support "
             f"at {path} (kind={plan.kind}, form={plan.form}); re-infer the package"
         )
-    if not schema and (plan is None or not plan.requires_field(path)):
+    if not schema and (plan is None or not plan.requires_field(plan_path)):
         return None
 
     for keyword in ("anyOf", "oneOf"):
@@ -352,7 +378,7 @@ def _walk_node(
             selected_index = self._coverage_branch_choices.get(path) if self._coverage_witness_mode else None
             if selected_index is not None:
                 selected = next((variant for index, variant in variants if index == selected_index), None)
-                if selected is not None:
+                if selected is not None and (plan is None or plan.compatible(selected, plan_path)):
                     return (
                         yield (
                             _annotated_variant(schema, selected),
@@ -362,7 +388,7 @@ def _walk_node(
                     )
 
             candidates = [
-                (index, variant) for index, variant in variants if plan is None or plan.compatible(variant, path)
+                (index, variant) for index, variant in variants if plan is None or plan.compatible(variant, plan_path)
             ]
             if not candidates:
                 raise ValueError("measured public record has no supported union branch; re-infer the package")
@@ -392,15 +418,17 @@ def _walk_node(
                 )
             )
 
-    if plan is not None and path in plan.scalars:
-        return plan.scalars[path]
-    if plan is not None and path in plan.graph_values:
-        return plan.graph_values[path]
-    if plan is not None and (tool_value := plan.tool_value(path, schema)) is not None:
-        plan.observe_tool_field(path, tool_value, schema)
+    if plan is not None and plan_path in plan.scalars:
+        return plan.scalars[plan_path]
+    if plan is not None and plan_path in plan.graph_values:
+        return plan.graph_values[plan_path]
+    if plan is not None and (tool_value := plan.tool_value(plan_path, schema)) is not None:
+        plan.observe_tool_field(plan_path, tool_value, schema)
         return tool_value
     schema_type = (
-        plan.content_type if plan is not None and path == plan.content_path else _schema_type(self, schema, rng, path)
+        plan.content_type
+        if plan is not None and plan_path == plan.content_path
+        else _schema_type(self, schema, rng, path)
     )
     if schema_type is not None and schema_type not in SCHEMA_CONSTRUCT_HANDLERS:
         return None
@@ -420,7 +448,7 @@ def _walk_node(
         case "string":
             value = self._generate_string(schema, rng, path=path)
             if plan is not None:
-                plan.observe_tool_field(path, value, schema)
+                plan.observe_tool_field(plan_path, value, schema)
             fmt = schema.get("x-polylogue-format")
             if fmt in {"uuid4", "uuid", "hex-id"}:
                 self._relation_solver.register_generated_id(path, value)
@@ -467,21 +495,22 @@ def _walk_object(
     properties = _schema_record(schema.get("properties"))
     schema_required = declared_required_properties(schema)
     candidate_keys = set(properties.keys())
-    plan = None if self._coverage_witness_mode else self._public_record_plan
+    plan_path = _record_plan_path(self, path)
+    plan = self._public_record_plan
     if plan is not None:
-        candidate_keys |= plan.child_fields(path)
+        candidate_keys |= plan.child_fields(plan_path)
     if plan is not None:
-        if any(path + "." + key in plan.absent for key in schema_required):
+        if any(plan_path + "." + key in plan.absent for key in schema_required):
             raise ValueError("required field conflicts with the selected original wire form")
-        candidate_keys = {key for key in candidate_keys if path + "." + key not in plan.absent}
+        candidate_keys = {key for key in candidate_keys if plan_path + "." + key not in plan.absent}
     if plan is not None and plan.mode == "absent":
-        candidate_keys = {key for key in candidate_keys if path + "." + key != plan.content_path}
+        candidate_keys = {key for key in candidate_keys if plan_path + "." + key != plan.content_path}
     if skip_keys:
         candidate_keys -= skip_keys
 
     if self._relation_solver.mutual_exclusions and not self._coverage_witness_mode:
         required = schema_required | {
-            key for key in candidate_keys if plan is not None and plan.requires_field(path + "." + key)
+            key for key in candidate_keys if plan is not None and plan.requires_field(plan_path + "." + key)
         }
         candidate_keys = self._relation_solver.filter_mutually_exclusive(path, candidate_keys, rng, required=required)
 
@@ -492,9 +521,9 @@ def _walk_object(
         identities = {
             identity
             for content, (identity, _bucket, _relation) in plan.tool_pointer_widths.items()
-            if content.rsplit(".", 1)[0] == path
+            if content.rsplit(".", 1)[0] == plan_path
         }
-        ordered_keys.sort(key=lambda key: path + "." + key not in identities)
+        ordered_keys.sort(key=lambda key: plan_path + "." + key not in identities)
     orders = self._relation_solver.numeric_orders(schema) if self.provider == "codex" else ()
     selected_numeric_fields: set[str] | None = None
     if orders:
@@ -506,7 +535,7 @@ def _walk_object(
             if name not in candidate_keys:
                 continue
             field_schema = _schema_record(properties.get(name, schema.get("additionalProperties")))
-            forced = name in schema_required or plan is not None and plan.requires_field(path + "." + name)
+            forced = name in schema_required or plan is not None and plan.requires_field(plan_path + "." + name)
             if not field_schema and not forced:
                 continue
             frequency = field_schema.get("x-polylogue-frequency")
@@ -523,7 +552,7 @@ def _walk_object(
         if prop_name not in candidate_keys:
             continue
         prop_schema = _schema_record(properties.get(prop_name, schema.get("additionalProperties")))
-        forced = prop_name in schema_required or plan is not None and plan.requires_field(path + "." + prop_name)
+        forced = prop_name in schema_required or plan is not None and plan.requires_field(plan_path + "." + prop_name)
         if not prop_schema and not forced:
             continue
 
@@ -546,9 +575,10 @@ def _walk_object(
                 continue
 
         child_path = f"{path}.properties.{prop_name}" if self._coverage_witness_mode else f"{path}.{prop_name}"
+        child_plan_path = _record_plan_path(self, child_path)
         ref = (
             None
-            if plan is not None and (child_path in plan.tool_fields or child_path in plan.string_exclusions)
+            if plan is not None and (child_plan_path in plan.tool_fields or child_plan_path in plan.string_exclusions)
             else self._relation_solver.resolve_foreign_key(child_path, rng)
         )
         if ref is not None:
@@ -582,7 +612,7 @@ def _walk_object(
     if (
         plan is not None
         and self.provider == "claude-code"
-        and plan.scalars.get(path + ".type") == "tool_result"
+        and plan.scalars.get(plan_path + ".type") == "tool_result"
         and isinstance(tool_id := obj.get("tool_use_id"), str | SampledText | JoinedText)
         and len(tool_id)
     ):
@@ -670,10 +700,11 @@ def _generate_string(
     path: str = "$",
     _format_body: bool = False,
 ) -> str | SampledText | JoinedText:
-    plan = None if self._coverage_witness_mode else self._public_record_plan
-    excluded = plan.string_exclusions.get(path, frozenset()) if plan is not None else frozenset()
-    agent_prefix = plan.agent_identity_prefix if plan is not None and path == "$.toolUseResult.agentId" else None
-    fresh_tool = plan is not None and path in plan.tool_fields and plan.tool_fields[path][1] == "new"
+    plan_path = _record_plan_path(self, path)
+    plan = self._public_record_plan
+    excluded = plan.string_exclusions.get(plan_path, frozenset()) if plan is not None else frozenset()
+    agent_prefix = plan.agent_identity_prefix if plan is not None and plan_path == "$.toolUseResult.agentId" else None
+    fresh_tool = plan is not None and plan_path in plan.tool_fields and plan.tool_fields[plan_path][1] == "new"
 
     def accepted_identity(value: GeneratedString) -> bool:
         if agent_prefix is not None:
@@ -683,8 +714,8 @@ def _generate_string(
             return plan.owner.agent_identity_is_new(value)
         return not fresh_tool or (plan is not None and plan.owner.tool_identity_is_new(value))
 
-    width = plan.tool_widths.get(path) if plan is not None else None
-    pointer_width = plan.tool_pointer_widths.get(path) if plan is not None else None
+    width = plan.tool_widths.get(plan_path) if plan is not None else None
+    pointer_width = plan.tool_pointer_widths.get(plan_path) if plan is not None else None
     geometry = (
         (plan.tool_widths[pointer_width[0]], pointer_width[1], pointer_width[2])
         if pointer_width is not None and plan is not None
@@ -707,13 +738,13 @@ def _generate_string(
                 and point[5] == geometry[1]
                 and pointer_width_relation(geometry[0], point[5]) == geometry[2]
             ]
-        plan = None if self._coverage_witness_mode else self._public_record_plan
-        if plan is not None and path in plan.tool_pointer_fields:
-            pointer = plan.tool_pointer_fields[path]
+        plan = self._public_record_plan
+        if plan is not None and plan_path in plan.tool_pointer_fields:
+            pointer = plan.tool_pointer_fields[plan_path]
             labels = [
                 label for label in labels if (PERSISTED_OUTPUT_POINTER_PATTERN.search(label) is not None) == pointer
             ]
-        if plan is not None and path in plan.tool_fields and plan.tool_fields[path][1] == "new":
+        if plan is not None and plan_path in plan.tool_fields and plan.tool_fields[plan_path][1] == "new":
             labels = [label for label in labels if label and plan.owner.tool_identity_is_new(label)]
         if not labels:
             raise ValueError("selected relation has no supported original field value")
@@ -740,12 +771,12 @@ def _generate_string(
                 return rng.choices(labels, weights=weights, k=1)[0]
         return rng.choice(labels)
 
-    plan = None if self._coverage_witness_mode else self._public_record_plan
-    selected_pointer = plan.tool_pointer_fields.get(path) if plan is not None else None
+    plan = self._public_record_plan
+    selected_pointer = plan.tool_pointer_fields.get(plan_path) if plan is not None else None
     if not _format_body:
         schema = _condition_string_format(schema, rng, pointer=selected_pointer, width=width, geometry=geometry)
     semantic_role = schema.get("x-polylogue-semantic-role")
-    if plan is not None and (path in plan.tool_fields or excluded) and semantic_role == "message_role":
+    if plan is not None and (plan_path in plan.tool_fields or excluded) and semantic_role == "message_role":
         # The original compiled tool coordinate is an identity, even when a
         # low-confidence role heuristic selected this leaf during inference.
         # Its measured field shape and relation width remain the authorities.
@@ -850,7 +881,7 @@ def _generate_string(
                 identity = plan.tool_fields[pointer_width[0]][3]
                 if identity is None:
                     raise RuntimeError("pointer field lost its original identity dependency")
-                if plan.tool_pointer_relations[path] == "own-direct":
+                if plan.tool_pointer_relations[plan_path] == "own-direct":
                     suffix_width = basename - len(identity)
                     if suffix_width < 0:
                         raise ValueError("original direct pointer width cannot represent its identity")
@@ -1320,8 +1351,9 @@ def _walk_array(
     path: str = "$",
 ) -> _GenerationFrame:
     item_schema = _schema_record(schema.get("items"))
-    plan = None if self._coverage_witness_mode else self._public_record_plan
-    conditioned = plan is not None and path == plan.content_path
+    plan_path = _record_plan_path(self, path)
+    plan = self._public_record_plan
+    conditioned = plan is not None and plan_path == plan.content_path
     length_schema: SchemaRecord = (
         {"x-polylogue-observed-distribution": {"array_length": plan.content["array_block_count"]}}
         if conditioned and plan is not None
@@ -1341,7 +1373,7 @@ def _walk_array(
         n_items = rng.randint(lo, hi)
     else:
         n_items = rng.randint(1, 3)
-    if self._coverage_witness_mode:
+    if self._coverage_witness_mode and not conditioned:
         n_items = 1
 
     prefix = schema.get("prefixItems")
@@ -1371,8 +1403,8 @@ def _walk_array(
             if grammar is not None and plan is not None:
                 if discriminator is not None:
                     plan.scalars.pop(discriminator, None)
-                plan.clear_tool_operand(item_path)
-                discriminator = plan.bind_content_kind(next(grammar), item_path, rng)
+                plan.clear_tool_operand(_record_plan_path(self, item_path))
+                discriminator = plan.bind_content_kind(next(grammar), _record_plan_path(self, item_path), rng)
             value = yield (original_item_schema, item_path, None)
             if value is None and not item_allows_null:
                 if conditioned:
@@ -1385,7 +1417,7 @@ def _walk_array(
             grammar.close()
         if plan is not None and discriminator is not None:
             plan.scalars.pop(discriminator, None)
-            plan.clear_tool_operand(item_path)
+            plan.clear_tool_operand(_record_plan_path(self, item_path))
     ordered = _observed_distribution(item_schema, "ordered_numeric_pairs")
     rate = ordered.get("nondecreasing_rate")
     if (

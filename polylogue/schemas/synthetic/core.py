@@ -123,7 +123,7 @@ class SyntheticCorpus:
         if self._session_record_structure is not None:
             return self._session_record_structure
         profile = self.workload_profile
-        if profile is None or self._coverage_witness_mode:
+        if profile is None:
             return None
         elements = profile.get("elements")
         if not isinstance(elements, dict) or not elements:
