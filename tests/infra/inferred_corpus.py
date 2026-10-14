@@ -825,7 +825,7 @@ def _compile_entry(
         element_kind=element.element_kind,
         schema=schema,
         wire_format=wire_format,
-        workload_profile=workload_profile if isinstance(workload_profile, Mapping) else None,
+        workload_profile=workload_profile,
     )
     witness = SyntheticCorpus.from_selection(selection).generate(
         count=1,
@@ -840,7 +840,7 @@ def _compile_entry(
         key=key,
         spec=spec,
         generator_schema=schema,
-        workload_profile=workload_profile if isinstance(workload_profile, Mapping) else None,
+        workload_profile=workload_profile,
     )
 
 

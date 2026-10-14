@@ -149,7 +149,7 @@ def test_measured_main_driver_conditions_the_whole_four_record_path() -> None:
     from polylogue.schemas.field_stats.collection import _collect_field_stats
     from polylogue.schemas.generation.field_annotations import annotate_schema
 
-    annotate_schema(identity, _collect_field_stats(["call0001", "call0002"]))
+    annotate_schema(identity, _collect_field_stats([{"id": "call0001"}, {"id": "call0002"}]), path="$.id")
     profile = inferred_record_profile("claude-code", schema, samples, element="session_record_stream")
     corpus = SyntheticCorpus(
         schema,

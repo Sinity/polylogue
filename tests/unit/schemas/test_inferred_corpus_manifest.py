@@ -100,6 +100,24 @@ def test_manifest_covers_every_persisted_package_version_element() -> None:
     assert len(manifest.payload_sha256) == 64
 
 
+def test_catalog_without_measured_profile_is_an_explicit_refusal(qualified_schema_registry: SchemaRegistry) -> None:
+    class RegistryWithoutProfile(_RegistryProxy):
+        def get_workload_profile(self, provider: str, version: str = "default") -> None:
+            return None
+
+    qualified = compile_inferred_corpus_manifest(registry=qualified_schema_registry, providers=("codex",))
+    assert qualified.entries and all(entry.supported for entry in qualified.entries)
+    unqualified = compile_inferred_corpus_manifest(
+        registry=RegistryWithoutProfile(qualified_schema_registry),  # type: ignore[arg-type]
+        providers=("codex",),
+    )
+    assert tuple(entry.key for entry in unqualified.entries) == tuple(entry.key for entry in qualified.entries)
+    assert all(
+        not entry.supported and entry.unsupported is not None and entry.unsupported.reason == "missing_workload_profile"
+        for entry in unqualified.entries
+    )
+
+
 def test_persisted_manifest_round_trip_validates_identity_and_integrity(
     tmp_path: Path,
 ) -> None:
