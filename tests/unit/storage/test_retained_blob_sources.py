@@ -887,3 +887,25 @@ def test_raw_restoration_resolves_one_history_for_a_shared_append_path(tmp_path:
             await owner.run_convergence_sync("test.raw-observation.law", restore, owner._compute_adapter)
 
     asyncio.run(exercise())
+
+
+def test_blob_availability_uses_the_same_existing_relocation_as_restore(tmp_path: Path) -> None:
+    """An absent earlier archive-directory candidate cannot hide a proved later one."""
+    from polylogue.storage.blob_integrity import classify_blob_reference_debt
+
+    root = tmp_path / "archive"
+    raw_id, blob_hash, source_path = _seed(
+        root, _CASES["direct_file"], sources=tmp_path / "original" / "inbox" / "nested" / "hooks"
+    )
+    relocated = root / "hooks" / "rollout.jsonl"
+    relocated.parent.mkdir()
+    Path(source_path).replace(relocated)
+    proofs, unproven = _backup_proof(root, blob_hash)
+    assert [proof["kind"] for proof in proofs] == ["direct_file_sha256"], unproven
+    assert _raw_restoration(root, raw_id, blob_hash, source_path) == (True, None)
+    debt = classify_blob_reference_debt(root / "source.db", store=BlobStore(root / "blob"))
+    assert debt.missing_source_path_presence == {"recoverable_source_path_exists": 1}
+    assert len(debt.samples) == 1
+    assert debt.samples[0].sample_source_available is True
+    assert debt.samples[0].sample_source_path == source_path
+    assert debt.samples[0].sample_source_outer_path == str(relocated)

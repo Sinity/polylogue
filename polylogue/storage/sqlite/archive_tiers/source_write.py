@@ -30,6 +30,7 @@ from polylogue.core.raw_coordinates import (
 )
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
+    RawFailureEvidenceKind,
     terminal_carrier_overwrite_predicate,
 )
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
@@ -1363,7 +1364,43 @@ def bind_source_raw_revision(
     caller-managed commit window (polylogue-amg1) -- the caller must call
     ``conn.commit()`` (or ``conn.rollback()`` on failure) itself.
     """
-    _bind_source_raw_revision(_ConnectionSourceProducer(conn), raw_id, revision, manage_transaction=manage_transaction)
+    producer = _ConnectionSourceProducer(conn)
+    if revision.kind is not RawRevisionKind.APPEND or revision.authority is not RawRevisionAuthority.BYTE_PROVEN:
+        _bind_source_raw_revision(producer, raw_id, revision, manage_transaction=manage_transaction)
+        return
+    with producer.binding_transaction(manage_transaction=manage_transaction):
+        _bind_source_raw_revision(producer, raw_id, revision, manage_transaction=False)
+        retire_missing_source_coordinate_refusal(conn, raw_id, revision)
+
+
+def retire_missing_source_coordinate_refusal(
+    conn: sqlite3.Connection, raw_id: str, revision: RawRevisionEnvelope
+) -> None:
+    """Retire only a coordinate refusal refined by this exact proved append."""
+    if revision.kind is not RawRevisionKind.APPEND or revision.authority is not RawRevisionAuthority.BYTE_PROVEN:
+        return
+    retired = conn.execute(
+        """DELETE FROM raw_artifacts AS a
+           WHERE a.raw_id=? AND a.artifact_kind=? AND a.support_status=?
+             AND EXISTS (
+                 SELECT 1 FROM raw_sessions r
+                 WHERE r.raw_id=a.raw_id AND r.origin IS a.origin
+                   AND r.source_path IS a.source_path AND r.source_index IS a.source_index
+                   AND r.logical_source_key IS ? AND r.revision_kind=? AND r.source_revision IS ?
+                   AND r.predecessor_source_revision IS ? AND r.predecessor_raw_id IS ?
+                   AND r.baseline_raw_id IS ? AND r.append_start_offset IS ? AND r.append_end_offset IS ?
+                   AND r.acquisition_generation IS ? AND r.revision_authority=?
+             )""",
+        (
+            raw_id,
+            RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.value,
+            RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.support_status.value,
+            *_revision_values(revision),
+        ),
+    )
+    if retired.rowcount:
+        # Only this negative membership conclusion depended on missing coordinates.
+        conn.execute("DELETE FROM raw_membership_census WHERE raw_id=? AND status='non_session'", (raw_id,))
 
 
 def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> ArchiveRawSessionEnvelope:

@@ -22,6 +22,11 @@ from pathlib import Path
 from polylogue.archive.artifact_taxonomy import CLASSIFIED_ARTIFACT_KINDS
 from polylogue.core.enums import TopologyEdgeStatus
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.raw_failure_evidence import (
+    RawFailureEvidenceKind,
+    raw_failure_outcome_code,
+    validated_raw_failure_evidence_kind,
+)
 from polylogue.core.sqlite_introspection import table_exists
 
 PARENT_ORIGINS: tuple[str, ...] = ("claude-code-session", "codex-session")
@@ -142,7 +147,12 @@ class ParentSessionAccountingReport:
     def blocking_count(self) -> int:
         # ``untyped_total`` is the separately reported raw denominator's
         # unexplained subset, so do not count that alias twice.
-        return self.unresolved_reference_total + self.available_unmaterialized_total + self.raw_unexplained_total
+        return (
+            self.unresolved_reference_total
+            + self.available_unmaterialized_total
+            + self.raw_unexplained_total
+            + self.raw_disposition_counts.get("missing_source_coordinates", 0)
+        )
 
     @property
     def warning_count(self) -> int:
@@ -218,10 +228,24 @@ def _raw_disposition(row: sqlite3.Row, *, source_available: bool) -> tuple[str, 
     revision_authority = row["revision_authority"]
     artifact_kind = row["artifact_kind"]
     parse_as_session = row["parse_as_session"]
+    failure_kind = validated_raw_failure_evidence_kind(
+        artifact_kind,
+        row["support_status"],
+        validation_failed=validation_status == "failed",
+        classification_reason=row["classification_reason"],
+        outcome_code=raw_failure_outcome_code(row["classification_reason"]),
+    )
+    if failure_kind is RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES:
+        return (
+            "missing_source_coordinates",
+            "retained session bytes lack proven source coordinates",
+        )
     if parse_error:
         return ("parse_failure", "raw_sessions.parse_error records a parser refusal")
     if validation_status == "failed":
         return ("validation_rejected", "raw_sessions.validation_status=failed records schema refusal")
+    if failure_kind is not None and failure_kind.lifecycle != "resolution":
+        return ("raw_failure_evidence", f"raw_artifacts records {failure_kind.value}")
     if parse_as_session == 0 and artifact_kind in CLASSIFIED_ARTIFACT_KINDS:
         return ("non_session_artifact", f"raw_artifacts declares {artifact_kind}")
     if parsed_at_ms is None:
@@ -424,9 +448,16 @@ def audit_parent_session_accounting(
         SELECT r.raw_id, r.origin, r.native_id, r.source_path, r.blob_size,
                r.blob_hash, r.parsed_at_ms, r.parse_error, r.validation_status,
                r.revision_authority,
-                   (SELECT a.artifact_kind FROM raw_artifacts a WHERE a.raw_id = r.raw_id ORDER BY a.artifact_id LIMIT 1) AS artifact_kind,
-                   (SELECT CASE WHEN SUM(a.parse_as_session IS NULL) > 0 THEN NULL ELSE MAX(a.parse_as_session) END FROM raw_artifacts a WHERE a.raw_id = r.raw_id) AS parse_as_session
+               a.artifact_kind, a.support_status, a.classification_reason,
+               (SELECT CASE WHEN SUM(a.parse_as_session IS NULL) > 0 THEN NULL ELSE MAX(a.parse_as_session) END
+                FROM raw_artifacts a WHERE a.raw_id = r.raw_id) AS parse_as_session
         FROM raw_sessions AS r
+        LEFT JOIN raw_artifacts a ON a.artifact_id = (
+            SELECT current.artifact_id FROM raw_artifacts current
+            WHERE current.raw_id = r.raw_id AND current.origin IS r.origin
+              AND current.source_path IS r.source_path AND current.source_index IS r.source_index
+            ORDER BY current.last_observed_at_ms DESC, current.artifact_id DESC LIMIT 1
+        )
         WHERE r.origin IN ({placeholders})
         ORDER BY r.origin, r.raw_id
         """,

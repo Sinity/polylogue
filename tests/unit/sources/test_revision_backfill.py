@@ -2298,3 +2298,56 @@ def test_owned_generation_replay_keeps_prefix_sharing_child_and_its_complete_tai
                 "SELECT text FROM blocks WHERE message_id IN (SELECT message_id FROM messages WHERE session_id=?)",
                 ("codex-session:achild0",),
             ).fetchall() == [("child-0-tail",)]
+
+
+@pytest.mark.parametrize("non_session", [False, True])
+def test_resolved_cas_replays_current_membership_into_owned_generation(tmp_path: Path, non_session: bool) -> None:
+    """Resolved CAS evidence cannot hide retained session or raw-only membership."""
+    from polylogue.core.errors import RawCASFrontierError
+
+    if non_session:
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=b"[]",
+                source_path="neutral/todos/task.json",
+                canonical_source_path="neutral/todos/task.json",
+                acquired_at_ms=1,
+            )
+        provider = Provider.CLAUDE_CODE
+    else:
+        raw_id = build_independent_raw_corpus(
+            tmp_path, raw_count=1, avg_payload_bytes=1_000, authoritative_source=True
+        )[0]
+        # This fixture writes Codex payloads. Its optional first-mode cache is absent.
+        provider = Provider.CODEX
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.mark_raw_parse_failed(
+            raw_id, provider=provider, error=RawCASFrontierError("synthetic frontier conflict")
+        )
+        archive.mark_raw_parse_succeeded(raw_id, provider=provider)
+        assert archive.raw_membership_census_rows((raw_id,))[0][2] is False
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchall() == [
+            (RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,)
+        ]
+    replay_retained_components(tmp_path, selected_raw_ids=(raw_id,))
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute(
+            "SELECT status FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+        ).fetchone() == ("complete",)
+        if non_session:
+            assert source.execute("SELECT status FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone() == (
+                "non_session",
+            )
+    with closing(sqlite3.connect(tmp_path / "index.db")) as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions WHERE raw_id=?", (raw_id,)).fetchone() == (
+            0 if non_session else 1,
+        )
+    with _registered_replay_candidate(tmp_path) as generation:
+        replay_retained_components(tmp_path, selected_raw_ids=(raw_id,), owned_generation=generation)
+        with closing(sqlite3.connect(generation.index_path)) as index:
+            assert index.execute("SELECT COUNT(*) FROM sessions WHERE raw_id=?", (raw_id,)).fetchone() == (
+                0 if non_session else 1,
+            )
