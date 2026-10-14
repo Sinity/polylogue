@@ -12,6 +12,7 @@ from polylogue.schemas.field_stats.distributions import _bucket_index
 from polylogue.schemas.field_stats.models import FilenameWidthStats, PointerShapeStats
 from polylogue.schemas.record_structure import (
     CODEX_PUBLIC_MESSAGE_ROLES,
+    NATIVE_CODEX_TOOL_VALUE_FIELDS,
     PUBLIC_CONTENT_BODY_FIELDS,
     content_prefix_kind,
     initial_content_prefix,
@@ -1163,6 +1164,37 @@ class PublicRecordPlan:
                     self.tool_pointer_fields[content] = disposition == "truncated"
         elif mode:
             raise ValueError("opaque content shape belongs to its declared tool-result wire")
+        native_forms = self.content.get("native_tool_field_forms")
+        if (
+            self.provider == "codex"
+            and kind in {"function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"}
+            and isinstance(native_forms, dict)
+        ):
+            forms = native_forms.get(kind)
+            if not isinstance(forms, list) or not forms:
+                raise ValueError("native tool value-field forms are missing; re-infer the package")
+            field_forms: list[tuple[str, ...]] = []
+            weights: list[int] = []
+            for form in forms:
+                fields = form.get("fields") if isinstance(form, dict) else None
+                if (
+                    not isinstance(fields, list)
+                    or any(
+                        not isinstance(field, str) or field not in NATIVE_CODEX_TOOL_VALUE_FIELDS for field in fields
+                    )
+                    or len(fields) != len(set(fields))
+                ):
+                    raise ValueError("native tool value-field form is malformed")
+                assert isinstance(form, dict)
+                field_forms.append(tuple(str(field) for field in fields))
+                weights.append(_count(form.get("count")))
+            selected_fields = rng.choices(field_forms, weights=weights, k=1)[0]
+            for value_field in NATIVE_CODEX_TOOL_VALUE_FIELDS:
+                target = path + "." + value_field
+                if value_field in selected_fields:
+                    self.required_body_fields.add(target)
+                else:
+                    self.absent.add(target)
         coordinate = path + "." + field
         if relation == "missing":
             self.owner.observe_missing_tool_identity(event)

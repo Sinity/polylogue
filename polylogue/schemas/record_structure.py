@@ -19,6 +19,7 @@ IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,47}$")
 
 
 PUBLIC_CONTENT_BODY_FIELDS = ("text", "thinking", "content", "input")
+NATIVE_CODEX_TOOL_VALUE_FIELDS = ("name", "execution", "arguments", "input", "action", "output", "tools", "result")
 
 
 def _safe_token(value: object) -> str | None:

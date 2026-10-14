@@ -28,6 +28,7 @@ from polylogue.schemas.generation.models import _PackageAccumulator, _UnitMember
 from polylogue.schemas.generation.observation_journal import JournalMemberships, ObservationJournal
 from polylogue.schemas.generation.packages import _package_bundle_scope_count
 from polylogue.schemas.record_structure import (
+    NATIVE_CODEX_TOOL_VALUE_FIELDS,
     PUBLIC_CONTENT_BODY_FIELDS,
     claude_agent_metadata_field_forms,
     claude_dispatch_field_forms,
@@ -769,6 +770,7 @@ class _ContentStructure:
     kinds: Counter[str] = field(default_factory=Counter)
     discriminator_fields: dict[str, Counter[str]] = field(default_factory=dict)
     body_field_forms: dict[str, Counter[tuple[str, ...]]] = field(default_factory=dict)
+    native_tool_field_forms: dict[str, Counter[tuple[str, ...]]] = field(default_factory=dict)
     starts: Counter[tuple[str, str]] = field(default_factory=Counter)
     ends: Counter[tuple[str, str]] = field(default_factory=Counter)
     transitions: Counter[tuple[str, str, str, str]] = field(default_factory=Counter)
@@ -831,6 +833,14 @@ class _ContentStructure:
             if operand is None:
                 continue
             kind, event, field_name, value = operand
+            if provider == "codex" and kind in {
+                "function_call",
+                "custom_tool_call",
+                "function_call_output",
+                "custom_tool_call_output",
+            }:
+                fields = tuple(field for field in NATIVE_CODEX_TOOL_VALUE_FIELDS if field in tool)
+                self.native_tool_field_forms.setdefault(kind, Counter())[fields] += 1
             presence = (
                 "absent"
                 if field_name not in tool
@@ -967,6 +977,10 @@ class _ContentStructure:
             ],
             "representations": dict(sorted(self.representations.items())),
             "block_kinds": dict(sorted(self.kinds.items())),
+            "native_tool_field_forms": {
+                kind: [{"fields": list(fields), "count": count} for fields, count in sorted(forms.items())]
+                for kind, forms in sorted(self.native_tool_field_forms.items())
+            },
             "block_body_field_forms": {
                 kind: [{"fields": list(fields), "count": count} for fields, count in sorted(forms.items())]
                 for kind, forms in sorted(self.body_field_forms.items())
