@@ -996,6 +996,7 @@ async def test_hydrated_profile_parent_blocks_large_competitor_with_spare_worker
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Measure held inputs and preserve their parent's exclusive admission."""
     import threading
 
     import polylogue.storage.derived.session.rebuild as rebuild
@@ -1031,6 +1032,9 @@ async def test_hydrated_profile_parent_blocks_large_competitor_with_spare_worker
         assert held_input_bytes and min(held_input_bytes) > 0
         assert held_snapshot.active_input_bytes >= sum(held_input_bytes)
         assert held_snapshot.capacity_slots == 2 and held_snapshot.active_units == 1
+        # The exclusive envelope protects hydration before its exact input
+        # demand is known. That envelope, rather than the byte counter above,
+        # governs whether a competing foreground operation can dispatch.
         competitor = compute.submit(
             competitor_entered.set,
             admission_class="interactive-read",

@@ -9,6 +9,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -202,6 +203,7 @@ def test_census_stream_never_fetches_a_valid_eight_mib_key_as_python_text(
     expected_digest = hashlib.sha256(expected).digest()
     expected_length = len(expected)
     original_next, original_fetchone = _MeasuredCursor.__next__, _MeasuredCursor.fetchone
+    original_fetchmany, original_fetchall = _MeasuredCursor.fetchmany, _MeasuredCursor.fetchall
 
     def verify_row(row: object) -> None:
         if row is not None:
@@ -218,9 +220,23 @@ def test_census_stream_never_fetches_a_valid_eight_mib_key_as_python_text(
         verify_row(row)
         return row
 
+    def fetchmany(cursor: _MeasuredCursor, *args: Any, **kwargs: Any) -> Any:
+        rows = original_fetchmany(cursor, *args, **kwargs)
+        for row in rows:
+            verify_row(row)
+        return rows
+
+    def fetchall(cursor: _MeasuredCursor) -> Any:
+        rows = original_fetchall(cursor)
+        for row in rows:
+            verify_row(row)
+        return rows
+
     with _measurement([key]) as measured:
         monkeypatch.setattr(_MeasuredCursor, "__next__", next_row)
         monkeypatch.setattr(_MeasuredCursor, "fetchone", fetchone)
+        monkeypatch.setattr(_MeasuredCursor, "fetchmany", fetchmany)
+        monkeypatch.setattr(_MeasuredCursor, "fetchall", fetchall)
         with measured.keys_json_stream(sqlite_encoding=sqlite_encoding) as (length, chunks):
             digest = hashlib.sha256()
             received = 0
