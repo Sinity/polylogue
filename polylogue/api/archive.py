@@ -54,6 +54,7 @@ from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
 from polylogue.logging import WARNING, emit
+from polylogue.operations.read_contracts import SessionMetadataPage
 from polylogue.operations.user_state_resolution import (
     resolve_durable_user_state_session_id as _resolve_durable_user_state_session_id,
 )
@@ -315,6 +316,7 @@ class SessionTranscriptPage:
     word_count: int
     limit: int | None
     offset: int
+    metadata_page: SessionMetadataPage | None = None
 
 
 from polylogue.core.errors import SessionNotFoundError as SessionNotFoundError  # noqa: E402
@@ -331,6 +333,9 @@ def _read_session_transcript_page(
     limit: int | None,
     offset: int,
     content_projection: ContentProjectionSpec | None,
+    metadata_continuation: str | None = None,
+    metadata_limit: int | None = None,
+    include_user_tags: bool = True,
 ) -> SessionTranscriptPage | None:
     """Read one session header plus the requested transcript window.
 
@@ -344,16 +349,44 @@ def _read_session_transcript_page(
         resolved_id = archive.resolve_session_id(session_id)
     except KeyError:
         return None
-    summary = archive.read_summary(resolved_id)
+    from polylogue.operations.session_metadata import read_session_metadata
+
+    if limit is None and (metadata_continuation is not None or metadata_limit is not None):
+        raise ValueError("metadata paging requires a bounded session page")
+    summary = archive.read_summary(resolved_id, include_metadata=limit is None)
+    metadata = (
+        read_session_metadata(
+            archive,
+            resolved_id,
+            limit=metadata_limit
+            if metadata_limit is not None
+            else None
+            if metadata_continuation
+            else limit
+            if limit
+            else None,
+            continuation=metadata_continuation,
+            include_user_tags=include_user_tags,
+        )
+        if limit is not None
+        else None
+    )
     envelope = (
-        archive.read_session_page(resolved_id, limit=limit, offset=normalized_offset)
+        archive.read_session_page(resolved_id, limit=limit, offset=normalized_offset, include_working_directories=False)
         if limit is not None
         else archive.read_session(resolved_id)
     )
+    if metadata is not None:
+        envelope = replace(envelope, working_directories=metadata.working_directories)
     session = archive_envelope_to_session(
         envelope,
         display_label=summary.display_label,
         display_label_source=summary.display_label_source,
+    )
+    session = session.model_copy(
+        update={
+            "tags_m2m": metadata.user_tags if metadata is not None else summary.tags if include_user_tags else (),
+        }
     )
     if content_projection is not None and content_projection.filters_content():
         session = session.with_content_projection(content_projection)
@@ -365,6 +398,7 @@ def _read_session_transcript_page(
         word_count=summary.word_count,
         limit=limit,
         offset=normalized_offset,
+        metadata_page=metadata.page if metadata is not None else None,
     )
 
 
@@ -2303,6 +2337,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         limit: int | None = None,
         offset: int = 0,
         content_projection: ContentProjectionSpec | None = None,
+        metadata_continuation: str | None = None,
+        metadata_limit: int | None = None,
+        include_user_tags: bool = True,
     ) -> SessionTranscriptPage | None:
         """Read one session bounded to ``[offset, offset + limit)`` messages.
 
@@ -2314,7 +2351,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         The returned page carries the session's true totals; see
         :class:`SessionTranscriptPage` for why they cannot be recomputed from
-        the rows it serves.
+        the rows it serves. Directories and User tags have independent
+        metadata_page coordinates; resume metadata_continuation separately
+        and retain metadata_limit when message windows narrow or finish.
         """
 
         normalized_offset = max(int(offset), 0)
@@ -2326,6 +2365,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 "limit": limit,
                 "offset": normalized_offset,
                 "content_projection": content_projection,
+                "metadata_continuation": metadata_continuation,
+                "metadata_limit": metadata_limit,
+                "include_user_tags": include_user_tags,
             },
             work=lambda archive: _read_session_transcript_page(
                 archive,
@@ -2333,8 +2375,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 limit=limit,
                 offset=normalized_offset,
                 content_projection=content_projection,
+                metadata_continuation=metadata_continuation,
+                metadata_limit=metadata_limit,
+                include_user_tags=include_user_tags,
             ),
-            page_size=limit,
+            page_size=max(limit, 1) if limit is not None else None,
             projection="session",
             stable_order="session,message,block",
         )

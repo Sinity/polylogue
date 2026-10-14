@@ -4181,6 +4181,7 @@ def read_archive_session_page(
     limit: int,
     offset: int,
     blob_store: BlobStore | None = None,
+    include_working_directories: bool = True,
 ) -> ArchiveSessionEnvelope:
     """Read a bounded ``[offset, offset + limit)`` PAGE of a session's transcript.
 
@@ -4205,7 +4206,14 @@ def read_archive_session_page(
     if not conn.in_transaction:
         conn.execute("BEGIN DEFERRED")
         try:
-            return read_archive_session_page(conn, session_id, limit=limit, offset=offset, blob_store=blob_store)
+            return read_archive_session_page(
+                conn,
+                session_id,
+                limit=limit,
+                offset=offset,
+                blob_store=blob_store,
+                include_working_directories=include_working_directories,
+            )
         finally:
             conn.execute("ROLLBACK")
     conn.row_factory = sqlite3.Row
@@ -4215,7 +4223,7 @@ def read_archive_session_page(
         session,
         plan=plan,
         messages=tuple(_fetch_planned_window(conn, plan.segments, offset=offset, limit=limit, blob_store=blob_store)),
-        working_directories=_read_session_working_directories(conn, session_id),
+        working_directories=_read_session_working_directories(conn, session_id) if include_working_directories else (),
         orphan_attachments=_read_orphan_attachments(conn, session_id, blob_store=blob_store),
         total_message_count=plan.total_message_count,
     )

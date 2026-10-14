@@ -3608,6 +3608,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if page is None:
             return None
         conv = page.session
+        metadata = page.metadata_page
+        directories = list(conv.working_directories)
+        tags = list(conv.tags_m2m)
+        while metadata is not None and metadata.continuation is not None:
+            follow = await poly.get_session_page(
+                conv_id,
+                limit=0,
+                offset=page.total_message_count,
+                metadata_limit=metadata.limit,
+                metadata_continuation=metadata.continuation,
+            )
+            if follow is None or follow.metadata_page is None or follow.metadata_page.offset <= metadata.offset:
+                raise ValueError("session metadata did not advance")
+            directories.extend(follow.session.working_directories)
+            tags.extend(follow.session.tags_m2m)
+            metadata = follow.metadata_page
+        conv = conv.model_copy(update={"working_directories": tuple(directories), "tags_m2m": tuple(tags)})
         flags = _build_flags_from_session(conv)
         session_id = str(conv.id)
         target_ref = TargetRefPayload.session(session_id)
@@ -3679,7 +3696,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             ],
             "attachments": session_attachments,
             "semantic_entries": list(card_placement.session_entries),
-            "tags": conv.tags,
+            "tags": list(conv.tags_m2m),
             "branch_type": str(conv.branch_type) if conv.branch_type else None,
             "parent_id": str(conv.parent_id) if conv.parent_id else None,
             "session_id": getattr(conv, "session_id", None),
