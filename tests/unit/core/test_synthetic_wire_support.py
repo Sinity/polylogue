@@ -11,29 +11,132 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.config import Source
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas import validator as validator_module
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, wire_formats
 from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
 from polylogue.schemas.synthetic.conservation import ConservationFinding, ConservationResult
-from polylogue.schemas.synthetic.models import SchemaRecord
+from polylogue.schemas.synthetic.models import GeneratedValue, SchemaRecord
 from polylogue.schemas.synthetic.runtime import SCHEMA_CONSTRUCT_HANDLERS
 from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.schemas.synthetic.wire_formats import UnsupportedSyntheticWireRouteError
 from polylogue.schemas.validator import SchemaValidator
+from polylogue.schemas.workload_profile_rows import WorkloadProfile
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 from tests.infra import wire_support as wire_support_infra
 from tests.infra.wire_support import shared_wire_generation, shared_wire_support_receipt
+
+
+@pytest.mark.parametrize("capture_kind", ["direct", "native", "fallback"])
+def test_claude_witness_uses_actual_parser_capture_authority(capture_kind: str) -> None:
+    from polylogue.browser_capture.models import BROWSER_CAPTURE_KIND, BROWSER_CAPTURE_SCHEMA_VERSION
+
+    native: JSONDocument = {
+        "uuid": "native-session",
+        "chat_messages": [{"uuid": "native-message", "sender": "human", "text": "native body"}],
+    }
+    if capture_kind == "direct":
+        payload: JSONValue = {
+            **native,
+            "raw_provider_payload": {
+                "uuid": "unrelated-session",
+                "chat_messages": [{"uuid": "unrelated-message", "sender": "human", "text": "unrelated"}],
+            },
+        }
+    else:
+        payload = {
+            "polylogue_capture_kind": BROWSER_CAPTURE_KIND,
+            "schema_version": BROWSER_CAPTURE_SCHEMA_VERSION,
+            "provenance": {
+                "source_url": "https://example.test/conversation",
+                "adapter_name": "synthetic",
+                "captured_at": "2026-01-01T00:00:00Z",
+            },
+            "session": {
+                "provider": "claude-ai",
+                "provider_session_id": "native-session" if capture_kind == "native" else "capture-session",
+                "turns": [{"provider_turn_id": "turn", "role": "user", "text": "capture body"}],
+            },
+            "raw_provider_payload": native if capture_kind == "native" else {"unrelated": "metadata"},
+        }
+    sessions = dispatch_module.parse_payload("claude-ai", payload, "fallback")
+    assert len(sessions) == 1 and sessions[0].messages
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "claude-ai", cast(GeneratedValue, payload), "fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "claude-ai", cast(GeneratedValue, payload), "fallback"
+    )
+    sessions[0].messages[0].text = "lost content"
+    sessions[0].messages[0].blocks = []
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "claude-ai", cast(GeneratedValue, payload), "fallback"
+    )
+    if capture_kind == "native":
+        from polylogue.sources.parsers.browser_capture import NativeCaptureIdentityMismatchError
+
+        mismatched = deepcopy(payload)
+        assert isinstance(mismatched, dict)
+        envelope = mismatched["session"]
+        assert isinstance(envelope, dict)
+        envelope["provider_session_id"] = "different-session"
+        with pytest.raises(NativeCaptureIdentityMismatchError):
+            dispatch_module.parse_payload("claude-ai", mismatched, "fallback")
+
+
+@pytest.mark.parametrize("schema", [{}, {"type": "integer"}, {"type": ["integer", "null"]}])
+def test_finite_witness_plan_is_deterministic_for_empty_and_single_choices(schema: SchemaRecord) -> None:
+    corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
+    first = list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
+    second = list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
+    assert first == second
+    assert first
+    assert wire_formats.construct_coverage(schema, [json.loads(raw) for raw in first]).complete
+
+
+def test_witness_generation_failure_restores_corpus_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    schema: SchemaRecord = {"type": "integer"}
+    corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
+
+    def fail(**kwargs: object) -> None:
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(corpus, "generate_batch", fail)
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        next(wire_formats.generate_coverage_witnesses(corpus, seed=31))
+    assert corpus.schema is schema
+    assert not corpus._coverage_witness_mode
+    assert not corpus._coverage_branch_choices
+    assert not corpus._coverage_type_choices
+
+
+def test_coverage_witness_stream_has_no_plan_cap_and_restores_state_before_yield() -> None:
+    schema: SchemaRecord = {"anyOf": [{"type": "integer", "x-polylogue-range": [index, index]} for index in range(140)]}
+    corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
+    state = corpus._generation_state
+    pools = corpus._categorical_pools
+    stream = wire_formats.generate_coverage_witnesses(corpus, seed=31)
+    first = next(stream)
+    assert corpus.schema is schema
+    assert corpus._generation_state is state
+    assert corpus._categorical_pools is pools
+    assert not corpus._coverage_witness_mode
+    assert not corpus._coverage_branch_choices
+    payloads = [json.loads(first), *(json.loads(raw) for raw in stream)]
+    assert len(payloads) > 128
+    assert set(payloads) == set(range(140))
+    assert wire_formats.construct_coverage(schema, payloads).complete
 
 
 def test_chatgpt_native_witness_does_not_select_unmarked_capture_fields() -> None:
@@ -59,8 +162,12 @@ def test_chatgpt_native_witness_does_not_select_unmarked_capture_fields() -> Non
     }
     sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
     assert len(sessions) == 1 and sessions[0].messages
-    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "chatgpt", payload, "fallback")
-    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "chatgpt", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
 
 
 @pytest.mark.parametrize("origin_kind", ["human", "runtime"])
@@ -77,10 +184,12 @@ def test_claude_code_witness_retains_declared_authorship(origin_kind: str) -> No
     ]
     sessions = dispatch_module.parse_payload("claude-code", payload, "fallback")
     assert len(sessions) == 1 and sessions[0].messages
-    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "claude-code", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "claude-code", cast(GeneratedValue, payload), "fallback"
+    )
     sessions[0].messages[0].material_origin = MaterialOrigin.UNKNOWN
     assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
-        sessions, "claude-code", payload, "fallback"
+        sessions, "claude-code", cast(GeneratedValue, payload), "fallback"
     )
 
 
@@ -105,18 +214,26 @@ def test_chatgpt_witness_checks_tool_identity_and_text_parts() -> None:
     }
     sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
     assert len(sessions) == 1 and sessions[0].messages
-    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "chatgpt", payload, "fallback")
-    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "chatgpt", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
     tool = next(block for block in sessions[0].messages[0].blocks if block.type is BlockType.TOOL_USE)
     tool.tool_id = "wrong-tool"
-    assert not wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "chatgpt", payload, "fallback")
+    assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
     # The parts' text survives on the message and on its tool block, and
     # either one covers it, so drop the second part from both.
     sessions[0].messages[0].text = "first body"
     for block in sessions[0].messages[0].blocks:
         if block.text is not None:
             block.text = "first body"
-    assert not wire_formats._parser_artifact_has_complete_message_coverage(sessions, "chatgpt", payload, "fallback")
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
 
 
 def test_codex_witness_checks_content_when_native_message_id_is_null() -> None:
@@ -131,11 +248,17 @@ def test_codex_witness_checks_content_when_native_message_id_is_null() -> None:
     ]
     sessions = dispatch_module.parse_payload("codex", payload, "fallback")
     assert len(sessions) == 1 and sessions[0].messages
-    assert wire_formats._parser_artifact_has_complete_message_coverage(sessions, "codex", payload, "fallback")
-    assert wire_formats._parser_artifact_has_complete_semantic_coverage(sessions, "codex", payload, "fallback")
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "codex", cast(GeneratedValue, payload), "fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "codex", cast(GeneratedValue, payload), "fallback"
+    )
     sessions[0].messages[0].text = "unrelated body"
     sessions[0].messages[0].blocks = []
-    assert not wire_formats._parser_artifact_has_complete_message_coverage(sessions, "codex", payload, "fallback")
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "codex", cast(GeneratedValue, payload), "fallback"
+    )
 
 
 def test_generated_browser_capture_attachment_strings_become_valid_bytes() -> None:
@@ -165,7 +288,7 @@ def test_generated_browser_capture_attachment_strings_become_valid_bytes() -> No
         },
     }
     corpus = SyntheticCorpus({"type": "object"}, wire_formats.WireFormat(encoding="json"), "chatgpt")
-    wire = json.loads(corpus._serialize(payload))
+    wire = json.loads(corpus._serialize(cast(GeneratedValue, payload)))
     session = wire["session"]
     assert base64.b64decode(session["attachments"][0]["inline_base64"], validate=True) == b"session bytes!"
     assert base64.b64decode(session["turns"][0]["attachments"][0]["inline_base64"], validate=True) == b"turn bytes!"
@@ -953,7 +1076,7 @@ def test_codex_flat_and_envelope_records_cannot_be_mixed() -> None:
     ]
 
     with pytest.raises(ValueError, match="cannot mix flat records"):
-        validate_wire_payload("codex", mixed)
+        validate_wire_payload("codex", cast(GeneratedValue, mixed))
 
 
 def test_catalog_unsupported_routes_fail_selection_with_typed_reason() -> None:
@@ -1011,7 +1134,7 @@ def test_selection_reuses_resolved_default_package_for_schema_and_profile(
                 return original_get_element_schema(provider, version="v2", element_kind=element_kind)
         return original_get_element_schema(provider, version=version, element_kind=element_kind)
 
-    def record_profile_version(provider: str, version: str = "default") -> SchemaRecord | None:
+    def record_profile_version(provider: str, version: str = "default") -> WorkloadProfile | None:
         if provider == "chatgpt":
             requested_profile_versions.append(version)
         return original_get_workload_profile(provider, version=version)
@@ -1069,12 +1192,12 @@ def test_construct_handler_removal_changes_coverage_receipt(monkeypatch: pytest.
     )
 
 
-def test_missing_handler_stops_random_witnesses_without_waiving_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_handler_remains_missing_in_finite_witness_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     schema: SchemaRecord = {"type": "object", "properties": {"values": {"type": "array", "items": {"type": "string"}}}}
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="jsonl"), "claude-code")
     monkeypatch.delitem(SCHEMA_CONSTRUCT_HANDLERS, "array")
 
-    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=31, max_witnesses=8)
+    raw_items = list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
     payloads = [json.loads(line) for raw in raw_items for line in raw.splitlines()]
     coverage = wire_formats.construct_coverage(schema, payloads)
 
@@ -1141,7 +1264,7 @@ def test_coverage_witnesses_select_nested_array_union_branches() -> None:
     }
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
 
-    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=31)
+    raw_items = list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
     payloads = [json.loads(raw) for raw in raw_items]
 
     assert {type(payload["choice"]) for payload in payloads} >= {int, str}
@@ -1160,7 +1283,7 @@ def test_coverage_witnesses_keep_nested_union_choices_independent() -> None:
     }
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
 
-    payloads = [json.loads(raw) for raw in wire_formats.generate_coverage_witnesses(corpus, seed=17, max_witnesses=8)]
+    payloads = [json.loads(raw) for raw in wire_formats.generate_coverage_witnesses(corpus, seed=17)]
 
     assert any(isinstance(payload, str) for payload in payloads)
     assert 0 in payloads
@@ -1192,7 +1315,7 @@ def test_claude_nested_array_content_is_explicitly_unrepresentable() -> None:
         },
     }
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="jsonl"), "claude-code")
-    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=31, max_witnesses=8)
+    raw_items = list(wire_formats.generate_coverage_witnesses(corpus, seed=31))
     payloads = [json.loads(line) for raw in raw_items for line in raw.splitlines()]
     coverage = wire_formats.construct_coverage(schema, payloads)
     assert coverage.missing_keywords
@@ -1281,7 +1404,7 @@ def test_chatgpt_v1_media_waiver_does_not_hide_parser_relevant_omissions() -> No
     selection = select_synthetic_schema("chatgpt", version="v1", registry_factory=lambda: registry)
     corpus = SyntheticCorpus.from_selection(selection)
     payload = corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=20260805).raw_items[0]
-    payloads: tuple[JSONValue, ...] = (json.loads(payload),)
+    payloads: tuple[GeneratedValue, ...] = (json.loads(payload),)
     witnessed = wire_formats.construct_coverage(selection.schema, payloads)
     parser_relevant = next(
         keyword
@@ -1520,14 +1643,18 @@ def test_removed_provider_route_changes_explicit_support_receipt(monkeypatch: py
         SyntheticCorpus.for_provider("codex")
 
 
-def test_codex_native_id_pinning_preserves_one_wire_shape() -> None:
-    corpus = SyntheticCorpus.for_provider("codex")
+def test_codex_native_id_binding_preserves_original_declared_wire_shape() -> None:
+    from polylogue.schemas.synthetic.authored_selection import authored_schema_selection
+
+    selection = authored_schema_selection("codex", "tool-heavy", session_native_ids=("pinned",))
+    corpus = SyntheticCorpus.from_selection(selection)
     [raw] = corpus.generate(count=1, seed=73, messages_per_session=range(3, 4), session_native_ids=("pinned",))
     records = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line]
 
     assert all(record.get("type") != "message" for record in records)
     assert any(record.get("type") == "session_meta" for record in records)
     assert all(record.get("type") in {"session_meta", "response_item"} for record in records)
+    assert records[0]["payload"]["id"] == "pinned"
 
 
 def test_shared_wire_generation_observes_provider_parser_mutation(monkeypatch: pytest.MonkeyPatch) -> None:

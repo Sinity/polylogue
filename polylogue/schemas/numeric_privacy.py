@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Mapping
 
-from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument
 
 
 def _project_numeric_distribution(distribution: JSONDocument) -> None:
@@ -63,24 +62,4 @@ def redact_observed_numeric_schema(schema: JSONDocument) -> JSONDocument:
                         visit(child)
 
     visit(result)
-    return result
-
-
-def redact_observed_numeric_workload(profile: Mapping[str, object]) -> JSONDocument:
-    """Copy public field profiles without private numeric sketches."""
-    from polylogue.schemas.generation.workload_profiles import workload_profile_identity
-
-    result = copy.deepcopy(json_document(dict(profile)))
-    elements = result.get("elements")
-    if isinstance(elements, dict):
-        for element in elements.values():
-            if not isinstance(element, dict):
-                continue
-            fields = element.get("field_profiles")
-            if isinstance(fields, dict):
-                for distribution in fields.values():
-                    if isinstance(distribution, dict):
-                        _project_numeric_distribution(distribution)
-    if "profile_id" in result:
-        result["profile_id"] = workload_profile_identity(result)
     return result

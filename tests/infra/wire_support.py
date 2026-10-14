@@ -50,8 +50,7 @@ from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from polylogue.archive.raw_payload.decode import JSONValue
-    from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticGenerationBatch
+    from polylogue.schemas.synthetic.models import GeneratedValue, SchemaRecord, SyntheticGenerationBatch
     from polylogue.schemas.synthetic.wire_formats import ConstructCoverage, WireSupportReceipt
     from polylogue.schemas.validator import ValidationResult
 
@@ -99,6 +98,13 @@ _IDENTITY_DIGEST_LIMIT = 4
 
 
 def _content_digest(value: object) -> str:
+    from polylogue.schemas.workload_profile_rows import WorkloadProfile, iter_workload_profile_chunks
+
+    if isinstance(value, WorkloadProfile):
+        hasher = hashlib.sha256()
+        for chunk in iter_workload_profile_chunks(value):
+            hasher.update(chunk)
+        return hasher.hexdigest()
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=repr).encode("utf-8")).hexdigest()
 
 
@@ -240,24 +246,16 @@ def _witness_entry_bytes(key: tuple[Any, ...], witnesses: list[bytes]) -> int:
 
 
 def _retain_witnesses(key: tuple[Any, ...], witnesses: list[bytes]) -> None:
-    """Memoize one generated corpus under the module's declared retained-heap budget.
-
-    Each entry is charged for its key, list and payload objects, not only its
-    payload bytes, so many tiny witnesses cannot outgrow the budget. The newest
-    entry is never the one evicted: a corpus larger than the whole budget still
-    answers the call that produced it, because a memo that discards what it
-    was just asked for is a slower no-op, not a bound.
-    """
+    """Retain only complete entries that fit the declared heap budget."""
     global _GENERATED_WITNESS_BYTES
+    if _witness_entry_bytes(key, witnesses) + sys.getsizeof(_GENERATED_WITNESSES) > _GENERATED_WITNESS_BYTES_LIMIT:
+        return
     previous = _GENERATED_WITNESSES.pop(key, None)
     if previous is not None:
         _GENERATED_WITNESS_BYTES -= _witness_entry_bytes(key, previous)
     _GENERATED_WITNESSES[key] = witnesses
     _GENERATED_WITNESS_BYTES += _witness_entry_bytes(key, witnesses)
-    while (
-        _GENERATED_WITNESS_BYTES + sys.getsizeof(_GENERATED_WITNESSES) > _GENERATED_WITNESS_BYTES_LIMIT
-        and len(_GENERATED_WITNESSES) > 1
-    ):
+    while _GENERATED_WITNESS_BYTES + sys.getsizeof(_GENERATED_WITNESSES) > _GENERATED_WITNESS_BYTES_LIMIT:
         evicted_key, evicted = _GENERATED_WITNESSES.popitem(last=False)
         _GENERATED_WITNESS_BYTES -= _witness_entry_bytes(evicted_key, evicted)
 
@@ -303,15 +301,26 @@ def shared_wire_generation() -> Iterator[None]:
     real_batch = SyntheticCorpus.generate_batch
     real_validate = SchemaValidator.validate
 
-    def memo_witnesses(corpus: Any, *, seed: int, max_witnesses: int = 128) -> list[bytes]:
-        key = (*_corpus_key(corpus, real_witnesses), seed, max_witnesses)
+    def memo_witnesses(corpus: Any, *, seed: int) -> Iterator[bytes]:
+        key = (*_corpus_key(corpus, real_witnesses), seed)
         witnesses = _GENERATED_WITNESSES.get(key)
-        if witnesses is None:
-            witnesses = real_witnesses(corpus, seed=seed, max_witnesses=max_witnesses)
-            _retain_witnesses(key, witnesses)
-        else:
+        if witnesses is not None:
             _GENERATED_WITNESSES.move_to_end(key)
-        return list(witnesses)
+            yield from witnesses
+            return
+        retained: list[bytes] | None = []
+        retained_bytes = _witness_entry_bytes(key, [])
+        for witness in real_witnesses(corpus, seed=seed):
+            if retained is not None:
+                retained_bytes += sys.getsizeof(witness)
+                retained.append(witness)
+                if retained_bytes + sys.getsizeof(retained) > _GENERATED_WITNESS_BYTES_LIMIT:
+                    retained = None
+            yield witness
+        # Reaching exhaustion proves completeness; an abandoned stream never
+        # publishes its partial entry. Oversized streams still return every byte.
+        if retained is not None:
+            _retain_witnesses(key, retained)
 
     def memo_batch(self: Any, *args: Any, **kwargs: Any) -> SyntheticGenerationBatch:
         # A witness corpus carries its branch, type and null choices in
@@ -335,7 +344,7 @@ def shared_wire_generation() -> Iterator[None]:
 
     def memo_coverage(
         schema: SchemaRecord,
-        payloads: Sequence[JSONValue],
+        payloads: Sequence[GeneratedValue],
         *,
         handler_names: Collection[str] | None = None,
         **kwargs: Any,

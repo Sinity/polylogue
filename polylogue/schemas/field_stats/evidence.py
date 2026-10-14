@@ -8,12 +8,16 @@ from collections.abc import Iterable, Mapping
 from typing import overload
 
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch
+from polylogue.schemas.field_stats.distributions import CATEGORICAL_BUCKET_COUNT, CategoricalSketch, DistributionSketch
 from polylogue.schemas.field_stats.models import (
     EQUALITY_EVIDENCE_CAP,
     REF_MATCH_THRESHOLD,
     SESSION_EVIDENCE_CAP,
     FieldStats,
+    PointerShapeStats,
+    StringCategoryStats,
+    StringCharacterStats,
+    StringFormatStats,
 )
 
 FIELD_EVIDENCE_VERSION = 1
@@ -83,6 +87,59 @@ def _string_tokens(values: Iterable[str]) -> list[JSONValue]:
     return list(values)
 
 
+def _character_shapes_state(shapes: Mapping[str, StringCharacterStats]) -> JSONDocument:
+    return {
+        name: {
+            "length": shape.length.to_state(),
+            "newlines": shape.newlines.to_state(),
+            "pointer_shapes": shape.pointer_shapes.to_payload(),
+        }
+        for name, shape in sorted(shapes.items())
+    }
+
+
+def _character_shapes_from_state(value: object) -> dict[str, StringCharacterStats]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not set(value) <= {"ascii", "non_ascii"}:
+        raise ValueError("string character evidence is malformed")
+    result: dict[str, StringCharacterStats] = {}
+    for name, shape in value.items():
+        if not isinstance(shape, dict):
+            raise ValueError("string character shape is missing")
+        result[name] = StringCharacterStats(
+            length=_distribution_from_state(shape, "length", DistributionSketch),
+            newlines=_distribution_from_state(shape, "newlines", DistributionSketch),
+            pointer_shapes=PointerShapeStats.from_payload(shape.get("pointer_shapes")),
+        )
+    return result
+
+
+def _category_shapes_from_state(value: object) -> dict[int, StringCategoryStats]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("string category evidence is malformed")
+    result: dict[int, StringCategoryStats] = {}
+    for name, shape in value.items():
+        if (
+            not isinstance(name, str)
+            or not name.isascii()
+            or not name.isdecimal()
+            or str(int(name)) != name
+            or not 0 <= int(name) < CATEGORICAL_BUCKET_COUNT
+            or not isinstance(shape, dict)
+        ):
+            raise ValueError("string category evidence has an invalid bucket")
+        result[int(name)] = StringCategoryStats(
+            length=_distribution_from_state(shape, "length", DistributionSketch),
+            newlines=_distribution_from_state(shape, "newlines", DistributionSketch),
+            pointer_shapes=PointerShapeStats.from_payload(shape.get("pointer_shapes")),
+            character_shapes=_character_shapes_from_state(shape.get("character_shapes")),
+        )
+    return result
+
+
 def serialize_field_stats(stats: FieldStats) -> JSONDocument:
     """Project one field's statistics without retaining source literals.
 
@@ -113,6 +170,24 @@ def serialize_field_stats(stats: FieldStats) -> JSONDocument:
         "number_range": [stats.num_min, stats.num_max],
         "types": _counter_state(stats.type_counts),
         "formats": _counter_state(stats.detected_formats),
+        "string_formats": {
+            fmt: {
+                "length": shape.length.to_state(),
+                "newlines": shape.newlines.to_state(),
+                "categorical": shape.categorical.to_state(),
+                "character_shapes": _character_shapes_state(shape.character_shapes),
+                "categories": {
+                    str(bucket): {
+                        "length": category.length.to_state(),
+                        "newlines": category.newlines.to_state(),
+                        "pointer_shapes": category.pointer_shapes.to_payload(),
+                        "character_shapes": _character_shapes_state(category.character_shapes),
+                    }
+                    for bucket, category in sorted(shape.categories.items())
+                },
+            }
+            for fmt, shape in sorted(stats.string_formats.items())
+        },
         "booleans": _counter_state(stats.boolean_counts),
         "co_occurring_fields": _counter_state(stats.co_occurring_fields),
         "truncated": _counter_state(stats.truncated_evidence),
@@ -177,6 +252,18 @@ def deserialize_field_stats(state: JSONDocument) -> FieldStats:
         co_occurrence_distribution=_distribution_from_state(distributions, "co_occurrence", CategoricalSketch),
     )
     number_range = state.get("number_range")
+    string_formats = state.get("string_formats")
+    if isinstance(string_formats, dict):
+        for fmt, shape in string_formats.items():
+            if not isinstance(shape, dict):
+                raise ValueError("string format evidence shape is missing")
+            stats.string_formats[fmt] = StringFormatStats(
+                length=_distribution_from_state(shape, "length", DistributionSketch),
+                newlines=_distribution_from_state(shape, "newlines", DistributionSketch),
+                categorical=_distribution_from_state(shape, "categorical", CategoricalSketch),
+                categories=_category_shapes_from_state(shape.get("categories")),
+                character_shapes=_character_shapes_from_state(shape.get("character_shapes")),
+            )
     if isinstance(number_range, list) and len(number_range) == 2:
         stats.num_min = float(number_range[0]) if isinstance(number_range[0], (int, float)) else None
         stats.num_max = float(number_range[1]) if isinstance(number_range[1], (int, float)) else None
@@ -294,6 +381,18 @@ def _merge_one(target: FieldStats, source: FieldStats) -> None:
         "co_occurrence_distribution",
     ):
         getattr(target, name).merge(getattr(source, name))
+    for fmt, source_shape in source.string_formats.items():
+        target_shape = target.string_formats.setdefault(fmt, StringFormatStats())
+        target_shape.length.merge(source_shape.length)
+        target_shape.newlines.merge(source_shape.newlines)
+        target_shape.categorical.merge(source_shape.categorical)
+        _merge_character_shapes(target_shape.character_shapes, source_shape.character_shapes)
+        for bucket, source_category in source_shape.categories.items():
+            category = target_shape.categories.setdefault(bucket, StringCategoryStats())
+            category.length.merge(source_category.length)
+            category.newlines.merge(source_category.newlines)
+            category.pointer_shapes.merge(source_category.pointer_shapes)
+            _merge_character_shapes(category.character_shapes, source_category.character_shapes)
     for digest, tokens in source.equality_session_tokens.items():
         target.equality_session_tokens.setdefault(digest, set()).update(tokens)
     for value, tokens in source.value_session_ids.items():
@@ -342,3 +441,13 @@ __all__ = [
     "merge_field_stats_into",
     "serialize_field_stats",
 ]
+
+
+def _merge_character_shapes(
+    target: dict[str, StringCharacterStats], source: Mapping[str, StringCharacterStats]
+) -> None:
+    for name, shape in source.items():
+        merged = target.setdefault(name, StringCharacterStats())
+        merged.length.merge(shape.length)
+        merged.newlines.merge(shape.newlines)
+        merged.pointer_shapes.merge(shape.pointer_shapes)

@@ -3566,7 +3566,7 @@ def _build_seeded_archive_inner(
                 sources: list[Source] = []
                 for spec, written in zip(selected_specs, written_batches, strict=True):
                     source_paths = (
-                        (written.files[0].parent.parent,) if spec.provider == "antigravity" else written.files
+                        (written.session_files[0].parent.parent,) if spec.provider == "antigravity" else written.files
                     )
                     package = provider_source_package(spec.provider, written.files, source_paths=source_paths)
                     sources.extend(package.admitted_sources())
@@ -3595,7 +3595,7 @@ def _build_seeded_archive_inner(
                 )
                 if orphan_finding is not None:
                     _dispose_seeded_archive_orphans(staging, orphan_finding)
-                facts = tuple(item.facts for written in written_batches for item in written.batch.artifacts)
+                facts = tuple(fact for written in written_batches for fact in written.facts)
                 _sqlite_integrity(staging)
                 _validate_facts(staging, facts)
                 from polylogue.storage.frontier_inspection import read_frontier_coverage_for_archive

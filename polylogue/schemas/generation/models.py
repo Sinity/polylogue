@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -45,7 +45,7 @@ class _ProviderBundle:
     result: GenerationResult
     catalog: SchemaPackageCatalog | None = None
     package_schemas: dict[str, dict[str, JSONDocument]] = field(default_factory=dict)
-    package_workload_profiles: dict[str, JSONDocument] = field(default_factory=dict)
+    package_workload_profiles: dict[str, Mapping[str, object]] = field(default_factory=dict)
     manifest: ClusterManifest | None = None
 
 

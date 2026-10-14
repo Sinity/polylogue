@@ -1093,3 +1093,52 @@ def test_archive_schema_sampling_observes_declared_structured_sidecars(
             "reason": "observed_schema_units",
         }
     ]
+
+
+def test_opaque_payload_metrics_count_exact_retained_bytes_without_decoding_or_content_dedup(tmp_path: Path) -> None:
+    from polylogue.schemas.generation.observation_journal import ObservationJournal
+    from polylogue.schemas.sampling_db import SchemaArchiveEvidenceError
+    from polylogue.storage.blob_store import BlobStore
+
+    db = _archive_index_db(tmp_path)
+    # Deliberately session-looking content: the declared opaque path remains
+    # opaque; this payload must never be promoted into another provider's schema.
+    payload = b'{"uuid":"neutral","chat_messages":[]}'
+    first_path = "/neutral/projects/project/owner/tool-results/first.txt"
+    raw_id = _insert_raw_session(db_path=db, origin="claude-code-session", source_path=first_path, raw_content=payload)
+    with sqlite3.connect(db.with_name("source.db")) as conn:
+        conn.execute(
+            "INSERT INTO raw_sessions(raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms) "
+            "SELECT 'second', origin, ?, source_index, blob_hash, blob_size, acquired_at_ms "
+            "FROM raw_sessions WHERE raw_id = ?",
+            (first_path.replace("first", "second"), raw_id),
+        )
+    with ObservationJournal.create(root=tmp_path / "journal") as journal:
+        assert (
+            list(
+                iter_schema_units(
+                    "claude-code",
+                    db_path=db,
+                    full_corpus=True,
+                    payload_recorder=journal.record_payload,
+                    terminal_recorder=journal.record_terminal,
+                )
+            )
+            == []
+        )
+        metrics = journal._connection.execute(
+            "SELECT artifact_kind, bundle_scope, byte_count FROM opaque_payloads ORDER BY raw_id"
+        ).fetchall()
+        assert [tuple(row) for row in metrics] == [("tool_result_sidecar", "owner", len(payload))] * 2
+        assert journal.unit_count == journal.sample_count == 0
+        assert journal.terminal_counts() == {"intentionally_excluded": 2}
+    blob = BlobStore(db.parent / "blob").blob_path(hashlib.sha256(payload).hexdigest())
+    blob.write_bytes(payload + b"foreign")
+    recorded: list[dict[str, object]] = []
+    with pytest.raises(SchemaArchiveEvidenceError):
+        list(
+            iter_schema_units(
+                "claude-code", db_path=db, full_corpus=True, payload_recorder=lambda **metric: recorded.append(metric)
+            )
+        )
+    assert recorded == []

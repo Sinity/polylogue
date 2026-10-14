@@ -8,6 +8,7 @@ from collections.abc import Collection
 from functools import lru_cache
 
 from polylogue.core.json import JSONDocument
+from polylogue.core.tool_result_pointer import PERSISTED_OUTPUT_POINTER_PATTERN
 
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -17,6 +18,7 @@ _HEX_KEY_PATTERN = re.compile(r"^[0-9a-f]{24,}$", re.IGNORECASE)
 _PREFIXED_ID_KEY_PATTERN = re.compile(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", re.IGNORECASE)
 
 FORMAT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("persisted-tool-output", PERSISTED_OUTPUT_POINTER_PATTERN),
     ("uuid4", re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.I)),
     ("uuid", re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)),
     ("hex-id", re.compile(r"^[0-9a-f]{24,}$", re.I)),
@@ -97,10 +99,10 @@ def should_collapse_observed_keys(keys: Collection[object]) -> bool:
 
 
 def _detect_string_format(value: str) -> str | None:
-    if not value or len(value) > 500:
+    if not value:
         return None
     for fmt_name, pattern in FORMAT_PATTERNS:
-        if pattern.match(value):
+        if pattern.search(value) if fmt_name == "persisted-tool-output" else pattern.match(value):
             return fmt_name
     return None
 

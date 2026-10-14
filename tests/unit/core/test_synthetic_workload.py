@@ -13,6 +13,10 @@ from typing import Any
 
 import pytest
 
+from polylogue.schemas.record_structure import (
+    classify_claude_code_record,
+    classify_codex_record,
+)
 from polylogue.schemas.synthetic.build_records import _declared_numeric
 from polylogue.schemas.synthetic.workload import (
     LAZY_TEXT_THRESHOLD,
@@ -21,8 +25,6 @@ from polylogue.schemas.synthetic.workload import (
     WorkloadProfile,
     _codex_session,
     _dumps,
-    classify_claude_code_record,
-    classify_codex_record,
     concat,
     default_origin_weights,
     embedded,

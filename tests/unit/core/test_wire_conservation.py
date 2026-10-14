@@ -323,6 +323,34 @@ def test_reject_pin_excludes_a_path_from_conservation() -> None:
     assert declared.excluded_paths == ("$.turns[0].text",)
 
 
+def test_a_dynamic_key_pin_excludes_the_dynamic_value_not_a_declared_sibling() -> None:
+    """A dynamic key has no schema position of its own, so its value sits at ``*``.
+
+    A pin on ``$.*`` excludes what a dynamic key carries and nothing a
+    declared property carries. Anti-vacuity: plant the value at ``$.<key>``
+    and the pin excludes nothing, so the dynamic title is reported lost; plant
+    the declared sibling under ``*`` too and the declared title is excluded.
+    """
+    title = {"type": "string", "x-polylogue-semantic-role": "session_title"}
+    schema = {
+        "type": "object",
+        "properties": {"title": title},
+        "additionalProperties": {"type": "object", "properties": {"title": title}},
+    }
+    payload = {"title": "declared title", "asset-1": {"title": "asset title"}}
+
+    result = check_conservation(
+        schema,
+        [payload],
+        [_session(title="declared title")],
+        excluded_paths=frozenset({"$.*"}),
+    )
+
+    assert result.excluded_paths == ("$.*.title",)
+    assert result.planted_count == 1
+    assert result.conserved
+
+
 @pytest.mark.parametrize("enforced", [True, False])
 def test_conservation_gates_health_only_where_enforced(enforced: bool) -> None:
     """Report-only providers are measured without deciding an exit code."""

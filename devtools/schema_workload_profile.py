@@ -27,17 +27,19 @@ from datetime import datetime
 from pathlib import Path
 
 from polylogue.core.sources import source_for_family
+from polylogue.schemas.record_structure import (
+    classify_claude_code_record,
+    classify_codex_record,
+    published_kind_tokens,
+)
 from polylogue.schemas.synthetic.workload import (
     CODEX_TURN_INSTRUCTION_FIELDS,
     PERSISTED_OUTPUT,
     WORKLOAD_PROFILE_KIND,
     WORKLOAD_PROFILE_VERSION,
-    classify_claude_code_record,
-    classify_codex_record,
     log2_bucket,
     measured_text,
     published_field_names,
-    published_kind_tokens,
     record_skeleton,
     result_length,
     template_measures,

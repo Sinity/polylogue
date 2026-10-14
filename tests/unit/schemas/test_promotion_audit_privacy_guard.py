@@ -712,3 +712,20 @@ def test_audit_refuses_absent_profile(tmp_path: Path) -> None:
 
     failures = [check for check in report.checks if check.status.value == "error"]
     assert [check.summary for check in failures] == ["Declared workload profile is missing"]
+
+
+def test_audit_reads_each_original_depth_grammar_without_expanding_the_profile(tmp_path: Path) -> None:
+    from polylogue.schemas.workload_profile_rows import DepthGrammars, WorkloadProfile, iter_workload_profile_chunks
+
+    bundle_root, provider, version = _copied_bundle(tmp_path)
+    rows = DepthGrammars()
+    rows.append("24", {"record_kinds": {"assistant_text": 1}, "neutral_path": "/home/neutral/generated"})
+    profile = WorkloadProfile({"elements": {"agent_transcript": {}}}, rows)
+    profile_path = bundle_root / provider / "versions" / version / "workload-profile.json.gz"
+    profile_path.write_bytes(gzip.compress(b"".join(iter_workload_profile_chunks(profile)), mtime=0))
+    _patch_package(bundle_root, provider, version, workload_profile_file="workload-profile.json.gz")
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+    failures = [check for check in report.checks if check.status.value == "error"]
+    assert any(check.name == "published_paths" and check.provider.endswith("/depth:24") for check in failures)
+    assert "/home/neutral/generated" not in report.format_text()

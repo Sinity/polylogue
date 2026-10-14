@@ -207,28 +207,6 @@ class TestAnnotateSemanticAndRelational:
         result_schema = _annotate_semantic_and_relational(schema, field_stats)
         assert isinstance(result_schema, dict)
 
-    def test_string_length_annotation_at_root(self) -> None:
-        """x-polylogue-string-lengths annotation at schema root."""
-        schema = {
-            "type": "object",
-            "properties": {
-                "description": {"type": "string"},
-            },
-        }
-        field_stats = {
-            "$.description": FieldStats(
-                path="$.description",
-                string_length_distribution=distribution_sketch([50, 100, 150, 200]),
-                is_multiline=2,
-                newline_distribution=distribution_sketch([1, 2, 1, 2]),
-                total_samples=4,
-                present_count=4,
-                value_count=4,
-            ),
-        }
-        result_schema = _annotate_semantic_and_relational(schema, field_stats)
-        assert isinstance(result_schema, dict)
-
     def test_nested_property_annotation(self) -> None:
         """Semantic annotations on nested properties."""
         schema = {
@@ -649,6 +627,20 @@ class TestObservedValueAnnotationIsExhaustive:
             "type": "object",
             "properties": {"role": {"type": "string", "x-polylogue-semantic-role": "message_role"}},
         }
+
+    def test_rare_public_discriminators_remain_original_field_support(self) -> None:
+        from polylogue.schemas.generation.field_annotations import _enum_values
+
+        samples: list[JSONDocument] = (
+            [{"role": "user"}] * 100
+            + [{"role": "assistant"}] * 100
+            + [{"role": "developer"}, {"role": "progress"}, {"role": "file-history-snapshot"}]
+            + [{"role": "neutral_private_category"}]
+            + [{"role": "person@example.com"}]
+        )
+        stats = _collect_field_stats(samples)["$.role"]
+        values = _enum_values(stats, path="$.role", privacy_config=None)
+        assert set(values) == {"user", "assistant", "developer", "progress", "file-history-snapshot"}
 
     def test_every_observed_value_survives_past_the_removed_output_ceiling(self) -> None:
         """25 distinct role tokens, each above both filters, all reach the annotation.

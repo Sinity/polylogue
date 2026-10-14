@@ -25,7 +25,7 @@ from polylogue.cli.operation_kernel import OperationKernelError, OperationResult
 from polylogue.cli.shared.types import AppEnv
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.conftest import _MANAGED_VERIFY_ENV
+from tests.conftest import _MANAGED_VERIFY_ENV, _TEST_RUNTIME_ENV
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
@@ -1268,6 +1268,7 @@ class TestEnvIsolation:
             # same canonical set rather than keeping a second list that silently
             # disagrees whenever the supervisor gains a variable.
             and k not in _MANAGED_VERIFY_ENV
+            and k not in _TEST_RUNTIME_ENV
         ]
         assert leaked == [], f"host POLYLOGUE_* vars leaked into test env: {leaked}"
         # And the daemon URL must be routed to an unreachable address.

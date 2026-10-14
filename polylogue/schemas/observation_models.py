@@ -38,6 +38,12 @@ class ObservationTerminalRecorder(Protocol):
     ) -> None: ...
 
 
+class ObservationPayloadRecorder(Protocol):
+    """Original retained opaque bytes, counted while verifying their blob hash."""
+
+    def __call__(self, *, raw_id: str, artifact_kind: str, bundle_scope: str | None, byte_count: int) -> None: ...
+
+
 @dataclass
 class ProviderConfig:
     """Configuration for one provider's schema observation behavior."""

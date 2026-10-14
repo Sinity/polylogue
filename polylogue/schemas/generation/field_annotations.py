@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import overload
 
 from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.schemas.field_stats.models import StringCharacterStats
 from polylogue.schemas.field_stats.stats import FieldStats
+from polylogue.schemas.json_walk import require_finite_json
 from polylogue.schemas.privacy import (
     PUBLISHABLE_VOCABULARY_ROLES,
     _is_content_field,
@@ -41,10 +43,13 @@ def _enum_values(
     :func:`polylogue.sources.origin_specs.schema_observed_leaf_values`, which
     reads it as every value the committed schema recorded.
 
-    The frequency and privacy filters below stay. They are selection criteria
-    a reader can name and reason about; a flat output ceiling inside an
-    already-bounded population was not.
+    Privacy filters stay for every value. Adapter-declared public tokens retain
+    every observation; other allowed values retain count/frequency selection.
+    A rare public record branch must remain realizable under this vocabulary.
     """
+    from polylogue.schemas.record_structure import published_kind_tokens
+
+    public_tokens = published_kind_tokens()
     total = max(field_stats.value_count, 1)
     min_count = _ENUM_MIN_COUNT if total >= 20 else 1
     min_freq = _ENUM_MIN_FREQ if total >= 50 else 0.0
@@ -52,16 +57,37 @@ def _enum_values(
     for value, count in field_stats.observed_values.most_common():
         if not _is_safe_enum_value(value, path=path, config=privacy_config):
             continue
-        if count < min_count:
-            continue
-        if min_freq and (count / total) < min_freq:
-            continue
+        # A measured public discriminator is executable field support even
+        # when its branch is rare. Selection filters cannot turn the same
+        # original record grammar into an impossible schema vocabulary.
+        if value not in public_tokens:
+            if count < min_count:
+                continue
+            if min_freq and (count / total) < min_freq:
+                continue
         values.append(value)
     return values
 
 
 def _schema_node(value: JSONValue | object) -> JSONDocument | None:
     return value if isinstance(value, dict) else None
+
+
+def _character_shape_payload(shapes: Mapping[str, StringCharacterStats], count: int) -> JSONDocument:
+    if not shapes or not set(shapes) <= {"ascii", "non_ascii"}:
+        raise ValueError("string character evidence requires complete reinference")
+    if sum(shape.length.count for shape in shapes.values()) != count or any(
+        shape.length.count <= 0 or shape.newlines.count != shape.length.count for shape in shapes.values()
+    ):
+        raise ValueError("string character evidence counts disagree")
+    return {
+        name: {
+            "string_length": shape.length.to_payload(),
+            "newline_count": shape.newlines.to_payload(),
+            **({"pointer_shapes": shape.pointer_shapes.to_payload()} if shape.pointer_shapes.bins else {}),
+        }
+        for name, shape in sorted(shapes.items())
+    }
 
 
 def _observed_distribution_payload(field_stats: FieldStats) -> JSONDocument:
@@ -103,36 +129,80 @@ def _observed_distribution_payload(field_stats: FieldStats) -> JSONDocument:
         payload["boolean_counts"] = dict(sorted(field_stats.boolean_counts.items()))
     if field_stats.detected_formats:
         payload["format_counts"] = dict(sorted(field_stats.detected_formats.items()))
+    if field_stats.string_formats:
+        if (
+            sum(shape.length.count for shape in field_stats.string_formats.values())
+            != field_stats.string_length_distribution.count
+        ):
+            raise ValueError("incomplete string format evidence requires reinference")
+        for shape in field_stats.string_formats.values():
+            if (
+                set(shape.categories) != set(shape.categorical.buckets)
+                or sum(category.length.count for category in shape.categories.values()) != shape.length.count
+            ):
+                raise ValueError("incomplete string category evidence requires reinference")
+            for bucket, category in shape.categories.items():
+                if (
+                    category.length.count != shape.categorical.buckets[bucket]
+                    or category.newlines.count != category.length.count
+                ):
+                    raise ValueError("string category evidence counts disagree")
+        for fmt, shape in field_stats.string_formats.items():
+            if fmt == "persisted-tool-output" and any(
+                sum(count for _point, count in category.pointer_shapes.bins.values()) != category.length.count
+                for category in shape.categories.values()
+            ):
+                raise ValueError("pointer shape joint requires complete reinference")
+        payload["string_formats"] = {
+            fmt: {
+                "string_length": shape.length.to_payload(),
+                "newline_count": shape.newlines.to_payload(),
+                "categorical": shape.categorical.to_payload(),
+                "character_shapes": _character_shape_payload(shape.character_shapes, shape.length.count),
+                "categories": {
+                    str(bucket): {
+                        "string_length": category.length.to_payload(),
+                        "newline_count": category.newlines.to_payload(),
+                        "character_shapes": _character_shape_payload(category.character_shapes, category.length.count),
+                        **(
+                            {"pointer_shapes": category.pointer_shapes.to_payload()}
+                            if fmt == "persisted-tool-output"
+                            else {}
+                        ),
+                    }
+                    for bucket, category in sorted(shape.categories.items())
+                },
+            }
+            for fmt, shape in sorted(field_stats.string_formats.items())
+        }
     if field_stats.truncated_evidence:
         payload["loss_inventory"] = dict(sorted(field_stats.truncated_evidence.items()))
     return payload
 
 
-@overload
-def annotate_schema(
-    schema: JSONDocument,
-    stats: Mapping[str, FieldStats],
-    path: str = "$",
-    *,
-    privacy_config: SchemaPrivacyConfig | None = None,
-) -> JSONDocument: ...
+def _set_frequency(schema: JSONDocument, frequency: float | None) -> None:
+    schema.pop("x-polylogue-frequency", None)
+    if frequency is not None and 0.0 < frequency < 0.95:
+        schema["x-polylogue-frequency"] = frequency
 
 
-@overload
-def annotate_schema(
+def _apply_property_presence(schema: JSONDocument, occurrences: int, containers: int) -> None:
+    if containers <= 0 or occurrences < 0 or occurrences > containers:
+        raise ValueError("observed property count contradicts its containing-object count")
+    observed = _schema_node(schema.get("x-polylogue-observed-distribution"))
+    if observed is None:
+        raise ValueError("observed property has no original occurrence evidence")
+    observed["parent_object_observations"] = containers
+    _set_frequency(schema, occurrences / containers)
+
+
+def _annotate_node(
     schema: JSONValue,
     stats: Mapping[str, FieldStats],
     path: str = "$",
     *,
-    privacy_config: SchemaPrivacyConfig | None = None,
-) -> JSONValue: ...
-
-
-def annotate_schema(
-    schema: JSONValue,
-    stats: Mapping[str, FieldStats],
-    path: str = "$",
-    *,
+    property_owner_path: str | None = None,
+    alias_branch: bool = False,
     privacy_config: SchemaPrivacyConfig | None = None,
 ) -> JSONValue:
     """Apply x-polylogue-* annotations to a schema from collected field stats."""
@@ -142,10 +212,18 @@ def annotate_schema(
 
     field_stats = stats.get(path)
     if field_stats:
-        schema_node["x-polylogue-observed-distribution"] = _observed_distribution_payload(field_stats)
-        freq = field_stats.document_frequency
-        if 0.0 < freq < 0.95:
-            schema_node["x-polylogue-frequency"] = freq
+        observed = _observed_distribution_payload(field_stats)
+        schema_node["x-polylogue-observed-distribution"] = observed
+        _set_frequency(schema_node, None if alias_branch else field_stats.document_frequency)
+        if property_owner_path is not None:
+            owner = stats.get(property_owner_path)
+            if owner is None:
+                raise ValueError("observed property has no original containing-object evidence")
+            # The object is already selected. Root-document frequency would
+            # thin its population again and lose repeated array/map occurrences.
+            _apply_property_presence(schema_node, sum(field_stats.type_counts.values()), owner.type_counts["object"])
+        # Union branches keep their observed type counts, not the enclosing
+        # property's repeated presence rate, as the original selection weights.
 
         if field_stats.field_first_seen:
             schema_node["x-polylogue-field-first-seen"] = field_stats.field_first_seen
@@ -196,48 +274,110 @@ def annotate_schema(
         if field_stats.ref_target:
             schema_node["x-polylogue-ref"] = field_stats.ref_target
 
-    properties = _schema_node(schema_node.get("properties"))
-    if properties is not None:
-        for prop_name, prop_schema in properties.items():
-            properties[prop_name] = annotate_schema(
-                prop_schema,
-                stats,
-                f"{path}.{prop_name}",
-                privacy_config=privacy_config,
-            )
-
-    additional_properties = _schema_node(schema_node.get("additionalProperties"))
-    if additional_properties is not None:
-        schema_node["additionalProperties"] = annotate_schema(
-            additional_properties,
-            stats,
-            f"{path}.*",
-            privacy_config=privacy_config,
-        )
-
-    items = _schema_node(schema_node.get("items"))
-    if items is not None:
-        schema_node["items"] = annotate_schema(
-            items,
-            stats,
-            f"{path}[*]",
-            privacy_config=privacy_config,
-        )
-
-    for keyword in ("anyOf", "oneOf", "allOf"):
-        keyword_items = schema_node.get(keyword)
-        if isinstance(keyword_items, Sequence) and not isinstance(keyword_items, (str, bytes, bytearray)):
-            schema_node[keyword] = [
-                annotate_schema(
-                    item,
-                    stats,
-                    path,
-                    privacy_config=privacy_config,
-                )
-                for item in keyword_items
-            ]
-
     return schema_node
+
+
+def _schema_children(node: JSONDocument, path: str) -> list[tuple[JSONDocument, str, str | None, bool]]:
+    children: list[tuple[JSONDocument, str, str | None, bool]] = []
+    properties = _schema_node(node.get("properties"))
+    if properties is not None:
+        for name, value in properties.items():
+            child = _schema_node(value)
+            if child is not None:
+                children.append((child, f"{path}.{name}", path, False))
+    for keyword, suffix in (("additionalProperties", ".*"), ("items", "[*]")):
+        child = _schema_node(node.get(keyword))
+        if child is not None:
+            children.append((child, path + suffix, None, False))
+    for keyword in ("anyOf", "oneOf", "allOf"):
+        values = node.get(keyword)
+        if isinstance(values, list):
+            for value in values:
+                child = _schema_node(value)
+                if child is not None:
+                    children.append((child, path, None, True))
+    return children
+
+
+def reannotate_property_presence(schema: JSONDocument) -> JSONDocument:
+    """Publish corrected presence from retained exact original type counts.
+
+    This producer pass changes only presence annotations. It keeps original
+    distributions, privacy decisions and schema support intact, and refuses a
+    property whose containing-object measurement is unavailable.
+    """
+    require_finite_json(schema)
+    pending: list[tuple[JSONDocument, JSONDocument | None, bool, str]] = [(schema, None, False, "$")]
+    while pending:
+        node, owner, alias, path = pending.pop()
+        if alias:
+            _set_frequency(node, None)
+        if owner is not None:
+            observed = _schema_node(node.get("x-polylogue-observed-distribution"))
+            parent = _schema_node(owner.get("x-polylogue-observed-distribution"))
+            counts = _schema_node(observed.get("type_counts")) if observed is not None else None
+            parent_counts = _schema_node(parent.get("type_counts")) if parent is not None else None
+            if (
+                counts is None
+                or parent_counts is None
+                or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in counts.values())
+            ):
+                raise ValueError("retained property occurrence evidence is unavailable")
+            containers = parent_counts.get("object")
+            if not isinstance(containers, int) or isinstance(containers, bool):
+                raise ValueError("retained containing-object occurrence evidence is unavailable")
+            occurrences = sum(value for value in counts.values() if isinstance(value, int))
+            _apply_property_presence(node, occurrences, containers)
+        pending.extend(
+            (child, node if owner_path is not None else None, child_alias, child_path)
+            for child, child_path, owner_path, child_alias in reversed(_schema_children(node, path))
+        )
+    return schema
+
+
+@overload
+def annotate_schema(
+    schema: JSONDocument,
+    stats: Mapping[str, FieldStats],
+    path: str = "$",
+    *,
+    privacy_config: SchemaPrivacyConfig | None = None,
+) -> JSONDocument: ...
+
+
+@overload
+def annotate_schema(
+    schema: JSONValue,
+    stats: Mapping[str, FieldStats],
+    path: str = "$",
+    *,
+    privacy_config: SchemaPrivacyConfig | None = None,
+) -> JSONValue: ...
+
+
+def annotate_schema(
+    schema: JSONValue,
+    stats: Mapping[str, FieldStats],
+    path: str = "$",
+    *,
+    privacy_config: SchemaPrivacyConfig | None = None,
+) -> JSONValue:
+    """Apply observed annotations without limiting valid schema depth."""
+    require_finite_json(schema)
+    node = _schema_node(schema)
+    pending: list[tuple[JSONDocument, str, str | None, bool]] = [(node, path, None, False)] if node is not None else []
+    while pending:
+        current, current_path, property_owner_path, alias_branch = pending.pop()
+        _annotate_node(
+            current,
+            stats,
+            current_path,
+            property_owner_path=property_owner_path,
+            alias_branch=alias_branch,
+            privacy_config=privacy_config,
+        )
+        pending.extend(reversed(_schema_children(current, current_path)))
+    return schema
 
 
 @overload
@@ -250,35 +390,19 @@ def remove_nested_required(schema: JSONValue, depth: int = 0) -> JSONValue: ...
 
 def remove_nested_required(schema: JSONValue, depth: int = 0) -> JSONValue:
     """Remove nested required declarations from generated schemas."""
-    schema_node = _schema_node(schema)
-    if schema_node is None:
-        return schema
-
-    if depth > 0 and "required" in schema_node:
-        del schema_node["required"]
-
-    properties = _schema_node(schema_node.get("properties"))
-    if properties is not None:
-        for key, prop in properties.items():
-            properties[key] = remove_nested_required(prop, depth + 1)
-
-    additional_properties = _schema_node(schema_node.get("additionalProperties"))
-    if additional_properties is not None:
-        schema_node["additionalProperties"] = remove_nested_required(additional_properties, depth + 1)
-
-    items = _schema_node(schema_node.get("items"))
-    if items is not None:
-        schema_node["items"] = remove_nested_required(items, depth + 1)
-
-    for keyword in ("anyOf", "oneOf", "allOf"):
-        keyword_items = schema_node.get(keyword)
-        if isinstance(keyword_items, Sequence) and not isinstance(keyword_items, (str, bytes, bytearray)):
-            schema_node[keyword] = [remove_nested_required(item, depth + 1) for item in keyword_items]
-
-    return schema_node
+    require_finite_json(schema)
+    node = _schema_node(schema)
+    pending = [(node, depth)] if node is not None else []
+    while pending:
+        current, current_depth = pending.pop()
+        if current_depth > 0:
+            current.pop("required", None)
+        pending.extend((child, current_depth + 1) for child, _path, _owner, _alias in _schema_children(current, "$"))
+    return schema
 
 
 __all__ = [
     "annotate_schema",
     "remove_nested_required",
+    "reannotate_property_presence",
 ]

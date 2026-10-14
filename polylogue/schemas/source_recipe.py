@@ -21,10 +21,10 @@ EvidencePhase = Literal["structure", "statistics"]
 @dataclass(frozen=True)
 class SourceEvidenceRecipe:
     admission_revision: int = 2
-    identity_revision: int = 3
+    identity_revision: int = 4
     zip_member_revision: int = 2
-    structure_revision: int = 2
-    statistics_revision: int = 1
+    structure_revision: int = 3
+    statistics_revision: int = 2
 
     def contract(self, phase: EvidencePhase) -> JSONDocument:
         return {

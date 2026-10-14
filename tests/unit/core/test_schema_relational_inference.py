@@ -5,14 +5,11 @@ Covers:
   - _detect_foreign_keys() identifies reference fields
   - _detect_time_deltas() between timestamp fields
   - _detect_mutual_exclusions() for never-co-occurring fields
-  - _detect_string_lengths() for notable variance fields
 """
 
 from __future__ import annotations
 
 from collections import Counter
-
-import pytest
 
 from polylogue.schemas.field_stats.stats import FieldStats
 from polylogue.schemas.inference.relational.inference import (
@@ -32,17 +29,15 @@ class TestInferRelations:
         assert isinstance(result.foreign_keys, list)
         assert isinstance(result.time_deltas, list)
         assert isinstance(result.mutual_exclusions, list)
-        assert isinstance(result.string_lengths, list)
 
     def test_empty_stats_returns_empty_annotations(self) -> None:
         result = infer_relations({})
         assert result.foreign_keys == []
         assert result.time_deltas == []
         assert result.mutual_exclusions == []
-        assert result.string_lengths == []
 
     def test_combined_detection(self) -> None:
-        """Full integration: detects FKs, time deltas, mutual exclusions, and lengths."""
+        """Full integration: detects FKs, time deltas and mutual exclusions."""
         stats = {
             # Foreign key setup
             "$.user_id": FieldStats(
@@ -107,7 +102,7 @@ class TestInferRelations:
         }
         result = infer_relations(stats)
         # At least some relations should be detected
-        assert len(result.foreign_keys) > 0 or len(result.time_deltas) > 0 or len(result.string_lengths) > 0
+        assert len(result.foreign_keys) > 0 or len(result.time_deltas) > 0
 
 
 class TestDetectForeignKeys:
@@ -455,130 +450,14 @@ class TestDetectMutualExclusions:
         assert len(exclusions) == 0
 
 
-class TestDetectStringLengths:
-    """_detect_string_lengths() extracts meaningful variance fields."""
+def test_truncated_collected_cooccurrence_does_not_infer_false_mutual_exclusion() -> None:
+    from polylogue.schemas.field_stats.collection import _CO_OCCURRENCE_FIELD_CAP, _collect_field_stats
 
-    def test_meaningful_variance_included(self) -> None:
-        """Fields with notable string length variance included."""
-        stats = {
-            "$.description": FieldStats(
-                path="$.description",
-                string_length_distribution=distribution_sketch([10, 50, 100, 150, 200]),
-                is_multiline=2,
-                newline_distribution=distribution_sketch([0, 1, 2, 1, 2]),
-                total_samples=5,
-                present_count=5,
-                value_count=5,
-            ),
-        }
-        result = infer_relations(stats)
-        assert len(result.string_lengths) > 0
-        slp = result.string_lengths[0]
-        assert slp.path == "$.description"
-        assert slp.min_length == 10
-        assert slp.max_length == 200
-        assert slp.avg_length == 102.0
-        multiline_rate = slp.evidence["multiline_rate"]
-        assert isinstance(multiline_rate, (int, float))
-        assert multiline_rate > 0
-
-    def test_short_low_variance_excluded(self) -> None:
-        """Short fields with low variance skipped."""
-        stats = {
-            "$.status": FieldStats(
-                path="$.status",
-                string_length_distribution=distribution_sketch([1, 1, 2, 1]),
-                is_multiline=0,
-                newline_distribution=distribution_sketch([0] * 4),
-                total_samples=4,
-                present_count=4,
-                value_count=4,
-            ),
-        }
-        result = infer_relations(stats)
-        status_lengths = [sl for sl in result.string_lengths if sl.path == "$.status"]
-        assert len(status_lengths) == 0
-
-    def test_too_few_samples_excluded(self) -> None:
-        """Fields with <3 string samples excluded."""
-        stats = {
-            "$.field": FieldStats(
-                path="$.field",
-                string_length_distribution=distribution_sketch([50, 100]),  # only 2 samples
-                is_multiline=1,
-                newline_distribution=distribution_sketch([1, 0]),
-                total_samples=2,
-                present_count=2,
-                value_count=2,
-            ),
-        }
-        result = infer_relations(stats)
-        field_lengths = [sl for sl in result.string_lengths if sl.path == "$.field"]
-        assert len(field_lengths) == 0
-
-    def test_evidence_includes_sample_count(self) -> None:
-        """StringLengthProfile evidence shows sample count and multiline rate."""
-        stats = {
-            "$.content": FieldStats(
-                path="$.content",
-                string_length_distribution=distribution_sketch([100, 200, 300]),
-                is_multiline=2,
-                newline_distribution=distribution_sketch([1, 2, 1]),
-                total_samples=3,
-                present_count=3,
-                value_count=3,
-            ),
-        }
-        result = infer_relations(stats)
-        if result.string_lengths:
-            slp = result.string_lengths[0]
-            assert slp.evidence["sample_count"] == 3
-            assert "multiline_rate" in slp.evidence
-
-    def test_stddev_computation(self) -> None:
-        """StringLengthProfile includes standard deviation."""
-        stats = {
-            "$.var_field": FieldStats(
-                path="$.var_field",
-                string_length_distribution=distribution_sketch([10, 20, 30]),
-                is_multiline=0,
-                newline_distribution=distribution_sketch([0] * 3),
-                total_samples=3,
-                present_count=3,
-                value_count=3,
-            ),
-        }
-        result = infer_relations(stats)
-        if result.string_lengths:
-            slp = result.string_lengths[0]
-            # avg = 20, stddev = 10 (perfect arithmetic sequence)
-            assert slp.avg_length == 20.0
-            assert slp.stddev > 0
-
-    @pytest.mark.parametrize(
-        "min_len,max_len,avg,stddev",
-        [
-            (5, 5, 5.0, 0.0),  # all same, low variance → excluded
-            (5, 50, 27.5, 15.0),  # moderate variance, avg > 5 → included
-            (50, 500, 275, 125.0),  # high variance, long strings → included
-        ],
-    )
-    def test_variance_thresholds(self, min_len: int, max_len: int, avg: float, stddev: float) -> None:
-        """Different variance levels handled correctly."""
-        stats = {
-            "$.field": FieldStats(
-                path="$.field",
-                string_length_distribution=distribution_sketch([min_len, max_len]),
-                is_multiline=0,
-                newline_distribution=distribution_sketch([0, 0]),
-                total_samples=2,
-                present_count=2,
-                value_count=2,
-            ),
-        }
-        result = infer_relations(stats)
-        # Only high-variance fields included
-        has_field = any(sl.path == "$.field" for sl in result.string_lengths)
-        if avg < 5 and stddev < 2:
-            assert not has_field
-        # (else may or may not be included depending on threshold)
+    names = ["sibling" + chr(97 + index // 26) + chr(97 + index % 26) for index in range(_CO_OCCURRENCE_FIELD_CAP + 1)]
+    stats = _collect_field_stats({"anchor": 1, name: 1} for name in names)
+    anchor = stats["$.anchor"]
+    assert anchor.truncated_evidence["co_occurring_fields"] > 0
+    omitted = next(name for name in names if name not in anchor.co_occurring_fields)
+    assert stats[f"$.{omitted}"].co_occurring_fields["anchor"] == 1
+    relations = infer_relations({"$.anchor": anchor, f"$.{omitted}": stats[f"$.{omitted}"]})
+    assert not relations.mutual_exclusions

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -34,11 +35,14 @@ from polylogue.schemas.observation import (
     extract_schema_units_from_payload,
     resolve_provider_config,
 )
+from polylogue.schemas.observation_identity import derive_bundle_scope
 from polylogue.schemas.observation_models import (
     SCHEMA_SAMPLE_STRING_LIMIT,
+    ObservationPayloadRecorder,
     ObservationTerminalRecorder,
     ObservationTerminalStatus,
 )
+from polylogue.schemas.observation_runtime import declared_observation_non_applicable
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.connection_profile import readonly_connection_context
@@ -175,6 +179,19 @@ def _record_terminal(
     )
 
 
+def _verified_payload_byte_count(blob_store: BlobStore, blob_hash: bytes) -> int:
+    """Count the same streamed bytes whose digest proves the retained revision."""
+    hasher = hashlib.sha256()
+    byte_count = 0
+    with blob_store.open(blob_hash.hex()) as handle:
+        while chunk := handle.read(1024 * 1024):
+            hasher.update(chunk)
+            byte_count += len(chunk)
+    if hasher.digest() != blob_hash:
+        raise SchemaArchiveEvidenceError("opaque retained payload does not match its original blob hash")
+    return byte_count
+
+
 def _record_sample_limit(
     *,
     config: ProviderConfig,
@@ -287,6 +304,7 @@ def _iter_schema_units_from_db(
     max_samples: int | None = None,
     full_corpus: bool = False,
     terminal_recorder: ObservationTerminalRecorder | None = None,
+    payload_recorder: ObservationPayloadRecorder | None = None,
     logical_heads_only: bool = False,
     archive_location: ArchiveLocation | None = None,
 ) -> Iterator[SchemaUnit]:
@@ -375,16 +393,6 @@ def _iter_schema_units_from_db(
             if not batch:
                 break
             for row in batch:
-                if row.blob_hash in seen_blob_hashes:
-                    _record_terminal(
-                        terminal_recorder,
-                        row,
-                        status="intentionally_excluded",
-                        reason="duplicate_blob_content",
-                    )
-                    continue
-                seen_blob_hashes.add(row.blob_hash)
-
                 raw_content = blob_store.blob_path(_blob_hash_hex(row.blob_hash))
 
                 path_classification = classify_artifact_path(
@@ -402,6 +410,16 @@ def _iter_schema_units_from_db(
                         config,
                     )
                     if structured_config is None:
+                        if payload_recorder is not None and declared_observation_non_applicable(
+                            Provider.from_string(row.provider_token or source_name), row.source_path or ""
+                        ):
+                            byte_count = _verified_payload_byte_count(blob_store, row.blob_hash)
+                            payload_recorder(
+                                raw_id=row.raw_id,
+                                artifact_kind=path_classification.kind.value,
+                                bundle_scope=derive_bundle_scope(source_name, row.source_path),
+                                byte_count=byte_count,
+                            )
                         _record_terminal(
                             terminal_recorder,
                             row,
@@ -411,6 +429,16 @@ def _iter_schema_units_from_db(
                         )
                         continue
                     observation_config = structured_config
+
+                if row.blob_hash in seen_blob_hashes:
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="intentionally_excluded",
+                        reason="duplicate_blob_content",
+                    )
+                    continue
+                seen_blob_hashes.add(row.blob_hash)
 
                 validation_authority = raw_state_authority(row.parsed_at_ms, row.validated_at_ms)
                 if row.validation_status == "failed" and validation_authority != "parse":

@@ -135,8 +135,9 @@ class TestDetectStringFormat:
     def test_empty_string_returns_none(self) -> None:
         assert _detect_string_format("") is None
 
-    def test_long_string_returns_none(self) -> None:
-        assert _detect_string_format("a" * 501) is None
+    def test_long_strings_keep_declared_formats_without_a_length_cap(self) -> None:
+        assert _detect_string_format("a" * 501) == "hex-id"
+        assert _detect_string_format("plain words " * 501) is None
 
     def test_plain_text_returns_none(self) -> None:
         assert _detect_string_format("hello world") is None

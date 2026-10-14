@@ -24,6 +24,7 @@ from polylogue.schemas.audit.walkers import _UUID_RE, _load_committed_schema
 from polylogue.schemas.packages import SchemaVersionPackage
 from polylogue.schemas.privacy import _looks_high_entropy_token
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
+from polylogue.schemas.workload_profile_rows import WorkloadProfile
 
 
 def _load_committed_package(provider: str) -> SchemaVersionPackage | None:
@@ -237,11 +238,22 @@ def _workload_profile_checks(
             summary=f"{len(token_errors)} unsafe workload token(s) found",
             details=[f"tokens: unsafe value length={len(value)}" for value in token_errors[:20]],
         )
-    return [
-        _scoped(scope, check_privacy_guards(profile)),
+    # The typed profile owns bounded JSON fields separately from its native
+    # exact-depth tape. Audit both through the existing predicates, one row at
+    # a time; generic JSON coercion must never silently erase the carrier.
+    fields = dict(profile)
+    checks = [
+        _scoped(scope, check_privacy_guards(fields)),
         _scoped(scope, token_privacy),
-        _scoped(scope, check_published_paths(profile)),
+        _scoped(scope, check_published_paths(fields)),
     ]
+    if isinstance(profile, WorkloadProfile) and profile.depth_grammars is not None:
+        for depth in profile.depth_grammars:
+            grammar = profile.depth_grammars[depth]
+            for check in (check_privacy_guards(grammar), check_published_paths(grammar)):
+                if check.status is OutcomeStatus.ERROR:
+                    checks.append(_scoped(f"{scope}/depth:{depth}", check))
+    return checks
 
 
 def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> AuditReport:

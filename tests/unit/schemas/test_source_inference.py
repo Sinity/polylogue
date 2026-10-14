@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 import tempfile
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,6 +17,7 @@ from polylogue.core.schema_subjects import inference_exclusion_reason
 from polylogue.schemas import source_inference as source_inference_module
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.workflow import build_provider_bundle_from_sources
+from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.source_inference import (
     SchemaSourceInput,
     SchemaSubjectExcludedError,
@@ -514,6 +515,7 @@ def test_zip_changed_after_member_collection_is_refused(
         include_statistics: bool,
         metadata_only: bool,
         spool_path: Path | None,
+        observation_recorder: Callable[[str, str, SchemaUnit], None] | None = None,
     ) -> source_inference_module._CollectedCandidate:
         collected = original_collect_zip(
             collected_candidate,
@@ -522,6 +524,7 @@ def test_zip_changed_after_member_collection_is_refused(
             include_statistics=include_statistics,
             metadata_only=metadata_only,
             spool_path=spool_path,
+            observation_recorder=observation_recorder,
         )
         archive.write_bytes(replacement.read_bytes())
         return collected

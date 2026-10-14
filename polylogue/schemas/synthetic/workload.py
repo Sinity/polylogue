@@ -38,6 +38,8 @@ from functools import cache, partial
 from pathlib import Path
 from typing import TypeVar
 
+from polylogue.schemas.record_structure import IDENTIFIER_PATTERN
+
 WORKLOAD_PROFILE_FILE = "workload-corpus.json"
 WORKLOAD_PROFILE_KIND = "polylogue.synthetic-workload-profile"
 WORKLOAD_PROFILE_VERSION = 5
@@ -51,127 +53,6 @@ _BASE_EPOCH = datetime(2025, 6, 1, tzinfo=timezone.utc)
 # ---------------------------------------------------------------------------
 # Record-kind classification (shared by the extractor and the renderers)
 # ---------------------------------------------------------------------------
-
-_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,47}$")
-
-#: Record kinds each renderer builds by hand because they carry relations
-#: (ids, parent chains, tool call/result pairing, cumulative usage). Every
-#: other kind is a *template kind* ("record:<type>[:<subtype>]") rendered from
-#: its measured key skeleton.
-CLAUDE_CODE_RELATIONAL_KINDS = frozenset(
-    {"user_text", "user_tool_result", "assistant_text", "assistant_thinking", "assistant_tool_use"}
-)
-CODEX_RELATIONAL_KINDS = frozenset(
-    {
-        "session_meta",
-        "turn_context",
-        "user_message",
-        "assistant_message",
-        "developer_message",
-        "reasoning",
-        "function_call",
-        "function_call_output",
-        "custom_tool_call",
-        "custom_tool_call_output",
-        "event_token_count",
-    }
-)
-
-
-def _safe_token(value: object) -> str | None:
-    return value if isinstance(value, str) and _IDENTIFIER.match(value) else None
-
-
-_SOURCES_ROOT = Path(__file__).resolve().parents[2] / "sources"
-
-
-@cache
-def published_kind_tokens() -> frozenset[str]:
-    """Record-type vocabulary already public in Polylogue's own source adapters.
-
-    A record ``type``/subtype value is published into a profile only when it
-    appears as a string literal in ``polylogue/sources``; any other value is
-    source data, not vocabulary, and is folded away.
-    """
-    import ast
-
-    tokens: set[str] = set()
-    for path in sorted(_SOURCES_ROOT.rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and _IDENTIFIER.match(node.value):
-                tokens.add(node.value)
-    return frozenset(tokens)
-
-
-def _kind(base: object, subtype: object) -> str:
-    vocabulary = published_kind_tokens()
-    base_token = _safe_token(base)
-    if base_token is None or base_token not in vocabulary:
-        return "record:other"
-    subtype_token = _safe_token(subtype)
-    return f"record:{base_token}:{subtype_token}" if subtype_token in vocabulary else f"record:{base_token}"
-
-
-def classify_claude_code_record(record: Mapping[str, object]) -> str:
-    """Return the workload kind of one Claude Code transcript record."""
-    record_type = record.get("type")
-    message = record.get("message")
-    if record_type in {"user", "assistant"} and isinstance(message, Mapping):
-        content = message.get("content")
-        block_types = (
-            {block.get("type") for block in content if isinstance(block, Mapping)}
-            if isinstance(content, list)
-            else set()
-        )
-        if record_type == "user":
-            return "user_tool_result" if "tool_result" in block_types else "user_text"
-        # A record carrying several blocks is classified by its most
-        # consequential one: a tool call outranks thinking outranks text.
-        if "tool_use" in block_types:
-            return "assistant_tool_use"
-        if "thinking" in block_types:
-            return "assistant_thinking"
-        return "assistant_text"
-    data = record.get("data")
-    attachment = record.get("attachment")
-    subtype = (
-        (data.get("type") if isinstance(data, Mapping) else None)
-        or (attachment.get("type") if isinstance(attachment, Mapping) else None)
-        or record.get("subtype")
-    )
-    return _kind(record_type, subtype)
-
-
-def classify_codex_record(record: Mapping[str, object]) -> str:
-    """Return the workload kind of one Codex rollout record.
-
-    Records without a ``payload`` envelope belong to the legacy flat format,
-    which a rollout never mixes with envelopes; they classify as
-    ``legacy`` and are not rendered.
-    """
-    record_type = record.get("type")
-    payload = record.get("payload")
-    if not isinstance(payload, Mapping):
-        return "legacy"
-    payload_type = payload.get("type")
-    if record_type in {"session_meta", "turn_context"}:
-        return str(record_type)
-    if record_type == "response_item":
-        if payload_type == "message":
-            role = payload.get("role")
-            return f"{role}_message" if role in {"user", "assistant", "developer"} else "assistant_message"
-        if payload_type in {
-            "reasoning",
-            "function_call",
-            "function_call_output",
-            "custom_tool_call",
-            "custom_tool_call_output",
-        }:
-            return str(payload_type)
-    if record_type == "event_msg" and payload_type == "token_count":
-        return "event_token_count"
-    return _kind(record_type, payload_type)
-
 
 #: Claude Code's persisted-output wrapper, which names the full size of the
 #: result it moved into a tool-results sidecar.
@@ -308,7 +189,7 @@ def record_skeleton(
         opaque = _OPAQUE_KEYS | ({"data"} if value.get("type") == "structured_output" else set())
         out: dict[str, object] = {}
         for key, item in sorted(value.items()):
-            if not (isinstance(key, str) and _IDENTIFIER.match(key) and (allowed is None or key in allowed)):
+            if not (isinstance(key, str) and IDENTIFIER_PATTERN.match(key) and (allowed is None or key in allowed)):
                 continue
             if key in opaque:
                 out[key] = "obj"
@@ -393,7 +274,7 @@ def template_measures(
     elif isinstance(value, Mapping):
         opaque = _OPAQUE_KEYS | ({"data"} if value.get("type") == "structured_output" else set())
         for key, item in value.items():
-            if not (isinstance(key, str) and _IDENTIFIER.match(key) and (allowed is None or key in allowed)):
+            if not (isinstance(key, str) and IDENTIFIER_PATTERN.match(key) and (allowed is None or key in allowed)):
                 continue
             if key in opaque:
                 continue
@@ -2154,8 +2035,6 @@ __all__ = [
     "WorkloadFile",
     "WorkloadProfile",
     "WorkloadStats",
-    "classify_claude_code_record",
-    "classify_codex_record",
     "generate_workload_corpus",
     "load_workload_profile",
     "synthetic_text",

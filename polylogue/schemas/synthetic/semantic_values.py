@@ -76,10 +76,10 @@ def _text_for_role(
 class SemanticValueGenerator:
     """Generate values driven by ``x-polylogue-semantic-role`` annotations.
 
-    This replaces the generic schema-driven string/number generation for
-    fields that have been identified as semantically meaningful.  The
-    generator is stateful within a single session to produce coherent
-    turn sequences.
+    The runtime's scalar owner applies declared values, formats and observed
+    distributions before accepting or shaping these proposals. This object
+    supplies coherent unconstrained defaults within a session, rather than
+    replacing branch/type selection or observed sampling.
     """
 
     def __init__(

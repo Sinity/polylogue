@@ -13,8 +13,14 @@ _LOG_BASE = 1.1
 _LOG_BASE_LOG = math.log(_LOG_BASE)
 _MAX_LOG_BUCKET = 512
 _DEFAULT_QUANTILES = (0.0, 0.5, 0.9, 0.95, 0.99, 1.0)
-_CATEGORICAL_BUCKETS = 256
+CATEGORICAL_BUCKET_COUNT = 256
 _HLL_PRECISION = 8
+
+
+def categorical_bucket(value: str, *, digest: bytes | None = None) -> int:
+    """The producer's stable bucket identity, also used for declared labels."""
+    value_digest = digest or hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()
+    return int.from_bytes(value_digest[:8], "big") & (CATEGORICAL_BUCKET_COUNT - 1)
 
 
 def _state_int(value: JSONValue) -> int:
@@ -217,7 +223,7 @@ class CategoricalSketch:
             return
         value_digest = digest or hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()
         hashed = int.from_bytes(value_digest[:8], "big")
-        bucket = hashed & (_CATEGORICAL_BUCKETS - 1)
+        bucket = categorical_bucket(value, digest=value_digest)
         self.count += count
         self.buckets[bucket] += count
 
@@ -251,7 +257,7 @@ class CategoricalSketch:
             "count": self.count,
             "estimated_distinct": self.estimated_distinct,
             "hash_algorithm": "sha256-64",
-            "bucket_count": _CATEGORICAL_BUCKETS,
+            "bucket_count": CATEGORICAL_BUCKET_COUNT,
             "bucket_histogram": [[bucket, count] for bucket, count in sorted(self.buckets.items())],
             "bucket_load_distribution": bucket_loads.to_payload(),
             "values_retained": False,
