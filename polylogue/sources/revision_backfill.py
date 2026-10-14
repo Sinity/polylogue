@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, Protocol, cast, overload
 
 import ijson
 
@@ -3835,6 +3835,7 @@ def prepare_revision_source_census(
                 seal,
                 raw_id,
                 [],
+                parser_sessions=[],
                 parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
@@ -3958,6 +3959,41 @@ def prepare_revision_source_census(
 
         return staged
 
+    def resolved_member_sessions(raw_id: str, sessions: Sequence[ParsedSession]) -> Sequence[ParsedSession]:
+        """Resolve original ordinals without retaining every hydrated member."""
+        first_ordinals: dict[str, int] = {}
+        repeated_keys: set[str] = set()
+        for ordinal, session in enumerate(sessions):
+            check_compute_cancelled()
+            logical_key = canonical_authority_logical_key(f"{session.source_name.value}:{session.provider_session_id}")
+            if logical_key in first_ordinals:
+                repeated_keys.add(logical_key)
+            else:
+                first_ordinals[logical_key] = ordinal
+        selected_ordinals = tuple(
+            resolve_same_raw_member(sessions, raw_id=raw_id, logical_source_key=logical_key).representative_ordinal
+            if logical_key in repeated_keys
+            else first_ordinals[logical_key]
+            for logical_key in sorted(first_ordinals)
+        )
+
+        class ResolvedMembers(Sequence[ParsedSession]):
+            def __len__(self) -> int:
+                return len(selected_ordinals)
+
+            @overload
+            def __getitem__(self, index: int) -> ParsedSession: ...
+
+            @overload
+            def __getitem__(self, index: slice) -> list[ParsedSession]: ...
+
+            def __getitem__(self, index: int | slice) -> ParsedSession | list[ParsedSession]:
+                if isinstance(index, slice):
+                    return [sessions[ordinal] for ordinal in selected_ordinals[index]]
+                return sessions[selected_ordinals[index]]
+
+        return ResolvedMembers()
+
     def apply_outcome(raw_id: str, source_index: int) -> None:
         check_compute_cancelled()
         state.scanned += 1
@@ -3972,6 +4008,7 @@ def prepare_revision_source_census(
                     seal,
                     raw_id,
                     None,
+                    parser_sessions=None,
                     parser_fingerprint=raw_authority_parser_fingerprint(),
                     censused_at_ms=0,
                     detail=BYTE_AUTHORITY_CENSUS_DETAIL,
@@ -4012,6 +4049,7 @@ def prepare_revision_source_census(
                         seal,
                         raw_id,
                         [],
+                        parser_sessions=[],
                         parser_fingerprint=raw_authority_parser_fingerprint(),
                         censused_at_ms=0,
                         detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
@@ -4059,6 +4097,7 @@ def prepare_revision_source_census(
                         seal,
                         raw_id,
                         [],
+                        parser_sessions=[],
                         parser_fingerprint=raw_authority_parser_fingerprint(),
                         censused_at_ms=0,
                         detail=str(outcome),
@@ -4234,6 +4273,7 @@ def prepare_revision_source_census(
                     seal,
                     raw_id,
                     [],
+                    parser_sessions=[],
                     parser_fingerprint=raw_authority_parser_fingerprint(),
                     censused_at_ms=0,
                     detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL if _retained_page_image_raw(evidence_reader, raw_id) else "",
@@ -4271,7 +4311,8 @@ def prepare_revision_source_census(
             replace_raw_membership_census(
                 seal,
                 raw_id,
-                sessions,
+                resolved_member_sessions(raw_id, sessions),
+                parser_sessions=sessions,
                 parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 revision_authority=None,
@@ -4290,7 +4331,8 @@ def prepare_revision_source_census(
             replace_raw_membership_census(
                 seal,
                 raw_id,
-                sessions,
+                resolved_member_sessions(raw_id, sessions),
+                parser_sessions=sessions,
                 parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=SUPERSEDED_IDENTITY_GOVERNANCE_DETAIL,
@@ -4338,6 +4380,7 @@ def prepare_revision_source_census(
                     seal,
                     raw_id,
                     [],
+                    parser_sessions=[],
                     parser_fingerprint=raw_authority_parser_fingerprint(),
                     censused_at_ms=0,
                     detail="current parser authority confirms typed non-session input",
@@ -4418,6 +4461,7 @@ def prepare_revision_source_membership_conversion(
                 seal,
                 raw_id,
                 sessions,
+                parser_sessions=sessions,
                 parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,

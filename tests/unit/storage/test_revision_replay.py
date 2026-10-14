@@ -1817,6 +1817,7 @@ def test_typed_retirement_authority_allows_detail_wording_to_change(
             seal,
             raw_id,
             [session],
+            parser_sessions=[session],
             parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=0,
             detail="operator-facing wording may change",

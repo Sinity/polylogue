@@ -317,6 +317,7 @@ def prepare_codex_state_source_terminal(
         seal,
         raw_id,
         [],
+        parser_sessions=[],
         parser_fingerprint=raw_authority_parser_fingerprint(),
         censused_at_ms=censused_at_ms,
         detail=_codex_state_terminal_detail(receipt),
