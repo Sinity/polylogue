@@ -2025,6 +2025,32 @@ def test_restart_census_refuses_multisession_append_without_membership_conversio
         assert archive.raw_revision_descriptor(raw_id)[4] == len(payload)
 
 
+def _observe_off_writer_retained_parses(monkeypatch: pytest.MonkeyPatch) -> set[str]:
+    """Record actual neutral parser work after checking its compute ownership."""
+    from threading import Lock
+
+    from polylogue.core.compute import compute_adapter
+    from polylogue.core.write_lease import coordinator_write_lease_active
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.storage.derived import raw
+
+    parsed_raw_ids: set[str] = set()
+    lock = Lock()
+    original = raw._parse_captured_neutral
+
+    def observed(
+        raw_id: str, captured: Any, artifact_key: tuple[object, ...], context: Any, scratch: Path
+    ) -> PreparedJsonl:
+        compute_adapter().require_current_creator()
+        assert not coordinator_write_lease_active()
+        with lock:
+            parsed_raw_ids.add(raw_id)
+        return original(raw_id, captured, artifact_key, context, scratch)
+
+    monkeypatch.setattr(raw, "_parse_captured_neutral", observed)
+    return parsed_raw_ids
+
+
 @contextmanager
 def _registered_replay_candidate(root: Path) -> Iterator[IndexGeneration]:
     """Borrow the production cold destination and discard only that candidate."""
@@ -2197,8 +2223,11 @@ def test_retained_replay_keeps_every_large_and_small_message_byte(
         pytest.fail("sealed replay reparsed inside its writer")
 
     monkeypatch.setattr(revision_backfill, "parse_retained_raw_sessions", forbid_inline_parse)
+    parsed_raw_ids = _observe_off_writer_retained_parses(monkeypatch)
     for _pass in range(2):
+        parsed_raw_ids.clear()
         result = replay_retained_components(tmp_path)
+        assert parsed_raw_ids == {*small_raw_ids, whale_raw_id}
         assert result.quarantined == result.adoption_deferred == 0
         with open_operation_read(tmp_path) as pinned:
             archive = pinned.archive
@@ -2218,12 +2247,13 @@ def test_owned_generation_replay_keeps_prefix_sharing_child_and_its_complete_tai
     """Prepared child publication stores its exact tail while retaining its parent edge."""
     bootstrap_archive_root(tmp_path)
     parent_texts = [f"parent-{index}" for index in range(4)]
+    raw_ids: list[str] = []
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         for native_id, texts, forked_from in (
             ("zparent", parent_texts, None),
             ("achild0", [*parent_texts, "child-0-tail"], "zparent"),
         ):
-            archive.write_raw_payload(
+            raw_id = archive.write_raw_payload(
                 provider=Provider.CODEX,
                 payload=_codex_session_payload(native_id, texts, forked_from_id=forked_from),
                 source_path=f"{native_id}.jsonl",
@@ -2237,6 +2267,7 @@ def test_owned_generation_replay_keeps_prefix_sharing_child_and_its_complete_tai
                     authority=RawRevisionAuthority.BYTE_PROVEN,
                 ),
             )
+            raw_ids.append(raw_id)
             publish_fixture_byte_classification(archive, f"codex-session:{native_id}")
     replay_retained_components(tmp_path)
 
@@ -2244,8 +2275,10 @@ def test_owned_generation_replay_keeps_prefix_sharing_child_and_its_complete_tai
         pytest.fail("sealed child replay reparsed inside its writer")
 
     monkeypatch.setattr(revision_backfill, "parse_retained_raw_sessions", forbid_inline_parse)
+    parsed_raw_ids = _observe_off_writer_retained_parses(monkeypatch)
     with _registered_replay_candidate(tmp_path) as generation:
         result = replay_retained_components(tmp_path, owned_generation=generation)
+        assert parsed_raw_ids == set(raw_ids)
         assert result.adoption_deferred == result.quarantined == 0
         with closing(sqlite3.connect(generation.index_path)) as index:
             assert {row[0] for row in index.execute("SELECT session_id FROM sessions")} == {
