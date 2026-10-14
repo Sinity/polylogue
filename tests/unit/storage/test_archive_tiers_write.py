@@ -5318,6 +5318,32 @@ def test_force_one_sided_producer_timestamp_keeps_interval_closed(tmp_path: Path
     assert row["created_at_ms"] == row["updated_at_ms"] == 1798761600000
 
 
+@pytest.mark.parametrize(("force_replace", "merge_append"), [(False, False), (True, False), (False, True)])
+def test_one_sided_replacement_keeps_timestamp_interval_ordered(
+    tmp_path: Path, force_replace: bool, merge_append: bool
+) -> None:
+    """Moving only the producer start must close an already known end."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        original = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="timestamp-interval",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-02T00:00:00Z",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="first", position=0)],
+        )
+        session_id = write_fixture_index_session(conn, original, raw_id="original")
+        replacement = original.model_copy(update={"created_at": "2026-02-01T00:00:00Z", "updated_at": None})
+        write_fixture_index_session(
+            conn, replacement, raw_id="replacement", force_replace=force_replace, merge_append=merge_append
+        )
+        row = _session_timestamps(conn, session_id)
+        assert row["created_at_ms"] == 1769904000000
+        assert row["updated_at_ms"] == row["created_at_ms"]
+    finally:
+        conn.close()
+
+
 def test_direct_writer_repairs_created_observation_on_stale_skip(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     established = ParsedSession(

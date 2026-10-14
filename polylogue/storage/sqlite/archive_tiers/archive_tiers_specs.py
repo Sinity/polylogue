@@ -822,6 +822,20 @@ RAW_REVISION_HEADS_SPEC = _make_table_spec(
     ),
 )
 
+# Select endpoint authority before closing a known end against the final start.
+_SESSION_CREATED_AT_UPDATE = """CASE
+    WHEN ? AND excluded.created_at_ms IS NOT NULL THEN excluded.created_at_ms
+    WHEN sessions.created_at_ms IS NULL THEN excluded.created_at_ms
+    ELSE sessions.created_at_ms END"""
+_SESSION_UPDATED_AT_UPDATE = """CASE
+    WHEN ? AND (? OR ?) AND excluded.updated_at_ms IS NOT NULL THEN excluded.updated_at_ms
+    WHEN ? AND excluded.updated_at_ms IS NOT NULL AND sessions.updated_at_ms IS NULL THEN excluded.updated_at_ms
+    WHEN excluded.updated_at_ms IS NULL THEN sessions.updated_at_ms
+    WHEN sessions.updated_at_ms IS NULL THEN excluded.updated_at_ms
+    WHEN ? THEN MAX(sessions.updated_at_ms, excluded.updated_at_ms)
+    ELSE sessions.updated_at_ms END"""
+
+
 SESSIONS_SPEC = _make_table_spec(
     "sessions",
     (
@@ -1062,11 +1076,7 @@ SESSIONS_SPEC = _make_table_spec(
             # A durable observed fact, so it ratchets: a valid producer
             # timestamp outranks a previously-derived value, and a derived
             # observation never overwrites stored producer authority.
-            conflict_update="""CASE
-                        WHEN ? AND excluded.created_at_ms IS NOT NULL THEN excluded.created_at_ms
-                        WHEN sessions.created_at_ms IS NULL THEN excluded.created_at_ms
-                        ELSE sessions.created_at_ms
-                    END""",
+            conflict_update=_SESSION_CREATED_AT_UPDATE,
             conflict_params=("producer_created",),
         ),
         _raw_column(
@@ -1079,27 +1089,15 @@ SESSIONS_SPEC = _make_table_spec(
             # Force replacement may replace known evidence with a newer producer
             # value, but an incoming NULL is omission, never a command to erase
             # an established timestamp. The interval stays closed even when only
-            # one producer endpoint is supplied.
-            conflict_update="""CASE
-                        WHEN ? AND (? OR ?) AND excluded.updated_at_ms IS NOT NULL THEN
-                            CASE
-                                WHEN ? AND excluded.created_at_ms IS NOT NULL
-                                    THEN MAX(excluded.updated_at_ms, excluded.created_at_ms)
-                                WHEN sessions.created_at_ms IS NOT NULL
-                                    THEN MAX(excluded.updated_at_ms, sessions.created_at_ms)
-                                ELSE excluded.updated_at_ms
-                            END
-                        WHEN ? AND excluded.updated_at_ms IS NOT NULL
-                             AND sessions.updated_at_ms IS NULL THEN excluded.updated_at_ms
-                        WHEN excluded.updated_at_ms IS NULL THEN sessions.updated_at_ms
-                        WHEN sessions.updated_at_ms IS NULL THEN excluded.updated_at_ms
-                        WHEN ? THEN MAX(sessions.updated_at_ms, excluded.updated_at_ms)
-                        ELSE sessions.updated_at_ms
-                    END""",
+            # one producer endpoint is supplied. A missing end remains NULL.
+            conflict_update=f"""(SELECT CASE WHEN interval_start IS NULL THEN interval_end
+                        ELSE MAX(interval_start, interval_end) END
+                    FROM (SELECT {_SESSION_CREATED_AT_UPDATE} AS interval_start,
+                                 {_SESSION_UPDATED_AT_UPDATE} AS interval_end))""",
             conflict_params=(
+                "producer_created",
                 "force_replace",
                 "producer_updated",
-                "producer_created",
                 "producer_created",
                 "producer_updated",
                 "producer_updated_or_merge_append",

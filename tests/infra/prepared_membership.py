@@ -157,7 +157,7 @@ def write_prepared_retained_session(
             prepared_write = prepare_session_write(
                 seal.observer("index"),
                 session,
-                merge_append=False,
+                merge_append=source_index < 0,
                 fallback_timestamp=prepared_raw_revision_file_mtime(seal, raw_id),
                 source_read=PreparedSessionSourceRead(seal, blob_store=BlobStore(root / "blob")),
                 raw_id=raw_id,

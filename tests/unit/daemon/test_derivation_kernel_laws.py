@@ -1486,3 +1486,37 @@ def test_deadline_reached_during_compute_keeps_the_unattempted_suffix_ahead_of_c
     assert report.done == 1 and report.pending == 1
     assert report.cursor.position("d").pending_keys == ("deferred",)
     assert report.cursor_unsettled_domains == frozenset()
+
+
+@pytest.mark.parametrize("retiring", [False, True])
+def test_shrinking_pages_resume_every_unconsumed_key_with_smaller_budgets(retiring: bool) -> None:
+    """Re-fetching a,b,c,d after publishing a,b formerly skipped c,d."""
+    keys = tuple("abcdef")
+
+    class ShrinkingDerivation(RecordingDerivation):
+        @staticmethod
+        def page(remaining: Sequence[str], cursor: str | None, limit: int) -> KeyPage:
+            eligible = tuple(key for key in remaining if cursor is None or key > cursor)
+            selected = eligible[:limit]
+            return KeyPage(selected, selected[-1] if len(eligible) > limit else None)
+
+        def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+            return self.page(tuple(key for key in self._required if key not in self.output), cursor, limit)
+
+        def excess_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+            return self.page(tuple(sorted(key for key in self.output if key not in self._required)), cursor, limit)
+
+    domain = ShrinkingDerivation("shrinking", required=() if retiring else keys)
+    if retiring:
+        domain.output.update(dict.fromkeys(keys, "old"))
+    registry = DerivationRegistry([domain])
+    first = converge(registry, FRAME, budget=Budget(page=4, publication=2))
+    assert domain.published == ["a", "b"]
+    assert first.cursor.position("shrinking").pending_keys == ("c", "d")
+    cursor = first.cursor
+    for key in keys[2:]:
+        result = converge(registry, FRAME, budget=Budget(page=1, publication=1), cursor=cursor)
+        cursor = result.cursor
+        assert domain.published[-1] == key
+    assert domain.published == list(keys)
+    assert set(domain.output) == (set() if retiring else set(keys))

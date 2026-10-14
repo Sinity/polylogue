@@ -16,6 +16,7 @@ import pytest
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import BlockType, Origin, Provider, Role
 from polylogue.core.types import ContentHash, MessageId, SessionId
+from polylogue.pipeline.ids import block_content_identity
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage import hydrators
 from polylogue.storage.hydrators import message_from_record, session_from_records, session_summary_from_record
@@ -203,9 +204,9 @@ def test_the_declaration_owns_the_session_upsert_policy() -> None:
     # ratchet's parameters against the wrong conditions.
     assert SESSIONS_SPEC.conflict_update_param_names == (
         "producer_created",
+        "producer_created",
         "force_replace",
         "producer_updated",
-        "producer_created",
         "producer_created",
         "producer_updated",
         "producer_updated_or_merge_append",
@@ -353,7 +354,9 @@ async def test_declared_semantics_round_trip_through_the_sync_and_async_routes(t
     # Generated identity, read back through the declared projections.
     assert str(message_records[0].message_id) == f"{session_id}:n:native-message"
     block_record = blocks[str(message_records[0].message_id)][0]
-    assert str(block_record.block_id) == f"{message_records[0].message_id}:0"
+    assert str(block_record.block_id) == archive_block_id(
+        str(message_records[0].message_id), content_identity=block_content_identity(parsed.messages[0].blocks[0])
+    )
 
     hydrated = message_from_record(
         message_records[0].model_copy(update={"blocks": [block_record]}),

@@ -43,6 +43,7 @@ from tests.infra.index_writer import (
     close_fixture_index_connection,
     fixture_index_mutation_scope,
     write_fixture_index_session,
+    write_fixture_retained_session,
 )
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
@@ -169,6 +170,45 @@ def _seed_retained_raw(root: Path, *, origin: Origin, source_path: str, payload:
         )
         conn.commit()
     return raw_id
+
+
+@pytest.mark.parametrize("source_index", [0, -1], ids=["ordinary", "append"])
+def test_retained_publisher_reconciles_alias_only_transcript_changes(tmp_path: Path, source_index: int) -> None:
+    """Equal transcript hashes cannot hide changed Source identity claims."""
+    from polylogue.pipeline.ids import session_content_hash
+
+    original = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="native-session",
+        provider_session_aliases=["old-alias"],
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="unchanged",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="unchanged")],
+            )
+        ],
+    )
+    replacement = original.model_copy(update={"provider_session_aliases": ["new-alias"]})
+    assert session_content_hash(original) == session_content_hash(replacement)
+    bootstrap_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        write_fixture_retained_session(conn, original, source_index=source_index)
+        write_fixture_retained_session(conn, replacement, source_index=source_index)
+        session_id = str(make_session_id(Provider.CODEX, "native-session"))
+        claims = {
+            row[0]
+            for row in conn.execute(
+                "SELECT provider_value FROM session_identity_claims "
+                "WHERE claimant_session_id=? AND identity_namespace='provider-session'",
+                (session_id,),
+            )
+        }
+        assert claims == {"native-session", "new-alias"}
+        assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id=?", (session_id,)).fetchone() == (1,)
+        assert conn.execute("SELECT text FROM blocks WHERE session_id=?", (session_id,)).fetchall() == [("unchanged",)]
 
 
 class _PublicationConfig:
