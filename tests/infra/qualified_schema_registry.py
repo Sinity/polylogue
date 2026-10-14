@@ -54,7 +54,7 @@ _ASSISTANT = "44444444-4444-4444-8444-444444444444"
 _TIME = "2025-01-01T00:00:00Z"
 
 
-def _neutral_sources(provider: str) -> tuple[_NeutralSource, ...]:
+def _neutral_sources(provider: str, *, tool_cases: bool = False) -> tuple[_NeutralSource, ...]:
     if provider == "claude-code":
         rows: list[JSONDocument] = [
             {
@@ -99,6 +99,7 @@ def _neutral_sources(provider: str) -> tuple[_NeutralSource, ...]:
                             "type": "tool_result",
                             "tool_use_id": "call-neutral",
                             "content": _TOOL_OUTPUT,
+                            **({"is_error": False} if tool_cases else {}),
                         }
                     ],
                 },
@@ -133,6 +134,8 @@ def _neutral_sources(provider: str) -> tuple[_NeutralSource, ...]:
                 "message": {"role": "assistant", "content": _OUTPUT},
             },
         ]
+        if tool_cases:
+            return (_NeutralSource(rows, NeutralSourceExpectation("blocks.jsonl", 4, (_INPUT, _TOOL_OUTPUT, _OUTPUT))),)
         return (
             _NeutralSource(
                 rows,
@@ -168,7 +171,9 @@ def _neutral_sources(provider: str) -> tuple[_NeutralSource, ...]:
                 "payload": {
                     "type": "function_call_output",
                     "call_id": "call-neutral",
-                    "output": _TOOL_OUTPUT,
+                    "output": {"output": _TOOL_OUTPUT, "exit_code": 0, "is_error": False}
+                    if tool_cases
+                    else _TOOL_OUTPUT,
                 },
             },
             {
@@ -193,6 +198,17 @@ def _neutral_sources(provider: str) -> tuple[_NeutralSource, ...]:
                 "content": [{"type": "output_text", "text": _OUTPUT}],
             },
         ]
+        if tool_cases:
+            return (
+                _NeutralSource(
+                    rows,
+                    NeutralSourceExpectation(
+                        "enveloped.jsonl",
+                        4,
+                        (_INPUT, '{"exit_code": 0, "is_error": false, "output": "Neutral tool output."}', _OUTPUT),
+                    ),
+                ),
+            )
         return (
             _NeutralSource(
                 rows,
@@ -301,6 +317,7 @@ def build_qualified_schema_registry(
     root: Path,
     *,
     providers: Sequence[str] = QUALIFIED_SCHEMA_PROVIDERS,
+    tool_cases: bool = False,
 ) -> SchemaRegistry:
     """Infer and publish measured packages from caller-owned neutral files.
 
@@ -311,9 +328,11 @@ def build_qualified_schema_registry(
     providers = tuple(providers)
     if len(set(providers)) != len(providers):
         raise ValueError("Neutral source providers must be unique")
+    if tool_cases and not set(providers) <= {"claude-code", "codex"}:
+        raise ValueError("Tool outcome fixtures require native Claude Code/Codex sources")
     registry_root = root / "registry"
     for provider in providers:
-        sources = _neutral_sources(provider)
+        sources = _neutral_sources(provider, tool_cases=tool_cases)
         source_root = root / "sources" / provider
         source_root.mkdir(parents=True, exist_ok=True)
         for source in sources:

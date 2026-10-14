@@ -745,7 +745,7 @@ def test_parser_witness_tool_identity_loss_is_not_accepted(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
     artifact_index: int,
-    qualified_schema_registry: SchemaRegistry,
+    qualified_tool_schema_registry: SchemaRegistry,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
     mutated_blocks = 0
@@ -785,7 +785,9 @@ def test_parser_witness_tool_identity_loss_is_not_accepted(
 
     monkeypatch.setattr(dispatch_module, "parse_payload", drop_tool_identity)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=(provider,))
+        receipt = wire_formats.build_wire_support_receipt(
+            registry=qualified_tool_schema_registry, providers=(provider,)
+        )
 
     assert mutated_blocks > 0
     assert not receipt.complete
@@ -804,7 +806,7 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
     artifact_index: int,
-    qualified_schema_registry: SchemaRegistry,
+    qualified_tool_schema_registry: SchemaRegistry,
 ) -> None:
     original_parse_payload = dispatch_module.parse_payload
     mutated_outcomes = 0
@@ -818,50 +820,6 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
         source_path: str | None = None,
     ) -> list[ParsedSession]:
         nonlocal mutated_outcomes
-        if parsed_provider == provider and fallback_id.endswith(f":{artifact_index}") and isinstance(payload, list):
-            injected_outcome = False
-            for record in payload:
-                if not isinstance(record, dict):
-                    continue
-                container = record.get("message") if provider == "claude-code" else record
-                content = container.get("content") if isinstance(container, dict) else None
-                if not isinstance(content, list):
-                    continue
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "tool_result":
-                        item["is_error"] = False
-                        injected_outcome = True
-                        break
-                if injected_outcome:
-                    break
-            if not injected_outcome:
-                for record in payload:
-                    if not isinstance(record, dict):
-                        continue
-                    container = record.get("message") if provider == "claude-code" else record
-                    content = container.get("content") if isinstance(container, dict) else None
-                    if not isinstance(content, list):
-                        continue
-                    tool_use = next(
-                        (
-                            item
-                            for item in content
-                            if isinstance(item, dict)
-                            and item.get("type") == "tool_use"
-                            and isinstance(item.get("id"), str)
-                        ),
-                        None,
-                    )
-                    if isinstance(tool_use, dict):
-                        content.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_use["id"],
-                                "content": "synthetic structured outcome",
-                                "is_error": False,
-                            }
-                        )
-                        break
         sessions = original_parse_payload(
             parsed_provider,
             payload,
@@ -897,7 +855,9 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
 
     monkeypatch.setattr(dispatch_module, "parse_payload", corrupt_structured_tool_outcome)
     with shared_wire_generation():
-        receipt = wire_formats.build_wire_support_receipt(registry=qualified_schema_registry, providers=(provider,))
+        receipt = wire_formats.build_wire_support_receipt(
+            registry=qualified_tool_schema_registry, providers=(provider,)
+        )
 
     assert mutated_outcomes > 0
     assert not receipt.complete
@@ -1930,3 +1890,30 @@ def test_codex_native_tool_receipt_checks_both_record_sides_and_outcomes(envelop
         assert not wire_formats._parser_artifact_has_complete_semantic_coverage(
             corrupted, "codex", payload, "neutral-fallback"
         )
+
+
+def test_neutral_tool_source_profiles_have_nonvacuous_healthy_receipts(
+    qualified_tool_schema_registry: SchemaRegistry,
+) -> None:
+    for provider, filename in (("claude-code", "blocks.jsonl"), ("codex", "enveloped.jsonl")):
+        source = qualified_tool_schema_registry.storage_root.parent / "sources" / provider / filename
+        rows = [json.loads(line) for line in source.read_text().splitlines()]
+        sessions = dispatch_module.parse_payload(provider, rows, "neutral-source")
+        assert len(sessions) == 1 and len(sessions[0].messages) == 4
+        results = [
+            block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+        ]
+        assert len(results) == 1
+        assert results[0].tool_id == "call-neutral"
+        assert results[0].is_error is False
+        assert results[0].exit_code == (0 if provider == "codex" else None)
+    receipt = shared_wire_support_receipt(
+        storage_root=qualified_tool_schema_registry.storage_root, providers=("claude-code", "codex")
+    )
+    assert receipt.complete
+    assert len(receipt.entries) == 2
+    assert all(
+        witness.healthy and witness.parsed_message_count == 4
+        for entry in receipt.entries
+        for witness in entry.parser_witnesses
+    )

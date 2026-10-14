@@ -1267,6 +1267,16 @@ def qualified_schema_registry(tmp_path_factory: pytest.TempPathFactory) -> Schem
 
 
 @pytest.fixture(scope="session")
+def qualified_tool_schema_registry(tmp_path_factory: pytest.TempPathFactory) -> SchemaRegistry:
+    """Infer tool-bearing source streams with authored structured outcomes."""
+    from tests.infra.qualified_schema_registry import build_qualified_schema_registry
+
+    return build_qualified_schema_registry(
+        tmp_path_factory.mktemp("qualified-tool-schemas"), providers=("claude-code", "codex"), tool_cases=True
+    )
+
+
+@pytest.fixture(scope="session")
 def qualified_schema_catalog(
     qualified_schema_registry: SchemaRegistry, tmp_path_factory: pytest.TempPathFactory
 ) -> SchemaRegistry:

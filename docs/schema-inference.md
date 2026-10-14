@@ -163,8 +163,10 @@ captures use the same selection predicates and lowering as production parsing.
 Witness bytes stream with corpus state restored before each yield. The receipt
 retains per-artifact evidence and aggregate construct keys and counts. The test
 memo retains complete entries within its heap budget; oversized or abandoned
-streams remain uncached without dropping their output. This covers per-field
-schema generation, not the still separate cross-record workload model.
+streams remain uncached without dropping their output. Package-backed witnesses retain their original cross-record grammar and
+measured field presence. A construct assignment applies only to a compatible
+original record; other records retain their selected wire forms. Missing
+construct evidence remains visible in the receipt.
 
 Optional field sampling overrides its marginal frequency only with an explicit
 co-occurrence count. Missing public maps or keys are unknown; an explicit zero
@@ -259,7 +261,10 @@ the generator does not reconstruct joint evidence from marginal histograms.
 
 Package workload profiles own cross-record structure. The original record pass
 measures public kind starts, endings, transitions, scope counts and conditional
-content block paths. Claude Code role carriers preserve their measured joint
+content block paths. Each public block kind also carries a finite presence
+joint for `text`, `thinking`, `content` and `input`; unrelated body fields are
+not drawn independently from merged block marginals. This retains no body
+values or observed private field names. Claude Code role carriers preserve their measured joint
 presence/null/value combinations and parser precedence; empty ChatGPT nodes
 retain the measured absence or null form. Missing conditional evidence requires
 reinference, rather than guessing a joint distribution from field marginals.

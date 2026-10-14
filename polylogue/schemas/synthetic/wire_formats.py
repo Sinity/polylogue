@@ -1642,6 +1642,10 @@ def _parser_artifact_expected_session_id(provider: str, payload: JSONValue, fall
                 session_id = payload.get(field)
                 if isinstance(session_id, str) and session_id:
                     return session_id
+        if provider == "gemini":
+            identity = payload.get("id")
+            if isinstance(identity, str) and identity:
+                return identity
         if provider == "claude-ai":
             for field in ("uuid", "id", "conversation_id", "conversationId"):
                 session_id = payload.get(field)
