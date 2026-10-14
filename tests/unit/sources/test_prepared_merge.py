@@ -647,6 +647,7 @@ def test_retained_revision_metadata_does_not_collect_growing_history(tmp_path: P
         ],
     )
     artifact = _chunk_artifact(tmp_path / "raw", session, "e" * 64)
+    assert artifact.blob_hash is not None
     retained = PreparedRetainedInput(
         raw_id="raw",
         provider=Provider.CODEX,
