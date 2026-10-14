@@ -845,7 +845,7 @@ def test_canonical_read_cancellation_precedes_cache_publication(
         assert warm.outcome == "completed", warm.to_dict()
         actual_get = cache.get_cached_result
 
-        def cancelled_lookup(*args, **kwargs):
+        def cancelled_lookup(*args: Any, **kwargs: Any) -> dict[str, object]:
             result = actual_get(*args, **kwargs)
             assert result is not None
             control.cancel()
@@ -855,7 +855,7 @@ def test_canonical_read_cancellation_precedes_cache_publication(
     else:
         actual_query = daemon_reads._query_payload
 
-        def cancelled_computation(*args, **kwargs):
+        def cancelled_computation(*args: Any, **kwargs: Any) -> dict[str, object]:
             result = actual_query(*args, **kwargs)
             control.cancel()
             return result
@@ -864,7 +864,7 @@ def test_canonical_read_cancellation_precedes_cache_publication(
     inserted = []
     actual_put = cache.put_cached_result
 
-    def record_insert(*args, **kwargs):
+    def record_insert(*args: Any, **kwargs: Any) -> None:
         inserted.append(args)
         return actual_put(*args, **kwargs)
 
@@ -872,6 +872,8 @@ def test_canonical_read_cancellation_precedes_cache_publication(
     envelope = daemon_execution.execute_operation(request, context).to_dict()
     assert control.cancelled, envelope
     assert envelope["outcome"] == "cancelled"
-    assert envelope["error"]["code"] == "QueryCancelledError"
+    error = envelope["error"]
+    assert isinstance(error, dict)
+    assert error["code"] == "QueryCancelledError"
     assert envelope["result"] is None
     assert inserted == []
