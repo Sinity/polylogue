@@ -745,6 +745,7 @@ def test_separator_append_keeps_all_aggregate_dependencies_without_a_session(tmp
     bound = None
     try:
         assert tail.jsonl_separators_only and not tail.session_sequence()
+        (tmp_path / "bound").mkdir()
         bound = _finalize_prepared_cohort(
             tail.read_result(),
             lambda sessions: sessions,
