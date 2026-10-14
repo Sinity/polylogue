@@ -2751,11 +2751,14 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
     stacks = tmp_path / "stacks.json"
     if samples != "absent":
         stacks.write_text(json.dumps(document), encoding="utf-8")
-    monkeypatch.setattr(report, "_log_delivery", lambda path: document["log_delivery"])
-    monkeypatch.setattr(
-        report,
-        "analyse_events",
-        lambda *args, **kwargs: {"milestones_s": {"promoted_s": 0.5}, "coverage": {"complete": True}},
+    # Shutdown proof reduces and binds the captured files, independently of
+    # whether the requested diagnostic stacks were available.
+    (tmp_path / "events.jsonl").write_text(
+        _event("00.500", "daemon.cold_build.generation_promoted")
+        + "\n"
+        + _event("01.000", "daemon.writer.released", outcome="ok")
+        + "\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(report, "archive_census", lambda *args: {"messages_fts_rows": 0, "fts_indexable_rows": 0})
     (tmp_path / "policy.json").write_text(
@@ -2806,7 +2809,7 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
         identity={"unchanged_during_run": True, "git_sha": "0" * 40, "dirty": False},
         environment={"python_executable": "/synthetic/python"},
         command=[],
-        started_wall=0.0,
+        started_wall=report._ts("2026-09-27T10:00:00.000Z"),
         wall_s=1.0,
         outcome="terminal",
         terminal_at=1.0,
@@ -2823,7 +2826,15 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
         tree_samples=[],
         driver_at_launch=report.benchmark_implementation_sha256(),
     )
-    assert all(value for key, value in receipt["checks"].items() if key != "profile_collected")
+    expected_missing = {"events_lossless", "clean_shutdown"} if samples == "absent" else set()
+    assert all(
+        value for key, value in receipt["checks"].items() if key not in {"profile_collected", *expected_missing}
+    ), {key: value for key, value in receipt["checks"].items() if not value}
+    assert receipt["checks"]["events_lossless"] is (samples != "absent")
+    assert receipt["checks"]["clean_shutdown"] is (None if samples == "absent" else True)
+    assert receipt["shutdown_evidence"]["state"] == ("unknown" if samples == "absent" else "pass")
+    if samples == "absent":
+        assert "shutdown_inputs_unbound" in receipt["shutdown_evidence"]["unknown"]
     assert receipt["checks"]["fts_row_count_equal"] is True
     assert "fts_exact" not in receipt["checks"]
     assert receipt["checks"]["profile_collected"] is (samples == "collected")
@@ -2835,8 +2846,10 @@ def test_requested_profile_controls_terminal_qualification_and_comparison(
         assert "profile outcome=refused reason=" in report.render(receipt)
         for allow in (False, True):
             ok, text = compare(receipt, receipt, allow_unqualified=allow)
-            assert ok, text
-        assert receipt["evaluation"]["metrics"]["promotion_s"]["qualified"]
+            assert ok is (samples != "absent"), text
+            if samples == "absent":
+                assert "failed integrity check events_lossless" in text
+        assert receipt["evaluation"]["metrics"]["promotion_s"]["qualified"] is (samples != "absent")
         assert receipt["evaluation"]["capabilities"]["stacks"]["state"] == "refused"
 
 
