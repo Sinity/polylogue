@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TextIO, cast
 from unittest.mock import MagicMock, patch
 
 import click
@@ -677,22 +677,21 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
     return defaults
 
 
-def test_deliver_content_browser_destination_opens_browser() -> None:
-    """base.deliver_content's ``"browser"`` branch must route through the
-    existing query_output.open_in_browser mechanism (polylogue-bvnz), not a
-    second bespoke implementation.
-
-    Anti-vacuity: the production caller is ``deliver_content``
-    (``read_views/base.py``), used by every read view that streams rendered
-    content (dialogue, temporal, context, neighbors, messages, events,
-    file-edits, chronicle). Removing the ``elif destination == "browser":``
-    branch (or reverting it to fall into the generic ``else``) makes this
-    test fail because ``open_in_browser`` would never be called.
-    """
+def test_deliver_content_browser_destination_retains_the_shared_descriptor() -> None:
+    """Read views use the shared browser delivery owner through physical delivery."""
     from polylogue.cli.read_views.base import deliver_content
 
     env = cast(AppEnv, SimpleNamespace(ui=MagicMock()))
-    with patch("polylogue.cli.query_output.open_in_browser") as open_browser:
+    descriptors: list[TextIO] = []
+
+    def open_browser(actual_env: AppEnv, content: TextIO, output_format: str, session: object) -> None:
+        assert actual_env is env and output_format == "markdown" and session is None
+        assert not content.closed
+        content.seek(0)
+        assert content.read() == "rendered content"
+        descriptors.append(content)
+
+    with patch("polylogue.cli.query_output._open_descriptor_in_browser", side_effect=open_browser):
         deliver_content(
             env,
             "rendered content",
@@ -701,7 +700,7 @@ def test_deliver_content_browser_destination_opens_browser() -> None:
             output_format="markdown",
             session=None,
         )
-    open_browser.assert_called_once_with(env, "rendered content", "markdown", None)
+    assert len(descriptors) == 1 and descriptors[0].closed
 
 
 def test_deliver_content_file_destination_warns_on_secret_candidate(tmp_path: Path) -> None:

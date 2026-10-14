@@ -120,6 +120,26 @@ Session-level existential DSL filters stay independent of the semantic witness. 
 
 Exact root transcript reads preserve every bounded `session.read` page's outcome and lineage verdict in the `root-session` JSON document. A missing inherited prefix remains degraded after subsequent successful pages; root message streams report that supplied verdict on stderr and use its exit status. Document exports deliver to named file destinations before reporting an empty or degraded terminal status. `read --all --view summary` always selects the summary-list projection, including when its selection names one exact session ID.
 
+Complete CLI transcripts stage each bounded message page in a private descriptor
+before reading the next page. Their header and repeatable message iterator feed
+the same semantic projection, terminal classifier, and renderer used by the
+string formatter. JSON, YAML, CSV, Markdown, plaintext, Org, Obsidian, and HTML
+encode staged records incrementally. HTML keeps branch positions in memory;
+tool projection keeps dependency identifiers. Message bodies are not collected
+into a complete Session or rendered string.
+
+Query-set transcripts drain the independent metadata continuation before
+rendering. Nonempty User tags retain their authority and recorded order;
+provider tags supply the existing fallback when the User relation is empty.
+Exact root transcript documents do not request User tags or add undeclared
+metadata fields. A failed later page or renderer closes the read and output
+descriptors without publishing a partial finite stdout document.
+
+Completed output remains in its private descriptor through delivery. Clipboard
+commands receive that descriptor as stdin; each fallback rewinds it before the
+next command. The caller closes it after physical command completion. Explicit
+stream output keeps its incremental delivery contract.
+
 Every row-bearing envelope carries one typed outcome -- `ok`, `empty`,
 `degraded`, or `error` -- decided at the operation boundary
 (`polylogue/surfaces/outcome.py:1-60`). `empty` means the declared scope

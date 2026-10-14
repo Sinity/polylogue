@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from typing import cast
 
 import pytest
@@ -34,11 +35,12 @@ def test_session_window_continuation_keeps_remaining_bound(monkeypatch: pytest.M
         }, {}
 
     monkeypatch.setattr(archive_query, "dispatch_read", read)
-    result = archive_query._read_session_windows(
-        cast(Config, object()), "session:w12", daemon_disabled=True, message_limit=5
-    )
-    assert [request.payload.get("limit") for request in requests] == [4, 1]
-    assert result["messages"] == [{"position": i} for i in range(5)]
+    with ExitStack() as lifetime:
+        result = archive_query._read_session_windows(
+            cast(Config, object()), "session:w12", daemon_disabled=True, lifetime=lifetime, message_limit=5
+        )
+        assert [request.payload.get("limit") for request in requests] == [4, 1]
+        assert list(result.records.records()) == [{"position": i} for i in range(5)]
 
 
 def test_session_window_resumes_the_original_page_bound(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,6 +67,9 @@ def test_session_window_resumes_the_original_page_bound(monkeypatch: pytest.Monk
         }, {}
 
     monkeypatch.setattr(archive_query, "dispatch_read", read)
-    result = archive_query._read_session_windows(cast(Config, object()), "session:w12", daemon_disabled=True)
-    assert requests == [(4, None), (4, "after-4")]
-    assert result["messages"] == [{"position": i} for i in range(7)]
+    with ExitStack() as lifetime:
+        result = archive_query._read_session_windows(
+            cast(Config, object()), "session:w12", daemon_disabled=True, lifetime=lifetime
+        )
+        assert requests == [(4, None), (4, "after-4")]
+        assert list(result.records.records()) == [{"position": i} for i in range(7)]

@@ -217,12 +217,12 @@ def _tool_block_id(block: object) -> str | None:
     return None
 
 
-def _pending_tool_blocks(session: Session) -> int:
+def _pending_tool_blocks(session: Session, messages: Callable[[], Iterable[Message]] | None = None) -> int:
     uses: Counter[str] = Counter()
     results: Counter[str] = Counter()
     unidentified_uses = 0
     unidentified_results = 0
-    for message in session.messages:
+    for message in messages() if messages is not None else session.messages:
         for block in message.blocks:
             if not isinstance(block, dict):
                 continue
@@ -246,11 +246,12 @@ def _pending_tool_blocks(session: Session) -> int:
 
 class _ToolResultSummary(NamedTuple):
     outcome: str
-    text: str | None
 
 
-def _session_tool_results(session: Session) -> dict[str, _ToolResultSummary]:
-    """Session-wide ``tool_id -> (structural outcome, result text)`` map.
+def _session_tool_results(
+    session: Session, messages: Callable[[], Iterable[Message]] | None = None
+) -> dict[str, _ToolResultSummary]:
+    """Session-wide ``tool_id -> structural outcome`` map.
 
     Mirrors ``_pending_tool_blocks``'s session-wide (not per-message)
     ``tool_use``/``tool_result`` pairing and
@@ -259,13 +260,12 @@ def _session_tool_results(session: Session) -> dict[str, _ToolResultSummary]:
     message and its paired ``tool_result`` in a *later* message, which
     :func:`polylogue.archive.actions.parsing.build_tool_calls_from_content_blocks`
     (and therefore ``Action.output_text``, per-message only) cannot see.
-    Reading blocks directly session-wide here is what makes both the
-    structural error signal and its tagged text fallback in
-    :func:`_terminal_state` actually fire for the common shape, not just the
-    rare same-message case.
+    Reading blocks directly session-wide lets :func:`_terminal_state` use
+    structural outcomes for the common shape, not just the rare same-message
+    case. Result bodies are not needed by that decision.
     """
     results: dict[str, _ToolResultSummary] = {}
-    for message in session.messages:
+    for message in messages() if messages is not None else session.messages:
         for block in message.blocks:
             if not isinstance(block, dict):
                 continue
@@ -274,11 +274,7 @@ def _session_tool_results(session: Session) -> dict[str, _ToolResultSummary]:
             tool_id = _tool_block_id(block)
             if tool_id is None:
                 continue
-            text = block.get("text")
-            results[tool_id] = _ToolResultSummary(
-                outcome=tool_result_block_outcome(block),
-                text=text if isinstance(text, str) and text else None,
-            )
+            results[tool_id] = _ToolResultSummary(outcome=tool_result_block_outcome(block))
     return results
 
 
@@ -306,7 +302,7 @@ TERMINAL_STATE_METHODS = frozenset(
 
 
 def _terminal_state(
-    session: Session, actions: Iterable[Action]
+    session: Session, actions: Iterable[Action], messages: Callable[[], Iterable[Message]] | None = None
 ) -> tuple[str, float, dict[str, int | float | str | None], str]:
     """Classify how a session's tool/turn activity ended.
 
@@ -325,7 +321,7 @@ def _terminal_state(
     token persisted to ``session_profiles.terminal_state_method``
     (polylogue-vhjs).
     """
-    pending_block_count = _pending_tool_blocks(session)
+    pending_block_count = _pending_tool_blocks(session, messages)
     if pending_block_count:
         return (
             "tool_left",
@@ -333,7 +329,7 @@ def _terminal_state(
             {"pending_tool_count": pending_block_count, "evidence_class": "raw_evidence"},
             "pending_tool_blocks",
         )
-    tool_results = _session_tool_results(session)
+    tool_results = _session_tool_results(session, messages)
     latest_error_action_id: str | None = None
     latest_error_action_evidence_class: str | None = None
     final_action_outcome_is_error = False
@@ -391,7 +387,7 @@ def _terminal_state(
         )
 
     last: Message | None = None
-    for message in session.messages:
+    for message in messages() if messages is not None else session.messages:
         if (message.text or "").strip() and not message.is_protocol_artifact:
             last = message
     if last is None:
@@ -476,6 +472,7 @@ def build_session_terminal_state(
     session: Session,
     *,
     facts: SessionSemanticFacts | None = None,
+    messages: Callable[[], Iterable[Message]] | None = None,
 ) -> tuple[str, float, dict[str, int | float | str | None], str]:
     """Read structural terminal evidence without unrelated profile analysis.
 
@@ -487,11 +484,11 @@ def build_session_terminal_state(
         if facts is not None
         else (
             action
-            for message in session.messages
+            for message in (messages() if messages is not None else session.messages)
             for action in build_actions(message, message_tool_calls(message) if message.is_tool_use else ())
         )
     )
-    return _terminal_state(session, actions)
+    return _terminal_state(session, actions, messages)
 
 
 def build_session_analysis(

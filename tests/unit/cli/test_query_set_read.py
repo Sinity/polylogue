@@ -61,6 +61,15 @@ def _resident_bulk_pages(monkeypatch: pytest.MonkeyPatch) -> None:
         session = next(session for session in config.fixture_sessions if session.id == operation.payload["ref"])
         return {
             "session": session.model_dump(mode="json"),
+            "metadata_page": {
+                "working_directories_total": len(session.working_directories),
+                "user_tags_total": len(session.tags_m2m),
+                "limit": 100,
+                "offset": 0,
+                "next_offset": None,
+                "continuation": None,
+                "complete": True,
+            },
             "session_id": session.id,
             "selection_epoch": "fixture-selected-frame",
             "outcome": decide_outcome(matched=len(session.messages)).to_dict(),
@@ -1072,13 +1081,34 @@ def test_bulk_late_hydration_failure_emits_no_partial_document(monkeypatch: pyte
     sessions = _two_sessions()
     reached = []
 
-    def read(_env, _request, session_id, epoch):  # type: ignore[no-untyped-def]
+    def read(_env, _request, session_id, epoch, lifetime):  # type: ignore[no-untyped-def]
         reached.append((session_id, epoch))
         if session_id == "b":
             if failure == "cancelled":
                 raise OperationCancelledError("session.read", "cancelled after the first selected session")
             raise OperationFailedError("query_continuation_stale", "changed selected view")
-        return sessions[0], decide_outcome(matched=1)
+        from polylogue.cli.transcript import transcript_records
+
+        records = lifetime.enter_context(transcript_records())
+        for message in sessions[0].messages:
+            records.append(message.model_dump(mode="json"))
+        from polylogue.cli.transcript import MetadataWalk
+
+        metadata = MetadataWalk(lifetime.enter_context(transcript_records()))
+        metadata.accept(
+            {
+                "working_directories_total": len(sessions[0].working_directories),
+                "user_tags_total": len(sessions[0].tags_m2m),
+                "limit": 100,
+                "offset": 0,
+                "next_offset": None,
+                "continuation": None,
+                "complete": True,
+            },
+            sessions[0].working_directories,
+            sessions[0].tags_m2m,
+        )
+        return sessions[0], records, metadata, decide_outcome(matched=1)
 
     monkeypatch.setattr(query_set_read, "_read_selected_session", read)
     runner = CliRunner()
@@ -1184,3 +1214,82 @@ def test_query_set_csv_has_one_header_and_complete_message_rows() -> None:
         ("neutral-a", "message-a", 'Żółć, "one"\nsecond line'),
         ("neutral-b", "message-b", "other message  "),
     ]
+
+
+@pytest.mark.parametrize("fail_last", [False, True])
+def test_complete_transcript_drains_independent_metadata_before_output(
+    monkeypatch: pytest.MonkeyPatch, fail_last: bool
+) -> None:
+    from polylogue.archive.message.messages import MessageCollection
+    from polylogue.cli import read_dispatch
+    from polylogue.cli.read_dispatch import ServedBy
+    from polylogue.surfaces.outcome import decide_outcome
+
+    tags = tuple(f"tag-{position:03d}" for position in range(250))
+    session = make_conv(
+        id="metadata-session",
+        messages=[make_msg(id="one", text="authored")],
+        tags_m2m=tags,
+        metadata={"tags": ["provider-z", "provider-a"]},
+    )
+    env = _stub_env([session])
+    requests: list[dict[str, object]] = []
+
+    def read(config, operation, **kwargs):  # type: ignore[no-untyped-def]
+        payload = operation.payload
+        requests.append(dict(payload))
+        position = len(requests) - 1
+        if fail_last and position == 2:
+            raise RuntimeError("late metadata read failed")
+        offset = position * 100
+        next_offset = offset + 100 if position < 2 else None
+        page = session.model_copy(
+            update={
+                "messages": session.messages if position == 0 else MessageCollection.empty(),
+                "tags_m2m": tags[offset : offset + 100],
+            }
+        )
+        return {
+            "session": page.model_dump(mode="json"),
+            "session_id": session.id,
+            "selection_epoch": "fixture-selected-frame",
+            "outcome": decide_outcome(matched=1).to_dict(),
+            "offset": 0 if position == 0 else 1,
+            "total": 1,
+            "next_offset": None,
+            "continuation": None,
+            "complete": True,
+            "metadata_page": {
+                "working_directories_total": 0,
+                "user_tags_total": 250,
+                "limit": 100,
+                "offset": offset,
+                "next_offset": next_offset,
+                "continuation": f"metadata-{next_offset}" if next_offset else None,
+                "complete": next_offset is None,
+            },
+        }, ServedBy("fixture", None)
+
+    monkeypatch.setattr(read_dispatch, "dispatch_read", read)
+    runner = CliRunner()
+    with runner.isolation() as (out, _err, _term):
+        if fail_last:
+            with pytest.raises(RuntimeError, match="late metadata"):
+                query_set_read.run_query_set_read(env, _request(), output_format="json", fields=None)
+            assert out.getvalue() == b""
+        else:
+            query_set_read.run_query_set_read(env, _request(), output_format="json", fields=None)
+            document = json.loads(out.getvalue())[0]
+            assert document["tags"] == list(tags)
+            assert [message["id"] for message in document["messages"]] == ["one"]
+    assert [request["limit"] for request in requests] == [100, 0, 0]
+    assert [request["offset"] for request in requests] == [0, 1, 1]
+    assert [request["metadata_continuation"] for request in requests] == [None, "metadata-100", "metadata-200"]
+    assert all(request["metadata_limit"] == 100 for request in requests)
+
+
+@pytest.mark.parametrize("user_tags", [(), ("a", "a", "z")])
+def test_complete_transcript_keeps_user_tag_authority_and_provider_fallback_order(user_tags: tuple[str, ...]) -> None:
+    session = make_conv(id="tag-session", tags_m2m=user_tags, metadata={"tags": ["provider-z", "provider-a"]})
+    document = json.loads(_capture_run(_stub_env([session]), _request(), "json", None))[0]
+    assert document["tags"] == list(user_tags or ("provider-z", "provider-a"))

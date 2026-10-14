@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+from tempfile import TemporaryFile
 from typing import TYPE_CHECKING
 
 from polylogue.rendering.renderers.html_highlighting import (
@@ -10,13 +12,13 @@ from polylogue.rendering.renderers.html_highlighting import (
 )
 from polylogue.rendering.renderers.html_messages import (
     _attach_branches,
-    build_session_html_messages,
+    iter_html_messages,
 )
 from polylogue.rendering.renderers.html_template import get_cached_template
 from polylogue.ui.theme import ThemeMode, css_variable_declarations, syntax_theme
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Session
+    from polylogue.archive.models import Message, Session
 
 
 def render_session_html(conv: Session, theme: str = "dark") -> str:
@@ -33,37 +35,31 @@ def render_session_html(conv: Session, theme: str = "dark") -> str:
     Returns:
         Complete HTML document as a string.
     """
+    return "".join(session_html_chunks(conv, conv.messages, theme))
+
+
+def session_html_chunks(conv: Session, messages: Iterable[Message], theme: str = "dark") -> Iterator[str]:
+    from polylogue.rendering.renderers.html_records import HTMLRecords
+
     active_theme: ThemeMode = "light" if theme == "light" else "dark"
-    style = syntax_theme("html", active_theme)
-    highlighter = PygmentsHighlighter(style=style)
+    highlighter = PygmentsHighlighter(style=syntax_theme("html", active_theme))
     message_renderer = HTMLMessageRenderer(highlighter)
-
-    messages = build_session_html_messages(
-        conv,
-        render_html=message_renderer.render,
-        preview_limit=120,
-    )
-    title = conv.display_title or str(conv.id)
-
-    template = get_cached_template()
-
-    rendered = template.render(
-        title=title,
-        origin=conv.origin.value,
-        session_id=str(conv.id),
-        messages=messages,
-        message_count=len(messages),
-        created_at=str(conv.display_date) if conv.display_date else None,
-        highlight_css=highlighter.get_css(),
-        theme=active_theme,
-        theme_css=css_variable_declarations(active_theme),
-    )
-    return str(rendered)
+    with TemporaryFile(mode="w+t", encoding="utf-8") as stream:
+        records = HTMLRecords(
+            stream, iter_html_messages(messages, render_html=message_renderer.render, preview_limit=120)
+        )
+        template = get_cached_template()
+        yield from template.generate(
+            title=conv.display_title or str(conv.id),
+            origin=conv.origin.value,
+            session_id=str(conv.id),
+            messages=records,
+            message_count=len(records),
+            created_at=str(conv.display_date) if conv.display_date else None,
+            highlight_css=highlighter.get_css(),
+            theme=active_theme,
+            theme_css=css_variable_declarations(active_theme),
+        )
 
 
-__all__ = [
-    "HTMLMessageRenderer",
-    "PygmentsHighlighter",
-    "_attach_branches",
-    "render_session_html",
-]
+__all__ = ["HTMLMessageRenderer", "PygmentsHighlighter", "_attach_branches", "render_session_html"]

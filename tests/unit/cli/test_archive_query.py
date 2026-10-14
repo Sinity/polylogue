@@ -5,7 +5,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -1544,12 +1546,11 @@ class TestSessionSummaryText:
             }, None
 
         monkeypatch.setattr(archive_query, "dispatch_read", dispatch)
-        assert (
-            archive_query._read_session_windows(cast(Config, object()), "session:fixture", daemon_disabled=True)[
-                "messages"
-            ]
-            == []
-        )
+        with ExitStack() as lifetime:
+            result = archive_query._read_session_windows(
+                cast(Config, object()), "session:fixture", daemon_disabled=True, lifetime=lifetime
+            )
+            assert list(result.records.records()) == []
         assert limits == [200]
 
     """``read --view summary`` must render a condensed synopsis, not the full
@@ -1850,7 +1851,7 @@ def test_open_result_preserves_supplied_degraded_outcome(
     monkeypatch.setattr(
         archive_query,
         "_transcript_or_page",
-        lambda *_args, **_kwargs: {"session_id": session_id, "outcome": supplied.to_dict()},
+        lambda *_args, **_kwargs: SimpleNamespace(header={"session_id": session_id}, outcome=supplied),
     )
     monkeypatch.setattr(archive_query, "_single_query_token_looks_like_ref", lambda _value: selection == "reference")
     opened = []

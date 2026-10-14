@@ -15,20 +15,21 @@ from __future__ import annotations
 
 import csv
 import io
-import json
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Generator, Iterable, Iterator
+from contextlib import closing
+from typing import TYPE_CHECKING, TextIO
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.localtime import format_local_datetime
 from polylogue.surfaces.payloads import (
     JSONDocument,
+    message_render_envelope_from_domain,
     model_json_document,
-    session_detail_envelope_from_domain,
     session_list_envelope_from_domain,
 )
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Session
+    from polylogue.archive.models import Message, Session
 
 SESSION_OUTPUT_FORMATS = (
     "markdown",
@@ -63,26 +64,159 @@ def format_session(
     Returns:
         Formatted string
     """
-    output_format = normalize_session_output_format(output_format)
-    if content_projection is not None and content_projection.filters_content():
-        conv = conv.with_content_projection(content_projection)
+    output = io.StringIO()
+    write_session(
+        conv, lambda: iter(conv.messages), output, output_format, fields, content_projection=content_projection
+    )
+    return output.getvalue()
 
-    if output_format == "json":
-        return _conv_to_json(conv, fields)
-    elif output_format == "yaml":
-        return _conv_to_yaml(conv, fields)
+
+def write_session(
+    header: Session,
+    messages: Callable[[], Iterable[Message]],
+    output: TextIO,
+    output_format: str,
+    fields: str | None,
+    *,
+    content_projection: ContentProjectionSpec | None = None,
+    compact_json: bool = False,
+    tags: Callable[[], Iterable[str]] | None = None,
+) -> None:
+    """Render the complete owned transcript without constructing a whole Session."""
+    with closing(
+        session_chunks(
+            header,
+            messages,
+            output_format,
+            fields,
+            content_projection=content_projection,
+            compact_json=compact_json,
+            tags=tags,
+        )
+    ) as chunks:
+        for chunk in chunks:
+            output.write(chunk)
+
+
+def session_chunks(
+    header: Session,
+    messages: Callable[[], Iterable[Message]],
+    output_format: str,
+    fields: str | None,
+    *,
+    content_projection: ContentProjectionSpec | None = None,
+    compact_json: bool = False,
+    tags: Callable[[], Iterable[str]] | None = None,
+) -> Generator[str, None, None]:
+    from polylogue.archive.semantic.content_projection import iter_projected_content
+    from polylogue.rendering.transcript import message_document_chunks, stripped_chunks
+
+    def selected_messages() -> Iterable[Message]:
+        return iter_projected_content(messages, content_projection)
+
+    output_format = normalize_session_output_format(output_format)
+    if output_format in {"json", "yaml"}:
+        selected = {field.strip() for field in fields.split(",")} if fields else None
+        metadata = session_list_envelope_from_domain(header, bound_title=False, messages=selected_messages).selected(
+            selected
+        )
+        projected = (
+            (
+                model_json_document(
+                    message_render_envelope_from_domain(message, session_id=header.id), exclude_none=True
+                )
+                for message in selected_messages()
+            )
+            if selected is None or "messages" in selected
+            else None
+        )
+        arrays = {"tags": tags()} if tags is not None and "tags" in metadata else None
+        if arrays is not None:
+            metadata["tags"] = []
+        yield from message_document_chunks(metadata, projected, output_format, compact=compact_json, arrays=arrays)
     elif output_format == "html":
-        return _conv_to_html(conv)
+        from polylogue.rendering.renderers.html import session_html_chunks
+
+        yield from session_html_chunks(header, selected_messages())
     elif output_format == "csv":
-        return _conv_to_csv_messages(conv)
-    elif output_format == "obsidian":
-        return _conv_to_obsidian(conv)
-    elif output_format == "org":
-        return _conv_to_org(conv)
+
+        def csv_chunks() -> Iterator[str]:
+            buffer = io.StringIO()
+            writer = csv.writer(buffer)
+            writer.writerow(["session_id", "message_id", "role", "timestamp", "text"])
+            yield buffer.getvalue()
+            for message in selected_messages():
+                if not message.text:
+                    continue
+                buffer.seek(0)
+                buffer.truncate()
+                writer.writerow(
+                    [
+                        str(header.id),
+                        str(message.id),
+                        _csv_safe(message.role or ""),
+                        _csv_safe(message.timestamp.isoformat() if message.timestamp else ""),
+                        _csv_safe(message.text),
+                    ]
+                )
+                yield buffer.getvalue()
+
+        yield from stripped_chunks(csv_chunks(), leading=False, characters="\r\n")
     elif output_format == "plaintext":
-        return _conv_to_plaintext(conv)
-    else:  # markdown
-        return _conv_to_markdown(conv)
+        yield from stripped_chunks(message.text + "\n\n" for message in selected_messages() if message.text)
+    elif output_format == "org":
+        yield f"#+TITLE: {header.display_title or header.id}\n#+DATE: {format_local_datetime(header.display_date, '%Y-%m-%d') or 'unknown'}\n#+PROPERTY: origin {header.origin.value}\n"
+        for message in selected_messages():
+            if message.text:
+                yield f"\n* {(message.role or 'unknown').upper()}\n{message.text}\n"
+    else:
+        if output_format == "obsidian":
+            yield f"---\nid: {_yaml_safe(str(header.id))}\norigin: {_yaml_safe(header.origin.value)}\ndate: {header.display_date.isoformat() if header.display_date else 'unknown'}\ntags: ["
+            for position, tag in enumerate(tags() if tags is not None else header.tags):
+                if position:
+                    yield ", "
+                yield _yaml_safe(tag)
+            yield "]\n---\n"
+        yield from stripped_chunks(_markdown_chunks(header, selected_messages()))
+        yield "\n"
+
+
+def _markdown_chunks(header: Session, messages: Iterable[Message]) -> Iterator[str]:
+    from pathlib import Path
+
+    from polylogue.rendering.block_models import coerce_renderable_blocks
+    from polylogue.rendering.core_markdown import (
+        MarkdownAttachment,
+        _normalize_markdown_message,
+        markdown_message_lines,
+    )
+
+    yield f"# {header.title or 'Untitled'}\n\nOrigin: {header.origin.value}\nSession ID: {header.id}\n\n"
+    for message in messages:
+        normalized = _normalize_markdown_message(
+            message_id=str(message.id),
+            role=message.role,
+            text=message.text,
+            timestamp=message.timestamp,
+            default_role="message",
+            blocks=coerce_renderable_blocks(message.blocks),
+        )
+        attachments = [
+            MarkdownAttachment(str(att.id), att.path or att.source_url, att.name) for att in message.attachments
+        ]
+        lines = markdown_message_lines(normalized, attachments, Path("."))
+        if lines:
+            yield "\n".join(lines) + "\n"
+    if header.attachments:
+        from polylogue.rendering.core_markdown import append_attachment_markdown
+
+        yield "## attachments\n\n"
+        for att in header.attachments:
+            lines = []
+            append_attachment_markdown(
+                MarkdownAttachment(str(att.id), att.path or att.source_url, att.name), lines, Path(".")
+            )
+            yield "\n".join(lines) + "\n"
 
 
 def _conv_to_dict(conv: Session, fields: str | None, *, bound_title: bool = True) -> JSONDocument:
@@ -97,46 +231,7 @@ def _conv_to_dict(conv: Session, fields: str | None, *, bound_title: bool = True
     return session_list_envelope_from_domain(conv, bound_title=bound_title).selected(selected)
 
 
-def _conv_to_json(conv: Session, fields: str | None) -> str:
-    """Convert a single session to full JSON with message content."""
-    data = _conv_to_dict(conv, fields, bound_title=False)
-    if fields is None or "messages" in {field.strip() for field in fields.split(",")}:
-        detail_payload = session_detail_envelope_from_domain(conv)
-        data["messages"] = [
-            model_json_document(message_payload, exclude_none=True) for message_payload in detail_payload.messages
-        ]
-    return json.dumps(data, indent=2)
-
-
-def _conv_to_yaml(conv: Session, fields: str | None) -> str:
-    """Convert session to YAML format.
-
-    Args:
-        conv: Session to format
-        fields: Optional comma-separated field selector
-
-    Returns:
-        YAML-formatted string
-    """
-    import yaml
-
-    data = _conv_to_dict(conv, fields, bound_title=False)
-    if fields is None or "messages" in {field.strip() for field in fields.split(",")}:
-        detail_payload = session_detail_envelope_from_domain(conv)
-        data["messages"] = [
-            model_json_document(message_payload, exclude_none=True) for message_payload in detail_payload.messages
-        ]
-
-    return str(yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False))
-
-
 def _conv_to_html(conv: Session) -> str:
-    """Convert session to HTML with Pygments syntax highlighting.
-
-    Delegates to the shared ``render_session_html`` function which
-    uses the same Jinja2 template and Pygments highlighting as the
-    rendering subsystem's ``HTMLRenderer``.
-    """
     from polylogue.rendering.renderers.html import render_session_html
 
     return render_session_html(conv)
@@ -149,95 +244,9 @@ def _csv_safe(value: str) -> str:
     return value
 
 
-def _conv_to_csv_messages(conv: Session) -> str:
-    """Convert a single session's messages to CSV rows."""
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["session_id", "message_id", "role", "timestamp", "text"])
-    for msg in conv.messages:
-        if not msg.text:
-            continue
-        writer.writerow(
-            [
-                str(conv.id),
-                str(msg.id),
-                _csv_safe(msg.role or ""),
-                _csv_safe(msg.timestamp.isoformat() if msg.timestamp else ""),
-                _csv_safe(msg.text),
-            ]
-        )
-    return buf.getvalue().rstrip("\r\n")
-
-
-def _conv_to_markdown(conv: Session) -> str:
-    """Convert session to markdown."""
-    from polylogue.rendering.core_markdown import format_session_markdown
-
-    return format_session_markdown(conv)
-
-
-def _conv_to_plaintext(conv: Session) -> str:
-    """Convert session to plain text (no markdown formatting).
-
-    Strips all formatting, returning just the raw message content.
-    Useful for piping to grep, wc, or other text processing tools.
-
-    Args:
-        conv: Session to format
-
-    Returns:
-        Plain text with messages separated by blank lines
-    """
-    lines = []
-
-    for msg in conv.messages:
-        if msg.text:
-            # Just the raw text, no role labels or formatting
-            lines.append(msg.text)
-            lines.append("")
-
-    return "\n".join(lines).strip()
-
-
 def _yaml_safe(value: str) -> str:
     """Quote a YAML value if it contains special characters."""
     if any(c in value for c in ":#{}[]|>&*!?@`'\",\n\t"):
         escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t")
         return f'"{escaped}"'
     return value
-
-
-def _conv_to_obsidian(conv: Session) -> str:
-    """Convert session to Obsidian-compatible markdown with YAML frontmatter."""
-    tags_formatted = ", ".join(_yaml_safe(t) for t in conv.tags) if conv.tags else ""
-    frontmatter = [
-        "---",
-        f"id: {_yaml_safe(str(conv.id))}",
-        f"origin: {_yaml_safe(conv.origin.value)}",
-        f"date: {conv.display_date.isoformat() if conv.display_date else 'unknown'}",
-        f"tags: [{tags_formatted}]",
-        "---",
-        "",
-    ]
-    content = _conv_to_markdown(conv)
-    return "\n".join(frontmatter) + content
-
-
-def _conv_to_org(conv: Session) -> str:
-    """Convert session to Org-mode format."""
-    lines = [
-        f"#+TITLE: {conv.display_title or conv.id}",
-        f"#+DATE: {format_local_datetime(conv.display_date, '%Y-%m-%d') or 'unknown'}",
-        f"#+PROPERTY: origin {conv.origin.value}",
-        "",
-    ]
-
-    for msg in conv.messages:
-        if not msg.text:
-            continue
-        role_label = (msg.role or "unknown").upper()
-        lines.append(f"* {role_label}")
-        lines.append(msg.text)
-        lines.append("")
-
-    return "\n".join(lines)

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import io
 import json
 import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 from urllib.parse import quote
@@ -48,6 +47,7 @@ from polylogue.cli.render.rows import (
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.helpers import load_effective_config, mutation_refusal
 from polylogue.cli.shared.types import AppEnv
+from polylogue.cli.transcript import TranscriptRead, transcript_records
 from polylogue.config import Config
 from polylogue.core.errors import FIRST_RUN_INDEX_GUIDANCE, ArchiveTierUnavailableError
 from polylogue.logging import get_logger
@@ -120,27 +120,32 @@ def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
     env.begin_timing("execute")
     try:
         output = QueryOutputSpec.from_params(request.params)
-        if output.destination_labels() == ("stdout",) or request.params.get("stream"):
+        if request.params.get("stream"):
             _execute_archive_query_stdout(env, request)
             return
+        from polylogue.cli.output_stream import output_chunks, output_stream, strip_final_newlines
         from polylogue.cli.query_output import deliver_query_output
 
-        rendered = io.StringIO()
-        terminal_exit: OutcomeExit | None = None
-        try:
-            with redirect_stdout(rendered):
-                _execute_archive_query_stdout(env, request)
-        except OutcomeExit as exc:
-            # Deliver the completed empty/degraded document before its status.
-            terminal_exit = exc
-        deliver_query_output(
-            env,
-            QueryOutputDocument(
-                content=rendered.getvalue().rstrip("\n"),
-                output_format=output.output_format,
-                destinations=output.destinations,
-            ),
-        )
+        with output_stream() as rendered:
+            terminal_exit: OutcomeExit | None = None
+            try:
+                with redirect_stdout(rendered):
+                    _execute_archive_query_stdout(env, request)
+            except OutcomeExit as exc:
+                terminal_exit = exc
+            if output.destination_labels() == ("stdout",):
+                for chunk in output_chunks(rendered):
+                    click.echo(chunk, nl=False)
+            else:
+                strip_final_newlines(rendered)
+                deliver_query_output(
+                    env,
+                    QueryOutputDocument(
+                        content=rendered,
+                        output_format=output.output_format,
+                        destinations=output.destinations,
+                    ),
+                )
         if terminal_exit is not None:
             raise terminal_exit
     finally:
@@ -250,8 +255,9 @@ def _read_session_windows(
     ref: str,
     *,
     daemon_disabled: bool,
+    lifetime: ExitStack,
     message_limit: int | None = None,
-) -> dict[str, object]:
+) -> TranscriptRead:
     """Compose one whole transcript out of the operation's bounded windows.
 
     ``session.read`` is windowed because a full transcript can exceed the
@@ -276,7 +282,7 @@ def _read_session_windows(
     from polylogue.cli.operation_kernel import OperationEnvelopeError
     from polylogue.surfaces.outcome import combine_outcomes
 
-    messages: list[dict[str, object]] = []
+    records = lifetime.enter_context(transcript_records())
     session: dict[str, object] = {}
     continuation: str | None = None
     outcome: OutcomeEnvelope | None = None
@@ -284,14 +290,14 @@ def _read_session_windows(
     while True:
         window_limit = window_ceiling
         if message_limit is not None:
-            remaining = message_limit - len(messages)
+            remaining = message_limit - records.count
             if remaining <= 0:
                 break
             window_limit = min(remaining, window_ceiling)
         payload: Mapping[str, object]
         payload, _ = dispatch_read(
             config,
-            lower_session_read(ref, limit=window_limit, continuation=continuation),
+            lower_session_read(ref, limit=window_limit, continuation=continuation, include_user_tags=False),
             daemon_disabled=daemon_disabled,
         )
         window_ceiling = window_limit
@@ -324,20 +330,25 @@ def _read_session_windows(
         added = 0
         if isinstance(window_messages, list):
             rows = [item for item in window_messages if isinstance(item, dict)]
-            messages.extend(rows)
+            for row in rows:
+                records.append(row)
             added = len(rows)
         if payload.get("complete") is True:
             break
-        if message_limit is not None and len(messages) >= message_limit:
+        if message_limit is not None and records.count >= message_limit:
             break
         next_continuation = payload.get("continuation")
-        if added == 0 or not isinstance(next_continuation, str) or not next_continuation:
+        if (
+            added == 0
+            or not isinstance(next_continuation, str)
+            or not next_continuation
+            or next_continuation == continuation
+        ):
             raise OperationEnvelopeError("session.read did not complete or advance its message relation")
         continuation = next_continuation
-    session["messages"] = messages if message_limit is None else messages[:message_limit]
     assert outcome is not None
     session["outcome"] = outcome.to_dict()
-    return session
+    return TranscriptRead(session, records, outcome)
 
 
 def _session_result_payload(session: Mapping[str, object]) -> dict[str, object]:
@@ -349,8 +360,6 @@ def _session_result_payload(session: Mapping[str, object]) -> dict[str, object]:
     """
     from polylogue.cli.query_output_contracts import RootSessionDocument
 
-    messages = session.get("messages")
-    rows = [row for row in messages if isinstance(row, Mapping)] if isinstance(messages, list) else []
     return RootSessionDocument.model_validate(
         {
             "mode": "session",
@@ -368,9 +377,7 @@ def _session_result_payload(session: Mapping[str, object]) -> dict[str, object]:
             "outcome": session["outcome"],
             "lineage_complete": session["lineage_complete"],
             "lineage_truncation_reason": session["lineage_truncation_reason"],
-            "messages": [
-                {key: value for key, value in row.items() if key not in {"word_count", "has_tool_use"}} for row in rows
-            ],
+            "messages": [],
         }
     ).model_dump(mode="json")
 
@@ -398,50 +405,70 @@ def _session_message_text(message: Mapping[str, object]) -> str:
     return "\n".join(rendered)
 
 
+def _projected_session_messages(read: TranscriptRead) -> Iterable[dict[str, object]]:
+    for row in read.records.records():
+        yield {key: value for key, value in row.items() if key not in {"word_count", "has_tool_use"}}
+
+
 def _emit_session_result(
-    session: Mapping[str, object],
+    read: TranscriptRead,
     *,
     output_format: str,
     fields: str | None,
     view: str = "transcript",
 ) -> None:
     from polylogue.cli.render.outcome import finish_supplied_outcome
+    from polylogue.rendering.transcript import message_document_chunks
 
-    payload = _session_result_payload(session)
-    outcome = OutcomeEnvelope.model_validate(payload["outcome"])
-    if output_format == "json":
-        click.echo(json.dumps(project_payload(payload, fields), indent=2, sort_keys=True))
-    elif output_format == "yaml":
-        import yaml
-
-        click.echo(yaml.safe_dump(project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
+    payload = project_payload(_session_result_payload(read.header), fields)
+    if output_format in {"json", "yaml"}:
+        messages = _projected_session_messages(read) if "messages" in payload else None
+        for chunk in message_document_chunks(payload, messages, output_format, sort_keys=output_format == "json"):
+            click.echo(chunk, nl=False)
+        if output_format == "json":
+            click.echo()
     elif output_format == "ndjson":
-        messages = payload["messages"]
-        if not isinstance(messages, list):
-            raise TypeError("session payload messages must be a list")
-        for message in messages:
+        for message in _projected_session_messages(read):
             click.echo(json.dumps(message, sort_keys=True))
     elif output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Full-session reads do not support --format {output_format}.")
     else:
-        line = render_outcome_line(outcome)
+        line = render_outcome_line(read.outcome)
         if line is not None:
             click.echo(line)
-        click.echo(_session_summary_text(session) if view == "summary" else _session_text(session))
-    finish_supplied_outcome(outcome)
+        if view == "summary":
+            click.echo(
+                _session_summary_text(read.header, messages=read.records.records(), message_count=read.records.count)
+            )
+        else:
+            for chunk in _session_text_chunks(read.header, read.records.records()):
+                click.echo(chunk, nl=False)
+            click.echo()
+    finish_supplied_outcome(read.outcome)
+
+
+def _session_text_chunks(session: Mapping[str, object], messages: Iterable[Mapping[str, object]]) -> Iterable[str]:
+    session_id = str(session.get("session_id") or "")
+    yield f"# {session.get('title') or session_id}\n\n`{session_id}`"
+    pending: str | None = None
+    for message in messages:
+        if pending is not None:
+            yield pending
+        pending = f"\n\n## {message.get('role')}\n{_session_message_text(message)}"
+    if pending is not None:
+        yield pending.rstrip()
 
 
 def _session_text(session: Mapping[str, object]) -> str:
-    session_id = str(session.get("session_id") or "")
-    lines = [f"# {session.get('title') or session_id}", "", f"`{session_id}`", ""]
-    for message in _session_messages(session):
-        lines.append(f"## {message.get('role')}")
-        lines.append(_session_message_text(message))
-        lines.append("")
-    return "\n".join(lines).rstrip()
+    return "".join(_session_text_chunks(session, _session_messages(session))).rstrip()
 
 
-def _session_summary_text(session: Mapping[str, object]) -> str:
+def _session_summary_text(
+    session: Mapping[str, object],
+    *,
+    messages: Iterable[Mapping[str, object]] | None = None,
+    message_count: int | None = None,
+) -> str:
     """Condensed session synopsis: counts, roles, tool usage, first/last excerpts.
 
     Deliberately distinct from :func:`_session_text` (the full transcript) --
@@ -451,11 +478,24 @@ def _session_summary_text(session: Mapping[str, object]) -> str:
     the whole-transcript Y instead).
     """
     session_id = str(session.get("session_id") or "")
-    rows = _session_messages(session)
+    rows = messages if messages is not None else _session_messages(session)
     role_counts: dict[str, int] = {}
     tool_use_message_count = 0
     total_words = 0
+    count = 0
+    first_text = last_text = ""
     for message in rows:
+        count += 1
+        if message.get("role") in {"user", "assistant"}:
+            blocks = message.get("blocks")
+            if isinstance(blocks, list):
+                text = "\n\n".join(
+                    str(block.get("text")) for block in blocks if isinstance(block, Mapping) and block.get("text")
+                )
+                if text.strip():
+                    if not first_text:
+                        first_text = text
+                    last_text = text
         role = str(message.get("role") or "")
         role_counts[role] = role_counts.get(role, 0) + 1
         total_words += _object_int(message.get("word_count"))
@@ -467,7 +507,7 @@ def _session_summary_text(session: Mapping[str, object]) -> str:
         "",
         f"`{session_id}`  ({session.get('origin')})",
         "",
-        f"- messages: {len(rows)}",
+        f"- messages: {count if message_count is None else message_count}",
     ]
     for role in sorted(role_counts):
         lines.append(f"  - {role}: {role_counts[role]}")
@@ -478,21 +518,6 @@ def _session_summary_text(session: Mapping[str, object]) -> str:
     if created_at or updated_at:
         lines.append(f"- created: {created_at or 'unknown'}  updated: {updated_at or 'unknown'}")
 
-    def _first_authored_text(candidates: Iterable[Mapping[str, object]]) -> str:
-        for message in candidates:
-            if message.get("role") not in ("user", "assistant"):
-                continue
-            blocks = message.get("blocks")
-            block_rows = [block for block in blocks if isinstance(block, Mapping)] if isinstance(blocks, list) else []
-            # The archive's own display flattening (``archive_message_display_text``):
-            # every non-empty block's text in block order, blank-line separated.
-            text = "\n\n".join(str(block.get("text")) for block in block_rows if block.get("text"))
-            if text.strip():
-                return text
-        return ""
-
-    first_text = _first_authored_text(rows)
-    last_text = _first_authored_text(reversed(rows))
     if first_text:
         lines += ["", "## First turn", "", bound_display_text(first_text, max_chars=500)]
     if last_text and last_text != first_text:
@@ -500,31 +525,29 @@ def _session_summary_text(session: Mapping[str, object]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _emit_stream(session: Mapping[str, object], *, output_format: str) -> None:
+def _emit_stream(read: TranscriptRead, *, output_format: str) -> None:
     from polylogue.cli.render.outcome import finish_supplied_outcome
 
-    payload = _session_result_payload(session)
-    outcome = OutcomeEnvelope.model_validate(payload["outcome"])
-    raw_messages = payload["messages"]
-    if not isinstance(raw_messages, list):
-        raise TypeError("session payload messages must be a list")
     if output_format in {"json", "json-lines", "ndjson"}:
-        for message in raw_messages:
+        for message in _projected_session_messages(read):
             click.echo(json.dumps(message, sort_keys=True))
-        finish_supplied_outcome(outcome)
-        return
-    if output_format not in {"markdown", "plaintext"}:
+    elif output_format in {"markdown", "plaintext"}:
+
+        def text_chunks() -> Iterable[str]:
+            line = render_outcome_line(read.outcome)
+            if line is not None:
+                yield line + "\n"
+            for message in read.records.records():
+                yield f"## {message.get('role')}\n{_session_message_text(message)}\n\n"
+
+        from polylogue.rendering.transcript import stripped_chunks
+
+        for chunk in stripped_chunks(text_chunks(), leading=False):
+            click.echo(chunk, nl=False)
+        click.echo()
+    else:
         raise click.UsageError(f"Stream does not support --format {output_format}.")
-    lines: list[str] = []
-    line = render_outcome_line(outcome)
-    if line is not None:
-        lines.append(line)
-    for message in _session_messages(session):
-        lines.append(f"## {message.get('role')}")
-        lines.append(_session_message_text(message))
-        lines.append("")
-    click.echo("\n".join(lines).rstrip())
-    finish_supplied_outcome(outcome)
+    finish_supplied_outcome(read.outcome)
 
 
 def _archive_stats_from_result(body: Mapping[str, object]) -> ArchiveStats:
@@ -588,7 +611,8 @@ def _transcript_or_page(
     daemon_disabled: bool,
     message_limit: int | None,
     certain: bool,
-) -> dict[str, object] | None:
+    lifetime: ExitStack,
+) -> TranscriptRead | None:
     """Read ``ref`` as a transcript, or decline when it was only ref-*shaped*.
 
     ``repo:polylogue`` and other structured field clauses pass the cheap
@@ -599,7 +623,9 @@ def _transcript_or_page(
     from polylogue.cli.operation_kernel import OperationKernelError
 
     try:
-        return _read_session_windows(config, ref, daemon_disabled=daemon_disabled, message_limit=message_limit)
+        return _read_session_windows(
+            config, ref, daemon_disabled=daemon_disabled, lifetime=lifetime, message_limit=message_limit
+        )
     except OperationKernelError as exc:
         # A ref-shaped token such as ``repo:polylogue`` may miss the cheap
         # transcript probe and continue as an ordinary query.  Only the
@@ -621,6 +647,11 @@ def _transcript_or_page(
 
 
 def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None:
+    with ExitStack() as lifetime:
+        _execute_archive_query_owned(env, request, lifetime)
+
+
+def _execute_archive_query_owned(env: AppEnv, request: RootModeRequest, lifetime: ExitStack) -> None:
     """Render root query output to stdout.
 
     Every read below is a declared operation dispatched through the kernel.
@@ -799,11 +830,11 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         exact_session_ids: list[str] | None = None
         if session_scope_id is None and query and not similar_text and _single_query_token_looks_like_ref(query):
             resolved = _transcript_or_page(
-                config, query, daemon_disabled=daemon_disabled, message_limit=1, certain=False
+                config, query, daemon_disabled=daemon_disabled, message_limit=1, certain=False, lifetime=lifetime
             )
             if resolved is None:
                 _fail(f"Session not found: {query}")
-            exact_session_ids = [str(resolved.get("session_id") or query)]
+            exact_session_ids = [str(resolved.header.get("session_id") or query)]
         if tags_to_add or metadata_to_set:
             _emit_user_mutations(
                 env,
@@ -911,17 +942,17 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         # window resolves the reference (and proves the session exists) without
         # reading a transcript the launcher immediately discards.
         opened = _transcript_or_page(
-            config, transcript_ref, daemon_disabled=daemon_disabled, message_limit=1, certain=True
+            config, transcript_ref, daemon_disabled=daemon_disabled, message_limit=1, certain=True, lifetime=lifetime
         )
         if opened is None:
             _fail(f"Session not found: {transcript_ref}")
         _open_session(
             env,
-            str(opened.get("session_id") or transcript_ref),
+            str(opened.header.get("session_id") or transcript_ref),
             output_format=output_format,
             print_url=bool(params.get("print_url")),
         )
-        finish_supplied_outcome(OutcomeEnvelope.model_validate(opened["outcome"]))
+        finish_supplied_outcome(opened.outcome)
         return
     if transcript_ref is not None:
         session = _transcript_or_page(
@@ -930,16 +961,17 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             daemon_disabled=daemon_disabled,
             message_limit=_stream_message_limit(params) if stream else None,
             certain=certain_ref,
+            lifetime=lifetime,
         )
         if session is not None:
             env.record_timing("db-open", db_open_started_at)
-            session_id = str(session.get("session_id") or transcript_ref)
+            session_id = str(session.header.get("session_id") or transcript_ref)
             if stream:
                 _emit_stream(session, output_format=stream_output_format)
                 return
             if params.get("open_result"):
                 _open_session(env, session_id, output_format=output_format, print_url=bool(params.get("print_url")))
-                finish_supplied_outcome(OutcomeEnvelope.model_validate(session["outcome"]))
+                finish_supplied_outcome(session.outcome)
                 return
             _emit_session_result(session, output_format=output_format, fields=fields, view=read_view)
             return
@@ -1008,6 +1040,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 matched_session_ids[0],
                 daemon_disabled=daemon_disabled,
                 message_limit=_stream_message_limit(params),
+                lifetime=lifetime,
             ),
             output_format=stream_output_format,
         )

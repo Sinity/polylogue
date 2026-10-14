@@ -6,7 +6,7 @@ import csv
 import io
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TextIO
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
@@ -112,7 +112,7 @@ class StructuredRowsDocument:
 class QueryOutputDocument:
     """Rendered content plus delivery contract for query output surfaces."""
 
-    content: str
+    content: TextIO
     output_format: QueryOutputFormat
     destinations: tuple[QueryDeliveryTarget, ...]
     session: Session | None = None

@@ -175,6 +175,7 @@ def lower_session_read(
     projection: Mapping[str, object] | None = None,
     continuation: str | None = None,
     around: str | None = None,
+    include_user_tags: bool = True,
 ) -> OperationRequest:
     """Lower one bounded read for an exact reference onto ``session.read``.
 
@@ -226,6 +227,8 @@ def lower_session_read(
         payload["continuation"] = continuation
     if around is not None:
         payload["around"] = around
+    if not include_user_tags:
+        payload["include_user_tags"] = False
     return OperationRequest("session.read", payload)
 
 
