@@ -679,3 +679,29 @@ def test_interrupted_recovery_batch_keeps_durable_prefix_and_resumes(
     verify_runs.reconcile_and_record_verify_runs(**arguments)
     assert len(list(verify_runs._iter_history_pinned(history))) == 3
     assert len(verify_runs.read_verification_evidence(evidence)) == 3
+
+
+def test_focused_completion_prunes_against_the_history_it_published(
+    receipt_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the shared history argument, none of the old successful detail is pruned."""
+    history = verify_runs.verify_history_path(root=receipt_workspace)
+    successful = []
+    for _ in range(verify_runs.SUCCESSFUL_VERIFY_DETAIL_LIMIT + 2):
+        run = verify_runs.VerifyRun(
+            tier="focused-test", argv=[], git_head="a" * 40, root=receipt_workspace, mirror_current=False
+        )
+        payload = run.finish(exit_code=0, duration_s=0.1, final_git_head="a" * 40)
+        verify_runs.append_verify_history(payload, path=history)
+        successful.append(payload)
+    monkeypatch.setattr(run_tests, "prune_successful_verify_runs", verify_runs.prune_successful_verify_runs)
+    monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (4, 0.1, {"diagnosis": "pytest_failed"}))
+
+    assert run_tests.main(["tests/missing-target.py"]) == 4
+
+    remaining = [payload for payload in successful if (receipt_workspace / payload["artifact_dir"]).exists()]
+    assert len(remaining) == verify_runs.SUCCESSFUL_VERIFY_DETAIL_LIMIT
+    rows = list(verify_runs._iter_history_pinned(history))
+    assert len(rows) == len(successful) + 1
+    assert rows[-1]["exit_code"] == 4
+    assert not (receipt_workspace / verify_runs.VERIFY_HISTORY_PATH).exists()
