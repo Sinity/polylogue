@@ -2,7 +2,7 @@
 
 import sqlite3
 from builtins import BaseExceptionGroup
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path
 from typing import Literal
@@ -2449,3 +2449,253 @@ def test_preparation_payload_waits_for_original_sql_and_retries_failed_cleanup(
                     compute_cancel.reset(cancellation_token)
                 if displaced_index.exists():
                     displaced_index.rename(tmp_path / "index.db")
+
+
+@pytest.mark.parametrize("first_tier", ["source", "user"])
+@pytest.mark.parametrize("settlement_failure", ["none", "close", "authorizer"])
+def test_overlapping_literal_children_freeze_main_until_last_physical_settlement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_tier: str, settlement_failure: str
+) -> None:
+    import errno
+
+    from polylogue.operations.mutation_actuators import SessionExcisionActuator
+    from polylogue.operations.mutation_transaction import _authorized_removal_apply
+    from polylogue.storage.sqlite.connection_profile import native_sql_children
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, control_archive_connections
+    from tests.infra.user_allocation_probe import begin
+
+    started, args = begin(tmp_path)
+    assert started.operation_id is not None
+    released: list[object] = []
+    actual_release = ArchiveWriteCustody.release_sql_owner
+    selected_seal: PreparedIndexMutation | None = None
+
+    def release(custody: ArchiveWriteCustody, owner: object) -> None:
+        if owner is selected_seal:
+            released.append(owner)
+        return actual_release(custody, owner)
+
+    monkeypatch.setattr(ArchiveWriteCustody, "release_sql_owner", release)
+    with (
+        write_lease("test.overlapping-literal-children", archive_root=tmp_path),
+        _authorized_removal_apply(started.plan, tmp_path, SessionExcisionActuator(), args),
+    ):
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            selected_seal = seal
+            cell = seal.retain_literal_stream("blob", 3, (b"abc",))
+            seal.bind_begun_excision(started.operation_id, started.plan.plan_hash, (args.session_id,))
+            with seal.original_read_snapshot(), seal.source_producer():
+                pass
+            with seal.original_read_snapshot(), seal.user_producer():
+                pass
+            source_permit = seal.prepare_source_mutation()
+            user_permit = seal.prepare_user_mutation()
+            # Construct the foreign original observer before the controlled
+            # writable factory selects existing inode identities.
+            foreign = PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+            control_archive_connections(monkeypatch, tmp_path / "source.db", tmp_path / "user.db")
+            with pytest.raises(ReferenceSealError):
+                seal._settle_frozen_literal_bookkeeping()
+            contexts = {}
+            owners = {}
+            try:
+                for tier, permit in (("user", user_permit), ("source", source_permit)):
+                    with permit.hold_authority():
+                        context = permit.mutation_connection()
+                        connection = context.__enter__()
+                        contexts[tier] = context
+                        assert isinstance(connection, ControlledConnection)
+                        owners[tier] = next(
+                            child for child in native_sql_children(seal) if child.connection is connection
+                        )
+                        with closing(connection.execute("BEGIN IMMEDIATE")):
+                            pass
+                        expression, bindings = seal.source_literal_expression(cell)
+                        with closing(connection.execute(f"SELECT {expression}", bindings)) as cursor:
+                            assert cursor.fetchone()[0] == b"abc"
+                        if tier == "source":
+                            permit.allow_commit(connection)
+                            connection.commit()
+                            seal.accept_known_tier_commit(permit.committed())
+                    # Only TEMP bookkeeping can change while either literal
+                    # reader retains the same immutable original MAIN.
+                    with closing(
+                        seal._scratch.execute("INSERT OR IGNORE INTO temp.authorized_removals VALUES (?)", (tier,))
+                    ):
+                        pass
+                    with closing(seal._scratch.execute("SELECT 1 UNION ALL SELECT 2")) as live:
+                        assert live.fetchone()[0] == 1
+                        with pytest.raises(ReferenceSealError):
+                            seal._settle_frozen_literal_bookkeeping()
+                    scratch_owner = next(
+                        child for child in native_sql_children(seal) if child.connection is seal._scratch
+                    )
+                    with scratch_owner.readonly_blob("known_tier_literals", "literal", cell._cell_id):
+                        with pytest.raises(ReferenceSealError):
+                            seal._settle_frozen_literal_bookkeeping()
+                    seal._settle_frozen_literal_bookkeeping()
+                assert owners["user"].require_connection().in_transaction
+                assert seal._live_literal_readers == {owners["user"]: user_permit, owners["source"]: source_permit}
+                with pytest.raises(ReferenceSealError):
+                    seal._retain_live_literal_reader(owners["user"], user_permit)
+                with pytest.raises(ReferenceSealError):
+                    foreign._retain_live_literal_reader(owners["user"], user_permit)
+                for tier in (first_tier, "user" if first_tier == "source" else "source"):
+                    owner = owners[tier]
+                    connection = owner.require_connection()
+                    assert isinstance(connection, ControlledConnection)
+                    if settlement_failure != "none" and tier == first_tier:
+                        actual_authorizer = seal._scratch.set_authorizer
+                        if settlement_failure == "close":
+                            connection.close_failure = OSError(errno.EIO, "exact overlapping reader close failure")
+                        else:
+
+                            def fail_authorizer(callback: Callable[..., int] | None) -> None:
+                                raise OSError(errno.EIO, "exact frozen authorizer settlement failure")
+
+                            monkeypatch.setattr(seal._scratch, "set_authorizer", fail_authorizer)
+                        with pytest.raises(NativeConnectionSettlementError):
+                            contexts[tier].__exit__(None, None, None)
+                        assert owner in seal._live_literal_readers
+                        assert owner.connection is (connection if settlement_failure == "close" else None)
+                        assert owner.close_required
+                        assert released == []
+                        with pytest.raises(sqlite3.DatabaseError):
+                            with closing(seal._scratch.execute("DELETE FROM known_tier_literals")):
+                                pass
+                        connection.close_failure = None
+                        monkeypatch.setattr(seal._scratch, "set_authorizer", actual_authorizer)
+                        owner.close()
+                    else:
+                        contexts[tier].__exit__(None, None, None)
+                    assert owner not in seal._live_literal_readers and owner.connection is None
+                    if seal._live_literal_readers:
+                        assert released == [] and seal._mutation_custody is not None
+                        with pytest.raises(ReferenceSealError):
+                            seal.retain_literal_scalar(1)
+                        with pytest.raises(sqlite3.DatabaseError):
+                            with closing(seal._scratch.execute("DELETE FROM known_tier_literals")):
+                                pass
+                        with pytest.raises(sqlite3.DatabaseError):
+                            seal._scratch.blobopen("known_tier_literals", "literal", cell._cell_id, readonly=False)
+                assert released == [seal] and seal._mutation_custody is None
+                assert not seal._literal_custody_release_pending
+                assert seal.retain_literal_scalar(1)._seal is seal
+            finally:
+                for owner in owners.values():
+                    if owner.connection is not None:
+                        assert isinstance(owner.connection, ControlledConnection)
+                        owner.connection.close_failure = None
+                    owner.close()
+                foreign.close()
+
+
+@pytest.mark.parametrize("cancel_site", ["source_admission", "after_source_close"])
+def test_overlapping_literal_cancellation_preserves_exact_native_obligations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_site: str
+) -> None:
+    import asyncio
+    import threading
+
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.operations.mutation_actuators import SessionExcisionActuator
+    from polylogue.operations.mutation_transaction import _authorized_removal_apply
+    from polylogue.storage.sqlite.connection_profile import native_sql_children, open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import KnownTierMutationPermit, PreparedIndexMutation
+    from tests.infra.user_allocation_probe import begin
+
+    started, args = begin(tmp_path)
+    assert started.operation_id is not None
+    cancelled = threading.Event()
+    token = compute_cancel.set(cancelled)
+    try:
+        with (
+            write_lease("test.overlapping-literal-cancellation", archive_root=tmp_path),
+            _authorized_removal_apply(started.plan, tmp_path, SessionExcisionActuator(), args),
+        ):
+            with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+                with closing(
+                    setup.execute(
+                        "INSERT INTO raw_sessions(raw_id,origin,source_path,blob_hash,blob_size,acquired_at_ms) "
+                        "VALUES('overlap-control','unknown-export','synthetic/overlap',?,1,0)",
+                        (b"x" * 32,),
+                    )
+                ):
+                    pass
+                setup.commit()
+            with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+                seal.bind_begun_excision(started.operation_id, started.plan.plan_hash, (args.session_id,))
+                with seal.original_read_snapshot(), seal.source_producer():
+                    with seal.original_rows(
+                        "source", "SELECT rowid FROM raw_sessions WHERE raw_id='overlap-control'"
+                    ) as rows:
+                        rowid = rows.fetchone()[0]
+                    image = seal.retain_tier_row("source", "raw_sessions", rowid)
+                    assert image is not None
+                    seal.load_source_row(image)
+                    key = seal.retain_literal_scalar("overlap-control")
+                    expression, parameters = seal.source_literal_expression(key)
+                    with seal.source_statement(
+                        f"UPDATE raw_sessions SET blob_size=2 WHERE raw_id={expression}",
+                        parameters,
+                        table="raw_sessions",
+                        writable_targets=(("raw_sessions", (key,)),),
+                    ):
+                        pass
+                with seal.original_read_snapshot(), seal.user_producer():
+                    pass
+                user_permit = seal.prepare_user_mutation()
+                source_permit = seal.prepare_source_mutation()
+                with user_permit.hold_authority():
+                    user_context = user_permit.mutation_connection()
+                    user = user_context.__enter__()
+                    owner = next(child for child in native_sql_children(seal) if child.connection is user)
+                    with closing(user.execute("BEGIN IMMEDIATE")):
+                        pass
+                actual_configure = KnownTierMutationPermit.configure_mutation_connection
+                reached = []
+
+                def configure(
+                    permit: KnownTierMutationPermit, connection: sqlite3.Connection, statements: tuple[str, ...]
+                ) -> None:
+                    if permit is source_permit and cancel_site == "source_admission":
+                        reached.append(True)
+                        cancelled.set()
+                    return actual_configure(permit, connection, statements)
+
+                monkeypatch.setattr(KnownTierMutationPermit, "configure_mutation_connection", configure)
+                try:
+                    with pytest.raises(asyncio.CancelledError):
+                        with source_permit.hold_authority(), source_permit.mutation_connection() as source:
+                            with closing(source.execute("BEGIN IMMEDIATE")):
+                                pass
+                            source_permit.apply_source_statements(source)
+                            source_permit.allow_commit(source)
+                            source.commit()
+                            seal.accept_known_tier_commit(source_permit.committed())
+                        reached.append(True)
+                        cancelled.set()
+                        seal._require_new_work()
+                    assert reached == [True]
+                    assert seal._live_literal_readers == {owner: user_permit}
+                    assert user.in_transaction and seal._mutation_custody is not None
+                    # Cancellation never substitutes a logical close for this
+                    # actual original User transaction's rollback/settlement.
+                    user_context.__exit__(None, None, None)
+                    assert owner.connection is None and not seal._live_literal_readers
+                    assert not seal._literal_custody_release_pending
+                    if cancel_site == "after_source_close":
+                        assert seal._mutation_custody is None
+                finally:
+                    owner.close()
+                cancelled.clear()
+            with closing(sqlite3.connect(tmp_path / "source.db")) as observed:
+                with closing(
+                    observed.execute("SELECT blob_size FROM raw_sessions WHERE raw_id='overlap-control'")
+                ) as rows:
+                    assert rows.fetchone()[0] == (2 if cancel_site == "after_source_close" else 1)
+    finally:
+        cancelled.clear()
+        compute_cancel.reset(token)
