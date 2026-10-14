@@ -1,11 +1,17 @@
 """Projection windows classify against the complete transcript dependency scope."""
 
 import asyncio
+import sqlite3
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any, Literal
 
 import pytest
 
+from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
+from polylogue.archive.semantic.projection_context import ContentProjectionContext
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -22,7 +28,7 @@ async def test_projected_window_indexes_later_tool_use_before_counting(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     role_filter: tuple[Role, ...],
-    type_filter: str | None,
+    type_filter: Literal["tool_result"] | None,
     expected_total: int,
 ) -> None:
     """A result before its use crosses raw pages without becoming ordinary output."""
@@ -33,7 +39,7 @@ async def test_projected_window_indexes_later_tool_use_before_counting(
         ParsedMessage(
             provider_message_id="early-result",
             role=Role.USER,
-            message_type="tool_result",
+            message_type=MessageType.TOOL_RESULT,
             text="private file result",
             blocks=[
                 ParsedContentBlock(
@@ -51,7 +57,7 @@ async def test_projected_window_indexes_later_tool_use_before_counting(
         ParsedMessage(
             provider_message_id="later-use",
             role=Role.ASSISTANT,
-            message_type="tool_use",
+            message_type=MessageType.TOOL_USE,
             text=None,
             blocks=[
                 ParsedContentBlock(
@@ -76,12 +82,13 @@ async def test_projected_window_indexes_later_tool_use_before_counting(
             )
 
     session_id = await asyncio.to_thread(seed)
-    from polylogue.archive.semantic.projection_context import ContentProjectionContext
 
     paths: list[Path] = []
     original_initialize = ContentProjectionContext.__init__
 
-    def initialize(context, connection, checkpoint):
+    def initialize(
+        context: ContentProjectionContext, connection: sqlite3.Connection, checkpoint: Callable[[], None]
+    ) -> None:
         original_initialize(context, connection, checkpoint)
         paths.append(Path(connection.execute("PRAGMA database_list").fetchone()[2]))
 
@@ -121,7 +128,6 @@ async def test_physical_projection_late_fault_releases_private_dependency_contex
 
     from polylogue.archive.query.execution_control import QueryCancelledError
     from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-    from polylogue.archive.semantic.projection_context import ContentProjectionContext
 
     archive = _archive(tmp_path)
 
@@ -143,14 +149,16 @@ async def test_physical_projection_late_fault_releases_private_dependency_contex
     paths: list[Path] = []
     original_initialize = ContentProjectionContext.__init__
 
-    def initialize(context, connection, checkpoint):
+    def initialize(
+        context: ContentProjectionContext, connection: sqlite3.Connection, checkpoint: Callable[[], None]
+    ) -> None:
         original_initialize(context, connection, checkpoint)
         paths.append(Path(connection.execute("PRAGMA database_list").fetchone()[2]))
 
     monkeypatch.setattr(ContentProjectionContext, "__init__", initialize)
     original_read = ArchiveStore.read_session_page
 
-    def read(store, session_id, *, limit, offset, **kwargs):
+    def read(store: ArchiveStore, session_id: str, *, limit: int, offset: int, **kwargs: Any) -> Any:
         if limit == 500 and offset == 500:
             if fault == "cancelled":
                 raise QueryCancelledError("synthetic late dependency cancellation")
@@ -181,7 +189,6 @@ async def test_projected_dependency_scan_cancellation_releases_private_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from polylogue.archive.semantic.content_projection import ContentProjectionSpec
-    from polylogue.archive.semantic.projection_context import ContentProjectionContext
 
     archive = _archive(tmp_path)
 
@@ -203,7 +210,7 @@ async def test_projected_dependency_scan_cancellation_releases_private_context(
     paths: list[Path] = []
     original_register = ContentProjectionContext.register_page
 
-    def register(context, messages, *, offset):
+    def register(context: ContentProjectionContext, messages: Sequence[Message], *, offset: int) -> None:
         original_register(context, messages, offset=offset)
         if offset == 0:
             paths.append(Path(context.connection.execute("PRAGMA database_list").fetchone()[2]))
@@ -253,7 +260,7 @@ async def test_projected_window_uses_terminal_tool_semantics_across_pages(tmp_pa
                         ParsedMessage(
                             provider_message_id="early-result",
                             role=Role.USER,
-                            message_type="tool_result",
+                            message_type=MessageType.TOOL_RESULT,
                             blocks=[
                                 ParsedContentBlock(
                                     type=BlockType.TOOL_RESULT,
@@ -300,6 +307,6 @@ async def test_projected_window_uses_terminal_tool_semantics_across_pages(tmp_pa
         assert physical is not None
         assert physical.total_message_count == 503
         assert len(physical.session.messages) == 1
-        assert physical.session.messages[0].text == "neutral output"
+        assert list(physical.session.messages)[0].text == "neutral output"
     finally:
         await archive.close()
