@@ -69,3 +69,14 @@ def test_a_withdrawn_schema_package_reports_partial_and_names_the_missing_item(
     assert "provider-package:grok-export/export-json@v1: partial" in output
     assert "schema_package is missing" in output
     assert "provider-package:grok-export/export-json@v1: complete" not in output
+
+
+def test_unmatched_origin_retains_the_json_contract(capsys: pytest.CaptureFixture[str]) -> None:
+    """The old early return emits no JSON for the same empty report."""
+    assert verify_provider_completeness.main(["--origin", "fixture-absent-origin", "--check", "--json"]) == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["mode"] == "provider-package-completeness"
+    assert payload["rows"] == []
+    assert payload["totals"]["total"] == 0
+    assert captured.err == ""

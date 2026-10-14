@@ -29,10 +29,13 @@ from dataclasses import dataclass
 
 from polylogue.core.enums import PolylogueStrEnum
 
-#: A ``column IN ( ... )`` membership list. The body excludes parentheses so a
-#: nested call expression can never be swallowed into the member list.
-_MEMBERSHIP = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\(([^()]*)\)", re.IGNORECASE)
-_STRING_LITERAL = re.compile(r"'((?:[^']|'')*)'")
+# Quoted SQL tokens are indivisible: comment markers and parentheses inside
+# them are data, never executable syntax.
+_SQL_TOKEN = re.compile(
+    r"--[^\n]*|/\*.*?(?:\*/|\Z)|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[[^\]]*\]"
+    r"|[A-Za-z_][A-Za-z0-9_]*|[^\s]",
+    re.DOTALL,
+)
 
 #: Structural literal lists that predate this gate and whose member set happens
 #: to coincide with an enum's value set. Keyed on tier, column, and the exact
@@ -106,47 +109,53 @@ def scan_ddl_for_enum_membership_checks(
     tier: str,
     enums_by_members: dict[frozenset[str], str] | None = None,
 ) -> list[EnumCheckViolation]:
-    """Return every membership list in *ddl* whose members are an enum's values.
-
-    Exposed standalone so a test can feed a synthetic offending DDL string
-    directly, instead of temporarily corrupting the real tier DDL.
-    """
+    """Return literal enum memberships in executable table CHECK constraints."""
     resolved = _reachable_enums() if enums_by_members is None else enums_by_members
-    # SQL comments and membership predicates in indexes/views are not table
-    # CHECK constraints. Strip comments first, then inspect balanced CHECK bodies.
-    executable = re.sub(r"--[^\n]*|/\*.*?\*/", " ", ddl, flags=re.DOTALL)
-    checks: list[str] = []
-    for marker in re.finditer(r"\bCHECK\s*\(", executable, re.IGNORECASE):
-        depth = 1
-        end = marker.end()
-        while end < len(executable) and depth:
-            if executable[end] == "(":
+    tokens = [token for token in _SQL_TOKEN.findall(ddl) if not token.startswith(("--", "/*"))]
+    checks: list[list[str]] = []
+    for offset, token in enumerate(tokens[:-1]):
+        if token.upper() != "CHECK" or tokens[offset + 1] != "(":
+            continue
+        depth, end = 1, offset + 2
+        while end < len(tokens) and depth:
+            if tokens[end] == "(":
                 depth += 1
-            elif executable[end] == ")":
+            elif tokens[end] == ")":
                 depth -= 1
             end += 1
         if depth == 0:
-            checks.append(executable[marker.end() : end - 1])
+            checks.append(tokens[offset + 2 : end - 1])
     violations: list[EnumCheckViolation] = []
-    for match in (match for check_body in checks for match in _MEMBERSHIP.finditer(check_body)):
-        column, body = match.group(1), match.group(2)
-        literals = _STRING_LITERAL.findall(body)
-        if not literals:
-            continue
-        members = frozenset(literal.replace("''", "'") for literal in literals)
-        enum_name = resolved.get(members)
-        if enum_name is None:
-            continue
-        if (tier, column, members) in GRANDFATHERED:
-            continue
-        violations.append(
-            EnumCheckViolation(
-                tier=tier,
-                column=column,
-                enum_name=enum_name,
-                members=tuple(sorted(members)),
+    for body in checks:
+        for offset in range(1, len(body) - 1):
+            if body[offset].upper() != "IN" or body[offset + 1] != "(":
+                continue
+            column_offset = offset - 2 if body[offset - 1].upper() == "NOT" else offset - 1
+            if column_offset < 0:
+                continue
+            column = body[column_offset]
+            if column.startswith(('"', "`", "[")):
+                quote = column[0]
+                column = column[1:-1].replace(quote * 2, quote)
+            elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column) is None:
+                continue
+            literals: list[str] = []
+            end = offset + 2
+            while end < len(body) and body[end].startswith("'") and body[end].endswith("'"):
+                literals.append(body[end][1:-1].replace("''", "'"))
+                end += 1
+                if end >= len(body) or body[end] != ",":
+                    break
+                end += 1
+            if not literals or end >= len(body) or body[end] != ")":
+                continue
+            members = frozenset(literals)
+            enum_name = resolved.get(members)
+            if enum_name is None or (tier, column, members) in GRANDFATHERED:
+                continue
+            violations.append(
+                EnumCheckViolation(tier=tier, column=column, enum_name=enum_name, members=tuple(sorted(members)))
             )
-        )
     return violations
 
 

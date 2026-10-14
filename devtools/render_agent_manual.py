@@ -46,9 +46,8 @@ REFERENCE_DATA_PATH = DATA_DIR / "deep-reference.md"
 MANUAL_DOC_PATH = REPO_ROOT / "docs" / "agent-manual.md"
 REFERENCE_DOC_PATH = REPO_ROOT / "docs" / "agent-integration-reference.md"
 
-# Generated assets are committed and therefore must be byte-stable.  This is
-# deliberately a valid future window rather than wall-clock time so the sample
-# remains a production-codec q2 token without causing render drift.
+# Generated assets are committed and byte-stable. Validate the fixed example
+# at its issuance time, not at the wall time of a later documentation build.
 _EXAMPLE_CONTINUATION_ISSUED_AT = 1_893_456_000
 _EXAMPLE_CONTINUATION_EXPIRES_AT = _EXAMPLE_CONTINUATION_ISSUED_AT + 3_600
 
@@ -80,7 +79,7 @@ def continuation_example_token() -> str:
         expires_at=_EXAMPLE_CONTINUATION_EXPIRES_AT,
     )
     token = QueryContinuation(request=request, result_ref=request.result_ref).encode()
-    decode_query_units_continuation(token)
+    decode_query_units_continuation(token, now_s=_EXAMPLE_CONTINUATION_ISSUED_AT)
     return token
 
 
