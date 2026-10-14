@@ -10,7 +10,12 @@ from polylogue.core.json import JSONDocument, JSONValue
 
 
 def mixed_claude_tool_records(
-    number: int, *, multiple_calls: bool = False, result_arrays: bool = False
+    number: int,
+    *,
+    multiple_calls: bool = False,
+    result_arrays: bool = False,
+    private_todo: bool = False,
+    todo_mix: bool = False,
 ) -> list[JSONDocument]:
     session = str(uuid.UUID(int=number, version=4))
     rows: list[JSONDocument] = []
@@ -72,6 +77,25 @@ def mixed_claude_tool_records(
         ("private_tool_neutral", {}, {}),
     )
     for index, (name, tool_input, result) in enumerate(cases):
+        if todo_mix and name == "TodoWrite":
+            todos = tool_input["todos"]
+            assert isinstance(todos, list) and isinstance(todos[0], dict)
+            tool_input["todos"] = [
+                {**todos[0], "status": "pending" if number == 2 else "completed"} for _ in range(number)
+            ]
+        if private_todo and name == "TodoWrite":
+            todos = tool_input["todos"]
+            assert isinstance(todos, list)
+            for todo in todos:
+                assert isinstance(todo, dict)
+                todo["status"] = "private_todo_state"
+            for field in ("oldTodos", "newTodos"):
+                items = result[field]
+                assert isinstance(items, list)
+                for todo in items:
+                    assert isinstance(todo, dict)
+                    todo["status"] = "private_todo_state"
+                    todo["priority"] = "private_todo_priority"
         tool_id = f"call-neutral-{index}"
         if multiple_calls and index == 0:
             append(
@@ -100,11 +124,22 @@ def mixed_claude_tool_records(
 
 
 def write_mixed_claude_tool_sources(
-    root: Path, *, multiple_calls: bool = False, result_arrays: bool = False
+    root: Path,
+    *,
+    multiple_calls: bool = False,
+    result_arrays: bool = False,
+    private_todo: bool = False,
+    todo_mix: bool = False,
 ) -> list[list[JSONDocument]]:
     root.mkdir()
     sessions = [
-        mixed_claude_tool_records(number, multiple_calls=multiple_calls, result_arrays=result_arrays)
+        mixed_claude_tool_records(
+            number,
+            multiple_calls=multiple_calls,
+            result_arrays=result_arrays,
+            private_todo=private_todo,
+            todo_mix=todo_mix,
+        )
         for number in range(1, 4)
     ]
     for number, records in enumerate(sessions, 1):

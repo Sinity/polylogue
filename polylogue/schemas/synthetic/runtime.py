@@ -729,8 +729,13 @@ def _generate_string(
 ) -> str | SampledText | JoinedText:
     plan_path = _record_plan_path(self, path)
     plan = self._public_record_plan
-    if plan is not None and plan_path in plan.tool_syntax:
-        syntax_value = plan.tool_syntax[plan_path]
+    syntax_value = plan.tool_syntax.get(plan_path) if plan is not None else None
+    if plan is not None and plan_path in plan.tool_tokens:
+        tokens = plan.tool_tokens[plan_path]
+        public_token = rng.choices(list(tokens), weights=list(tokens.values()), k=1)[0]
+        if public_token:
+            syntax_value = public_token
+    if syntax_value is not None:
         newline_count = 0
         ascii_only = True
         pending = [syntax_value]

@@ -35,6 +35,7 @@ from polylogue.schemas.record_structure import (
     PUBLIC_CONTENT_BODY_FIELDS,
     claude_agent_metadata_field_forms,
     claude_dispatch_field_forms,
+    claude_todo_token_counts,
     codex_message_record,
     codex_parent_field_forms,
     codex_session_header,
@@ -775,6 +776,9 @@ class _ContentStructure:
     discriminator_fields: dict[str, Counter[str]] = field(default_factory=dict)
     body_field_forms: dict[str, Counter[tuple[str, ...]]] = field(default_factory=dict)
     native_tool_field_forms: dict[str, Counter[tuple[str, tuple[str, ...], str]]] = field(default_factory=dict)
+    native_tool_tokens: dict[tuple[str, str, tuple[str, ...], str], dict[str, Counter[str]]] = field(
+        default_factory=dict
+    )
     starts: Counter[tuple[str, str]] = field(default_factory=Counter)
     ends: Counter[tuple[str, str]] = field(default_factory=Counter)
     transitions: Counter[tuple[str, str, str, str]] = field(default_factory=Counter)
@@ -785,6 +789,30 @@ class _ContentStructure:
 
     tool_identity_widths: dict[tuple[object, ...], DistributionSketch] = field(default_factory=dict)
     tool_filename_widths: dict[tuple[object, ...], FilenameWidthStats] = field(default_factory=dict)
+
+    def _observe_todo_tokens(
+        self,
+        kind: str,
+        mode: str,
+        fields: tuple[str, ...],
+        syntax: str,
+        value: object,
+        containers: tuple[str, ...],
+    ) -> None:
+        # Item frequencies aggregate under the existing form, rather than
+        # turning each array cardinality into a new record-weighted form.
+        counters = self.native_tool_tokens.setdefault((kind, mode, fields, syntax), {})
+        for path, weights in claude_todo_token_counts(value, containers).items():
+            counters.setdefault(path, Counter()).update(weights)
+
+    def _native_tool_syntax(self, kind: str, mode: str, fields: tuple[str, ...], syntax: str) -> JSONDocument:
+        result = json.loads(syntax) if syntax else {}
+        key = kind, mode, fields, syntax
+        if key in self.native_tool_tokens:
+            result["todo_tokens"] = {
+                path: dict(sorted(weights.items())) for path, weights in sorted(self.native_tool_tokens[key].items())
+            }
+        return json_document(result)
 
     def observe(
         self,
@@ -886,6 +914,8 @@ class _ContentStructure:
                     else ""
                 )
                 self.native_tool_field_forms.setdefault(kind, Counter())[("", fields, syntax)] += 1
+                if name == "TodoWrite":
+                    self._observe_todo_tokens(kind, "", fields, syntax, tool_input, ("todos",))
             presence = (
                 "absent"
                 if field_name not in tool
@@ -956,6 +986,8 @@ class _ContentStructure:
                     separators=(",", ":"),
                 )
                 self.native_tool_field_forms.setdefault(kind, Counter())[(result_mode, fields, syntax)] += 1
+                if tool_class == "TodoWrite":
+                    self._observe_todo_tokens(kind, result_mode, fields, syntax, evidence, ("oldTodos", "newTodos"))
             pointer_widths = None
             point: tuple[int, ...] | None = None
             if (
@@ -1056,7 +1088,7 @@ class _ContentStructure:
                     {
                         "result_mode": mode,
                         "fields": list(fields),
-                        "syntax": json.loads(syntax) if syntax else {},
+                        "syntax": self._native_tool_syntax(kind, mode, fields, syntax),
                         "count": count,
                     }
                     for (mode, fields, syntax), count in sorted(forms.items())

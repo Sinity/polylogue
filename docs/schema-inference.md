@@ -104,8 +104,8 @@ they are compatible. Missing Codex ordering metadata is recovered separately
 from field statistics.
 
 Structure revisions apply to the affected provider: generic reduction is5,
-Codex tool grammar is6 and Claude named tool forms are7. A batch uses the
-highest revision applicable to its actual inventoried providers; an empty
+Codex tool grammar is6 and Claude named tool forms and public Todo tokens are8.
+A batch uses the highest revision applicable to its actual inventoried providers; an empty
 batch uses5. A ChatGPT-only batch therefore keeps its unchanged revision5
 contract. Mixed batches conservatively bind one combined contract rather than
 claiming separate reuse for each provider. Stored provenance is never relabeled.
@@ -300,8 +300,12 @@ generated call identity and its measured public class, including absence of an
 envelope. Dispatcher class and result-content mode use the same eligible
 measured form and actual call inventory before either draw. Argument bodies,
 paths and arbitrary tool names remain anonymous;
-the reducer publishes only fixed public keys, labels, modes and counts. This
-does not establish numeric outcome fidelity, foreground/background subtype
+the reducer publishes only fixed public keys, labels, modes and counts.
+TodoWrite status and priority fields retain only their declared public token
+counts aggregated by actual items within the existing native form; unknown
+values stay anonymous, and descriptions remain content. Tokens
+are sampled per actual string field through the same measured text-shape checks.
+This does not establish numeric outcome fidelity, foreground/background subtype
 correlation or asynchronous completion and progress semantics.
 
 Original Claude Code child depths remain exact. Each depth's conditional record

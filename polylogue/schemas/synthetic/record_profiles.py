@@ -14,6 +14,7 @@ from polylogue.schemas.field_stats.models import FilenameWidthStats, PointerShap
 from polylogue.schemas.record_structure import (
     CODEX_PUBLIC_MESSAGE_ROLES,
     NATIVE_CODEX_TOOL_VALUE_FIELDS,
+    PUBLIC_CLAUDE_TODO_TOKENS,
     PUBLIC_CLAUDE_TOOL_INPUT_FIELDS,
     PUBLIC_CLAUDE_TOOL_NAMES,
     PUBLIC_CLAUDE_TOOL_RESULT_FIELDS,
@@ -516,6 +517,7 @@ class PublicRecordPlan:
         self.graph_values: dict[str, str | None] = {}
         self.string_exclusions: dict[str, frozenset[str]] = {}
         self.tool_syntax: dict[str, GeneratedString] = {}
+        self.tool_tokens: dict[str, dict[str, int]] = {}
         self.tool_classes: dict[str, str] = {}
         self.record_tool_class: str | None = None
         self.tool_content_types: dict[str, frozenset[str]] = {}
@@ -769,6 +771,24 @@ class PublicRecordPlan:
             self.graph_values[prefix + field] = parent_id
         if not self.compatible(self.schema, "$"):
             raise ValueError("original header class has no declared schema branch; re-infer the package")
+
+    def _bind_todo_tokens(self, value: object, root: str, fields: tuple[str, ...]) -> None:
+        if not isinstance(value, dict):
+            raise ValueError("TodoWrite public token evidence is missing; re-infer the package")
+        allowed = {
+            field + "[*]." + slot: vocabulary
+            for field in fields
+            for slot, vocabulary in PUBLIC_CLAUDE_TODO_TOKENS.items()
+        }
+        for path, counts in value.items():
+            if path not in allowed or not isinstance(counts, dict) or not counts:
+                raise ValueError("TodoWrite token evidence contains an undeclared field")
+            weights: dict[str, int] = {}
+            for token, count in counts.items():
+                if not isinstance(token, str) or token and token not in allowed[path]:
+                    raise ValueError("TodoWrite token evidence contains a private value")
+                weights[token] = _count(count)
+            self.tool_tokens[root + "." + str(path)] = weights
 
     def _claude_result_forms(
         self,
@@ -1350,7 +1370,8 @@ class PublicRecordPlan:
                 if (
                     not isinstance(name, str)
                     or name not in PUBLIC_CLAUDE_TOOL_NAMES
-                    or set(syntax) != {"name", "input_mode"}
+                    or set(syntax)
+                    != ({"name", "input_mode", "todo_tokens"} if name == "TodoWrite" else {"name", "input_mode"})
                     or not isinstance(input_mode, str)
                     or input_mode not in {"absent", "null", "object", "array", "string", "other"}
                 ):
@@ -1359,6 +1380,8 @@ class PublicRecordPlan:
                 self.tool_classes[path + ".id"] = name
                 self.required_body_fields.add(path + ".name")
                 input_path = path + ".input"
+                if name == "TodoWrite":
+                    self._bind_todo_tokens(syntax["todo_tokens"], input_path, ("todos",))
                 if input_mode == "absent":
                     self.absent.add(input_path)
                 elif input_mode == "null":
@@ -1391,7 +1414,12 @@ class PublicRecordPlan:
             result_class_filter = str(syntax["name"])
             envelope_mode = syntax.get("envelope_mode")
             if (
-                set(syntax) != {"name", "envelope_mode"}
+                set(syntax)
+                != (
+                    {"name", "envelope_mode", "todo_tokens"}
+                    if result_class_filter == "TodoWrite"
+                    else {"name", "envelope_mode"}
+                )
                 or not isinstance(envelope_mode, str)
                 or envelope_mode not in {"absent", "null", "object", "array", "string", "other"}
                 or not isinstance(fields, list)
@@ -1399,6 +1427,11 @@ class PublicRecordPlan:
                 or len(fields) != len(set(fields))
             ):
                 raise ValueError("Claude result form contains undeclared syntax")
+            for coordinate in tuple(self.tool_tokens):
+                if coordinate.startswith("$.toolUseResult."):
+                    del self.tool_tokens[coordinate]
+            if result_class_filter == "TodoWrite":
+                self._bind_todo_tokens(syntax["todo_tokens"], "$.toolUseResult", ("oldTodos", "newTodos"))
             if envelope_mode == "absent":
                 self.absent.add("$.toolUseResult")
             elif envelope_mode == "null":
@@ -1473,6 +1506,7 @@ class PublicRecordPlan:
         )
         for mapping in (
             self.tool_syntax,
+            self.tool_tokens,
             self.tool_classes,
             self.tool_content_types,
             self.tool_pointer_fields,
