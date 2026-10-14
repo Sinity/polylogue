@@ -2123,3 +2123,59 @@ def test_chatgpt_empty_incidental_tool_name_and_recipient_do_not_create_a_result
     assert ordinary.text == "" and ordinary.blocks == []
     assert ordinary.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
     assert len(wire_formats._parser_artifact_expected_tool_witnesses("chatgpt", cast(GeneratedValue, payload))) == 6
+
+
+@pytest.mark.parametrize("fallback", ["node-id", "mapping-key"])
+def test_chatgpt_call_and_answer_witnesses_use_the_same_native_id_fallback(fallback: str) -> None:
+    from collections import Counter
+
+    payload = _chatgpt_tool_result_graph()
+    mapping = cast(JSONDocument, payload["mapping"])
+    call = cast(JSONDocument, mapping["call-coordinate"])
+    message = cast(JSONDocument, call["message"])
+    del message["id"]
+    canonical = "node-call-message"
+    if fallback == "mapping-key":
+        del call["id"]
+        canonical = "call-coordinate"
+    expected = Counter(
+        {
+            (BlockType.TOOL_USE, canonical, None, None): 1,
+            (BlockType.TOOL_RESULT, canonical, False, None): 2,
+            (BlockType.TOOL_RESULT, canonical, True, None): 2,
+            (BlockType.TOOL_RESULT, canonical, None, None): 1,
+        }
+    )
+    assert (
+        Counter(wire_formats._parser_artifact_expected_tool_witnesses("chatgpt", cast(GeneratedValue, payload)))
+        == expected
+    )
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    assert len(sessions) == 1 and len(sessions[0].messages) == 10
+    assert Counter(wire_formats._parser_artifact_tool_witnesses(sessions)) == expected
+    assert wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    assert wire_formats._parser_artifact_has_complete_semantic_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+    call_message = next(item for item in sessions[0].messages if item.provider_message_id == canonical)
+    call_message.provider_message_id = "wrong-native-message"
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
+
+
+def test_chatgpt_canonical_id_projection_does_not_waive_a_missing_role() -> None:
+    payload = _chatgpt_tool_result_graph()
+    mapping = cast(JSONDocument, payload["mapping"])
+    call = cast(JSONDocument, mapping["call-coordinate"])
+    message = cast(JSONDocument, call["message"])
+    message["author"] = {"name": "lookup"}
+    assert "id:call-message" in wire_formats._parser_artifact_expected_message_keys(
+        "chatgpt", cast(GeneratedValue, payload)
+    )
+    sessions = dispatch_module.parse_payload("chatgpt", payload, "fallback")
+    assert not wire_formats._parser_artifact_has_complete_message_coverage(
+        sessions, "chatgpt", cast(GeneratedValue, payload), "fallback"
+    )
