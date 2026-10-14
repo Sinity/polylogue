@@ -6940,7 +6940,7 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(
             source_result_ref="result-set:facade-import",
             actor_ref="agent:facade-test",
             model_ref="agent:model",
-            prompt_ref="block:prompt:0",
+            prompt_ref="block:prompt:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
             created_at_ms=1_000,
         )
 
@@ -6955,8 +6955,10 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(
         assert resolution.payload["items"][0]["kind"] == "assertion"
         assert [item["error"] for item in resolution.payload["items"] if item["kind"] == "validation-error"] == [
             "field 'label' must be one of ['no', 'yes'], got 'maybe'",
-            "evidence_ref 'missing-evidence' does not resolve in the live archive",
+            "evidence_refs_unresolved",
         ]
+        errors = [item for item in resolution.payload["items"] if item["kind"] == "validation-error"]
+        assert all(item["failure"]["unresolved_evidence_refs"] == [0] for item in errors)
         assert not (configured_root / "user.db").exists()
         with sqlite3.connect(active_root / "user.db") as conn:
             persisted = conn.execute("SELECT status, scope_ref FROM assertions WHERE key = 'row-1'").fetchone()

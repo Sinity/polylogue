@@ -2749,12 +2749,14 @@ def test_socket_shutdown_physically_settles_an_admitted_incomplete_body(
             peer.close()
 
 
+@pytest.mark.parametrize("errors_from", ["fields", "references"])
 def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, errors_from: str
 ) -> None:
     """A post-write result-size refusal must not erase the original commit verdict."""
     import asyncio
 
+    from polylogue.annotations.schema import AnnotationField, AnnotationSchema
     from polylogue.api import Polylogue
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import Provider
@@ -2774,12 +2776,29 @@ def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
                 ),
             )
 
+            if errors_from == "fields":
+                archive.save_annotation_schema(
+                    AnnotationSchema(
+                        schema_id="test.amplified-fields",
+                        version=1,
+                        title="Amplified fields",
+                        fields=tuple(
+                            AnnotationField(name=f"field_{index}", value_type="string") for index in range(10_000)
+                        ),
+                        target_ref_kinds=("session",),
+                        evidence_policy="required",
+                        status="active",
+                    )
+                )
+
     jsonl = "\n".join(
         json.dumps(
             {
                 "row_key": f"row-{index}",
-                "value": {"activity": "debugging", "confidence": 0.9},
-                "evidence_refs": [""] * 10_000,
+                "value": {} if errors_from == "fields" else {"activity": "debugging", "confidence": 0.9},
+                "evidence_refs": ["session:codex-session:annotation-amplification"]
+                if errors_from == "fields"
+                else [""] * 10_000,
             }
         )
         for index in range(20)
@@ -2794,13 +2813,13 @@ def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
                 {
                     "input": {"sha256": input_body.sha256, "size_bytes": input_body.size_bytes},
                     "batch_id": "amplified-errors",
-                    "schema_id": "seed.activity",
-                    "schema_version": 2,
+                    "schema_id": "test.amplified-fields" if errors_from == "fields" else "seed.activity",
+                    "schema_version": 1 if errors_from == "fields" else 2,
                     "target_ref": "session:codex-session:annotation-amplification",
                     "source_result_ref": "result-set:amplification",
                     "actor_ref": "agent:labeler",
                     "model_ref": "agent:model",
-                    "prompt_ref": "block:prompt:0",
+                    "prompt_ref": "block:prompt:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
                     "metadata": {},
                 },
                 request_id="amplified-annotation-import",
@@ -2827,20 +2846,32 @@ def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
 
         async def read_pages() -> None:
             async with Polylogue(archive_root=stack.archive_root, db_path=stack.archive_root / "index.db") as poly:
-                for offset in (0, 9_999, 10_000, 199_999, 200_000):
+                total = 200_000 if errors_from == "fields" else 20
+                offsets = (0, 9_999, 10_000, 199_999, total) if errors_from == "fields" else (0, 9, 19, total)
+                for offset in offsets:
                     resolved = await poly.resolve_ref(summary["batch_ref"], limit=1, offset=offset)
                     assert resolved.resolved and resolved.payload is not None
                     page = resolved.payload
-                    assert page["total"] == 200_000
-                    if offset == 200_000:
+                    assert page["total"] == total
+                    if offset == total:
                         assert page["items"] == [] and page["next_offset"] is None
                         continue
                     item = page["items"][0]
-                    assert item["failure_ordinal"] == offset // 10_000
-                    assert item["error_ordinal"] == offset % 10_000
-                    assert item["failure"] == {"line": offset // 10_000 + 1, "row_key": f"row-{offset // 10_000}"}
-                    assert item["error"] == "evidence_ref '' does not resolve in the live archive"
-                    assert page["next_offset"] == (offset + 1 if offset < 199_999 else None)
+                    row_ordinal = offset // 10_000 if errors_from == "fields" else offset
+                    error_ordinal = offset % 10_000 if errors_from == "fields" else 0
+                    assert item["failure_ordinal"] == row_ordinal
+                    assert item["error_ordinal"] == error_ordinal
+                    assert item["failure"] == {
+                        "line": row_ordinal + 1,
+                        "row_key": f"row-{row_ordinal}",
+                        "unresolved_evidence_refs": [] if errors_from == "fields" else list(range(10_000)),
+                    }
+                    assert item["error"] == (
+                        f"missing required field 'field_{error_ordinal}'"
+                        if errors_from == "fields"
+                        else "evidence_refs_unresolved"
+                    )
+                    assert page["next_offset"] == (offset + 1 if offset < total - 1 else None)
 
         asyncio.run(read_pages())
 
