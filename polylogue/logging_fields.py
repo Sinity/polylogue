@@ -352,6 +352,7 @@ def _fields() -> dict[str, FieldKind]:
         "held",
         "enabled",
         "available",
+        "terminal_receipt_available",
         "bound",  # FTS readiness binding publication result
         "more_pending",
         # Cold-build decisions carried by live.ingest.cold_build_shape_engaged.

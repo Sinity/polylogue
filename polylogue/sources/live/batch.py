@@ -1934,8 +1934,8 @@ class LiveBatchProcessor:
             )
         await self._record_attempt_progress_admitted(
             attempt_id,
-            phase="completed",
-            status="completed",
+            phase="finishing",
+            status="running",
             queued_file_count=metrics.queued_file_count,
             needed_file_count=metrics.needed_file_count,
             skipped_file_count=metrics.skipped_file_count,
@@ -2001,7 +2001,7 @@ class LiveBatchProcessor:
             # A cancellation from here on may race a close the coordinator
             # finishes detached; the cancellation event says so.
             open_attempt.finishing = True
-        await self._run_ops_write(
+        terminal_receipt_available = await self._run_ops_write(
             "attempt_finish",
             self._cursor.finish_ingest_attempt,
             attempt_id,
@@ -2010,7 +2010,15 @@ class LiveBatchProcessor:
             error="; ".join(retry_paths[:3]) if retry_paths else None,
             disposition=final_disposition,
         )
-        if open_attempt is not None:
+        if terminal_receipt_available is False:
+            emit(
+                "live.ingest.attempt_finish_failed",
+                level=ERROR,
+                outcome="error",
+                reason="ops_write_skipped",
+                attempt_id=attempt_id,
+            )
+        elif open_attempt is not None:
             open_attempt.finished = True
         timing_items = sorted(metrics.stage_timings_s.items(), key=lambda item: (-item[1], item[0]))
         timing_map: dict[str, float] = {}
@@ -2023,13 +2031,15 @@ class LiveBatchProcessor:
             "live.ingest.chunk",
             outcome=(
                 "degraded"
-                if metrics.failed_file_count
+                if terminal_receipt_available is False
+                or metrics.failed_file_count
                 or metrics.excluded_file_count
                 or metrics.deferred_paths
                 or metrics.partial_admission_paths
                 else "ok"
             ),
             files=metrics.needed_file_count,
+            terminal_receipt_available=terminal_receipt_available is not False,
             bytes=metrics.input_bytes,
             duration_ms=metrics.total_time_s * 1000,
             succeeded=metrics.succeeded_file_count,
