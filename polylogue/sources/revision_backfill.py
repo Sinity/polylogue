@@ -51,7 +51,7 @@ from polylogue.archive.revision_authority import (
     canonical_authority_logical_key,
     is_work_event_raw_id,
 )
-from polylogue.archive.revision_replay import RevisionReplayPlan
+from polylogue.archive.revision_replay import ApplicationDecision, RevisionReplayPlan
 from polylogue.archive.session_revision_membership import (
     MembershipClassification,
     MembershipDecision,
@@ -1916,6 +1916,37 @@ def prepared_session_for_logical_key(
     return resolve_same_raw_member(sessions, raw_id=raw_id, logical_source_key=logical_source_key).session
 
 
+def is_separator_only_append(
+    raw_id: str, plan: RevisionReplayPlan, prepared_inputs: Mapping[str, PreparedRetainedInput]
+) -> bool:
+    """Omit output only for a proved empty continuation of an accepted chain."""
+    accepted = plan.accepted_raw_ids
+    if raw_id not in accepted or accepted.index(raw_id) == 0:
+        return False
+    item = prepared_inputs[raw_id]
+    baseline = prepared_inputs[accepted[0]]
+    artifact = item.prepared_artifact
+    # APPLIED_APPEND is produced only by the byte planner's unique contiguous
+    # BYTE_PROVEN edge with its exact predecessor and baseline. A membership
+    # candidate, full observation or unproven append never has this decision.
+    return (
+        any(a.raw_id == raw_id and a.decision is ApplicationDecision.APPLIED_APPEND for a in plan.applications)
+        and item.revision_kind is RawRevisionKind.APPEND
+        and item.provider is not Provider.UNKNOWN
+        and item.provider is baseline.provider
+        and baseline.revision_kind is RawRevisionKind.FULL
+        and item.native_id is not None
+        and plan.logical_source_key == f"{origin_from_provider(item.provider).value}:{item.native_id}"
+        and artifact is not None
+        and artifact.error is None
+        and artifact.blob_hash == item.blob_hash
+        and artifact.resolved_provider is item.provider
+        and item.payload_bytes > 0
+        and artifact.jsonl_separators_only
+        and not artifact.session_sequence()
+    )
+
+
 def prepared_session_for_revision_key(
     sessions: Sequence[ParsedSession], *, raw_id: str, logical_source_key: str
 ) -> ParsedSession:
@@ -2292,9 +2323,10 @@ def apply_prepared_revision_replay(
                     stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
                         time.perf_counter() - spill_started
                     )
-                    parsed_by_raw_id[raw_id] = prepared_session_for_logical_key(
-                        sessions, raw_id=raw_id, logical_source_key=logical_key
-                    )
+                    if not is_separator_only_append(raw_id, plan, prepared_inputs):
+                        parsed_by_raw_id[raw_id] = prepared_session_for_logical_key(
+                            sessions, raw_id=raw_id, logical_source_key=logical_key
+                        )
                     retained_bytes += payload_bytes
                 prepared_aggregate_session: ParsedSession | None = None
                 if len(plan.accepted_raw_ids) > 1:

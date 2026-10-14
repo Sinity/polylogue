@@ -3541,6 +3541,7 @@ class RawObservationDerivation(RawObservationInspection):
                         if not needs_source_census:
                             from polylogue.sources.revision_backfill import (
                                 _prepared_retained_outcome,
+                                is_separator_only_append,
                                 prepared_session_for_revision_key,
                             )
 
@@ -3560,9 +3561,14 @@ class RawObservationDerivation(RawObservationInspection):
                                                     member_raw_id,
                                                     f"selector member did not parse: {original_output}",
                                                 ) from original_output
-                                            prepared_session_for_revision_key(
-                                                original_output[0], raw_id=member_raw_id, logical_source_key=logical_key
-                                            )
+                                            if not is_separator_only_append(
+                                                member_raw_id, prepared_revision_plans[logical_key], prepared
+                                            ):
+                                                prepared_session_for_revision_key(
+                                                    original_output[0],
+                                                    raw_id=member_raw_id,
+                                                    logical_source_key=logical_key,
+                                                )
                                         except CohortMembershipRefusalError as refusal:
                                             prepared_key_refusals[logical_key] = refusal
                                             break
@@ -3618,7 +3624,17 @@ class RawObservationDerivation(RawObservationInspection):
                                 continue
                             try:
                                 check_compute_cancelled()
-                                aggregate = prepare_retained_cohort_artifact(ordered, scratch)
+                                aggregate = prepare_retained_cohort_artifact(
+                                    ordered,
+                                    scratch,
+                                    separator_only_raw_ids=frozenset(
+                                        raw_id
+                                        for raw_id in accepted_raw_ids
+                                        if is_separator_only_append(
+                                            raw_id, prepared_revision_plans[logical_key], prepared
+                                        )
+                                    ),
+                                )
                                 check_compute_cancelled()
                             except DaemonOperationCancelled:
                                 raise

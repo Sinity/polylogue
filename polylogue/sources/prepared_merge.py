@@ -118,7 +118,12 @@ def _single_prepared_session(artifact: PreparedJsonl) -> ParsedSession:
 class _CohortOwnerOccurrences:
     """Bind acquired original owners to semantic digest occurrences."""
 
-    def __init__(self, ordered: Sequence[tuple[str, PreparedJsonl]], store: SqliteMessageStore) -> None:
+    def __init__(
+        self,
+        ordered: Sequence[tuple[str, PreparedJsonl]],
+        store: SqliteMessageStore,
+        separator_only_raw_ids: frozenset[str],
+    ) -> None:
         self.conn = store.conn
         self.conn.execute(
             "CREATE TEMP TABLE cohort_owner_source (stable TEXT NOT NULL, raw_id TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(stable,raw_id)) WITHOUT ROWID"
@@ -130,6 +135,8 @@ class _CohortOwnerOccurrences:
             "CREATE TEMP TABLE cohort_owner_placed (position INTEGER NOT NULL, variant INTEGER NOT NULL, stable TEXT NOT NULL, PRIMARY KEY(position,variant)) WITHOUT ROWID"
         )
         for raw_id, artifact in ordered:
+            if raw_id in separator_only_raw_ids:
+                continue
             session = _single_prepared_session(artifact)
             with settled_iterator(session.messages) as messages:
                 for message in messages:
@@ -174,11 +181,14 @@ class _CohortOwnerOccurrences:
 
 
 def _merge_into_store(
-    ordered: Sequence[tuple[str, PreparedJsonl]], merged: ParsedSession, store: SqliteMessageStore
+    ordered: Sequence[tuple[str, PreparedJsonl]],
+    merged: ParsedSession,
+    store: SqliteMessageStore,
+    separator_only_raw_ids: frozenset[str],
 ) -> ParsedSession:
     messages = store.new_sink()
     events = store.new_event_sink()
-    owner_occurrences = _CohortOwnerOccurrences(ordered, store)
+    owner_occurrences = _CohortOwnerOccurrences(ordered, store, separator_only_raw_ids)
     claude_summaries = {event_type: payload_keys for event_type, payload_keys, _ in _CLAUDE_SUMMARIES}
     seen: set[str] = set()
     if merged.source_name is Provider.CLAUDE_CODE:
@@ -213,6 +223,8 @@ def _merge_into_store(
             ),
         )
         check_compute_cancelled()
+        if raw_id in separator_only_raw_ids:
+            continue
         session = _single_prepared_session(artifact)
         positions = ChunkPositions(session.messages, len(messages), conn=store.conn)
         with settled_iterator(session.messages) as _original_messages:
@@ -269,18 +281,29 @@ def _merge_into_store(
     )
 
 
-def prepare_retained_cohort_artifact(ordered: Sequence[tuple[str, PreparedJsonl]], directory: Path) -> PreparedJsonl:
+def prepare_retained_cohort_artifact(
+    ordered: Sequence[tuple[str, PreparedJsonl]],
+    directory: Path,
+    *,
+    separator_only_raw_ids: frozenset[str] = frozenset(),
+) -> PreparedJsonl:
     """Seal one bounded full-replay artifact from accepted raw revisions."""
     if len(ordered) < 2:
         raise ValueError("retained cohort needs at least two revisions")
     source_hash = prepared_cohort_source_hash(ordered)
+    if not separator_only_raw_ids.issubset(raw_id for raw_id, _ in ordered[1:]):
+        raise ValueError("separator-only continuation is outside the accepted chain")
     merged_metadata: ParsedSession | None = None
     identity: tuple[Provider, str] | None = None
     # Metadata merges without events, but Claude Code orders its working
     # directories by the relocation events; carry those in record order.
     relocated_cwds: list[str] = []
-    for _, artifact in ordered:
+    for raw_id, artifact in ordered:
         check_compute_cancelled()
+        if raw_id in separator_only_raw_ids:
+            if not artifact.jsonl_separators_only or artifact.session_sequence():
+                raise ValueError("separator-only continuation lacks its complete byte proof")
+            continue
         session = _single_prepared_session(artifact)
         candidate = (session.source_name, session.provider_session_id)
         if identity is not None and candidate != identity:
@@ -309,7 +332,7 @@ def prepare_retained_cohort_artifact(ordered: Sequence[tuple[str, PreparedJsonl]
     sealed = False
     try:
         store = SqliteMessageStore(store_path)
-        merged = _merge_into_store(ordered, merged_metadata, store)
+        merged = _merge_into_store(ordered, merged_metadata, store, separator_only_raw_ids)
         merged.content_hash = session_content_hash(merged)
         shard_path = prepare_session_shard(directory, [merged]).path
         _write_artifact(store, source_hash, [merged], enrichment_digest=None, enrichment_index_path=None)

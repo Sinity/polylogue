@@ -713,3 +713,142 @@ def test_retained_cohort_fold_observes_owner_cancellation(fold: str) -> None:
                 prepared_cohort_source_hash(CancelDuringIteration([("raw-0", artifact), ("raw-1", artifact)]))
     finally:
         compute_cancel.reset(token)
+
+
+@pytest.mark.parametrize("body", [b"\n\n", b" \t\r\n" * 20000])
+def test_separator_append_keeps_all_aggregate_dependencies_without_a_session(tmp_path: Path, body: bytes) -> None:
+    from contextlib import closing
+
+    from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+
+    baseline = _chunk_artifact(
+        tmp_path / "baseline",
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="same",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="unchanged")],
+        ),
+        "a" * 64,
+    )
+    path = tmp_path / "tail.jsonl"
+    path.write_bytes(body)
+    tail = prepare_jsonl_blob(
+        str(path),
+        "same.jsonl",
+        "codex",
+        "same",
+        is_stream=True,
+        shard_directory=str(tmp_path / "tail"),
+        strict_jsonl_records=True,
+    )
+    aggregate = None
+    try:
+        assert tail.jsonl_separators_only and not tail.session_sequence()
+        ordered = [("baseline", baseline), ("tail", tail)]
+        aggregate = prepare_retained_cohort_artifact(
+            ordered, tmp_path / "aggregate", separator_only_raw_ids=frozenset({"tail"})
+        )
+        assert aggregate.blob_hash == prepared_cohort_source_hash(ordered)
+        assert aggregate.blob_hash != prepared_cohort_source_hash(ordered[:1])
+        with closing(aggregate.iter_sessions()) as sessions:
+            session = next(sessions)
+            assert next(sessions, None) is None
+        assert [(m.provider_message_id, m.text) for m in session.messages] == [("m1", "unchanged")]
+        assert aggregate.sessions_path is not None
+        with closing(sqlite3.connect(aggregate.sessions_path)) as conn:
+            assert conn.execute(
+                "SELECT raw_id FROM prepared_attachment_origin_artifact ORDER BY ordinal"
+            ).fetchall() == [("baseline",), ("tail",)]
+    finally:
+        if aggregate is not None:
+            aggregate.discard()
+        tail.discard()
+        baseline.discard()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "accepted",
+        "partial",
+        "malformed",
+        "array",
+        "metadata",
+        "full",
+        "unproven",
+        "broken-parent",
+        "unknown",
+        "wrong-native",
+    ],
+)
+def test_zero_output_append_requires_complete_separator_and_byte_chain_proof(tmp_path: Path, case: str) -> None:
+    from dataclasses import replace
+
+    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionKind
+    from polylogue.archive.revision_replay import RevisionCandidate, plan_revision_replay
+    from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+    from polylogue.sources.revision_backfill import PreparedRetainedInput, is_separator_only_append
+
+    body = {
+        "partial": b"\n{",
+        "malformed": b"bad\n",
+        "array": b"[]\n",
+        "metadata": b'{"type":"session_meta","payload":{"id":"same"}}\n',
+    }.get(case, b"\n\n")
+    path = tmp_path / "tail.jsonl"
+    path.write_bytes(body)
+    artifact = prepare_jsonl_blob(
+        str(path),
+        "same.jsonl",
+        "codex",
+        "same",
+        is_stream=True,
+        shard_directory=str(tmp_path / "prepared"),
+        strict_jsonl_records=True,
+        parse_prefix_size=1 if case == "partial" else None,
+    )
+    try:
+        assert artifact.jsonl_separators_only is (case not in {"partial", "malformed", "array", "metadata"})
+        base = RevisionCandidate(
+            "base",
+            "codex-session:same",
+            RawRevisionKind.FULL,
+            "a" * 64,
+            0,
+            RawRevisionAuthority.BYTE_PROVEN,
+            100,
+            baseline_raw_id="base",
+        )
+        tail = RevisionCandidate(
+            "tail",
+            base.logical_source_key,
+            RawRevisionKind.APPEND,
+            "b" * 64,
+            1,
+            RawRevisionAuthority.QUARANTINED if case == "unproven" else RawRevisionAuthority.BYTE_PROVEN,
+            len(body),
+            predecessor_raw_id="missing" if case == "broken-parent" else "base",
+            baseline_raw_id="base",
+            append_start_offset=100,
+            append_end_offset=100 + len(body),
+        )
+        plan = plan_revision_replay([base, tail])
+        item = PreparedRetainedInput(
+            "tail",
+            Provider.UNKNOWN if case == "unknown" else Provider.CODEX,
+            artifact.blob_hash or "b" * 64,
+            "same.jsonl",
+            RawRevisionKind.FULL if case == "full" else RawRevisionKind.APPEND,
+            len(body),
+            "other" if case == "wrong-native" else "same",
+            "fixture",
+            None,
+            (0, 0, 0, 0, 0),
+            None,
+            prepared_artifact=artifact,
+        )
+        inputs = {"base": replace(item, raw_id="base", revision_kind=RawRevisionKind.FULL), "tail": item}
+        assert is_separator_only_append("tail", plan, inputs) is (case == "accepted")
+        assert not is_separator_only_append("base", plan, inputs)
+    finally:
+        artifact.discard()
