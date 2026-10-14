@@ -127,6 +127,15 @@ A read view that computes its own answer in-process is a different question
 from this one: those are declared, and shrink-only, in
 `polylogue/cli/read_view_registry.py:95-110`.
 
+## Cold CLI commands
+
+Machine JSON from config, init and status writes directly to the output stream,
+so terminal markup and line wrapping cannot change its values or construct
+terminal UI. Entrypoint version requests resolve the actual build identity only
+when selected; ordinary command import and resilient parsing do not inspect Git.
+Archive identity dictionaries still include their current build identity when
+serialized.
+
 ## Surface ownership
 
 - `polylogue/cli/` owns command grammar and human/machine presentation.

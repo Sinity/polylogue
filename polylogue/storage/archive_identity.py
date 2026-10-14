@@ -18,7 +18,6 @@ from types import TracebackType
 from typing import Literal
 
 from polylogue.logging import WARNING, emit
-from polylogue.version import VERSION_INFO
 
 _LOCAL_ARCHIVE_OWNERS_LOCK = threading.RLock()
 #: In-process owners, keyed on the *durable anchor* directory identity --
@@ -468,6 +467,8 @@ class ArchiveIdentity:
         return shared_durable and distinct_indexes
 
     def as_dict(self, *, unit: str | None = None) -> dict[str, object]:
+        from polylogue.version import VERSION_INFO
+
         return {
             "configured_root": str(self.configured_root),
             "durable_id": self.durable_id,

@@ -43,6 +43,8 @@ from pathlib import Path
 
 import pytest
 
+from devtools.isolated_environment import isolated_home_environment
+
 _FORBIDDEN_ON_DAEMON_HIT = (
     "polylogue.api",
     "polylogue.services",
@@ -185,4 +187,77 @@ def test_unused_cold_branches_do_not_load_their_execution_owners(
     """Restoring an eager import loads an owner the selected branch never uses."""
     code = f"import sys\n{probe}\nassert not set({forbidden!r}) & sys.modules.keys()\n"
     result = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "args,expected_exit",
+    [
+        (["status", "--format", "json"], 1),
+        (["init", "--dry-run", "--format", "json"], 0),
+        (["config", "--format", "json"], 0),
+    ],
+)
+@pytest.mark.uses_real_clock("fresh process exercises actual entrypoint and physical exit")
+def test_machine_json_commands_do_not_load_terminal_ui(tmp_path: Path, args: list[str], expected_exit: int) -> None:
+    """Restoring any machine-payload console print hydrates terminal UI."""
+    environment = isolated_home_environment(os.environ, home=tmp_path)
+    environment["POLYLOGUE_ARCHIVE_ROOT"] = str(tmp_path / "absent-archive")
+    environment["POLYLOGUE_ROOT"] = str(Path(__file__).resolve().parents[3])
+    environment.pop("POLYLOGUE_DAEMON_URL", None)
+    environment.pop("POLYLOGUE_DAEMON_MODE", None)
+    code = f"""import sys
+from polylogue.cli.click_app import main
+sys.argv = ['polylogue', *{args!r}]
+try:
+    main()
+except SystemExit as exc:
+    assert exc.code == {expected_exit}
+else:
+    assert {expected_exit} == 0
+assert 'polylogue.ui' not in sys.modules
+"""
+    result = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=environment, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    import json
+
+    payload = json.loads(result.stdout)
+    if args[0] == "status":
+        assert payload["daemon_liveness"] is False
+        assert payload["status_snapshot"]["reason"] == "daemon_absent"
+    elif args[0] == "init":
+        assert payload["written"] is False
+    else:
+        assert "values" in payload
+
+
+@pytest.mark.parametrize(
+    "module_name,command_name,prog_name",
+    [
+        ("polylogue.cli.click_app", "cli", "polylogue"),
+        ("polylogue.daemon.commands", "main", "polylogued"),
+    ],
+)
+@pytest.mark.uses_real_clock("fresh entrypoint process resolves its actual Git build identity")
+def test_entrypoint_version_resolves_only_when_selected(
+    tmp_path: Path, module_name: str, command_name: str, prog_name: str
+) -> None:
+    """Eager version imports break startup; a metadata substitute breaks identity."""
+    environment = isolated_home_environment(os.environ, home=tmp_path)
+    environment["POLYLOGUE_ROOT"] = str(Path(__file__).resolve().parents[3])
+    code = f"""import sys
+from importlib import import_module
+from click.testing import CliRunner
+command = getattr(import_module({module_name!r}), {command_name!r})
+assert 'polylogue.version' not in sys.modules
+with command.make_context('renamed-entrypoint', ['--version'], resilient_parsing=True):
+    pass
+assert 'polylogue.version' not in sys.modules
+result = CliRunner().invoke(command, ['--version'], prog_name='renamed-entrypoint')
+assert result.exit_code == 0, (result.stdout, result.stderr, result.exception)
+from polylogue.version import POLYLOGUE_VERSION
+assert result.stdout == {prog_name!r} + ', version ' + POLYLOGUE_VERSION + chr(10)
+assert result.stderr == ''
+"""
+    result = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=environment, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

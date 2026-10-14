@@ -35,7 +35,6 @@ from polylogue.cli.shell_completion_classes import register_completion_classes
 from polylogue.cli.shell_words import completion_words
 from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.logging import configure_logging
-from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
     from polylogue.ui import UI
@@ -344,6 +343,15 @@ def _emit_help_markdown(ctx: click.Context, _param: click.Parameter, value: bool
     ctx.exit(0)
 
 
+def _show_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
+    from polylogue.version import POLYLOGUE_VERSION
+
+    click.echo(f"polylogue, version {POLYLOGUE_VERSION}")
+    ctx.exit()
+
+
 # Main CLI group with query-mode options
 @click.group(
     cls=QueryFirstGroup,
@@ -359,7 +367,14 @@ def _emit_help_markdown(ctx: click.Context, _param: click.Parameter, value: bool
     help="Same content as `polylogue manual`; emit the full --help tree as Markdown and exit.",
 )
 @apply_query_mode_options
-@click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogue")
+@click.option(
+    "--version",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_show_version,
+    help="Show the version and exit.",
+)
 @click.pass_context
 def cli(
     ctx: click.Context,
