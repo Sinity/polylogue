@@ -20,6 +20,10 @@ signalled by `find`, a quoted expression, or field syntax. The query DSL is
 lowered to SQL; it is not a grep-like post-filter. Pagination and cancellation
 are part of the route contract (`polylogue/archive/query/transaction.py:1-100`).
 
+Grammar-only daemon completion binds the control authority snapshot and checks
+cancellation. Archive-backed value completion uses the normal Index read.
+Explicit caller-supplied Index preconditions are verified on either route.
+
 Saved query definitions canonicalize the typed predicate wire shape before
 persistence. Only declared grammar tokens and field aliases are normalized;
 opaque operands and mapping keys stay exact. Boolean `kind=and/or` children
@@ -409,6 +413,8 @@ reply evidence. Canonical unknown outcomes stay unknown. Structured outcome
 events retain each use occurrence even when two commands and outcomes match.
 The temporary association relation uses native scratch custody and never
 opens an archive tier (`analysis/transforms.py`, `core/tool_association.py`).
+Events with only session evidence carry session subjects; message-backed
+outcomes retain message subjects.
 
 Session title filters use Python Unicode `lower()` and literal substring matching.
 Working-directory filters compare case-sensitive path components after trimming,

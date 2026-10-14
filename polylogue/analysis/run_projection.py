@@ -321,7 +321,10 @@ def build_run_projection(
                 kind="tool_finished",
                 run_ref=main_run_ref,
                 summary=_tool_event_summary(tool),
-                subject_ref=ObjectRef(kind="message", object_id=evidence_refs[0].message_id or session_id),
+                subject_ref=ObjectRef(
+                    kind="message" if evidence_refs[0].message_id else "session",
+                    object_id=evidence_refs[0].message_id or session_id,
+                ),
                 object_refs=_tool_object_refs(tool),
                 evidence_refs=evidence_refs,
                 tool_name=tool.tool_name,
@@ -342,7 +345,10 @@ def build_run_projection(
                 kind=event.kind,
                 run_ref=main_run_ref,
                 summary=event.summary,
-                subject_ref=ObjectRef(kind="message", object_id=evidence_refs[0].message_id or session_id),
+                subject_ref=ObjectRef(
+                    kind="message" if evidence_refs[0].message_id else "session",
+                    object_id=evidence_refs[0].message_id or session_id,
+                ),
                 evidence_refs=evidence_refs,
                 tool_name=event.tool_name,
                 tool_id=event.tool_id,

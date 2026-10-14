@@ -3189,3 +3189,42 @@ def test_restarted_durable_preview_compute_refusal_preserves_reference(tmp_path:
         )
         assert restored is not None and restored["outcome"] == "completed", restored
         assert restored["result"] == prepared["result"]
+
+
+def test_grammar_completion_keeps_authority_checks_without_opening_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old canonical executor opened the index before its grammar-only handler."""
+    from polylogue.operations import daemon_execution
+
+    def forbid_index(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("grammar completion must not acquire an index snapshot")
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        monkeypatch.setattr(daemon_execution, "open_operation_read", forbid_index)
+        envelope = stack.client.operation(
+            "completion", {"kind": "field", "incomplete": "orig"}, archive_root=str(stack.archive_root)
+        )
+        assert envelope is not None
+        assert envelope["outcome"] == "completed", envelope
+        assert envelope["result"]["query_completions"]
+        assert "index" not in envelope["schema_versions"]
+        rejected = stack.client.operation(
+            "completion",
+            {"kind": "field", "incomplete": "orig"},
+            archive_root=str(stack.archive_root),
+            expected_archive_identity="not-this-archive",
+        )
+        assert rejected is not None
+        assert rejected["outcome"] == "rejected"
+        assert rejected["error"]["code"] == "archive_identity_stale"
+
+        schema_refused = stack.client.operation(
+            "completion",
+            {"kind": "field", "incomplete": "orig"},
+            archive_root=str(stack.archive_root),
+            index_schema_version=99,
+        )
+        assert schema_refused is not None
+        assert schema_refused["outcome"] == "rejected"
+        assert schema_refused["error"]["code"] == "schema_version_mismatch"

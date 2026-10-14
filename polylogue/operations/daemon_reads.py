@@ -354,7 +354,7 @@ def execute_read_operation(
 
         result = execute_fable_packet(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
     elif name == "completion":
-        result = _completion_payload(payload, archive=archive)
+        result = completion_payload(payload, archive=archive)
     elif name == "facets":
         result = _facets_payload(_params(payload), archive=archive)
     elif name == "status":
@@ -874,7 +874,7 @@ def completion_reads_archive(payload: Mapping[str, object]) -> bool:
     return isinstance(source, str) and source in ARCHIVE_COMPLETION_SOURCES
 
 
-def _completion_payload(payload: Mapping[str, object], *, archive: ArchiveStore | None = None) -> dict[str, object]:
+def completion_payload(payload: Mapping[str, object], *, archive: ArchiveStore | None = None) -> dict[str, object]:
     """Answer one completion question from the grammar, or from the archive.
 
     ``source`` names an archive-backed vocabulary and is the only path that

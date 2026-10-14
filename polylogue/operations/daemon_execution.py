@@ -461,7 +461,12 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
         def execute(*, mutating: bool) -> DaemonOperationEnvelope:
             nonlocal snapshot
             guard = (nullcontext if mutating else context.runtime.publication_guard) if context.runtime else None
-            from polylogue.operations.daemon_reads import requires_vector_snapshot
+            from polylogue.operations.daemon_reads import (
+                completion_payload,
+                completion_reads_archive,
+                requires_vector_snapshot,
+            )
+            from polylogue.operations.operation_context import abort_checkpoint
 
             vector_binding = context.read_dependencies.vector_binding if context.read_dependencies is not None else None
             vector_recipe = (
@@ -483,6 +488,28 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                     owner_ref=context.principal.actor_ref,
                 )
             )
+            if request.operation == "completion" and not completion_reads_archive(request.payload):
+                assert read_control is not None
+                try:
+                    with guard() if guard is not None else nullcontext():
+                        snapshot = _observe_explicit_index_condition(
+                            request,
+                            observe_control_authority(context.archive_root),
+                            archive_root=context.archive_root,
+                            read_control=read_control,
+                        )
+                        _validate_identity(request, context, snapshot)
+                        if context.runtime is not None:
+                            context.runtime.observe_snapshot(request, snapshot)
+                        abort_checkpoint(read_control)()
+                        result = completion_payload(request.payload)
+                        abort_checkpoint(read_control)()
+                        validate_operation_result(request.operation, result)
+                        return operation_envelope(
+                            request, context, snapshot=snapshot, started_at=started, result=result
+                        )
+                finally:
+                    read_control.mark_cleanup_complete()
             with open_operation_read(
                 context.archive_root,
                 publication_guard=guard,
@@ -501,7 +528,6 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                     result = handler(request, context, audit, snapshot)
                 else:
                     from polylogue.operations.daemon_reads import DaemonReadDependencies, execute_read_operation
-                    from polylogue.operations.operation_context import abort_checkpoint
 
                     dependencies = (
                         replace(

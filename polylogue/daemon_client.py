@@ -343,17 +343,26 @@ class DaemonClient:
                 "operation.cancel",
                 "operation.result",
             }:
-                if request.index_schema_version is None and operation not in {
-                    "maintenance.backup",
-                    "maintenance.restore_verified_backup",
-                    "user.assertions.export.release",
-                    "user.settings.get",
-                    "user.settings.list",
-                    "insights.hermes_health",
-                }:
-                    # These operations read or copy declared tiers without an Index
-                    # reader. An explicit Index precondition still reaches the
-                    # server unchanged and must be verified there.
+                completion_needs_index = True
+                if operation == "completion":
+                    from polylogue.operations.daemon_reads import completion_reads_archive
+
+                    completion_needs_index = completion_reads_archive(request.payload)
+                if (
+                    request.index_schema_version is None
+                    and completion_needs_index
+                    and operation
+                    not in {
+                        "maintenance.backup",
+                        "maintenance.restore_verified_backup",
+                        "user.assertions.export.release",
+                        "user.settings.get",
+                        "user.settings.list",
+                        "insights.hermes_health",
+                    }
+                ):
+                    # Only Index-backed operations receive an implicit condition.
+                    # Caller-supplied conditions reach the server unchanged.
                     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
                     request = replace(request, index_schema_version=INDEX_SCHEMA_VERSION)
