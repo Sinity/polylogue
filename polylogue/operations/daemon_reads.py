@@ -1466,6 +1466,8 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         window_offset = offset
         window_next_offset = None
         window_continuation = None
+        lineage_complete = envelope.lineage_complete
+        lineage_truncation_reason: str | None = envelope.lineage_truncation_reason
         matched = len(metadata.working_directories) + len(metadata.user_tags)
     else:
         assert request is not None
@@ -1484,6 +1486,8 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         window_offset = window.offset
         window_next_offset = window.next_offset
         window_continuation = window.continuation
+        lineage_complete = window.lineage_complete
+        lineage_truncation_reason = window.lineage_truncation_reason
         matched = len(window.rows)
     envelope = replace(envelope, working_directories=metadata.working_directories)
     session_body = _session_identity_projection(envelope, excluded_blocks=excluded_blocks)
@@ -1515,13 +1519,13 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         "metadata_page": metadata.page.model_dump(mode="json"),
         "outcome": lineage_page_outcome(
             matched=matched,
-            complete=envelope.lineage_complete,
-            truncation_reason=envelope.lineage_truncation_reason,
+            complete=lineage_complete,
+            truncation_reason=lineage_truncation_reason,
         ).to_dict(),
         "session": session_body,
         "selection_epoch": selection_epoch,
-        "lineage_complete": envelope.lineage_complete,
-        "lineage_truncation_reason": envelope.lineage_truncation_reason,
+        "lineage_complete": lineage_complete,
+        "lineage_truncation_reason": lineage_truncation_reason,
         "session_id": session_id,
         "total": window_total,
         "limit": window_limit,
