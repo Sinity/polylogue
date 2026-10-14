@@ -22,6 +22,14 @@ Callers select a role, never a lock-wait duration.
 | `publication` | 30 s | write | daemon writer, WAL, `synchronous=NORMAL` |
 | `offline-bulk` (write) | 30 s | write | owned inactive generation, `journal_mode=MEMORY`, `EXCLUSIVE` |
 
+Ordinary interactive, background, offline and sealed readers use
+`temp_store=FILE`. Source-derived health counts use association and window
+relations whose query plans require TEMP B-trees. Their temporary pages may
+spill to disk rather than growing entirely in the reader heap; SQLite still
+uses a cache, so FILE does not imply zero memory use. This common policy also
+covers standalone diagnostics opened outside ArchiveStore. Count semantics,
+read-only enforcement and explicit unavailable evidence remain unchanged.
+
 `READ_PROFILES` and `WRITE_PROFILES` are separate maps: a single merged map
 shadowed the offline-bulk read profile with the bulk-build writer.
 

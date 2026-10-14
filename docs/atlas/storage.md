@@ -317,6 +317,13 @@ retains its own read connection; hydration does not borrow a backend-global pool
 The scoped query store refuses another task or use after its operation ends.
 Cancellation and failed native close retain the existing backend cleanup owner.
 
+Ordinary read profiles use file-backed SQLite TEMP storage, including
+standalone health readers. The source-derived observed-event count retains its
+shared pairing semantics and can spill its association/window relations to
+disk; FILE backing retains SQLite cache memory rather than proving zero RSS.
+The separate sealed historical classifier staging profile keeps its declared
+private in-memory TEMP policy (`docs/sqlite-connection-policy.md`).
+
 Per-operation `sqlite3` readers use `contextlib.closing` or an explicit `finally`
 to end the connection lifetime. SQLite's connection context manager commits or
 rolls back but does not close. A reader scope consumes its cursors before close;
