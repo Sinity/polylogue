@@ -361,3 +361,14 @@ usage records carry declared cache/input and reasoning/output subset laws. The
 relation owner conditions the scalar owner's original support, including its
 neutral public range when magnitude evidence is private; it neither publishes
 private numeric observations nor clamps generated values.
+
+Per-field lengths, type/presence mixes and categorical frequencies come from
+the element schema annotations. Cross-record order, tool relationships, child
+streams, sidecars and session prefixes come only from the same package's
+workload-profile artifact. `devtools schema commit` measures and publishes
+both through the source inference owner. Fixtures and benchmark corpus writers
+consume that package through `SyntheticCorpus.iter_sessions`; the separate
+per-origin workload extractor, loader, profiles and hand renderer are retired.
+Packages missing measured evidence require reinference and publication before
+they can supply the driver. Neutral publication controls qualify this path;
+they do not stand in for operator package publication.
