@@ -39,7 +39,7 @@ from tests.infra.query_manifest_oracle import (
     QueryCardinalityManifest,
     query_cardinality_manifest,
 )
-from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
+from tests.infra.workload_artifacts import SeededArchiveArtifact, build_seeded_archive, clone_seeded_archive
 
 _ACTION_EXPRESSION = f"actions where session.origin:codex-session AND command:{QUERY_CARDINALITY_TOKEN}"
 _SESSION_EXPRESSION = f"exists action(session.origin:codex-session AND command:{QUERY_CARDINALITY_TOKEN})"
@@ -49,6 +49,7 @@ _SESSION_EXPRESSION = f"exists action(session.origin:codex-session AND command:{
 class _PreparedArchive:
     root: Path
     manifest: QueryCardinalityManifest
+    artifact: SeededArchiveArtifact
 
 
 @contextmanager
@@ -75,10 +76,13 @@ def query_cardinality_archive(tmp_path_factory: pytest.TempPathFactory) -> _Prep
     return _prepare_query_cardinality_archive(tmp_path_factory.mktemp("query-cardinality-survivor"))
 
 
-def _prepare_query_cardinality_archive(work: Path) -> _PreparedArchive:
+def _prepare_query_cardinality_archive(
+    work: Path, *, artifact: SeededArchiveArtifact | None = None
+) -> _PreparedArchive:
     """Acquire the corpus into an authentic seeded clone with its original train proofs."""
     work.mkdir(parents=True, exist_ok=True)
-    artifact = build_seeded_archive(cache_root=work / "seeded-cache")
+    if artifact is None:
+        artifact = build_seeded_archive(cache_root=work / "seeded-cache")
     clone = clone_seeded_archive(artifact, work / "augmented-archive")
     manifest = query_cardinality_manifest()
     sources = [Source(name="codex", path=path) for path in manifest.write_sources(work / "wire")]
@@ -92,7 +96,7 @@ def _prepare_query_cardinality_archive(work: Path) -> _PreparedArchive:
         result = asyncio.run(ingest_owned_clone())
     assert result.parse_failures == 0
     assert result.processed_ids == set(manifest.matching_session_ids()) | {manifest.decoy_session_id}
-    return _PreparedArchive(root=clone.root, manifest=manifest)
+    return _PreparedArchive(root=clone.root, manifest=manifest, artifact=artifact)
 
 
 def _action_identity(row: Any) -> ActionIdentity:
@@ -100,18 +104,19 @@ def _action_identity(row: Any) -> ActionIdentity:
         str(row.session_id),
         str(row.tool_command),
         cast(str | None, row.output_text),
-        cast(int | None, row.is_error),
-        cast(int | None, row.exit_code),
+        cast(int | None, row.results[0].is_error) if row.results else None,
+        cast(int | None, row.results[0].exit_code) if row.results else None,
     )
 
 
 def _payload_action_identity(row: dict[str, object]) -> ActionIdentity:
+    results = cast(list[dict[str, object]], row.get("results", []))
     return (
         str(row["session_id"]),
         str(row["tool_command"]),
         cast(str | None, row.get("output_text")),
-        cast(int | None, row.get("is_error")),
-        cast(int | None, row.get("exit_code")),
+        cast(int | None, results[0].get("is_error")) if results else None,
+        cast(int | None, results[0].get("exit_code")) if results else None,
     )
 
 
@@ -221,7 +226,9 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     assert isinstance(count_envelope, QueryUnitAggregateEnvelope)
     assert [(item.group_key, item.count) for item in count_envelope.items] == [("all", len(expected))]
     assert isinstance(partition_envelope, QueryUnitAggregateEnvelope)
-    partition = {str(item.group_key): item.count for item in partition_envelope.items}
+    partition = {
+        "unknown" if item.group_key is None else str(item.group_key): item.count for item in partition_envelope.items
+    }
     assert partition == manifest.is_error_partition()
     assert sum(partition.values()) == len(expected)
 
@@ -284,7 +291,9 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     # Preview and apply run against a private clone.  The previewed identities
     # equal the planted session set, apply reports the same cardinality, the
     # selected sessions disappear, and the output-only decoy remains.
-    mutation_archive = _prepare_query_cardinality_archive(tmp_path / "mutation-archive")
+    mutation_archive = _prepare_query_cardinality_archive(
+        tmp_path / "mutation-archive", artifact=query_cardinality_archive.artifact
+    )
     assert mutation_archive.manifest == manifest
     mutation_root = mutation_archive.root
     with cli_daemon_archive(mutation_root, monkeypatch):
@@ -324,8 +333,15 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
             ["--plain", "--format", "json", "find", _ACTION_EXPRESSION],
             env=_cli_env(mutation_root),
         )
-        assert post_result.exit_code == 2, post_result.output
+        # Retained raws are unchecked after excision. Empty rows still carry
+        # that materialization gap rather than certifying a clean empty scope.
+        assert post_result.exit_code == 1, post_result.output
         post_payload = cast(dict[str, object], json.loads(post_result.output))
+        post_outcome = cast(dict[str, object], post_payload["outcome"])
+        assert post_outcome["state"] == "degraded"
+        assert post_outcome["reason"] == "archive_not_converged"
+        detail = cast(dict[str, object], post_outcome["detail"])
+        assert "archive_not_converged" in cast(list[str], detail["gaps"])
         assert post_payload["items"] == []
         assert post_payload["total"] == 0
 
@@ -368,7 +384,11 @@ def test_survivor_detects_naive_duplicate_id_join_mutation(
                 r.text AS output_text,
                 r.tool_result_is_error AS is_error,
                 r.tool_result_exit_code AS exit_code,
-                r.block_id AS tool_result_block_id,
+                CASE WHEN r.block_id IS NULL THEN '[]' ELSE json_array(json_object(
+                    'tool_result_block_id',r.block_id,'output_text',r.text,'is_error',r.tool_result_is_error,
+                    'exit_code',r.tool_result_exit_code,'tool_outcome',r.tool_outcome,
+                    'outcome_unknown_reason',r.tool_result_outcome_unknown_reason)) END AS results_json,
+                r.tool_outcome AS tool_outcome,
                 r.tool_result_outcome_unknown_reason AS outcome_unknown_reason,
                 CASE
                     WHEN r.block_id IS NULL THEN 'no_result'

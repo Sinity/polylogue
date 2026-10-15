@@ -517,9 +517,9 @@ memory contributors.
 - `blocks.tool_outcome` is the canonical structural outcome; a deliberate
   `unknown` is only storable together with its parser reason, enforced by a
   table CHECK that also keeps that reason off any other block shape. The
-  `actions` view joins paired blocks and derives `result_state` from
-  `tool_outcome` alone, so the legacy `is_error`/`exit_code` pair stays exposed
-  for compatibility without deciding the state
+  `actions` view exposes ordered constituent results and derives `result_state`
+  and aggregate `is_error` from the shared association verdict. Each result
+  retains its own error flag, exit code, outcome and unknown reason
   (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:606-611`;
   `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:642-652`;
   `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:594-605`;
@@ -731,12 +731,23 @@ unrelated ambiguous window. A final resultless invocation remains `no_result`;
 absence of a paired reply does not retract independent execution-sidecar
 facts on the original tool-use block.
 
-A proved fanout aggregates error before unknown before success. One invocation
-event carries the call and every exact reply reference. Scalar result location,
-output, error flag and exit code remain absent for multiple replies rather
-than selecting a representative. Tool episodes expose the omission in their
-caveat and the existing authority gap `tool_episode_plural_output_omitted`.
-A known aggregate verdict does not certify a complete scalar output. Writers
+A proved fanout aggregates error before unknown before success. Public actions,
+Python tool calls and tool episodes expose every ordered constituent through
+`results`; each retains its original block reference, output, error flag, exit
+code, verdict and unknown reason. Aggregate output joins reported bodies in
+order, while `is_error` states the aggregate verdict. A singular result reference
+or scalar exit code cannot represent this collection and is absent from the
+public action row. Exit-code predicates match any owned result; exit codes are
+not scalar grouping or aggregate fields.
+
+One stable invocation event carries the call and every exact reply reference.
+Its location anchors the final ordered reply without replacing the aggregate
+verdict or constituent evidence. Exact-session reads filter the canonical
+composed transcript before association, so parent and sibling contexts cannot
+borrow each other's replies. A removed intermediary revokes that parent-chain
+proof; an independently unique alternating native-ID stream can still associate
+the surviving reply. Membership and reply-parent traversal stay in the same
+requested context. Writers
 resolve original parent links before reconciling outcomes and refreshing
 associations; reads do not depend on insertion order or a populated cache.
 

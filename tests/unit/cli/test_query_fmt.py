@@ -419,12 +419,14 @@ class TestListFormatting:
             assert payload["items"][0]["summary"] == "Summary text"
         elif output_format == "csv":
             assert (
-                "id,date,origin,title,messages,tags,summary,outcome,cost_usd,relative_time,repo,cwd_display" in rendered
+                "id,date,origin,title,messages,tags,summary,outcome,cost_usd,cost_provenance,relative_time,repo,cwd_display"
+                in rendered
             )
             assert "outcome" in rendered and "cost_usd" in rendered and "relative_time" in rendered
             assert "repo" in rendered and "cwd_display" in rendered
             assert "conv-summary-1" in rendered
             assert "alpha,beta" in rendered
+            assert "provider_reported" in rendered
         else:
             assert "conv-summary-1" in rendered
             assert "claude-ai" in rendered
@@ -508,7 +510,7 @@ class TestListFormatting:
             assert payload["items"][0]["match"]["retrieval_lane"] == "dialogue"
         elif output_format == "csv":
             assert (
-                "id,date,origin,title,messages,rank,retrieval_lane,match_surface,message_id,snippet,outcome,cost_usd,relative_time,repo,cwd_display"
+                "id,date,origin,title,messages,rank,retrieval_lane,match_surface,message_id,snippet,outcome,cost_usd,cost_provenance,relative_time,repo,cwd_display"
                 in rendered
             )
             assert "outcome" in rendered and "cost_usd" in rendered and "relative_time" in rendered

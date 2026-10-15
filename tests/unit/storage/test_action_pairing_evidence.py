@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -84,17 +85,16 @@ def test_writer_canonical_bulk_and_events_agree_on_causal_evidence(
         for bounded in (False, True):
             sql = action_relation_select_sql(session_placeholders="?" if bounded else None)
             parameters = (session_id,) * 3 if bounded else ()
-            columns = "tool_command, tool_result_block_id, result_state, outcome_unknown_reason"
+            columns = "tool_command, json_extract(results_json,'$[0].tool_result_block_id'), result_state, outcome_unknown_reason"
             rows = conn.execute(f"SELECT {columns} FROM ({sql}) ORDER BY tool_command", parameters).fetchall()
             canonical_expected = [
                 (name, result_block, state, reason) for name, result_block, _outcome, state, reason in expected_rows
             ]
             assert [tuple(row) for row in rows] == canonical_expected
             for row in conn.execute(f"SELECT * FROM ({sql})", parameters):
-                if row["tool_result_block_id"] is None:
+                if not json.loads(row["results_json"]):
                     assert row["output_text"] is None
                     assert row["is_error"] is None
-                    assert row["exit_code"] is None
 
         # The observed-event owner must compute the same links independently of
         # whether the action_pairs cache has been refreshed.
@@ -160,7 +160,7 @@ def test_variant_order_cannot_certify_a_cross_branch_use(tmp_path: Path, result_
     with ArchiveStore(tmp_path / "archive") as archive:
         write_index_session(archive, session)
         rows = archive._conn.execute(
-            "SELECT tool_result_block_id, result_state, outcome_unknown_reason FROM actions"
+            "SELECT json_extract(results_json,'$[0].tool_result_block_id'), result_state, outcome_unknown_reason FROM actions"
         ).fetchall()
         assert [tuple(row) for row in rows] == [(None, "outcome_unknown", "ambiguous_tool_id_reuse")]
 
@@ -212,13 +212,13 @@ def test_action_read_routes_preserve_paired_unknown_reason(tmp_path: Path, reaso
             assert len(rows) == 1
             row = rows[0]
             assert row.result_state == "outcome_unknown"
-            assert row.tool_result_block_id is not None
+            assert len(row.results) == 1
             assert row.outcome_unknown_reason == reason
             payload = ActionQueryRowPayload.from_row(row)
             assert payload.outcome_unknown_reason == reason
             assert payload.model_dump(mode="json")["outcome_unknown_reason"] == reason
         episode = archive.list_tool_episode_insights()[0]
-        assert episode.tool_result_block_id is not None
+        assert len(episode.results) == 1
         assert episode.result_state == "outcome_unknown"
         assert episode.outcome_unknown_reason == reason
         assert episode.caveat == "outcome unknown: paired structural result has no trusted verdict"
@@ -268,7 +268,7 @@ def test_append_reconciliation_does_not_pair_empty_tool_ids(tmp_path: Path, tool
         assert use[0] == ("no_result" if tool_id == "" else "ok")
         action = archive.query_actions(source.predicate)[0]
         assert action.result_state == ("no_result" if tool_id == "" else "outcome_success")
-        assert (action.tool_result_block_id is None) == (tool_id == "")
+        assert (not action.results) == (tool_id == "")
 
 
 def test_episode_context_preserves_composed_message_boundaries_and_result_anchor(tmp_path: Path) -> None:
@@ -316,7 +316,7 @@ def test_episode_context_preserves_composed_message_boundaries_and_result_anchor
         assert episode.context_before == ("user: first\nsecond\nthird", "assistant: parent reply")
         assert episode.context_after == ("user: " + "x" * 2000 + "\nnext\nline", "assistant: last")
         assert episode.next_action == "x" * 2000 + "\nnext\nline"
-        assert episode.result_output == "result"
+        assert episode.output_text == "result"
         assert episode.result_state == "outcome_success"
         assert not archive._conn.in_transaction
 
@@ -353,8 +353,9 @@ def test_observed_event_evidence_subqueries_read_materialized_results(tmp_path: 
         ]
 
     correlated = [node for node, _parent, _unused, detail in plan if detail.startswith("CORRELATED")]
-    assert len(correlated) == 2
-    for node in correlated:
+    evidence_lookups = [node for node in correlated if any(detail.startswith("SEARCH tr ") for detail in subtree(node))]
+    assert len(evidence_lookups) == 3
+    for node in evidence_lookups:
         details = subtree(node)
         assert not [detail for detail in details if "association_numbered" in detail], details
         assert [detail for detail in details if detail.startswith("SEARCH tr ")], details

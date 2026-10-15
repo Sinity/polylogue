@@ -465,6 +465,10 @@ def cli(
     \b
     Verbs (actions on matched sessions):
         polylogue find id:abc then read          # exact ref: one selected session
+        polylogue find 'origin:codex-session' then read
+        polylogue find 'tag:review' then read
+        polylogue find 'has:tools' then analyze --facets
+        polylogue find 'tool:bash' then read --view messages
         polylogue find id:abc then select --format json # expose selected-session identity
         polylogue find id:abc then read --view messages
         polylogue find id:abc then read --to browser

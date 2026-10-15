@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Literal
 
-from polylogue.archive.viewport.viewports import ToolCall, ToolCategory, classify_tool
+from polylogue.archive.viewport.viewports import ToolCall, ToolCategory, ToolResult, classify_tool
 from polylogue.core.enums import ActionResultState, Origin, ToolOutcome
 from polylogue.core.json import JSONDocument, json_document
 
@@ -130,13 +130,13 @@ def build_tool_calls_from_content_blocks(
     *,
     origin: Origin | str | None,
     content_blocks: Sequence[Mapping[str, object]],
-    result_block_by_use_block_id: Mapping[int, Mapping[str, object] | None] | None = None,
+    results_by_use_block_id: Mapping[int, Sequence[ToolResult]] | None = None,
+    result_state_by_use_block_id: Mapping[int, ActionResultState] | None = None,
 ) -> tuple[ToolCall, ...]:
     """Normalize canonical ToolCall viewports from content blocks.
 
-    Results are paired to uses by per-tool FIFO rank. Callers that have a
-    session-wide view may provide ``result_block_by_use_block_id`` to apply the
-    same rank semantics across message boundaries.
+    Per-message callers retain the one-result FIFO rule. Archive callers pass
+    the canonical context-filtered result association and aggregate state.
     """
     tool_result_blocks: dict[str, list[Mapping[str, object]]] = {}
     tool_use_blocks: list[Mapping[str, object]] = []
@@ -162,15 +162,18 @@ def build_tool_calls_from_content_blocks(
     for block in tool_use_blocks:
         tool_id = block.get("tool_id")
         outcome_tool_id = tool_id if isinstance(tool_id, str) and tool_id else None
-        if result_block_by_use_block_id is not None and id(block) in result_block_by_use_block_id:
-            result_block = result_block_by_use_block_id[id(block)]
+        canonical_results = results_by_use_block_id is not None and id(block) in results_by_use_block_id
+        results: tuple[ToolResult, ...] = ()
+        result_blocks: Sequence[Mapping[str, object]] = ()
+        if canonical_results and results_by_use_block_id is not None:
+            results = tuple(results_by_use_block_id[id(block)])
         elif outcome_tool_id is not None:
             rank = use_ranks.get(outcome_tool_id, 0)
             use_ranks[outcome_tool_id] = rank + 1
-            results = tool_result_blocks.get(outcome_tool_id, ())
-            result_block = results[rank] if rank < len(results) else None
+            pending = tool_result_blocks.get(outcome_tool_id, ())
+            result_blocks = pending[rank : rank + 1]
         else:
-            result_block = None
+            result_blocks = ()
         name = block.get("tool_name")
         if not isinstance(name, str) or not name:
             continue
@@ -195,26 +198,64 @@ def build_tool_calls_from_content_blocks(
             "semantic_type": block.get("semantic_type"),
             "text": block.get("text"),
         }
-        outcome = tool_result_block_outcome(result_block) if result_block is not None else "unknown"
+        if not canonical_results:
+            results = tuple(
+                ToolResult(
+                    block_id=str(result.get("block_id")) if result.get("block_id") is not None else None,
+                    output_text=text if isinstance(text := result.get("text"), str) else None,
+                    is_error=_block_outcome_int(result, "tool_result_is_error", legacy_key="is_error"),
+                    exit_code=_block_outcome_int(result, "tool_result_exit_code", legacy_key="exit_code"),
+                    outcome={"ok": ToolOutcome.OK, "failed": ToolOutcome.ERROR, "unknown": ToolOutcome.UNKNOWN}[
+                        tool_result_block_outcome(result)
+                    ],
+                    outcome_unknown_reason=(
+                        str(result["tool_result_outcome_unknown_reason"])
+                        if result.get("tool_result_outcome_unknown_reason") is not None
+                        else None
+                    ),
+                )
+                for result in result_blocks
+            )
+        outcome = (
+            "failed"
+            if any(result.outcome == ToolOutcome.ERROR for result in results)
+            else "unknown"
+            if not results or any(result.outcome == "unknown" for result in results)
+            else "ok"
+        )
         result_state = (
             ActionResultState.NO_RESULT
-            if result_block is None
+            if not results
+            else ActionResultState.OUTCOME_ERROR
+            if outcome == "failed"
             else ActionResultState.OUTCOME_UNKNOWN
             if outcome == "unknown"
             else ActionResultState.OUTCOME_SUCCESS
-            if outcome == "ok"
-            else ActionResultState.OUTCOME_ERROR
         )
+        if result_state_by_use_block_id is not None and id(block) in result_state_by_use_block_id:
+            result_state = result_state_by_use_block_id[id(block)]
+            outcome = {
+                ActionResultState.NO_RESULT: "unknown",
+                ActionResultState.OUTCOME_UNKNOWN: "unknown",
+                ActionResultState.OUTCOME_SUCCESS: "ok",
+                ActionResultState.OUTCOME_ERROR: "failed",
+            }[result_state]
         success = {"ok": True, "failed": False, "unknown": None}[outcome]
-        output = result_block.get("text") if result_block is not None else None
+        result_texts = [result.output_text for result in results]
+        output = (
+            "\n".join(text for text in result_texts if text is not None)
+            if any(text is not None for text in result_texts)
+            else None
+        )
         calls.append(
             ToolCall(
                 name=name,
                 id=outcome_tool_id,
                 input=normalized_input,
-                output=output if isinstance(output, str) and output else None,
+                output=output,
                 success=success,
                 result_state=result_state,
+                results=results,
                 category=category,
                 origin=normalized_origin,
                 raw=raw,

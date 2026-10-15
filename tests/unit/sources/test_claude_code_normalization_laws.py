@@ -318,16 +318,15 @@ def test_family_fixture_survives_acquire_parse_store_read_and_action_pairing(tmp
     assert set(by_command) == {"python -m pytest -q tests/unit/sources", "false"}
     assert (
         by_command["python -m pytest -q tests/unit/sources"].is_error,
-        by_command["python -m pytest -q tests/unit/sources"].exit_code,
+        by_command["python -m pytest -q tests/unit/sources"].results[0].exit_code,
     ) == (1, 7)
-    assert by_command["python -m pytest -q tests/unit/sources"].tool_result_block_id is not None
-    assert (by_command["false"].is_error, by_command["false"].exit_code) == (1, None)
-    assert by_command["false"].tool_result_block_id is not None
+    assert bool(by_command["python -m pytest -q tests/unit/sources"].results)
+    assert (by_command["false"].is_error, by_command["false"].results[0].exit_code) == (1, None)
+    assert bool(by_command["false"].results)
     unmatched_read = next(action for action in actions if action.tool_name == "Read")
     assert unmatched_read.tool_path == "/workspace/polylogue/missing.py"
-    assert unmatched_read.tool_result_block_id is None
+    assert not unmatched_read.results
     assert unmatched_read.is_error is None
-    assert unmatched_read.exit_code is None
 
 
 def test_agent_artifact_topology_prevents_generated_instruction_from_becoming_human() -> None:

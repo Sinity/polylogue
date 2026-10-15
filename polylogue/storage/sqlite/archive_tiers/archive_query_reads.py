@@ -37,7 +37,7 @@ from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.refs import delegation_edge_object_id
 from polylogue.core.tool_identity import sql_coalesced_json_extract
 from polylogue.storage.search.query_support import normalize_fts5_query
-from polylogue.storage.sqlite.action_relation import bounded_action_relation_cte
+from polylogue.storage.sqlite.action_relation import action_relation_select_sql, bounded_action_relation_cte
 from polylogue.storage.sqlite.archive_tiers.types import (
     DelegationMappingState,
     DelegationResultStatus,
@@ -127,6 +127,19 @@ class ArchiveMessageQueryRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveActionResultQueryRow:
+    """One original result, ordered by its actual composed occurrence."""
+
+    tool_result_block_id: str
+    output_text: str | None
+    is_error: int | None
+    exit_code: int | None
+    tool_outcome: str
+    outcome_unknown_reason: str | None
+    output_text_chars: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveActionQueryRow:
     """Terminal query projection over normalized tool/action rows."""
 
@@ -135,7 +148,7 @@ class ArchiveActionQueryRow:
     origin: str
     title: str | None
     tool_use_block_id: str
-    tool_result_block_id: str | None
+    results: tuple[ArchiveActionResultQueryRow, ...]
     tool_name: str | None
     semantic_type: str | None
     tool_command: str | None
@@ -143,7 +156,6 @@ class ArchiveActionQueryRow:
     occurred_at_ms: int | None
     output_text: str | None
     is_error: int | None
-    exit_code: int | None
     result_state: ActionResultState
     followup_class: str | None
     followup_message_ref: str | None
@@ -206,17 +218,28 @@ def _archive_sequence_witness_row(row: sqlite3.Row, *, step_count: int) -> Archi
     )
 
 
-def _archive_action_query_row(row: sqlite3.Row, *, with_text_length: bool = False) -> ArchiveActionQueryRow:
-    tool_result_block_id = str(row["tool_result_block_id"]) if row["tool_result_block_id"] is not None else None
+def _archive_action_query_row(
+    row: sqlite3.Row,
+    *,
+    with_text_length: bool = False,
+    text_prefix_chars: int | None = None,
+) -> ArchiveActionQueryRow:
+    raw_results = json.loads(row["results_json"])
+    if text_prefix_chars is not None:
+        for result in raw_results:
+            text = result["output_text"]
+            if text is not None and result.get("output_text_chars") is None:
+                result["output_text_chars"] = len(text)
+                result["output_text"] = text[: max(text_prefix_chars, 0)]
+    results = tuple(ArchiveActionResultQueryRow(**result) for result in raw_results)
     is_error = int(row["is_error"]) if row["is_error"] is not None else None
-    exit_code = int(row["exit_code"]) if row["exit_code"] is not None else None
     return ArchiveActionQueryRow(
         session_id=str(row["session_id"]),
         message_id=str(row["message_id"]),
         origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
         tool_use_block_id=str(row["tool_use_block_id"]),
-        tool_result_block_id=tool_result_block_id,
+        results=results,
         tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
         semantic_type=str(row["semantic_type"]) if row["semantic_type"] is not None else None,
         tool_command=str(row["tool_command"]) if row["tool_command"] is not None else None,
@@ -224,7 +247,6 @@ def _archive_action_query_row(row: sqlite3.Row, *, with_text_length: bool = Fals
         occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
         output_text=str(row["output_text"]) if row["output_text"] is not None else None,
         is_error=is_error,
-        exit_code=exit_code,
         result_state=ActionResultState(str(row["result_state"])),
         outcome_unknown_reason=row["outcome_unknown_reason"],
         followup_class=str(row["followup_class"]) if row["followup_class"] is not None else None,
@@ -822,7 +844,7 @@ WITH action_followup_base AS (
     SELECT
         a.*,
         CASE
-            WHEN COALESCE(a.is_error, 0) = 1 OR COALESCE(a.exit_code, 0) != 0
+            WHEN a.tool_outcome = 'error'
                 THEN (
                     SELECT nm.message_id
                     FROM messages nm
@@ -831,9 +853,11 @@ WITH action_followup_base AS (
                       AND nm.position > COALESCE(
                           (
                               SELECT rm.position
-                              FROM blocks rb
+                              FROM json_each(a.results_json) result
+                              JOIN blocks rb ON rb.block_id=json_extract(result.value, '$.tool_result_block_id')
                               JOIN messages rm ON rm.message_id = rb.message_id
-                              WHERE rb.block_id = a.tool_result_block_id
+                              WHERE json_extract(result.value, '$.tool_outcome') = 'error'
+                              ORDER BY rm.position,rm.variant_index,rb.position
                               LIMIT 1
                           ),
                           (
@@ -894,7 +918,7 @@ action_rows AS (
     SELECT
         aft.*,
         CASE
-            WHEN NOT (COALESCE(aft.is_error, 0) = 1 OR COALESCE(aft.exit_code, 0) != 0) THEN NULL
+            WHEN NOT (aft.tool_outcome = 'error') THEN NULL
             WHEN aft.followup_message_id IS NULL THEN 'ambiguous'
             WHEN {_ACTION_FOLLOWUP_ACK_CONDITION} THEN 'acknowledged'
             WHEN TRIM(aft.followup_text_lower) GLOB '<thinking>*</thinking>'
@@ -950,6 +974,7 @@ def _action_relation_for_query(
     predicate: QueryPredicate | None = None,
     session_ids: Sequence[str] = (),
     include_followup: bool,
+    conn: sqlite3.Connection | None = None,
 ) -> tuple[str, str, list[object]]:
     """Select the canonical action relation, physically bounded when safe."""
     explicit_ids = tuple(dict.fromkeys(session_id for session_id in session_ids if session_id))
@@ -961,6 +986,34 @@ def _action_relation_for_query(
             ("action_rows" if include_followup else "actions"),
             [],
         )
+    if conn is not None:
+        segments = _composed_segments_cte(conn, normalized_ids)
+        action_sql = action_relation_select_sql(context_relation="composed_segments")
+        prefix = f"WITH {segments}, contextual_actions AS ({action_sql})"
+        if not include_followup:
+            return prefix, "contextual_actions", []
+        contextual_messages = """contextual_messages AS (
+            SELECT c.context_session_id AS session_id,m.message_id,m.role,m.variant_index,
+                   ROW_NUMBER() OVER (PARTITION BY c.context_session_id
+                       ORDER BY c.segment_order,m.position,m.variant_index,m.message_id) AS position
+            FROM composed_segments c JOIN messages m ON m.session_id=c.source_session_id
+            WHERE c.upto_position IS NULL
+               OR (m.position,m.variant_index)<=(c.upto_position,c.upto_variant_index)
+        )"""
+        followup = _ACTION_FOLLOWUP_RELATION_SQL.strip().removeprefix("WITH ")
+        followup = followup.replace("FROM actions a", "FROM contextual_actions a", 1)
+        followup = followup.replace("FROM messages nm", "FROM contextual_messages nm")
+        followup = followup.replace(
+            "JOIN messages rm ON rm.message_id = rb.message_id",
+            "JOIN contextual_messages rm ON rm.message_id=rb.message_id AND rm.session_id=a.session_id",
+        )
+        followup = followup.replace("FROM messages um", "FROM contextual_messages um")
+        followup = followup.replace(
+            "WHERE um.message_id = a.message_id", "WHERE um.message_id=a.message_id AND um.session_id=a.session_id"
+        )
+        for alias in ("tool_block", "text_block", "first_tool"):
+            followup = followup.replace(f"AND {alias}.session_id = afb.session_id", "")
+        return f"{prefix}, {contextual_messages},\n{followup}", "action_rows", []
     bounded_cte = bounded_action_relation_cte(
         relation_name="bounded_actions",
         session_count=len(normalized_ids),
@@ -971,6 +1024,27 @@ def _action_relation_for_query(
     followup_ctes = _ACTION_FOLLOWUP_RELATION_SQL.strip().removeprefix("WITH ")
     followup_ctes = followup_ctes.replace("FROM actions a", "FROM bounded_actions a", 1)
     return f"WITH {bounded_cte},\n{followup_ctes}", "action_rows", relation_params
+
+
+def _composed_segments_cte(conn: sqlite3.Connection, session_ids: Sequence[str]) -> str:
+    """Select exact transcript membership through the canonical lineage planner."""
+    from polylogue.storage.sqlite.archive_tiers.write import _composed_transcript_plan
+
+    rows: list[str] = []
+    for context_id in dict.fromkeys(session_ids):
+        for ordinal, segment in enumerate(_composed_transcript_plan(conn, context_id).segments):
+            position = "NULL" if segment.upto_position is None else str(segment.upto_position)
+            variant = "NULL" if segment.upto_variant_index is None else str(segment.upto_variant_index)
+            rows.append(
+                f"({_sql_string_literal(context_id)},{_sql_string_literal(segment.session_id)},"
+                f"{position},{variant},{ordinal})"
+            )
+    values = "VALUES " + ",".join(rows) if rows else "SELECT NULL,NULL,NULL,NULL,NULL WHERE 0"
+    return (
+        "composed_segments(context_session_id,source_session_id,upto_position,upto_variant_index,segment_order) AS ("
+        + values
+        + ")"
+    )
 
 
 def _per_partition_rank_sql(partition_expression: str, order_by: str) -> str:
@@ -1122,7 +1196,7 @@ _ARCHIVE_ACTION_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("origin", "s.origin"),
     ("title", "s.title"),
     ("tool_use_block_id", "a.tool_use_block_id"),
-    ("tool_result_block_id", "a.tool_result_block_id"),
+    ("results_json", "a.results_json"),
     ("tool_name", "a.tool_name"),
     ("semantic_type", "a.semantic_type"),
     ("tool_command", _action_command_expression("a")),
@@ -1130,7 +1204,6 @@ _ARCHIVE_ACTION_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("occurred_at_ms", "m.occurred_at_ms"),
     ("output_text", "a.output_text"),
     ("is_error", "a.is_error"),
-    ("exit_code", "a.exit_code"),
     ("result_state", "a.result_state"),
     ("outcome_unknown_reason", "a.outcome_unknown_reason"),
     ("followup_class", "a.followup_class"),
@@ -1174,8 +1247,19 @@ def _archive_action_query_select_sql(text_prefix_chars: int | None) -> str:
     if text_prefix_chars is None:
         return _ARCHIVE_ACTION_QUERY_SELECT_SQL
     bound = max(int(text_prefix_chars), 0)
+    result_text = "json_extract(result.value,'$.output_text')"
+    result_preview = f"""(SELECT json_group_array(json_set(result.value,
+        '$.output_text',{_text_prefix_sql(result_text, bound)},
+        '$.output_text_chars',{_text_length_sql(result_text)})) FROM json_each(a.results_json) result)"""
     columns = [
-        (name, _text_prefix_sql("a.output_text", bound) if name == "output_text" else expr)
+        (
+            name,
+            _text_prefix_sql("a.output_text", bound)
+            if name == "output_text"
+            else result_preview
+            if name == "results_json"
+            else expr,
+        )
         for name, expr in _ARCHIVE_ACTION_QUERY_COLUMNS
     ]
     columns.append(("output_text_chars", _text_length_sql("a.output_text")))
@@ -1826,7 +1910,8 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
             return f"{action_alias}.is_error = 0", []
         return "0=1", []
     if field == "exit_code":
-        return _numeric_predicate_clause(f"{action_alias}.exit_code", predicate)
+        clause, params = _numeric_predicate_clause("json_extract(result.value,'$.exit_code')", predicate)
+        return f"EXISTS (SELECT 1 FROM json_each({action_alias}.results_json) result WHERE {clause})", params
     if field == "followup_class":
         return _in_or_equals_clause(f"{action_alias}.followup_class", predicate.values, lower=True)
     if field == "text":
@@ -3486,6 +3571,7 @@ def query_unit_counts(
         action_prefix_sql, action_relation_name, action_relation_params = _action_relation_for_query(
             predicate=predicate,
             include_followup=action_needs_followup,
+            conn=self._conn,
         )
     from_sql_by_unit = _query_unit_from_sql_by_unit(action_relation_name)
     from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
@@ -3624,6 +3710,7 @@ def query_unit_multi_counts(
             prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
                 predicate=predicate,
                 include_followup=action_needs_followup,
+                conn=self._conn,
             )
         from_sql_by_unit = _query_unit_from_sql_by_unit(action_relation_name)
         from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
@@ -3868,6 +3955,7 @@ def query_unit_agg_metrics(
             prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
                 predicate=predicate,
                 include_followup=action_needs_followup,
+                conn=self._conn,
             )
         from_sql_by_unit = _query_unit_from_sql_by_unit(action_relation_name)
         from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
@@ -4034,6 +4122,7 @@ def query_actions(
         prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
             predicate=predicate,
             include_followup=True,
+            conn=self._conn,
         )
         outer_clause = clause
         outer_session_clause = session_clause
@@ -4115,6 +4204,7 @@ def query_session_actions(
     prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
         session_ids=normalized_session_ids,
         include_followup=True,
+        conn=self._conn,
     )
     select_sql = _archive_action_query_select_sql(text_prefix_chars)
     if per_session_limit is None:
@@ -4160,7 +4250,12 @@ def query_session_actions(
         query_sql,
         [*relation_params, *normalized_session_ids, *rank_params, normalized_limit, normalized_offset],
     ).fetchall()
-    return [_archive_action_query_row(row, with_text_length=text_prefix_chars is not None) for row in rows]
+    return [
+        _archive_action_query_row(
+            row, with_text_length=text_prefix_chars is not None, text_prefix_chars=text_prefix_chars
+        )
+        for row in rows
+    ]
 
 
 def query_session_action_occurrences(
@@ -4198,6 +4293,7 @@ def query_session_action_occurrences(
     prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
         session_ids=normalized_session_ids,
         include_followup=False,
+        conn=self._conn,
     )
     rows = self._conn.execute(
         f"""
@@ -4208,7 +4304,7 @@ def query_session_action_occurrences(
             s.origin,
             s.title,
             a.tool_use_block_id,
-            a.tool_result_block_id,
+            a.results_json,
             a.tool_name,
             a.semantic_type,
             {_action_command_expression("a")} AS tool_command,
@@ -4216,7 +4312,6 @@ def query_session_action_occurrences(
             m.occurred_at_ms,
             a.output_text,
             a.is_error,
-            a.exit_code,
             a.result_state,
             a.outcome_unknown_reason,
             NULL AS followup_class,

@@ -499,10 +499,9 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         fallback_markers=(),
         confidence_field=(),
         readiness_semantics=(
-            "Each episode surfaces the shared invocation association and structural verdict. "
-            "A parent-proven fanout retains every result in invocation events while episode "
-            "scalar output is omitted with a named caveat and authority gap. result_state "
-            "does not certify completeness of scalar output."
+            "Each episode exposes every ordered owned result and its structural verdict through "
+            "the shared causal association. Error wins over unknown, then success; absent and "
+            "ambiguous results remain distinct."
         ),
         consumer_fields=(
             "episode_id",
@@ -510,13 +509,11 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "message_id",
             "origin",
             "tool_use_block_id",
-            "tool_result_block_id",
+            "results",
             "tool_name",
             "semantic_type",
             "call_input",
-            "result_output",
-            "is_error",
-            "exit_code",
+            "output_text",
             "result_state",
             "context_before",
             "context_after",
@@ -524,13 +521,10 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "followup_class",
             "caveat",
         ),
-        field_exemptions=_true_zero_fields(
-            "is_error and exit_code are provider-reported structural values read directly "
-            "from a singular paired tool_result block, not estimates or aggregates. None means "
-            "no singular value is projected, including a proved plural reply; the episode "
-            "caveat reports that omission. Zero is a recorded exit code or non-error.",
-            "is_error",
-            "exit_code",
+        field_exemptions=_true_zero_paths(
+            "Every owned result preserves its provider-reported structural integers; None is unreported.",
+            ("results", "is_error"),
+            ("results", "exit_code"),
         ),
         version_fields=(RigorVersionField(name="contract_version", current_version=ARCHIVE_INSIGHT_CONTRACT_VERSION),),
     ),

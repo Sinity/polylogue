@@ -25,6 +25,7 @@ from polylogue.storage.fts.sql import (
 )
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
+from polylogue.storage.sqlite.action_relation import action_relation_select_sql
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPECS
 from polylogue.storage.sqlite.archive_tiers.query_unit_frame import index_frame_bump_sql, index_frame_seed_sql
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
@@ -1029,33 +1030,10 @@ WHERE tool_result_block_id IS NOT NULL;
 -- Association has one owner in action_pairs.py. An earlier orphan never
 -- certifies a later use; incomplete or duplicated same-ID streams expose
 -- unknown outcomes rather than shifted ranks. Payload text stays on blocks.
--- polylogue-2i2w: tool_input/output_text are no longer materialized on
--- action_pairs itself -- they are re-joined from blocks (by
--- tool_use_block_id / tool_result_block_id) here, at read time, so every
--- consumer of this view keeps byte-identical payloads without any caller
--- change. tu is an INNER JOIN because tool_use_block_id is a NOT NULL FK
--- ON DELETE CASCADE (the derived action row cannot outlive its use block); tr
--- is a LEFT JOIN because tool_result_block_id is nullable (unpaired uses)
--- and ON DELETE SET NULL.
+-- Bodies live once on blocks. The shared association projects ordered results
+-- at read time; the materialized witness cannot stand in for plural output.
 CREATE VIEW IF NOT EXISTS actions AS
-SELECT
-    ap.session_id, ap.message_id, ap.tool_use_block_id, ap.tool_name, ap.semantic_type,
-    ap.tool_command, ap.tool_path, tu.tool_input AS tool_input, tr.text AS output_text,
-    ap.is_error, ap.exit_code, ap.tool_result_block_id,
-    ap.outcome_unknown_reason,
-    -- ``blocks.tool_outcome`` is the canonical structural outcome; the legacy
-    -- ``is_error``/``exit_code`` pair stays exposed for compatibility but no
-    -- longer decides the state, so a deliberately distrusted result cannot be
-    -- read back as a success through a provider exit code the parser refused.
-    CASE ap.tool_outcome
-        WHEN 'no_result' THEN 'no_result'
-        WHEN 'unknown' THEN 'outcome_unknown'
-        WHEN 'error' THEN 'outcome_error'
-        WHEN 'ok' THEN 'outcome_success'
-    END AS result_state
-FROM action_pairs ap
-JOIN blocks tu ON tu.block_id = ap.tool_use_block_id
-LEFT JOIN blocks tr ON tr.block_id = ap.tool_result_block_id;
+{action_relation_select_sql()};
 
 CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_ai
 AFTER INSERT ON blocks
@@ -2022,13 +2000,14 @@ WITH dispatch_actions AS (
         a.message_id                           AS instruction_message_id,
         a.tool_use_block_id                    AS instruction_tool_use_block_id,
         a.tool_input                           AS instruction_payload,
-        a.tool_result_block_id                 AS artifact_block_id,
-        a.output_text                          AS artifact_text,
-        a.is_error                             AS result_is_error,
-        a.exit_code                            AS result_exit_code,
+        json_extract(result.value,'$.tool_result_block_id') AS artifact_block_id,
+        json_extract(result.value,'$.output_text') AS artifact_text,
+        json_extract(result.value,'$.is_error') AS result_is_error,
+        json_extract(result.value,'$.exit_code') AS result_exit_code,
         m.model_name                           AS dispatch_turn_model,
         {_REQUESTED_MODEL_SQL}  AS requested_model
     FROM actions a
+    LEFT JOIN json_each(a.results_json) result ON 1
     JOIN messages m ON m.message_id = a.message_id
     WHERE a.semantic_type = 'subagent'
       AND EXISTS (

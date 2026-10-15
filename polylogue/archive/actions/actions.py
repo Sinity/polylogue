@@ -24,7 +24,7 @@ from polylogue.archive.actions.fields import (
     normalize_output_text,
 )
 from polylogue.archive.actions.parsing import build_tool_calls_from_content_blocks
-from polylogue.archive.viewport.viewports import ToolCall, ToolCategory
+from polylogue.archive.viewport.viewports import ToolCall, ToolCategory, ToolResult
 from polylogue.core.enums import ActionResultState, Origin
 
 _CANONICAL_TOOL_NAMES = {
@@ -102,6 +102,7 @@ class Action:
     #: This keeps no result distinct from a result whose provider outcome is
     #: unknown, while preserving ``tool_success`` for existing callers.
     result_state: ActionResultState = ActionResultState.NO_RESULT
+    results: tuple[ToolResult, ...] = ()
 
     @property
     def normalized_tool_name(self) -> str:
@@ -175,6 +176,7 @@ def _build_action_from_message_fields(
         raw=call.raw,
         tool_success=call.success,
         result_state=call.result_state,
+        results=call.results,
     )
 
 

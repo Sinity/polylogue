@@ -5,6 +5,7 @@ from __future__ import annotations
 from polylogue.core.enums import ActionResultState
 from polylogue.surfaces.payloads import (
     ActionQueryRowPayload,
+    ActionResultPayload,
     ContextSnapshotQueryRowPayload,
     MessageQueryRowPayload,
     ObservedEventQueryRowPayload,
@@ -44,7 +45,7 @@ def test_project_query_unit_rows_to_otel_preserves_polylogue_refs() -> None:
                 origin="codex-session",
                 title="OTel projection",
                 tool_use_block_id="tool-use-1",
-                tool_result_block_id="tool-result-1",
+                results=(ActionResultPayload(tool_result_block_id="tool-result-1", tool_outcome="ok"),),
                 tool_name="Bash",
                 semantic_type="shell",
                 tool_command="pytest tests/unit/telemetry",

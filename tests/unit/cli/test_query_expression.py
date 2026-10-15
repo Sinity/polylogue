@@ -3871,7 +3871,7 @@ class TestBooleanQueryExpression:
         assert isinstance(row, ActionQueryRowPayload)
         assert row.tool_command == "pytest silent"
         assert row.is_error == 1
-        assert row.exit_code == 1
+        assert row.results[0].exit_code == 1
         assert row.followup_class == "silent_proceed"
         assert row.followup_message_ref == "message:" + _mid(
             "codex-session:ext-followups", "m-silent-followup", position=3

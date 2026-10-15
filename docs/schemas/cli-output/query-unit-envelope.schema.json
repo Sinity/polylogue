@@ -4,18 +4,6 @@
       "additionalProperties": false,
       "description": "Shared terminal-query row for normalized tool/action evidence.",
       "properties": {
-        "exit_code": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Exit Code"
-        },
         "followup_class": {
           "anyOf": [
             {
@@ -99,6 +87,14 @@
         "result_state": {
           "$ref": "#/$defs/ActionResultState"
         },
+        "results": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ActionResultPayload"
+          },
+          "title": "Results",
+          "type": "array"
+        },
         "semantic_type": {
           "anyOf": [
             {
@@ -163,18 +159,6 @@
           "default": null,
           "title": "Tool Path"
         },
-        "tool_result_block_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Tool Result Block Id"
-        },
         "tool_use_block_id": {
           "title": "Tool Use Block Id",
           "type": "string"
@@ -194,6 +178,85 @@
         "result_state"
       ],
       "title": "ActionQueryRowPayload",
+      "type": "object"
+    },
+    "ActionResultPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "is_error": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Is Error"
+        },
+        "outcome_unknown_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome Unknown Reason"
+        },
+        "output_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Text"
+        },
+        "output_text_chars": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Text Chars"
+        },
+        "tool_outcome": {
+          "title": "Tool Outcome",
+          "type": "string"
+        },
+        "tool_result_block_id": {
+          "title": "Tool Result Block Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_result_block_id",
+        "tool_outcome"
+      ],
+      "title": "ActionResultPayload",
       "type": "object"
     },
     "ActionResultState": {

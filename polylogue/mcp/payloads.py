@@ -74,7 +74,7 @@ class MCPRootPayload(RootModel[TRoot], Generic[TRoot]):
     _transaction_request: object | None = PrivateAttr(default=None)
 
     def to_json(self, *, exclude_none: bool = False) -> str:
-        return self.model_dump_json(indent=2, exclude_none=exclude_none)
+        return self.model_dump_json(exclude_none=exclude_none)
 
 
 class MCPMessageFragmentPayload(SurfacePayloadModel):

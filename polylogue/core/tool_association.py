@@ -26,15 +26,14 @@ def tool_association_ctes_sql() -> str:
         UNION
         SELECT a.session_key,a.result_key,a.tool_id,m.parent_key
         FROM association_ancestors a JOIN association_messages m
-          ON m.message_key=a.parent_key
-        WHERE m.parent_key IS NOT NULL AND (
-            m.role='tool' OR (
-                EXISTS (SELECT 1 FROM association_blocks r
-                        WHERE r.session_key=m.session_key AND r.message_key=m.message_key AND r.is_use=0)
-                AND NOT EXISTS (SELECT 1 FROM association_blocks u
-                        WHERE u.session_key=m.session_key AND u.message_key=m.message_key AND u.is_use=1)
-            )
-        )
+          ON m.message_key=a.parent_key AND m.session_key=a.session_key
+        WHERE m.parent_key IS NOT NULL
+          AND EXISTS (SELECT 1 FROM association_blocks r
+                      WHERE r.session_key=m.session_key AND r.message_key=m.message_key
+                        AND r.is_use=0 AND r.tool_id=a.tool_id)
+          AND NOT EXISTS (SELECT 1 FROM association_blocks u
+                          WHERE u.session_key=m.session_key AND u.message_key=m.message_key AND u.is_use=1)
+
     ), association_owner_candidates AS (
         SELECT a.session_key,a.result_key,COUNT(DISTINCT b.block_key) AS owner_count,
                MIN(b.block_key) AS owner_key

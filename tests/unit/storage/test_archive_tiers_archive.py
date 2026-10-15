@@ -621,10 +621,19 @@ def test_archive_tiers_archive_facade_queries_session_actions_by_session_index(t
         assert failed_source is not None
         failed_rows = facade.query_actions(failed_source.predicate, limit=10)
         error_counts = facade.query_unit_counts("action", failed_source.predicate, group_by="is_error")
-        exit_counts = facade.query_unit_counts("action", failed_source.predicate, group_by="exit_code")
+        with pytest.raises(ValueError, match="unsupported action .* group field: exit_code"):
+            facade.query_unit_counts("action", failed_source.predicate, group_by="exit_code")
 
     assert [
-        (row.session_id, row.tool_name, row.tool_command, row.output_text, row.is_error, row.exit_code) for row in rows
+        (
+            row.session_id,
+            row.tool_name,
+            row.tool_command,
+            row.output_text,
+            row.is_error,
+            row.results[0].exit_code if row.results else None,
+        )
+        for row in rows
     ] == [
         (
             session_id,
@@ -635,9 +644,10 @@ def test_archive_tiers_archive_facade_queries_session_actions_by_session_index(t
             2,
         )
     ]
-    assert [(row.session_id, row.is_error, row.exit_code) for row in failed_rows] == [(session_id, 1, 2)]
+    assert [
+        (row.session_id, row.is_error, row.results[0].exit_code if row.results else None) for row in failed_rows
+    ] == [(session_id, 1, 2)]
     assert [(row.group_key, row.count) for row in error_counts] == [("1", 1)]
-    assert [(row.group_key, row.count) for row in exit_counts] == [("2", 1)]
 
 
 def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) -> None:
@@ -727,8 +737,8 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
         "empty": ActionResultState.NO_RESULT,
     }
     rows_by_command = {row.tool_command: row for row in rows}
-    assert rows_by_command["absent"].tool_result_block_id is None
-    assert rows_by_command["empty"].tool_result_block_id is None
+    assert not rows_by_command["absent"].results
+    assert not rows_by_command["empty"].results
     assert rows_by_command["empty"].output_text is None
     assert {payload.tool_command: payload.result_state for payload in payloads}["empty"] == "no_result"
     occurrence_by_command = {row.tool_command: row for row in occurrence_rows}
@@ -739,7 +749,7 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
         "absent": ActionResultState.NO_RESULT,
         "empty": ActionResultState.NO_RESULT,
     }
-    assert occurrence_by_command["empty"].tool_result_block_id is None
+    assert not occurrence_by_command["empty"].results
 
 
 def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage(
@@ -801,13 +811,13 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
 
     rows_by_command = {row.tool_command: row for row in rows}
     assert rows_by_command["empty-payload"].result_state is ActionResultState.OUTCOME_UNKNOWN
-    assert rows_by_command["empty-payload"].tool_result_block_id is not None
+    assert bool(rows_by_command["empty-payload"].results)
     assert rows_by_command["empty-payload"].output_text is None
     assert rows_by_command["unknown-nonempty"].result_state is ActionResultState.OUTCOME_UNKNOWN
-    assert rows_by_command["unknown-nonempty"].tool_result_block_id is not None
+    assert bool(rows_by_command["unknown-nonempty"].results)
     assert rows_by_command["unknown-nonempty"].output_text == "provider omitted outcome"
     assert rows_by_command["absent-linkage"].result_state is ActionResultState.NO_RESULT
-    assert rows_by_command["absent-linkage"].tool_result_block_id is None
+    assert not rows_by_command["absent-linkage"].results
     assert rows_by_command["absent-linkage"].output_text is None
 
 
@@ -877,9 +887,9 @@ def test_session_action_occurrences_keep_parallel_repeated_ids_ambiguous_when_pa
         first_page = facade.query_session_action_occurrences([session_id], limit=1, offset=0)
         second_page = facade.query_session_action_occurrences([session_id], limit=1, offset=1)
 
-    assert [(row.tool_command, row.result_state, row.tool_result_block_id, row.output_text) for row in all_rows] == [
-        ("first", ActionResultState.OUTCOME_UNKNOWN, None, None),
-        ("second", ActionResultState.OUTCOME_UNKNOWN, None, None),
+    assert [(row.tool_command, row.result_state, row.results, row.output_text) for row in all_rows] == [
+        ("first", ActionResultState.OUTCOME_UNKNOWN, (), None),
+        ("second", ActionResultState.OUTCOME_UNKNOWN, (), None),
     ]
     assert [(row.tool_command, row.result_state) for row in first_page] == [
         ("first", ActionResultState.OUTCOME_UNKNOWN)
@@ -1121,18 +1131,20 @@ def test_bounded_action_relation_plans_session_index_not_archive_wide_tool_scan(
         plan_rows = facade._conn.execute(f"EXPLAIN QUERY PLAN {aggregate_sql}").fetchall()
         plan_details = [str(row["detail"]) for row in plan_rows]
 
+    # The composed relation has one physical block branch for both kinds;
+    # both it and the selected-use projection must seek by physical session.
     session_scoped_block_scans = [
         detail
         for detail in plan_details
         if detail.startswith(
-            ("SEARCH u USING INDEX idx_blocks_session_position", "SEARCH r USING INDEX idx_blocks_session_position")
+            ("SEARCH b USING INDEX idx_blocks_session_position", "SEARCH u USING INDEX idx_blocks_session_position")
         )
     ]
     assert any(
-        detail.startswith("SEARCH u USING INDEX idx_blocks_session_position") for detail in session_scoped_block_scans
+        detail.startswith("SEARCH b USING INDEX idx_blocks_session_position") for detail in session_scoped_block_scans
     ), plan_details
     assert any(
-        detail.startswith("SEARCH r USING INDEX idx_blocks_session_position") for detail in session_scoped_block_scans
+        detail.startswith("SEARCH u USING INDEX idx_blocks_session_position") for detail in session_scoped_block_scans
     ), plan_details
     assert not any("idx_blocks_type_tool" in detail for detail in plan_details), plan_details
 

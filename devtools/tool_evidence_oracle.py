@@ -71,7 +71,7 @@ class ArchivedAction:
     tool_id: str | None
     tool_name: str | None
     result_state: str
-    tool_result_block_id: str | None
+    tool_result_block_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -513,13 +513,16 @@ def judge_conservation(
             changed_owners.append(f"{name}: archived {len(rows)} calls, declared {len(declared)}")
         declared_answered = sum(1 for call in declared if call.outcome != NO_RESULT)
         declared_records = sum(call.result_count for call in declared)
-        archived_answered = sum(1 for row in rows if row.result_state != "no_result")
+        archived_answered = sum(bool(row.tool_result_block_ids) for row in rows)
+        archived_owned = sum(len(row.tool_result_block_ids) for row in rows)
         if archived_answered < declared_answered:
             lost.append(f"{name}: source answers {declared_answered} calls, archive answers {archived_answered}")
         elif archived_answered > declared_answered:
             synthesized.append(f"{name}: archive answers {archived_answered} calls, source answers {declared_answered}")
-        if declared_records and archived_answered > declared_records:
-            duplicated.append(f"{name}: archive pairs {archived_answered} results, source declares {declared_records}")
+        if archived_owned < declared_records:
+            lost.append(f"{name}: archive owns {archived_owned} results, source declares {declared_records}")
+        elif archived_owned > declared_records:
+            duplicated.append(f"{name}: archive owns {archived_owned} results, source declares {declared_records}")
         if compare_outcomes:
             outcome_disagreements.extend(_outcome_disagreements(name, declared, rows))
 
@@ -539,7 +542,7 @@ def judge_conservation(
         archived_results=(
             physical_results
             if physical_results is not None
-            else sum(1 for row in archived if row.tool_result_block_id is not None)
+            else sum(len(row.tool_result_block_ids) for row in archived)
         ),
         lost_results=tuple(lost),
         synthesized_results=tuple(synthesized),

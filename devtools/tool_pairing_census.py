@@ -430,8 +430,8 @@ def build_report(args: CensusArgs) -> dict[str, object]:
             f"""
             SELECT {_ORIGIN_EXPR.format(column="session_id")} AS origin,
                    COUNT(*),
-                   SUM(tool_result_block_id IS NOT NULL)
-            FROM action_pairs
+                   SUM(json_array_length(results_json)>0)
+            FROM actions
             GROUP BY origin
             """,
         )
@@ -455,11 +455,12 @@ def build_report(args: CensusArgs) -> dict[str, object]:
             conn,
             "no_result_calls",
             """
-            SELECT ap.session_id, ap.tool_id, ap.tool_name, m.position,
+            SELECT ap.session_id, use_block.tool_id, ap.tool_name, m.position,
                    (SELECT MAX(position) FROM messages tail WHERE tail.session_id = ap.session_id)
-            FROM action_pairs ap
+            FROM actions ap
+            JOIN blocks use_block ON use_block.block_id=ap.tool_use_block_id
             LEFT JOIN messages m ON m.message_id = ap.message_id
-            WHERE ap.tool_result_block_id IS NULL
+            WHERE json_array_length(ap.results_json)=0
             """,
         )
         queries.append(timing)
@@ -819,7 +820,7 @@ def _archived_answers(index_db: Path, cohort_sessions: dict[tuple[str, str], lis
     try:
         for session_id in sessions:
             row = conn.execute(
-                "SELECT COUNT(*) FROM action_pairs WHERE session_id = ? AND tool_result_block_id IS NOT NULL",
+                "SELECT COUNT(*) FROM actions WHERE session_id = ? AND json_array_length(results_json)>0",
                 (session_id,),
             ).fetchone()
             answers[session_id] = int(row[0]) if row else 0

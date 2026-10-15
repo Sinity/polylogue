@@ -47,7 +47,7 @@ from polylogue.context.scheduler import (
     ContextLedgerRecord,
     read_context_ledger,
 )
-from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
+from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, ToolOutcome
 from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, SchemaRefusalError
 from polylogue.core.json import JSONDocument
 from polylogue.core.timestamps import parse_archive_datetime
@@ -65,7 +65,12 @@ from polylogue.storage.runtime import LineageCompleteness, LineageTruncationReas
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionIdentity, ArchiveSessionSummary, IndexStatus
+from polylogue.storage.sqlite.archive_tiers.archive import (
+    ArchiveActionQueryRow,
+    ArchiveSessionIdentity,
+    ArchiveSessionSummary,
+    IndexStatus,
+)
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import (
     ArchiveContextDeliveryEnvelope,
     ArchiveContextDeliveryPage,
@@ -2224,20 +2229,12 @@ class _ArchiveNeighborRuntime:
         return validated_origin, validated_origins
 
 
-def _actions_for_session(session: Session) -> tuple[Action, ...]:
-    """Derive ordered actions from an archive session's tool blocks.
-
-    Each message's content blocks are parsed into tool calls, then promoted
-    to ``Action`` records. No storage round-trip — the domain
-    session already carries the content blocks the actions are built from.
-    """
+def _actions_for_session(session: Session, canonical_rows: Sequence[ArchiveActionQueryRow]) -> tuple[Action, ...]:
+    """Hydrate actions from the canonical context-filtered archive relation."""
     from polylogue.archive.actions.actions import build_actions, build_tool_calls_from_content_blocks
+    from polylogue.archive.viewport.models import ToolResult
+    from polylogue.core.enums import ActionResultState
 
-    # Keep pairing aligned with the canonical action_pairs view: rank uses and
-    # results independently by (message position, variant index, block
-    # position), then join equal ranks for each (session, tool_id). This is
-    # intentionally session-wide because providers commonly emit a tool use in
-    # one message and its result in a later message.
     ordered_messages = [
         message
         for _input_index, message in sorted(
@@ -2245,31 +2242,39 @@ def _actions_for_session(session: Session) -> tuple[Action, ...]:
             key=lambda item: (item[1].position, item[1].branch_index, item[0]),
         )
     ]
-    uses_by_tool_id: dict[str, builtins.list[Mapping[str, object]]] = {}
-    results_by_tool_id: dict[str, builtins.list[Mapping[str, object]]] = {}
+    rows_by_use_id = {str(row.tool_use_block_id): row for row in canonical_rows}
+    results_by_use: dict[int, tuple[ToolResult, ...]] = {}
+    state_by_use: dict[int, ActionResultState] = {}
     for message in ordered_messages:
         for block in message.blocks:
-            block_type = str(block.get("type"))
-            tool_id = block.get("tool_id")
-            if not isinstance(tool_id, str) or not tool_id:
+            if str(block.get("type")) != "tool_use":
                 continue
-            if block_type == "tool_use":
-                uses_by_tool_id.setdefault(tool_id, []).append(block)
-            elif block_type == "tool_result":
-                results_by_tool_id.setdefault(tool_id, []).append(block)
-
-    result_block_by_use_block_id: dict[int, Mapping[str, object] | None] = {}
-    for tool_id, use_blocks in uses_by_tool_id.items():
-        result_blocks = results_by_tool_id.get(tool_id, ())
-        for rank, use_block in enumerate(use_blocks):
-            result_block_by_use_block_id[id(use_block)] = result_blocks[rank] if rank < len(result_blocks) else None
+            block_id = block.get("id")
+            if not isinstance(block_id, str):
+                raise DatabaseError("An archived tool use has no canonical block identity")
+            row = rows_by_use_id.get(block_id)
+            if row is None:
+                raise DatabaseError("An archived tool use is missing its canonical action projection")
+            results_by_use[id(block)] = tuple(
+                ToolResult(
+                    block_id=result.tool_result_block_id,
+                    output_text=result.output_text,
+                    is_error=result.is_error,
+                    exit_code=result.exit_code,
+                    outcome=ToolOutcome(result.tool_outcome),
+                    outcome_unknown_reason=result.outcome_unknown_reason,
+                )
+                for result in row.results
+            )
+            state_by_use[id(block)] = row.result_state
 
     events: builtins.list[Action] = []
     for message in ordered_messages:
         calls = build_tool_calls_from_content_blocks(
             origin=session.origin,
             content_blocks=message.blocks,
-            result_block_by_use_block_id=result_block_by_use_block_id,
+            results_by_use_block_id=results_by_use,
+            result_state_by_use_block_id=state_by_use,
         )
         events.extend(build_actions(message, calls))
     return tuple(events)
@@ -3680,16 +3685,41 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         self,
         session_ids: builtins.list[str],
     ) -> dict[str, tuple[Action, ...]]:
-        """Derive actions for a batch of sessions from their content blocks.
+        """Read actions from the canonical result association in transcript context."""
 
-        ``index.db`` exposes an ``actions`` view; these actions are derived on
-        read from each session's tool-use/tool-result blocks — the same
-        source the archive materializer hashed into durable rows. Missing
-        sessions are omitted from the result mapping, mirroring the archive
-        repository batch reader.
-        """
-        sessions = await self.get_sessions(session_ids)
-        return {str(session.id): _actions_for_session(session) for session in sessions}
+        def read(archive: ArchiveStore) -> dict[str, tuple[Action, ...]]:
+            result: dict[str, tuple[Action, ...]] = {}
+            for session_id in dict.fromkeys(session_ids):
+                try:
+                    session = archive_envelope_to_session(archive.read_session(session_id))
+                except KeyError:
+                    continue
+                use_count = sum(
+                    1
+                    for message in session.messages
+                    for block in message.blocks
+                    if str(block.get("type")) == "tool_use"
+                )
+                rows = (
+                    archive.query_session_actions(
+                        [session_id],
+                        limit=max(use_count, 1),
+                        sort_direction="asc",
+                    )
+                    if use_count
+                    else []
+                )
+                result[str(session.id)] = _actions_for_session(session, rows)
+            return result
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.actions.batch",
+            arguments={"session_ids": session_ids},
+            work=read,
+            projection="canonical-actions",
+            stable_order="composed-message,tool-use-block",
+        )
 
     async def list_sessions(
         self,

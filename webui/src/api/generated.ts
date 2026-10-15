@@ -46,7 +46,6 @@ export type ActionOutputPayload = {
 };
 
 export type ActionQueryRowPayload = {
-  readonly exit_code?: number | null;
   readonly followup_class?: string | null;
   readonly followup_message_ref?: string | null;
   readonly is_error?: number | null;
@@ -56,15 +55,25 @@ export type ActionQueryRowPayload = {
   readonly outcome_unknown_reason?: string | null;
   readonly output_text?: string | null;
   readonly result_state: ActionResultState;
+  readonly results?: ReadonlyArray<ActionResultPayload>;
   readonly semantic_type?: string | null;
   readonly session_id: string;
   readonly title?: string | null;
   readonly tool_command?: string | null;
   readonly tool_name?: string | null;
   readonly tool_path?: string | null;
-  readonly tool_result_block_id?: string | null;
   readonly tool_use_block_id: string;
   readonly unit?: "action";
+};
+
+export type ActionResultPayload = {
+  readonly exit_code?: number | null;
+  readonly is_error?: number | null;
+  readonly outcome_unknown_reason?: string | null;
+  readonly output_text?: string | null;
+  readonly output_text_chars?: number | null;
+  readonly tool_outcome: string;
+  readonly tool_result_block_id: string;
 };
 
 export type ActionResultState = "no_result" | "outcome_unknown" | "outcome_success" | "outcome_error";

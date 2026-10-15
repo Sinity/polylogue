@@ -199,7 +199,7 @@ def _archived_actions(db_path: Path, session_id: str) -> list[ArchivedAction]:
     try:
         rows = conn.execute(
             """
-            SELECT tool_use_block_id, tool_name, result_state, tool_result_block_id,
+            SELECT tool_use_block_id, tool_name, result_state, results_json,
                    (SELECT tool_id FROM blocks WHERE block_id = actions.tool_use_block_id) AS tool_id
             FROM actions
             WHERE session_id = ?
@@ -215,7 +215,7 @@ def _archived_actions(db_path: Path, session_id: str) -> list[ArchivedAction]:
             tool_id=row["tool_id"],
             tool_name=row["tool_name"],
             result_state=str(row["result_state"]),
-            tool_result_block_id=row["tool_result_block_id"],
+            tool_result_block_ids=tuple(item["tool_result_block_id"] for item in json.loads(row["results_json"])),
         )
         for row in rows
     ]
@@ -324,9 +324,9 @@ def test_chatgpt_abandoned_call_is_absent_not_unknown(test_db: Path) -> None:
     actions, _stored = _write_and_read(test_db, chatgpt_parse(chatgpt_conversation(), "conv-tool-evidence"))
     by_name = {action.tool_name: action for action in actions}
     assert by_name["computer.do"].result_state == "no_result"
-    assert by_name["computer.do"].tool_result_block_id is None
+    assert by_name["computer.do"].tool_result_block_ids == ()
     assert by_name["file_search.msearch"].result_state == "outcome_unknown"
-    assert by_name["file_search.msearch"].tool_result_block_id is not None
+    assert by_name["file_search.msearch"].tool_result_block_ids != ()
 
 
 # ---------------------------------------------------------------------------
@@ -603,9 +603,16 @@ def test_parent_proven_fanout_preserves_all_results_and_aggregate_verdict(
         conn.row_factory = sqlite3.Row
         generic = conn.execute(action_relation_select_sql() + " ORDER BY tool_use_block_id").fetchall()
         cached = conn.execute("SELECT * FROM action_pairs ORDER BY tool_use_block_id").fetchall()
-        assert [(row["tool_use_block_id"], row["tool_outcome"], row["tool_result_block_id"]) for row in generic] == [
-            (row["tool_use_block_id"], row["tool_outcome"], row["tool_result_block_id"]) for row in cached
-        ]
+        assert [
+            (
+                row["tool_use_block_id"],
+                row["tool_outcome"],
+                json.loads(row["results_json"])[0]["tool_result_block_id"]
+                if len(json.loads(row["results_json"])) == 1
+                else None,
+            )
+            for row in generic
+        ] == [(row["tool_use_block_id"], row["tool_outcome"], row["tool_result_block_id"]) for row in cached]
         browser = next(row for row in generic if row["tool_name"] == "browser")
         # A later reply changes the earlier invocation's block verdict. Its
         # message hash must be the original row producer's current digest.
@@ -630,9 +637,21 @@ def test_parent_proven_fanout_preserves_all_results_and_aggregate_verdict(
         )
         assert message["content_hash"] == expected_message_hash
         assert browser["tool_outcome"] == expected
-        assert browser["tool_result_block_id"] is None
-        assert browser["output_text"] is None
-        assert browser["exit_code"] is None
+        owned = json.loads(browser["results_json"])
+        expected_bodies = [
+            row[0]
+            for row in conn.execute(
+                "SELECT b.text FROM blocks b JOIN messages m ON m.message_id=b.message_id "
+                "WHERE m.session_id=? AND m.native_id IN ('res-fanout-1','res-fanout-2') "
+                "AND b.block_type='tool_result' ORDER BY m.position,m.variant_index,b.position",
+                (sid,),
+            )
+        ]
+        assert len(expected_bodies) == 2
+        assert [item["output_text"] for item in owned] == (expected_bodies if parent_proved else [])
+        assert browser["output_text"] == (
+            "\n".join(text for text in expected_bodies if text is not None) if parent_proved else None
+        )
         events = conn.execute(
             observed_event_relation_sql(source_where="1=1")
             + " SELECT * FROM observed_events WHERE kind='tool_finished' AND tool_name='browser'"
@@ -645,16 +664,21 @@ def test_parent_proven_fanout_preserves_all_results_and_aggregate_verdict(
         )
         episodes = reader.list_tool_episode_insights(ToolEpisodeQuery(session_id=sid, tool="browser"))
         assert len(episodes) == 1
-        assert episodes[0].result_output is None
+        assert episodes[0].output_text == browser["output_text"]
         if parent_proved:
-            assert reader.degraded_components == ("tool_episode_plural_output_omitted",)
-            assert episodes[0].tool_result_block_id is None
-            assert episodes[0].is_error is None and episodes[0].exit_code is None
+            assert reader.degraded_components == ()
+            assert [result.block_id for result in episodes[0].results] == [
+                item["tool_result_block_id"] for item in owned
+            ]
+            assert [result.output_text for result in episodes[0].results] == expected_bodies
             assert len(events) == 1
             assert events[0]["status"] == ("failed" if reported == "error" else reported)
             refs = json.loads(events[0]["evidence_refs_json"])
             assert len(refs) == 3 and len(set(refs)) == 3
-            assert events[0]["result_message_id"] is None and events[0]["result_position"] is None
+            final = conn.execute(
+                "SELECT message_id,position FROM blocks WHERE block_id=?", (owned[-1]["tool_result_block_id"],)
+            ).fetchone()
+            assert (events[0]["result_message_id"], events[0]["result_position"]) == tuple(final)
         else:
             assert reader.degraded_components == ()
             assert events == []

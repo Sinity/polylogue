@@ -424,7 +424,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 failure_class="source_coverage",
             ),
             _fact("failure_path", "forensic-actions", "items", "*", "tool_path"),
-            _fact("exit_code", "forensic-actions", "items", "*", "exit_code"),
+            _fact("exit_code", "forensic-actions", "items", "*", "results", "*", "exit_code"),
             _fact("file_rows", "forensic-files", "items", "*", "path", reducer="count"),
             _fact("file_path", "forensic-files", "items", "*", "path"),
         ),
@@ -564,7 +564,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 failure_class="source_coverage",
             ),
             _fact("failed_tool", "failed-actions", "items", "*", "tool_name"),
-            _fact("exit_code", "failed-actions", "items", "*", "exit_code"),
+            _fact("exit_code", "failed-actions", "items", "*", "results", "*", "exit_code"),
             _fact("failure_output", "failed-actions", "items", "*", "output_text"),
         ),
         evidence=(

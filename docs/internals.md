@@ -371,24 +371,14 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   text and the child's first turn. `ambiguous` is retired from the
   `mapping_state` vocabulary. `delegation_facts` is a materialized table, not
   a view, so existing index tiers must be rebuilt from source evidence.
-- Index schema version 41 stops materializing `tool_input`/`output_text` text
-  copies on `action_pairs` (polylogue-2i2w). `action_pairs` keeps only
-  join/rank/outcome columns for a paired `tool_use`/`tool_result` block
-  (`tool_use_block_id`, `tool_result_block_id`, `session_id`, `message_id`,
-  `tool_id`, `use_rank`, `tool_name`, `semantic_type`, `tool_command`,
-  `tool_path`, `is_error`, `exit_code`); the text itself already lives once in
-  `blocks.tool_input`/`blocks.text`. On a live generation this table stored
-  868,522 rows at ~4.7KB/row (~4.1GB) — every tool interaction existed ~3x on
-  disk (blocks, action_pairs, FTS) — and the ~4.7KB rows lived in SQLite
-  overflow-page chains, so a per-session `DELETE FROM action_pairs WHERE
-  session_id=?` paid dozens of scattered page reads per row, turning a whale
-  session replace into hours of random IO. The `actions` VIEW is rewritten to
-  re-join `blocks` by `tool_use_block_id`/`tool_result_block_id` at read time,
-  so every reader (CLI, API, MCP, insights, `delegation_facts_source`) keeps
-  byte-identical `tool_input`/`output_text` payloads with no caller change.
-  Existing index tiers must be rebuilt from source evidence (`polylogue ops
-  reset --index, then restart polylogued`), though the transition itself needs no raw
-  reparse.
+- `action_pairs` retains the derived invocation witness and aggregate verdict;
+  result bodies remain solely on `blocks`. Public action reads use the shared
+  causal association to project ordered result descriptors and joined output.
+  Exact-session reads filter canonical composed membership before association.
+  Typed CLI, API, MCP and insight payloads expose `results` and no singular
+  result reference or scalar exit code. The original Index identity changes
+  with this read/view contract; reconvergence uses retained Source.
+
 - Index schema version 37 drops the three run-projection materialized cache
   tables — `session_runs`, `session_observed_events`,
   `session_context_snapshots` — added by v11 (polylogue-dab). Their write
@@ -482,7 +472,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   dispatch `actions` row and both sessions' `session_profiles` — no
   convergence stage needed, matching the `actions` view's own derived-tier
   precedent. `result_status` (`ok`/`error`/`unknown`) is derived only from
-  `actions.is_error`/`exit_code`, never guessed.
+  `actions.is_error` and each owned result's exit code, never guessed.
 - Index schema version 27 adds `session_profiles.primary_model_name` and
   `primary_model_family`, the dominant model per session by assistant
   OUTPUT-token share, backing the `delegations` view above.

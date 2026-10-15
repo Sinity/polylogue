@@ -9,7 +9,7 @@ from polylogue.analysis.fallback import FallbackReason
 from polylogue.analysis.temporal_source import TimeConfidence
 from polylogue.core.sources import source_name_to_origin
 
-ARCHIVE_INSIGHT_CONTRACT_VERSION = 13
+ARCHIVE_INSIGHT_CONTRACT_VERSION = 14
 
 
 class ArchiveInsightModel(BaseModel):
