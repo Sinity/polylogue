@@ -133,7 +133,7 @@ def exercise(run):
     run.cli("olderneedle", "list")
     literal=run.cli("find","list","--json")
     require(literal["count"]==0,"find list silently widened into listing")
-    run.cli("find","--json",expected=(3,))
+    run.cli("find","--json",expected=(2,))
     run.checked("ordinary terminal and JSON listing use the daemon query")
     for query in ["messages olderneedle", "olderneedle OR prose", "sessions | group by origin", "--reveal"]:
         run.cli(query, "--json", expected=(2,))

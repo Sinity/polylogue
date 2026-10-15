@@ -967,7 +967,7 @@ fn ordinary_listing_and_prose_search_share_retained_ids_and_population_qualifica
             0
         );
     }
-    assert_eq!(world.cli(&["find", "--json"]).status.code(), Some(3));
+    assert_eq!(world.cli(&["find", "--json"]).status.code(), Some(2));
     let nohit = world.cli(&["absenttoken", "--json"]);
     assert_eq!(nohit.status.code(), Some(5));
     let nohit: Value = serde_json::from_slice(&nohit.stdout).unwrap();
