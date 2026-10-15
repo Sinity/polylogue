@@ -137,3 +137,12 @@ fn durable_page_corruption_is_rejected_by_checksum_vfs() {
         assert!(matches!(err,Error::Sqlite {ref file, source:rusqlite::Error::SqliteFailure(e,_)} if file==&path && e.extended_code==rusqlite::ffi::SQLITE_IOERR_DATA),"{err}");
     }
 }
+#[test]
+fn readonly_byte_access_does_not_recreate_writer_scratch() {
+    let tmp=tempfile::tempdir().unwrap(); let root=tmp.path();
+    let mut writer=Writer::open(root).unwrap(); let hash=writer.put_blob(b"read without mutation").unwrap();
+    let read=writer.read_handle().unwrap();
+    fs::remove_dir(root.join("blobs/tmp")).unwrap();
+    assert_eq!(read.read_blob_range(hash,0,4).unwrap(),b"read");
+    assert!(!root.join("blobs/tmp").exists());
+}

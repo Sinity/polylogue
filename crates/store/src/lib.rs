@@ -93,6 +93,7 @@ fn version(conn: &Connection, file: &Path) -> Result<u32> {
 }
 fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Result<()> {
     let file = root.join(name);
+    if file.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) { return Err(Error::Schema(file)); }
     if !file.exists() || file.metadata()?.len() == 0 { return Ok(()); }
     // Read only: no journal mode, schema, counters, chmod, or blob mutations precede this check.
     let conn = open(&file, true, durable)?;
@@ -116,6 +117,7 @@ fn preflight(root: &Path) -> Result<()> {
     validate_version(root, "index.db", INDEX_VERSION, false)
 }
 fn private_dir(path: &Path) -> Result<()> {
+    if path.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) { return Err(Error::Schema(path.into())); }
     DirBuilder::new().recursive(true).mode(0o700).create(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())
@@ -167,9 +169,12 @@ fn validate_schema(conn: &Connection, path: &Path, sql: &str) -> Result<()> {
     Ok(())
 }
 fn private_files(root: &Path) -> Result<()> {
-    for entry in fs::read_dir(root)? {
-        let path = entry?.path();
-        if path.is_file() { fs::set_permissions(path, fs::Permissions::from_mode(0o600))?; }
+    for name in ["archive.db", "index.db", "embeddings.db", "archive.db-wal", "archive.db-shm", "index.db-wal", "index.db-shm", "embeddings.db-wal", "embeddings.db-shm", "writer.lock"] {
+        let path = root.join(name);
+        if let Ok(metadata) = path.symlink_metadata() {
+            if metadata.file_type().is_symlink() { return Err(Error::Schema(path)); }
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
     }
     Ok(())
 }
@@ -182,7 +187,7 @@ impl Writer {
         if fresh_root { private_dir(path)?; }
         if fs::read_dir(path)?.next().is_none() { native::no_cow(path)?; }
         let root = fs::canonicalize(path)?;
-        let mut lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(root.join("writer.lock"))?;
+        let mut lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(root.join("writer.lock"))?;
         match lock.try_lock() {
             Ok(()) => (),
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -242,7 +247,7 @@ impl ReadHandle {
         let size: Option<u64> = db(&path,self.archive.query_row("SELECT size FROM blob WHERE hash=?1 AND state='present'",[hash.bytes().as_slice()],|r|r.get(0)).optional())?;
         let size = size.ok_or(Error::UnknownBlob)?;
         if offset.checked_add(length).is_none_or(|end| end > size) { return Err(Error::Range); }
-        let store = hashed_blobs::Store::open_read_only(&self.root, vec![]);
+        let store = hashed_blobs::Reader::new(&self.root, vec![]);
         Ok(store.read_range(&hashed_blobs::Hash(*hash.bytes()),offset,length)?)
     }
 }
