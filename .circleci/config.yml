@@ -5,22 +5,18 @@ jobs:
     docker:
       # Official nixos/nix amd64 image, resolved from the publisher's registry.
       - image: nixos/nix@sha256:62c506c32c75395163676006f0c00d75c31578fffaac1167d600289f72477b78
+        environment:
+          # Checkout resolves /bin/circleci-agent before job-step variables apply.
+          PATH: /usr/local/bin:/usr/bin:/bin:/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/nix/var/nix/profiles/default/sbin
     resource_class: medium
+    shell: /nix/var/nix/profiles/default/bin/bash -eo pipefail
     environment:
-      # The Nix image omits conventional paths used by the injected CI agent.
-      PATH: /usr/local/bin:/usr/bin:/bin:/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/nix/var/nix/profiles/default/sbin
       NIX_CONFIG: |
         experimental-features = nix-command flakes
         sandbox = false
         max-jobs = 1
         cores = 2
     steps:
-      - run:
-          name: Locate injected checkout agent
-          shell: /nix/var/nix/profiles/default/bin/bash -eo pipefail
-          command: |
-            printf 'PATH=%s\n' "$PATH"
-            find / -name circleci-agent -type f 2>/dev/null || true
       - checkout
       - run:
           name: Check the actual Rust foundation
