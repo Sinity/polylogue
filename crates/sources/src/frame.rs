@@ -181,6 +181,32 @@ impl<O> PendingJsonlStep<O> {
         self.continuation.partial.capacity()
     }
 
+    /// Encode/transform the provider output without releasing its linear
+    /// framing continuation. A failed transform consumes the attempt; retry
+    /// reconstructs from the committed predecessor. Publication still belongs
+    /// to commit_with after every staged member has actually committed.
+    pub fn try_map_output<U, E>(
+        self,
+        transform: impl FnOnce(O, &Counts, u64, u64) -> Result<U, E>,
+    ) -> Result<PendingJsonlStep<U>, E> {
+        let Self {
+            output,
+            counts,
+            continuation,
+        } = self;
+        let output = transform(
+            output,
+            &counts,
+            continuation.parsed_upto,
+            continuation.scanned_upto,
+        )?;
+        Ok(PendingJsonlStep {
+            output,
+            counts,
+            continuation,
+        })
+    }
+
     /// The owning writer validates the pinned predecessor and atomically commits
     /// state, output and progress inside this callback. A continuation is returned
     /// only after success. The callback must not return success before committing.
