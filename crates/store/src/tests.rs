@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::params;
 use std::os::unix::fs::{MetadataExt, symlink};
 
 #[test]

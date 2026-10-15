@@ -11,7 +11,7 @@
 //! fn escape(writer: &polylogue_store::Writer) { let _ = &writer.archive; }
 //! ```
 use polylogue_model::BlobHash;
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags};
 use std::{
     fs::{self, DirBuilder, File, OpenOptions},
     io::{self, Read, Write},
