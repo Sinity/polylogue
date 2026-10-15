@@ -121,6 +121,7 @@ from polylogue.sources.parsers.claude.orchestration import (
     parse_claude_orchestration_artifact,
 )
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
+from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, _prepared_reader, normalize_active_branch
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
@@ -11591,6 +11592,39 @@ def _resolve_session_graph(
     invalidated_session_ids: set[str] | None = None,
     source_read: SessionSourceRead | None = None,
 ) -> set[str]:
+    # Claims and parent events are already written. No input to the dispatch
+    # projection changes during this graph operation; the next write gets a
+    # fresh projection, even when it shares the same outer transaction.
+    with ExitStack() as stack:
+        return _resolve_session_graph_with_dispatch(
+            conn,
+            session_id,
+            _native_id,
+            origin,
+            cache=cache,
+            add_timing=add_timing,
+            bulk_fts=bulk_fts,
+            bulk_build=bulk_build,
+            invalidated_session_ids=invalidated_session_ids,
+            source_read=source_read,
+            dispatch_evidence=_ParentDispatchEvidence(conn, session_id, stack),
+        )
+
+
+def _resolve_session_graph_with_dispatch(
+    conn: sqlite3.Connection,
+    session_id: str,
+    _native_id: str,
+    origin: str,
+    *,
+    cache: dict[str, list[tuple[str, str]]] | None = None,
+    add_timing: Callable[[str, float], None] | None = None,
+    bulk_fts: bool = False,
+    bulk_build: bool = False,
+    invalidated_session_ids: set[str] | None = None,
+    source_read: SessionSourceRead | None = None,
+    dispatch_evidence: _ParentDispatchEvidence,
+) -> set[str]:
     """Resolve this session's lineage edges and re-anchor what its write moved.
 
     A branch point this write relocated onto identical content elsewhere in the
@@ -11621,7 +11655,7 @@ def _resolve_session_graph(
     _resolve_outbound_session_links(conn, session_id, origin)
     record_substage("outbound_links", t0)
     t0 = time.perf_counter()
-    _refill_inbound_dispatch_block_ids(conn, session_id, source_read=source_read)
+    _refill_inbound_dispatch_block_ids(conn, session_id, source_read=source_read, evidence=dispatch_evidence)
     record_substage("inbound_dispatch_blocks", t0)
     t0 = time.perf_counter()
     has_outbound_link = (
@@ -11693,7 +11727,9 @@ def _resolve_session_graph(
                 observed_at_ms=int(time.time() * 1000),
             )
             continue
-        dispatch = _resolve_parent_dispatch_block(conn, session_id, child_id, source_read=source_read)
+        dispatch = _resolve_parent_dispatch_block(
+            conn, session_id, child_id, source_read=source_read, evidence=dispatch_evidence
+        )
         conn.execute(
             f"""
             UPDATE session_links
@@ -11781,6 +11817,7 @@ def _refill_inbound_dispatch_block_ids(
     parent_session_id: str,
     *,
     source_read: SessionSourceRead | None = None,
+    evidence: _ParentDispatchEvidence | None = None,
 ) -> None:
     """Rebind resolved children to this parent's dispatch blocks.
 
@@ -11794,6 +11831,14 @@ def _refill_inbound_dispatch_block_ids(
     the same edge. A refusal is re-typed each time so the recorded reason
     reflects the parent as it stands now.
     """
+    if evidence is None:
+        with ExitStack() as stack:
+            return _refill_inbound_dispatch_block_ids(
+                conn,
+                parent_session_id,
+                source_read=source_read,
+                evidence=_ParentDispatchEvidence(conn, parent_session_id, stack),
+            )
     rows = conn.execute(
         """SELECT src_session_id, dst_origin, dst_native_id, link_type
            FROM session_links
@@ -11803,7 +11848,9 @@ def _refill_inbound_dispatch_block_ids(
         (parent_session_id,),
     ).fetchall()
     for src_session_id, dst_origin, dst_native_id, link_type in rows:
-        dispatch = _resolve_parent_dispatch_block(conn, parent_session_id, str(src_session_id), source_read=source_read)
+        dispatch = _resolve_parent_dispatch_block(
+            conn, parent_session_id, str(src_session_id), source_read=source_read, evidence=evidence
+        )
         conn.execute(
             f"""UPDATE session_links
                SET parent_tool_use_block_id = ?,
@@ -16915,12 +16962,93 @@ def _sidecar_paths_dispatch_tool_ids(
     return tool_ids
 
 
+class _ParentDispatchEvidence:
+    """Disk-backed exact observations for one graph operation, built on demand."""
+
+    def __init__(self, conn: sqlite3.Connection, parent_session_id: str, stack: ExitStack) -> None:
+        self.conn, self.parent_session_id, self.stack = conn, parent_session_id, stack
+        self.projection: PickleSpool[tuple[str, str, int]] | None = None
+        self._origin: str | None = None
+        self._origin_observed = False
+
+    @property
+    def origin(self) -> str | None:
+        if not self._origin_observed:
+            row = self.conn.execute(
+                "SELECT origin FROM sessions WHERE session_id = ?", (self.parent_session_id,)
+            ).fetchone()
+            self._origin = None if row is None else str(row[0])
+            self._origin_observed = True
+        return self._origin
+
+    def observations(self) -> Generator[tuple[str, str, int], None, None]:
+        after = 0
+        while True:
+            # Close each bounded Index cursor before resolving aliases.
+            with connection_cursor(
+                self.conn,
+                """SELECT rowid, source_message_provider_id,
+                source_message_provider_id_json, payload_json FROM session_events
+                WHERE session_id=? AND event_type='claude_delegation_progress' AND rowid>?
+                ORDER BY rowid LIMIT 500""",
+                (self.parent_session_id, after),
+            ) as cursor:
+                rows = cursor.fetchall()
+            if not rows:
+                break
+            after = int(rows[-1][0])
+            for _rowid, stored_source_id, source_id_carrier, payload_json in rows:
+                source_id = native_id_from_storage(stored_source_id, source_id_carrier)
+                try:
+                    payload = json.loads(str(payload_json))
+                    observation_payload = dict(payload) if isinstance(payload, dict) else {}
+                    if source_id and "provider_tool_id" not in observation_payload:
+                        observation_payload["provider_tool_id"] = str(source_id)
+                    observation = ParsedDispatchObservation.model_validate(observation_payload)
+                except (TypeError, ValueError):
+                    continue
+                if observation.resolution_reason not in (None, "identity-contradiction"):
+                    continue
+                values = _dispatch_child_identity_values(observation, observation_payload)
+                if not values:
+                    continue
+                assert self.origin is not None
+                resolved = _canonical_identity_session_ids(self.conn, self.origin, values)
+                if resolved is None:
+                    continue
+                for child_id in resolved:
+                    yield child_id, observation.provider_tool_id, int(len(resolved) > 1)
+
+    def for_child(self, child_session_id: str) -> tuple[set[str], bool]:
+        if self.projection is None:
+            # One graph invocation decodes each event only once, including
+            # children split across resolved and newly resolved link walks.
+            self.projection = self.stack.enter_context(closing(PickleSpool[tuple[str, str, int]]()))
+            with closing(self.observations()) as observations:
+                for observation in observations:
+                    self.projection.append(observation)
+        observations = iter(self.projection)
+        tools: set[str] = set()
+        contradicted = False
+        with closing(observations):
+            for child_id, tool_id, conflict in observations:
+                if child_id != child_session_id:
+                    continue
+                contradicted |= bool(conflict)
+                # Two distinct tools already prove contradiction; no successful
+                # outcome requires retaining a larger set in memory.
+                if not conflict and len(tools) < 2:
+                    tools.add(tool_id)
+        return tools, contradicted
+
+
 def _resolve_parent_dispatch_block(
     conn: sqlite3.Connection,
     parent_session_id: str,
     child_session_id: str,
     *,
     source_read: SessionSourceRead | None = None,
+    evidence: _ParentDispatchEvidence | None = None,
 ) -> _DispatchResolution:
     """Bind a child edge to the exact parent tool_use block that dispatched it.
 
@@ -16932,48 +17060,21 @@ def _resolve_parent_dispatch_block(
     different sessions contradict each other. Every refusal is typed; there
     is no ordinal, count, timestamp, or nearest-call fallback.
     """
-    origin_row = conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (parent_session_id,)).fetchone()
-    if origin_row is None:
+    if evidence is None:
+        with ExitStack() as stack:
+            return _resolve_parent_dispatch_block(
+                conn,
+                parent_session_id,
+                child_session_id,
+                source_read=source_read,
+                evidence=_ParentDispatchEvidence(conn, parent_session_id, stack),
+            )
+    origin = evidence.origin
+    if origin is None:
         return _DISPATCH_PENDING
-    origin = str(origin_row[0])
     if not _origin_carries_dispatch_identity(origin):
         return _DispatchResolution(None, "origin-no-dispatch-identity")
-    rows = conn.execute(
-        """SELECT source_message_provider_id, source_message_provider_id_json, payload_json
-           FROM session_events
-           WHERE session_id = ? AND event_type = 'claude_delegation_progress'""",
-        (parent_session_id,),
-    ).fetchall()
-    tool_ids: set[str] = set()
-    contradicted = False
-    for stored_source_id, source_id_carrier, payload_json in rows:
-        source_id = native_id_from_storage(stored_source_id, source_id_carrier)
-        try:
-            payload = json.loads(str(payload_json))
-        except (TypeError, ValueError):
-            continue
-        try:
-            observation_payload = dict(payload) if isinstance(payload, dict) else {}
-            if source_id and "provider_tool_id" not in observation_payload:
-                observation_payload["provider_tool_id"] = str(source_id)
-            observation = ParsedDispatchObservation.model_validate(observation_payload)
-        except (TypeError, ValueError):
-            continue
-        # A parser-side contradiction is provisional: it compares raw names
-        # without an archive to resolve them against. Every other refusal
-        # reason stands.
-        if observation.resolution_reason is not None and observation.resolution_reason != "identity-contradiction":
-            continue
-        identity_values = _dispatch_child_identity_values(observation, observation_payload)
-        if not identity_values:
-            continue
-        resolved = _canonical_identity_session_ids(conn, origin, identity_values)
-        if resolved is None or child_session_id not in resolved:
-            continue
-        if len(resolved) > 1:
-            contradicted = True
-            continue
-        tool_ids.add(observation.provider_tool_id)
+    tool_ids, contradicted = evidence.for_child(child_session_id)
     tool_ids |= _sidecar_dispatch_tool_ids(
         conn,
         source_read,
