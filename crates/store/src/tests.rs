@@ -227,6 +227,7 @@ fn durable_page_corruption_is_rejected_by_checksum_vfs() {
         bytes[200] ^= 0x40;
         fs::write(&path, bytes).unwrap();
         let err = Writer::open(root).err().expect("corrupt page must refuse");
+        assert!(err.to_string().contains("page 1"), "checksum failure must name its actual page: {err}");
         assert!(
             matches!(err,Error::Sqlite {ref file, source:rusqlite::Error::SqliteFailure(e,_)} if file==&path && e.extended_code==rusqlite::ffi::SQLITE_IOERR_DATA),
             "{err}"
