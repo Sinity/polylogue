@@ -140,6 +140,97 @@ impl From<MessageId> for MessageIdWire {
     }
 }
 
+/// The provider's block position, supplied independently of the opaque stored ID.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockSlot {
+    Item(u32),
+    Reasoning(u32),
+    Attachment(String),
+}
+
+/// A block keeps its message relation and slot without decoding its ID text.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "BlockIdWire", into = "BlockIdWire")]
+pub struct BlockId {
+    id: String,
+    message: MessageId,
+    slot: BlockSlot,
+}
+#[derive(Serialize, Deserialize)]
+struct BlockIdWire {
+    id: String,
+    message: MessageId,
+    slot: BlockSlot,
+}
+impl BlockId {
+    pub fn new(message: MessageId, index: u32) -> Self {
+        Self {
+            id: format!("{}:{index}", message.as_str()),
+            message,
+            slot: BlockSlot::Item(index),
+        }
+    }
+    pub fn reasoning(message: MessageId, index: u32) -> Self {
+        Self {
+            id: format!("{}:r{index}", message.as_str()),
+            message,
+            slot: BlockSlot::Reasoning(index),
+        }
+    }
+    pub fn attachment(message: MessageId, native: &str) -> Result<Self, IdError> {
+        if native.is_empty() {
+            return Err(IdError::Empty);
+        }
+        Ok(Self {
+            id: format!("{}:a{native}", message.as_str()),
+            message,
+            slot: BlockSlot::Attachment(native.to_owned()),
+        })
+    }
+    pub fn from_stored(
+        id: impl Into<String>,
+        message: MessageId,
+        slot: BlockSlot,
+    ) -> Result<Self, IdError> {
+        let id = id.into();
+        if id.is_empty() || matches!(&slot, BlockSlot::Attachment(native) if native.is_empty()) {
+            return Err(IdError::Empty);
+        }
+        Ok(Self { id, message, slot })
+    }
+    pub fn as_str(&self) -> &str {
+        &self.id
+    }
+    pub fn message(&self) -> &MessageId {
+        &self.message
+    }
+    pub fn slot(&self) -> &BlockSlot {
+        &self.slot
+    }
+    pub fn index(&self) -> Option<u32> {
+        match self.slot {
+            BlockSlot::Item(n) | BlockSlot::Reasoning(n) => Some(n),
+            BlockSlot::Attachment(_) => None,
+        }
+    }
+}
+impl TryFrom<BlockIdWire> for BlockId {
+    type Error = IdError;
+    fn try_from(value: BlockIdWire) -> Result<Self, Self::Error> {
+        Self::from_stored(value.id, value.message, value.slot)
+    }
+}
+impl From<BlockId> for BlockIdWire {
+    fn from(value: BlockId) -> Self {
+        Self {
+            id: value.id,
+            message: value.message,
+            slot: value.slot,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("blob hash must be exactly 64 lowercase hexadecimal characters")]
 pub struct InvalidBlobHash;
