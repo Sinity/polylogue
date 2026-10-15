@@ -83,6 +83,7 @@ def test_resident_cold_samples_keep_each_childs_rss(tmp_path: Path, monkeypatch:
     from unittest.mock import Mock
 
     import tests.benchmarks.test_cli_cold_start as cold
+    from tests.benchmarks.cli_profile import record_metrics as real_record
     from tests.infra.cli_cold_start import EmptyResident
 
     home = tmp_path / "home"
@@ -99,7 +100,6 @@ def test_resident_cold_samples_keep_each_childs_rss(tmp_path: Path, monkeypatch:
     )
     rss = iter((1001, 1002, 1003))
     recorded: list[int] = []
-    real_record = cold.record_metrics
 
     def measured(argv: object, **kwargs: object) -> tuple[subprocess.CompletedProcess[bytes], int]:
         return subprocess.CompletedProcess(

@@ -502,8 +502,8 @@ def mixed_load_read_params(read_index: int) -> dict[str, int]:
     return {"limit": 2 + read_index % 4, "offset": read_index}
 
 
-@pytest.fixture
-def bench_mixed_load_stack(
+@contextmanager
+def _running_bench_mixed_load_stack(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[DaemonOperationStack]:
@@ -545,6 +545,12 @@ def bench_mixed_load_stack(
         compute_queue_units=16,
         socket_path=socket_path,
     ) as stack:
+        yield stack
+
+
+@pytest.fixture
+def bench_mixed_load_stack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[DaemonOperationStack]:
+    with _running_bench_mixed_load_stack(tmp_path, monkeypatch) as stack:
         yield stack
 
 
@@ -1421,6 +1427,6 @@ def test_seeded_benchmark_callers_clone_before_daemon_bootstrap(
     test_read_frame_timing_handoff_attributes_worker_delay_over_real_uds(timing_root, monkeypatch)
     mixed_root = tmp_path / "mixed"
     mixed_root.mkdir()
-    with contextmanager(bench_mixed_load_stack.__wrapped__)(mixed_root, monkeypatch) as stack:
+    with _running_bench_mixed_load_stack(mixed_root, monkeypatch) as stack:
         response = _operation(stack.client, "cli.query", {"params": {"limit": 2}})
         assert response["error"] is None
