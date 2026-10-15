@@ -227,9 +227,12 @@ fn durable_page_corruption_is_rejected_by_checksum_vfs() {
         bytes[200] ^= 0x40;
         fs::write(&path, bytes).unwrap();
         let err = Writer::open(root).err().expect("corrupt page must refuse");
-        assert!(err.to_string().contains("page 1"), "checksum failure must name its actual page: {err}");
         assert!(
-            matches!(err,Error::Sqlite {ref file, source:rusqlite::Error::SqliteFailure(e,_)} if file==&path && e.extended_code==rusqlite::ffi::SQLITE_IOERR_DATA),
+            err.to_string().contains("page 1"),
+            "checksum failure must name its actual page: {err}"
+        );
+        assert!(
+            matches!(err,Error::CorruptPage {ref file, page:1, offset:0, source:rusqlite::Error::SqliteFailure(e,_), ..} if file==&path && e.extended_code==rusqlite::ffi::SQLITE_IOERR_DATA),
             "{err}"
         );
     }
@@ -363,4 +366,130 @@ fn main_metadata_errors_are_not_treated_as_a_fresh_archive() {
     let error = Writer::open(&root).err().expect("invalid root must refuse");
     assert!(matches!(error, Error::Io(ref e) if e.kind() == io::ErrorKind::NotADirectory));
     assert_eq!(fs::read(root).unwrap(), b"preserve this file");
+}
+
+// Return a closed, checksummed store with a damaged non-header table page.
+fn corrupt_table(name: &str, table: &str) -> (tempfile::TempDir, PathBuf, u64, u32) {
+    let tmp = tempfile::tempdir().unwrap();
+    drop(Writer::open(tmp.path()).unwrap());
+    let file = tmp.path().join(name);
+    let conn = open(&file, true, true).unwrap();
+    let page: u64 = conn
+        .query_row(
+            "SELECT rootpage FROM sqlite_schema WHERE name=?1",
+            [table],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page_size: u32 = conn
+        .query_row("PRAGMA page_size", [], |r| r.get(0))
+        .unwrap();
+    drop(conn);
+    assert!(page > 1);
+    let mut bytes = fs::read(&file).unwrap();
+    bytes[((page - 1) * u64::from(page_size) + 200) as usize] ^= 0x40;
+    fs::write(&file, bytes).unwrap();
+    (tmp, file, page, page_size)
+}
+
+#[test]
+fn checksum_failure_names_non_header_page_and_actual_file() {
+    for (name, table) in [("archive.db", "meta"), ("embeddings.db", "embedded")] {
+        let (_tmp, file, page, page_size) = corrupt_table(name, table);
+        let conn = open(&file, true, true).unwrap();
+        // Deliberately different context: the VFS filename, not the caller hint,
+        // is the authority for which physical file failed.
+        let err = db(Path::new("caller-context"), || {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+        })
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::CorruptPage {file: actual, page: actual_page, offset, page_size: actual_size, source:rusqlite::Error::SqliteFailure(e,_)} if actual == &file && *actual_page == page && *offset == (page-1)*u64::from(page_size) && *actual_size==page_size && e.extended_code==rusqlite::ffi::SQLITE_IOERR_DATA),
+            "{err}"
+        );
+        assert!(native::take_checksum_fault().is_none());
+    }
+}
+
+#[test]
+fn checksum_fault_locations_are_thread_local() {
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let handles: Vec<_> = [("archive.db", "meta"), ("embeddings.db", "embedded")].into_iter().map(|(name, table)| {
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            let (_tmp, file, page, _) = corrupt_table(name, table);
+            let conn = open(&file, true, true).unwrap();
+            let err = db(&file, || {
+                let result = conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get::<_, i64>(0));
+                assert!(result.is_err());
+                // Both faults have happened before either wrapper consumes one.
+                barrier.wait();
+                result
+            }).unwrap_err();
+            assert!(matches!(&err, Error::CorruptPage { file: actual, page: actual_page, .. } if actual==&file && *actual_page==page), "{err}");
+        })
+    }).collect();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+#[test]
+fn unscoped_or_successful_fault_cannot_taint_later_errors() {
+    let (_tmp, file, _, _) = corrupt_table("archive.db", "meta");
+    let conn = open(&file, true, true).unwrap();
+    assert!(
+        conn.query_row("SELECT count(*) FROM meta", [], |r| r.get::<_, i64>(0))
+            .is_err()
+    );
+    let synthetic = || {
+        Err::<(), _>(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR_DATA),
+            None,
+        ))
+    };
+    // Stale fault outside the scoped operation cannot supply a page.
+    assert!(matches!(db(&file, synthetic), Err(Error::Sqlite { .. })));
+    db(&file, || {
+        assert!(
+            conn.query_row("SELECT count(*) FROM meta", [], |r| r.get::<_, i64>(0))
+                .is_err()
+        );
+        Ok(())
+    })
+    .unwrap();
+    assert!(native::take_checksum_fault().is_none());
+    assert!(matches!(db(&file, synthetic), Err(Error::Sqlite { .. })));
+    let err = db(&file, || {
+        assert!(
+            conn.query_row("SELECT count(*) FROM meta", [], |r| r.get::<_, i64>(0))
+                .is_err()
+        );
+        Err::<(), _>(rusqlite::Error::InvalidQuery)
+    })
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        Error::Sqlite {
+            source: rusqlite::Error::InvalidQuery,
+            ..
+        }
+    ));
+    assert!(native::take_checksum_fault().is_none());
+}
+
+#[test]
+fn public_reader_reports_corrupt_archive_page_without_repair() {
+    let (tmp, file, page, _) = corrupt_table("archive.db", "meta");
+    let before = fs::read(&file).unwrap();
+    let err = ReadHandle::open(tmp.path())
+        .err()
+        .expect("reader must refuse corrupt meta");
+    assert!(
+        matches!(&err, Error::CorruptPage {file: actual, page: actual_page,..} if actual==&file && *actual_page==page),
+        "{err}"
+    );
+    assert_eq!(fs::read(&file).unwrap(), before);
 }

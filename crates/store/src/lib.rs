@@ -42,6 +42,17 @@ pub enum Error {
         #[source]
         source: rusqlite::Error,
     },
+    #[error(
+        "checksum failure at {file}, page {page} (offset {offset}, page size {page_size}): {source}"
+    )]
+    CorruptPage {
+        file: PathBuf,
+        page: u64,
+        offset: u64,
+        page_size: u32,
+        #[source]
+        source: rusqlite::Error,
+    },
     #[error("archive writer already held at {archive} by {holder}")]
     WriterHeld { archive: PathBuf, holder: String },
     #[error(
@@ -118,10 +129,17 @@ fn initialize_sqlite() -> Result<()> {
     .clone()
     .map_err(Error::Initialization)
 }
-fn db<T>(file: &Path, value: rusqlite::Result<T>) -> Result<T> {
-    value.map_err(|source| Error::Sqlite {
-        file: file.into(),
-        source,
+fn db<T>(file: &Path, operation: impl FnOnce() -> rusqlite::Result<T>) -> Result<T> {
+    native::take_checksum_fault();
+    let result = operation();
+    let fault = native::take_checksum_fault();
+    result.map_err(|source| {
+        if matches!(&source, rusqlite::Error::SqliteFailure(e, _) if e.extended_code == rusqlite::ffi::SQLITE_IOERR_DATA) {
+            if let Some(fault) = fault {
+                return Error::CorruptPage { file: fault.file, page: fault.page, offset: fault.offset, page_size: fault.page_size, source };
+            }
+        }
+        Error::Sqlite { file: file.into(), source }
     })
 }
 fn open(file: &Path, readonly: bool, durable: bool) -> Result<Connection> {
@@ -130,10 +148,9 @@ fn open(file: &Path, readonly: bool, durable: bool) -> Result<Connection> {
     } else {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
     } | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    db(
-        file,
-        Connection::open_with_flags_and_vfs(file, flags, if durable { "cksmvfs" } else { "unix" }),
-    )
+    db(file, || {
+        Connection::open_with_flags_and_vfs(file, flags, if durable { "cksmvfs" } else { "unix" })
+    })
 }
 fn inspect_immutable(file: &Path, durable: bool) -> Result<Connection> {
     // Without a WAL, immutable mode prevents SQLite creating shared-memory/journal siblings.
@@ -147,36 +164,33 @@ fn inspect_immutable(file: &Path, durable: bool) -> Result<Connection> {
         }
     }
     uri.push_str("?immutable=1");
-    db(
-        file,
+    db(file, || {
         Connection::open_with_flags_and_vfs(
             uri,
             OpenFlags::SQLITE_OPEN_READ_ONLY
                 | OpenFlags::SQLITE_OPEN_URI
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             if durable { "cksmvfs" } else { "unix" },
-        ),
-    )
+        )
+    })
 }
 fn counter(conn: &Connection, file: &Path) -> Result<u64> {
-    let text: String = db(
-        file,
+    let text: String = db(file, || {
         conn.query_row(
             "SELECT value FROM meta WHERE key='write_counter'",
             [],
             |r| r.get(0),
-        ),
-    )?;
+        )
+    })?;
     text.parse::<u64>()
         .ok()
         .filter(|n| *n <= i64::MAX as u64)
         .ok_or_else(|| Error::Schema(file.into()))
 }
 fn version(conn: &Connection, file: &Path) -> Result<u32> {
-    db(
-        file,
-        conn.query_row("PRAGMA user_version", [], |row| row.get(0)),
-    )
+    db(file, || {
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+    })
 }
 fn sibling(file: &Path, suffix: &str) -> PathBuf {
     let mut name = file.as_os_str().to_os_string();
@@ -253,14 +267,13 @@ fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Re
         counter(&conn, &file)?;
     }
     if name == "index.db" {
-        let stored: String = db(
-            &file,
+        let stored: String = db(&file, || {
             conn.query_row(
                 "SELECT value FROM meta WHERE key='INDEX_VERSION'",
                 [],
                 |r| r.get(0),
-            ),
-        )?;
+            )
+        })?;
         let found = stored
             .parse::<u32>()
             .map_err(|_| Error::Schema(file.clone()))?;
@@ -327,42 +340,38 @@ fn initialize_db(
             )));
         }
     }
-    db(
-        &path,
-        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;"),
-    )?;
+    db(&path, || {
+        conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;")
+    })?;
     if fresh {
-        db(&path, conn.execute_batch("BEGIN IMMEDIATE"))?;
-        db(&path, conn.execute_batch(sql))?;
+        db(&path, || conn.execute_batch("BEGIN IMMEDIATE"))?;
+        db(&path, || conn.execute_batch(sql))?;
         if name != "embeddings.db" {
-            db(
-                &path,
+            db(&path, || {
                 conn.execute(
                     "INSERT INTO meta(key,value) VALUES ('write_counter','0')",
                     [],
-                ),
-            )?;
+                )
+            })?;
         }
         if name == "index.db" {
-            db(
-                &path,
+            db(&path, || {
                 conn.execute(
                     "INSERT INTO meta(key,value) VALUES ('INDEX_VERSION', ?1)",
                     [INDEX_VERSION.to_string()],
-                ),
-            )?;
+                )
+            })?;
         }
-        db(&path, conn.pragma_update(None, "user_version", expected))?;
-        db(&path, conn.execute_batch("COMMIT"))?;
+        db(&path, || conn.pragma_update(None, "user_version", expected))?;
+        db(&path, || conn.execute_batch("COMMIT"))?;
     } else {
         // Version zero is not a license to adopt an unrelated database as an archive.
         validate_schema(&conn, &path, sql)?;
     }
-    db(&path, conn.pragma_update(None, "journal_mode", "WAL"))?;
-    db(
-        &path,
-        conn.pragma_update(None, "synchronous", if durable { "FULL" } else { "NORMAL" }),
-    )?;
+    db(&path, || conn.pragma_update(None, "journal_mode", "WAL"))?;
+    db(&path, || {
+        conn.pragma_update(None, "synchronous", if durable { "FULL" } else { "NORMAL" })
+    })?;
     private_files(root)?;
     Ok(conn)
 }
@@ -372,9 +381,9 @@ fn schema(conn: &Connection) -> rusqlite::Result<Vec<(String, String, String)>> 
         .collect()
 }
 fn validate_schema(conn: &Connection, path: &Path, sql: &str) -> Result<()> {
-    let expected = db(path, Connection::open_in_memory())?;
-    db(path, expected.execute_batch(sql))?;
-    if db(path, schema(conn))? != db(path, schema(&expected))? {
+    let expected = db(path, || Connection::open_in_memory())?;
+    db(path, || expected.execute_batch(sql))?;
+    if db(path, || schema(conn))? != db(path, || schema(&expected))? {
         return Err(Error::Schema(path.into()));
     }
     if path.file_name().is_some_and(|s| s != "index.db") {
@@ -485,22 +494,23 @@ impl Writer {
         let stored = i64::try_from(self.blobs.stored_size(&h)?).map_err(|_| Error::Range)?;
         let length = i64::try_from(bytes.len()).map_err(|_| Error::Range)?;
         let file = self.root.join("archive.db");
-        let tx = db(&file, self.archive.transaction())?;
-        let inserted = db(&file, tx.execute("INSERT OR IGNORE INTO blob(hash,size,stored_size,place,encoding,state) VALUES(?1,?2,?3,'file','plain','present')", params![hash.bytes().as_slice(),length,stored]))?;
+        let tx = db(&file, || self.archive.transaction())?;
+        let inserted = db(&file, || {
+            tx.execute("INSERT OR IGNORE INTO blob(hash,size,stored_size,place,encoding,state) VALUES(?1,?2,?3,'file','plain','present')", params![hash.bytes().as_slice(),length,stored])
+        })?;
         if inserted != 0 {
             let next = counter(&tx, &file)?
                 .checked_add(1)
                 .filter(|n| *n <= i64::MAX as u64)
                 .ok_or_else(|| Error::Schema(file.clone()))?;
-            db(
-                &file,
+            db(&file, || {
                 tx.execute(
                     "UPDATE meta SET value=?1 WHERE key='write_counter'",
                     [next.to_string()],
-                ),
-            )?;
+                )
+            })?;
         }
-        db(&file, tx.commit())?;
+        db(&file, || tx.commit())?;
         Ok(hash)
     }
 }
@@ -528,16 +538,15 @@ impl ReadHandle {
     }
     pub fn read_blob_range(&self, hash: BlobHash, offset: u64, length: u64) -> Result<Vec<u8>> {
         let path = self.root.join("archive.db");
-        let size: Option<i64> = db(
-            &path,
+        let size: Option<i64> = db(&path, || {
             self.archive
                 .query_row(
                     "SELECT size FROM blob WHERE hash=?1 AND state='present'",
                     [hash.bytes().as_slice()],
                     |r| r.get(0),
                 )
-                .optional(),
-        )?;
+                .optional()
+        })?;
         let size = u64::try_from(size.ok_or(Error::UnknownBlob)?)
             .map_err(|_| Error::Schema(path.clone()))?;
         if offset.checked_add(length).is_none_or(|end| end > size) {

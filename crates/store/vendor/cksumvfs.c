@@ -449,6 +449,8 @@ static int cksmRead(
       u8 cksum[8];
       cksmCompute((u8*)zBuf, iAmt-8, cksum);
       if( memcmp((u8*)zBuf+iAmt-8, cksum, 8)!=0 ){
+        extern void polylogue_checksum_fault(const char*, sqlite3_int64, int);
+        polylogue_checksum_fault(p->zFName, iOfst, iAmt);
         sqlite3_log(SQLITE_IOERR_DATA,
            "checksum fault offset %lld of \"%s\"",
            iOfst, p->zFName);

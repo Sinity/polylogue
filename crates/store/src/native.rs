@@ -38,3 +38,49 @@ pub(crate) fn no_cow(path: &Path) -> io::Result<()> {
     }
     Ok(())
 }
+
+// SQLite calls are synchronous on the owning thread. Capture only the current
+// operation; unrelated errors must never inherit a previous checksum location.
+#[derive(Debug)]
+pub(crate) struct ChecksumFault {
+    pub file: std::path::PathBuf,
+    pub page: u64,
+    pub offset: u64,
+    pub page_size: u32,
+}
+thread_local! {
+    static CHECKSUM_FAULT: std::cell::RefCell<Option<ChecksumFault>> = const { std::cell::RefCell::new(None) };
+}
+pub(crate) fn take_checksum_fault() -> Option<ChecksumFault> {
+    CHECKSUM_FAULT.with(|slot| slot.borrow_mut().take())
+}
+#[unsafe(no_mangle)]
+unsafe extern "C" fn polylogue_checksum_fault(
+    filename: *const std::ffi::c_char,
+    offset: i64,
+    size: i32,
+) {
+    use std::os::unix::ffi::OsStringExt;
+    if filename.is_null()
+        || offset < 0
+        || size < 512
+        || !(size as u32).is_power_of_two()
+        || offset % i64::from(size) != 0
+    {
+        return;
+    }
+    // The VFS owns a NUL-terminated filename for the complete synchronous call.
+    // Copy before returning; no borrowed C pointer escapes.
+    let file = unsafe { std::ffi::CStr::from_ptr(filename) }
+        .to_bytes()
+        .to_vec();
+    let fault = ChecksumFault {
+        file: std::ffi::OsString::from_vec(file).into(),
+        page: offset as u64 / size as u64 + 1,
+        offset: offset as u64,
+        page_size: size as u32,
+    };
+    CHECKSUM_FAULT.with(|slot| {
+        *slot.borrow_mut() = Some(fault);
+    });
+}

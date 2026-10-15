@@ -4,7 +4,7 @@ This isolated branch prepares the Rust foundation. It supports foundation diagno
 
 ## Structure
 
-`crates/model` owns pure identity, value and outcome types. `crates/hashed-blobs` is the unchanged shared file layer. `crates/store` owns every SQLite connection and mutation. `crates/polylogue` owns configuration, process lifetime and the CLI. `xtask` runs focused developer checks. Tests use synthetic inputs and isolated temporary state.
+`crates/model` owns pure identity, value and outcome types. `crates/hashed-blobs` is the reviewed shared file layer with a read-only capability. `crates/store` owns every SQLite connection and mutation. `crates/polylogue` owns configuration, process lifetime and the CLI. `xtask` runs focused developer checks. Tests use synthetic inputs and isolated temporary state.
 
 ## Commands and style
 
