@@ -1,41 +1,53 @@
 # Foundation store
 
-The daemon acquires `Writer::open` and holds it until shutdown. An exclusive
-file lock at the canonical archive path rejects competing writers, including
-symlink aliases. Callers receive typed read handles and status, never SQLite
-connections. `put_file_blob` is a foundation byte-storage diagnostic, not provider
-ingestion, revisions, parsing or M1 support.
+The daemon acquires `Writer::open` and holds it until shutdown. The canonical
+archive's exclusive file lock rejects competing writers and cold readers,
+including aliases. Writer-created read handles retain that authority until
+their connections close; they use the active SQLite view without scanning a WAL
+being appended. Cold read handles acquire the existing lock without creating or
+rewriting it. Callers receive typed handles, never raw SQLite connections.
+`put_file_blob` is a foundation byte-storage diagnostic, not provider ingestion,
+revisions, parsing or M1 support.
 
-All three schemas are exact SQL-fence extractions from the owning copied
-specification under `docs/rewrite/polylogue-spec/spec/storage/`; a drift test
-compares the extracted text. Every table exists initially. Archive and
-embeddings migration versions are zero because there are no pre-release
-migration steps. The index has version three, adding the durable provider-preparation barrier. Startup checks every existing
-schema/version before target database mutations. A newer durable file is
+All three schemas are exact SQL-fence extractions from the owning snapshot;
+a drift test compares their text. Archive/embeddings versions are zero because
+there are no pre-release migrations; index version is three, adding provider preparation. Existing schemas
+and versions are checked before database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
-the old index. A missing or empty main file with retained nonempty WAL or
-shared-memory bytes requires recovery and is never initialized as fresh.
-An orphan nonempty WAL without its shared-memory file requires
-explicit recovery before non-mutating inspection; no WAL is silently ignored.
-An existing live WAL is inspected with its real SQLite view; SQLite may update
-coordination read marks in its existing shared-memory file. Durable database
-and WAL bytes are not changed by inspection. Rebuild and migration machinery remain later work.
+it. Retained state without its coordination lock requires controlled recovery;
+raw headers may explain a newer-version refusal without opening SQLite.
 
-Bundled SQLite 3.53.2 is checked at build time and runtime. The unchanged
-matching upstream checksum VFS is statically linked and registered before
-store connections open. Durable files reserve eight bytes before creation;
-index uses the underlying Unix VFS. Page-corruption tests require
-`SQLITE_IOERR_DATA` and identify the database path. Upstream logs the corrupt
-offset; propagating an exact page number in the public error remains open.
+Before any cold SQLite open, the lock holder checks durable WAL headers,
+current frame salts, page numbers and rolling checksums. Memory is bounded by
+one page (at most 64 KiB); total IO scales with WAL length. Cancellation is
+checked before and between frames. Valid complete uncommitted frames are
+allowed. A bad header/frame, partial frame, orphan WAL or uncertain generation
+tail returns `RecoveryRequired` before SQLite can discard or checkpoint bytes.
+Refusal and scan cancellation preserve retained files. After successful
+validation, SQLite may update SHM coordination state during inspection.
 
-Fresh archive directories get No_COW on btrfs before any children exist.
-Directories use 0700 and owned files 0600. Tests cover real writes, read-only
-mutation denial, byte-range corruption, schema refusal without sibling
-creation or chmod, alias locks and privacy. Compile-fail examples verify that
-read handles have no writer method and connections remain private. These tests
-do not qualify cross-file product snapshots, ingestion, excision or index
-rebuilds.
+This intermediate guard may refuse legitimate torn uncommitted tails and stale
+frames from `RESTART` reuse. It needs controlled recovery and does not qualify
+full startup availability. Aligned truncation to an earlier valid commit,
+older consistent main/WAL pairs, valid-prefix salt/header/history changes and
+checksum collisions cannot be excluded without an independent expected head.
+There is no external commit ledger. Runtime live-WAL corruption and complete
+recovery remain unqualified.
 
+Bundled SQLite 3.53.2 is checked at build time and runtime. Its matching
+checksum VFS has one documented local fault callback. Main-database checksum
+failures retain `SQLITE_IOERR_DATA` and report the VFS's actual file, page,
+offset and page size through operation-scoped thread-local evidence. The VFS
+does not wrap WAL reads; the cold guard above is a separate boundary. Index
+uses the underlying Unix VFS and is rebuildable.
+
+Fresh archive directories get No_COW on btrfs before children exist. Directories
+use 0700 and owned files 0600. Synthetic tests cover actual writes, read-only
+mutation denial, range/page corruption, killed-process retained-WAL faults,
+legitimate/ambiguous tails, cancellation, lock lifetimes, schema refusal and
+privacy. Compile-fail examples deny writer methods and raw connections. These
+checks do not qualify coupled cross-file views, ingestion, excision, index
+rebuild/swap, full recovery or M0 completion.
 
 Disposable parser state uses typed Writer admission and read-only pinned
 snapshots, with no connection or SQL escape. Small state deltas, supplied output and

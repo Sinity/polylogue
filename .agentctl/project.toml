@@ -35,3 +35,11 @@ result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
+[operations.foundation_store_tests]
+description = "Run the bounded focused foundation store suite"
+exec = ["nix", "develop", "--command", "cargo", "test", "--locked", "-p", "polylogue-store"]
+pool = "normal"
+result = "exit"
+timeout_seconds = 180
+scratch = "nvme"
+cache = "none"

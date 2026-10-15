@@ -883,3 +883,30 @@ fn missing_lock_refuses_without_creating_coordination_files() {
     ));
     assert!(snapshot(tmp.path()) == before);
 }
+
+#[test]
+fn aligned_prior_commit_is_an_explicit_expected_head_limit() {
+    let (tmp, root, _) = killed_wal_fixture("normal");
+    let wal = fs::read(root.join("archive.db-wal")).unwrap();
+    let size = u32::from_be_bytes(wal[8..12].try_into().unwrap()) as usize;
+    let end = (0..(wal.len() - 32) / (size + 24))
+        .find(|frame| {
+            let pos = 32 + frame * (size + 24) + 4;
+            u32::from_be_bytes(wal[pos..pos + 4].try_into().unwrap()) != 0
+        })
+        .unwrap()
+        + 1;
+    for api in ["reader", "writer"] {
+        let case = tmp.path().join(api);
+        copy_fixture(&root, &case);
+        fs::write(case.join("archive.db-wal"), &wal[..32 + end * (size + 24)]).unwrap();
+        let status = if api == "reader" {
+            ReadHandle::open(&case).and_then(|r| r.status())
+        } else {
+            Writer::open(&case).and_then(|w| w.status())
+        };
+        // The externally acknowledged head was3, but this earlier prefix is
+        // internally valid. No checksum-only guard can infer the missing head.
+        assert_eq!(status.unwrap().write_counter, 2);
+    }
+}
