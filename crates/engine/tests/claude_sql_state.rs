@@ -1,7 +1,6 @@
 //! Actual retained synthetic inputs, SQLite snapshots and the public prepared
 //! barrier. No canonical Message writer or daemon completion is asserted.
-#[path = "../src/state/claude.rs"]
-mod adapter;
+use polylogue_engine::state::claude as adapter;
 use polylogue_model::BlobHash;
 use polylogue_sources::claude_code::keyed::{
     BodyPayload, Header, MemoryReadView, ReadView, ResponseKey,

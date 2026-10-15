@@ -1,6 +1,5 @@
 //! Real SQLite state tests. These do not certify canonical output publication.
-#[path = "../src/state/codex.rs"]
-mod adapter;
+use polylogue_engine::state::codex as adapter;
 use polylogue_sources::codex::{
     self,
     keyed::{

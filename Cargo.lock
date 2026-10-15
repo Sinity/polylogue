@@ -532,6 +532,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "polylogue-engine"
+version = "0.1.0"
+dependencies = [
+ "polylogue-model",
+ "polylogue-sources",
+ "polylogue-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "polylogue-model"
 version = "0.1.0"
 dependencies = [
