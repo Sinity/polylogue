@@ -69,7 +69,7 @@ message-local selection to final publication. Whole-cell encoding, decoding and
 SQLite page work remain explicitly unqualified for arbitrarily large cells.
 
 
-The forward index10 SQL is extracted from the pinned owning specification revision
+The forward index11 SQL is extracted from the pinned owning specification revision
 `INDEX_SPEC_COMMIT` and checked against `INDEX_SQL_BLAKE3`, copied Markdown, and
 actual SQLite application. Its Message head/body/directory schema replaces the
 old mutable Message columns. The inbox index8 executable comparison remains
@@ -99,3 +99,11 @@ identity mismatches reject further preparation. Invalidation releases its active
 value lease even after the source basis changes. These APIs do not yet finish
 candidate reconciliation, body activation, or retirement draining; public-client
 and whole-path resource acceptance remain open.
+
+Occupied field-conflict leaves pin a shared immutable witness subtree. They
+remain distinct from missing fields, contribute no new source-rank facts, and
+retain exact alternatives independently of mutable input representatives.
+Directory lookup/copy/collection uses the same leases and fixed-depth paths;
+no per-body alternative list is copied on an unrelated field change. The pure
+model compares canonical typed values one witness at a time. Serving conflict
+views, export/import and full canonical activation are still unwired.

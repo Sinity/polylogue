@@ -73,7 +73,7 @@ progress. Deleting it loses nothing; the loop rebuilds it.
 
 A provider contributes addressable groups, blocks and source-field facts. `message_candidate` retains pre-fill mapper facts, not scores inferred from normalized defaults. Reduce eligible revisions within each chain, chain representatives within each input, then effective input representatives, as sources rules2/5 require. `message_chain_choice` and `message_input_choice` retain those representatives and field roots. Their indexed scalar rank summaries are copied from the selected candidate in the same transaction, never independently rescored. Within one retained archive revision, a ready replacement of the same format-owned logical candidate retires the earlier intermediate state from current eligibility and missing-field donors. Scheduling cuts create neither additional source witnesses nor historical input authority. This does not collapse distinct competing versions deliberately represented by a format, and actual historical revisions/chains retain the declared lossy/edit policy. Finish ranks positively in-progress, unclassified, positively finished in ascending order. Edits first exclude superseded content and omissions; unresolved edit-head authority remains unresolved. A detached independent import keeps its own input contribution.
 
-`message_build` owns the pinned contributor/removal basis and scalar phase/cursors. Its bounded frontier leases nodes while preparing copy-on-write paths. Its active-value reference is a durable producer lease while normalized bytes are appended/verified; readiness transfers that reference to its field/text owner, and abort releases it before bounded payload retirement. Outer group directories reference local block directories; a replacement copies at most the affected radix16 paths, without shifting later block payload rows. Field directories retain source-slot donors independently of filled output. An immutable node owns at most16 edges; internal height strictly decreases, group leaves enter block roots, and final leaves reference blocks or field facts. Cached counts are computed from those children by the typed writer before sealing the node. No ready node or ready body is mutated.
+`message_build` owns the pinned contributor/removal basis and scalar phase/cursors. Its bounded frontier leases nodes while preparing copy-on-write paths. Its active-value reference is a durable producer lease while normalized bytes are appended/verified; readiness transfers that reference to its field/text owner, and abort releases it before bounded payload retirement. Outer group directories reference local block directories; a replacement copies at most the affected radix16 paths, without shifting later block payload rows. Field directories retain source-slot donors independently of filled output. A selected field root may instead contain an occupied conflict marker for a semantic slot: ordinary scalar output is unknown, and lower-authority fill cannot replace it. The marker enters a shared immutable witness directory retaining its exact fact references, so a pinned historical body never resolves the conflict through today's mutable input choices. The marker is derived resolution, never an additional source-supplied fact or rank contribution. Typed readiness verifies at least two unequal canonical typed values at equal top authority/version; an empty or agreeing witness set cannot certify a conflict. An immutable node owns at most16 edges; internal height strictly decreases, group leaves enter block roots, field conflict leaves enter witness roots, and final leaves reference blocks or field facts. Witness leaves cannot contain conflicts or other directory kinds, so this additional shared subtree introduces no cycle. Cached counts are computed from those children by the typed writer before sealing the node. No ready node or ready body is mutated.
 
 Bodies, representatives, frontier rows and incoming edges acquire/release node references in their small owning transaction. A zero-reference node is claimed as `retiring` before draining at most the admitted edge count; acquisition cannot attach a retiring node. Retirement releases children by stable keysets, then removes the empty owner. Payload/fact/value cleanup likewise checks remaining references and drains bounded chunks. No cascade, giant ID list or whole-body map is used. SQLite readers pinned before retirement retain their old complete graph through WAL. Index collection cannot delete archive-owned source bytes.
 
@@ -446,7 +446,7 @@ CREATE TABLE message_body_node (
   pk INTEGER PRIMARY KEY AUTOINCREMENT,
   message_pk INTEGER NOT NULL,
   session_pk INTEGER NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN('groups','blocks','fields','operations')),
+  kind TEXT NOT NULL CHECK(kind IN('groups','blocks','fields','operations','witnesses')),
   height INTEGER NOT NULL CHECK(height BETWEEN 0 AND 15),
   state TEXT NOT NULL CHECK(state IN('building','ready','retiring')),
   incoming INTEGER NOT NULL CHECK(incoming>=0),
@@ -477,6 +477,7 @@ CREATE TABLE message_body_edge (
   child_state TEXT NOT NULL DEFAULT 'ready' CHECK(child_state='ready'),
   block_pk INTEGER,
   field_fact_pk INTEGER,
+  conflict_slot_pk INTEGER, -- occupied unresolved scalar; witnesses remain in contributing roots
   tool_call_pk INTEGER,
   association_pk INTEGER,
   ordinary_count INTEGER NOT NULL CHECK(ordinary_count>=0),
@@ -485,15 +486,21 @@ CREATE TABLE message_body_edge (
   source_text_blocks INTEGER NOT NULL CHECK(source_text_blocks BETWEEN 0 AND source_blocks),
   source_fields INTEGER NOT NULL CHECK(source_fields>=0),
   CHECK((parent_height>0 AND child_node_pk IS NOT NULL AND child_kind=parent_kind
-         AND child_kind IS NOT NULL AND child_height IS NOT NULL AND child_height=parent_height-1 AND block_pk IS NULL AND field_fact_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
+         AND child_kind IS NOT NULL AND child_height IS NOT NULL AND child_height=parent_height-1 AND block_pk IS NULL AND field_fact_pk IS NULL AND conflict_slot_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
      OR (parent_height=0 AND parent_kind='groups' AND child_node_pk IS NOT NULL
-         AND child_kind='blocks' AND child_height IS NOT NULL AND block_pk IS NULL AND field_fact_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
+         AND child_kind='blocks' AND child_height IS NOT NULL AND block_pk IS NULL AND field_fact_pk IS NULL AND conflict_slot_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
      OR (parent_height=0 AND parent_kind='blocks' AND child_node_pk IS NULL AND child_kind IS NULL
-         AND child_height IS NULL AND block_pk IS NOT NULL AND field_fact_pk IS NULL AND association_pk IS NULL)
-     OR (parent_height=0 AND parent_kind='fields' AND child_node_pk IS NULL AND child_kind IS NULL
-         AND child_height IS NULL AND block_pk IS NULL AND field_fact_pk IS NOT NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
+         AND child_height IS NULL AND block_pk IS NOT NULL AND field_fact_pk IS NULL AND conflict_slot_pk IS NULL AND association_pk IS NULL)
+     OR (parent_height=0 AND parent_kind IN('fields','witnesses') AND child_node_pk IS NULL AND child_kind IS NULL
+         AND child_height IS NULL AND block_pk IS NULL AND field_fact_pk IS NOT NULL
+         AND conflict_slot_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
+     OR (parent_height=0 AND parent_kind='fields' AND child_node_pk IS NOT NULL
+         AND child_kind='witnesses' AND child_height IS NOT NULL AND block_pk IS NULL
+         AND field_fact_pk IS NULL AND conflict_slot_pk IS NOT NULL AND tool_call_pk IS NULL
+         AND association_pk IS NULL AND ordinary_count=0 AND reasoning_count=0
+         AND source_blocks=0 AND source_text_blocks=0 AND source_fields=0)
      OR (parent_height=0 AND parent_kind='operations' AND child_node_pk IS NULL AND child_kind IS NULL
-         AND child_height IS NULL AND block_pk IS NULL AND field_fact_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NOT NULL)),
+         AND child_height IS NULL AND block_pk IS NULL AND field_fact_pk IS NULL AND conflict_slot_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NOT NULL)),
   FOREIGN KEY(parent_pk,message_pk,session_pk,parent_kind,parent_height)
     REFERENCES message_body_node(pk,message_pk,session_pk,kind,height),
   FOREIGN KEY(child_node_pk,message_pk,session_pk,child_kind,child_height)
@@ -502,6 +509,7 @@ CREATE TABLE message_body_edge (
     REFERENCES message_body_node(pk,message_pk,session_pk,kind,state),
   FOREIGN KEY(block_pk,message_pk,session_pk) REFERENCES block(pk,message_pk,session_pk),
   FOREIGN KEY(field_fact_pk,message_pk,session_pk) REFERENCES message_field_fact(pk,message_pk,session_pk),
+  FOREIGN KEY(conflict_slot_pk,message_pk,session_pk) REFERENCES message_field_slot(pk,message_pk,session_pk),
   FOREIGN KEY(association_pk,message_pk,session_pk) REFERENCES tool_item_association(pk,message_pk,session_pk),
   FOREIGN KEY(tool_call_pk,block_pk,message_pk,session_pk)
     REFERENCES tool_call(pk,call_block_pk,message_pk,session_pk),
@@ -510,6 +518,7 @@ CREATE TABLE message_body_edge (
 CREATE INDEX message_body_edge_child ON message_body_edge(child_node_pk);
 CREATE INDEX message_body_edge_block ON message_body_edge(block_pk);
 CREATE INDEX message_body_edge_fact ON message_body_edge(field_fact_pk);
+CREATE INDEX message_body_edge_conflict ON message_body_edge(conflict_slot_pk);
 CREATE INDEX message_body_edge_call ON message_body_edge(tool_call_pk);
 CREATE INDEX message_body_edge_association ON message_body_edge(association_pk);
 
@@ -539,7 +548,7 @@ CREATE TABLE message_build (
 CREATE INDEX message_build_body ON message_build(body_pk);
 CREATE INDEX message_build_value ON message_build(active_value_pk);
 -- Fixed frontier slots lease ready nodes while paths are copied. A path through
--- an outer group tree and inner block tree has at most 32 radix16 nodes. Root
+-- an outer group/block path or field/conflict-witness path has at most 32 radix16 nodes. Root
 -- leases owned by bodies/representatives are separate incoming references.
 CREATE TABLE message_build_frontier (
   build_pk INTEGER NOT NULL,

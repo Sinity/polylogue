@@ -8,10 +8,10 @@
     },
     {
       "source": "polylogue-spec/spec/storage/index-db.md",
-      "sha256": "642b821f86b98ddf5a468da3be26097e08af9757959f68af59ba3f414c083551",
-      "copied_sha256": "642b821f86b98ddf5a468da3be26097e08af9757959f68af59ba3f414c083551",
-      "spec_commit": "f4ddfd5202e971996b6130ebef310200a1cef3f6",
-      "sql_sha256": "2cafe0893dfbb18a2302d0c2f726b974f588406447104cb531010ada7fb9e563"
+      "sha256": "8dd5ce4df9f463cb691ec591f8e7469128432ae43e8e448747c7222332283fda",
+      "copied_sha256": "8dd5ce4df9f463cb691ec591f8e7469128432ae43e8e448747c7222332283fda",
+      "spec_commit": "51f9a72c2bfac1ce1fdea243dff205c887d6553f",
+      "sql_sha256": "2d945be3f497d2cbf428ec087adfa63ccb1aeab1d6f63171fb03ac2174258f1a"
     },
     {
       "source": "polylogue-spec/spec/storage/embeddings.md",

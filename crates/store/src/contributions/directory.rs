@@ -11,6 +11,7 @@ pub(super) enum Kind {
     Blocks,
     Fields,
     Operations,
+    Witnesses,
 }
 impl Kind {
     fn name(self) -> &'static str {
@@ -19,6 +20,7 @@ impl Kind {
             Self::Blocks => "blocks",
             Self::Fields => "fields",
             Self::Operations => "operations",
+            Self::Witnesses => "witnesses",
         }
     }
     fn parse(s: &str) -> Result<Self> {
@@ -27,6 +29,7 @@ impl Kind {
             "blocks" => Ok(Self::Blocks),
             "fields" => Ok(Self::Fields),
             "operations" => Ok(Self::Operations),
+            "witnesses" => Ok(Self::Witnesses),
             _ => Err(bad("unknown directory kind")),
         }
     }
@@ -65,6 +68,7 @@ pub(super) enum Link {
     Block { pk: i64, call: Option<i64> },
     Field(i64),
     Operation(i64),
+    Conflict { slot: i64, root: i64, height: u8 },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Edge {
@@ -111,7 +115,7 @@ fn load(
         edges: [None; 16],
     };
     let mut stmt = db(path, || {
-        dbh.prepare("SELECT slot,child_node_pk,child_kind,child_height,block_pk,field_fact_pk,tool_call_pk,association_pk,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields FROM message_body_edge WHERE parent_pk=?1 ORDER BY slot")
+        dbh.prepare("SELECT slot,child_node_pk,child_kind,child_height,block_pk,field_fact_pk,tool_call_pk,association_pk,conflict_slot_pk,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields FROM message_body_edge WHERE parent_pk=?1 ORDER BY slot")
     })?;
     let mut rows = db(path, || stmt.query([pk]))?;
     let mut total = Counts::default();
@@ -125,7 +129,20 @@ fn load(
         let field: Option<i64> = db(path, || row.get(5))?;
         let call: Option<i64> = db(path, || row.get(6))?;
         let association: Option<i64> = db(path, || row.get(7))?;
-        let link = if let Some(child) = child {
+        let conflict: Option<i64> = db(path, || row.get(8))?;
+        let link = if let Some(slot) = conflict {
+            let root = child.ok_or_else(|| bad("conflict lacks witness root"))?;
+            let k: String = db(path, || row.get(2))?;
+            let h: u8 = db(path, || row.get(3))?;
+            if kind != Kind::Fields || height != 0 || k != "witnesses" {
+                return Err(bad("conflict directory shape"));
+            }
+            Link::Conflict {
+                slot,
+                root,
+                height: h,
+            }
+        } else if let Some(child) = child {
             let k: String = db(path, || row.get(2))?;
             let h: u8 = db(path, || row.get(3))?;
             Link::Node {
@@ -144,8 +161,11 @@ fn load(
         };
         let edge = Edge {
             link,
-            counts: db(path, || counts(row, 8))?,
+            counts: db(path, || counts(row, 9))?,
         };
+        if matches!(edge.link, Link::Conflict { .. }) && edge.counts != Counts::default() {
+            return Err(bad("conflict is not a source-rank fact"));
+        }
         total = total.add(edge.counts)?;
         node.edges[slot] = Some(edge);
         work.edges_read += 1;
@@ -175,7 +195,7 @@ fn insert(
     work.nodes_written += 1;
     for (slot, edge) in edges.into_iter().enumerate() {
         let Some(edge) = edge else { continue };
-        let (child, k, h, block, field, call, association) = match edge.link {
+        let (child, k, h, block, field, call, association, conflict) = match edge.link {
             Link::Node { pk, kind, height } => (
                 Some(pk),
                 Some(kind.name()),
@@ -184,10 +204,21 @@ fn insert(
                 None,
                 None,
                 None,
+                None,
             ),
-            Link::Block { pk, call } => (None, None, None, Some(pk), None, call, None),
-            Link::Field(pk) => (None, None, None, None, Some(pk), None, None),
-            Link::Operation(pk) => (None, None, None, None, None, None, Some(pk)),
+            Link::Block { pk, call } => (None, None, None, Some(pk), None, call, None, None),
+            Link::Field(pk) => (None, None, None, None, Some(pk), None, None, None),
+            Link::Operation(pk) => (None, None, None, None, None, None, Some(pk), None),
+            Link::Conflict { slot, root, height } => (
+                Some(root),
+                Some("witnesses"),
+                Some(height),
+                None,
+                None,
+                None,
+                None,
+                Some(slot),
+            ),
         };
         if let Some(child) = child {
             if db(path, || {
@@ -199,7 +230,7 @@ fn insert(
             work.references_changed += 1;
         }
         db(path, || {
-            tx.execute("INSERT INTO message_body_edge(parent_pk,message_pk,session_pk,parent_kind,parent_height,slot,child_node_pk,child_kind,child_height,block_pk,field_fact_pk,tool_call_pk,association_pk,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",params![pk,owner.message,owner.session,kind.name(),height,slot as i64,child,k,h,block,field,call,association,edge.counts.ordinary,edge.counts.reasoning,edge.counts.source_blocks,edge.counts.source_text_blocks,edge.counts.source_fields])
+            tx.execute("INSERT INTO message_body_edge(parent_pk,message_pk,session_pk,parent_kind,parent_height,slot,child_node_pk,child_kind,child_height,block_pk,field_fact_pk,tool_call_pk,association_pk,conflict_slot_pk,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",params![pk,owner.message,owner.session,kind.name(),height,slot as i64,child,k,h,block,field,call,association,conflict,edge.counts.ordinary,edge.counts.reasoning,edge.counts.source_blocks,edge.counts.source_text_blocks,edge.counts.source_fields])
         })?;
         work.edges_written += 1;
     }
@@ -705,5 +736,241 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn conflict_witness_subtree_is_shared_and_historical_snapshot_survives_collection() {
+        let (_dir, mut writer, owner, body) = fixture();
+        let file = writer.root.join("index.db");
+        let tx = writer._index.transaction().unwrap();
+        tx.execute(
+            "INSERT INTO message_field_slot(message_pk,session_pk,semantic_key) VALUES(1,1,x'01')",
+            [],
+        )
+        .unwrap();
+        let slot = tx.last_insert_rowid();
+        let mut witness_root = None;
+        let mut facts = Vec::new();
+        for i in 1..=64i64 {
+            tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,basis_digest,finish,route) VALUES(1,1,1,1,1,100,1,?1,1,zeroblob(32),1,2)",[blake3::hash(&i.to_be_bytes()).as_bytes().as_slice()]).unwrap();
+            let candidate = tx.last_insert_rowid();
+            let bytes = i.to_string();
+            tx.execute("INSERT INTO body_value(codec,length,hash,state,incoming) VALUES('json',?1,?2,'ready',1)",params![bytes.len() as i64,blake3::hash(bytes.as_bytes()).as_bytes().as_slice()]).unwrap();
+            let value = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO body_value_chunk(value_pk,offset,bytes) VALUES(?1,0,?2)",
+                params![value, bytes.as_bytes()],
+            )
+            .unwrap();
+            tx.execute("INSERT INTO message_field_fact(message_pk,session_pk,candidate_pk,slot_pk,value_pk,supplied) VALUES(1,1,?1,?2,?3,1)",params![candidate,slot,value]).unwrap();
+            let fact = tx.last_insert_rowid();
+            facts.push(fact);
+            let (root, _) = replace(
+                &tx,
+                &file,
+                owner,
+                Kind::Witnesses,
+                witness_root,
+                fact as u64,
+                Some(Edge {
+                    link: Link::Field(fact),
+                    counts: Counts::default(),
+                }),
+                &mut Work::default(),
+            )
+            .unwrap();
+            witness_root = Some(root);
+        }
+        let witnesses = witness_root.unwrap();
+        let conflict = Edge {
+            link: Link::Conflict {
+                slot,
+                root: witnesses,
+                height: 15,
+            },
+            counts: Counts::default(),
+        };
+        let (first, _) = replace(
+            &tx,
+            &file,
+            owner,
+            Kind::Fields,
+            None,
+            slot as u64,
+            Some(conflict),
+            &mut Work::default(),
+        )
+        .unwrap();
+        acquire(&tx, &file, owner, first).unwrap();
+        tx.execute(
+            "UPDATE message_body SET field_root_pk=?1 WHERE pk=?2",
+            params![first, body],
+        )
+        .unwrap();
+        // A changed unrelated field copies no witness facts/subtree. Retain the
+        // new root through an actual build-frontier owner while old body lives.
+        tx.execute(
+            "INSERT INTO message_field_slot(message_pk,session_pk,semantic_key) VALUES(1,1,x'02')",
+            [],
+        )
+        .unwrap();
+        let other_slot = tx.last_insert_rowid();
+        let (candidate, value): (i64, i64) = tx
+            .query_row(
+                "SELECT candidate_pk,value_pk FROM message_field_fact WHERE pk=?1",
+                [facts[0]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        tx.execute("INSERT INTO message_field_fact(message_pk,session_pk,candidate_pk,slot_pk,value_pk,supplied) VALUES(1,1,?1,?2,?3,1)",params![candidate,other_slot,value]).unwrap();
+        let other_fact = tx.last_insert_rowid();
+        tx.execute(
+            "UPDATE body_value SET incoming=incoming+1 WHERE pk=?1",
+            [value],
+        )
+        .unwrap();
+        let mut work = Work::default();
+        let (second, _) = replace(
+            &tx,
+            &file,
+            owner,
+            Kind::Fields,
+            Some(first),
+            other_slot as u64,
+            Some(Edge {
+                link: Link::Field(other_fact),
+                counts: Counts {
+                    source_fields: 1,
+                    ..Counts::default()
+                },
+            }),
+            &mut work,
+        )
+        .unwrap();
+        assert_eq!(work.nodes_written, 16);
+        assert!(work.nodes_read <= 16);
+        assert!(work.edges_written <= 256);
+        acquire(&tx, &file, owner, second).unwrap();
+        tx.execute("INSERT INTO message_build(message_pk,session_pk,body_pk,basis_digest,contributor_revision,removal_epoch,phase) VALUES(1,1,?1,zeroblob(32),0,0,'fold')",[body]).unwrap();
+        let build = tx.last_insert_rowid();
+        tx.execute("INSERT INTO message_build_frontier(build_pk,message_pk,session_pk,depth,node_pk,next_slot) VALUES(?1,1,1,0,?2,0)",params![build,second]).unwrap();
+        tx.commit().unwrap();
+        let reader = writer.read_handle().unwrap();
+        reader.index.execute_batch("BEGIN").unwrap();
+        assert_eq!(
+            lookup(
+                &reader.index,
+                &file,
+                owner,
+                Kind::Fields,
+                Some(first),
+                slot as u64,
+                &mut Work::default()
+            )
+            .unwrap(),
+            Some(conflict)
+        );
+        let tx = writer._index.transaction().unwrap();
+        tx.execute(
+            "UPDATE message_body SET field_root_pk=NULL WHERE pk=?1",
+            [body],
+        )
+        .unwrap();
+        release(&tx, &file, owner, first).unwrap();
+        tx.commit().unwrap();
+        fn drain(writer: &mut crate::Writer, file: &Path) {
+            loop {
+                let pk: Option<i64> = writer
+                    ._index
+                    .query_row(
+                        "SELECT pk FROM message_body_node WHERE incoming=0 ORDER BY pk LIMIT 1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .unwrap();
+                let Some(pk) = pk else { break };
+                let tx = writer._index.transaction().unwrap();
+                assert!(collect(&tx, file, pk).unwrap());
+                tx.commit().unwrap();
+            }
+        }
+        drain(&mut writer, &file);
+        assert_eq!(
+            lookup(
+                &writer._index,
+                &file,
+                owner,
+                Kind::Fields,
+                Some(second),
+                slot as u64,
+                &mut Work::default()
+            )
+            .unwrap(),
+            Some(conflict)
+        );
+        assert_eq!(
+            lookup(
+                &writer._index,
+                &file,
+                owner,
+                Kind::Witnesses,
+                Some(witnesses),
+                facts[63] as u64,
+                &mut Work::default()
+            )
+            .unwrap()
+            .unwrap()
+            .link,
+            Link::Field(facts[63])
+        );
+        let tx = writer._index.transaction().unwrap();
+        tx.execute(
+            "DELETE FROM message_build_frontier WHERE build_pk=?1",
+            [build],
+        )
+        .unwrap();
+        release(&tx, &file, owner, second).unwrap();
+        tx.commit().unwrap();
+        drain(&mut writer, &file);
+        assert!(
+            load(
+                &writer._index,
+                &file,
+                owner,
+                Kind::Witnesses,
+                witnesses,
+                &mut Work::default()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            lookup(
+                &reader.index,
+                &file,
+                owner,
+                Kind::Fields,
+                Some(first),
+                slot as u64,
+                &mut Work::default()
+            )
+            .unwrap(),
+            Some(conflict)
+        );
+        assert_eq!(
+            lookup(
+                &reader.index,
+                &file,
+                owner,
+                Kind::Witnesses,
+                Some(witnesses),
+                facts[0] as u64,
+                &mut Work::default()
+            )
+            .unwrap()
+            .unwrap()
+            .link,
+            Link::Field(facts[0])
+        );
+        reader.index.execute_batch("ROLLBACK").unwrap();
     }
 }

@@ -32,11 +32,11 @@ mod wal;
 
 pub const ARCHIVE_VERSION: u32 = 0;
 pub const EMBEDDINGS_VERSION: u32 = 0;
-pub const INDEX_VERSION: u32 = 10;
+pub const INDEX_VERSION: u32 = 11;
 /// Exact owning forward-schema revision, independently qualified from inbox index8.
 pub const INDEX_SQL_BLAKE3: &str =
-    "d01863f84dc3f45acc2f17dceeaa4208c4532d08324e46ffca694d33d48b62a6";
-pub const INDEX_SPEC_COMMIT: &str = "f4ddfd5202e971996b6130ebef310200a1cef3f6";
+    "3462750cb2e02f3a01a066bd6ae86bb5b927f7ceb1c35b78999cdf6b192708df";
+pub const INDEX_SPEC_COMMIT: &str = "51f9a72c2bfac1ce1fdea243dff205c887d6553f";
 const ARCHIVE_SQL: &str = include_str!("../schema/archive.sql");
 const INDEX_SQL: &str = include_str!("../schema/index.sql");
 const EMBEDDINGS_SQL: &str = include_str!("../schema/embeddings.sql");
