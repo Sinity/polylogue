@@ -38,7 +38,10 @@ pub enum Error {
     #[error("parser predecessor changed; discard the attempted step")]
     ParserPredecessorChanged,
     #[error("{resource} requires a larger admission ({required})")]
-    ParserAdmission { resource: &'static str, required: u64 },
+    ParserAdmission {
+        resource: &'static str,
+        required: u64,
+    },
     #[error("parser state invariant: {0}")]
     Invariant(String),
     #[error("filesystem: {0}")]
@@ -362,7 +365,9 @@ fn initialize_db(
             })?;
         }
         if name == "index.db" {
-            db(&path, || conn.execute("INSERT INTO meta(key,value) VALUES ('generation',lower(hex(randomblob(16)))),('parser_generation','0')", []))?;
+            db(&path, || {
+                conn.execute("INSERT INTO meta(key,value) VALUES ('generation',lower(hex(randomblob(16)))),('parser_generation','0')", [])
+            })?;
             db(&path, || {
                 conn.execute(
                     "INSERT INTO meta(key,value) VALUES ('INDEX_VERSION', ?1)",
