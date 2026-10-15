@@ -141,7 +141,7 @@ impl From<MessageId> for MessageIdWire {
 }
 
 /// The provider's block position, supplied independently of the opaque stored ID.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockSlot {
     Item(u32),

@@ -2,6 +2,7 @@
 pub mod content;
 pub mod identity;
 pub mod measures;
+pub mod merge;
 pub mod time;
 pub mod types;
 
