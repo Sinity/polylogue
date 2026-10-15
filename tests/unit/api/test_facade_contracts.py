@@ -40,6 +40,7 @@ import pytest
 import polylogue.api.archive as archive_module
 from polylogue import Polylogue
 from polylogue.analysis import insight_reads
+from polylogue.analysis.transforms import SessionDigest
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.importer import AnnotationBatchImportRequest
 from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
@@ -377,6 +378,14 @@ def _archive(tmp_path: Path) -> Polylogue:
     """Construct a Polylogue facade against an isolated tmp archive."""
     run_off_event_loop(lambda: initialize_active_archive_root(tmp_path))
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
+
+
+def _read_pinned_digest(root: Path, session_id: str) -> SessionDigest | None:
+    from polylogue.operations.analysis_reports import read_session_digest
+    from polylogue.operations.operation_context import open_operation_read
+
+    with open_operation_read(root) as pinned:
+        return read_session_digest(pinned.archive, session_id)
 
 
 @pytest.fixture
@@ -1181,12 +1190,14 @@ async def test_get_session_returns_typed_object(tmp_path: Path) -> None:
 
 
 async def test_session_digest_compiles_seeded_session(tmp_path: Path) -> None:
-    """The private session-digest helper compiles deterministic transform output."""
+    """The supplied-reader digest helper compiles deterministic transform output."""
     archive = _archive(tmp_path)
     db_path = archive.config.archive_root / "index.db"
     await _seed_two_sessions(db_path)
     try:
-        digest = await archive._session_digest("claude-ai-export:conv-alpha")
+        digest = run_off_event_loop(
+            lambda: _read_pinned_digest(archive.config.archive_root, "claude-ai-export:conv-alpha")
+        )
 
         assert digest is not None
         assert digest.session_id == "claude-ai-export:conv-alpha"
@@ -1194,7 +1205,7 @@ async def test_session_digest_compiles_seeded_session(tmp_path: Path) -> None:
         assert digest.transform.input_session_id == "claude-ai-export:conv-alpha"
         assert digest.resume_markdown.startswith("# Resume: Alpha")
         assert digest.raw_refs
-        assert await archive._session_digest("nonexistent") is None
+        assert run_off_event_loop(lambda: _read_pinned_digest(archive.config.archive_root, "nonexistent")) is None
     finally:
         await archive.close()
 
@@ -1259,7 +1270,7 @@ async def test_session_digest_resolves_subagent_child_links(tmp_path: Path) -> N
             parent_id,
         ) = run_off_event_loop(_off_loop_6)
 
-        digest = await archive._session_digest(parent_id)
+        digest = run_off_event_loop(lambda: _read_pinned_digest(archive.config.archive_root, parent_id))
 
         assert digest is not None
         [subagent] = digest.subagent_reports
@@ -1269,7 +1280,9 @@ async def test_session_digest_resolves_subagent_child_links(tmp_path: Path) -> N
         assert subagent.resolved_child_session_id == child_id
         assert "child_link_status=resolved" in digest.resume_markdown
 
-        alias_digest = await archive._session_digest("codex:session-digest-parent")
+        alias_digest = run_off_event_loop(
+            lambda: _read_pinned_digest(archive.config.archive_root, "codex:session-digest-parent")
+        )
         assert alias_digest is not None
         [alias_subagent] = alias_digest.subagent_reports
         assert alias_subagent.resolved_child_session_id == child_id
@@ -7370,7 +7383,7 @@ async def test_pathology_report_counts_unreadable_sessions_as_failed(
     never folded into the analyzed count (polylogue-dvhe7).
 
     Anti-vacuity: revert the ``failed`` bookkeeping in
-    ``PolylogueArchiveMixin.pathology_report`` -- i.e. let a ``None`` digest
+    ``compile_analysis_report`` -- i.e. let a ``None`` digest
     simply be skipped -- and the report claims ``matched=2, analyzed=1`` with
     nothing naming the missing session, so an unmeasured session renders as a
     measured pathology-free one. The assertion that the three counts conserve
@@ -7383,16 +7396,16 @@ async def test_pathology_report_counts_unreadable_sessions_as_failed(
         assert len(summaries) == 2
         unreadable = str(summaries[0].id)
 
-        from polylogue.api.archive import PolylogueArchiveMixin
+        from polylogue.operations import analysis_reports
 
-        original = PolylogueArchiveMixin._session_digest
+        original = analysis_reports.read_session_digest
 
-        async def _digest(self: PolylogueArchiveMixin, session_id: str) -> object:
+        def _digest(store: ArchiveStore, session_id: str) -> object:
             if session_id == unreadable:
                 return None
-            return await original(self, session_id)
+            return original(store, session_id)
 
-        monkeypatch.setattr(PolylogueArchiveMixin, "_session_digest", _digest)
+        monkeypatch.setattr(analysis_reports, "read_session_digest", _digest)
 
         report = await archive.pathology_report()
 
@@ -7816,6 +7829,24 @@ async def test_analysis_scope_and_digests_use_one_pinned_reader(
         report = await getattr(facade, method_name)()
         scope = getattr(report, "scope", report)
         assert scope.matched_session_count == 2
-        assert len(opened) == 1, "scope, profiles, events and digests must share one supplied reader"
+        assert len(opened) == 1, f"scope, profiles, events and digests opened {len(opened)} readers"
+    finally:
+        await facade.close()
+
+
+@pytest.mark.parametrize("plan_name", ["github-copilot-pro", "nonexistent-synthetic-plan"])
+async def test_cost_outlook_resolves_missing_cycle_or_plan_before_opening_archive(
+    tmp_path: Path, plan_name: str
+) -> None:
+    from polylogue.cost.plans import PlanLookupError
+
+    facade = Polylogue(archive_root=tmp_path / "absent")
+    try:
+        if plan_name == "github-copilot-pro":
+            assert await facade.cost_outlook(plan_name) is None
+        else:
+            with pytest.raises(PlanLookupError):
+                await facade.cost_outlook(plan_name)
+        assert not (tmp_path / "absent").exists()
     finally:
         await facade.close()

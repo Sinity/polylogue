@@ -637,3 +637,58 @@ def test_temporal_selected_reference_retains_text_and_ranking_criteria(
     assert {ref for event in events for ref in event["evidence_refs"] if ref.startswith("session:")} == {
         f"session:{sessions[1]}"
     }
+
+
+@pytest.mark.parametrize("operation", ["analysis.postmortem", "analysis.portfolio"])
+def test_analysis_report_counts_the_full_scalar_scope_before_its_requested_cap(tmp_path: Path, operation: str) -> None:
+    _seed(tmp_path)
+    result = _run(tmp_path, operation, {"params": {}, "limit": 1})
+    payload = cast(dict[str, Any], result["payload"])
+    assert payload["scope"]["matched_session_count"] == 3
+    assert payload["scope"]["dropped_session_count"] == 2
+    assert payload["scope"]["truncated"] is True
+    assert cast(dict[str, Any], result["outcome"])["state"] == "degraded"
+    spec = daemon_operation_spec(operation)
+    assert spec is not None and spec.fallback.value == "never"
+
+
+def test_resident_facets_accept_canonical_query_terms(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    result = _run(tmp_path, "facets", {"params": {"query": ['title:"Read 1"']}})
+    assert result["total_sessions"] == 1
+    assert result["scoped_to_query"] is True
+
+
+def test_resident_cost_outlook_refuses_session_predicates(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    with pytest.raises(ValueError, match="global to its billing plan"):
+        _run(tmp_path, "analysis.cost-outlook", {"plan_name": "claude-pro", "params": {"origin": "codex-session"}})
+
+
+def test_cost_outlook_uses_creation_time_and_the_same_reference_cutoff() -> None:
+    from collections.abc import Iterator
+    from datetime import UTC, datetime
+
+    from polylogue.analysis.archive import SessionCostInsight
+    from polylogue.cost.plans import SubscriptionPlan
+    from polylogue.operations.analysis_reports import compile_cost_outlook
+
+    fields: dict[str, object] = {}
+
+    class Costs:
+        def iter_session_cost_insights(self, **kwargs: object) -> Iterator[SessionCostInsight]:
+            fields.update(kwargs)
+            yield from ()
+
+    when = datetime(2026, 5, 11, 12, 0, 0, 500999, tzinfo=UTC)
+    plan = SubscriptionPlan(
+        name="synthetic-plan", provider="test", display_name="Synthetic", monthly_cost_usd=20.0, cycle_anchor_day=1
+    )
+    outlook = compile_cost_outlook(cast(ArchiveStore, Costs()), plan, now=when, checkpoint=lambda: None)
+    assert fields == {
+        "since_ms": int(datetime(2026, 5, 1, tzinfo=UTC).timestamp() * 1000),
+        "until_ms": int(when.timestamp() * 1000),
+        "time_basis": "created",
+        "limit": None,
+    }
+    assert outlook is not None and outlook.window.now == when

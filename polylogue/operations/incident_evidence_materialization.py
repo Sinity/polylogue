@@ -62,7 +62,7 @@ class IncidentEvidenceMaterializationResult:
 async def _session_links_for(repository: SessionRepository, session_id: str) -> list[dict[str, object]]:
     """Resolve one session's lineage links, including unlinked children.
 
-    Mirrors ``Polylogue._session_digest``'s own link resolution exactly:
+    Mirrors the pinned analysis report digest link resolution:
     ``session_links`` rows plus a synthesized ``resolved`` link per child
     session whose ``parent_session_id`` already points here even when no
     explicit ``session_links`` row was recorded for it.

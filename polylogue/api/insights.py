@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, cast
 
 from polylogue.analysis.archive import (
@@ -40,9 +40,7 @@ from polylogue.archive.query.spec import parse_query_date
 from polylogue.archive.query.transaction import run_archive_read
 from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.core.types import SessionId
-from polylogue.cost.aggregation import session_costs_to_daily_usd
-from polylogue.cost.outlook import CycleOutlook, ProjectionMethod, build_cycle_outlook
-from polylogue.cost.plans import resolve_plan
+from polylogue.cost.outlook import CycleOutlook, ProjectionMethod
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -469,23 +467,28 @@ class PolylogueInsightsMixin:
         :class:`polylogue.cost.plans.PlanLookupError` when ``plan_name``
         is non-empty but unknown.
         """
-        from polylogue.config import load_polylogue_config
+        from polylogue.operations.analysis_reports import compile_cost_outlook, cost_outlook_inputs, open_analysis_read
 
-        polylogue_config = load_polylogue_config()
-        plan = resolve_plan(plan_name, user_rows=polylogue_config.subscription_plans)
-        if plan is None:
+        inputs = cost_outlook_inputs(plan_name, now)
+        if inputs is None:
             return None
-        when = (now or datetime.now(UTC)).astimezone(UTC)
-        from polylogue.cost.plans import cycle_for
-
-        cycle = cycle_for(plan, when)
-        if cycle is None:
-            return None
-        session_costs = await self.list_session_cost_insights(
-            SessionCostInsightQuery(since=cycle[0], until=when.isoformat(), time_basis="created", limit=None)
+        plan, when = inputs
+        root = _active_archive_root(self.config)
+        return await run_archive_read(
+            root,
+            operation="insights.cost_outlook",
+            arguments={"plan_name": plan_name, "now": when, "method": method},
+            work=lambda archive: compile_cost_outlook(
+                archive,
+                plan_name,
+                now=now,
+                method=method,
+                checkpoint=archive.check_operation_read,
+            ),
+            read_owner=lambda context: open_analysis_read(root, context),
+            projection="cost-outlook",
+            workload_class="scan",
         )
-        daily = session_costs_to_daily_usd(session_costs, as_of=when)
-        return build_cycle_outlook(plan, daily, now=when, method=method)
 
     # ------------------------------------------------------------------
     # Session analysis primitives (#1691 / polylogue-9e5.24)

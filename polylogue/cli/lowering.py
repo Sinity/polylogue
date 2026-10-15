@@ -37,6 +37,7 @@ __all__ = [
     "COMPLETION_LIMIT_BOUNDS",
     "aggregate_mode",
     "lower_cli_query",
+    "lower_analysis_read",
     "lower_completion",
     "lower_query_aggregate",
     "lower_query_units",
@@ -164,6 +165,15 @@ def lower_query_aggregate(request: RootModeRequest, *, mode: str) -> OperationRe
             raise click.UsageError("Root query --by requires a grouping field.")
         payload["group_by"] = group_by
     return OperationRequest("query.aggregate", payload)
+
+
+def lower_analysis_read(request: RootModeRequest, operation: str, **arguments: object) -> OperationRequest:
+    """Carry the canonical selection into the supplied-reader analysis owner."""
+    params, terms = lower_query_params({**_selection_params(request), "query": request.query_terms})
+    params["query"] = list(terms)
+    if operation == "facets":
+        params.update({key: request.params[key] for key in ("no_idf", "include_deferred") if key in request.params})
+    return OperationRequest(operation, {"params": params, **arguments})
 
 
 def lower_session_read(
