@@ -47,6 +47,10 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(
+        "immutable interpretation context needs {required} framed bytes; maximum declaration is {maximum}"
+    )]
+    ImportContextTooLarge { required: usize, maximum: usize },
     #[error("import request {id} was reused with different content")]
     ImportRequestConflict { id: String },
     #[error(

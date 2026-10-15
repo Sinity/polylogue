@@ -44,11 +44,32 @@ pub struct ImmutableImport {
 }
 
 fn validate_context(format: InputFormat, context: &[&str]) -> Result<()> {
+    const MAXIMUM: usize = 65536;
+    let mut required = context
+        .len()
+        .checked_mul(8)
+        .and_then(|n| n.checked_add(8))
+        .ok_or(Error::Range)?;
+    if required > MAXIMUM {
+        return Err(Error::ImportContextTooLarge {
+            required,
+            maximum: MAXIMUM,
+        });
+    }
+    for field in context {
+        required = required.checked_add(field.len()).ok_or(Error::Range)?;
+        if required > MAXIMUM {
+            return Err(Error::ImportContextTooLarge {
+                required,
+                maximum: MAXIMUM,
+            });
+        }
+    }
     match format {
         InputFormat::CodexRollout if context.is_empty() => {}
-        InputFormat::ClaudeCodeJsonl if matches!(context,["claude-main",stem] if !stem.is_empty() && !stem.contains('/')) =>
+        InputFormat::ClaudeCodeJsonl if matches!(context,["claude-main",stem] if !stem.is_empty() && !stem.contains('/') && !stem.contains('\0')) =>
             {}
-        InputFormat::ClaudeCodeJsonl if matches!(context,["claude-subagent",agent] | ["claude-subagent",agent,_] if !agent.is_empty() && !agent.contains('/') && context.iter().all(|v|!v.is_empty())) =>
+        InputFormat::ClaudeCodeJsonl if matches!(context,["claude-subagent",agent] | ["claude-subagent",agent,_] if !agent.is_empty() && !agent.contains('/') && !agent.contains('\0') && context.iter().all(|v|!v.is_empty())) =>
             {}
         _ => {
             return Err(Error::Invariant(
@@ -127,7 +148,7 @@ impl Writer {
         let file = self.root.join("archive.db");
         let row: Option<(String, String, i64, Vec<u8>, Vec<u8>, String)> = db(&file, || {
             self.archive.query_row(
-            "SELECT i.id,i.format,r.length,r.blake3,i.original_hash,i.context_json FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.id>?1 AND r.produced='imported' AND r.chain=1 ORDER BY i.id LIMIT 1", [after],
+            "SELECT i.id,i.format,r.length,r.blake3,i.original_hash,CASE WHEN length(CAST(i.context_json AS BLOB))<=524288 THEN i.context_json ELSE NULL END FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.id>?1 AND r.produced='imported' AND r.chain=1 ORDER BY i.id LIMIT 1", [after],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()
         })?;
         self.decode_immutable_import(row)
@@ -139,7 +160,7 @@ impl Writer {
         let file = self.root.join("archive.db");
         let row = db(&file, || {
             self.archive.query_row(
-            "SELECT i.id,i.format,r.length,r.blake3,i.original_hash,i.context_json FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.id=?1 AND r.produced='imported' AND r.chain=1", [id],
+            "SELECT i.id,i.format,r.length,r.blake3,i.original_hash,CASE WHEN length(CAST(i.context_json AS BLOB))<=524288 THEN i.context_json ELSE NULL END FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.id=?1 AND r.produced='imported' AND r.chain=1", [id],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()
         })?;
         self.decode_immutable_import(row)
@@ -604,6 +625,40 @@ mod tests {
             writer.next_immutable_import(""),
             Err(Error::ExcisionCheckRequired)
         ));
+    }
+
+    #[test]
+    fn context_declared_bound_precedes_scanning_encoding_or_sql_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let mut writer = Writer::open(root.path()).unwrap();
+        let hash = writer.put_file_blob(b"synthetic").unwrap();
+        let huge = "x".repeat(65536);
+        let before = writer.status().unwrap().write_counter;
+        assert!(matches!(
+            writer.retain_immutable_input(
+                hash,
+                InputFormat::ClaudeCodeJsonl,
+                &["claude-main", &huge],
+                &observation("large"),
+                usize::MAX
+            ),
+            Err(Error::ImportContextTooLarge { maximum: 65536, .. })
+        ));
+        assert!(matches!(
+            validate_context(InputFormat::CodexRollout, &vec![""; 8192]),
+            Err(Error::ImportContextTooLarge { .. })
+        ));
+        assert!(
+            validate_context(InputFormat::ClaudeCodeJsonl, &["claude-main", "bad\0stem"]).is_err()
+        );
+        assert_eq!(writer.status().unwrap().write_counter, before);
+        assert_eq!(
+            writer
+                .archive
+                .query_row("SELECT count(*) FROM input", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
