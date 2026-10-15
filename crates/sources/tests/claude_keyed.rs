@@ -307,7 +307,13 @@ impl ReadView for Metered<'_> {
     }
     fn session(&self, native: &str) -> Result<Option<SessionCell>, Self::Error> {
         self.read("session")?;
-        Ok(self.memory.session(native).unwrap())
+        let mut cell = self.memory.session(native).unwrap();
+        if self.fail == Some("session-corrupt") {
+            if let Some(cell) = &mut cell {
+                cell.session.native_id = "different".into();
+            }
+        }
+        Ok(cell)
     }
     fn response(
         &self,
@@ -315,6 +321,9 @@ impl ReadView for Metered<'_> {
         key: &ResponseKey,
     ) -> Result<Option<ResponseCell>, Self::Error> {
         self.read("response")?;
+        if self.fail == Some("response-missing") {
+            return Ok(None);
+        }
         Ok(self.memory.response(session, key).unwrap())
     }
     fn record(&self, session: &str, uuid: &str) -> Result<Option<RecordAddress>, Self::Error> {
@@ -327,6 +336,9 @@ impl ReadView for Metered<'_> {
         item: u64,
     ) -> Result<Option<Contribution>, Self::Error> {
         self.read("contribution")?;
+        if self.fail == Some("contribution-missing") {
+            return Ok(None);
+        }
         Ok(self.memory.contribution(message, item).unwrap())
     }
     fn side(&self, uuid: &str) -> Result<Option<String>, Self::Error> {
@@ -510,4 +522,42 @@ fn required_body_read_failure_is_not_an_unavailable_payload() {
     );
     assert_eq!(framed.output.err().unwrap().error, "body");
     assert_eq!(framed.parsed_upto, 0);
+}
+
+#[test]
+fn missing_or_misidentified_committed_cells_cannot_restart_a_referenced_response() {
+    let mut memory = MemoryReadView::default();
+    step(
+        &mut memory,
+        FileCtx::main("s"),
+        line(assistant("a", "m", "r")).as_bytes(),
+        0,
+    );
+    for corruption in [
+        "response-missing",
+        "contribution-missing",
+        "session-corrupt",
+    ] {
+        for changed in [false, true] {
+            let view = Metered {
+                memory: &memory,
+                reads: Cell::new(0),
+                fail: Some(corruption),
+            };
+            let mut update = assistant("a", "m", "r");
+            if changed {
+                update["message"]["content"] = json!([]);
+            }
+            let framed = drive_jsonl(
+                KeyedRecords::new(FileCtx::main("s"), &view).unwrap(),
+                line(update).as_bytes(),
+                0,
+            );
+            assert!(
+                framed.output.is_err(),
+                "{corruption} must remain a state error"
+            );
+            assert_eq!(framed.parsed_upto, 0);
+        }
+    }
 }

@@ -141,6 +141,9 @@ impl<R: ReadView> KeyedRecords<R> {
                 }
             }
         };
+        if cell.session.native_id != native || cell.session.origin != origin() {
+            return Err("Claude session cell disagrees with its lookup identity".into());
+        }
         let i = self.sessions.len();
         self.sessions.push(cell);
         self.by_id.insert(native.into(), i);
@@ -411,6 +414,9 @@ impl<R: ReadView> KeyedRecords<R> {
             ),
             None => None,
         };
+        if old.as_ref().is_some_and(|cell| cell.uuid != uuid) {
+            return Err("committed Claude contribution UUID disagrees with its address".into());
+        }
         let raw = raw::overlay(old.as_ref().map(|c| c.raw.as_slice()), rec.bytes)?;
         let v: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
         if v.get("type").and_then(Value::as_str) != Some(ty) {
@@ -443,12 +449,14 @@ impl<R: ReadView> KeyedRecords<R> {
         let old_same = old
             .as_ref()
             .is_some_and(|c| c.raw == raw && c.bodies == bodies);
-        if old_same {
-            return Ok(RecordOutcome::Used);
-        }
         let mut response = match self.response(&native, &key)? {
             Some(cell) => cell,
             None => {
+                if address.is_some() {
+                    return Err(
+                        "missing committed Claude response referenced by UUID address".into(),
+                    );
+                }
                 let id = MessageId::new(self.sessions[si].session.id.clone(), uuid)
                     .map_err(|e| e.to_string())?;
                 let (written_by, prompt_kind, from_name) = if ty == "assistant" {
@@ -499,6 +507,18 @@ impl<R: ReadView> KeyedRecords<R> {
                 }
             }
         };
+        if address
+            .as_ref()
+            .is_some_and(|a| a.message != response.message.id || a.item >= response.items)
+        {
+            return Err("committed Claude UUID address disagrees with its response".into());
+        }
+        if response.message.id.session() != &self.sessions[si].session.id {
+            return Err("committed Claude response belongs to a different session".into());
+        }
+        if old_same {
+            return Ok(RecordOutcome::Used);
+        }
         let item = match &address {
             Some(a) => a.item,
             None => {
