@@ -96,18 +96,18 @@ def test_run_proof_reads_owned_bound_ports_and_product_convergence(
         },
     }
     assert isinstance(started["listener_info_path"], Path)
-    assert started["listener_info_path"].parent == tmp_path / "scratch" / "polylogue-dev-loop-proof" / "artifacts"
-    assert initialized == [tmp_path / "scratch" / "polylogue-dev-loop-proof" / "archive"]
+    proof_root = started["listener_info_path"].parent.parent
+    assert proof_root.parent == tmp_path / "scratch"
+    assert proof_root.name.startswith("polylogue-dev-loop-proof-")
+    assert initialized == [proof_root / "archive"]
     environment = started["environment"]
     assert isinstance(environment, dict)
     assert environment["POLYLOGUE_API_PORT"] == "0"
     assert environment["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "0"
-    assert environment["XDG_CONFIG_HOME"] == str(
-        tmp_path / "scratch" / "polylogue-dev-loop-proof" / "artifacts" / "home" / ".config"
-    )
+    assert environment["XDG_CONFIG_HOME"] == str(proof_root / "artifacts" / "home" / ".config")
 
 
-def test_started_daemon_uses_fixed_proof_tokens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_started_daemon_keeps_private_proof_tokens_out_of_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir()
     launched: dict[str, object] = {}
@@ -127,13 +127,11 @@ def test_started_daemon_uses_fixed_proof_tokens(tmp_path: Path, monkeypatch: pyt
 
     command = launched["command"]
     assert isinstance(command, list)
-    token_index = command.index("--browser-capture-auth-token")
-    assert command[token_index + 1] == dev_loop_service._RECEIVER_TOKEN
+    assert "--browser-capture-auth-token" not in command
     assert command[command.index("--api-port") + 1] == "0"
     assert command[command.index("--port") + 1] == "0"
     assert command[command.index("--listener-info-path") + 1] == str(artifact_root / "listeners.json")
-    api_token_index = command.index("--api-auth-token")
-    assert command[api_token_index + 1] == dev_loop_service._API_TOKEN
+    assert "--api-auth-token" not in command
 
 
 def test_proof_daemon_runs_in_an_isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,18 +197,22 @@ def test_convergence_reads_use_the_matching_service_tokens(monkeypatch: pytest.M
             provider="chatgpt",
             provider_session_id="proof",
             timeout_s=0.1,
+            receiver_token="synthetic-receiver",
         )
         is not None
     )
-    assert dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed") is True
+    assert (
+        dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed", api_token="synthetic-api")
+        is True
+    )
     assert observed == [
         {
             "url": "http://receiver/v1/archive-state?provider=chatgpt&provider_session_id=proof",
-            "bearer_token": dev_loop_service._RECEIVER_TOKEN,
+            "bearer_token": "synthetic-receiver",
         },
         {
             "url": "http://api/api/sessions/indexed/messages?limit=5",
-            "bearer_token": dev_loop_service._API_TOKEN,
+            "bearer_token": "synthetic-api",
         },
     ]
 
@@ -259,7 +261,10 @@ def test_api_message_convergence_rejects_wrong_or_malformed_response(
 ) -> None:
     monkeypatch.setattr(dev_loop_service, "_http_get_json", lambda *_args, **_kwargs: (200, payload))
 
-    assert dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed") is False
+    assert (
+        dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed", api_token="synthetic-api")
+        is False
+    )
 
 
 @pytest.mark.parametrize(
@@ -375,7 +380,9 @@ def test_deterministic_captures_still_exercise_receiver_provider_identity(monkey
 
     monkeypatch.setattr(dev_loop_service, "_receiver_post", accepted)
 
-    captures = dev_loop_service._submit_deterministic_captures(capture_port=48865, session_id="proof")
+    captures = dev_loop_service._submit_deterministic_captures(
+        capture_port=48865, session_id="proof", receiver_token="synthetic-receiver"
+    )
 
     assert captures == {
         "chatgpt": {"provider": "chatgpt", "provider_session_id": "proof-chatgpt"},
@@ -383,7 +390,7 @@ def test_deterministic_captures_still_exercise_receiver_provider_identity(monkey
     }
     payloads = [cast(dict[str, dict[str, str]], entry["body"]) for entry in observed]
     assert [payload["session"]["provider"] for payload in payloads] == ["chatgpt", "claude-ai"]
-    assert all(entry["token"] == dev_loop_service._RECEIVER_TOKEN for entry in observed)
+    assert all(entry["token"] == "synthetic-receiver" for entry in observed)
 
 
 def test_shared_chrome_node_boundary_launches_only_sinnix_control() -> None:
@@ -616,6 +623,7 @@ def test_proof_daemon_owns_ephemeral_ports_through_product_convergence(
     """A competing binder cannot take either actual listener before proof readiness."""
     _fixed_service_context(monkeypatch)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "scratch"))
+    (tmp_path / "scratch").mkdir()
     monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: {"ok": True})
     monkeypatch.setattr(dev_loop_service, "scoped_native_transport_proof", _neutral_native_scope)
     original = dev_loop_service._await_listener_ports
@@ -672,6 +680,7 @@ def test_listener_readback_failure_still_terminates_proof_child(
 ) -> None:
     _fixed_service_context(monkeypatch)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "scratch"))
+    (tmp_path / "scratch").mkdir()
     monkeypatch.setattr(dev_loop_service, "initialize_active_archive_root", lambda _root: None)
     monkeypatch.setattr(dev_loop_service, "run_receiver_smoke", lambda **_kwargs: {"ok": True})
     child = object()
@@ -686,3 +695,35 @@ def test_listener_readback_failure_still_terminates_proof_child(
     with pytest.raises(RuntimeError, match="listener readback refused"):
         dev_loop_service.run_proof(chrome_user_data_dir=tmp_path)
     assert stopped == [child]
+
+
+def test_proof_paths_are_private_and_distinct_per_invocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    first_archive, first_artifacts = dev_loop_service._service_paths()
+    second_archive, second_artifacts = dev_loop_service._service_paths()
+    assert first_archive.parent == first_artifacts.parent
+    assert second_archive.parent == second_artifacts.parent
+    assert first_archive.parent != second_archive.parent
+    assert first_archive.parent.stat().st_mode & 0o777 == 0o700
+    assert second_archive.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_proof_credentials_are_private_per_run_and_absent_from_child_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_API_ALLOW_NO_AUTH", "1")
+    monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH", "1")
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first_tokens = dev_loop_service._proof_tokens(first)
+    second_tokens = dev_loop_service._proof_tokens(second)
+    assert len({*first_tokens, *second_tokens}) == 4
+    for root, tokens in ((first, first_tokens), (second, second_tokens)):
+        for filename, token in zip(("browser-capture-receiver-token", "api-auth-token"), tokens, strict=True):
+            path = root / filename
+            assert path.read_text().strip() == token
+            assert path.stat().st_mode & 0o777 == 0o600
+        env = dev_loop_service._proof_environment(archive_root=root, artifact_root=root / "artifacts")
+        assert not set(tokens) & set(env.values())
+        assert env["POLYLOGUE_API_ALLOW_NO_AUTH"] == "0"
+        assert env["POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH"] == "0"

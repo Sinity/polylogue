@@ -119,9 +119,8 @@ def bound_topology_envelope(
             ]
     bounded["nodes_complete"] = not truncated
     bounded["edges_complete"] = not truncated
-    # A source page already carries the requested offset; only synthesize a
-    # continuation when this bound is what did the narrowing.
-    if envelope.get("continuation") is None and dropped > 0:
+    # Resume at the first node withheld here, before any later upstream page.
+    if dropped > 0:
         bounded["continuation"] = f"node-offset:{source_node_offset + len(kept_nodes)}"
 
     source_outcome = cast("dict[str, object]", envelope["outcome"])

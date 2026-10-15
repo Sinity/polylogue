@@ -39,6 +39,7 @@ __all__ = [
     "declares_profile_identity",
     "profile_key",
     "qualified_session_id",
+    "qualified_session_id_bounds",
     "split_qualified_session_id",
 ]
 
@@ -140,6 +141,11 @@ def observe_profile_namespace(artifact_path: Path, expected: os.stat_result) -> 
 def qualified_session_id(raw_session_id: str, key: str) -> str:
     """Return the profile-qualified session id for a raw Hermes session id."""
     return f"{raw_session_id}@profile-{key}"
+
+
+def qualified_session_id_bounds(raw_session_id: str) -> tuple[str, str]:
+    """Binary half-open bounds for one exact raw ID's profile-qualified forms."""
+    return qualified_session_id(raw_session_id, ""), f"{raw_session_id}@profile."
 
 
 def split_qualified_session_id(qualified_id: str) -> tuple[str, str | None]:

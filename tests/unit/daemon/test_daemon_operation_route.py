@@ -3341,3 +3341,41 @@ def test_grammar_completion_keeps_authority_checks_without_opening_index(
         assert schema_refused is not None
         assert schema_refused["outcome"] == "rejected"
         assert schema_refused["error"]["code"] == "schema_version_mismatch"
+
+
+def test_tag_removal_uses_current_authority_and_repeats_without_effect(tmp_path: Path) -> None:
+    """Actual compiled removal retains permission and a repeat has no new effect."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    ids: tuple[str, ...] = ()
+
+    def seed(root: Path) -> None:
+        nonlocal ids
+        ids = _seed_sessions(root, count=1)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        added = stack.client.operation_to_completion(
+            "mutation.session.tag",
+            {"session_ids": list(ids), "tags": ["retained", "removed"]},
+            archive_root=str(stack.archive_root),
+        )
+        assert added is not None and added["outcome"] == "completed"
+        assert added["result"]["affected_count"] == 1
+        removed = stack.client.operation_to_completion(
+            "mutation.session.tag",
+            {"session_ids": list(ids), "remove_tags": ["removed"]},
+            archive_root=str(stack.archive_root),
+            request_id="remove-tag-authority",
+        )
+        assert removed is not None and removed["outcome"] == "completed"
+        assert removed["result"]["affected_count"] == 1
+        replay = stack.client.operation_to_completion(
+            "mutation.session.tag",
+            {"session_ids": list(ids), "remove_tags": ["removed"]},
+            archive_root=str(stack.archive_root),
+            request_id="remove-tag-authority",
+        )
+        assert replay is not None and replay["outcome"] == "completed"
+        assert replay["result"]["affected_count"] == 0
+        with ArchiveStore.open_existing(stack.archive_root) as archive:
+            assert archive.list_user_tags() == {"retained": 1}
