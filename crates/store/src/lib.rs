@@ -661,3 +661,5 @@ impl ReadHandle {
 use rusqlite::OptionalExtension;
 #[cfg(test)]
 mod tests;
+
+pub mod prose_search;

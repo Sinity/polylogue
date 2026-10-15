@@ -88,8 +88,7 @@ Message on the worker with cooperative cancellation. Leaf and origin-descriptor 
 one admitted field again for each chunk. Selector evaluation decodes admitted
 whole source records; it does not establish a cumulative record-work bound. No whole-leaf Vec is required, but this
 does not establish bounded worker computation, append locality or RSS. The CLI exposes only the selected terminal Message-reference consumer with
-degraded coverage. Session query/JSON read/export/search and the Claude Code
-demonstration remain unfinished.
+degraded coverage. Known Session listing/prose search and Session JSON reads are registered with degraded coverage. Export and the complete Claude Code demonstration remain unfinished.
 
 Immutable import source-row settlement audits the retained step dispositions and
 effects plus selected current source certificates. A fixed parser-token/basis
@@ -109,3 +108,6 @@ same pinned parse accounting. Aggregate source receipt counts are not summed.
 The read shares the selected-row snapshot, admits whole existing effect cells,
 and checks its deadline/cancellation between catalog/cell/error steps. This does
 not prove linked/global dependencies or full Session/search completeness.
+
+
+`session_query` executes the registered typed Session subset against the existing pinned catalog. Admission dependencies qualify the searched population independently of matching rows. Selected human/model Text blocks build a query-local store-owned FTS corpus; all candidates are visited before matching/sorting/limit, while stored structured channels and origin readers retain their ownership. Queries expose known selected Message counts/times and retained hit references, never complete Session reductions. Current removal authority is checked again after evaluation. Canonical distinct-text relevance remains unavailable; the response discloses known activity order. General planner/paging, persistent search publication, linked subagent promotion, snippets and whole-corpus resource acceptance remain open.

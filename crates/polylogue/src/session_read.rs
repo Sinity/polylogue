@@ -98,7 +98,7 @@ pub(crate) fn serve(
 }
 // POLLHUP detects full peer close without treating a request's write-half close
 // as cancellation. Safe rustix polling neither changes flags nor spawns helpers.
-fn peer_gone(stream: &UnixStream) -> bool {
+pub(crate) fn peer_gone(stream: &UnixStream) -> bool {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     let mut fds = [PollFd::new(stream, PollFlags::HUP | PollFlags::ERR)];
     match poll(

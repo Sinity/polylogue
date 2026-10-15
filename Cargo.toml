@@ -13,6 +13,7 @@ credential-output = { path = "crates/credential-output" }
 polylogue-model = { path = "crates/model" }
 polylogue-store = { path = "crates/store" }
 polylogue-sources = { path = "crates/sources" }
+polylogue-query = { path = "crates/query" }
 polylogue-engine = { path = "crates/engine" }
 hashed-blobs = { path = "crates/hashed-blobs" }
 serde = { version = "1", features = ["derive"] }

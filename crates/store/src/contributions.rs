@@ -13,12 +13,13 @@ mod inheritance;
 pub use inheritance::InheritedProjection;
 mod origins;
 pub use origins::SourceRange;
-mod reads;
+pub(crate) mod reads;
 pub use reads::{
     BlockFieldAddress, BlockFieldEntry, BlockView, FieldCursor, FieldRead, FieldView,
-    MessageFieldEntry, MessageHeader, MessageLookup, MessageView, SessionCoverage, SessionCursor,
-    SessionDependencyCursor, SessionHeader, SessionInputDependency, SessionPosition, SessionStep,
-    SessionView, SourceCursor, SourceSpan, SourceStep, ToolResultHeader,
+    MessageFieldEntry, MessageHeader, MessageLookup, MessageView, SessionCatalog,
+    SessionCatalogCursor, SessionCoverage, SessionCursor, SessionDependencyCursor, SessionHeader,
+    SessionInputDependency, SessionPosition, SessionStep, SessionView, SourceCursor, SourceSpan,
+    SourceStep, ToolResultHeader,
 };
 mod retirement;
 mod source;

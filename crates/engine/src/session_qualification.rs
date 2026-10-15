@@ -4,12 +4,13 @@ use crate::{owner, source_rows, source_turn::SourceContext, state::claude};
 use polylogue_model::settlement::RecordFailureId;
 use polylogue_store::{
     Error, InputFormat,
-    contributions::{SessionInputDependency, SessionView},
+    contributions::{SessionCatalog, SessionInputDependency, SessionView},
 };
 use std::time::Instant;
 #[derive(Clone, Debug, Default)]
 pub struct Qualification {
     pub record_errors: u64,
+    pub interpreted_nonempty_inputs: u64,
     pub pending_inputs: u64,
     pub unresolved_inputs: u64,
     pub unavailable_inputs: u64,
@@ -49,9 +50,25 @@ pub fn qualify_with_cancel(
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Qualification, Error> {
+    let header = session.header()?;
+    let plan = polylogue_model::query::SessionQuery {
+        origin: Some(header.origin.as_str().into()),
+        id: Some(header.id.as_str().into()),
+        ..Default::default()
+    };
+    qualify_catalog(&session.catalog(), &plan, until, allowance, cancelled)
+}
+/// Qualify every possible retained contributor, including those that published
+/// no Session or matching Message. EOF alone never becomes a query proof.
+pub fn qualify_catalog(
+    session: &SessionCatalog,
+    plan: &polylogue_model::query::SessionQuery,
+    until: Instant,
+    allowance: usize,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<Qualification, Error> {
     let mut result = Qualification::default();
     let mut cursor = None;
-    let target = session.header()?.id.clone();
     loop {
         deadline(until)?;
         if cancelled() {
@@ -63,24 +80,25 @@ pub fn qualify_with_cancel(
         cursor = Some(next);
         // Format owns origin; a Codex rollout cannot contribute Claude rows.
         if dependency.format() == InputFormat::CodexRollout {
-            if session.header()?.origin.as_str() != "codex" {
+            if plan.origin.as_deref().is_some_and(|o| o != "codex") {
                 continue;
             }
             add(&mut result.unresolved_inputs, 1)?;
             continue;
         }
-        if session.header()?.origin.as_str() != "claude-code" {
+        if plan.origin.as_deref().is_some_and(|o| o != "claude-code") {
             continue;
         }
         let Some(input) = dependency.registered() else {
             // Context remains available before disposable input_ref repair.
             match dependency.context() {
                 [kind, stem] if kind == "claude-main" => {
-                    if polylogue_sources::claude_code::FileCtx::main(stem)
-                        .direct_main_session()
-                        .as_ref()
-                        == Some(&target)
-                    {
+                    if plan.id.as_deref().is_none_or(|target| {
+                        polylogue_sources::claude_code::FileCtx::main(stem)
+                            .direct_main_session()
+                            .as_ref()
+                            .is_some_and(|id| id.as_str() == target)
+                    }) {
                         add(&mut result.pending_inputs, 1)?;
                     }
                 }
@@ -93,7 +111,14 @@ pub fn qualify_with_cancel(
             return Err(Error::Invariant("Claude format/context mismatch".into()));
         };
         match context.direct_main_session() {
-            Some(id) if id != target => continue,
+            Some(id)
+                if plan
+                    .id
+                    .as_deref()
+                    .is_some_and(|target| id.as_str() != target) =>
+            {
+                continue;
+            }
             Some(_) => {}
             None => {
                 add(&mut result.unresolved_inputs, 1)?;
@@ -109,6 +134,9 @@ pub fn qualify_with_cancel(
         {
             add(&mut result.pending_inputs, 1)?;
             continue;
+        }
+        if head.counts.used > 0 {
+            add(&mut result.interpreted_nonempty_inputs, 1)?;
         }
         let mut unavailable = dependency.failure().is_some();
         let receipt = session.dependency_cell(
@@ -149,7 +177,7 @@ pub fn qualify_with_cancel(
     Ok(result)
 }
 fn count_record_failures(
-    session: &SessionView,
+    session: &SessionCatalog,
     dependency: &SessionInputDependency,
     until: Instant,
     allowance: usize,

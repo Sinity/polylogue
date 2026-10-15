@@ -17,3 +17,5 @@ pub use time::{Precision, ProviderTime, TimeQuality, Timestamp};
 pub use types::{Credits, ErrorKind, Failure, Ratio, RecordOutcome, ResultOutcome, Usd};
 
 pub mod settlement;
+
+pub mod query;

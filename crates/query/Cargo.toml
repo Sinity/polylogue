@@ -1,0 +1,12 @@
+[package]
+name = "polylogue-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+polylogue-model.workspace = true
+
+[lints]
+workspace = true

@@ -536,6 +536,7 @@ dependencies = [
  "jiff",
  "polylogue-engine",
  "polylogue-model",
+ "polylogue-query",
  "polylogue-store",
  "rustix",
  "serde",
@@ -565,6 +566,13 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "polylogue-query"
+version = "0.1.0"
+dependencies = [
+ "polylogue-model",
 ]
 
 [[package]]

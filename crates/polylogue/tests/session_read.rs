@@ -906,3 +906,175 @@ fn session_qualification_includes_malformed_only_source_but_excludes_unrelated_p
         first
     );
 }
+
+#[test]
+fn ordinary_listing_and_prose_search_share_retained_ids_and_population_qualification() {
+    let mut world = World::new();
+    let empty = world.cli(&["sessions", "--json"]);
+    assert_eq!(empty.status.code(), Some(1), "{empty:?}");
+    let value: Value = serde_json::from_slice(&empty.stdout).unwrap();
+    assert_eq!(value["outcome"], "empty");
+    assert_eq!(value["count"], 0);
+    let empty_search = world.cli(&["absenttoken", "--json"]);
+    assert_eq!(empty_search.status.code(), Some(1));
+    let mut prose: Value = serde_json::from_slice(&simple(
+        "older",
+        json!("Łódź weekday_offset refactor carefully"),
+    ))
+    .unwrap();
+    prose["promptSource"] = json!("typed");
+    let source = world.input(
+        "prose-search.jsonl",
+        &(prose.to_string() + "\n").into_bytes(),
+    );
+    let ready = wait_import(
+        &world,
+        &source,
+        "01900000-0000-7000-8000-000000000430",
+        "20",
+    );
+    assert_eq!(ready.status.code(), Some(0), "{ready:?}");
+    let listed = world.cli(&["origin:claude-code", "list", "--json"]);
+    assert_eq!(listed.status.code(), Some(5), "{listed:?}");
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(listed["rows"][0]["id"], reference());
+    assert_eq!(listed["count"], 1);
+    for text in [
+        "lodz",
+        "łódź",
+        "weekday offset",
+        "\"weekday offset\"",
+        "refact*",
+        "sessions where origin:claude-code text:lodz",
+    ] {
+        let hit = world.cli(&[text, "--json"]);
+        assert_eq!(hit.status.code(), Some(5), "{text}: {hit:?}");
+        let hit: Value = serde_json::from_slice(&hit.stdout).unwrap();
+        assert_eq!(hit["count"], 1, "{text}: {hit}");
+        assert_eq!(hit["rows"][0]["id"], reference());
+        assert!(
+            hit["rows"][0]["hits"][0]["message"]
+                .as_str()
+                .unwrap()
+                .ends_with(":older")
+        );
+    }
+    for word in ["list", "status", "messages"] {
+        let output = world.cli(&["find", word, "--json"]);
+        assert_eq!(output.status.code(), Some(5), "{output:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()["count"],
+            0
+        );
+    }
+    assert_eq!(world.cli(&["find", "--json"]).status.code(), Some(2));
+    let nohit = world.cli(&["absenttoken", "--json"]);
+    assert_eq!(nohit.status.code(), Some(5));
+    let nohit: Value = serde_json::from_slice(&nohit.stdout).unwrap();
+    assert_eq!(nohit["count"], 0);
+    assert_eq!(nohit["outcome"], "degraded");
+    fs::remove_file(&source).unwrap();
+    world.restart();
+    let again = world.cli(&["lodz", "--json"]);
+    assert_eq!(again.status.code(), Some(5));
+    let again: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again["rows"][0]["id"], reference());
+    let read = world.cli(&[
+        again["rows"][0]["id"].as_str().unwrap(),
+        "read",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(read.status.code(), Some(5));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&read.stdout).unwrap()["messages"][0]["blocks"][0]["text"],
+        "Łódź weekday_offset refactor carefully"
+    );
+}
+#[test]
+fn prose_conjunction_crosses_text_blocks_but_phrases_do_not() {
+    let world = World::new();
+    let mut record: Value = serde_json::from_slice(&simple(
+        "split",
+        json!([{"type":"text","text":"boundaryfirst"},{"type":"text","text":"boundarysecond"}]),
+    ))
+    .unwrap();
+    record["promptSource"] = json!("typed");
+    let source = world.input("split-prose.jsonl", (record.to_string() + "\n").as_bytes());
+    let ready = wait_import(
+        &world,
+        &source,
+        "01900000-0000-7000-8000-000000000434",
+        "20",
+    );
+    assert_eq!(ready.status.code(), Some(0), "{ready:?}");
+    for (query, count) in [
+        ("boundaryfirst boundarysecond", 1),
+        ("\"boundaryfirst boundarysecond\"", 0),
+    ] {
+        let output = world.cli(&[query, "--json"]);
+        assert_eq!(output.status.code(), Some(5), "{output:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["count"], count, "{result}");
+        assert_eq!(result["ranking"]["state"], "unavailable");
+    }
+}
+#[test]
+fn query_unknown_population_is_not_completed_empty_and_request_shapes_refuse() {
+    let world = World::new();
+    let empty = world.input("query-empty.jsonl", b"\n");
+    assert_eq!(
+        wait_import(&world, &empty, "01900000-0000-7000-8000-000000000431", "20")
+            .status
+            .code(),
+        Some(0)
+    );
+    assert_eq!(world.cli(&["sessions", "--json"]).status.code(), Some(1));
+    let malformed = world.input("query-malformed-only.jsonl", b"{not json}\n");
+    assert_eq!(
+        wait_import(
+            &world,
+            &malformed,
+            "01900000-0000-7000-8000-000000000432",
+            "20"
+        )
+        .status
+        .code(),
+        Some(2)
+    );
+    let query = world.cli(&["sessions", "--json"]);
+    assert_eq!(query.status.code(), Some(5), "{query:?}");
+    let query: Value = serde_json::from_slice(&query.stdout).unwrap();
+    assert_eq!(query["count"], 0);
+    assert_eq!(query["unknown"]["record_errors"], 1);
+    assert_eq!(query["unknown"]["unavailable_inputs"], 1);
+    let sub = world.input("query-unresolved-subagent.jsonl", b"{bad}\n");
+    assert_eq!(
+        wait_import_context(
+            &world,
+            &sub,
+            "01900000-0000-7000-8000-000000000433",
+            "20",
+            &["claude-subagent", "synthetic-agent"]
+        )
+        .status
+        .code(),
+        Some(2)
+    );
+    let query = world.cli(&["find", "missingneedle", "--json"]);
+    assert_eq!(query.status.code(), Some(5));
+    let query: Value = serde_json::from_slice(&query.stdout).unwrap();
+    assert_eq!(query["unknown"]["record_errors"], 1);
+    assert_eq!(query["unknown"]["unresolved_inputs"], 1);
+    for query in [
+        "near:semantic",
+        "messages needle",
+        "sessions | group by origin",
+        "needle OR other",
+        "--reveal",
+    ] {
+        let out = world.cli(&[query, "--json"]);
+        assert!(matches!(out.status.code(), Some(2 | 3)), "{query}: {out:?}");
+        assert!(out.stdout.is_empty());
+    }
+}
