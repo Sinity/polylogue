@@ -401,9 +401,11 @@ fn checksum_failure_names_non_header_page_and_actual_file() {
         // Deliberately different context: the VFS filename, not the caller hint,
         // is the authority for which physical file failed.
         let err = db(Path::new("caller-context"), || {
-            conn.query_row(&format!("SELECT count(*) FROM {table} NOT INDEXED"), [], |r| {
-                r.get::<_, i64>(0)
-            })
+            conn.query_row(
+                &format!("SELECT count(*) FROM {table} NOT INDEXED"),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
         })
         .unwrap_err();
         assert!(
@@ -442,7 +444,8 @@ fn unscoped_or_successful_fault_cannot_taint_later_errors() {
     let (_tmp, file, _, _) = corrupt_table("archive.db", "meta");
     let conn = open(&file, true, true).unwrap();
     assert!(
-        conn.query_row("SELECT count(*) FROM meta NOT INDEXED", [], |r| r.get::<_, i64>(0))
+        conn.query_row("SELECT count(*) FROM meta NOT INDEXED", [], |r| r
+            .get::<_, i64>(0))
             .is_err()
     );
     let synthetic = || {
@@ -455,7 +458,8 @@ fn unscoped_or_successful_fault_cannot_taint_later_errors() {
     assert!(matches!(db(&file, synthetic), Err(Error::Sqlite { .. })));
     db(&file, || {
         assert!(
-            conn.query_row("SELECT count(*) FROM meta NOT INDEXED", [], |r| r.get::<_, i64>(0))
+            conn.query_row("SELECT count(*) FROM meta NOT INDEXED", [], |r| r
+                .get::<_, i64>(0))
                 .is_err()
         );
         Ok(())
@@ -465,7 +469,8 @@ fn unscoped_or_successful_fault_cannot_taint_later_errors() {
     assert!(matches!(db(&file, synthetic), Err(Error::Sqlite { .. })));
     let err = db(&file, || {
         assert!(
-            conn.query_row("SELECT count(*) FROM meta NOT INDEXED", [], |r| r.get::<_, i64>(0))
+            conn.query_row("SELECT count(*) FROM meta NOT INDEXED", [], |r| r
+                .get::<_, i64>(0))
                 .is_err()
         );
         Err::<(), _>(rusqlite::Error::InvalidQuery)
