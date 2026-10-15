@@ -54,6 +54,8 @@ pub struct ResponseCell {
     /// Selected raw usage, stop_reason, model, timestamp, in this fixed order.
     pub selected: [Option<Vec<u8>>; 4],
     pub incomplete_bodies: u64,
+    pub selected_from: [Option<u64>; 4],
+    pub selected_facts: [Vec<super::projection::Fact>; 4],
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordAddress {
@@ -80,6 +82,7 @@ pub struct Contribution {
     /// Stable contribution-local positions, not final response BlockIds.
     pub blocks: Vec<BlockContent>,
     pub bodies: Vec<RequiredBody>,
+    pub projection: super::projection::RecordFacts,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LinkKey {
@@ -281,7 +284,7 @@ impl ResponseCell {
         .collect()
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EvidenceUnit {
     Json {
         tag: String,

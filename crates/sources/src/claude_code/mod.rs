@@ -7,9 +7,10 @@ use polylogue_model::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 pub mod keyed;
+pub mod projection;
 mod raw;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 1;
+pub const PARSER_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -504,6 +505,8 @@ impl<R: ReadView> KeyedRecords<R> {
                     revision: 0,
                     selected: Default::default(),
                     incomplete_bodies: 0,
+                    selected_from: Default::default(),
+                    selected_facts: Default::default(),
                 }
             }
         };
@@ -529,6 +532,46 @@ impl<R: ReadView> KeyedRecords<R> {
                 item
             }
         };
+        let revision = response
+            .revision
+            .checked_add(1)
+            .ok_or("Claude evidence revision overflow")?;
+        let raw_changed = old.as_ref().is_none_or(|previous| previous.raw != raw);
+        let mut projected = projection::record(
+            &v,
+            if raw_changed {
+                &rec.value
+            } else {
+                &Value::Null
+            },
+            &blocks,
+            revision,
+            old.as_ref().map(|c| &c.projection),
+        )?;
+        if item == 0 {
+            if let Some(previous) = &old {
+                let old_raw: Value =
+                    serde_json::from_slice(&previous.raw).map_err(|e| e.to_string())?;
+                if previous
+                    .projection
+                    .obligations
+                    .contains(&projection::CountingObligation::FirstAuthorUpdate)
+                    || [
+                        "origin",
+                        "promptSource",
+                        "isMeta",
+                        "isVisibleInTranscriptOnly",
+                        "isApiErrorMessage",
+                    ]
+                    .iter()
+                    .any(|key| old_raw.get(*key) != v.get(*key))
+                {
+                    projected
+                        .obligations
+                        .push(projection::CountingObligation::FirstAuthorUpdate);
+                }
+            }
+        }
         // Stable item slots own blocks until the body finalizer assigns ordinary
         // one-counter BlockIds. A changed count never mutates a historical body.
         let contribution = Contribution {
@@ -536,6 +579,7 @@ impl<R: ReadView> KeyedRecords<R> {
             raw,
             blocks: std::mem::take(&mut blocks),
             bodies,
+            projection: projected,
         };
         let old_missing = old.as_ref().map_or(0, |c| {
             c.bodies.iter().filter(|b| b.payload.is_none()).count() as u64
@@ -550,10 +594,7 @@ impl<R: ReadView> KeyedRecords<R> {
             .checked_sub(old_missing)
             .and_then(|n| n.checked_add(missing))
             .ok_or("Claude required-body counter mismatch")?;
-        response.revision = response
-            .revision
-            .checked_add(1)
-            .ok_or("Claude evidence revision overflow")?;
+        response.revision = revision;
         // Only newly supplied fields advance their response-level selection.
         // Inherited fields in a same-UUID overlay do not become later updates.
         if old
@@ -563,6 +604,11 @@ impl<R: ReadView> KeyedRecords<R> {
             for (index, path) in METADATA_PATHS.iter().enumerate() {
                 if let Some(value) = raw::optional_field(rec.bytes, path)? {
                     response.selected[index] = Some(raw::canonical(value)?);
+                    response.selected_from[index] = Some(item);
+                    let semantic: Value =
+                        serde_json::from_slice(value).map_err(|e| e.to_string())?;
+                    response.selected_facts[index] =
+                        projection::selected(index, &semantic, revision);
                 }
             }
         }
@@ -822,6 +868,18 @@ fn usage_of(u: &Value) -> Usage {
         output: g("output_tokens"),
         cache_read: g("cache_read_input_tokens"),
         cache_write: g("cache_creation_input_tokens"),
+        cache_write_5m: u
+            .get("cache_creation")
+            .and_then(|m| m.get("ephemeral_5m_input_tokens"))
+            .and_then(Value::as_u64),
+        cache_write_1h: u
+            .get("cache_creation")
+            .and_then(|m| m.get("ephemeral_1h_input_tokens"))
+            .and_then(Value::as_u64),
+        reasoning: u
+            .get("output_tokens_details")
+            .and_then(|m| m.get("thinking_tokens"))
+            .and_then(Value::as_u64),
         ..Usage::default()
     }
 }
@@ -834,7 +892,7 @@ fn text_of(v: &Value) -> Option<String> {
                 .iter()
                 .filter_map(|x| x.get("text").and_then(Value::as_str))
                 .collect();
-            if parts.is_empty() {
+            if parts.is_empty() && !a.is_empty() {
                 None
             } else {
                 Some(parts.join("\n"))
@@ -867,7 +925,8 @@ fn blocks_of(content: &Value) -> Vec<BlockContent> {
                             .get("signature")
                             .and_then(Value::as_str)
                             .map(str::to_owned),
-                        ..Thinking::default()
+                        encrypted: it.get("encrypted").and_then(Value::as_bool),
+                        data: it.get("data").and_then(Value::as_str).map(str::to_owned),
                     }),
                     "tool_use" => {
                         let input = it.get("input").cloned();
