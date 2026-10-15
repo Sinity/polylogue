@@ -16,11 +16,7 @@ fn header() -> String {
 }
 fn run(view: MemoryReadView, resume: Resume, bytes: &str) -> (MemoryReadView, Resume) {
     let start = resume.parsed_upto;
-    let framed = drive_jsonl(
-        KeyedRecords::new(view.clone(), resume),
-        bytes.as_bytes(),
-        start,
-    );
+    let framed = drive_jsonl(KeyedRecords::new(&view, resume), bytes.as_bytes(), start);
     let mut delta = framed.output.unwrap();
     delta.resume.parsed_upto = framed.parsed_upto;
     let mut view = view;
@@ -132,7 +128,7 @@ fn unowned_child_never_enters_latest_wrapper_message() {
         "event_msg",
         json!({"type":"item_completed","item":{"type":"CommandExecution","id":"child","source":"agent","status":"failed","exit_code":1,"aggregated_output":""}}),
     );
-    let framed = drive_jsonl(KeyedRecords::new(view.clone(), resume), child.as_bytes(), 0);
+    let framed = drive_jsonl(KeyedRecords::new(&view, resume), child.as_bytes(), 0);
     let delta = framed.output.unwrap();
     assert!(delta.resume.normalization_incomplete());
     assert_eq!(delta.events[0].kind, "unowned_tool_item");

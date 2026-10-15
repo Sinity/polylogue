@@ -18,7 +18,7 @@ fn header() -> String {
 }
 fn run(view: MemoryReadView, resume: Resume, bytes: &[u8]) -> (MemoryReadView, Resume, Delta) {
     let start = resume.parsed_upto;
-    let framed = drive_jsonl(KeyedRecords::new(view.clone(), resume), bytes, start);
+    let framed = drive_jsonl(KeyedRecords::new(&view, resume), bytes, start);
     let mut delta = framed.output.unwrap();
     delta.resume.parsed_upto = framed.parsed_upto;
     assert!(framed.counts.balanced());
@@ -99,17 +99,6 @@ impl ReadView for Meter<'_> {
         self.base.previous(k)
     }
 }
-impl ReadView for &Meter<'_> {
-    fn read(&self, k: &Key) -> Result<Option<Cell>, String> {
-        (**self).read(k)
-    }
-    fn next(&self, k: &Key) -> Result<Option<(Key, Cell)>, String> {
-        (**self).next(k)
-    }
-    fn previous(&self, k: &Key) -> Result<Option<(Key, Cell)>, String> {
-        (**self).previous(k)
-    }
-}
 fn prefix(n: usize) -> (MemoryReadView, Resume) {
     let mut bytes = header();
     // One early running result keeps the old contiguous suffix unsettled.
@@ -137,11 +126,15 @@ fn prefix(n: usize) -> (MemoryReadView, Resume) {
         );
         bytes += &line("event_msg", json!({"type":"token_count","info":null}));
     }
-    let (view, resume, _) = run(
-        MemoryReadView::default(),
-        Resume::default(),
-        bytes.as_bytes(),
-    );
+    let mut view = MemoryReadView::default();
+    let mut resume = Resume::default();
+    // Build the fixture through admitted provider steps; constructing a large
+    // fixture in one overlay must not disable the production admission limit.
+    for record in bytes.as_bytes().split_inclusive(|b| *b == b'\n') {
+        let (next, state, _) = run(view, resume, record);
+        view = next;
+        resume = state;
+    }
     (view, resume)
 }
 #[test]

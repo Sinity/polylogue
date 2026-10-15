@@ -118,6 +118,17 @@ pub trait ReadView {
     fn next(&self, after: &Key) -> Result<Option<(Key, Cell)>, String>;
     fn previous(&self, before: &Key) -> Result<Option<(Key, Cell)>, String>;
 }
+impl<V: ReadView + ?Sized> ReadView for &V {
+    fn read(&self, key: &Key) -> Result<Option<Cell>, String> {
+        (**self).read(key)
+    }
+    fn next(&self, key: &Key) -> Result<Option<(Key, Cell)>, String> {
+        (**self).next(key)
+    }
+    fn previous(&self, key: &Key) -> Result<Option<(Key, Cell)>, String> {
+        (**self).previous(key)
+    }
+}
 #[derive(Clone, Default)]
 pub struct MemoryReadView {
     pub cells: BTreeMap<Key, Cell>,
