@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(
             writer
                 .archive
-                .query_row("SELECT count(*) FROM revision", [], |r| r.get::<_, u64>(0))
+                .query_row("SELECT count(*) FROM revision", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
             1
         );
@@ -260,7 +260,7 @@ mod tests {
             writer
                 .archive
                 .query_row("SELECT count(*) FROM observation", [], |r| r
-                    .get::<_, u64>(0))
+                    .get::<_, i64>(0))
                 .unwrap(),
             1
         );
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(
             writer
                 .archive
-                .query_row("SELECT count(*) FROM extent", [], |r| r.get::<_, u64>(0))
+                .query_row("SELECT count(*) FROM extent", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
             1
         );
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(
             writer
                 .archive
-                .query_row("SELECT count(*) FROM input", [], |r| r.get::<_, u64>(0))
+                .query_row("SELECT count(*) FROM input", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
             1
         );
