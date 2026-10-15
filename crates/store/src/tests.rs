@@ -374,7 +374,7 @@ fn corrupt_table(name: &str, table: &str) -> (tempfile::TempDir, PathBuf, u64, u
     drop(Writer::open(tmp.path()).unwrap());
     let file = tmp.path().join(name);
     let conn = open(&file, true, true).unwrap();
-    let page: u64 = conn
+    let page: u32 = conn
         .query_row(
             "SELECT rootpage FROM sqlite_schema WHERE name=?1",
             [table],
@@ -385,6 +385,7 @@ fn corrupt_table(name: &str, table: &str) -> (tempfile::TempDir, PathBuf, u64, u
         .query_row("PRAGMA page_size", [], |r| r.get(0))
         .unwrap();
     drop(conn);
+    let page = u64::from(page);
     assert!(page > 1);
     let mut bytes = fs::read(&file).unwrap();
     bytes[((page - 1) * u64::from(page_size) + 200) as usize] ^= 0x40;
