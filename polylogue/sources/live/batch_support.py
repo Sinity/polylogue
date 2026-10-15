@@ -6,6 +6,7 @@ import errno
 import hashlib
 import io
 import json
+import os
 import re
 import sqlite3
 import time
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from polylogue.sources.sqlite_inspection import SQLiteClassification
 
 from polylogue.archive.artifact_taxonomy import (
+    ArtifactStreamClassification,
     classify_artifact_path,
     strong_path_classification,
 )
@@ -35,7 +37,11 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_failure_evidence import PartialAdmission, RetainedRawDecodeRefusalError
 from polylogue.core.sources import origin_from_provider
-from polylogue.sources.acquisition_boundary import refuse_declared_foreign, refuse_foreign_path
+from polylogue.sources.acquisition_boundary import (
+    captured_path_coordinate,
+    refuse_declared_foreign,
+    refuse_foreign_path,
+)
 from polylogue.sources.dispatch import (
     ForeignOriginContentError,
     detect_provider_from_raw_stream_evidence,
@@ -1206,17 +1212,96 @@ def _jsonl_provider_and_non_session_proof(
     *,
     checkpoint: Callable[[], None] | None = None,
 ) -> tuple[Provider, bool, str | None]:
-    """Return positive non-session proof, preserving unproven decode outcomes."""
+    """Share complete record folds without turning unknown input into refusal."""
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
-    # Declared raw-only carriers never borrow authority from record shape.
     if path_declaration_refuses_session(fallback_provider, path):
         return fallback_provider, True, None
-    provider, detection_failure = detect_provider_from_path_evidence(path, fallback_provider, check_stop=checkpoint)
-    if path_declaration_refuses_session(provider, path):
-        return provider, True, detection_failure
-    scan = scan_jsonl_session_artifact(path, provider=provider, source_path=path, check_stop=checkpoint)
-    return provider, scan.proved_non_session, detection_failure
+    with path.open("rb") as handle:
+        before = os.fstat(handle.fileno())
+        coordinate = captured_path_coordinate(path, handle.fileno())
+        fused = _complete_jsonl_admission(handle, path, fallback_provider, checkpoint=checkpoint)
+        if fused is not None:
+            provider, classification = fused
+            proved_non_session = classification.proved_non_session
+            detection_failure = None
+        else:
+            provider, evidence = detect_provider_from_raw_stream_evidence(
+                handle, path.name, fallback_provider, truncated_tail_ok=True, check_stop=checkpoint
+            )
+            detection_failure = evidence if evidence.startswith("stream decode error") else None
+            proved_non_session = (
+                path_declaration_refuses_session(provider, path)
+                or scan_jsonl_session_artifact(
+                    handle, provider=provider, source_path=path, check_stop=checkpoint
+                ).proved_non_session
+            )
+        after = path.stat()
+        if captured_path_coordinate(path, handle.fileno()) != coordinate:
+            raise OSError(errno.ESTALE, "source coordinate changed during admission", str(path))
+        descriptor = os.fstat(handle.fileno())
+        attributes = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        identity = tuple(getattr(before, name) for name in attributes)
+        if identity != tuple(getattr(descriptor, name) for name in attributes) or identity != tuple(
+            getattr(after, name) for name in attributes
+        ):
+            raise OSError(errno.ESTALE, "source changed during admission", str(path))
+    return provider, path_declaration_refuses_session(provider, path) or proved_non_session, detection_failure
+
+
+def _complete_jsonl_admission(
+    handle: IO[bytes], path: Path, fallback_provider: Provider, *, checkpoint: Callable[[], None] | None
+) -> tuple[Provider, ArtifactStreamClassification] | None:
+    """Fold complete physical records once; other grammars keep their own law."""
+    from contextlib import closing
+
+    from polylogue.archive.artifact_taxonomy import ArtifactRecordClassifiers
+    from polylogue.archive.artifact_taxonomy.support import record_candidacy_projection
+    from polylogue.core.json_envelope import jsonl_has_record_successor
+    from polylogue.sources.detection_projection import iter_decoded_jsonl_records, project_detection_value
+    from polylogue.sources.origin_specs import detector_registry
+
+    # A partial tail's original bytes and parser prefix are different inputs.
+    # Single/multiline documents likewise retain their document grammar.
+    encoding = json.detect_encoding(handle.read(4))
+    handle.seek(0)
+    if encoding not in {"utf-8", "utf-8-sig"}:
+        return None
+    if jsonl_parse_prefix_size_of_handle(handle, check_stop=checkpoint) is not None:
+        return None
+    if not jsonl_has_record_successor(handle, check_stop=checkpoint):
+        return None
+    detector = detector_registry().record_stream_classifier()
+    classifiers = ArtifactRecordClassifiers(detector.possible_providers() | {fallback_provider}, source_path=path)
+    projection = record_candidacy_projection()
+    callback_failure: BaseException | None = None
+
+    def check() -> None:
+        nonlocal callback_failure
+        if checkpoint is not None:
+            try:
+                checkpoint()
+            except BaseException as error:
+                callback_failure = error
+                raise
+
+    try:
+        with closing(iter_decoded_jsonl_records(handle, check_stop=check)) as records:
+            for record in records:
+                detector.observe(record)
+                artifact_record = project_detection_value(record, projection)
+                classifiers.observe(artifact_record, possible=detector.possible_providers() | {fallback_provider})
+        detected, _evidence = detector.finish()
+        selected_provider = detected or fallback_provider
+        return selected_provider, classifiers.finish(selected_provider)
+    except (ijson.JSONError, UnicodeError, json.JSONDecodeError):
+        if callback_failure is not None:
+            raise callback_failure from None
+        # Malformed completed records need the artifact owner's explicit
+        # decode-loss accounting and the detector's absence of provider proof.
+        return None
+    finally:
+        handle.seek(0)
 
 
 def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:

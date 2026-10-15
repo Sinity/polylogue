@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import IO, BinaryIO, Literal, cast
 
@@ -711,6 +711,221 @@ def classify_artifact_records(
     )
 
 
+@dataclass
+class _ArtifactRecordSummary:
+    evidence: _RecordArtifactEvidence = field(default_factory=_RecordArtifactEvidence)
+    count: int = 0
+    all_metadata: bool = True
+    item: JSONDocument = field(default_factory=dict)
+
+    def observe(self, value: object) -> None:
+        self.count += 1
+        self.item = json_document(value)
+        self.evidence.observe(self.item)
+        self.all_metadata &= isinstance(value, str | int | float | bool | type(None)) or (
+            isinstance(value, dict) and looks_metadataish_dict(self.item)
+        )
+
+
+class ArtifactRecordClassifier:
+    """One invocation's exact artifact fold; no decoded records are retained."""
+
+    def __init__(
+        self,
+        *,
+        provider: Provider,
+        source_path: str | Path | None = None,
+        sequence: bool = True,
+        empty_jsonl: bool = True,
+        _shared: _ArtifactRecordSummary | None = None,
+    ) -> None:
+        self.provider = provider
+        self.source_path = source_path
+        self.sequence = sequence
+        self.empty_jsonl = empty_jsonl
+        self.fact_path_recovery = fact_path_admits_session_content(source_path, provider=provider)
+        self._summary = _shared if _shared is not None else _ArtifactRecordSummary()
+        self._owns_summary = _shared is None
+        self._codex_legacy_records = 0
+        self.specific_document = False
+        self.first_classification: ArtifactClassification | None = None
+        self.codex_unsupported_record = False
+
+    def observe(self, value: object) -> None:
+        from polylogue.sources.parsers.codex import is_legacy_response_record, is_supported_outer_record
+
+        check_compute_cancelled()
+        if self._owns_summary:
+            self._summary.observe(value)
+        item = self._summary.item
+        if self.provider is Provider.CODEX:
+            self.codex_unsupported_record |= not is_supported_outer_record(value)
+            # An unwrapped 2025 response record (function_call, its output,
+            # reasoning) carries no generic envelope marker, yet the parser
+            # materializes it; count it as record evidence so a rollout made
+            # mostly of tool calls still clears the record majority.
+            self._codex_legacy_records += int(is_legacy_response_record(value) and not looks_like_record_entry(item))
+        classification = classify_artifact(cast(JSONValue, value), provider=self.provider, source_path=self.source_path)
+        if self._summary.count == 1:
+            self.first_classification = classification
+        self.specific_document |= classification.parse_as_session
+
+    def finish(self) -> ArtifactStreamClassification:
+        evidence = self._summary.evidence
+        if self._codex_legacy_records:
+            evidence = replace(evidence, record_count=evidence.record_count + self._codex_legacy_records)
+
+        def result(classification: ArtifactClassification, proved: bool) -> ArtifactStreamClassification:
+            return ArtifactStreamClassification(classification, proved, self._summary.count)
+
+        if self.empty_jsonl and not self._summary.count:
+            classification = ArtifactClassification(
+                self.provider, ArtifactKind.UNKNOWN, False, False, 0, "no complete JSONL artifact records"
+            )
+            return result(classification, False)
+        if not self.sequence and self.first_classification is not None and not self.fact_path_recovery:
+            classification = replace(self.first_classification, schema_eligible=False)
+            return result(
+                classification,
+                not classification.parse_as_session
+                and (
+                    classification.kind is not ArtifactKind.UNKNOWN
+                    or evidence.all_beads
+                    and bool(evidence.document_count)
+                ),
+            )
+        explicit = strong_path_classification(self.source_path, provider=self.provider)
+        if explicit is not None and not explicit.parse_as_session and not self.fact_path_recovery:
+            return result(explicit, True)
+        if (
+            self.provider is Provider.CODEX
+            and evidence.document_count
+            and evidence.all_codex_session_meta
+            and not (evidence.document_count > 1 and evidence.all_bare_codex_headers)
+        ):
+            # A Codex stream of nothing but ``session_meta`` headers carries no
+            # conversation records, wherever it lives: it is not a session. The
+            # narrow repeated-bare-header recovery shape below stays admitted.
+            classification = ArtifactClassification(
+                self.provider,
+                ArtifactKind.METADATA_DOCUMENT,
+                False,
+                False,
+                0,
+                "Codex session-meta-only stream without conversation records",
+            )
+            return result(classification, True)
+        if self.provider is Provider.CODEX and self.sequence and self.codex_unsupported_record:
+            # The parser would drop such a record and report the rest as the
+            # whole session. The same contract ``classify_artifact`` applies to a
+            # complete payload refuses the stream instead, ahead of any path rule,
+            # so the drop surfaces as a typed unsupported shape.
+            classification = ArtifactClassification(
+                self.provider,
+                ArtifactKind.UNKNOWN,
+                False,
+                False,
+                0,
+                "Codex record stream contains unsupported session records",
+            )
+            return result(classification, False)
+        if evidence.extracted and not evidence.provider_envelope:
+            classification = ArtifactClassification(
+                self.provider, ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS, False, False, 0, "extracted transcript corpus"
+            )
+            return result(classification, True)
+        if (
+            self.provider is Provider.CLAUDE_CODE
+            and explicit is not None
+            and explicit.parse_as_session
+            and evidence.saw_checkpoint
+            and not evidence.checkpoint_disqualified
+        ):
+            classification = ArtifactClassification(
+                self.provider,
+                ArtifactKind.FILE_HISTORY_SNAPSHOT,
+                False,
+                False,
+                0,
+                "Claude Code file-history-snapshot-only stream",
+            )
+            return result(classification, True)
+        if explicit is not None and not self.fact_path_recovery:
+            return result(replace(explicit, schema_eligible=False), False)
+        if evidence.document_count and evidence.all_hooks:
+            classification = ArtifactClassification(
+                self.provider, ArtifactKind.HOOK_EVENT, False, False, 100, "hook event stream"
+            )
+            return result(classification, True)
+        if evidence.document_count and evidence.all_beads:
+            classification = ArtifactClassification(
+                Provider.UNKNOWN, ArtifactKind.UNKNOWN, False, False, 0, "Beads interaction-history artifact"
+            )
+            return result(classification, True)
+        if self.provider is Provider.CODEX and evidence.document_count > 1 and evidence.all_bare_codex_headers:
+            classification = ArtifactClassification(
+                self.provider,
+                ArtifactKind.SESSION_RECORD_STREAM,
+                True,
+                False,
+                120,
+                "repeated bare Codex session-meta record stream",
+            )
+            return result(classification, False)
+        candidacy = _record_candidacy_from_evidence(
+            evidence,
+            self.specific_document,
+            provider=self.provider,
+            source_path=self.source_path,
+            fact_path_recovery=self.fact_path_recovery,
+        )
+        if candidacy is not None:
+            return result(candidacy, False)
+        if explicit is not None and not explicit.parse_as_session:
+            return result(explicit, True)
+        if self._summary.all_metadata:
+            classification = ArtifactClassification(
+                self.provider,
+                ArtifactKind.METADATA_DOCUMENT,
+                False,
+                False,
+                0,
+                "metadata-oriented list payload" if self._summary.count else "empty list payload",
+            )
+            return result(classification, True)
+        weak = _self_generated_artifact_dir_classification(self.source_path, provider=self.provider)
+        if weak is not None:
+            return result(weak, True)
+        classification = ArtifactClassification(
+            self.provider, ArtifactKind.UNKNOWN, False, False, 0, "unrecognized artifact stream"
+        )
+        return result(classification, False)
+
+
+class ArtifactRecordClassifiers:
+    """Possible-provider folds sharing only provider-independent record facts."""
+
+    def __init__(self, providers: Iterable[Provider], *, source_path: str | Path | None = None) -> None:
+        self._summary = _ArtifactRecordSummary()
+        self._classifiers = {
+            provider: ArtifactRecordClassifier(provider=provider, source_path=source_path, _shared=self._summary)
+            for provider in providers
+        }
+
+    def observe(self, value: object, *, possible: frozenset[Provider]) -> None:
+        self._summary.observe(value)
+        for provider in tuple(self._classifiers):
+            if provider not in possible:
+                del self._classifiers[provider]
+        for classifier in self._classifiers.values():
+            classifier.observe(value)
+        # No prior record's selected mapping is retained between feed calls.
+        self._summary.item = {}
+
+    def finish(self, provider: Provider) -> ArtifactStreamClassification:
+        return self._classifiers[provider].finish()
+
+
 def _classify_artifact_records(
     records: Iterable[object],
     *,
@@ -720,161 +935,14 @@ def _classify_artifact_records(
     empty_jsonl: bool,
     check_stop: Callable[[], None] | None,
 ) -> ArtifactStreamClassification:
-    # At a ``fact`` path, decoded session evidence outranks the location: the
-    # rule's refusal stands only when the records carry none.
-    fact_path_recovery = fact_path_admits_session_content(source_path, provider=provider)
-    evidence = _RecordArtifactEvidence()
-    count = 0
-    all_metadata = True
-    specific_document = False
-    first_classification: ArtifactClassification | None = None
-    codex_unsupported_record = False
-    from polylogue.sources.parsers.codex import is_legacy_response_record, is_supported_outer_record
-
-    def result(classification: ArtifactClassification, proved: bool) -> ArtifactStreamClassification:
-        return ArtifactStreamClassification(classification, proved, count)
-
+    classifier = ArtifactRecordClassifier(
+        provider=provider, source_path=source_path, sequence=sequence, empty_jsonl=empty_jsonl
+    )
     for value in records:
-        check_compute_cancelled()
         if check_stop is not None:
             check_stop()
-        count += 1
-        item = json_document(value)
-        evidence.observe(item)
-        if provider is Provider.CODEX:
-            codex_unsupported_record |= not is_supported_outer_record(value)
-            # An unwrapped 2025 response record (function_call, its output,
-            # reasoning) carries no generic envelope marker, yet the parser
-            # materializes it; count it as record evidence so a rollout made
-            # mostly of tool calls still clears the record majority.
-            evidence.record_count += int(is_legacy_response_record(value) and not looks_like_record_entry(item))
-        all_metadata &= isinstance(value, str | int | float | bool | type(None)) or (
-            isinstance(value, dict) and looks_metadataish_dict(item)
-        )
-        classification = classify_artifact(cast(JSONValue, value), provider=provider, source_path=source_path)
-        if count == 1:
-            first_classification = classification
-        specific_document |= classification.parse_as_session
-    if empty_jsonl and not count:
-        classification = ArtifactClassification(
-            provider, ArtifactKind.UNKNOWN, False, False, 0, "no complete JSONL artifact records"
-        )
-        return result(classification, False)
-    if not sequence and first_classification is not None and not fact_path_recovery:
-        classification = replace(first_classification, schema_eligible=False)
-        return result(
-            classification,
-            not classification.parse_as_session
-            and (
-                classification.kind is not ArtifactKind.UNKNOWN or evidence.all_beads and bool(evidence.document_count)
-            ),
-        )
-    explicit = strong_path_classification(source_path, provider=provider)
-    if explicit is not None and not explicit.parse_as_session and not fact_path_recovery:
-        return result(explicit, True)
-    if (
-        provider is Provider.CODEX
-        and evidence.document_count
-        and evidence.all_codex_session_meta
-        and not (evidence.document_count > 1 and evidence.all_bare_codex_headers)
-    ):
-        # A Codex stream of nothing but ``session_meta`` headers carries no
-        # conversation records, wherever it lives: it is not a session. The
-        # narrow repeated-bare-header recovery shape below stays admitted.
-        classification = ArtifactClassification(
-            provider,
-            ArtifactKind.METADATA_DOCUMENT,
-            False,
-            False,
-            0,
-            "Codex session-meta-only stream without conversation records",
-        )
-        return result(classification, True)
-    if provider is Provider.CODEX and sequence and codex_unsupported_record:
-        # The parser would drop such a record and report the rest as the
-        # whole session. The same contract ``classify_artifact`` applies to a
-        # complete payload refuses the stream instead, ahead of any path rule,
-        # so the drop surfaces as a typed unsupported shape.
-        classification = ArtifactClassification(
-            provider,
-            ArtifactKind.UNKNOWN,
-            False,
-            False,
-            0,
-            "Codex record stream contains unsupported session records",
-        )
-        return result(classification, False)
-    if evidence.extracted and not evidence.provider_envelope:
-        classification = ArtifactClassification(
-            provider, ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS, False, False, 0, "extracted transcript corpus"
-        )
-        return result(classification, True)
-    if (
-        provider is Provider.CLAUDE_CODE
-        and explicit is not None
-        and explicit.parse_as_session
-        and evidence.saw_checkpoint
-        and not evidence.checkpoint_disqualified
-    ):
-        classification = ArtifactClassification(
-            provider,
-            ArtifactKind.FILE_HISTORY_SNAPSHOT,
-            False,
-            False,
-            0,
-            "Claude Code file-history-snapshot-only stream",
-        )
-        return result(classification, True)
-    if explicit is not None and not fact_path_recovery:
-        return result(replace(explicit, schema_eligible=False), False)
-    if evidence.document_count and evidence.all_hooks:
-        classification = ArtifactClassification(
-            provider, ArtifactKind.HOOK_EVENT, False, False, 100, "hook event stream"
-        )
-        return result(classification, True)
-    if evidence.document_count and evidence.all_beads:
-        classification = ArtifactClassification(
-            Provider.UNKNOWN, ArtifactKind.UNKNOWN, False, False, 0, "Beads interaction-history artifact"
-        )
-        return result(classification, True)
-    if provider is Provider.CODEX and evidence.document_count > 1 and evidence.all_bare_codex_headers:
-        classification = ArtifactClassification(
-            provider,
-            ArtifactKind.SESSION_RECORD_STREAM,
-            True,
-            False,
-            120,
-            "repeated bare Codex session-meta record stream",
-        )
-        return result(classification, False)
-    candidacy = _record_candidacy_from_evidence(
-        evidence,
-        specific_document,
-        provider=provider,
-        source_path=source_path,
-        fact_path_recovery=fact_path_recovery,
-    )
-    if candidacy is not None:
-        return result(candidacy, False)
-    if explicit is not None and not explicit.parse_as_session:
-        return result(explicit, True)
-    if all_metadata:
-        classification = ArtifactClassification(
-            provider,
-            ArtifactKind.METADATA_DOCUMENT,
-            False,
-            False,
-            0,
-            "metadata-oriented list payload" if count else "empty list payload",
-        )
-        return result(classification, True)
-    weak = _self_generated_artifact_dir_classification(source_path, provider=provider)
-    if weak is not None:
-        return result(weak, True)
-    classification = ArtifactClassification(
-        provider, ArtifactKind.UNKNOWN, False, False, 0, "unrecognized artifact stream"
-    )
-    return result(classification, False)
+        classifier.observe(value)
+    return classifier.finish()
 
 
 def _classify_list(

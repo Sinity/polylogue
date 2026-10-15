@@ -82,6 +82,14 @@ are rolled back after its evidence folds finish; ending or abandoning the
 stream closes the scratch store. Small records keep their decoded route.
 
 
+Complete multi-record JSONL admission shares one decoded stream between the
+registry's provider fold and the artifact fold. Each still-possible provider
+keeps compact artifact state until complete late evidence selects the winner.
+The opened descriptor and path revision must stay unchanged. Single/multiline
+documents, partial tails and malformed-record accounting keep their declared
+grammar owners; original-byte revision hashing remains independent. Unknown
+input still supplies no positive non-session proof.
+
 The artifact classifier proves a complete first physical JSONL value has a
 later nonblank line before trying the existing record fold first. The syntax
 probe retains no record values. Single values, multiline documents and failed
