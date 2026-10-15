@@ -29,7 +29,7 @@ class Run:
         self.next_import = 1
         self.paths = []
 
-    def cli(self, *args, expected=(5,), archive=None):
+    def cli(self, *args, expected=(5,), archive=None, decode=True):
         argv = [str(self.binary), "--archive", str(archive or self.archive), *args]
         index = len(self.commands)
         record = {"argv": argv, "expected": list(expected), "exit": None,
@@ -40,7 +40,7 @@ class Run:
         record["exit"] = result.returncode
         text = (self.output / record["stdout"]).read_text()
         require(result.returncode in expected, f"unexpected exit {result.returncode}: {argv}; {record}")
-        return json.loads(text) if text else None
+        return json.loads(text) if text and decode else text if text else None
 
     def start(self):
         index = len(self.processes)
@@ -130,7 +130,8 @@ def exercise(run):
     selected=run.query("ranktoken | limit 1",111,["claude-code:query-newer-0109"])
     require(selected["ranking"]["state"]=="unavailable","fabricated canonical relevance")
     before_document=run.cli(sid,"read","--format","json")
-    run.cli("olderneedle", "list")
+    terminal=run.cli("olderneedle", "list",decode=False)
+    require(sid in terminal,"terminal omitted the matching Session")
     literal=run.cli("find","list","--json")
     require(literal["count"]==0,"find list silently widened into listing")
     run.cli("find","--json",expected=(2,))
