@@ -31,6 +31,10 @@ impl Key {
             Self::CallWitness(_) => "call_witness",
             Self::StatusWitness(_) => "status_witness",
             Self::Result(_) => "result",
+            Self::NativeItem(_, _) => "native_item",
+            Self::OutputChunk(_, _, _) => "output_chunk",
+            Self::PendingResult(_, _) => "pending_result",
+            Self::ContinuationTarget(_) => "continuation_target",
         }
     }
     /// Exact size for the legacy in-memory convenience API. Admitted callers
@@ -42,6 +46,19 @@ impl Key {
     /// NUL escapes. Any subsequent scan is bounded by the supplied allowance.
     /// The error is the required size or a cheap lower bound on that size.
     pub fn ordered_len_limited(&self, allowance: usize) -> Result<usize, usize> {
+        if let Self::NativeItem(scope, id) = self {
+            let lower = 5usize.saturating_add(scope.len()).saturating_add(id.len());
+            if lower > allowance {
+                return Err(lower);
+            }
+            let required =
+                lower.saturating_add(scope.bytes().chain(id.bytes()).filter(|b| *b == 0).count());
+            return if required > allowance {
+                Err(required)
+            } else {
+                Ok(required)
+            };
+        }
         let (fixed, text): (usize, Option<&str>) = match self {
             Self::Message(_)
             | Self::Wrapper(_)
@@ -49,7 +66,8 @@ impl Key {
             | Self::BlockOrder(_)
             | Self::EvidenceHead(_)
             | Self::Context(_) => (9, None),
-            Self::Evidence(_, _, _) => (25, None),
+            Self::Evidence(_, _, _) | Self::OutputChunk(_, _, _) => (25, None),
+            Self::PendingResult(_, _) => (17, None),
             Self::EvidenceItem(_, s) => (11, Some(s)),
             Self::Block(_, _) => (17, None),
             Self::Call(s)
@@ -62,10 +80,12 @@ impl Key {
             | Self::Occurrence(s)
             | Self::CallWitness(s)
             | Self::StatusWitness(s)
-            | Self::Result(s) => (3, Some(s)),
+            | Self::Result(s)
+            | Self::ContinuationTarget(s) => (3, Some(s)),
             Self::CallBlock(s, _, _) => (19, Some(s)),
             Self::WrapperCall(s, _) | Self::Child(s, _) | Self::Mutable(_, s) => (11, Some(s)),
             Self::Prompt => (1, None),
+            Self::NativeItem(_, _) => unreachable!("handled above"),
         };
         let lower = fixed.saturating_add(text.map_or(0, str::len));
         if lower > allowance {
@@ -203,6 +223,26 @@ impl Key {
                 out.write_all(&[24])?;
                 text(out, s)?;
             }
+            Self::NativeItem(scope, id) => {
+                out.write_all(&[25])?;
+                text(out, scope)?;
+                text(out, id)?;
+            }
+            Self::OutputChunk(i, b, n) => {
+                out.write_all(&[26])?;
+                number(out, *i)?;
+                number(out, *b)?;
+                number(out, *n)?;
+            }
+            Self::PendingResult(i, b) => {
+                out.write_all(&[27])?;
+                number(out, *i)?;
+                number(out, *b)?;
+            }
+            Self::ContinuationTarget(s) => {
+                out.write_all(&[28])?;
+                text(out, s)?;
+            }
         }
         Ok(())
     }
@@ -277,6 +317,10 @@ impl Key {
             22 => Self::CallWitness(r.text()?),
             23 => Self::StatusWitness(r.text()?),
             24 => Self::Result(r.text()?),
+            25 => Self::NativeItem(r.text()?, r.text()?),
+            26 => Self::OutputChunk(r.number()?, r.number()?, r.number()?),
+            27 => Self::PendingResult(r.number()?, r.number()?),
+            28 => Self::ContinuationTarget(r.text()?),
             _ => return Err("unknown Codex cell key tag".into()),
         };
         if !r.0.is_empty() {

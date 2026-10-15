@@ -38,6 +38,60 @@ pub(super) fn session_argument(raw: &[u8], legacy: bool) -> Result<Vec<u8>, Stri
         canonical_field(args, &["session_id"])
     }
 }
+/// Field overlay at the provider item boundary. New field values replace whole
+/// fields (including arrays); fields absent from the newer snapshot survive.
+/// Structural rollout envelopes are rebuilt without decoding numeric values.
+pub(super) fn overlay(
+    old: &[u8],
+    new: &[u8],
+    path: &[&str],
+) -> Result<(Vec<u8>, ValueFields), String> {
+    fn object(raw: &[u8]) -> Result<BTreeMap<String, Box<RawValue>>, String> {
+        serde_json::from_slice(raw).map_err(|e| e.to_string())
+    }
+    fn encode(fields: BTreeMap<String, Box<RawValue>>) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(&fields).map_err(|e| e.to_string())
+    }
+    fn replace(raw: &[u8], path: &[&str], value: &[u8]) -> Result<Vec<u8>, String> {
+        if path.is_empty() {
+            return Ok(value.to_vec());
+        }
+        let mut fields = object(raw)?;
+        let child = fields
+            .get(path[0])
+            .ok_or("missing structural Codex envelope")?;
+        let replaced = replace(child.get().as_bytes(), &path[1..], value)?;
+        fields.insert(
+            path[0].into(),
+            serde_json::from_slice(&replaced).map_err(|e| e.to_string())?,
+        );
+        encode(fields)
+    }
+    let mut previous = object(field(old, path)?)?;
+    let newer = object(field(new, path)?)?;
+    let missing: Vec<String> = previous
+        .keys()
+        .filter(|key| !newer.contains_key(*key))
+        .cloned()
+        .collect();
+    let mut conflicts = missing;
+    for name in ["role", "type"] {
+        if let (Some(a), Some(b)) = (previous.get(name), newer.get(name)) {
+            if a.get() != b.get() {
+                conflicts.push(name.into());
+            }
+        }
+    }
+    previous.extend(newer);
+    let item = encode(previous)?;
+    let canonical = replace(new, path, &item)?;
+    let value = serde_json::from_slice(&item).map_err(|e| e.to_string())?;
+    Ok((canonical, ValueFields { value, conflicts }))
+}
+pub(super) struct ValueFields {
+    pub value: serde_json::Value,
+    pub conflicts: Vec<String>,
+}
 #[cfg(test)]
 mod tests {
     use super::*;

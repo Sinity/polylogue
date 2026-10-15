@@ -4,11 +4,11 @@ use crate::frame::{IgnoredKind, Record, RecordOutcome, RecordParser};
 use polylogue_model::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 pub mod keyed;
 mod keyed_codec;
 mod raw;
-pub const PARSER_VERSION: u32 = 1;
+pub const PARSER_VERSION: u32 = 2;
 
 /// Record kinds that carry nothing to keep in the index (their bytes stay stored).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +110,22 @@ fn texts(content: Option<&Value>) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn native_outcome(item: &Value) -> (ToolOutcome, Option<i64>) {
+    let exit = item.get("exit_code").and_then(Value::as_i64);
+    let status = item.get("status").and_then(Value::as_str);
+    let outcome = match (exit, status) {
+        (Some(0), _) | (None, Some("completed")) => ToolOutcome::Ok,
+        (Some(_), _) | (None, Some("failed")) => ToolOutcome::Error { reason: None },
+        (_, Some("declined")) => ToolOutcome::Error {
+            reason: Some(ErrorReason::Denied("declined".into())),
+        },
+        _ => ToolOutcome::Unknown {
+            reason: UnknownReason::ResultWithoutStatus,
+        },
+    };
+    (outcome, exit)
 }
 
 fn recorded_output(value: Option<&Value>) -> Option<ToolOutput> {

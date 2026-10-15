@@ -166,3 +166,145 @@ fn exact_numeric_fallback_and_structured_error_are_not_normalized_away() {
         matches!(&message.blocks[0].content,BlockContent::ToolResult(result) if matches!(result.outcome,ToolOutcome::Error{..}))
     );
 }
+
+#[test]
+fn assistant_snapshot_replaces_its_block_and_retains_missing_raw_fields() {
+    let first = line(
+        "response_item",
+        json!({"type":"message","id":"answer","role":"assistant","phase":"final_answer","content":[{"text":"first"}]}),
+    );
+    let close = line("event_msg", json!({"type":"token_count","info":null}));
+    let later = line(
+        "response_item",
+        json!({"id":"answer","content":[{"text":"last"}]}),
+    );
+    let bytes = header() + &first + &first + &close + &later;
+    let (whole, resume) = run(MemoryReadView::default(), Resume::default(), &bytes);
+    assert_eq!(resume.message_count(), 1);
+    let message = whole.message(0).unwrap().unwrap();
+    assert_eq!(message.blocks.len(), 1);
+    assert!(matches!(&message.blocks[0].content,BlockContent::Text{text} if text=="last"));
+    assert_eq!(message.attrs.unwrap()["phase"], "final_answer");
+    let head = head(&whole, 0);
+    assert_eq!(head.items, 1);
+    assert!(!head.incomplete);
+    assert!(
+        units(&whole, 0)[0]
+            .1
+            .windows(12)
+            .any(|bytes| bytes == b"final_answer")
+    );
+    let mut view = MemoryReadView::default();
+    let mut state = Resume::default();
+    for record in bytes.split_inclusive('\n') {
+        let (next, resume) = run(view, state, record);
+        view = next;
+        state = resume;
+    }
+    assert_eq!(view.message(0).unwrap(), whole.message(0).unwrap());
+    assert_eq!(units(&view, 0), units(&whole, 0));
+}
+#[test]
+fn call_and_owned_child_snapshots_replace_without_reopening_or_double_counting() {
+    let wrapper = line(
+        "response_item",
+        json!({"type":"function_call","id":"wrapper-item","call_id":"w","name":"exec","arguments":"{\"cmd\":\"first\"}"}),
+    );
+    let replacement = line(
+        "response_item",
+        json!({"type":"function_call","id":"wrapper-item","arguments":"{\"cmd\":\"last\"}"}),
+    );
+    let child = line(
+        "event_msg",
+        json!({"type":"item_completed","item":{"type":"CommandExecution","id":"child","parent_call_id":"w","status":"completed","aggregated_output":""}}),
+    );
+    let done = line(
+        "response_item",
+        json!({"type":"function_call_output","id":"wrapper-result","call_id":"w","output":"Script completed"}),
+    );
+    let changed = line(
+        "event_msg",
+        json!({"type":"item_completed","item":{"type":"CommandExecution","id":"child","status":"failed","exit_code":1}}),
+    );
+    let (view, resume) = run(
+        MemoryReadView::default(),
+        Resume::default(),
+        &(header() + &wrapper + &wrapper + &replacement + &child + &done + &changed),
+    );
+    assert_eq!(resume.message_count(), 2);
+    assert!(matches!(
+        view.cells.get(&Key::ChildCount("w".into())),
+        Some(Cell::Number(1))
+    ));
+    let message = view.message(0).unwrap().unwrap();
+    assert_eq!(message.blocks.len(), 3);
+    assert!(
+        matches!(&message.blocks[0].content,BlockContent::ToolCall(call) if call.input.as_ref().unwrap()["cmd"]=="last")
+    );
+    assert!(
+        matches!(&message.blocks[2].content,BlockContent::ToolResult(result) if matches!(result.outcome,ToolOutcome::Error{..})&&result.exit_code==Some(1)&&result.output==Some(polylogue_model::ToolOutput::Text(String::new())))
+    );
+}
+#[test]
+fn native_result_snapshot_replaces_the_output_chunk_without_a_second_message() {
+    let call = line(
+        "response_item",
+        json!({"type":"function_call","id":"a","call_id":"c","name":"tool","arguments":"{}"}),
+    );
+    let first = line(
+        "response_item",
+        json!({"type":"function_call_output","id":"out","call_id":"c","output":"first"}),
+    );
+    let last = line("response_item", json!({"id":"out","output":"last"}));
+    let (view, resume) = run(
+        MemoryReadView::default(),
+        Resume::default(),
+        &(header() + &call + &first + &last),
+    );
+    assert_eq!(resume.message_count(), 2);
+    assert_eq!(head(&view, 1).items, 1);
+    let message = view.message(1).unwrap().unwrap();
+    assert_eq!(message.blocks.len(), 1);
+    assert!(
+        matches!(&message.blocks[0].content,BlockContent::ToolResult(result) if result.output==Some(polylogue_model::ToolOutput::Text("last".into())))
+    );
+    assert!(view.cells.contains_key(&Key::PendingResult(1, 0)));
+}
+#[test]
+fn replacing_an_old_continuation_preserves_distinct_equal_chunks_without_prefix_copying() {
+    let call = line(
+        "response_item",
+        json!({"type":"function_call","id":"a","call_id":"c","name":"exec_command","arguments":"{}"}),
+    );
+    let start = line(
+        "response_item",
+        json!({"type":"function_call_output","id":"start","call_id":"c","output":"Process running with session ID 7"}),
+    );
+    let mut bytes = header() + &call + &start;
+    for n in 1..=2 {
+        bytes += &line(
+            "response_item",
+            json!({"type":"function_call","id":format!("stdin{n}"),"call_id":format!("s{n}"),"name":"write_stdin","arguments":"{\"session_id\":7}"}),
+        );
+        bytes += &line(
+            "response_item",
+            json!({"type":"function_call_output","id":format!("chunk{n}"),"call_id":format!("s{n}"),"output":"tick"}),
+        );
+    }
+    let (view, resume) = run(MemoryReadView::default(), Resume::default(), &bytes);
+    let changed = line("response_item", json!({"id":"chunk1","output":"TACK"}));
+    let (view, _) = run(view, resume, &changed);
+    assert_eq!(head(&view, 1).items, 3);
+    let message = view.message(1).unwrap().unwrap();
+    assert!(
+        matches!(&message.blocks[0].content,BlockContent::ToolResult(result) if result.output==Some(polylogue_model::ToolOutput::Text("Process running with session ID 7TACKtick".into())))
+    );
+    let raw = match view.cells.get(&Key::Block(1, 0)).unwrap() {
+        Cell::Block(block) => block,
+        _ => panic!("shape"),
+    };
+    assert!(
+        matches!(&raw.content,BlockContent::ToolResult(result) if result.output==Some(polylogue_model::ToolOutput::Text("Process running with session ID 7".into()))),
+        "interpretation did not rebuild the growing result body"
+    );
+}

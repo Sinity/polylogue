@@ -35,6 +35,10 @@ pub enum Key {
     CallWitness(String),
     StatusWitness(String),
     Result(String),
+    NativeItem(String, String),
+    OutputChunk(usize, usize, usize),
+    PendingResult(usize, usize),
+    ContinuationTarget(String),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Cell {
@@ -81,6 +85,11 @@ pub struct EvidenceHead {
 pub struct PendingVersion {
     pub message: usize,
     pub evidence_revision: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeConflict {
+    pub message: usize,
+    pub fields: Vec<String>,
 }
 /// Explicit cursor for the owner's scheduled version preparation. Each call
 /// supplies at most one cell key. No parser finish scans a Message's members.
@@ -202,6 +211,8 @@ pub struct Delta {
     pub links: Vec<Link>,
     pub reached_back: bool,
     pub pending_versions: Vec<PendingVersion>,
+    pub conflicts: Vec<NativeConflict>,
+    pub pending_results: Vec<(usize, usize)>,
 }
 /// The single provider interpretation core, over a pinned view and touched-key overlay.
 /// This stage does not bound a single record's wrapper fanout or public-ID
@@ -215,6 +226,11 @@ pub struct KeyedRecords<V> {
     sizes: BTreeMap<Key, usize>,
     current_raw: Vec<u8>,
     pending_versions: BTreeMap<usize, u64>,
+    effective_item: Option<Value>,
+    effective_raw: Vec<u8>,
+    replacement_block: Option<usize>,
+    pub(crate) conflicts: Vec<NativeConflict>,
+    pending_results: BTreeSet<(usize, usize)>,
     pub(crate) s: Resume,
     pub(crate) reached_back: bool,
     pub(crate) events: Vec<Event>,
@@ -263,7 +279,13 @@ impl Cell {
                 (Key::Block(_, _), Self::Block(_))
                     | (Key::Call(_), Self::Call { .. })
                     | (
-                        Key::Reasoning(_) | Key::Running(_) | Key::PendingStdin(_) | Key::Result(_),
+                        Key::Reasoning(_)
+                            | Key::Running(_)
+                            | Key::PendingStdin(_)
+                            | Key::Result(_)
+                            | Key::EvidenceItem(_, _)
+                            | Key::NativeItem(_, _)
+                            | Key::ContinuationTarget(_),
                         Self::Position(_, _)
                     )
                     | (Key::Outcome(_), Self::Outcome(_, _, _))
@@ -272,17 +294,18 @@ impl Cell {
                             | Key::CallBlock(_, _, _)
                             | Key::WrapperCall(_, _)
                             | Key::Model(_)
-                            | Key::Mutable(_, _),
+                            | Key::Mutable(_, _)
+                            | Key::PendingResult(_, _),
                         Self::Present
                     )
                     | (
-                        Key::Wrapper(_) | Key::Child(_, _) | Key::Prompt,
+                        Key::Wrapper(_)
+                            | Key::Child(_, _)
+                            | Key::Prompt
+                            | Key::OutputChunk(_, _, _),
                         Self::Text(_)
                     )
-                    | (
-                        Key::ChildCount(_) | Key::Occurrence(_) | Key::EvidenceItem(_, _),
-                        Self::Number(_)
-                    )
+                    | (Key::ChildCount(_) | Key::Occurrence(_), Self::Number(_))
                     | (Key::BlockOrder(_), Self::Position(_, _))
                     | (
                         Key::Evidence(_, _, _) | Key::Context(_) | Key::StatusWitness(_),
@@ -307,6 +330,11 @@ impl<V: ReadView> KeyedRecords<V> {
             sizes: BTreeMap::new(),
             current_raw: Vec::new(),
             pending_versions: BTreeMap::new(),
+            effective_item: None,
+            effective_raw: Vec::new(),
+            replacement_block: None,
+            conflicts: Vec::new(),
+            pending_results: BTreeSet::new(),
             s: resume,
             reached_back: false,
             events: Vec::new(),
@@ -728,6 +756,8 @@ impl<V: ReadView> KeyedRecords<V> {
             events: self.events,
             links: self.links,
             reached_back: self.reached_back,
+            conflicts: self.conflicts,
+            pending_results: self.pending_results.into_iter().collect(),
             pending_versions: self
                 .pending_versions
                 .into_iter()
@@ -749,6 +779,8 @@ impl<V: ReadView> RecordParser for KeyedRecords<V> {
         }
         // Capture exact provider bytes before decoded Value can normalize numbers.
         self.current_raw = raw::canonical(rec.bytes)?;
+        self.effective_item = None;
+        self.replacement_block = None;
         let out = self.interpret(rec);
         if let Some(e) = &self.failure {
             Err(e.clone())
@@ -762,6 +794,165 @@ impl<V: ReadView> RecordParser for KeyedRecords<V> {
 }
 
 impl<V: ReadView> KeyedRecords<V> {
+    fn raw_item_path(&self) -> Vec<&'static str> {
+        if self.s.legacy {
+            vec![]
+        } else if raw::field(&self.current_raw, &["payload", "item"]).is_ok() {
+            vec!["payload", "item"]
+        } else {
+            vec!["payload"]
+        }
+    }
+    fn native_key(&self, id: &str) -> Key {
+        let scope = if raw::field(&self.current_raw, &["payload", "item"]).is_ok() {
+            raw::field(&self.current_raw, &["payload", "turn_id"])
+                .ok()
+                .and_then(|b| serde_json::from_slice::<String>(b).ok())
+                .map(|turn| format!("completed:{turn}"))
+                .unwrap_or_else(|| "legacy-completed".into())
+        } else {
+            "response_item".into()
+        };
+        Key::NativeItem(scope, id.into())
+    }
+    fn known_owner(&mut self, item: &Value) -> Option<usize> {
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())?;
+        self.position(self.native_key(id))
+            .map(|(message, _)| message)
+    }
+    fn preview_item(&mut self, item: &Value) -> Value {
+        let Some(i) = self.known_owner(item) else {
+            return item.clone();
+        };
+        let Some(id) = item.get("id").and_then(Value::as_str) else {
+            return item.clone();
+        };
+        let slot = match self.get(Key::EvidenceItem(i, id.into())) {
+            Some(Cell::Position(slot, _)) => slot,
+            _ => {
+                self.missing("native item position");
+                return item.clone();
+            }
+        };
+        let previous = match self.get(Key::Evidence(i, 0, slot)) {
+            Some(Cell::Evidence(unit)) => unit,
+            _ => {
+                self.missing("native item evidence");
+                return item.clone();
+            }
+        };
+        match raw::overlay(
+            &previous.canonical,
+            &self.current_raw,
+            &self.raw_item_path(),
+        ) {
+            Ok((_, fields)) => fields.value,
+            Err(error) => {
+                self.failure = Some(error);
+                item.clone()
+            }
+        }
+    }
+    fn effective(&self, original: &Value) -> Value {
+        self.effective_item
+            .clone()
+            .unwrap_or_else(|| original.clone())
+    }
+    fn owned_block(&mut self, i: usize, content: BlockContent) -> Option<usize> {
+        if let Some(block) = self.replacement_block.take() {
+            let previous = match self.get(Key::Block(i, block)) {
+                Some(Cell::Block(value)) => Some(value.content),
+                _ => {
+                    self.missing("owned block");
+                    return None;
+                }
+            };
+            if let Some(BlockContent::ToolCall(old)) = previous {
+                if let Some(id) = old.call_id {
+                    let new = match &content {
+                        BlockContent::ToolCall(new) => new.call_id.as_deref(),
+                        _ => None,
+                    };
+                    if new != Some(id.as_str()) {
+                        self.remove(Key::CallBlock(id.clone(), i, block));
+                        if self.call(&id).is_some_and(|call| call.at == (i, block)) {
+                            self.wrapper_remove(&id);
+                            self.remove(Key::Call(id.clone()));
+                            self.remove(Key::CallWitness(id.clone()));
+                            if let Some(Cell::Position(message, _)) =
+                                self.remove(Key::PendingStdin(id.clone()))
+                            {
+                                self.pin(format!("stdin:{id}"), Some(message), None);
+                            }
+                        }
+                    }
+                }
+            }
+            if let BlockContent::ToolCall(new) = &content {
+                if let Some(id) = &new.call_id {
+                    self.put(Key::CallBlock(id.clone(), i, block), Cell::Present);
+                }
+            }
+            self.edit_block(i, block, |value| *value = content);
+            Some(block)
+        } else {
+            self.push_block(i, content)
+        }
+    }
+    fn pending_result(&mut self, i: usize, block: usize) {
+        self.put(Key::PendingResult(i, block), Cell::Present);
+        self.pending_results.insert((i, block));
+    }
+    fn result_chunk(&mut self, i: usize, block: usize, slot: usize, output: &Option<ToolOutput>) {
+        if let Some(ToolOutput::Text(text)) = output {
+            self.put(Key::OutputChunk(i, block, slot), Cell::Text(text.clone()));
+            self.pending_result(i, block);
+        } else {
+            self.remove(Key::OutputChunk(i, block, slot));
+            self.pending_result(i, block);
+        }
+    }
+    fn current_item_slot(&mut self, i: usize, item: &Value) -> Option<usize> {
+        if let Some(id) = item
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(Cell::Position(slot, _)) = self.get(Key::EvidenceItem(i, id.into())) {
+                return Some(slot);
+            }
+            self.missing("item slot");
+            return None;
+        }
+        self.evidence_head(i)
+            .items
+            .checked_sub(1)
+            .and_then(|n| n.checked_mul(3))
+    }
+    fn remove_evidence(&mut self, i: usize, phase: usize, slot: usize) {
+        let key = Key::Evidence(i, phase, slot);
+        if self.get(key.clone()).is_none() {
+            return;
+        }
+        let mut head = self.evidence_head(i);
+        let Some(units) = head.units.checked_sub(1) else {
+            self.missing("evidence count");
+            return;
+        };
+        let Some(revision) = head.revision.checked_add(1) else {
+            self.failure = Some("Codex evidence revision overflow".into());
+            return;
+        };
+        head.units = units;
+        head.revision = revision;
+        self.remove(key);
+        self.put(Key::EvidenceHead(i), Cell::EvidenceHead(head));
+        self.edit(i, |message| message.version_hash = None);
+        self.pending_versions.insert(i, revision);
+    }
     fn evidence_head(&mut self, i: usize) -> EvidenceHead {
         match self.get(Key::EvidenceHead(i)) {
             Some(Cell::EvidenceHead(head)) => head,
@@ -799,33 +990,78 @@ impl<V: ReadView> KeyedRecords<V> {
         self.edit(i, |m| m.version_hash = None);
         self.pending_versions.insert(i, revision);
     }
-    /// Returns false for a proven identical replay. Non-reasoning replacement
-    /// needs block replacement support rather than appending a second item.
-    fn own_evidence(&mut self, i: usize, item: &Value, mutable: bool) -> bool {
+    /// Effective raw snapshots retain one slot and block position per native
+    /// item. Exact re-emission adds no unit; later fields replace in place.
+    fn own_evidence(&mut self, i: usize, item: &Value, primary: bool) -> bool {
+        self.effective_item = Some(item.clone());
+        self.replacement_block = None;
         let native = item
             .get("id")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty());
         let existing = native.and_then(|id| match self.get(Key::EvidenceItem(i, id.to_owned())) {
-            Some(Cell::Number(slot)) => Some(slot),
+            Some(Cell::Position(slot, block)) => Some((slot, block)),
             _ => None,
         });
-        let unit = EvidenceUnit {
+        if primary
+            && existing.is_none()
+            && native.is_some_and(|id| self.position(self.native_key(id)).is_some())
+        {
+            self.missing("native item position");
+            return false;
+        }
+        let mut unit = EvidenceUnit {
             tag: "item".into(),
             canonical: self.current_raw.clone(),
             whole_record: true,
         };
-        let slot = if let Some(slot) = existing {
+        let slot = if let Some((slot, block)) = existing {
             if matches!(self.get(Key::Evidence(i,0,slot)), Some(Cell::Evidence(old)) if old == unit)
             {
                 return false;
             }
-            if !mutable {
-                self.failure = Some(
-                    "Codex repeated non-reasoning native item replacement is not implemented"
-                        .into(),
-                );
-                return false;
+            self.replacement_block = Some(block);
+            let previous = match self.get(Key::Evidence(i, 0, slot)) {
+                Some(Cell::Evidence(unit)) => unit,
+                _ => {
+                    self.missing("owned item evidence");
+                    return false;
+                }
+            };
+            let path = self.raw_item_path();
+            match raw::overlay(&previous.canonical, &self.current_raw, &path) {
+                Ok((canonical, fields)) => {
+                    unit.whole_record = canonical == self.current_raw;
+                    unit.canonical = canonical;
+                    let original = raw::field(&previous.canonical, &path)
+                        .ok()
+                        .and_then(|raw| serde_json::from_slice::<Value>(raw).ok());
+                    let association_changed = original.as_ref().is_some_and(|old| {
+                        ["role", "type", "call_id", "name"]
+                            .iter()
+                            .any(|key| old.get(*key) != fields.value.get(*key))
+                    });
+                    self.effective_item = Some(fields.value);
+                    if association_changed {
+                        self.s.normalization_incomplete = true;
+                        let mut head = self.evidence_head(i);
+                        head.incomplete = true;
+                        self.put(Key::EvidenceHead(i), Cell::EvidenceHead(head));
+                    }
+                    if unit == previous {
+                        return false;
+                    }
+                    if primary && !fields.conflicts.is_empty() {
+                        self.conflicts.push(NativeConflict {
+                            message: i,
+                            fields: fields.conflicts,
+                        });
+                    }
+                }
+                Err(error) => {
+                    self.failure = Some(error);
+                    return false;
+                }
             }
             slot
         } else {
@@ -841,10 +1077,18 @@ impl<V: ReadView> KeyedRecords<V> {
             head.items = next;
             self.put(Key::EvidenceHead(i), Cell::EvidenceHead(head));
             if let Some(id) = native {
-                self.put(Key::EvidenceItem(i, id.to_owned()), Cell::Number(slot));
+                let block = self.header(i).map(|(_, blocks)| blocks).unwrap_or(0);
+                self.put(
+                    Key::EvidenceItem(i, id.to_owned()),
+                    Cell::Position(slot, block),
+                );
+                if primary {
+                    self.put(self.native_key(id), Cell::Position(i, block));
+                }
             }
             slot
         };
+        self.effective_raw = unit.canonical.clone();
         self.evidence_unit(i, 0, slot, unit);
         true
     }
@@ -899,9 +1143,8 @@ impl<V: ReadView> KeyedRecords<V> {
             );
         }
     }
-    fn association_evidence(&mut self, i: usize, call_id: &str) {
-        let head = self.evidence_head(i);
-        let Some(slot) = head.items.checked_sub(1).and_then(|n| n.checked_mul(3)) else {
+    fn association_evidence(&mut self, i: usize, call_id: &str, item: &Value) {
+        let Some(slot) = self.current_item_slot(i, item) else {
             self.missing("output evidence slot");
             return;
         };
@@ -923,6 +1166,8 @@ impl<V: ReadView> KeyedRecords<V> {
                             whole_record: false,
                         },
                     );
+                } else {
+                    self.remove_evidence(i, 0, slot + offset);
                 }
             }
         } else if self.call(call_id).is_some() {
@@ -1139,6 +1384,9 @@ impl<V: ReadView> KeyedRecords<V> {
 
     /// The open request's model message, opening one if none is open.
     fn request_message(&mut self, first_item: &Value, at: Option<Timestamp>) -> Option<usize> {
+        if let Some(i) = self.known_owner(first_item) {
+            return Some(i);
+        }
         let reopen = self.s.legacy && self.s.output_since_open;
         if let (Some(i), false) = (self.s.open_request, reopen) {
             self.edit(i, |m| {
@@ -1185,6 +1433,8 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn response_item(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
+        let preview = self.preview_item(p);
+        let p = &preview;
         let ty = p.get("type").and_then(Value::as_str).unwrap_or("");
         match ty {
             "message" => self.message_item(p, at),
@@ -1208,16 +1458,47 @@ impl<V: ReadView> KeyedRecords<V> {
             let Some(i) = self.request_message_for_assistant(p, at) else {
                 return RecordOutcome::Unrecognized("no session");
             };
-            if !self.own_evidence(i, p, false) {
+            if !self.own_evidence(i, p, true) {
                 return RecordOutcome::Used;
             }
-            self.context_for(i, false, true);
+            if self.replacement_block.is_none() {
+                self.context_for(i, false, true);
+            }
+            let p = self.effective(p);
+            let text = texts(p.get("content")).join("\n");
             self.edit(i, |m| {
                 if let Some(phase) = p.get("phase") {
                     m.attrs = Some(serde_json::json!({ "phase": phase }));
                 }
             });
-            self.push_block(i, BlockContent::Text { text });
+            self.owned_block(i, BlockContent::Text { text });
+            return RecordOutcome::Used;
+        }
+        if let Some(i) = self.known_owner(p) {
+            if !self.own_evidence(i, p, true) {
+                return RecordOutcome::Used;
+            }
+            let effective = self.effective(p);
+            let text = texts(effective.get("content")).join("\n");
+            let changed_text=self.replacement_block.and_then(|b|self.get(Key::Block(i,b))).is_some_and(|cell| matches!(cell,Cell::Block(block) if matches!(block.content,BlockContent::Text{text:old} if old!=text)));
+            if changed_text {
+                self.remove_evidence(i, 1, 3);
+            }
+            if role == "user" {
+                self.edit(i, |message| message.role = Role::User);
+                self.classify_prompt(i, &text);
+                if is_harness_wrapper(&text) {
+                    self.remove_evidence(i, 1, 1);
+                } else {
+                    self.context_for(i, true, false);
+                }
+            } else {
+                self.edit(i, |message| {
+                    message.role = Role::System;
+                    message.written_by = WrittenBy::Harness;
+                });
+            }
+            self.owned_block(i, BlockContent::Text { text });
             return RecordOutcome::Used;
         }
         self.close_request();
@@ -1240,36 +1521,47 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         self.push_message(m);
         let index = self.s.messages - 1;
-        self.own_evidence(index, p, false);
+        self.own_evidence(index, p, true);
+        if let Some(native) = p.get("id").and_then(Value::as_str) {
+            self.put(
+                Key::EvidenceItem(index, native.into()),
+                Cell::Position(0, 0),
+            );
+            self.put(self.native_key(native), Cell::Position(index, 0));
+        }
         self.context_for(index, role == "user" && !is_harness_wrapper(&text), false);
         if role == "user" {
-            if self.s.legacy {
-                // The 2025 layout has no echoes; a user item that is not a harness wrapper is typed (spec gap).
-                if !text.trim_start().starts_with('<') {
-                    self.mark_human(index);
-                }
-            } else {
-                // Who wrote it, from structure: a wrapper is the harness's; otherwise the session's
-                // mode decides; a matching echo, when Codex kept one, confirms a typed prompt.
-                if !is_harness_wrapper(&text) {
-                    match self.s.mode {
-                        SessionMode::Interactive => self.mark_human(index),
-                        SessionMode::Subagent => {
-                            self.edit(index, |m| m.written_by = WrittenBy::Model);
-                        }
-                        SessionMode::Exec => {}
-                        SessionMode::Unknown => {
-                            self.edit(index, |m| m.written_by = WrittenBy::Unknown);
-                        }
-                    }
-                }
-                self.s.pending_prompt = Some(index);
-                self.put(Key::Prompt, Cell::Text(text));
-            }
+            self.classify_prompt(index, &text);
         }
         RecordOutcome::Used
     }
 
+    fn classify_prompt(&mut self, index: usize, text: &str) {
+        self.edit(index, |message| {
+            message.written_by = WrittenBy::Harness;
+            message.prompt_kind = None;
+        });
+        if self.s.legacy {
+            if !is_harness_wrapper(text) {
+                self.mark_human(index);
+            }
+            return;
+        }
+        if !is_harness_wrapper(text) {
+            match self.s.mode {
+                SessionMode::Interactive => self.mark_human(index),
+                SessionMode::Subagent => {
+                    self.edit(index, |message| message.written_by = WrittenBy::Model)
+                }
+                SessionMode::Exec => {}
+                SessionMode::Unknown => {
+                    self.edit(index, |message| message.written_by = WrittenBy::Unknown)
+                }
+            }
+        }
+        self.s.pending_prompt = Some(index);
+        self.put(Key::Prompt, Cell::Text(text.into()));
+    }
     fn request_message_for_assistant(&mut self, p: &Value, at: Option<Timestamp>) -> Option<usize> {
         let i = self.request_message(p, at)?;
         self.anchor_request(i, p);
@@ -1285,13 +1577,23 @@ impl<V: ReadView> KeyedRecords<V> {
 
     fn model_item(&mut self, p: &Value, ty: &str, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
         if ty == "reasoning" {
-            let summary: Vec<String> = match p.get("summary") {
-                Some(Value::Array(items)) => items
-                    .iter()
-                    .filter_map(|i| i.get("text").and_then(Value::as_str).map(str::to_owned))
-                    .collect(),
-                _ => Vec::new(),
+            let rid = p.get("id").and_then(Value::as_str).map(str::to_owned);
+            let existing = rid
+                .as_ref()
+                .and_then(|r| self.position(Key::Reasoning(r.clone())));
+            let i = if let Some((mi, _)) = existing {
+                mi
+            } else {
+                let Some(i) = self.request_message(p, at) else {
+                    return RecordOutcome::Unrecognized("no session");
+                };
+                i
             };
+            if !self.own_evidence(i, p, true) {
+                return RecordOutcome::Used;
+            }
+            let p = self.effective(p);
+            let summary = texts(p.get("summary"));
             let encrypted = p
                 .get("encrypted_content")
                 .and_then(Value::as_str)
@@ -1306,24 +1608,10 @@ impl<V: ReadView> KeyedRecords<V> {
                 encrypted: Some(encrypted.is_some() && summary.is_empty()),
                 data: encrypted,
             };
-            let rid = p.get("id").and_then(Value::as_str).map(str::to_owned);
-            if let Some((mi, bi)) = rid
-                .as_ref()
-                .and_then(|r| self.position(Key::Reasoning(r.clone())))
-            {
-                // The same reasoning item keeps its evidence and block slot.
-                if !self.own_evidence(mi, p, true) {
-                    return RecordOutcome::Used;
-                }
-                self.edit_block(mi, bi, |b| *b = BlockContent::Thinking(thinking));
-                return RecordOutcome::Used;
+            if existing.is_none() {
+                self.context_for(i, false, true);
             }
-            let Some(i) = self.request_message(p, at) else {
-                return RecordOutcome::Unrecognized("no session");
-            };
-            self.own_evidence(i, p, true);
-            self.context_for(i, false, true);
-            let Some(bi) = self.push_block(i, BlockContent::Thinking(thinking)) else {
+            let Some(bi) = self.owned_block(i, BlockContent::Thinking(thinking)) else {
                 return RecordOutcome::Used;
             };
             if let Some(r) = rid {
@@ -1331,23 +1619,39 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             return RecordOutcome::Used;
         }
-        let name = p
+        let Some(i) = self.request_message(p, at) else {
+            return RecordOutcome::Unrecognized("no session");
+        };
+        self.anchor_request(i, p);
+        if !self.own_evidence(i, p, true) {
+            return RecordOutcome::Used;
+        }
+        let replacing = self.replacement_block.is_some();
+        if !replacing {
+            self.context_for(i, false, true);
+        }
+        let p = self.effective(p);
+        let recorded_name = p
             .get("name")
             .and_then(Value::as_str)
-            .unwrap_or(ty)
-            .to_owned();
+            .map(str::to_owned)
+            .or_else(|| {
+                matches!(ty, "web_search_call" | "tool_search_call")
+                    .then(|| ty.trim_end_matches("_call").to_owned())
+            });
+        let name = recorded_name.clone().unwrap_or_default();
         let call_id = p.get("call_id").and_then(Value::as_str).map(str::to_owned);
         let input = match p.get("arguments").or_else(|| p.get("input")) {
             Some(Value::String(s)) => {
-                serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()))
+                Some(serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone())))
             }
-            Some(v) => v.clone(),
-            None => p.clone(),
+            Some(v) => Some(v.clone()),
+            None => None,
         };
         let command = if is_shell_tool(&name) {
             input
-                .get("cmd")
-                .or_else(|| input.get("command"))
+                .as_ref()
+                .and_then(|input| input.get("cmd").or_else(|| input.get("command")))
                 .map(|c| match c {
                     Value::Array(parts) => parts
                         .iter()
@@ -1360,27 +1664,20 @@ impl<V: ReadView> KeyedRecords<V> {
         } else {
             None
         };
-        let Some(i) = self.request_message(p, at) else {
-            return RecordOutcome::Unrecognized("no session");
-        };
-        self.anchor_request(i, p);
-        if !self.own_evidence(i, p, false) {
-            return RecordOutcome::Used;
-        }
-        self.context_for(i, false, true);
         let stdin_session = (name == "write_stdin")
             .then(|| {
                 input
-                    .get("session_id")
+                    .as_ref()
+                    .and_then(|input| input.get("session_id"))
                     .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
             })
             .flatten();
-        let Some(bi) = self.push_block(
+        let Some(bi) = self.owned_block(
             i,
             BlockContent::ToolCall(ToolCall {
-                tool: Some(name.clone()),
+                tool: recorded_name,
                 call_id: call_id.clone(),
-                input: Some(input),
+                input,
                 command,
             }),
         ) else {
@@ -1388,7 +1685,7 @@ impl<V: ReadView> KeyedRecords<V> {
         };
         if let Some(c) = call_id {
             let raw_name = raw::canonical_field(
-                &self.current_raw,
+                &self.effective_raw,
                 if self.s.legacy {
                     &["name"]
                 } else {
@@ -1397,7 +1694,7 @@ impl<V: ReadView> KeyedRecords<V> {
             )
             .ok();
             let session = if raw_name.as_deref() == Some(b"\"write_stdin\"") {
-                raw::session_argument(&self.current_raw, self.s.legacy).ok()
+                raw::session_argument(&self.effective_raw, self.s.legacy).ok()
             } else {
                 None
             };
@@ -1420,7 +1717,10 @@ impl<V: ReadView> KeyedRecords<V> {
                 self.put(Key::PendingStdin(c.clone()), Cell::Position(i, bi));
                 self.pin(format!("stdin:{c}"), None, Some(i));
             }
-            if name == "exec" {
+            if name == "exec"
+                && !self.wrapper_is_open(&c)
+                && (!replacing || self.position(Key::Result(c.clone())).is_none())
+            {
                 self.wrapper_push(c, i);
             }
         }
@@ -1428,6 +1728,87 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn output_item(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
+        if let Some(i) = self.known_owner(p) {
+            if !self.own_evidence(i, p, true) {
+                return RecordOutcome::Used;
+            }
+            let effective = self.effective(p);
+            let Some(call_id) = effective
+                .get("call_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            else {
+                return RecordOutcome::Unrecognized("output without call_id");
+            };
+            let block = self.replacement_block.take().unwrap_or(0);
+            let old = match self.get(Key::Block(i, block)) {
+                Some(Cell::Block(block)) => match block.content {
+                    BlockContent::ToolResult(result) => Some(result),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let old_call = old.as_ref().and_then(|result| result.call_id.clone());
+            if old_call.as_deref() != Some(call_id.as_str()) {
+                if let Some(old_call) = old_call {
+                    if self.position(Key::Result(old_call.clone())) == Some((i, block)) {
+                        self.remove(Key::Result(old_call));
+                    }
+                }
+                self.remove_evidence(i, 1, 0);
+            }
+            let recorded = recorded_output(effective.get("output"));
+            if effective.get("output").is_some() && recorded.is_none() {
+                self.s.normalization_incomplete = true;
+            }
+            let text = match &recorded {
+                Some(ToolOutput::Text(text)) => text.as_str(),
+                _ => "",
+            };
+            let tool = self
+                .call(&call_id)
+                .map(|call| call.tool)
+                .unwrap_or_default();
+            let output = effective.get("output").cloned().unwrap_or(Value::Null);
+            let (outcome, exit_code) = if self.get(Key::Evidence(i, 1, 0)).is_some() {
+                old.as_ref()
+                    .map(|result| (result.outcome.clone(), result.exit_code))
+                    .unwrap_or_else(|| output_outcome(&tool, &output, text))
+            } else {
+                output_outcome(&tool, &output, text)
+            };
+            self.edit_block(i, block, |value| {
+                *value = BlockContent::ToolResult(ToolResult {
+                    call_id: Some(call_id.clone()),
+                    outcome: outcome.clone(),
+                    exit_code,
+                    duration_ms: None,
+                    output: recorded.clone(),
+                })
+            });
+            self.put(Key::Result(call_id.clone()), Cell::Position(i, block));
+            self.association_evidence(i, &call_id, &effective);
+            if let Some(slot) = self.current_item_slot(i, &effective) {
+                self.result_chunk(i, block, slot, &recorded);
+            }
+            if let Some((target, bi)) = self.position(Key::ContinuationTarget(call_id.clone())) {
+                if self.own_evidence(target, &effective, false) {
+                    self.association_evidence(target, &call_id, &effective);
+                    if let Some(slot) = self.current_item_slot(target, &effective) {
+                        self.result_chunk(target, bi, slot, &recorded);
+                    }
+                    if exit_code.is_some() {
+                        self.edit_block(target, bi, |value| {
+                            if let BlockContent::ToolResult(result) = value {
+                                result.outcome = outcome.clone();
+                                result.exit_code = exit_code;
+                            }
+                        });
+                    }
+                }
+            }
+            return RecordOutcome::Used;
+        }
         let Some(call_id) = p.get("call_id").and_then(Value::as_str).map(str::to_owned) else {
             return RecordOutcome::Unrecognized("output without call_id");
         };
@@ -1482,17 +1863,15 @@ impl<V: ReadView> KeyedRecords<V> {
                 .and_then(|s| self.position(Key::Running(s.clone())))
             {
                 self.put(Key::Continuation(call_id.clone()), Cell::Present);
+                self.put(
+                    Key::ContinuationTarget(call_id.clone()),
+                    Cell::Position(target.0, target.1),
+                );
                 self.own_evidence(target.0, p, false);
-                self.association_evidence(target.0, &call_id);
-                self.edit_block(target.0, target.1, |block| {
-                    if let BlockContent::ToolResult(result) = block {
-                        match &mut result.output {
-                            Some(ToolOutput::Text(output)) => output.push_str(&text),
-                            None => result.output = Some(ToolOutput::Text(text.clone())),
-                            Some(ToolOutput::Blob(_)) => {} // this provider never produces blob-backed continuation output
-                        }
-                    }
-                });
+                self.association_evidence(target.0, &call_id, p);
+                if let Some(slot) = self.current_item_slot(target.0, p) {
+                    self.result_chunk(target.0, target.1, slot, &recorded);
+                }
                 if exit_code.is_some() {
                     self.edit_block(target.0, target.1, |b| {
                         if let BlockContent::ToolResult(r) = b {
@@ -1529,8 +1908,25 @@ impl<V: ReadView> KeyedRecords<V> {
         self.push_message(m);
         let result_i = self.s.messages - 1;
         self.put(Key::Result(call_id.clone()), Cell::Position(result_i, 0));
-        self.own_evidence(result_i, p, false);
-        self.association_evidence(result_i, &call_id);
+        self.own_evidence(result_i, p, true);
+        if let Some(native) = p.get("id").and_then(Value::as_str) {
+            self.put(
+                Key::EvidenceItem(result_i, native.into()),
+                Cell::Position(0, 0),
+            );
+            self.put(self.native_key(native), Cell::Position(result_i, 0));
+        }
+        self.association_evidence(result_i, &call_id, p);
+        if let Some(slot) = self.current_item_slot(result_i, p) {
+            let output = match self.get(Key::Block(result_i, 0)) {
+                Some(Cell::Block(block)) => match block.content {
+                    BlockContent::ToolResult(result) => result.output,
+                    _ => None,
+                },
+                _ => None,
+            };
+            self.result_chunk(result_i, 0, slot, &output);
+        }
         if let Some(unit) = status_witness {
             self.evidence_unit(result_i, 1, 0, unit);
         }
@@ -1547,7 +1943,8 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn item_completed(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
-        let item = p.get("item").cloned().unwrap_or(Value::Null);
+        let original = p.get("item").cloned().unwrap_or(Value::Null);
+        let item = self.preview_item(&original);
         let ty = item.get("type").and_then(Value::as_str).unwrap_or("");
         match ty {
             "CommandExecution" | "FileChange" | "McpToolCall" => {
@@ -1560,15 +1957,7 @@ impl<V: ReadView> KeyedRecords<V> {
                     self.s.normalization_incomplete = true;
                     return self.event("non_agent_command_item", at, false, p);
                 }
-                let status = item.get("status").and_then(Value::as_str);
-                let exit = item.get("exit_code").and_then(Value::as_i64);
-                let outcome = match (exit, status) {
-                    (Some(0), _) | (None, Some("completed")) => ToolOutcome::Ok,
-                    (Some(_), _) | (None, Some("failed")) => ToolOutcome::Error { reason: None },
-                    _ => ToolOutcome::Unknown {
-                        reason: UnknownReason::ResultWithoutStatus,
-                    },
-                };
+                let (outcome, exit) = native_outcome(&item);
                 let call_id = item
                     .get("call_id")
                     .and_then(Value::as_str)
@@ -1616,7 +2005,13 @@ impl<V: ReadView> KeyedRecords<V> {
                     .filter(|c| self.wrapper_is_open(c))
                     .map(str::to_owned);
                 let owner = named.or_else(|| self.wrapper_one());
-                let Some(place) = owner else {
+                let prior_owner = self.known_owner(&item);
+                let mi = prior_owner.or_else(|| {
+                    owner
+                        .as_ref()
+                        .and_then(|place| self.call(place).map(|call| call.at.0))
+                });
+                let Some(mi) = mi else {
                     self.s.normalization_incomplete = true;
                     let child_id = item.get("id").and_then(Value::as_str).unwrap_or("");
                     // Counting suppression is not an asserted parent edge. This
@@ -1626,14 +2021,12 @@ impl<V: ReadView> KeyedRecords<V> {
                     }
                     return self.event("unowned_tool_item", at, false, p);
                 };
-                let wrapper = place.clone();
-                let Some(mi) = self.call(&place).map(|c| c.at.0) else {
-                    self.missing("wrapper call");
-                    return RecordOutcome::Used;
-                };
-                if !self.own_evidence(mi, &item, false) {
+                if !self.own_evidence(mi, &item, true) {
                     return RecordOutcome::Used;
                 }
+                let replacing = self.replacement_block.is_some();
+                let item = self.effective(&item);
+                let (outcome, exit) = native_outcome(&item);
                 let child_id = item
                     .get("id")
                     .and_then(Value::as_str)
@@ -1650,7 +2043,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 } else {
                     "mcp"
                 };
-                self.push_block(
+                let Some(call_block) = self.owned_block(
                     mi,
                     BlockContent::ToolCall(ToolCall {
                         tool: Some(tool.into()),
@@ -1658,20 +2051,28 @@ impl<V: ReadView> KeyedRecords<V> {
                         input: Some(item.clone()),
                         command,
                     }),
-                );
-                self.push_block(
-                    mi,
-                    BlockContent::ToolResult(ToolResult {
-                        call_id: Some(child_id.clone()),
-                        outcome,
-                        exit_code: exit,
-                        duration_ms: None,
-                        output: recorded_output(
-                            item.get("aggregated_output").or_else(|| item.get("output")),
-                        ),
-                    }),
-                );
-                self.child(wrapper, child_id);
+                ) else {
+                    return RecordOutcome::Used;
+                };
+                let result = BlockContent::ToolResult(ToolResult {
+                    call_id: Some(child_id.clone()),
+                    outcome,
+                    exit_code: exit,
+                    duration_ms: None,
+                    output: recorded_output(
+                        item.get("aggregated_output").or_else(|| item.get("output")),
+                    ),
+                });
+                if replacing {
+                    self.edit_block(mi, call_block + 1, |content| *content = result);
+                } else {
+                    self.push_block(mi, result);
+                }
+                if !replacing {
+                    if let Some(wrapper) = owner {
+                        self.child(wrapper, child_id);
+                    }
+                }
                 RecordOutcome::Used
             }
             "ContextCompaction" => self.event("compaction", at, true, &item),
@@ -1845,6 +2246,25 @@ impl MemoryReadView {
                     BlockId::attachment(m.id.clone(), key).map_err(|e| e.to_string())?
                 }
             };
+            if let BlockContent::ToolResult(result) = &mut block.content {
+                if self.cells.contains_key(&Key::PendingResult(i, b)) {
+                    let mut chunks = String::new();
+                    let mut present = false;
+                    for (key, value) in self
+                        .cells
+                        .range(Key::OutputChunk(i, b, 0)..=Key::OutputChunk(i, b, usize::MAX))
+                    {
+                        match (key, value) {
+                            (Key::OutputChunk(_, _, _), Cell::Text(text)) => {
+                                chunks.push_str(text);
+                                present = true;
+                            }
+                            _ => return Err("invalid output chunk".into()),
+                        }
+                    }
+                    result.output = present.then_some(ToolOutput::Text(chunks));
+                }
+            }
             m.blocks.push(block);
         }
         Ok(Some(m))
