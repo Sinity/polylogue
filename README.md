@@ -52,9 +52,9 @@ canonical row effects. Its typed `source_rows` result is independent of Session
 completeness, global freshness and search readiness. Existing step dispositions
 and current source certificates are audited before a durable source receipt is
 published; unsupported effects or retained malformed records remain named
-unavailable. Usable partial rows give degraded exit5; otherwise a typed error.
-`--wait-timeout SECONDS` controls only the caller's post-admission wait (default30,
-maximum86400). Timeout/disconnect leaves retained owner work runnable. Retry the
+unavailable. Usable partial rows give degraded exit 5; otherwise a typed error.
+`--wait-timeout SECONDS` controls only the caller's post-admission wait (default 30,
+maximum 86400). Timeout/disconnect leaves retained owner work runnable. Retry the
 same receipt after provider deletion/restart. Import/progress no longer expose a
 hardcoded `canonical_complete` placeholder; Session read coverage remains explicit.
 
