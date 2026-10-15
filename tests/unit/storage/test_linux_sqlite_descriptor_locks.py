@@ -9,6 +9,7 @@ import sys
 import threading
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,11 +18,13 @@ from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import compute_cancel
 from polylogue.storage import index_generation
 from polylogue.storage.index_generation import _open_source_snapshot
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite import connection_profile, physical_file
 from polylogue.storage.sqlite.connection_profile import (
     NativeConnectionSettlementError,
     retained_native_sql_owners_on_current_thread,
 )
+from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra import workload_artifacts
 from tests.infra.sqlite_lock_probe import retained_sqlite_namespace_locks, sqlite_lock_state
@@ -77,10 +80,10 @@ def test_checkpoint_admission_preserves_an_existing_native_reader(
     with retained_sqlite_namespace_locks(path), write_lease("test.checkpoint-locks", archive_root=tmp_path):
         expected = {"main": "protected", "shm": "protected"}
         assert sqlite_lock_state(path) == expected
-        original = index_generation.checkpoint_connection
+        original = checkpoint_connection
         observed = []
 
-        def checkpoint(*args, **kwargs):
+        def checkpoint(*args: Any, **kwargs: Any) -> Any:
             observed.append(sqlite_lock_state(path))
             return original(*args, **kwargs)
 
@@ -105,9 +108,9 @@ def test_native_open_refuses_substituted_parent_and_never_creates_missing_tier(
     path = selected / "index.db"
     displaced = tmp_path / "displaced"
     connections = []
-    original = connection_profile.connect_measured
+    original = connect_measured
 
-    def substitute(*args, **kwargs):
+    def substitute(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         selected.rename(displaced)
         selected.mkdir()
         if replacement:
@@ -154,13 +157,13 @@ def test_bound_open_failed_parent_close_keeps_its_actual_native_owner(
     original_close = os.close
     refused = []
 
-    def opened(name, flags, *args, **kwargs):
+    def opened(name: Any, flags: int, *args: Any, **kwargs: Any) -> int:
         descriptor = original_open(name, flags, *args, **kwargs)
         if Path(name) == tmp_path and flags & os.O_DIRECTORY:
             refused.append(descriptor)
         return descriptor
 
-    def close(descriptor):
+    def close(descriptor: int) -> None:
         if descriptor in refused:
             raise OSError("synthetic parent close before effect")
         original_close(descriptor)
@@ -197,13 +200,13 @@ def test_consumer_failed_identity_close_retains_current_native_owner(
     original_close = os.close
     refused = []
 
-    def opened(*args, **kwargs):
+    def opened(*args: Any, **kwargs: Any) -> int:
         descriptor = original_open(*args, **kwargs)
         if os.fstat(descriptor).st_ino == path.stat().st_ino:
             refused.append(descriptor)
         return descriptor
 
-    def close(descriptor):
+    def close(descriptor: int) -> None:
         if descriptor in refused:
             raise OSError("synthetic identity close before effect")
         original_close(descriptor)
@@ -250,7 +253,7 @@ def test_descriptor_stream_cancellation_reaps_actual_child_and_preserves_locks(
     original = subprocess.Popen
     children = []
 
-    def start(*args, **kwargs):
+    def start(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
         process = original(*args, **kwargs)
         children.append(process)
         cancelled.set()
@@ -282,17 +285,17 @@ def test_fixture_failed_parent_close_releases_new_identity_pin(tmp_path: Path, m
     parents = []
     pins = []
 
-    def parent(*args, **kwargs):
+    def parent(*args: Any, **kwargs: Any) -> tuple[int, str]:
         descriptor, leaf = original_parent(*args, **kwargs)
         parents.append(descriptor)
         return descriptor, leaf
 
-    def identity(*args, **kwargs):
+    def identity(*args: Any, **kwargs: Any) -> int:
         descriptor = original_identity(*args, **kwargs)
         pins.append(descriptor)
         return descriptor
 
-    def close(descriptor):
+    def close(descriptor: int) -> None:
         if descriptor in parents:
             raise OSError("synthetic fixture parent close before effect")
         original_close(descriptor)

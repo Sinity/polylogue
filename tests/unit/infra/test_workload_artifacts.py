@@ -3242,12 +3242,12 @@ def test_small_archive_failed_child_copy_retains_pending_and_reaps_child(
     original_popen = subprocess.Popen
     children = []
 
-    def popen(*args, **kwargs):
+    def popen(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
         child = original_popen(*args, **kwargs)
         children.append(child)
         return child
 
-    monkeypatch.setattr(physical_file.subprocess, "Popen", popen)
+    monkeypatch.setattr("polylogue.storage.sqlite.physical_file.subprocess.Popen", popen)
     monkeypatch.setattr(
         physical_file,
         "_CHILD",
