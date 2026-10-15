@@ -338,3 +338,31 @@ def test_native_open_refuses_same_inode_substituted_leaf_symlink(tmp_path: Path)
             assert sqlite_lock_state(path) == {"main": "protected", "shm": "protected"}
         finally:
             os.close(descriptor)
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_child_copy_refuses_existing_destination_without_changing_either_file(tmp_path: Path, symlink: bool) -> None:
+    source = tmp_path / "source.db"
+    output = tmp_path / "output"
+    output.mkdir()
+    target = output / "predecessor"
+    target.write_bytes(b"neutral predecessor")
+    destination = output / "selected"
+    if symlink:
+        destination.symlink_to(target.name)
+    else:
+        destination.write_bytes(b"neutral existing leaf")
+    before = destination.read_bytes()
+    with retained_sqlite_namespace_locks(source):
+        source_pin = physical_file.open_physical_identity(source)
+        directory = os.open(output, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with pytest.raises(OSError, match="physical file child failed"):
+                physical_file.physical_identity_operation(source_pin, copy_directory_fd=directory, copy_name="selected")
+            assert destination.is_symlink() is symlink
+            assert destination.read_bytes() == before
+            assert target.read_bytes() == b"neutral predecessor"
+            assert sqlite_lock_state(source) == {"main": "protected", "shm": "protected"}
+        finally:
+            os.close(directory)
+            os.close(source_pin)

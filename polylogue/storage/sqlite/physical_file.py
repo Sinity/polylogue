@@ -14,6 +14,7 @@ import sys
 import time
 from builtins import BaseExceptionGroup
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -256,66 +257,75 @@ def _physical_identity_child(request: dict[str, object]) -> None:
     selected = require_physical_identity(identity_fd)
     descriptor = os.open(f"/proc/self/fd/{identity_fd}", os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
     destination = -1
-    try:
-        before = os.fstat(descriptor)
-        _require_identity(before, selected.st_dev, selected.st_ino, Path(str(identity_fd)))
-        if "chmod" in request:
-            mode = request["chmod"]
-            if set(request) != {"identity_fd", "chmod"} or type(mode) is not int:
-                raise OSError(errno.EPROTO, "invalid physical chmod")
-            os.fchmod(descriptor, mode)
-            result: dict[str, object] = {"chmod": mode}
-        else:
-            if "copy_directory_fd" in request:
-                directory = request["copy_directory_fd"]
-                name = request.get("copy_name")
-                if (
-                    set(request) != {"identity_fd", "copy_directory_fd", "copy_name"}
-                    or type(directory) is not int
-                    or not isinstance(name, str)
-                    or not name
-                    or name in {".", ".."}
-                    or "/" in name
-                ):
-                    raise OSError(errno.EPROTO, "invalid physical copy")
-                _directory_identity(directory)
-                destination = os.open(
-                    name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory
-                )
-            elif set(request) != {"identity_fd"}:
-                raise OSError(errno.EPROTO, "invalid physical read")
-            digest = hashlib.sha256()
-            size_bytes = 0
-            while chunk := os.read(descriptor, _READ_CHUNK):
-                digest.update(chunk)
-                size_bytes += len(chunk)
+    with ExitStack() as destination_owner:
+        try:
+            before = os.fstat(descriptor)
+            _require_identity(before, selected.st_dev, selected.st_ino, Path(str(identity_fd)))
+            if "chmod" in request:
+                mode = request["chmod"]
+                if set(request) != {"identity_fd", "chmod"} or type(mode) is not int:
+                    raise OSError(errno.EPROTO, "invalid physical chmod")
+                os.fchmod(descriptor, mode)
+                result: dict[str, object] = {"chmod": mode}
+            else:
+                if "copy_directory_fd" in request:
+                    directory = request["copy_directory_fd"]
+                    name = request.get("copy_name")
+                    if (
+                        set(request) != {"identity_fd", "copy_directory_fd", "copy_name"}
+                        or type(directory) is not int
+                        or not isinstance(name, str)
+                        or not name
+                        or name in {".", ".."}
+                        or "/" in name
+                    ):
+                        raise OSError(errno.EPROTO, "invalid physical copy")
+                    _directory_identity(directory)
+                    # Exclusive binary creation refuses existing leaves, including
+                    # symlinks. The pinned directory remains the path authority.
+                    # This one-shot child is single-threaded; its umask cannot
+                    # change the parent's and makes the file private before writes.
+                    previous_umask = os.umask(0o177)
+                    try:
+                        destination_stream = destination_owner.enter_context(
+                            open(f"/proc/self/fd/{directory}/{name}", "xb", buffering=0)
+                        )
+                    finally:
+                        os.umask(previous_umask)
+                    destination = destination_stream.fileno()
+                elif set(request) != {"identity_fd"}:
+                    raise OSError(errno.EPROTO, "invalid physical read")
+                digest = hashlib.sha256()
+                size_bytes = 0
+                while chunk := os.read(descriptor, _READ_CHUNK):
+                    digest.update(chunk)
+                    size_bytes += len(chunk)
+                    if destination >= 0:
+                        remaining = memoryview(chunk)
+                        while remaining:
+                            written = os.write(destination, remaining)
+                            if written <= 0:
+                                raise OSError(errno.EIO, "physical copy made no write progress")
+                            remaining = remaining[written:]
+                after = os.fstat(descriptor)
+                if _metadata(before) != _metadata(after) or size_bytes != after.st_size:
+                    raise OSError(errno.ESTALE, "physical identity changed while reading")
                 if destination >= 0:
-                    remaining = memoryview(chunk)
-                    while remaining:
-                        written = os.write(destination, remaining)
-                        if written <= 0:
-                            raise OSError(errno.EIO, "physical copy made no write progress")
-                        remaining = remaining[written:]
-            after = os.fstat(descriptor)
-            if _metadata(before) != _metadata(after) or size_bytes != after.st_size:
-                raise OSError(errno.ESTALE, "physical identity changed while reading")
-            if destination >= 0:
-                os.fchmod(destination, stat.S_IMODE(before.st_mode))
-            result = {
-                "sha256": digest.hexdigest(),
-                "size_bytes": size_bytes,
-                "device": before.st_dev,
-                "inode": before.st_ino,
-                "mode": before.st_mode,
-                "mtime_ns": before.st_mtime_ns,
-                "ctime_ns": before.st_ctime_ns,
-            }
-        sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
-    finally:
-        if destination >= 0:
-            os.close(destination)
-        os.close(descriptor)
+                    os.fchmod(destination, stat.S_IMODE(before.st_mode))
+                result = {
+                    "sha256": digest.hexdigest(),
+                    "size_bytes": size_bytes,
+                    "device": before.st_dev,
+                    "inode": before.st_ino,
+                    "mode": before.st_mode,
+                    "mtime_ns": before.st_mtime_ns,
+                    "ctime_ns": before.st_ctime_ns,
+                }
+            sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
+        finally:
+            destination_owner.close()
+            os.close(descriptor)
 
 
 def _read_child_result(process: subprocess.Popen[bytes], check_cancelled: Callable[[], None]) -> bytes:

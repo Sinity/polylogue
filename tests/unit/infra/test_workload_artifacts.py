@@ -3271,6 +3271,7 @@ physical_file._physical_file_hash_child()
     with pytest.raises(OSError, match="physical file child failed"):
         clone_immutable_tree(artifact, destination)
     assert (destination / POPULATION_PENDING).is_file()
+    assert stat.S_IMODE((destination / "source.db").stat().st_mode) == 0o600
     with pytest.raises(ArchivePopulationPendingError):
         ArchiveStore.open_existing(destination)
     assert {
