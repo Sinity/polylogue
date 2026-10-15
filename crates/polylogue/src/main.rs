@@ -1,3 +1,4 @@
+mod import_cli;
 use polylogue_model::types::{ErrorKind, Failure};
 use serde_json::json;
 use std::{
@@ -43,7 +44,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|config schema>\nNo session sources, queries, export or MCP are registered.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|import PATH --format codex-rollout|progress INPUT|retry INPUT|config schema>\nImport retains one regular file. Canonical queries, search, export and MCP remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -77,7 +78,16 @@ fn run() -> Result<i32, Failure> {
     } else {
         env::current_dir().map_err(io_error)?.join(archive)
     };
-    if args != ["daemon"] && args != ["status"] && !args.is_empty() {
+    let command = if args.first().map(String::as_str) == Some("import") {
+        Some(import_cli::request(&args)?)
+    } else if args.first().map(String::as_str) == Some("progress") && args.len() == 2 {
+        Some(json!({"command":"progress","input":args[1]}))
+    } else if args.first().map(String::as_str) == Some("retry") && args.len() == 2 {
+        Some(json!({"command":"retry","input":args[1]}))
+    } else {
+        None
+    };
+    if args != ["daemon"] && args != ["status"] && !args.is_empty() && command.is_none() {
         return Err(error(
             ErrorKind::NotYetAvailable,
             format!("operation is not registered; archive {}", archive.display()),
@@ -107,7 +117,7 @@ fn run() -> Result<i32, Failure> {
         let mut running = polylogue::Running::start_cancellable(&archive, &runtime, &stop)
             .map_err(|e| error(ErrorKind::Io, format!("archive {}: {e}", archive.display())))?;
         eprintln!(
-            "foundation listening: {} (no sources registered)",
+            "listening: {} (immutable Codex import; canonical finalization incomplete)",
             running.socket().display()
         );
         while !stop.load(Ordering::Acquire) {
@@ -130,7 +140,18 @@ fn run() -> Result<i32, Failure> {
         )
     })?;
     let socket = polylogue::socket_path(&resolved, &runtime);
-    let value = polylogue::request(&socket).map_err(|e| {
+    if let Some(command) = command.as_ref().filter(|v| v["command"] == "import") {
+        eprintln!(
+            "import request {} --seen-at {}",
+            command["id"].as_str().unwrap_or(""),
+            command["seen_at"]
+        );
+    }
+    let mut value = match &command {
+        Some(command) => polylogue::request_value(&socket, command),
+        None => polylogue::request(&socket),
+    }
+    .map_err(|e| {
         error(
             if matches!(
                 e.kind(),
@@ -143,6 +164,10 @@ fn run() -> Result<i32, Failure> {
             format!("archive {}: {e}", archive.display()),
         )
     })?;
+    if let Some(command) = command.filter(|v| v["command"] == "import") {
+        value["request_id"] = command["id"].clone();
+        value["seen_at"] = command["seen_at"].clone();
+    }
     serde_json::to_writer(&mut out, &value).map_err(io_error)?;
     writeln!(out).map_err(io_error)?;
     Ok(if value["outcome"] == "ok" {

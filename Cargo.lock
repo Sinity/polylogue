@@ -525,6 +525,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ctrlc",
+ "polylogue-engine",
  "polylogue-model",
  "polylogue-store",
  "serde_json",

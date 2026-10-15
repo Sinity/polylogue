@@ -38,3 +38,15 @@ in admitted byte chunks. Its digest is distinct from normalized payload content
 integrity. Providers still own exact membership/order/canonicalization; lost
 ephemeral hash progress replays from zero. This prerequisite does not qualify
 append-local hash updates or canonical publication.
+
+
+`source_turn` computes one window from the existing provider cores. Its linear
+commit guard releases framing continuation only after the actual prepared-store
+publication receipt matches. `owner` connects Codex imports to one Writer actor,
+one capture worker and one compute worker, with bounded metadata requests.
+Restart enumerates retained imports and resumes or discards durable prepared
+state before interpreting again. Peer requests can run between installation
+turns; provider EOF and waiting tails keep canonical finalization pending.
+Current scheduling drains one input before the next. Neither this owner nor
+its progress endpoint publishes canonical Messages or certifies fair per-input
+rounds, arbitrary record capacity, physical IO/RSS or search completion.

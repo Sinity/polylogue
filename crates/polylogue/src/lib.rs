@@ -1,6 +1,8 @@
 //! Foundation process ownership. Unsupported product operations stay unregistered.
+use polylogue_engine::owner::{Handle, Owner};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, Writer};
+mod protocol;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -25,7 +27,7 @@ pub fn socket_path(archive: &Path, runtime: &Path) -> PathBuf {
 }
 
 pub struct Running {
-    writer: Option<Writer>,
+    owner: Option<Owner>,
     stop: Arc<AtomicBool>,
     clients: Arc<Mutex<HashMap<u64, UnixStream>>>,
     accept: Option<JoinHandle<()>>,
@@ -95,6 +97,8 @@ impl Running {
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let stop = Arc::new(AtomicBool::new(false));
         let clients = Arc::new(Mutex::new(HashMap::new()));
+        let owner = Owner::start(writer, Arc::clone(&stop)).map_err(|e| e.to_string())?;
+        let handle = owner.handle();
         let thread_stop = Arc::clone(&stop);
         let thread_clients = Arc::clone(&clients);
         let accept = thread::spawn(move || {
@@ -112,12 +116,19 @@ impl Running {
                             .lock()
                             .expect("client lock")
                             .insert(id, cancel);
+                        // Bound simultaneous request decoders and idle sockets.
+                        if thread_clients.lock().expect("client lock").len() > 64 {
+                            thread_clients.lock().expect("client lock").remove(&id);
+                            let _ = stream.shutdown(std::net::Shutdown::Both);
+                            continue;
+                        }
+                        let handle = handle.clone();
                         let archive = archive.clone();
                         let reader = Arc::clone(&reader);
                         let completed = Arc::clone(&thread_clients);
                         workers.retain(|worker| !worker.is_finished());
                         workers.push(thread::spawn(move || {
-                            if let Err(error) = serve(stream, &archive, &reader) {
+                            if let Err(error) = serve(stream, &archive, &reader, &handle) {
                                 eprintln!("client: {error}");
                             }
                             completed.lock().expect("client lock").remove(&id);
@@ -137,7 +148,7 @@ impl Running {
             }
         });
         Ok(Self {
-            writer: Some(writer),
+            owner: Some(owner),
             stop,
             clients,
             accept: Some(accept),
@@ -156,7 +167,11 @@ impl Running {
             let _ = accept.join();
         }
         self.socket.remove();
-        self.writer.take();
+        if let Some(owner) = self.owner.take() {
+            if let Err(error) = owner.shutdown() {
+                eprintln!("writer shutdown: {error}");
+            }
+        }
     }
 }
 impl Drop for Running {
@@ -184,25 +199,37 @@ impl Drop for OwnedSocket {
     }
 }
 
-fn serve(mut stream: UnixStream, archive: &Path, reader: &Mutex<ReadHandle>) -> Result<(), String> {
+fn serve(
+    mut stream: UnixStream,
+    archive: &Path,
+    reader: &Mutex<ReadHandle>,
+    owner: &Handle,
+) -> Result<(), String> {
     let mut line = String::new();
+    use std::io::Read;
+    // Admission is on request metadata, never a semantic provider-record cap.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| e.to_string())?;
     BufReader::new(stream.try_clone().map_err(|e| e.to_string())?)
+        .take(65537)
         .read_line(&mut line)
         .map_err(|e| e.to_string())?;
+    if line.len() > 65536 || !line.ends_with('\n') {
+        return Err("request metadata exceeds admission or lacks a newline".into());
+    }
     let reply = match serde_json::from_str::<Value>(&line) {
         Ok(request) if request == json!({"command":"status"}) => {
             match reader.lock().expect("reader lock").status() {
                 Ok(status) => {
-                    json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status"],"product_path":"not_implemented"})
+                    json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status","codex-immutable-retention","provider-progress"],"product_path":"not_implemented"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})
                 }
             }
         }
-        Ok(_) => {
-            json!({"outcome":"error","error":Failure::new(ErrorKind::NotYetAvailable,"only foundation status is supported"),"archive":archive})
-        }
+        Ok(request) => protocol::handle(&request, owner),
         Err(error) => {
             json!({"outcome":"error","error":Failure::new(ErrorKind::InvalidQuery,error.to_string()),"archive":archive})
         }
@@ -212,11 +239,32 @@ fn serve(mut stream: UnixStream, archive: &Path, reader: &Mutex<ReadHandle>) -> 
 }
 
 pub fn request(socket: &Path) -> Result<Value, io::Error> {
+    request_value(socket, &json!({"command":"status"}))
+}
+/// Send one request and read one bounded metadata response. Import success means
+/// durable raw retention; query readiness is reported independently.
+pub fn request_value(socket: &Path, value: &Value) -> Result<Value, io::Error> {
     let mut stream = UnixStream::connect(socket)?;
-    stream.write_all(b"{\"command\":\"status\"}\n")?;
+    let bytes =
+        serde_json::to_vec(value).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    if bytes.len() >= 65536 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "request metadata exceeds admission",
+        ));
+    }
+    stream.write_all(&bytes)?;
+    stream.write_all(b"\n")?;
     stream.shutdown(std::net::Shutdown::Write)?;
     let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line)?;
+    use std::io::Read;
+    BufReader::new(stream).take(65537).read_line(&mut line)?;
+    if line.len() > 65536 || !line.ends_with('\n') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid response metadata frame",
+        ));
+    }
     serde_json::from_str(&line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 

@@ -1,0 +1,136 @@
+//! Typed actor requests are bounded before they enter the single writer queue.
+use polylogue_engine::owner::{Error as OwnerError, Handle, ImportRequest, Observation};
+use polylogue_model::types::{ErrorKind, Failure};
+use serde_json::{Value, json};
+use std::{path::PathBuf, sync::mpsc};
+const METADATA_BYTES: usize = 65536;
+fn failed(kind: ErrorKind, message: impl Into<String>) -> Value {
+    json!({"outcome":"error","error":Failure::new(kind,message)})
+}
+fn actor_error(error: OwnerError) -> Value {
+    let kind = match &error {
+        OwnerError::Busy | OwnerError::Stopped => ErrorKind::Timeout,
+        OwnerError::InvalidRequest(_) | OwnerError::RequestTooLarge { .. } => {
+            ErrorKind::InvalidQuery
+        }
+        OwnerError::UnknownInput => ErrorKind::NotFound,
+        _ => ErrorKind::Io,
+    };
+    failed(kind, error.to_string())
+}
+fn receive<T>(
+    pending: Result<mpsc::Receiver<Result<T, OwnerError>>, OwnerError>,
+) -> Result<T, Value> {
+    pending
+        .map_err(actor_error)?
+        .recv()
+        .map_err(|_| failed(ErrorKind::NotRunning, "writer stopped before replying"))?
+        .map_err(actor_error)
+}
+fn text<'a>(request: &'a Value, key: &str) -> Result<&'a str, Value> {
+    request
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            failed(
+                ErrorKind::InvalidQuery,
+                format!("{key} must be a nonempty string"),
+            )
+        })
+}
+fn valid_request_id(id: &str) -> bool {
+    let b = id.as_bytes();
+    b.len() == 36
+        && [8, 13, 18, 23].into_iter().all(|i| b[i] == b'-')
+        && b[14] == b'7'
+        && matches!(b[19], b'8' | b'9' | b'a' | b'b')
+        && b.iter()
+            .enumerate()
+            .all(|(i, v)| [8, 13, 18, 23].contains(&i) || matches!(v,b'0'..=b'9'|b'a'..=b'f'))
+}
+pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
+    let action = || -> Result<Value, Value> {
+        match text(request, "command")? {
+            "import" => {
+                let allowed = [
+                    "command", "id", "path", "format", "context", "machine", "host", "seen_at",
+                ];
+                let object = request
+                    .as_object()
+                    .ok_or_else(|| failed(ErrorKind::InvalidQuery, "request must be an object"))?;
+                if object.keys().any(|k| !allowed.contains(&k.as_str())) {
+                    return Err(failed(ErrorKind::InvalidQuery, "unknown import field"));
+                }
+                if request.get("context") != Some(&json!([])) {
+                    return Err(failed(
+                        ErrorKind::InvalidQuery,
+                        "Codex immutable import requires explicit empty context",
+                    ));
+                }
+                if text(request, "format")? != "codex-rollout" {
+                    return Err(failed(
+                        ErrorKind::NotYetAvailable,
+                        "only explicit codex-rollout regular files are admitted; Claude public source route is not registered",
+                    ));
+                }
+                if !valid_request_id(text(request, "id")?) {
+                    return Err(failed(
+                        ErrorKind::InvalidQuery,
+                        "import id must be a canonical UUIDv7",
+                    ));
+                }
+                let path = text(request, "path")?.to_owned();
+                let request = ImportRequest {
+                    path: PathBuf::from(&path),
+                    metadata_allowance: METADATA_BYTES,
+                    observation: Observation {
+                        id: text(request, "id")?.to_owned(),
+                        machine: text(request, "machine")?.to_owned(),
+                        host: text(request, "host")?.to_owned(),
+                        path,
+                        seen_at: request.get("seen_at").and_then(Value::as_i64).ok_or_else(
+                            || failed(ErrorKind::InvalidQuery, "seen_at must be an integer"),
+                        )?,
+                    },
+                };
+                let retained = receive(owner.try_import(request))?;
+                Ok(
+                    json!({"outcome":"ok","retained":{"id":retained.id,"length":retained.length,"chain":retained.chain},"canonical_complete":false,"query_coverage":"incomplete"}),
+                )
+            }
+            "progress" => {
+                if request
+                    .as_object()
+                    .is_none_or(|o| o.keys().any(|k| !matches!(k.as_str(), "command" | "input")))
+                {
+                    return Err(failed(ErrorKind::InvalidQuery, "unknown progress field"));
+                }
+                let progress = receive(owner.try_progress(text(request, "input")?))?;
+                let parser=progress.parser.map(|h|json!({"status":h.status,"step":h.token.step,"acquired_upto":h.acquired_upto,"inspected_upto":h.inspected_upto,"parsed_upto":h.parsed_upto,"finalization_pending":h.finalization_pending,
+                    "records":{"framed":h.counts.framed,"used":h.counts.used,"ignored":h.counts.ignored,"unrecognized":h.counts.unrecognized,"undecodable":h.counts.undecodable}}));
+                Ok(
+                    json!({"outcome":"ok","input":progress.input.id,"length":progress.input.length,"parser":parser,"failure":progress.failure,"recovery_error":progress.recovery_error,"active":progress.active,"canonical_complete":progress.canonical_complete,"query_coverage":"incomplete"}),
+                )
+            }
+            "retry" => {
+                if request
+                    .as_object()
+                    .is_none_or(|o| o.keys().any(|k| !matches!(k.as_str(), "command" | "input")))
+                {
+                    return Err(failed(ErrorKind::InvalidQuery, "unknown retry field"));
+                }
+                receive(owner.try_retry(text(request, "input")?))?;
+                Ok(json!({"outcome":"ok","canonical_complete":false}))
+            }
+            _ => Err(failed(
+                ErrorKind::NotYetAvailable,
+                "operation is not registered; canonical read, search and export remain unavailable",
+            )),
+        }
+    };
+    match action() {
+        Ok(reply) => reply,
+        Err(reply) => reply,
+    }
+}
