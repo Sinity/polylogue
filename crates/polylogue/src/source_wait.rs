@@ -64,6 +64,9 @@ pub(crate) fn wait(socket: &Path, mut retained: Value, duration: Duration) -> Va
         match rows.state {
             SourceRowState::Settled => {
                 retained["outcome"] = json!("ok");
+                if checked_progress && Instant::now() >= deadline {
+                    return timed_out(retained);
+                }
                 return retained;
             }
             SourceRowState::Unavailable {

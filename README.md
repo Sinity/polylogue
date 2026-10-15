@@ -54,7 +54,10 @@ and current source certificates are audited before a durable source receipt is
 published; unsupported effects or retained malformed records remain named
 unavailable. Usable partial rows give degraded exit 5; otherwise a typed error.
 `--wait-timeout SECONDS` controls only the caller's post-admission wait (default 30,
-maximum 86400). Timeout/disconnect leaves retained owner work runnable. Retry the
+maximum 86400). One absolute deadline covers progress connect, writes and the
+complete response frame; trickled bytes do not extend it. An already-settled
+admission passes a zero-second check without a progress RPC. Timeout/disconnect
+leaves retained owner work runnable. Retry the
 same receipt after provider deletion/restart. Import/progress no longer expose a
 hardcoded `canonical_complete` placeholder; Session read coverage remains explicit.
 
