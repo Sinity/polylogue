@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.cost.outlook import CycleOutlook
     from polylogue.cost.plans import SubscriptionPlan
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionIdentity, ArchiveStore
 
 
 @contextmanager
@@ -68,7 +68,12 @@ def compile_analysis_report(
     checkpoint: Callable[[], None],
 ) -> PostmortemBundle | PortfolioBundle | PathologyReport:
     """Preserve the declared analysis window and count the whole matched relation."""
-    from polylogue.api.archive import _archive_text_query, _iter_archive_session_identity_candidates
+    from polylogue.api.archive import (
+        _archive_query_kwargs,
+        _archive_text_query,
+        _iter_archive_session_identity_candidates,
+        _post_filter_window,
+    )
 
     if limit is not None and limit <= 0:
         raise ValueError("limit must be a positive integer")
@@ -78,11 +83,59 @@ def compile_analysis_report(
     matched = 0
     checkpoint()
     with closing(_iter_archive_session_identity_candidates(archive, scope_spec)) as selected:
-        for row in selected:
-            checkpoint()
-            matched += 1
-            if len(selected_ids) < cap:
-                selected_ids.append(row.session_id)
+
+        def checked_rows() -> Iterator[ArchiveSessionIdentity]:
+            for row in selected:
+                checkpoint()
+                yield row
+
+        rows: Iterable[ArchiveSessionIdentity] = checked_rows()
+        query_kwargs = _archive_query_kwargs(scope_spec, default_limit=None) if scope_spec is not None else {}
+        if scope_spec is not None and scope_spec.exclude_text_terms and scope_spec.sample is None and scope_spec.latest:
+            rows = _post_filter_window(rows, query_kwargs=query_kwargs, limit=None, offset=None)
+
+        def counted_rows() -> Iterator[ArchiveSessionIdentity]:
+            nonlocal matched
+            for row in rows:
+                checkpoint()
+                matched += 1
+                yield row
+
+        if scope_spec is not None and scope_spec.exclude_text_terms and scope_spec.sample is not None:
+            # Count the sampled relation while retaining only the report's
+            # analysis cap, even when its requested sample is much larger.
+            selected_ids = [
+                row.session_id
+                for row in _post_filter_window(
+                    counted_rows(),
+                    query_kwargs=query_kwargs,
+                    limit=min(cap, scope_spec.sample),
+                    offset=0,
+                )
+            ]
+            matched = min(matched, scope_spec.sample)
+        elif (
+            scope_spec is not None
+            and scope_spec.exclude_text_terms
+            and scope_spec.sample is None
+            and not scope_spec.latest
+            and scope_spec.sort == "random"
+        ):
+            # Count every survivor while the existing reservoir retains only
+            # the independently requested analysis window.
+            selected_ids = [
+                row.session_id
+                for row in _post_filter_window(
+                    counted_rows(),
+                    query_kwargs=query_kwargs,
+                    limit=cap,
+                    offset=0,
+                )
+            ]
+        else:
+            for row in counted_rows():
+                if len(selected_ids) < cap:
+                    selected_ids.append(row.session_id)
     profiles = []
     digests: dict[str, SessionDigest] = {}
     for session_id in selected_ids:

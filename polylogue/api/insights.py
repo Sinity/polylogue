@@ -480,8 +480,8 @@ class PolylogueInsightsMixin:
             arguments={"plan_name": plan_name, "now": when, "method": method},
             work=lambda archive: compile_cost_outlook(
                 archive,
-                plan_name,
-                now=now,
+                plan,
+                now=when,
                 method=method,
                 checkpoint=archive.check_operation_read,
             ),

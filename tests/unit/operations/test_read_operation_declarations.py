@@ -692,3 +692,23 @@ def test_cost_outlook_uses_creation_time_and_the_same_reference_cutoff() -> None
         "limit": None,
     }
     assert outlook is not None and outlook.window.now == when
+
+
+@pytest.mark.parametrize("operation", ["analysis.postmortem", "analysis.portfolio"])
+def test_analysis_scope_samples_after_negative_text_filtering(tmp_path: Path, operation: str) -> None:
+    _seed(tmp_path)
+    result = _run(tmp_path, operation, {"params": {"exclude_text": ["session 1"], "sample": 1}, "limit": 1})
+    scope = cast(dict[str, Any], result["payload"])["scope"]
+    assert scope["matched_session_count"] == 1
+    assert scope["dropped_session_count"] == 0
+    assert scope["truncated"] is False
+
+
+@pytest.mark.parametrize("operation", ["analysis.postmortem", "analysis.portfolio"])
+def test_analysis_scope_retains_latest_after_negative_text_filtering(tmp_path: Path, operation: str) -> None:
+    _seed(tmp_path)
+    result = _run(tmp_path, operation, {"params": {"exclude_text": ["session 1"], "latest": True}, "limit": 1})
+    scope = cast(dict[str, Any], result["payload"])["scope"]
+    assert scope["matched_session_count"] == 1
+    assert scope["dropped_session_count"] == 0
+    assert scope["truncated"] is False

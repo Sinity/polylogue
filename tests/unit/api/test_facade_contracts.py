@@ -1648,6 +1648,12 @@ async def test_correlate_claude_agent_dispatches_resolves_via_the_facade(tmp_pat
                 fixture_block_content_identity("tool_use", "Bash", "toolu_facade_1"),
             ),
         )
+        instruction_block_id = str(
+            index_conn.execute(
+                "SELECT block_id FROM blocks WHERE session_id = ? AND tool_id = ?",
+                (session_id, "toolu_facade_1"),
+            ).fetchone()[0]
+        )
         index_conn.commit()
 
     envelope: dict[str, object] = {
@@ -1693,7 +1699,7 @@ async def test_correlate_claude_agent_dispatches_resolves_via_the_facade(tmp_pat
         assertion = report.resolved[0]
         assert assertion.agent_id == "agent-instance-facade"
         assert assertion.agent_type == "reviewer"
-        assert assertion.tool_use_block_id == f"{session_id}:n:msg-1:0"
+        assert assertion.tool_use_block_id == instruction_block_id
     finally:
         await archive.close()
 
@@ -4488,8 +4494,7 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
     """polylogue-lph4: action-observed delegation identity is
     (parent_session_id, instruction_tool_use_block_id) -- the ref carries
     only the block id since it already embeds the parent session id
-    structurally (block_id = message_id:position, message_id =
-    session_id:native_id)."""
+    through its message owner and immutable content identity."""
     archive = _archive(tmp_path)
     try:
 
@@ -4516,19 +4521,16 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
                         branch_type=BranchType.SUBAGENT,
                     ),
                 )
-            return (
-                child_session_id,
-                parent_session_id,
-            )
+                instruction_block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE session_id = ? AND tool_id = ? AND block_type = 'tool_use'",
+                        (parent_session_id, "task-1"),
+                    ).fetchone()[0]
+                )
+            return instruction_block_id, child_session_id, parent_session_id
 
-        (
-            child_session_id,
-            parent_session_id,
-        ) = run_off_event_loop(_off_loop_32)
+        instruction_block_id, child_session_id, parent_session_id = run_off_event_loop(_off_loop_32)
 
-        # blocks.block_id derives from messages.message_id, which is generated
-        # with an "n:" discriminator for a native-id message.
-        instruction_block_id = f"{parent_session_id}:n:dispatch:0"
         payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
 
         assert payload.resolved is True
@@ -4752,11 +4754,15 @@ async def test_resolve_ref_returns_unresolved_delegation_attempt_payload_without
                         branch_type=BranchType.SUBAGENT,
                     ),
                 )
-            return (parent_session_id,)
+                instruction_block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE session_id = ? AND tool_id = ? AND block_type = 'tool_use'",
+                        (parent_session_id, "task-a"),
+                    ).fetchone()[0]
+                )
+            return parent_session_id, instruction_block_id
 
-        (parent_session_id,) = run_off_event_loop(_off_loop_36)
-
-        instruction_block_id = f"{parent_session_id}:n:dispatch-a:0"
+        parent_session_id, instruction_block_id = run_off_event_loop(_off_loop_36)
         payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
 
         assert payload.resolved is True
@@ -6922,15 +6928,28 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(
             source_name=Provider.CODEX,
             provider_session_id="annotation-facade-v1",
             title="Annotation facade target",
-            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="evidence",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="evidence")],
+                )
+            ],
         )
 
         def _off_loop_58() -> Any:
             with ArchiveStore(active_root) as archive_db:
                 session_id = write_index_session(archive_db, session)
-            return (session_id,)
+                prompt_block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE message_id = ? AND block_type = 'text'",
+                        (archive_message_id(session_id, "m1"),),
+                    ).fetchone()[0]
+                )
+            return session_id, prompt_block_id
 
-        (session_id,) = run_off_event_loop(_off_loop_58)
+        session_id, prompt_block_id = run_off_event_loop(_off_loop_58)
 
         registry = AnnotationSchemaRegistry()
         registry.register(
@@ -6974,7 +6993,7 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(
             source_result_ref="result-set:facade-import",
             actor_ref="agent:facade-test",
             model_ref="agent:model",
-            prompt_ref="block:prompt:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+            prompt_ref=f"block:{prompt_block_id}",
             created_at_ms=1_000,
         )
 
@@ -7027,10 +7046,22 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
                         branch_type=BranchType.SUBAGENT,
                     ),
                 )
-            return (parent_session_id,)
+                instruction_block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE session_id = ? AND tool_id = ? AND block_type = 'tool_use'",
+                        (parent_session_id, "task-1"),
+                    ).fetchone()[0]
+                )
+                prompt_block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE message_id = ? AND block_type = 'text'",
+                        (archive_message_id(parent_session_id, "turn-0"),),
+                    ).fetchone()[0]
+                )
+            return parent_session_id, instruction_block_id, prompt_block_id
 
-        (parent_session_id,) = run_off_event_loop(_off_loop_59)
-        delegation_ref = f"delegation:{parent_session_id}:n:dispatch:0"
+        parent_session_id, instruction_block_id, prompt_block_id = run_off_event_loop(_off_loop_59)
+        delegation_ref = f"delegation:{instruction_block_id}"
         request_input = io.BytesIO(
             (
                 json.dumps(
@@ -7062,7 +7093,7 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
             source_result_ref="result-set:facade-default-registry",
             actor_ref="agent:facade-test",
             model_ref="agent:model",
-            prompt_ref="block:prompt:0",
+            prompt_ref=f"block:{prompt_block_id}",
             created_at_ms=2_000,
         )
 
@@ -7848,5 +7879,35 @@ async def test_cost_outlook_resolves_missing_cycle_or_plan_before_opening_archiv
             with pytest.raises(PlanLookupError):
                 await facade.cost_outlook(plan_name)
         assert not (tmp_path / "absent").exists()
+    finally:
+        await facade.close()
+
+
+async def test_cost_outlook_api_uses_the_resolved_plan_and_reference_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from polylogue.cost.plans import SubscriptionPlan
+    from polylogue.operations import analysis_reports
+
+    plan = SubscriptionPlan(
+        name="synthetic-plan", provider="test", display_name="Synthetic", monthly_cost_usd=20.0, cycle_anchor_day=1
+    )
+    when = datetime(2026, 5, 11, 12, tzinfo=UTC)
+
+    def resolve(name: str, *, user_rows: object) -> SubscriptionPlan:
+        assert name == "synthetic-plan"
+        return plan
+
+    monkeypatch.setattr(analysis_reports, "resolve_plan", resolve)
+    facade = _archive(tmp_path)
+    try:
+        await _seed_two_sessions(facade.config.db_path)
+        outlook = await facade.cost_outlook("synthetic-plan", now=when)
+        assert outlook is not None
+        assert outlook.plan_name == "synthetic-plan"
+        assert outlook.window.now == when
+        assert outlook.window.start == datetime(2026, 5, 1, tzinfo=UTC)
     finally:
         await facade.close()
