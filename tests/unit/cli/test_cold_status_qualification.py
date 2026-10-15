@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from tests.infra.cli_cold_start import assert_served_empty_status, stop_owned_process_group
+from tests.infra.frozen_clock import FrozenClock
 
 
 def _served_empty(root: Path) -> dict[str, Any]:
@@ -94,3 +95,120 @@ def test_cold_status_cleanup_stops_group_after_leader_exit(tmp_path: Path) -> No
         except ProcessLookupError:
             pass
         process.wait(timeout=10)
+
+
+def _compact_populated_status(frozen_clock: FrozenClock) -> dict[str, Any]:
+    from polylogue.cli.commands.status import _compact_status_payload
+
+    return _compact_status_payload(
+        {
+            "ok": True,
+            "daemon_liveness": True,
+            "status_snapshot": {
+                "state": "fresh",
+                "captured_at": frozen_clock.now().isoformat(),
+                "age_s": 0,
+                "frame": "synthetic-frame",
+                "current_frame": "synthetic-frame",
+                "frame_changed": False,
+            },
+            "raw_failure_lifecycle_available": True,
+            "raw_failure_lifecycle_state": "healthy",
+            "raw_parse_failures": 0,
+            "raw_validation_failures": 0,
+            "raw_unexplained_failures": 0,
+            "raw_materialization_readiness": {"raw_artifact_count": 7},
+            "raw_frontier_integrity": {
+                "available": True,
+                "overall_status": "healthy",
+                "broken_head_status": "healthy",
+                "broken_head_count": 0,
+                "broken_head_checked_count": 7,
+                "broken_head_samples": [],
+                "broken_head_reason": "",
+                "missing_source_raw_status": "healthy",
+                "missing_source_raw_count": 0,
+                "missing_source_raw_samples": [],
+                "missing_source_raw_reason": "",
+                "cursor_ahead_status": "healthy",
+                "cursor_ahead_count": 0,
+                "cursor_ahead_checked_count": 5,
+                "cursor_head_comparison_count": 5,
+                "cursor_ahead_comparison_count": 0,
+                "cursor_ahead_samples": [],
+                "cursor_authority_gap_count": 0,
+                "cursor_authority_gap_samples": [],
+                "cursor_authority_deferred_count": 0,
+                "cursor_ahead_reason": "",
+            },
+        },
+        source="daemon",
+    )
+
+
+@pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
+def test_populated_cold_driver_accepts_the_actual_compact_status_shape(frozen_clock: FrozenClock) -> None:
+    from tests.benchmarks.test_cli_cold_start import _require_healthy_status
+
+    payload = _compact_populated_status(frozen_clock)
+    assert payload["ok"] is True
+    assert not any(key.endswith("_samples") for key in payload["raw_frontier_integrity"])
+    _require_healthy_status(payload)
+
+
+@pytest.mark.frozen_clock_modules("polylogue.readiness.capability")
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "unknown",
+        "unavailable",
+        "missing_count",
+        "violation",
+        "gap",
+        "negative_count",
+        "bool_count",
+        "bool_available",
+        "wrong_raw_count",
+        "bool_raw_count",
+        "fewer_comparisons",
+        "unchecked_comparisons",
+        "ahead_comparison",
+        "stale_frame",
+    ],
+)
+def test_populated_cold_driver_rejects_unproved_compact_status(frozen_clock: FrozenClock, fault: str) -> None:
+    from tests.benchmarks.test_cli_cold_start import _require_healthy_status
+
+    payload = _compact_populated_status(frozen_clock)
+    assert payload["ok"] is True
+    frontier = payload["raw_frontier_integrity"]
+    if fault == "unknown":
+        frontier["cursor_ahead_status"] = "unknown"
+    elif fault == "unavailable":
+        frontier["available"] = False
+    elif fault == "missing_count":
+        del frontier["cursor_ahead_checked_count"]
+    elif fault == "violation":
+        frontier["missing_source_raw_count"] = 1
+    elif fault == "gap":
+        frontier["cursor_authority_gap_count"] = 1
+    elif fault == "negative_count":
+        frontier["cursor_ahead_checked_count"] = -1
+    elif fault == "bool_count":
+        frontier["cursor_ahead_checked_count"] = True
+    elif fault == "bool_available":
+        frontier["available"] = 1
+    elif fault == "wrong_raw_count":
+        payload["raw_materialization_readiness"]["raw_artifact_count"] = 8
+    elif fault == "bool_raw_count":
+        payload["raw_materialization_readiness"]["raw_artifact_count"] = True
+    elif fault == "fewer_comparisons":
+        frontier["cursor_head_comparison_count"] = 4
+    elif fault == "unchecked_comparisons":
+        frontier["cursor_ahead_checked_count"] = 0
+    elif fault == "ahead_comparison":
+        frontier["cursor_ahead_comparison_count"] = 1
+    else:
+        payload["status_snapshot"]["frame_changed"] = True
+    with pytest.raises((AssertionError, KeyError)):
+        _require_healthy_status(payload)

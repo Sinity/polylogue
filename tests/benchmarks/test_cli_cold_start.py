@@ -23,7 +23,6 @@ from watchfiles import watch
 from devtools.isolated_environment import isolated_home_environment
 from polylogue.operations.demo_resident import demo_resident
 from polylogue.readiness.capability import (
-    raw_frontier_integrity_is_proven_healthy,
     status_snapshot_has_fresh_provenance,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -245,7 +244,34 @@ def _require_healthy_status(payload: dict[str, Any]) -> None:
     assert isinstance(snapshot["frame"], str) and snapshot["frame"], payload
     assert snapshot["frame"] == snapshot["current_frame"], payload
     assert snapshot["frame_changed"] is False, payload
-    assert raw_frontier_integrity_is_proven_healthy(payload.get("raw_frontier_integrity")), payload
+    # Default status deliberately omits diagnostic sample arrays. Validate its
+    # compact authority fields without inventing a full diagnostic projection.
+    frontier = payload["raw_frontier_integrity"]
+    assert isinstance(frontier, dict), payload
+    assert frontier["available"] is True, payload
+    for key in ("overall_status", "broken_head_status", "missing_source_raw_status", "cursor_ahead_status"):
+        assert frontier[key] == "healthy", payload
+    count_keys = (
+        "broken_head_count",
+        "broken_head_checked_count",
+        "missing_source_raw_count",
+        "cursor_ahead_count",
+        "cursor_ahead_checked_count",
+        "cursor_head_comparison_count",
+        "cursor_ahead_comparison_count",
+        "cursor_authority_gap_count",
+        "cursor_authority_deferred_count",
+    )
+    for key in count_keys:
+        assert type(frontier[key]) is int and frontier[key] >= 0, payload
+    for key in ("broken_head_count", "missing_source_raw_count", "cursor_ahead_count", "cursor_authority_gap_count"):
+        assert frontier[key] == 0, payload
+    raw_count = payload["raw_materialization_readiness"]["raw_artifact_count"]
+    assert type(raw_count) is int and raw_count > 0, payload
+    assert frontier["broken_head_checked_count"] == raw_count, payload
+    assert frontier["cursor_ahead_checked_count"] <= frontier["cursor_head_comparison_count"], payload
+    assert (frontier["cursor_ahead_checked_count"] == 0) == (frontier["cursor_head_comparison_count"] == 0), payload
+    assert frontier["cursor_ahead_comparison_count"] == 0, payload
 
 
 @pytest.mark.uses_real_clock
