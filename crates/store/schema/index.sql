@@ -474,8 +474,9 @@ CREATE INDEX parse_state_status ON parse_state(status) WHERE status NOT IN ('don
 -- Disposable provider state, addressed by typed provider-owned keys. A read view
 -- pins a real SQLite read snapshot (or an independently qualified immutable
 -- state version), never a mutable generation/key pair alone. Interpretation
--- holds no write transaction. Its touched delta, output and checkpoint commit
--- together only after checking the index generation, basis, state_generation
+-- holds no write transaction. A small delta may commit with its checkpoint;
+-- a larger provider delta uses the parse_work admission barrier below. Logical
+-- state publication checks the index generation, basis, state_generation
 -- and state_step predecessor. Keyed carry stores bounded references, not these
 -- cells (the keyed reference is two big-endian i64s: generation, then step).
 -- Same-prefix acquisition may grow while an older step computes; that
@@ -495,6 +496,41 @@ CREATE TABLE parser_cell (
 -- Retired generations are reclaimed in bounded keysets. Excision/input removal
 -- must drain their cells before removing input_ref; there is no unbounded FK
 -- cascade and no orphan state outside the owning index lifecycle.
+
+-- A provider-state preparation barrier, not a canonical Message publication.
+-- Admission pins index incarnation plus the exact parser predecessor. New
+-- source snapshots are refused while work exists; already pinned SQLite views
+-- remain coherent. No provider interpretation runs under a write transaction.
+-- Each admitted batch stages reserved @work:<work_id> parser_cell members before
+-- seal, then applies and deletes a bounded keyset. Final publication changes
+-- only this control row and the parser head/resume/counts/checkpoint. It never
+-- adopts or copies an unbounded delta. Public canonical Messages are untouched.
+-- Same-prefix growth stays owed. Basis replacement/retirement invalidates this
+-- row; old-generation members remain subject to bounded parser_cell collection.
+CREATE TABLE parse_work (
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  work_id           INTEGER NOT NULL CHECK (work_id > 0), -- same monotonic allocator as state generations
+  state_generation  INTEGER NOT NULL CHECK (state_generation > 0),
+  state_step        INTEGER NOT NULL CHECK (state_step >= 0),
+  basis_digest      BLOB NOT NULL CHECK (length(basis_digest) = 32),
+  acquired_upto     INTEGER NOT NULL CHECK (acquired_upto >= 0),
+  phase             TEXT NOT NULL CHECK (phase IN ('staging','applying','discarding')),
+  staged            INTEGER NOT NULL DEFAULT 0 CHECK (staged >= 0),
+  applied           INTEGER NOT NULL DEFAULT 0 CHECK (applied BETWEEN 0 AND staged),
+  inspected_upto    INTEGER NOT NULL CHECK (inspected_upto >= 0),
+  parsed_upto       INTEGER NOT NULL CHECK (parsed_upto BETWEEN 0 AND inspected_upto),
+  next_status       TEXT NOT NULL CHECK (next_status IN ('parsing','waiting_tail','finalizing','done')),
+  finalization_pending INTEGER NOT NULL CHECK (finalization_pending IN (0,1)),
+  framed            INTEGER NOT NULL CHECK (framed >= 0),
+  used              INTEGER NOT NULL CHECK (used >= 0),
+  ignored           INTEGER NOT NULL CHECK (ignored >= 0),
+  unrecognized_n    INTEGER NOT NULL CHECK (unrecognized_n >= 0),
+  undecodable       INTEGER NOT NULL CHECK (undecodable >= 0),
+  PRIMARY KEY (input_pk, chain),
+  CHECK (framed = used + ignored + unrecognized_n + undecodable),
+  CHECK (inspected_upto <= acquired_upto)
+) STRICT, WITHOUT ROWID;
 
 -- Record types and fields a parser did not understand, and record types it
 -- deliberately only counts (sources/ lists them), per input: an append adds to

@@ -27,7 +27,7 @@ pub mod parser_state;
 
 pub const ARCHIVE_VERSION: u32 = 0;
 pub const EMBEDDINGS_VERSION: u32 = 0;
-pub const INDEX_VERSION: u32 = 2;
+pub const INDEX_VERSION: u32 = 3;
 const ARCHIVE_SQL: &str = include_str!("../schema/archive.sql");
 const INDEX_SQL: &str = include_str!("../schema/index.sql");
 const EMBEDDINGS_SQL: &str = include_str!("../schema/embeddings.sql");
@@ -37,6 +37,8 @@ type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("parser predecessor changed; discard the attempted step")]
     ParserPredecessorChanged,
+    #[error("provider state has unfinished prepared work; resume it before admitting a new parse")]
+    ParserWorkPending,
     #[error("{resource} requires a larger admission ({required})")]
     ParserAdmission {
         resource: &'static str,

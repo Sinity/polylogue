@@ -2,6 +2,8 @@
 //! real read-only SQLite snapshot; only its bounded touched delta enters the
 //! output transaction. This module checks predecessor identity, not whether the
 //! canonical message/index finalizer has actually earned completion.
+pub mod prepared;
+
 use crate::{Error as StoreError, Result};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
@@ -125,7 +127,7 @@ pub struct Budget {
     pub encoded_bytes: usize,
 }
 
-fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+pub(super) fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
     let value: i64 = row.get(index)?;
     u64::try_from(value).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -290,6 +292,7 @@ pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Resu
              WHERE input_pk=?1 AND chain=?2", params![basis.input_pk, basis.chain, acquired]))?;
     } else {
         let generation = allocate_generation(&tx, path)?;
+        prepared::invalidate(&tx, path, basis.input_pk, basis.chain)?;
         sql!(path, tx.execute(
             "INSERT INTO parse_state(input_pk,chain,parser_version,status,acquired_upto,inspected_upto,parsed_upto,
                 basis_digest,state_generation,state_step,carry,companions_json,excisions_seen)
@@ -322,6 +325,7 @@ impl Snapshot {
         let db = crate::open(path, true, false)?;
         sql!(path, db.execute_batch("BEGIN DEFERRED"))?;
         let head = current(&db, path, expected)?; // Establishes the actual read snapshot now.
+        prepared::ensure_idle(&db, path, expected)?;
         if head.status == "retired" {
             return Err(StoreError::ParserPredecessorChanged);
         }
@@ -410,8 +414,10 @@ fn validate(changes: &[CellChange], budget: Budget) -> Result<()> {
     }
     let mut bytes = 0usize;
     for c in changes {
-        if c.namespace.is_empty() {
-            return Err(StoreError::Invariant("empty parser cell namespace".into()));
+        if c.namespace.is_empty() || c.namespace.starts_with("@work:") {
+            return Err(StoreError::Invariant(
+                "empty or reserved parser cell namespace".into(),
+            ));
         }
         bytes = bytes
             .saturating_add(c.namespace.len())
@@ -426,23 +432,19 @@ fn validate(changes: &[CellChange], budget: Budget) -> Result<()> {
     }
     Ok(())
 }
-/// Cells must already be encoded/admitted outside the write transaction. The
-/// output closure is the existing writer's bounded row step, never interpretation
-/// or file IO. A successful receipt is returned only after the transaction commits.
-/// This primitive does not certify the semantic completeness of the closure.
-pub(crate) fn write_step<F>(
-    db: &mut Connection,
-    path: &Path,
-    expected: &Head,
-    progress: Progress,
-    changes: &[CellChange],
-    budget: Budget,
-    output: F,
-) -> Result<Head>
-where
-    F: FnOnce(&Transaction<'_>) -> Result<()>,
-{
-    validate(changes, budget)?;
+fn validate_expected_head(expected: &Head, now: &Head) -> Result<()> {
+    if expected.parsed_upto != now.parsed_upto
+        || expected.inspected_upto != now.inspected_upto
+        || expected.counts != now.counts
+        || expected.parser_version != now.parser_version
+        || expected.finalization_pending != now.finalization_pending
+        || expected.acquired_upto > now.acquired_upto
+    {
+        return Err(StoreError::ParserPredecessorChanged);
+    }
+    Ok(())
+}
+fn validate_progress(expected: &Head, progress: &Progress) -> Result<()> {
     progress.counts.checked()?;
     if progress.inspected_upto < expected.inspected_upto
         || progress.parsed_upto < expected.parsed_upto
@@ -473,6 +475,41 @@ where
             "finalizing requires an actual remaining obligation".into(),
         ));
     }
+    Ok(())
+}
+/// Cells must already be encoded/admitted outside the write transaction. The
+/// output closure is the existing writer's bounded row step, never interpretation
+/// or file IO. A successful receipt is returned only after the transaction commits.
+/// This primitive does not certify the semantic completeness of the closure.
+pub(crate) fn write_step<F>(
+    db: &mut Connection,
+    path: &Path,
+    expected: &Head,
+    progress: Progress,
+    changes: &[CellChange],
+    budget: Budget,
+    output: F,
+) -> Result<Head>
+where
+    F: FnOnce(&Transaction<'_>) -> Result<()>,
+{
+    write_step_inner(db, path, expected, progress, changes, budget, false, output)
+}
+fn write_step_inner<F>(
+    db: &mut Connection,
+    path: &Path,
+    expected: &Head,
+    progress: Progress,
+    changes: &[CellChange],
+    budget: Budget,
+    prepared: bool,
+    output: F,
+) -> Result<Head>
+where
+    F: FnOnce(&Transaction<'_>) -> Result<()>,
+{
+    validate(changes, budget)?;
+    validate_progress(expected, &progress)?;
     let next = expected
         .token
         .step
@@ -480,6 +517,10 @@ where
         .ok_or_else(|| StoreError::Invariant("parser state step exhausted".into()))?;
     let tx = sql!(path, db.transaction())?;
     let now = current(&tx, path, &expected.token)?;
+    validate_expected_head(expected, &now)?;
+    if !prepared {
+        prepared::ensure_idle(&tx, path, &expected.token)?;
+    }
     if now.status == "retired" {
         return Err(StoreError::ParserPredecessorChanged);
     }
@@ -537,6 +578,7 @@ where
 pub(crate) fn retire(db: &mut Connection, path: &Path, expected: &Token) -> Result<Head> {
     let tx = sql!(path, db.transaction())?;
     current(&tx, path, expected)?;
+    prepared::invalidate(&tx, path, expected.input_pk, expected.chain)?;
     let generation = allocate_generation(&tx, path)?;
     sql!(
         path,

@@ -10,7 +10,7 @@ All three schemas are exact SQL-fence extractions from the owning copied
 specification under `docs/rewrite/polylogue-spec/spec/storage/`; a drift test
 compares the extracted text. Every table exists initially. Archive and
 embeddings migration versions are zero because there are no pre-release
-migration steps. The index has version two, adding required parser incarnation metadata. Startup checks every existing
+migration steps. The index has version three, adding the durable provider-preparation barrier. Startup checks every existing
 schema/version before target database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 the old index. A missing or empty main file with retained nonempty WAL or
@@ -38,10 +38,20 @@ rebuilds.
 
 
 Disposable parser state uses typed Writer admission and read-only pinned
-snapshots, with no connection or SQL escape. State cells, supplied output and
+snapshots, with no connection or SQL escape. Small state deltas, supplied output and
 checkpoint share the final step transaction; the store primitive does not infer
 canonical completion from EOF. A per-index monotonic allocator survives head
 and input-key removal. Snapshot, stale-result, bounded retirement and actual
 child-process crash tests qualify this component, including the real archive
 writer lock. Provider ingestion, canonical message finalization and public
 client stepping are still unregistered.
+
+Larger provider deltas can be staged in admitted encoded-cell batches, sealed,
+and applied in bounded cell/byte steps. New parser snapshots wait while this
+work exists; already pinned readers retain the old SQLite view. Interrupted
+unsealed preparation can be discarded in bounded steps. Sealed application
+resumes after process exit and publishes its head/counts/checkpoint only after
+all staged members have been consumed. This protocol changes no canonical
+Message, block or search rows. The eventual canonical writer must couple its
+message-local selection to final publication. Whole-cell encoding, decoding and
+SQLite page work remain explicitly unqualified for arbitrarily large cells.
