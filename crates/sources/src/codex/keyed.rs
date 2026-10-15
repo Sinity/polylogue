@@ -906,6 +906,17 @@ impl<V: ReadView> KeyedRecords<V> {
         self.put(Key::PendingResult(i, block), Cell::Present);
         self.pending_results.insert((i, block));
     }
+    fn require_result(&mut self, i: usize, block: usize) -> bool {
+        match self.get(Key::Block(i, block)) {
+            Some(Cell::Block(block)) if matches!(block.content, BlockContent::ToolResult(_)) => {
+                true
+            }
+            _ => {
+                self.missing("promised tool result");
+                false
+            }
+        }
+    }
     fn result_chunk(&mut self, i: usize, block: usize, slot: usize, output: &Option<ToolOutput>) {
         if let Some(ToolOutput::Text(text)) = output {
             self.put(Key::OutputChunk(i, block, slot), Cell::Text(text.clone()));
@@ -1826,6 +1837,9 @@ impl<V: ReadView> KeyedRecords<V> {
                 self.result_chunk(i, block, slot, &recorded);
             }
             if let Some((target, bi)) = self.position(Key::ContinuationTarget(call_id.clone())) {
+                if !self.require_result(target, bi) {
+                    return RecordOutcome::Used;
+                }
                 if self.own_evidence(target, &effective, false) {
                     self.association_evidence(target, &call_id, &effective);
                     if let Some(slot) = self.current_item_slot(target, &effective) {
@@ -1896,6 +1910,9 @@ impl<V: ReadView> KeyedRecords<V> {
                 .as_ref()
                 .and_then(|s| self.position(Key::Running(s.clone())))
             {
+                if !self.require_result(target.0, target.1) {
+                    return RecordOutcome::Used;
+                }
                 self.put(Key::Continuation(call_id.clone()), Cell::Present);
                 self.put(
                     Key::ContinuationTarget(call_id.clone()),
@@ -2015,6 +2032,9 @@ impl<V: ReadView> KeyedRecords<V> {
                             whole_record: true,
                         };
                         if let Some((mi, bi)) = self.position(Key::Result(c.clone())) {
+                            if !self.require_result(mi, bi) {
+                                return RecordOutcome::Used;
+                            }
                             self.edit_block(mi, bi, |block| {
                                 if let BlockContent::ToolResult(result) = block {
                                     result.outcome = outcome.clone();

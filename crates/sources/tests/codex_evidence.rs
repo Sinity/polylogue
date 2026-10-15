@@ -332,7 +332,7 @@ fn distinct_native_calls_with_duplicate_call_ids_keep_both_wrapper_occurrences()
 
 #[test]
 fn unmapped_message_content_is_preserved_without_completed_empty_text() {
-    let item = json!({"type":"message","id":"image-prompt","role":"user","content":[{"type":"input_image","image_url":"synthetic://image"}]});
+    let item = json!({"type":"message","id":"image-prompt","role":"user","content":[{"type":"input_image","image_url":"synthetic://image","text":"caption"}]});
     let (view, resume) = run(
         MemoryReadView::default(),
         Resume::default(),
@@ -358,4 +358,44 @@ fn explicitly_unreadable_model_context_does_not_reuse_a_stale_model() {
     assert!(resume.normalization_incomplete());
     assert!(view.message(0).unwrap().unwrap().model.is_none());
     assert!(units(&view, 0).contains(&("context:model".into(), b"null".to_vec())));
+}
+
+#[test]
+fn a_promised_running_result_with_wrong_content_fails_the_attempt() {
+    let first = line(
+        "response_item",
+        json!({"type":"function_call","id":"a","call_id":"c","name":"exec_command","arguments":"{}"}),
+    );
+    let running = line(
+        "response_item",
+        json!({"type":"function_call_output","id":"start","call_id":"c","output":"Process running with session ID 7"}),
+    );
+    let stdin = line(
+        "response_item",
+        json!({"type":"function_call","id":"stdin","call_id":"s","name":"write_stdin","arguments":"{\"session_id\":7}"}),
+    );
+    let (mut view, resume) = run(
+        MemoryReadView::default(),
+        Resume::default(),
+        &(header() + &first + &running + &stdin),
+    );
+    if let Some(Cell::Block(block)) = view.cells.get_mut(&Key::Block(1, 0)) {
+        block.content = BlockContent::Text {
+            text: "wrong state shape".into(),
+        };
+    }
+    let output = line(
+        "response_item",
+        json!({"type":"function_call_output","id":"end","call_id":"s","output":"still running"}),
+    );
+    let framed = drive_jsonl(KeyedRecords::new(&view, resume), output.as_bytes(), 0);
+    assert!(
+        framed
+            .output
+            .unwrap_err()
+            .error
+            .contains("promised tool result")
+    );
+    assert_eq!(framed.counts.used, 0);
+    assert!(framed.counts.unrecognized.is_empty());
 }
