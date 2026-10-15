@@ -703,21 +703,31 @@ impl Actor {
             Some(head) => self.writer.parser_failure(&head.token)?,
             None => None,
         };
-        let mut source_rows = crate::source_rows::pending(
-            &input,
-            "source parsing or canonical row effects remain owed",
-        );
+        let obligation = match parser.as_ref().map(|h| h.status.as_str()) {
+            None => "source_parser_admission",
+            Some("waiting_tail") => "unfinished_source_record",
+            Some("parsing") => "source_record_interpretation",
+            _ => "canonical_source_row_effects_and_audit",
+        };
+        let mut source_rows = crate::source_rows::pending(&input, obligation);
         if let Some(head) = &parser {
-            if self.writer.parser_work(&head.token)?.is_none() {
+            if head.token.basis != parser_basis(&input)
+                || head.parser_version != parser_version(input.format)
+            {
+                source_rows =
+                    crate::source_rows::pending(&input, "current_interpretation_admission");
+            } else if let Some(reason) = &failure {
+                // A failed admitted install may still own unsealed work. Its
+                // retained diagnostic is unavailability, never a waiting tail.
+                source_rows.state = polylogue_model::settlement::SourceRowState::Unavailable {
+                    usable_result: false,
+                    notes: vec![reason.clone()],
+                    record_errors: head.counts.undecodable,
+                };
+            } else if self.writer.parser_work(&head.token)?.is_none() {
                 let snapshot = self.writer.parser_snapshot(&head.token)?;
                 if let Some(receipt) = crate::source_rows::read(&snapshot, &input)? {
                     source_rows = receipt.rows;
-                } else if let Some(reason) = &failure {
-                    source_rows.state = polylogue_model::settlement::SourceRowState::Unavailable {
-                        usable_result: false,
-                        notes: vec![reason.clone()],
-                        record_errors: head.counts.undecodable,
-                    };
                 }
             }
         }

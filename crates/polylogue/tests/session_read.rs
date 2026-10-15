@@ -706,7 +706,7 @@ fn source_wait_never_turns_no_usable_interpretation_or_unsupported_body_into_emp
 #[test]
 fn retained_byte_eof_stays_pending_until_real_message_effects_are_published() {
     let world = World::new();
-    let text = "source effect ".repeat(42000);
+    let text = "source effect ".repeat(15000);
     let bytes = simple("large-canonical-effect", json!(text));
     let path = world.input("eof-before-effects.jsonl", &bytes);
     let id = "01900000-0000-7000-8000-000000000409";
@@ -715,6 +715,7 @@ fn retained_byte_eof_stays_pending_until_real_message_effects_are_published() {
     let deadline = Instant::now() + WAIT;
     loop {
         let p = world.raw_progress(input);
+        assert!(p["failure"].is_null(), "{p}");
         if p["parser"]["parsed_upto"] == receipt["retained"]["length"] {
             assert_eq!(
                 p["source_rows"]["state"], "pending",
@@ -737,4 +738,39 @@ fn retained_byte_eof_stays_pending_until_real_message_effects_are_published() {
     assert_eq!(read.status.code(), Some(5));
     let doc: Value = serde_json::from_slice(&read.stdout).unwrap();
     assert_eq!(doc["messages"][0]["blocks"][0]["text"], text);
+}
+
+#[test]
+fn admission_refusal_and_provider_diagnostics_are_named_without_credential_disclosure() {
+    let world = World::new();
+    let bytes = simple("too-large-member", json!("capacity ".repeat(70000)));
+    let path = world.input("admission-wait.jsonl", &bytes);
+    let out = wait_import(&world, &path, "01900000-0000-7000-8000-000000000410", "20");
+    assert_eq!(out.status.code(), Some(2), "{out:?}; {}", world.log());
+    let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(failure["source_rows"]["state"], "unavailable");
+    assert!(
+        failure["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("admission")
+    );
+    let secret = ["gh", "p_"].concat() + &"A".repeat(36);
+    let mut record: Value =
+        serde_json::from_slice(&simple("secret-diagnostic", json!("supported content"))).unwrap();
+    record["message"][&secret] = json!("unsupported metadata");
+    let bytes = (record.to_string() + "\n").into_bytes();
+    let path = world.input("diagnostic-wait.jsonl", &bytes);
+    let out = wait_import(&world, &path, "01900000-0000-7000-8000-000000000411", "20");
+    assert_eq!(out.status.code(), Some(2), "{out:?}; {}", world.log());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(!text.contains(&secret), "{text}");
+    assert!(text.contains("credential:"), "{text}");
+    let failure: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        failure["source_rows"]["basis"]["original_hash"],
+        json!(polylogue_model::BlobHash::of(&bytes))
+    );
+    let progress = world.raw_progress(failure["retained"]["id"].as_str().unwrap());
+    assert!(!progress.to_string().contains(&secret));
 }

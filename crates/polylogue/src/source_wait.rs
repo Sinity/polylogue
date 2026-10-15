@@ -48,6 +48,7 @@ pub(crate) fn wait(socket: &Path, mut retained: Value, duration: Duration) -> Va
             }
         };
         if rows.basis != captured.basis || rows.scope != captured.scope {
+            retained["requested_source_basis"] = json!(captured.basis);
             return failure(
                 retained,
                 ErrorKind::Conflict,

@@ -244,7 +244,14 @@ fn serve(
             json!({"outcome":"error","error":Failure::new(ErrorKind::InvalidQuery,error.to_string()),"archive":archive})
         }
     };
-    serde_json::to_writer(&mut stream, &reply).map_err(|e| e.to_string())?;
+    // Retained interpretation diagnostics may contain provider-controlled text.
+    // Use the same response-boundary policy as normalized JSON documents.
+    let mut encoded = output_json::Encoder::new(
+        &mut stream,
+        std::time::Instant::now() + Duration::from_secs(30),
+    );
+    encoded.value(&reply).map_err(|e| e.to_string())?;
+    encoded.finish().map_err(|e| e.to_string())?;
     stream.write_all(b"\n").map_err(|e| e.to_string())
 }
 
