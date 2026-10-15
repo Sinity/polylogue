@@ -1,8 +1,8 @@
-# Shared file layer release
+# Shared crate releases
 
-Polylogue owns `crates/hashed-blobs`. The first proposed release is version `0.1.0`, tagged `hashed-blobs-v0.1.0` in `https://github.com/Sinity/polylogue`. This is a release candidate; the tag and downstream pin have not been published. Releases use owner Git tags, with `publish = false` preventing crates.io publication.
+Polylogue owns `crates/hashed-blobs` and `crates/credential-output`. Releases use immutable owner Git tags in `https://github.com/Sinity/polylogue`, with `publish = false` preventing crates.io publication. Each crate has its own version and tag namespace. Verify the remote tag and locked consumer commit before claiming a particular release is consumed.
 
-The crate is independent of the product workspace: its package metadata and dependencies are explicit, its edition is 2021, and its declared minimum is stable Rust 1.98.1. The locked Nix development shell supplies that compiler for qualification. This is the supported minimum being tested, not a claim that every earlier compiler fails. Its implementation uses Unix filesystem APIs; qualification covers x86_64 Linux. Native zstd compilation needs a C toolchain. No Sinex service, database, runtime or optional backend is needed.
+The `hashed-blobs` crate is independent of the product workspace: its package metadata and dependencies are explicit, its edition is 2021, and its declared minimum is stable Rust 1.98.1. The locked Nix development shell supplies that compiler for qualification. This is the supported minimum being tested, not a claim that every earlier compiler fails. Its implementation uses Unix filesystem APIs; qualification covers x86_64 Linux. Native zstd compilation needs a C toolchain. No Sinex service, database, runtime or optional backend is needed.
 
 `docs/shared-crate-source.json` records the original and read-only adaptation bytes. Release preparation changes package metadata only; API, implementation, tests and wire formats remain unchanged. Existing users retain the same `hashed_blobs` import and file encodings.
 
@@ -27,7 +27,7 @@ git push origin refs/tags/hashed-blobs-v0.1.0
 git ls-remote --tags origin refs/tags/hashed-blobs-v0.1.0 'refs/tags/hashed-blobs-v0.1.0^{}'
 ```
 
-These are future publication commands, not actions performed by preparation. An existing tag with different bytes requires a new version; never move an already consumed tag. Verify the peeled remote target before consumer replacement.
+These commands describe the release procedure; they are not evidence of publication. An existing tag with different bytes requires a new version; never move an already consumed tag. Verify the peeled remote target before consumer replacement.
 
 ## Sinex replacement
 
@@ -39,4 +39,10 @@ hashed-blobs = { git = "https://github.com/Sinity/polylogue", tag = "hashed-blob
 
 In the same downstream change, delete `vendor/hashed-blobs`, remove its root-workspace `exclude`, retire the vendor-source record and update its current replacement documentation. Regenerate the downstream lock with `cargo generate-lockfile`, then add `cargoLock.outputHashes."hashed-blobs-0.1.0"` to the downstream Nix package. Use a temporary `pkgs.lib.fakeHash` and take the expected fixed-output hash from the downstream declared build operation; replace the placeholder and rerun that build. The lock must record the remote Git URL, tag query and exact reviewed owner SHA. Run the existing affected Sinex store/file-layer tests and real downstream Nix build with its infrastructure features disabled by default; do not preserve a path patch or vendor fallback beside the Git dependency. Review and publish that connected downstream change through its normal route.
 
-Until owner publication and this consumer replacement pass, Sinex's qualified vendor copy remains a recorded unresolved release gate. Local clone trials cannot close it.
+For a new release, owner publication and the exact remote consumer replacement must both pass. Local clone trials cannot establish remote dependency delivery. Existing consumers remain pinned until their replacement is qualified and published.
+
+## Credential presentation crate
+
+`credential-output` uses this same extracted-package and disposable Git-tag consumer qualification, selected with `scripts/check-shared-file-layer.py --package credential-output` (declared operation `shared_credential_output_check`). Its independently reviewed release name is `credential-output-v0.1.0`. The existing hashed-blobs release must never move. The crate has no product dependencies or runtime configuration. Source recognition and the Unicode table were extracted unchanged from the app masking module at parent commit `272befd54fc95c3e5c5f9783fabd1b7b176de6ab`; the independent catalog and corpus retain their own provenance beside the crate tests.
+
+Publication and downstream immutable pin landing belong to the integration owner. Before publication a downstream candidate may bind the exact reviewed owner commit through a temporary explicit Git source. Such a candidate is local qualification evidence, not a released dependency. Remove that temporary source when landing the remote immutable tag and its verified Nix output hash. No vendor copy, path patch or compatibility engine is shipped.

@@ -1,7 +1,7 @@
 //! One response-boundary JSON encoder for normalized read/export documents.
 //! It masks logical string values, refuses credential-bearing structural keys,
 //! and keeps settled UTF-8 output bounded independently of masking expansion.
-use crate::masking::Masker;
+use credential_output::Masker;
 use serde_json::Value;
 use std::io::{self, Write};
 use std::time::Instant;

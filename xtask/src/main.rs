@@ -21,7 +21,7 @@ fn boundaries(root: &Path) -> Result<(), String> {
     {
         let name = package["name"].as_str().ok_or("package name missing")?;
         let allowed: &[&str] = match name {
-            "polylogue-model" | "hashed-blobs" | "xtask" => &[],
+            "polylogue-model" | "hashed-blobs" | "credential-output" | "xtask" => &[],
             "polylogue-sources" | "polylogue-query" | "polylogue-render" => &["polylogue-model"],
             "polylogue-store" => &["polylogue-model", "hashed-blobs"],
             "polylogue-engine" => &[
@@ -37,6 +37,7 @@ fn boundaries(root: &Path) -> Result<(), String> {
                 "polylogue-query",
                 "polylogue-engine",
                 "polylogue-render",
+                "credential-output",
             ],
             other => return Err(format!("unassigned workspace package {other}")),
         };

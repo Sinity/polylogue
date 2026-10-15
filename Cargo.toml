@@ -9,6 +9,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+credential-output = { path = "crates/credential-output" }
 polylogue-model = { path = "crates/model" }
 polylogue-store = { path = "crates/store" }
 polylogue-sources = { path = "crates/sources" }
