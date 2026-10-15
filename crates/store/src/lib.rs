@@ -23,6 +23,8 @@ use std::{
     sync::{Arc, OnceLock, atomic::AtomicBool},
 };
 mod native;
+mod retained;
+pub use retained::{ImportObservation, InputFormat, RetainedInput};
 pub mod parser_state;
 mod wal;
 
