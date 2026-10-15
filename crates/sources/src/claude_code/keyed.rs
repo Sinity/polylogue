@@ -1,0 +1,332 @@
+//! Point-read predecessor and touched cells. The caller pins input/chain/parser/
+//! companion basis; no historical enumeration is available to interpretation.
+use polylogue_model::{
+    BlobHash, BlockContent, LinkHow, LinkKind, Message, MessageId, Role, Session,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ResponseKey {
+    pub role: Role,
+    pub response: String,
+    pub request: String,
+}
+impl ResponseKey {
+    pub fn user(uuid: &str) -> Self {
+        Self {
+            role: Role::User,
+            response: uuid.into(),
+            request: String::new(),
+        }
+    }
+    pub fn new(response: &str, request: &str) -> Self {
+        Self {
+            role: Role::Assistant,
+            response: response.into(),
+            request: request.into(),
+        }
+    }
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Header {
+    /// Assigned only by the owner after complete-record framing, not by this parser.
+    pub parsed_upto: u64,
+    pub title: Option<(u8, String)>,
+    pub owner: Option<String>,
+    pub next_session_ordinal: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCell {
+    pub session: Session,
+    pub ordinal: u64,
+    pub seen_own_user: bool,
+    pub last_message: Option<MessageId>,
+    pub facts_pending: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResponseCell {
+    /// Source metadata only. Blocks/version/time aggregates are not complete here.
+    pub message: Message,
+    pub items: u64,
+    pub revision: u64,
+    /// Selected raw usage, stop_reason, model, timestamp, in this fixed order.
+    pub selected: [Option<Vec<u8>>; 4],
+    pub incomplete_bodies: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordAddress {
+    pub response: ResponseKey,
+    pub message: MessageId,
+    pub item: u64,
+    pub role: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BodyPayload {
+    pub blob: BlobHash,
+    pub length: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredBody {
+    pub content_item: u32,
+    pub payload: Option<BodyPayload>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Contribution {
+    pub uuid: String,
+    /// Effective raw field-presence overlay; exact numeric tokens survive.
+    pub raw: Vec<u8>,
+    /// Stable contribution-local positions, not final response BlockIds.
+    pub blocks: Vec<BlockContent>,
+    pub bodies: Vec<RequiredBody>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LinkKey {
+    pub parent: String,
+    pub child: String,
+    pub kind: LinkKind,
+    pub how: LinkHow,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingMessage {
+    pub message: MessageId,
+    pub revision: u64,
+    pub items: u64,
+    pub incomplete: bool,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Delta {
+    pub sessions: Vec<SessionCell>,
+    pub responses: Vec<(String, ResponseKey, ResponseCell)>,
+    pub addresses: Vec<(String, String, RecordAddress)>,
+    pub contributions: Vec<(MessageId, u64, Contribution)>,
+    pub sides: Vec<(String, String)>,
+    pub links: Vec<LinkKey>,
+    pub pending_messages: Vec<PendingMessage>,
+}
+
+pub trait ReadView {
+    type Error: std::fmt::Display;
+    fn header(&self) -> Result<Header, Self::Error>;
+    fn session(&self, native: &str) -> Result<Option<SessionCell>, Self::Error>;
+    fn response(
+        &self,
+        session: &str,
+        key: &ResponseKey,
+    ) -> Result<Option<ResponseCell>, Self::Error>;
+    fn record(&self, session: &str, uuid: &str) -> Result<Option<RecordAddress>, Self::Error>;
+    fn contribution(
+        &self,
+        message: &MessageId,
+        item: u64,
+    ) -> Result<Option<Contribution>, Self::Error>;
+    fn side(&self, uuid: &str) -> Result<Option<String>, Self::Error>;
+    fn has_link(&self, key: &LinkKey) -> Result<bool, Self::Error>;
+    /// Required body availability on the same pinned companion basis. A failed
+    /// lookup is an error, never a recorded absence or output-not-recorded.
+    fn body(&self, path: &str) -> Result<Option<BodyPayload>, Self::Error>;
+}
+impl<T: ReadView + ?Sized> ReadView for &T {
+    type Error = T::Error;
+    fn header(&self) -> Result<Header, Self::Error> {
+        (**self).header()
+    }
+    fn session(&self, native: &str) -> Result<Option<SessionCell>, Self::Error> {
+        (**self).session(native)
+    }
+    fn response(
+        &self,
+        session: &str,
+        key: &ResponseKey,
+    ) -> Result<Option<ResponseCell>, Self::Error> {
+        (**self).response(session, key)
+    }
+    fn record(&self, session: &str, uuid: &str) -> Result<Option<RecordAddress>, Self::Error> {
+        (**self).record(session, uuid)
+    }
+    fn contribution(
+        &self,
+        message: &MessageId,
+        item: u64,
+    ) -> Result<Option<Contribution>, Self::Error> {
+        (**self).contribution(message, item)
+    }
+    fn side(&self, uuid: &str) -> Result<Option<String>, Self::Error> {
+        (**self).side(uuid)
+    }
+    fn has_link(&self, key: &LinkKey) -> Result<bool, Self::Error> {
+        (**self).has_link(key)
+    }
+    fn body(&self, path: &str) -> Result<Option<BodyPayload>, Self::Error> {
+        (**self).body(path)
+    }
+}
+
+/// Legitimate test adapter, not an alternate parser or serialized legacy carry.
+#[derive(Default)]
+pub struct MemoryReadView {
+    header: Header,
+    sessions: HashMap<String, SessionCell>,
+    responses: HashMap<(String, ResponseKey), ResponseCell>,
+    records: HashMap<(String, String), RecordAddress>,
+    contributions: HashMap<(MessageId, u64), Contribution>,
+    sides: HashMap<String, String>,
+    links: HashSet<LinkKey>,
+    bodies: HashMap<String, BodyPayload>,
+}
+impl MemoryReadView {
+    pub fn set_body(&mut self, path: impl Into<String>, payload: Option<BodyPayload>) {
+        let path = path.into();
+        match payload {
+            Some(body) => {
+                self.bodies.insert(path, body);
+            }
+            None => {
+                self.bodies.remove(&path);
+            }
+        }
+    }
+    pub fn apply(&mut self, header: Header, delta: Delta) {
+        self.header = header;
+        for cell in delta.sessions {
+            self.sessions.insert(cell.session.native_id.clone(), cell);
+        }
+        for (s, k, c) in delta.responses {
+            self.responses.insert((s, k), c);
+        }
+        for (s, u, c) in delta.addresses {
+            self.records.insert((s, u), c);
+        }
+        for (m, i, c) in delta.contributions {
+            self.contributions.insert((m, i), c);
+        }
+        self.sides.extend(delta.sides);
+        self.links.extend(delta.links);
+    }
+}
+impl ReadView for MemoryReadView {
+    type Error = Infallible;
+    fn header(&self) -> Result<Header, Self::Error> {
+        Ok(self.header.clone())
+    }
+    fn session(&self, native: &str) -> Result<Option<SessionCell>, Self::Error> {
+        Ok(self.sessions.get(native).cloned())
+    }
+    fn response(
+        &self,
+        session: &str,
+        key: &ResponseKey,
+    ) -> Result<Option<ResponseCell>, Self::Error> {
+        Ok(self.responses.get(&(session.into(), key.clone())).cloned())
+    }
+    fn record(&self, session: &str, uuid: &str) -> Result<Option<RecordAddress>, Self::Error> {
+        Ok(self.records.get(&(session.into(), uuid.into())).cloned())
+    }
+    fn contribution(
+        &self,
+        message: &MessageId,
+        item: u64,
+    ) -> Result<Option<Contribution>, Self::Error> {
+        Ok(self.contributions.get(&(message.clone(), item)).cloned())
+    }
+    fn side(&self, uuid: &str) -> Result<Option<String>, Self::Error> {
+        Ok(self.sides.get(uuid).cloned())
+    }
+    fn has_link(&self, key: &LinkKey) -> Result<bool, Self::Error> {
+        Ok(self.links.contains(key))
+    }
+    fn body(&self, path: &str) -> Result<Option<BodyPayload>, Self::Error> {
+        Ok(self.bodies.get(path).cloned())
+    }
+}
+
+/// The owner pins `PendingMessage.revision` and its durable predecessor while
+/// preparing layout and version evidence. Each call addresses one contribution.
+/// Unit counting and hashing are scheduled owner work, not parser finalization.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContributionCursor {
+    pub item: u64,
+}
+impl ResponseCell {
+    pub fn next_contribution(&self, cursor: &mut ContributionCursor) -> Option<(MessageId, u64)> {
+        if cursor.item >= self.items {
+            return None;
+        }
+        let item = cursor.item;
+        cursor.item += 1;
+        Some((self.message.id.clone(), item))
+    }
+    /// After the owner has reduced effective-record metadata in contribution
+    /// order, append ONLY the selected raw subtrees that differ, in this order.
+    pub fn metadata_units(&self, baseline: &[Option<Vec<u8>>; 4]) -> Vec<EvidenceUnit> {
+        [
+            "response/usage",
+            "response/stop_reason",
+            "response/model",
+            "response/completed_at",
+        ]
+        .iter()
+        .enumerate()
+        .filter_map(|(i, tag)| {
+            if self.selected[i] == baseline[i] {
+                return None;
+            }
+            self.selected[i].as_ref().map(|raw| EvidenceUnit::Json {
+                tag: (*tag).into(),
+                canonical: raw.clone(),
+                whole_record: false,
+            })
+        })
+        .collect()
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EvidenceUnit {
+    Json {
+        tag: String,
+        canonical: Vec<u8>,
+        whole_record: bool,
+    },
+    Body {
+        tag: String,
+        payload: BodyPayload,
+    },
+}
+impl Contribution {
+    pub fn record_unit(&self, item: u64) -> EvidenceUnit {
+        EvidenceUnit::Json {
+            tag: format!("record/{item}"),
+            canonical: self.raw.clone(),
+            whole_record: true,
+        }
+    }
+    /// One admitted effective record, not a historical response scan. The owner
+    /// reduces these fields while reading `next_contribution` slots in order.
+    pub fn final_fields(&self) -> Result<[Option<Vec<u8>>; 4], String> {
+        let mut fields: [Option<Vec<u8>>; 4] = Default::default();
+        for (i, path) in super::METADATA_PATHS.iter().enumerate() {
+            fields[i] = super::raw::optional_field(&self.raw, path)?
+                .map(super::raw::canonical)
+                .transpose()?;
+        }
+        Ok(fields)
+    }
+    /// Body units follow all raw-record/final-field units, in (item,content-item)
+    /// order. A missing required payload is explicit unresolved work, not a hash
+    /// of a missing marker. Optional duplicated inline files create no entries.
+    pub fn body_unit(&self, item: u64, body: usize) -> Result<Option<EvidenceUnit>, String> {
+        self.bodies
+            .get(body)
+            .map(|b| {
+                b.payload
+                    .clone()
+                    .map(|payload| EvidenceUnit::Body {
+                        tag: format!("record/{item}/tool_result/{}/body", b.content_item),
+                        payload,
+                    })
+                    .ok_or_else(|| "required Claude body remains unavailable".to_owned())
+            })
+            .transpose()
+    }
+}
