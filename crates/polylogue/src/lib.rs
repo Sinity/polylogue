@@ -1,6 +1,7 @@
 //! Foundation process ownership. Unsupported product operations stay unregistered.
 use std::{collections::HashMap, fs, io::{self, BufRead, BufReader, Write}, os::unix::{fs::{FileTypeExt, MetadataExt, PermissionsExt}, net::{UnixListener, UnixStream}}, path::{Path, PathBuf}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, thread::{self, JoinHandle}, time::Duration};
 use polylogue_store::{ReadHandle, Writer};
+use polylogue_model::types::{ErrorKind, Failure};
 use serde_json::{json, Value};
 
 pub fn socket_path(archive: &Path, runtime: &Path) -> PathBuf {
@@ -100,11 +101,11 @@ fn serve(mut stream: UnixStream, archive: &Path) -> Result<(), String> {
         Ok(request) if request == json!({"command":"status"}) => {
             match ReadHandle::open(archive).and_then(|reader| reader.status()) {
                 Ok(status) => json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status"],"product_path":"not_implemented"}),
-                Err(error) => json!({"outcome":"error","error":{"kind":"unavailable","message":error.to_string()},"archive":archive}),
+                Err(error) => json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive}),
             }
         }
-        Ok(_) => json!({"outcome":"error","error":{"kind":"not_yet_available","message":"only foundation status is supported"},"archive":archive}),
-        Err(error) => json!({"outcome":"error","error":{"kind":"invalid_query","message":error.to_string()},"archive":archive}),
+        Ok(_) => json!({"outcome":"error","error":Failure::new(ErrorKind::NotYetAvailable,"only foundation status is supported"),"archive":archive}),
+        Err(error) => json!({"outcome":"error","error":Failure::new(ErrorKind::InvalidQuery,error.to_string()),"archive":archive}),
     };
     serde_json::to_writer(&mut stream, &reply).map_err(|e| e.to_string())?;
     stream.write_all(b"\n").map_err(|e| e.to_string())
