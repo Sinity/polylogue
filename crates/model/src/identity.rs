@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 #[derive(Debug, thiserror::Error)]
-#[error("origin must start with an ASCII letter or digit and contain only letters, digits, dot, underscore or hyphen")]
+#[error(
+    "origin must start with an ASCII letter or digit and contain only letters, digits, dot, underscore or hyphen"
+)]
 pub struct InvalidOrigin;
 
 /// An open product name, independent of parser registration.
@@ -14,7 +16,10 @@ pub struct Origin(String);
 impl Origin {
     pub fn new(value: impl Into<String>) -> Result<Self, InvalidOrigin> {
         let value = value.into();
-        if !value.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+        if !value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
             || !value
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
@@ -209,9 +214,24 @@ mod tests {
         for name in ["future-product-7", "Future_Product", "7", "product.v2"] {
             let origin = Origin::new(name).unwrap();
             assert_eq!(origin.as_str(), name);
-            assert_eq!(serde_json::from_str::<Origin>(&format!("{name:?}")).unwrap(), origin);
+            assert_eq!(
+                serde_json::from_str::<Origin>(&format!("{name:?}")).unwrap(),
+                origin
+            );
         }
-        for invalid in ["", ".", "..", ".hidden", "-codex", "_codex", "codex:other", "two words", "codex/cli", "codex\n", "é"] {
+        for invalid in [
+            "",
+            ".",
+            "..",
+            ".hidden",
+            "-codex",
+            "_codex",
+            "codex:other",
+            "two words",
+            "codex/cli",
+            "codex\n",
+            "é",
+        ] {
             assert!(Origin::new(invalid).is_err());
             assert!(serde_json::from_str::<Origin>(&format!("{invalid:?}")).is_err());
         }
