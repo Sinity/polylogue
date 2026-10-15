@@ -343,13 +343,6 @@ REF_FAMILIES: tuple[RefFamily, ...] = (
     RefFamily("action", "tool_use_block_id", "archive-id", "block", detail_closure=True),
     RefFamily(
         "action",
-        "tool_result_block_id",
-        "archive-id",
-        "block",
-        reason="null for an unpaired tool use; the missing-result population is asserted separately",
-    ),
-    RefFamily(
-        "action",
         "followup_message_ref",
         "archive-id",
         "message",

@@ -120,9 +120,9 @@ Featured parser-gated examples:
 | `top-k` | `sessions` | `near:"semantic search"` | Ranks the sessions most relevant to a semantic-search phrase. | `session.id, session.origin, session.title, session.message_count, session.created_at, session.updated_at, match.rank, match.retrieval_lane, match.match_surface, match.target_ref, match.message_id, match.snippet, match.score, match.score_kind, match.matched_terms` | `corpus-scale` |
 | `sample` | `sessions` | `repo:example-repo since:30d` | Samples recent sessions from one repository. | `id, origin, title, title_source, title_is_synthesized, title_ref, target_ref, anchor, actions, created_at, updated_at, message_count, terminal_state, total_cost_usd, cost_provenance, relative_time, tags, summary, words, repo, cwd_display, flags, parent_refs, child_refs, continuation` | `selective` |
 | `exhaustive` | `messages` | `messages where role:assistant AND text:timeout` | Returns assistant messages mentioning a timeout. | `unit, message_id, session_id, origin, title, repo, role, message_type, material_origin, occurred_at_ms, position, parent_message_id, variant_index, is_active_path, is_active_leaf, word_count, text` | `corpus-scale` |
-| `exhaustive` | `actions` | `actions where session.repo:example-repo AND action:file_edit AND path:src/query` | Returns file-edit actions under the query source path for one repository. | `unit, session_id, message_id, origin, title, tool_use_block_id, tool_result_block_id, tool_name, semantic_type, tool_command, tool_path, occurred_at_ms, output_text, is_error, exit_code, result_state, outcome_unknown_reason, followup_class, followup_message_ref` | `selective` |
-| `exhaustive` | `actions` | `actions where tool:shell AND command:pytest` | Returns shell actions whose command mentions pytest. | `unit, session_id, message_id, origin, title, tool_use_block_id, tool_result_block_id, tool_name, semantic_type, tool_command, tool_path, occurred_at_ms, output_text, is_error, exit_code, result_state, outcome_unknown_reason, followup_class, followup_message_ref` | `corpus-scale` |
-| `exhaustive` | `actions` | `actions where session.repo:example-repo AND session.since:7d AND output:failed` | Returns recent failed action evidence for one repository. | `unit, session_id, message_id, origin, title, tool_use_block_id, tool_result_block_id, tool_name, semantic_type, tool_command, tool_path, occurred_at_ms, output_text, is_error, exit_code, result_state, outcome_unknown_reason, followup_class, followup_message_ref` | `corpus-scale` |
+| `exhaustive` | `actions` | `actions where session.repo:example-repo AND action:file_edit AND path:src/query` | Returns file-edit actions under the query source path for one repository. | `unit, session_id, message_id, origin, title, tool_use_block_id, results, tool_name, semantic_type, tool_command, tool_path, occurred_at_ms, output_text, is_error, result_state, outcome_unknown_reason, followup_class, followup_message_ref` | `selective` |
+| `exhaustive` | `actions` | `actions where tool:shell AND command:pytest` | Returns shell actions whose command mentions pytest. | `unit, session_id, message_id, origin, title, tool_use_block_id, results, tool_name, semantic_type, tool_command, tool_path, occurred_at_ms, output_text, is_error, result_state, outcome_unknown_reason, followup_class, followup_message_ref` | `corpus-scale` |
+| `exhaustive` | `actions` | `actions where session.repo:example-repo AND session.since:7d AND output:failed` | Returns recent failed action evidence for one repository. | `unit, session_id, message_id, origin, title, tool_use_block_id, results, tool_name, semantic_type, tool_command, tool_path, occurred_at_ms, output_text, is_error, result_state, outcome_unknown_reason, followup_class, followup_message_ref` | `corpus-scale` |
 | `exhaustive` | `files` | `files where path:src/query/parser.py` | Returns file evidence for the query parser path. | `unit, session_id, origin, title, path, action_count, first_message_id, first_tool_use_block_id, last_tool_use_block_id, first_seen_ms, last_seen_ms` | `selective` |
 | `exhaustive` | `files` | `files where session.repo:example-repo AND path:src/mcp/server.py` | Returns file evidence for one path within one repository. | `unit, session_id, origin, title, path, action_count, first_message_id, first_tool_use_block_id, last_tool_use_block_id, first_seen_ms, last_seen_ms` | `selective` |
 | `exhaustive` | `assertions` | `assertions where kind:decision AND text:"schema migration"` | Returns decision assertions about a named topic. | `unit, assertion_id, target_ref, scope_ref, kind, key, body_text, value, author_ref, author_kind, status, visibility, evidence_refs, staleness, context_policy, created_at_ms, updated_at_ms` | `corpus-scale` |
@@ -174,7 +174,7 @@ polylogue --format json actions where session.repo:polylogue | group by tool | a
 Each metric is `count` (field-less) or `FN:FIELD`, where `FN` is `sum`,
 `avg`, `min`, `max`, or a nearest-rank percentile `pNN` (`p1`..`p99`), and
 `FIELD` is one of the unit's declared numeric metric fields (`message`:
-`word_count`; `action`: `is_error`, `exit_code`). An unsupported function or
+`word_count`; `action`: `is_error`). An unsupported function or
 field raises a typed error naming the unit, the metric, and the supported
 field set. Metric labels are stable output keys: `count` for the count
 metric, otherwise `f"{fn}_{field}"` (e.g. `avg_word_count`).
@@ -238,7 +238,7 @@ already present on that unit's attached row payload, not the full
 | Unit | Bracket predicate fields |
 |------|---------------------------|
 | `message` | `role`, `type` |
-| `action` | `tool`, `action`, `type`, `is_error`, `exit_code`, `followup_class` |
+| `action` | `tool`, `action`, `type`, `is_error`, `followup_class` |
 | `file` | `path` |
 | `assertion` | `kind`, `status`, `visibility`, `author_kind` |
 
@@ -1292,3 +1292,12 @@ Stored producer provenance is proved from the exact selected recipe or the publi
 
 
 Demo vectors have a deterministic synthetic producer and are outside Voyage's retrieval space. The existing completed demo ownership manifest excludes its exact session membership from embedding acquisition, including on an enabled daemon. Later real sessions remain eligible for acquisition. Status reports excluded messages separately from missing paid computation; exclusion does not certify retrieval readiness. Malformed or incomplete ownership records grant no exclusion, and unreadable ownership evidence propagates a read failure. An incompatible synthetic and hosted vector tier requires the existing explicit generation transition rather than silent mixing.
+
+Tool actions expose an ordered `results` collection with each original result's
+block reference, body, structural outcome, error flag, exit code and unknown
+reason. `output_text` joins the reported bodies; aggregate `is_error` is true
+when any owned result proves an error, false when all prove success, and null
+otherwise. Exit-code predicates match any owned result. A scalar exit code and
+singular result reference are absent from the public action row; exit codes
+cannot be used as scalar grouping or aggregate fields. Exact session reads
+associate only the canonical composed transcript's visible messages.

@@ -18,7 +18,10 @@ MAX_CAPABILITY_PAGE = 25
 
 
 def _snapshot_id(stats: Mapping[str, object] | None, readiness: Mapping[str, object] | None) -> str:
-    payload = json.dumps({"counts": stats, "readiness": readiness}, sort_keys=True, default=str).encode()
+    semantic_readiness = (
+        {key: value for key, value in readiness.items() if key != "timestamp"} if readiness is not None else None
+    )
+    payload = json.dumps({"counts": stats, "readiness": semantic_readiness}, sort_keys=True, default=str).encode()
     return "archive:" + sha256(payload).hexdigest()[:16]
 
 

@@ -327,7 +327,11 @@ tool_finished_base AS (
     -- is chosen to stand for the scalar location. Pushdown uses the same verdict.
     FROM paired_uses pair
     JOIN blocks u ON u.block_id = pair.tool_use_block_id
-    LEFT JOIN blocks r ON r.block_id = pair.candidate_result_id
+    LEFT JOIN blocks r ON r.block_id = (
+        SELECT tr.block_key FROM tool_finished_results tr
+        WHERE tr.session_key=pair.session_id AND tr.assigned_use_key=pair.tool_use_block_id
+        ORDER BY tr.message_position DESC,tr.variant_index DESC,tr.block_position DESC,tr.block_key DESC LIMIT 1
+    )
     WHERE pair.ambiguous=0 AND pair.result_count>0 AND ({source_where})
 ),
 source_observed_events AS (

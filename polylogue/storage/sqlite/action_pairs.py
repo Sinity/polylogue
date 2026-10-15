@@ -7,7 +7,13 @@ import sqlite3
 from polylogue.core.tool_association import tool_association_ctes_sql
 
 
-def action_pairing_ctes_sql(*, use_bound: str = "", result_bound: str = "", session_index_hint: str = "") -> str:
+def action_pairing_ctes_sql(
+    *,
+    use_bound: str = "",
+    result_bound: str = "",
+    session_index_hint: str = "",
+    context_relation: str | None = None,
+) -> str:
     """Project original stored facts into the shared association owner.
 
     Exact resolved parent chains can prove multiple replies to one invocation.
@@ -16,6 +22,31 @@ def action_pairing_ctes_sql(*, use_bound: str = "", result_bound: str = "", sess
     Bounded scans retain the caller's original session-index hint.
     """
     association = tool_association_ctes_sql()
+    if context_relation is not None:
+        return f"""
+        association_messages AS (
+            SELECT c.context_session_id AS session_key,m.message_id AS message_key,
+                   m.parent_message_id AS parent_key,m.role,m.session_id AS source_session_id,
+                   ROW_NUMBER() OVER (PARTITION BY c.context_session_id
+                       ORDER BY c.segment_order,m.position,m.variant_index,m.message_id) AS message_position,
+                   m.variant_index
+            FROM {context_relation} c JOIN messages m ON m.session_id=c.source_session_id
+            WHERE c.upto_position IS NULL
+               OR (m.position,m.variant_index)<=(c.upto_position,c.upto_variant_index)
+        ), association_blocks AS (
+            SELECT m.session_key,b.block_id AS block_key,b.message_id AS message_key,b.tool_id,
+                   b.block_type='tool_use' AS is_use,b.tool_outcome AS outcome,
+                   b.tool_result_outcome_unknown_reason AS unknown_reason,b.position AS block_position
+            FROM association_messages m
+            JOIN blocks b INDEXED BY idx_blocks_session_position
+              ON b.session_id=m.source_session_id AND b.message_id=m.message_key
+            WHERE b.block_type IN ('tool_use','tool_result')
+        ), {association}, paired_uses AS (
+            SELECT session_key AS session_id,tool_id,use_rank,use_key AS tool_use_block_id,
+                   result_key AS candidate_result_id,result_count,ambiguous,verdict,verdict_reason,association_state
+            FROM tool_associations
+        )
+        """.strip()
     return f"""
     association_messages AS (
         SELECT session_id AS session_key,message_id AS message_key,parent_message_id AS parent_key,

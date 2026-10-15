@@ -59,7 +59,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_transform_candidate_assertions,
 )
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE, open_connection
-from tests.infra.identity import archive_message_id, fixture_block_content_identity
+from tests.infra.identity import archive_block_id, archive_message_id, fixture_block_content_identity
 from tests.infra.user_tier import connect_measured_user_tier
 
 
@@ -371,7 +371,7 @@ def test_actions_view_keeps_duplicate_tool_ids_session_scoped(tmp_path: Path) ->
 
         action = conn.execute(
             """
-            SELECT output_text, tool_result_block_id
+            SELECT output_text, json_extract(results_json, '$[0].tool_result_block_id') AS tool_result_block_id
             FROM actions
             WHERE session_id = ?
             """,
@@ -395,7 +395,7 @@ def test_actions_view_keeps_duplicate_tool_ids_session_scoped(tmp_path: Path) ->
         )
         action = conn.execute(
             """
-            SELECT output_text, tool_result_block_id
+            SELECT output_text, json_extract(results_json, '$[0].tool_result_block_id') AS tool_result_block_id
             FROM actions
             WHERE session_id = ?
             """,
@@ -403,7 +403,12 @@ def test_actions_view_keeps_duplicate_tool_ids_session_scoped(tmp_path: Path) ->
         ).fetchone()
         assert action is not None
         assert action["output_text"] == "same-session-result"
-        assert action["tool_result_block_id"] == f"{message_a}:1"
+        assert action["tool_result_block_id"] == archive_block_id(
+            message_a,
+            content_identity=fixture_block_content_identity(
+                "tool_result", "same-session-result", "provider-local-tool-id"
+            ),
+        )
     finally:
         conn.close()
 
@@ -794,6 +799,9 @@ def test_supersession_and_status_persist(tmp_path: Path) -> None:
 
 
 def test_list_assertions_filters_by_target_and_kind(tmp_path: Path) -> None:
+    block_ref = "block:" + archive_block_id(
+        "message", content_identity=fixture_block_content_identity("text", "neutral")
+    )
     conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
@@ -815,7 +823,7 @@ def test_list_assertions_filters_by_target_and_kind(tmp_path: Path) -> None:
         upsert_assertion(
             conn,
             assertion_id="t2-tag",
-            target_ref="block:b-1",
+            target_ref=block_ref,
             kind=AssertionKind.TAG,
             value="python",
             now_ms=1_700_000_002_000,
@@ -829,7 +837,7 @@ def test_list_assertions_filters_by_target_and_kind(tmp_path: Path) -> None:
         s1_tags = list_assertions_for_target(conn, "session:s-1", kind="tag")
         assert [a.assertion_id for a in s1_tags] == ["t1-tag"]
 
-        b1 = list_assertions_for_target(conn, "block:b-1", kind="tag")
+        b1 = list_assertions_for_target(conn, block_ref, kind="tag")
         assert [a.assertion_id for a in b1] == ["t2-tag"]
 
         assert list_assertions_for_target(conn, "session:absent") == []

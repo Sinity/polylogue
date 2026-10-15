@@ -1777,6 +1777,16 @@ class MessageQueryRowPayload(_SurfacePayloadModel):
         return cls._from_row_generic(row)
 
 
+class ActionResultPayload(_SurfacePayloadModel):
+    tool_result_block_id: str
+    output_text: str | None = None
+    output_text_chars: int | None = None
+    is_error: int | None = None
+    exit_code: int | None = None
+    tool_outcome: str
+    outcome_unknown_reason: str | None = None
+
+
 class ActionQueryRowPayload(_SurfacePayloadModel):
     """Shared terminal-query row for normalized tool/action evidence."""
 
@@ -1786,7 +1796,7 @@ class ActionQueryRowPayload(_SurfacePayloadModel):
     origin: str
     title: str | None = None
     tool_use_block_id: str
-    tool_result_block_id: str | None = None
+    results: tuple[ActionResultPayload, ...] = ()
     tool_name: str | None = None
     semantic_type: str | None = None
     tool_command: str | None = None
@@ -1794,7 +1804,6 @@ class ActionQueryRowPayload(_SurfacePayloadModel):
     occurred_at_ms: int | None = None
     output_text: str | None = None
     is_error: int | None = None
-    exit_code: int | None = None
     result_state: ActionResultState
     outcome_unknown_reason: str | None = None
     followup_class: str | None = None
@@ -1802,7 +1811,9 @@ class ActionQueryRowPayload(_SurfacePayloadModel):
 
     @classmethod
     def from_row(cls, row: ArchiveActionQueryRow) -> ActionQueryRowPayload:
-        return cls._from_row_generic(row)
+        return cls._from_row_generic(
+            row, results=tuple(ActionResultPayload._from_row_generic(result) for result in row.results)
+        )
 
 
 def _delegation_instruction_text(payload: str | None) -> str | None:

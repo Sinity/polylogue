@@ -1666,3 +1666,24 @@ def test_workload_readiness_refuses_unreadable_thread_projection(
     assert readiness["checked"] is False
     assert readiness["reason"] == "thread projection unavailable"
     assert readiness["surface_readiness"] == {}
+
+
+def test_query_time_threads_preserve_rows_when_root_metadata_is_missing(tmp_path: Path) -> None:
+    from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    db = tmp_path / "index.db"
+    _seed_minimal_archive(db, tmp_path / "synthetic-input.json")
+    with ArchiveStore(tmp_path) as archive:
+        rebuild_archive_session_insights(archive)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 1
+        conn.execute("UPDATE sessions SET root_session_id='missing-root'")
+    report = probe(db, exact_derived_counts=True)
+    surface = report["archive_tiers"]["derived_readiness"]["surface_readiness"]["threads"]
+    assert surface["ready"] is True
+    assert surface["blockers"] == []
+    assert surface["evidence"]["thread_count"] == 1
+    assert surface["evidence"]["thread_session_count"] == 1

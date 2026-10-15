@@ -7,6 +7,7 @@ The capability owns only the read SQL and its row-to-insight mapping.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from builtins import BaseExceptionGroup
 from collections.abc import Callable
@@ -16,11 +17,11 @@ from datetime import UTC, datetime
 from polylogue.analysis.archive import ArchiveCoverageInsight
 from polylogue.analysis.archive_models import ArchiveInsightProvenance
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery, build_command_shape_usage
-from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
+from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery, ToolEpisodeResult
 from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.archive.query.spec import parse_query_date
 from polylogue.storage.io_phase_metrics import close_connection_cursor
-from polylogue.storage.sqlite.archive_tiers.archive_query_reads import _ACTION_FOLLOWUP_RELATION_SQL
+from polylogue.storage.sqlite.archive_tiers.archive_query_reads import _action_relation_for_query
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageOriginCoverageRow, ToolUsageRow
 
 OriginNormalizer = Callable[[str | None], str | None]
@@ -116,28 +117,27 @@ class ArchiveReadInsights:
         if until_ms is not None:
             where.append(f"{event_ms} <= ?")
             params.append(until_ms)
+        prefix, relation, relation_params = _action_relation_for_query(
+            session_ids=[request.session_id] if request.session_id else (),
+            include_followup=True,
+            conn=self._conn,
+        )
         rows = self._conn.execute(
             f"""
-            {_ACTION_FOLLOWUP_RELATION_SQL}
+            {prefix}
             SELECT a.*, s.origin, tu.tool_input
-              FROM action_rows a JOIN sessions s ON s.session_id=a.session_id
+              FROM {relation} a JOIN sessions s ON s.session_id=a.session_id
               JOIN messages m ON m.message_id=a.message_id JOIN blocks tu ON tu.block_id=a.tool_use_block_id
              WHERE {" AND ".join(where)}
              ORDER BY {event_ms}, a.tool_use_block_id LIMIT ? OFFSET ?
         """,
-            (*params, request.limit if request.limit is not None else -1, request.offset),
+            (*relation_params, *params, request.limit if request.limit is not None else -1, request.offset),
         ).fetchall()
         result: list[ToolEpisodeInsight] = []
         self.degraded_components = ()
         for row in rows:
             state = str(row["result_state"])
-            plural = (
-                row["tool_result_block_id"] is None
-                and state != "no_result"
-                and row["outcome_unknown_reason"] != "ambiguous_tool_id_reuse"
-            )
-            if plural:
-                self.degraded_components = ("tool_episode_plural_output_omitted",)
+            owned = json.loads(row["results_json"])
             before, after, next_action = self._episode_context(row)
             result.append(
                 ToolEpisodeInsight(
@@ -146,13 +146,21 @@ class ArchiveReadInsights:
                     message_id=str(row["message_id"]),
                     origin=str(row["origin"] or "unknown-export"),
                     tool_use_block_id=str(row["tool_use_block_id"]),
-                    tool_result_block_id=str(row["tool_result_block_id"]) if row["tool_result_block_id"] else None,
+                    results=tuple(
+                        ToolEpisodeResult(
+                            block_id=item["tool_result_block_id"],
+                            output_text=item["output_text"],
+                            is_error=item["is_error"],
+                            exit_code=item["exit_code"],
+                            outcome=item["tool_outcome"],
+                            unknown_reason=item["outcome_unknown_reason"],
+                        )
+                        for item in owned
+                    ),
                     tool_name=str(row["tool_name"]) if row["tool_name"] else None,
                     semantic_type=str(row["semantic_type"]) if row["semantic_type"] else None,
                     call_input=str(row["tool_input"]) if row["tool_input"] is not None else None,
-                    result_output=str(row["output_text"]) if row["output_text"] is not None else None,
-                    is_error=int(row["is_error"]) if row["is_error"] is not None else None,
-                    exit_code=int(row["exit_code"]) if row["exit_code"] is not None else None,
+                    output_text=str(row["output_text"]) if row["output_text"] is not None else None,
                     result_state=state,
                     outcome_unknown_reason=row["outcome_unknown_reason"],
                     context_before=before,
@@ -160,12 +168,10 @@ class ArchiveReadInsights:
                     next_action=next_action,
                     followup_class=str(row["followup_class"]) if row["followup_class"] else None,
                     caveat=(
-                        "parent-proven multiple results; scalar output omitted"
-                        if plural
-                        else "outcome unknown: no paired structural result"
+                        "outcome unknown: no paired structural result"
                         if state == "no_result"
                         else "outcome unknown: paired structural result has no trusted verdict"
-                        if state == "outcome_unknown" and row["tool_result_block_id"] is not None
+                        if state == "outcome_unknown" and owned
                         else "outcome unknown: ambiguous result association"
                         if state == "outcome_unknown"
                         else "structural outcome from tool result"
@@ -182,9 +188,12 @@ class ArchiveReadInsights:
         if start is None:
             raise ValueError("episode tool use is absent from its composed transcript")
         end = start
-        if row["tool_result_block_id"] is not None:
+        owned = json.loads(row["results_json"])
+        if owned:
             with closing(
-                self._conn.execute("SELECT message_id FROM blocks WHERE block_id = ?", (row["tool_result_block_id"],))
+                self._conn.execute(
+                    "SELECT message_id FROM blocks WHERE block_id = ?", (owned[-1]["tool_result_block_id"],)
+                )
             ) as cursor:
                 result = cursor.fetchone()
             if result is None:

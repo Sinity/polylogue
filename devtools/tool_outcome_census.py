@@ -110,7 +110,8 @@ def compute_tool_outcome_census(conn: sqlite3.Connection) -> ToolOutcomeCensus:
                COUNT(*) AS n
         FROM blocks b
         JOIN sessions s ON s.session_id = b.session_id
-        LEFT JOIN actions a ON a.tool_result_block_id = b.block_id
+        LEFT JOIN (SELECT a.tool_name,a.result_state,json_extract(result.value,'$.tool_result_block_id') AS result_id
+                   FROM actions a JOIN json_each(a.results_json) result) a ON a.result_id=b.block_id
         WHERE b.block_type = 'tool_result'
         GROUP BY origin, construct, outcome, reason, result_state
         """,

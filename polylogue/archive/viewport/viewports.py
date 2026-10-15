@@ -10,6 +10,7 @@ from polylogue.archive.viewport.models import MessageMeta as MessageMeta
 from polylogue.archive.viewport.models import ReasoningTrace as ReasoningTrace
 from polylogue.archive.viewport.models import TokenUsage as TokenUsage
 from polylogue.archive.viewport.models import ToolCall as ToolCall
+from polylogue.archive.viewport.models import ToolResult as ToolResult
 from polylogue.archive.viewport.tools import PATH_PATTERN as _PATH_PATTERN
 from polylogue.archive.viewport.tools import classify_tool as classify_tool
 from polylogue.archive.viewport.tools import clean_path_candidate as _clean_path_candidate
@@ -23,6 +24,7 @@ __all__ = [
     "ReasoningTrace",
     "TokenUsage",
     "ToolCall",
+    "ToolResult",
     "ToolCategory",
     "_PATH_PATTERN",
     "_clean_path_candidate",

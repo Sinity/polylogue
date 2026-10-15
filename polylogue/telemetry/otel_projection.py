@@ -141,7 +141,7 @@ def _action_span(trace_id: str, row: ActionQueryRowPayload) -> OtelSpanPayload:
         "polylogue.action.tool_use_block_id": row.tool_use_block_id,
         "polylogue.action.output_present": row.output_text is not None,
     }
-    _set_optional(attributes, "polylogue.action.tool_result_block_id", row.tool_result_block_id)
+    attributes["polylogue.action.tool_result_block_ids"] = [item.tool_result_block_id for item in row.results]
     _set_optional(attributes, "polylogue.action.tool_name", row.tool_name)
     _set_optional(attributes, "polylogue.action.semantic_type", row.semantic_type)
     if _contains_absolute_path(row.tool_command):
@@ -220,8 +220,7 @@ def _message_log(trace_id: str, row: MessageQueryRowPayload, *, include_text: bo
 
 def _action_refs(row: ActionQueryRowPayload) -> tuple[str, ...]:
     refs = [f"message:{row.message_id}", f"block:{row.tool_use_block_id}"]
-    if row.tool_result_block_id:
-        refs.append(f"block:{row.tool_result_block_id}")
+    refs.extend(f"block:{item.tool_result_block_id}" for item in row.results)
     return tuple(refs)
 
 

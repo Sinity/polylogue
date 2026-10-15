@@ -439,7 +439,7 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
         ),
     )
     conn.execute(
-        "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        "INSERT INTO blocks ( message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code, tool_outcome , content_identity, content_occurrence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ok', ?, 0)",
         (
             messages[0]["message_id"],
             session["session_id"],
@@ -511,7 +511,7 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
 
     actions = conn.execute(
         """
-        SELECT tool_command, output_text, is_error, exit_code
+        SELECT tool_command, output_text, is_error, json_extract(results_json, '$[0].exit_code') AS exit_code
         FROM actions
         WHERE session_id = ?
         ORDER BY output_text
@@ -534,17 +534,11 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
 
 
 def test_agent_action_and_delegation_views_are_indexed_projections(tmp_path: Path) -> None:
-    """The `actions` view and `delegation_facts` stay indexed, seekable relations.
+    """Global action and delegation views retain indexed physical access.
 
-    polylogue-a7xr.22: `delegations` was a zero-join rename of
-    `delegation_facts` and is gone. The delegation half of this law now names
-    the table the read sites actually use; the `actions` half still guards a
-    real view (a tool_use/tool_result join) against acquiring a WITH/WINDOW
-    body that would defeat predicate pushdown.
-
-    Anti-vacuity: reintroducing any rename-only view over `delegation_facts`
-    makes `test_no_rename_only_view_over_delegation_facts` fail; giving
-    `actions` a CTE or window body makes this one fail.
+    Selected-session reads bind the canonical context before association;
+    test_bounded_action_relation_plans_session_index_not_archive_wide_tool_scan
+    guards that route. Shared causal windows are required for plural replies.
     """
     conn = _connect(tmp_path / "index.db")
     _apply_tier(conn, ArchiveTier.INDEX)
@@ -570,8 +564,8 @@ def test_agent_action_and_delegation_views_are_indexed_projections(tmp_path: Pat
 
     assert "USING INDEX" in action_plan.upper()
     assert "USING INDEX" in delegation_plan.upper()
-    assert "WINDOW" not in view_sql["actions"].upper()
-    assert "WITH" not in view_sql["actions"].upper()
+    assert "association_results" in view_sql["actions"]
+    assert "results_json" in view_sql["actions"]
 
 
 def test_no_rename_only_view_over_delegation_facts(tmp_path: Path) -> None:
@@ -1015,7 +1009,7 @@ def test_actions_view_distinguishes_result_presence_and_outcome(tmp_path: Path) 
     )
 
     rows = conn.execute(
-        "SELECT tool_command, tool_result_block_id, result_state FROM actions WHERE session_id = ? ORDER BY tool_command",
+        "SELECT tool_command, json_extract(results_json, '$[0].tool_result_block_id') AS tool_result_block_id, result_state FROM actions WHERE session_id = ? ORDER BY tool_command",
         (session_id,),
     ).fetchall()
     result_ids = {

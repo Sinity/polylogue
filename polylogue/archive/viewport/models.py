@@ -17,7 +17,7 @@ from polylogue.archive.viewport.tools import (
     is_git_operation,
     is_subagent_operation,
 )
-from polylogue.core.enums import ActionResultState, Origin
+from polylogue.core.enums import ActionResultState, Origin, ToolOutcome
 from polylogue.core.tool_identity import TOOL_PATH_INPUT_KEYS, tool_input_command
 
 
@@ -38,6 +38,15 @@ class ReasoningTrace(BaseModel):
         return Origin.from_string(str(value))
 
 
+class ToolResult(BaseModel):
+    block_id: str | None = None
+    output_text: str | None = None
+    is_error: int | None = None
+    exit_code: int | None = None
+    outcome: ToolOutcome
+    outcome_unknown_reason: str | None = None
+
+
 class ToolCall(BaseModel):
     name: str
     id: str | None = None
@@ -45,6 +54,7 @@ class ToolCall(BaseModel):
     output: str | None = None
     success: bool | None = None
     result_state: ActionResultState = ActionResultState.NO_RESULT
+    results: tuple[ToolResult, ...] = ()
     category: ToolCategory = ToolCategory.OTHER
     origin: Origin | None = None
     raw: Mapping[str, object] = Field(default_factory=dict)

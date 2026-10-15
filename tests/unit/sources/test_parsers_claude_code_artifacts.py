@@ -594,7 +594,10 @@ def test_parse_code_projects_queue_attachment_and_user_completion_shapes(tmp_pat
         session_id = write_index_session(archive, parsed)
         actions = archive.query_session_actions([session_id], limit=10)
 
-    assert {action.tool_command: (action.is_error, action.exit_code) for action in actions} == {
+    assert {
+        action.tool_command: (action.is_error, action.results[0].exit_code if action.results else None)
+        for action in actions
+    } == {
         "true": (0, 0),
         "false": (1, 1),
         "printf user": (0, 0),
@@ -729,7 +732,10 @@ def test_parse_code_projects_background_completion_outcomes_through_actions(tmp_
             (session_id,),
         ).fetchall()
 
-    outcomes = {action.tool_command: (action.is_error, action.exit_code) for action in actions}
+    outcomes = {
+        action.tool_command: (action.is_error, action.results[0].exit_code if action.results else None)
+        for action in actions
+    }
     assert outcomes == {
         "true": (0, 0),
         "false": (1, 1),
@@ -971,7 +977,10 @@ def test_parse_code_projects_task_output_exit_code_through_actions(tmp_path: Pat
         session_id = write_index_session(archive, parsed)
         actions = archive.query_session_actions([session_id], limit=10)
 
-    outcomes = {action.tool_name: (action.is_error, action.exit_code) for action in actions}
+    outcomes = {
+        action.tool_name: (action.is_error, action.results[0].exit_code if action.results else None)
+        for action in actions
+    }
     assert outcomes == {"TaskOutput": (1, 2)}
 
 

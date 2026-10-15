@@ -259,8 +259,8 @@ def _action_receipt(row: sqlite3.Row) -> DemoActionReceipt:
         semantic_type=str(row["semantic_type"] or "unknown"),
         command=_command_from_row(row),
         exit_code=int(row["exit_code"]),
-        is_error=bool(row["is_error"]),
-        output=str(row["output_text"] or ""),
+        is_error=bool(row["result_is_error"]),
+        output=str(row["result_text"] or ""),
     )
 
 
@@ -288,14 +288,18 @@ def _action_rows(
 ) -> list[sqlite3.Row]:
     return conn.execute(
         f"""
-        SELECT a.*, result_message.position AS result_message_position,
+        SELECT a.*, result_block.block_id AS tool_result_block_id,
+               result_block.tool_result_is_error AS result_is_error,
+               result_block.tool_result_exit_code AS exit_code,result_block.text AS result_text,
+               result_message.position AS result_message_position,
                result_message.variant_index AS result_message_variant_index,
                result_block.position AS result_block_position
         FROM actions AS a
-        JOIN blocks AS result_block ON result_block.block_id = a.tool_result_block_id
+        JOIN json_each(a.results_json) result
+        JOIN blocks AS result_block ON result_block.block_id=json_extract(result.value,'$.tool_result_block_id')
         JOIN messages AS result_message ON result_message.message_id = result_block.message_id
         WHERE a.session_id = ?
-          AND (a.exit_code IS NOT NULL OR a.is_error IS NOT NULL)
+          AND (result_block.tool_result_exit_code IS NOT NULL OR result_block.tool_result_is_error IS NOT NULL)
           AND (
               result_message.position {position_clause} ?
               OR (result_message.position = ? AND result_message.variant_index {position_clause} ?)
@@ -305,7 +309,7 @@ def _action_rows(
                   AND result_block.position {position_clause} ?
               )
           )
-        ORDER BY result_message.position, result_message.variant_index, result_block.position, a.tool_result_block_id
+        ORDER BY result_message.position, result_message.variant_index, result_block.position, result_block.block_id
         """,
         (
             session_id,
@@ -320,7 +324,7 @@ def _action_rows(
 
 
 def _is_failed_action(row: sqlite3.Row) -> bool:
-    return int(row["is_error"] or 0) == 1 or int(row["exit_code"] or 0) != 0
+    return int(row["result_is_error"] or 0) == 1 or int(row["exit_code"] or 0) != 0
 
 
 def _optional_bool(value: object) -> bool | None:
@@ -435,14 +439,16 @@ def inspect_completion_claims(
                     prior_action_ref=(
                         f"block:{prior_action['tool_result_block_id']}" if prior_action is not None else None
                     ),
-                    prior_is_error=(_optional_bool(prior_action["is_error"]) if prior_action is not None else None),
+                    prior_is_error=(
+                        _optional_bool(prior_action["result_is_error"]) if prior_action is not None else None
+                    ),
                     prior_exit_code=(
                         int(prior_action["exit_code"])
                         if prior_action is not None and prior_action["exit_code"] is not None
                         else None
                     ),
                     repair_action_ref=f"block:{repair['tool_result_block_id']}" if repair is not None else None,
-                    repair_is_error=(_optional_bool(repair["is_error"]) if repair is not None else None),
+                    repair_is_error=(_optional_bool(repair["result_is_error"]) if repair is not None else None),
                     repair_exit_code=(
                         int(repair["exit_code"]) if repair is not None and repair["exit_code"] is not None else None
                     ),
@@ -484,22 +490,26 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
         with _connect(index_db) as conn:
             action_rows = conn.execute(
                 """
-                SELECT a.*, m.position AS message_position
+                SELECT a.*, m.position AS message_position,
+                       r.block_id AS tool_result_block_id,r.tool_result_is_error AS result_is_error,
+                       r.tool_result_exit_code AS exit_code,r.text AS result_text
                 FROM actions AS a
                 JOIN messages AS m ON m.message_id = a.message_id
+                JOIN json_each(a.results_json) result
+                JOIN blocks r ON r.block_id=json_extract(result.value,'$.tool_result_block_id')
                 WHERE a.session_id = ?
-                  AND a.exit_code IS NOT NULL
+                  AND r.tool_result_exit_code IS NOT NULL
                   AND a.tool_input LIKE '%pytest tests/test_clock.py%'
-                ORDER BY m.position, a.tool_result_block_id
+                ORDER BY m.position, result_block.block_id
                 """,
                 (DEMO_CODEX_RECEIPTS_SESSION_ID,),
             ).fetchall()
-            failed_row = next((row for row in action_rows if int(row["is_error"] or 0) == 1), None)
+            failed_row = next((row for row in action_rows if int(row["result_is_error"] or 0) == 1), None)
             recovery_row = next(
                 (
                     row
                     for row in action_rows
-                    if int(row["is_error"] or 0) == 0
+                    if int(row["result_is_error"] or 0) == 0
                     and failed_row is not None
                     and int(row["message_position"]) > int(failed_row["message_position"])
                 ),
@@ -551,7 +561,7 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
             )
             anti_grep_failed_actions = int(
                 conn.execute(
-                    "SELECT COUNT(*) FROM actions WHERE session_id = ? AND is_error = 1",
+                    "SELECT COUNT(*) FROM actions WHERE session_id = ? AND tool_outcome = 'error'",
                     (DEMO_CODEX_ANTI_GREP_SESSION_ID,),
                 ).fetchone()[0]
             )

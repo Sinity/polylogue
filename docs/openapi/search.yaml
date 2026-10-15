@@ -4388,12 +4388,12 @@ components:
         tool_use_block_id:
           title: Tool Use Block Id
           type: string
-        tool_result_block_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          default: null
-          title: Tool Result Block Id
+        results:
+          default: []
+          items:
+            $ref: '#/components/schemas/ActionResultPayload'
+          title: Results
+          type: array
         tool_name:
           anyOf:
           - type: string
@@ -4436,12 +4436,6 @@ components:
           - type: 'null'
           default: null
           title: Is Error
-        exit_code:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          default: null
-          title: Exit Code
         result_state:
           $ref: '#/components/schemas/ActionResultState'
         outcome_unknown_reason:
@@ -4469,6 +4463,50 @@ components:
       - tool_use_block_id
       - result_state
       title: ActionQueryRowPayload
+      type: object
+    ActionResultPayload:
+      additionalProperties: false
+      properties:
+        tool_result_block_id:
+          title: Tool Result Block Id
+          type: string
+        output_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Output Text
+        output_text_chars:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Output Text Chars
+        is_error:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Is Error
+        exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Exit Code
+        tool_outcome:
+          title: Tool Outcome
+          type: string
+        outcome_unknown_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Outcome Unknown Reason
+      required:
+      - tool_result_block_id
+      - tool_outcome
+      title: ActionResultPayload
       type: object
     ActionResultState:
       description: 'Presence and structural-outcome state of one ``actions`` row.

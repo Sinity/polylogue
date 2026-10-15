@@ -282,9 +282,9 @@ Python transcript anchors resolve and read their bounded page on the same contro
 
 Warm daemon query results refresh relative-time display fields from the retained timestamps through the canonical row projection. Cached selection rows, ranking, continuation and snapshot authority remain unchanged.
 
-Action rows and tool episodes retain the canonical `outcome_unknown_reason`. A paired result with an unknown verdict remains distinct from a missing result or an ambiguous association; episode caveats describe those separate evidence states. Append outcome reconciliation excludes empty tool IDs, matching the canonical association owner.
+Action rows and tool episodes expose ordered `results`, with each original block reference, output, exit code and canonical outcome. The top-level singular result reference and scalar exit code are removed; exit-code predicates match any owned result. Joined output preserves result order. Exact session reads restrict the canonical composed context before causal association. Action rows and tool episodes retain the canonical `outcome_unknown_reason`. A paired result with an unknown verdict remains distinct from a missing result or an ambiguous association; episode caveats describe those separate evidence states. Append outcome reconciliation excludes empty tool IDs, matching the canonical association owner.
 
-Tool-episode context reads the preceding and following three messages from the canonical composed transcript on the same read snapshot as the selected episode. Post-context starts after the paired result when present. Ordered prose blocks retain message boundaries and multiline text; `next_action` preserves the complete first post-result message text.
+Tool-episode context reads the preceding and following three messages from the canonical composed transcript on the same read snapshot as the selected episode. Post-context starts after the final owned result when present. Ordered prose blocks retain message boundaries and multiline text; `next_action` preserves the complete first post-result message text.
 
 CLI session query pages carry `snapshot_epoch` from the pinned generation path and the complete canonical Index/User relation frame. List and ranked selection walks require that frame on every page and refuse `query_continuation_stale` if it changes, even when totals are unchanged. Query cache hits must match the current pinned frame before display decoration. User assertion changes invalidate the frame within the same Index generation. The frame covers Index/User selection inputs; semantic retrieval also depends on its separate pinned embeddings snapshot and remains outside cache reuse. Standalone unbound envelope builders omit the optional frame; a proven missing explicit scope runs the canonical query on the actual pinned reader and returns its empty verdict and frame. Failed lookups do not mint a frame.
 
@@ -465,7 +465,7 @@ returns. A repository filter projects that admitted repository; unfiltered
 reads retain the alphabetical representative. MCP lowers its public `repo`
 operand to the registry model's declared repository field.
 
-Archive insight contract version 12 represents an unobserved materializer,
+Archive insight contract version 14 represents an unobserved materializer,
 inference, or enrichment version as `null` (or omitted when the selected
 renderer excludes null fields). A missing session profile cannot certify the
 current materializer version. Available thread and latency projections remain
