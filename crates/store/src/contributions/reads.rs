@@ -143,6 +143,9 @@ impl ReadHandle {
     }
 }
 impl MessageView {
+    pub fn provider_time(&self) -> Result<Option<i64>> {
+        search_time(self)
+    }
     // Content replacement preserves this pinned old incarnation. Privacy/removal
     // invalidates access immediately through the current scalar epoch instead.
     fn visible(&self) -> Result<()> {
@@ -539,7 +542,7 @@ impl<'a> BlockView<'a> {
 
 /// Metadata from this exact selected index snapshot. Optional values stay
 /// unknown when absent; stored millisecond aggregates imply no time quality.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SessionHeader {
     pub id: SessionId,
     pub origin: Origin,
@@ -581,6 +584,87 @@ pub struct SessionView {
     generation: String,
     counter: u64,
     archive_counter: u64,
+}
+/// The query and exact Session readers share this pinned admission/index view.
+#[derive(Clone)]
+pub struct SessionCatalog {
+    read: SharedRead,
+    path: PathBuf,
+    generation: String,
+    counter: u64,
+    archive_counter: u64,
+}
+#[derive(Clone)]
+pub struct SessionCatalogCursor {
+    read: SharedRead,
+    after: String,
+}
+impl SessionCatalog {
+    fn visible(&self) -> Result<()> {
+        let read = locked(&self.read)?;
+        let archive_path = self.path.with_file_name("archive.db");
+        if db(&archive_path, || {
+            read.archive_visibility.as_ref().unwrap().query_row(
+                "SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)",
+                [],
+                |r| r.get::<_, bool>(0),
+            )
+        })? {
+            return Err(Error::ExcisionCheckRequired);
+        }
+        if !db(&self.path, || {
+            read.visibility.query_row(
+                "SELECT EXISTS(SELECT 1 FROM meta WHERE key='generation' AND value=?1)",
+                [&self.generation],
+                |r| r.get::<_, bool>(0),
+            )
+        })? {
+            return Err(Error::MessagePredecessorChanged);
+        }
+        Ok(())
+    }
+    pub fn position(&self) -> SessionPosition<'_> {
+        SessionPosition {
+            generation: &self.generation,
+            counter: self.counter,
+        }
+    }
+    pub fn source_archive_counter(&self) -> u64 {
+        self.archive_counter
+    }
+    /// One complete identity in stable key order; the cursor cannot cross views.
+    pub fn next(
+        &self,
+        after: Option<&SessionCatalogCursor>,
+        allowance: usize,
+    ) -> Result<Option<(SessionCatalogCursor, SessionView)>> {
+        self.visible()?;
+        let key = match after {
+            None => "",
+            Some(c) if Arc::ptr_eq(&c.read, &self.read) => &c.after,
+            Some(_) => return Err(Error::MessagePredecessorChanged),
+        };
+        let read = locked(&self.read)?;
+        let row: Option<(u64, Option<String>)> = db(&self.path, || {
+            read.connection.query_row(
+            "SELECT length(CAST(id AS BLOB)),CASE WHEN length(CAST(id AS BLOB))<=?2 THEN id END FROM session WHERE id>?1 ORDER BY id LIMIT 1",
+            params![key, i64::try_from(allowance).unwrap_or(i64::MAX)], |r| Ok((crate::parser_state::unsigned(r,0)?,r.get(1)?))).optional()
+        })?;
+        drop(read);
+        let Some((length, id)) = row else {
+            return Ok(None);
+        };
+        let id = id.ok_or_else(|| metadata_admission("Session catalog identity", length))?;
+        let cursor = SessionCatalogCursor {
+            read: Arc::clone(&self.read),
+            after: id.clone(),
+        };
+        let id = SessionId::from_stored(id).map_err(|e| Error::Invariant(e.to_string()))?;
+        let session = self
+            .session(&id, allowance)?
+            .ok_or(Error::MessagePredecessorChanged)?;
+        Ok(Some((cursor, session)))
+    }
 }
 /// Work cursor bound to one exact read snapshot. Its PK is a tie cursor only,
 /// never an ordering authority for distinct Messages with the same sequence.
@@ -649,12 +733,11 @@ impl ReadHandle {
         id: &SessionId,
         allowance: usize,
     ) -> Result<Option<SessionView>> {
-        if id.as_str().len() > allowance {
-            return Err(metadata_admission(
-                "session read identity",
-                id.as_str().len() as u64,
-            ));
-        }
+        self.session_catalog(allowance)?.session(id, allowance)
+    }
+    /// Pin retained admission before the selected index. No matching-row or
+    /// newest-row restriction is applied to this catalog.
+    pub fn session_catalog(&self, allowance: usize) -> Result<SessionCatalog> {
         // Admission metadata is immutable, but its catalog can grow before
         // disposable registration. Pin it FIRST, then the index, and refuse an
         // archive change across that interval rather than hide a crash gap.
@@ -670,6 +753,32 @@ impl ReadHandle {
         })?;
         let generation = generation
             .ok_or_else(|| metadata_admission("session read generation", generation_length))?;
+        let counter = crate::counter(&connection, &path)?;
+        if crate::counter(&self.archive, &archive_path)? != archive_counter {
+            return Err(Error::MessagePredecessorChanged);
+        }
+        Ok(SessionCatalog {
+            read: Arc::new(Mutex::new(PinnedRead {
+                connection,
+                visibility: crate::open(&path, true, false)?,
+                archive: Some(archive),
+                archive_visibility: Some(crate::open(&archive_path, true, true)?),
+                _lock: Arc::clone(&self._lock),
+            })),
+            path,
+            generation,
+            counter,
+            archive_counter,
+        })
+    }
+}
+impl SessionCatalog {
+    pub fn session(&self, id: &SessionId, allowance: usize) -> Result<Option<SessionView>> {
+        self.visible()?;
+        let read = locked(&self.read)?;
+        let connection = &read.connection;
+        let path = &self.path;
+        let generation = &self.generation;
         let remaining = allowance.checked_sub(generation.len()).ok_or_else(|| {
             metadata_admission("session read generation", generation.len() as u64)
         })?;
@@ -764,15 +873,6 @@ impl ReadHandle {
                     .map_err(|e| Error::Invariant(format!("selected Session attrs JSON: {e}")))
             })
             .transpose()?;
-        // Read on the already pinned index connection, never a fresh archive
-        // counter. This position names the data view, not a completion receipt.
-        let counter: Option<String> = db(&path, || {
-            connection.query_row("SELECT CASE WHEN length(CAST(value AS BLOB))<=20 THEN value END FROM meta WHERE key='write_counter'",[],|r|r.get(0))
-        })?;
-        let counter = counter
-            .and_then(|text| text.parse::<u64>().ok())
-            .filter(|value| *value <= i64::MAX as u64)
-            .ok_or_else(|| Error::Schema(path.clone()))?;
         let header = SessionHeader {
             id: id.clone(),
             origin,
@@ -796,27 +896,27 @@ impl ReadHandle {
             last_activity_at,
             stub,
         };
-        if crate::counter(&self.archive, &archive_path)? != archive_counter {
-            return Err(Error::MessagePredecessorChanged);
-        }
         Ok(Some(SessionView {
-            read: Arc::new(Mutex::new(PinnedRead {
-                connection,
-                visibility: crate::open(&path, true, false)?,
-                archive: Some(archive),
-                archive_visibility: Some(crate::open(&archive_path, true, true)?),
-                _lock: Arc::clone(&self._lock),
-            })),
-            path,
+            read: Arc::clone(&self.read),
+            path: self.path.clone(),
             header,
             pk,
-            generation,
-            counter,
-            archive_counter,
+            generation: self.generation.clone(),
+            counter: self.counter,
+            archive_counter: self.archive_counter,
         }))
     }
 }
 impl SessionView {
+    pub fn catalog(&self) -> SessionCatalog {
+        SessionCatalog {
+            read: Arc::clone(&self.read),
+            path: self.path.clone(),
+            generation: self.generation.clone(),
+            counter: self.counter,
+            archive_counter: self.archive_counter,
+        }
+    }
     fn visible(&self) -> Result<()> {
         let read = locked(&self.read)?;
         if let Some(archive) = &read.archive_visibility {
@@ -2104,5 +2204,36 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+}
+
+// The existing selected body owns branch/copy membership and provider time.
+pub(crate) fn search_membership(message: &MessageView) -> Result<bool> {
+    message.visible()?;
+    let read = locked(&message.read)?;
+    db(&message.path, || {
+        read.connection.query_row(
+            "SELECT on_active_path IS NOT 0 AND copy_origin IS NULL FROM message_body WHERE pk=?1",
+            [message.body],
+            |r| r.get(0),
+        )
+    })
+}
+pub(crate) fn search_time(message: &MessageView) -> Result<Option<i64>> {
+    use polylogue_model::merge::{MessageField, Slot};
+    match message.field(&Slot::Message(MessageField::At), 65536)? {
+        Some(FieldRead::Value(value)) => {
+            let range = value.range(0, 65536)?;
+            if !range.eof {
+                return Err(metadata_admission(
+                    "search provider time",
+                    range.next_offset,
+                ));
+            }
+            let time: serde_json::Value = serde_json::from_slice(&range.bytes)
+                .map_err(|e| Error::Invariant(e.to_string()))?;
+            Ok(time.get("at").and_then(serde_json::Value::as_i64))
+        }
+        _ => Ok(None),
     }
 }

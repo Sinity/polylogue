@@ -1,0 +1,18 @@
+//! Typed supported Session query plans. Binding belongs to polylogue-query.
+use crate::SessionKind;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextTerm {
+    Word(String),
+    Phrase(String),
+    Prefix(String),
+}
+#[derive(Clone, Debug, Default)]
+pub struct SessionQuery {
+    pub origin: Option<String>,
+    pub kind: Option<SessionKind>,
+    pub all_kinds: bool,
+    pub id: Option<String>,
+    pub text: Vec<TextTerm>,
+    pub limit: Option<usize>,
+    pub recent: bool,
+}

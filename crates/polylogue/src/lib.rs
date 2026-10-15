@@ -6,6 +6,7 @@ mod output_json;
 mod protocol;
 pub mod reference_read;
 mod session_document;
+pub mod session_query;
 pub mod session_read;
 use serde_json::{Value, json};
 use std::{
@@ -226,12 +227,15 @@ fn serve(
         Ok(request) if request == json!({"command":"status"}) => {
             match reader.lock().expect("reader lock").status() {
                 Ok(status) => {
-                    json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","provider-progress","selected-message-terminal-read","selected-session-json-read"],"product_path":"partial"})
+                    json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","provider-progress","selected-message-terminal-read","selected-session-json-read","session-query-list-prose-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})
                 }
             }
+        }
+        Ok(request) if request["command"] == "query" => {
+            return session_query::serve(&mut stream, &request, reader).map_err(|e| e.to_string());
         }
         Ok(request) if request["command"] == "session-read" => {
             return session_read::serve(&mut stream, &request, reader).map_err(|e| e.to_string());
@@ -285,18 +289,7 @@ fn request_metadata(
             "request metadata exceeds admission",
         ));
     }
-    let stream = if deadline.is_some() {
-        // socket2 owns nonblocking connect/poll without a blocked helper thread.
-        // Remaining time is recomputed after address/socket construction too.
-        let address = socket2::SockAddr::unix(socket)?;
-        let stream = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
-        stream.connect_timeout(&address, remaining(deadline)?.unwrap())?;
-        UnixStream::from(std::os::fd::OwnedFd::from(stream))
-    } else {
-        UnixStream::connect(socket)?
-    };
-    remaining(deadline)?;
-    let mut stream = MetadataTransport { stream, deadline };
+    let mut stream = metadata_transport(socket, deadline)?;
     stream.write_all(&bytes)?;
     stream.write_all(b"\n")?;
     stream.stream.shutdown(std::net::Shutdown::Write)?;
@@ -317,6 +310,23 @@ fn request_metadata(
     remaining(deadline)?;
     Ok(result)
 }
+pub(crate) fn metadata_transport(
+    socket: &Path,
+    deadline: Option<std::time::Instant>,
+) -> io::Result<MetadataTransport> {
+    let stream = if deadline.is_some() {
+        // socket2 owns nonblocking connect/poll without a blocked helper thread.
+        // Remaining time is recomputed after address/socket construction too.
+        let address = socket2::SockAddr::unix(socket)?;
+        let stream = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
+        stream.connect_timeout(&address, remaining(deadline)?.unwrap())?;
+        UnixStream::from(std::os::fd::OwnedFd::from(stream))
+    } else {
+        UnixStream::connect(socket)?
+    };
+    remaining(deadline)?;
+    Ok(MetadataTransport { stream, deadline })
+}
 fn remaining(deadline: Option<std::time::Instant>) -> io::Result<Option<Duration>> {
     deadline
         .map(|deadline| {
@@ -327,7 +337,7 @@ fn remaining(deadline: Option<std::time::Instant>) -> io::Result<Option<Duration
         })
         .transpose()
 }
-struct MetadataTransport {
+pub(crate) struct MetadataTransport {
     stream: UnixStream,
     deadline: Option<std::time::Instant>,
 }

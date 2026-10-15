@@ -1,6 +1,6 @@
 # Polylogue Rust foundation
 
-This repository contains the standalone Rust foundation. It implements foundation identity/value contracts, durable SQLite schema checks, shared content files, one archive writer, read-only handles and a real daemon/status client. Explicit immutable Codex and context-declared Claude regular-file imports and provider-state progress are registered. Selected uncontested Messages have a streaming terminal reference read, and known selected Session catalogs have a degraded normalized JSON read. Full canonical finalization, export, search, MCP and HTTP remain unfinished. Status reports `product_path: "partial"`; an initialized empty schema is not a completed ingestion or M1 demonstration.
+This repository contains the standalone Rust foundation. It implements foundation identity/value contracts, durable SQLite schema checks, shared content files, one archive writer, read-only handles and a real daemon/status client. Explicit immutable Codex and context-declared Claude regular-file imports and provider-state progress are registered. Selected uncontested Messages have a streaming terminal reference read, and known selected Session catalogs have a degraded normalized JSON read. Known Session listing and human/model prose search share one typed daemon query, with explicit degraded coverage. Full canonical finalization, export, MCP and HTTP remain unfinished. Status reports `product_path: "partial"`; an initialized empty schema is not a completed ingestion or M1 demonstration.
 
 ## Build and run
 
@@ -75,14 +75,14 @@ The actor uses fixed record/cell/request admission allowances. Oversized records
 fail explicitly with owed work retained; configurable larger allowances and full
 resource qualification remain unfinished. Its current source scheduling follows
 one imported input to provider EOF; cross-input fair parse rounds and complete Session
-finalization are still owed. Public search refuses even after provider EOF.
+finalization are still owed. Known selected prose is searchable with explicit population qualifications; provider EOF does not remove them.
 
 The canonical worker prepares uncontested Codex Text/Thinking and supported
 Claude Messages through the same durable private roots and field-origin checks,
 then selects a whole certified source body. Claude signatures and derived tool
 reasons are retained without increasing source-presence rank. Declared legacy
 call identity uses the proved source Session and supplied call ID; global
-pairing and cross-input operation selection remain unfinished. Terminal Message-reference and Session JSON reads are exposed; search and export remain unavailable. Competing inputs, unsupported operations and unresolved
+pairing and cross-input operation selection remain unfinished. Terminal Message-reference, Session JSON and known Session query reads are exposed; export remains unavailable. Competing inputs, unsupported operations and unresolved
 mapping remain pending; Session/query completeness remains unqualified. Hash validation is
 cooperative off actor but can still process a whole Message/value per worker
 call, and normalized-leaf windowing can repeat serialization. These costs have
@@ -156,3 +156,17 @@ pass. New runs record start/end times and invocation. Older JSON can be viewed
 with `python3 scripts/morrow_report.py PATH/result.json`; missing historical
 timestamps remain unknown. Artifact links are relative and refuse files outside
 the report tree, so copy the whole run directory when relocating it.
+
+## Known Session listing and prose search
+
+`polylogue [QUERY] [list] [--json]` and `polylogue find QUERY [--json]` use the same daemon query capability. Bare `polylogue` lists known Sessions. The registered subset accepts `sessions [where]`, conjunctive `origin:`, `kind:main|chat|subagent|*`, exact `id:` or full origin-prefixed Session IDs, alphanumeric words, double-quoted prose phrases, word prefixes such as `refact*`, `| sort by last_active desc` and a final `| limit N`. Unknown fields, units, flags, Boolean shapes and stages refuse before acquiring the read view. The full slice-1 query language is not registered. See [the query contract](crates/query/README.md).
+
+The daemon traverses the entire pinned retained admission and selected Session/Message catalog. Text search uses SQLite FTS5 BM25 over a query-local corpus built only from selected human/model Text blocks, with case/diacritic and stroke-letter folding. Thinking, tool output, harness and unknown authors do not enter prose matching. Every term must match the same Message. Preparation/staged bodies cannot affect membership or corpus statistics. There is no newest-row search window. The query-local corpus is an intermediate serving implementation, not a published archive FTS index or a performance qualification.
+
+Rows expose stable Session IDs, selected catalog metadata, `known_messages` and `known_last_message_at` (provider milliseconds). Listing order uses this known Message time, with unknown times last and stable ID ties. These are partial selected-row facts, not completed Session reductions. Search hits carry retained Message IDs and BM25 ranks; snippets remain unavailable because cutting before credential presentation can remove required masking context. Open the Session with `SID read --format json` or a hit with `message:MID read --format terminal` through the existing readers. Structured payloads and origins retain their owning representation.
+
+`count` is the number of known candidates before an explicit selection limit; `next_cursor: null` ends this admitted enumeration. No continuation is registered. Nonempty retained populations and unmatched searches over them remain degraded (exit 5), with named failures, pending inputs, unresolved dependency shapes and unknown authors. Malformed-only input participates even when it published no matching row. Only an accessible empty retained population with no outstanding relevant interpretation obligation yields empty (exit 1). Global `up_to_date` remains false; this capability does not prove collection freshness or full searched-population settlement. Deadline/disconnect stops read-side work without cancelling retained interpretation.
+
+Admission currently permits 20,000 catalog Sessions and prose Messages, 4 MiB of prose per Message, 32 MiB of selected prose per query, and 4 MiB of accumulated result metadata/encoded response. Exceeding an allowance fails the whole query instead of truncating its searched population. SQLite scratch work and whole admitted Messages remain coarse work units; these are logical admission limits, not whole-process CPU/RSS guarantees. General fields, linked subagent promotion, inherited/active-path completeness, snippets, paging, persistent search publication, export, MCP and full Morrow/M1 acceptance remain open.
+
+`scripts/check-session-query.py --binary /nix/store/.../bin/polylogue --output /absolute/new/private/directory` exercises an installed package against independent synthetic fixtures, including an oldest-only match behind 110 newer nonmatches, failed-population qualifications and retained navigation after provider removal and SIGKILL/restart. It records exact argv, exits, outputs and owned process cleanup without changing the Morrow oracle.

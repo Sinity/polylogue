@@ -45,7 +45,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read --format json|config schema>\nImport retains one regular file. Selected Message terminal reads and Session JSON reads have explicit degraded coverage. Session queries, search, export and MCP remain unavailable.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read --format json|[QUERY] [list] [--json]|config schema>\nImport retains one regular file. Selected Message terminal reads and Session JSON reads have explicit degraded coverage. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Export and MCP remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -98,12 +98,22 @@ fn run() -> Result<i32, Failure> {
     } else {
         None
     };
-    if args != ["daemon"] && args != ["status"] && !args.is_empty() && command.is_none() {
-        return Err(error(
-            ErrorKind::NotYetAvailable,
-            format!("operation is not registered; archive {}", archive.display()),
-        ));
+    let mut query_args = args.clone();
+    let json_output = query_args.iter().any(|a| a == "--json");
+    query_args.retain(|a| a != "--json");
+    if query_args.last().is_some_and(|a| a == "list") {
+        query_args.pop();
     }
+    if query_args.first().is_some_and(|a| a == "find") {
+        query_args.remove(0);
+    }
+    let query = if args != ["daemon"] && args != ["status"] && command.is_none() {
+        let text = query_args.join(" ");
+        polylogue_query::bind(&text)?;
+        Some(text)
+    } else {
+        None
+    };
     let runtime = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .ok_or_else(|| {
@@ -151,6 +161,51 @@ fn run() -> Result<i32, Failure> {
         )
     })?;
     let socket = polylogue::socket_path(&resolved, &runtime);
+    if let Some(query) = query {
+        let value = polylogue::session_query::request(&socket, &query).map_err(|e| {
+            error(
+                match e.kind() {
+                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+                        ErrorKind::NotRunning
+                    }
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ErrorKind::Timeout,
+                    _ => ErrorKind::Io,
+                },
+                format!("archive {}: {e}", archive.display()),
+            )
+        })?;
+        if json_output || value["outcome"] == "error" {
+            serde_json::to_writer(&mut out, &value).map_err(io_error)?;
+            writeln!(out).map_err(io_error)?;
+        } else {
+            for row in value["rows"]
+                .as_array()
+                .ok_or_else(|| io_error("query rows missing"))?
+            {
+                writeln!(
+                    out,
+                    "{}  {}",
+                    terminal_text(row["id"].as_str().unwrap_or("")),
+                    terminal_text(row["title"].as_str().unwrap_or(""))
+                )
+                .map_err(io_error)?;
+                if let Some(hits) = row["hits"].as_array() {
+                    for hit in hits {
+                        writeln!(
+                            out,
+                            "  message:{}",
+                            terminal_text(hit["message"].as_str().unwrap_or(""))
+                        )
+                        .map_err(io_error)?;
+                    }
+                }
+            }
+            for note in value["notes"].as_array().into_iter().flatten() {
+                eprintln!("{}", terminal_text(note.as_str().unwrap_or("")));
+            }
+        }
+        return reply_exit_code(&value);
+    }
     if terminal_read || session_json {
         let reply = if session_json {
             polylogue::session_read::request(&socket, &args[0], &mut out)
@@ -280,6 +335,18 @@ mod tests {
             assert_eq!(reply_exit_code(&reply).unwrap_err().kind, ErrorKind::Io);
         }
     }
+}
+
+fn terminal_text(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_default().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
 }
 
 fn main() -> ExitCode {

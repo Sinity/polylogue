@@ -13,3 +13,5 @@ pub mod canonical_message;
 mod source_rows;
 
 pub mod session_qualification;
+
+pub mod session_query;

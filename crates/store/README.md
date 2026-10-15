@@ -215,3 +215,6 @@ a visible pending dependency. Opaque cursors and input cell reads share the
 same view; immutable import identity validation is shared with the writer.
 Current excision authority conservatively refuses Session dependency reads;
 partial-excision qualification remains open. No new schema or migration is added.
+
+
+`session_catalog` generalizes the existing Session read view without creating another publication catalog. Exact Session reads and query traversal share its pinned admission/index connections, generation, archive counter and opaque view-bound cursors. It includes Sessions independently of matches and retains the existing direct-input dependency cell access even when no Session exists. Current excision authority conservatively refuses. Query-local `ProseSearch` builds an isolated in-memory FTS5 corpus only through selected Message body readers; raw SQL/SQLite handles never escape. Staged bodies remain invisible to both membership and BM25 statistics. It has explicit whole-Message/corpus/count admission and returns retained Message IDs/ranks, without slicing credential-bearing text into contextless snippets. This does not publish durable FTS rows, certify complete source populations, or qualify arbitrary corpus CPU/RSS costs.

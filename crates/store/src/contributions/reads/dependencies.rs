@@ -4,7 +4,6 @@ use crate::{ImmutableImport, RetainedInput, parser_state};
 #[derive(Clone)]
 pub struct SessionDependencyCursor {
     read: SharedRead,
-    session: i64,
     after: String,
 }
 pub struct SessionInputDependency {
@@ -48,10 +47,7 @@ impl SessionInputDependency {
         })
     }
 }
-impl SessionView {
-    pub fn source_archive_counter(&self) -> u64 {
-        self.archive_counter
-    }
+impl SessionCatalog {
     /// One unique retained input, even when it has no selected/catalog Message.
     /// `None` ends only this fixed admission catalog, not Session completeness.
     pub fn next_dependency(
@@ -62,9 +58,7 @@ impl SessionView {
         self.visible()?;
         let key = match after {
             None => "",
-            Some(cursor) if Arc::ptr_eq(&self.read, &cursor.read) && cursor.session == self.pk => {
-                &cursor.after
-            }
+            Some(cursor) if Arc::ptr_eq(&self.read, &cursor.read) => &cursor.after,
             Some(_) => return Err(Error::MessagePredecessorChanged),
         };
         let read = locked(&self.read)?;
@@ -123,7 +117,6 @@ impl SessionView {
         Ok(Some((
             SessionDependencyCursor {
                 read: Arc::clone(&self.read),
-                session: self.pk,
                 after: id.clone(),
             },
             SessionInputDependency {
@@ -161,5 +154,30 @@ impl SessionView {
         })?;
         row.map(|(n, bytes)| bytes.ok_or_else(|| metadata_admission("Session dependency cell", n)))
             .transpose()
+    }
+}
+
+impl SessionView {
+    pub fn source_archive_counter(&self) -> u64 {
+        self.archive_counter
+    }
+    pub fn next_dependency(
+        &self,
+        after: Option<&SessionDependencyCursor>,
+        allowance: usize,
+    ) -> Result<Option<(SessionDependencyCursor, SessionInputDependency)>> {
+        self.visible()?;
+        self.catalog().next_dependency(after, allowance)
+    }
+    pub fn dependency_cell(
+        &self,
+        dependency: &SessionInputDependency,
+        namespace: &str,
+        key: &[u8],
+        allowance: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        self.visible()?;
+        self.catalog()
+            .dependency_cell(dependency, namespace, key, allowance)
     }
 }
