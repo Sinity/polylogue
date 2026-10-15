@@ -144,8 +144,14 @@ pub fn canonical_record(raw: &[u8], volatile: &[&str]) -> Result<Vec<u8>, serde_
 pub fn fallback_hash(raw: &[u8], volatile: &[&str]) -> Result<String, serde_json::Error> {
     Ok(BlobHash::of(&canonical_record(raw, volatile)?).to_string()[..12].to_owned())
 }
-pub fn provisional_message_id(session: SessionId, hash: &str, earlier_identical: u64) -> MessageId {
-    MessageId::new(session, &format!("~{hash}-{earlier_identical}"))
+pub fn provisional_message_id(
+    session: SessionId,
+    raw: &[u8],
+    volatile: &[&str],
+    earlier_identical: u64,
+) -> Result<MessageId, serde_json::Error> {
+    let hash = fallback_hash(raw, volatile)?;
+    Ok(MessageId::new(session, &format!("~{hash}-{earlier_identical}")))
 }
 
 #[cfg(test)]
@@ -196,9 +202,9 @@ mod tests {
     #[test]
     fn duplicate_counter_is_local_to_hash_not_record_position() {
         let session = SessionId::from_stored("codex:thread:with:colons");
-        let hash = fallback_hash(br#"{"text":"ok"}"#, &[]).unwrap();
-        let first = provisional_message_id(session.clone(), &hash, 0);
-        let second = provisional_message_id(session, &hash, 1);
+        let raw = br#"{"text":"ok"}"#;
+        let first = provisional_message_id(session.clone(), raw, &[], 0).unwrap();
+        let second = provisional_message_id(session, raw, &[], 1).unwrap();
         assert_ne!(first, second);
         assert!(second.as_str().ends_with("-1"));
     }
