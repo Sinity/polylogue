@@ -39,6 +39,12 @@ impl Group {
             })
     }
     pub fn replace(&mut self, owner: Owner, other: Group) {
+        if owner == Owner::Primary && !other.nonempty {
+            self.fields.clear();
+            self.nonempty = false;
+            self.nonempty_text = false;
+            return;
+        }
         self.fields.retain(|w| w.owner != owner);
         for witness in other.fields {
             self.fields.retain(|old| old.slot != witness.slot);
