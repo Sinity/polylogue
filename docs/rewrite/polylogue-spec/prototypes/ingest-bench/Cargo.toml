@@ -1,0 +1,15 @@
+[package]
+name = "ingest-bench"
+description = "Measures a first build of real Claude Code data into the spec's index.db schema."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+blake3 = "1"
+anyhow = "1"
+
+[profile.release]
+debug = 1

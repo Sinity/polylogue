@@ -1,0 +1,267 @@
+{
+  "workflow": "source-conservation",
+  "scope": "Sectional review of one consumer workflow. References assign intended obligations, not product completion or exhaustive document review.",
+  "additional_requirements": [
+    {
+      "id": "polylogue:prose:acquisition-scope",
+      "project": "polylogue",
+      "source": "polylogue-spec/spec/storage/blobs.md",
+      "heading": "Inputs, revisions and extents",
+      "statement": "Declare the acquired representation and known coverage: a byte window or logical row export does not claim a full physical input; unavailable contributing evidence remains explicit.",
+      "slices": [
+        "1",
+        "2"
+      ],
+      "why_distinct": "Existing byte-retention, snapshot and record-counting laws do not independently identify whether acquired evidence claims a full physical input or only an export/window with unknown coverage."
+    },
+    {
+      "id": "sinex:prose:acquisition-scope",
+      "project": "sinex",
+      "source": "sinex-spec/spec/model.md",
+      "heading": "2. Material",
+      "statement": "Declare the acquired representation and known coverage: a byte window or logical row export does not claim a full physical input; unavailable contributing evidence remains explicit.",
+      "slices": [
+        "1a",
+        "1c"
+      ],
+      "why_distinct": "Existing byte-retention, snapshot and record-counting laws do not independently identify whether acquired evidence claims a full physical input or only an export/window with unknown coverage."
+    },
+    {
+      "id": "sinex:prose:registered-material-authority",
+      "project": "sinex",
+      "source": "sinex-spec/spec/storage.md",
+      "heading": "Rules",
+      "statement": "Initial interpretation, ingress retries and replay resolve registered immutable bytes; changing or removing the acquisition URI never substitutes current provider content.",
+      "slices": [
+        "1a"
+      ],
+      "why_distinct": "Replay/readback laws do not independently identify first ingress reopening a mutable acquisition URI after immutable registration."
+    }
+  ],
+  "obligations": [
+    {
+      "id": "polylogue:acquisition",
+      "project": "polylogue",
+      "stage": "acquisition",
+      "source": "polylogue-spec/spec/storage/blobs.md",
+      "heading": "Inputs, revisions and extents",
+      "requirements": [
+        "polylogue:prose:acquisition-scope",
+        "polylogue:law:117",
+        "polylogue:component:store.snapshots"
+      ],
+      "acceptance": "Capture a full file then an append window; distinguish a logical export from a page snapshot and leave an unknown prefix explicit."
+    },
+    {
+      "id": "sinex:acquisition",
+      "project": "sinex",
+      "stage": "acquisition",
+      "source": "sinex-spec/spec/model.md",
+      "heading": "2. Material",
+      "requirements": [
+        "sinex:prose:acquisition-scope",
+        "sinex:law:31",
+        "sinex:component:sources.adapters"
+      ],
+      "acceptance": "Capture rows and a consistent snapshot; retained row exports do not claim unexported database columns or unknown capture intervals."
+    },
+    {
+      "id": "polylogue:identity",
+      "project": "polylogue",
+      "stage": "identity",
+      "source": "polylogue-spec/spec/storage/blobs.md",
+      "heading": "Inputs, revisions and extents",
+      "requirements": [
+        "polylogue:law:10",
+        "polylogue:component:store.inputs"
+      ],
+      "acceptance": "Retry the same capture without new identity; equal append bytes at different logical windows retain their correct coordinates."
+    },
+    {
+      "id": "sinex:identity",
+      "project": "sinex",
+      "stage": "identity",
+      "source": "sinex-spec/spec/model.md",
+      "heading": "6. Identity and occurrences",
+      "requirements": [
+        "sinex:law:2",
+        "sinex:law:34",
+        "sinex:law:35"
+      ],
+      "acceptance": "Replay keeps occurrence anchors; equal bytes from distinct captured occurrences remain distinct where the source declares no equivalence key."
+    },
+    {
+      "id": "polylogue:retention",
+      "project": "polylogue",
+      "stage": "retention",
+      "source": "polylogue-spec/spec/storage/blobs.md",
+      "heading": "Blobs",
+      "requirements": [
+        "polylogue:law:8",
+        "polylogue:component:blobs.files"
+      ],
+      "acceptance": "Delete or mutate the provider path after retention and read the original captured bytes with their recorded hash."
+    },
+    {
+      "id": "sinex:retention",
+      "project": "sinex",
+      "stage": "retention",
+      "source": "sinex-spec/spec/storage.md",
+      "heading": "Rules",
+      "requirements": [
+        "sinex:prose:registered-material-authority",
+        "sinex:law:19",
+        "sinex:law:20",
+        "sinex:component:store.content"
+      ],
+      "acceptance": "Remove or mutate the acquisition URI before initial ingress; the registered stored bytes remain authoritative and missing blobs fail explicitly."
+    },
+    {
+      "id": "polylogue:reconstruction",
+      "project": "polylogue",
+      "stage": "reconstruction",
+      "source": "polylogue-spec/spec/storage/blobs.md",
+      "heading": "Inputs, revisions and extents",
+      "requirements": [
+        "polylogue:law:2",
+        "polylogue:law:5",
+        "polylogue:law:8",
+        "polylogue:component:store.inputs"
+      ],
+      "acceptance": "Reconstruct the full revision from earlier extents and delta bases, retaining companion and attachment references; a missing root is not replaced from the live path."
+    },
+    {
+      "id": "sinex:reconstruction",
+      "project": "sinex",
+      "stage": "reconstruction",
+      "source": "sinex-spec/spec/model.md",
+      "heading": "Roles a material can play",
+      "requirements": [
+        "sinex:law:32",
+        "sinex:law:19",
+        "sinex:prose:acquisition-scope",
+        "sinex:component:store.content"
+      ],
+      "acceptance": "Reassemble retained parts and snapshot bases/patches; missing required predecessors or attachments produce the source-declared incomplete/error outcome."
+    },
+    {
+      "id": "polylogue:normalization",
+      "project": "polylogue",
+      "stage": "normalization",
+      "source": "polylogue-spec/spec/sources/README.md",
+      "heading": "The same conversation through several routes",
+      "requirements": [
+        "polylogue:law:4",
+        "polylogue:law:12",
+        "polylogue:law:13",
+        "polylogue:law:120",
+        "polylogue:component:sources.framework"
+      ],
+      "acceptance": "Compare source-derived expected messages with normalized output; account for every framed record and preserve contribution references through lossy rewrites."
+    },
+    {
+      "id": "sinex:normalization",
+      "project": "sinex",
+      "stage": "normalization",
+      "source": "sinex-spec/spec/model.md",
+      "heading": "3. Event",
+      "requirements": [
+        "sinex:law:1",
+        "sinex:law:10",
+        "sinex:law:11",
+        "sinex:component:sources.drain"
+      ],
+      "acceptance": "Compare expected event meaning, provenance and time quality with source bytes; unknown clocks and omitted fields are not invented."
+    },
+    {
+      "id": "polylogue:acknowledgement",
+      "project": "polylogue",
+      "stage": "acknowledgement",
+      "source": "polylogue-spec/spec/convergence.md",
+      "heading": "Parse",
+      "requirements": [
+        "polylogue:law:7",
+        "polylogue:law:66",
+        "polylogue:component:store.writer"
+      ],
+      "acceptance": "Interrupt between row commits and checkpoint/terminal reply; retry the same intent without duplicate rows or a fabricated completed result."
+    },
+    {
+      "id": "sinex:acknowledgement",
+      "project": "sinex",
+      "stage": "acknowledgement",
+      "source": "sinex-spec/spec/storage.md",
+      "heading": "6. NATS JetStream and KV",
+      "requirements": [
+        "sinex:law:21",
+        "sinex:law:22",
+        "sinex:law:44",
+        "sinex:component:daemon.publisher"
+      ],
+      "acceptance": "Lose the final reply after durable admission; verify stored content, terminal acknowledgement and confirmed-consumer progress separately across retry."
+    },
+    {
+      "id": "polylogue:answer",
+      "project": "polylogue",
+      "stage": "answer",
+      "source": "polylogue-spec/spec/query.md",
+      "heading": "Results",
+      "requirements": [
+        "polylogue:law:45",
+        "polylogue:law:38",
+        "polylogue:bootstrap:inspectable-demo"
+      ],
+      "acceptance": "Read/search/export through packaged clients; incomplete evidence is degraded or unavailable, and optional backend parity is evaluated on a fixed producer/consumer pair."
+    },
+    {
+      "id": "sinex:answer",
+      "project": "sinex",
+      "stage": "answer",
+      "source": "sinex-spec/spec/storage.md",
+      "heading": "What Sinex hands back to Polylogue",
+      "requirements": [
+        "sinex:law:4",
+        "sinex:law:24",
+        "sinex:bootstrap:inspectable-demo"
+      ],
+      "acceptance": "Compare the actual client answer with independent retained-input facts and a fresh read-model rebuild; direct bus/codec checks do not close the joined route."
+    },
+    {
+      "id": "polylogue:recovery",
+      "project": "polylogue",
+      "stage": "recovery",
+      "source": "polylogue-spec/spec/storage/blobs.md",
+      "heading": "Crash safety without repair",
+      "requirements": [
+        "polylogue:law:7",
+        "polylogue:law:5",
+        "polylogue:bootstrap:inspectable-demo"
+      ],
+      "acceptance": "Kill at actual retention/index/publication boundaries and restart the same state; final bytes, rows and answer equal an uninterrupted baseline."
+    },
+    {
+      "id": "sinex:recovery",
+      "project": "sinex",
+      "stage": "recovery",
+      "source": "sinex-spec/spec/storage.md",
+      "heading": "6. NATS JetStream and KV",
+      "requirements": [
+        "sinex:law:6",
+        "sinex:law:13",
+        "sinex:law:50",
+        "sinex:bootstrap:inspectable-demo"
+      ],
+      "acceptance": "Restart after retained ingress and an unsettled confirmed delivery; the same immutable evidence redelivers without loss or duplicate live meaning."
+    }
+  ],
+  "stages": [
+    "acquisition",
+    "identity",
+    "retention",
+    "reconstruction",
+    "normalization",
+    "acknowledgement",
+    "answer",
+    "recovery"
+  ]
+}

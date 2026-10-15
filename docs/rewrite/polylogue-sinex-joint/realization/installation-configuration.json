@@ -1,0 +1,105 @@
+{
+  "workflow": "installation-configuration",
+  "scope": "Sectional review of package entrypoints, configuration, isolated service ownership and predecessor upgrade safety. Full deployment, release distribution, platform support and installed-client acceptance remain unverified.",
+  "stages": [
+    "package",
+    "configuration",
+    "services",
+    "upgrade"
+  ],
+  "additional_requirements": [],
+  "obligations": [
+    {
+      "id": "polylogue:installation:package",
+      "project": "polylogue",
+      "stage": "package",
+      "source": "polylogue-spec/plan/workspace.md",
+      "heading": "Nix",
+      "requirements": [
+        "polylogue:bootstrap:executable-workspace"
+      ],
+      "acceptance": "Build the package in a fresh checkout, run its binary outside the source tree, and export config schema with no daemon or archive. Generated module options agree with that binary; only supported commands are advertised. This does not qualify the later static release binary or installed service."
+    },
+    {
+      "id": "sinex:installation:package",
+      "project": "sinex",
+      "stage": "package",
+      "source": "sinex-spec/plan/workspace.md",
+      "heading": "Nix",
+      "requirements": [
+        "sinex:bootstrap:executable-workspace",
+        "sinex:component:daemon.config"
+      ],
+      "acceptance": "Run packaged entrypoints and catalog export without a running daemon or database. Compare generated module options with the same candidate Config and defaults; an unsupported service/source request fails module validation instead of enabling a stub."
+    },
+    {
+      "id": "polylogue:installation:configuration",
+      "project": "polylogue",
+      "stage": "configuration",
+      "source": "polylogue-spec/spec/behavior.md",
+      "heading": "Concurrency",
+      "requirements": [
+        "polylogue:component:bin.daemon",
+        "polylogue:bootstrap:executable-workspace"
+      ],
+      "acceptance": "Use two isolated archives: the package wrapper selects its configured archive for CLI and MCP, an explicit --archive overrides it, and status/errors name the selected directory. Each request reaches only that archive daemon. Demo creation refuses an existing unowned directory and leaves real archives untouched."
+    },
+    {
+      "id": "sinex:installation:configuration",
+      "project": "sinex",
+      "stage": "configuration",
+      "source": "sinex-spec/spec/behavior.md",
+      "heading": "10. Configuration",
+      "requirements": [
+        "sinex:component:daemon.config"
+      ],
+      "acceptance": "Reject unknown TOML keys before component startup, compare Rust and generated Nix defaults, and observe status using that same parsed configuration. Conflicting environment connection values cannot override the supplied TOML; secrets remain file references and are not emitted in generated config or diagnostics."
+    },
+    {
+      "id": "polylogue:installation:services",
+      "project": "polylogue",
+      "stage": "services",
+      "source": "polylogue-sinex-joint/BOOTSTRAP-INVENTORY.md",
+      "heading": "Minimum executable bootstrap",
+      "requirements": [
+        "polylogue:bootstrap:executable-workspace",
+        "polylogue:bootstrap:ownership"
+      ],
+      "acceptance": "Start two candidate stacks with separate state and socket endpoints; each client reaches its own daemon. Occupied endpoints fail without adoption. Stop and failed-start cleanup affect only the recorded owned processes/state; an unrelated listener and sentinel archive survive."
+    },
+    {
+      "id": "sinex:installation:services",
+      "project": "sinex",
+      "stage": "services",
+      "source": "sinex-spec/plan/workspace.md",
+      "heading": "Nix",
+      "requirements": [
+        "sinex:bootstrap:executable-workspace",
+        "sinex:bootstrap:ownership"
+      ],
+      "acceptance": "Start two isolated Postgres/NATS/API stacks using rendered TOML, prove database-role separation, restart each, and stop one without affecting the other or external services. Inject partial startup failure and an occupied endpoint; unwind only resources started by that invocation."
+    },
+    {
+      "id": "polylogue:installation:upgrade",
+      "project": "polylogue",
+      "stage": "upgrade",
+      "source": "polylogue-sinex-joint/BOOTSTRAP-INVENTORY.md",
+      "heading": "Source-tree disposition",
+      "requirements": [
+        "polylogue:bootstrap:consumer-pins"
+      ],
+      "acceptance": "Inspect direct and transitive consumers and local overrides against the replacement candidate. Both locked builds and a deliberate input update retain an immutable predecessor choice until explicit cutover; Python imports, contract generators and service modules are tested through their actual callers. An isolated package build alone cannot settle this acceptance."
+    },
+    {
+      "id": "sinex:installation:upgrade",
+      "project": "sinex",
+      "stage": "upgrade",
+      "source": "polylogue-sinex-joint/BOOTSTRAP-INVENTORY.md",
+      "heading": "Source-tree disposition",
+      "requirements": [
+        "sinex:bootstrap:consumer-pins"
+      ],
+      "acceptance": "Inspect direct and transitive consumers and local overrides against the replacement candidate. Both locked builds and a deliberate input update retain an immutable predecessor choice until explicit cutover; Python imports, contract generators and service modules are tested through their actual callers. An isolated package build alone cannot settle this acceptance."
+    }
+  ]
+}

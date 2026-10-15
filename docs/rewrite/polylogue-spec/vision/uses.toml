@@ -1,0 +1,1989 @@
+# The vision catalog: uses that should grow on Polylogue (README.md describes the form). Checked by check_uses.py.
+
+[features]   # feature -> the spec file and heading that own it
+search = "spec/query.md#Full-text search"
+semantic = "spec/query.md#Semantic search"
+query = "spec/query.md#Shape of a query"
+stages = "spec/query.md#Stages"
+evidence_until = "spec/query.md#sessions"
+saved_queries = "spec/user-data.md#Saved queries and kept results"
+signals = "spec/user-data.md#Saved queries and kept results"
+notes = "spec/user-data.md#Notes: one mechanism"
+markers = "spec/user-data.md#Inline markers"
+briefings = "spec/user-data.md#Briefings for agents"
+resume = "spec/user-data.md#Resume candidates"
+recall = "spec/user-data.md#Recall"
+judgment = "spec/user-data.md#Judgment"
+checked_claims = "spec/user-data.md#Checked claims and annotation passes"
+pages = "spec/user-data.md#Pages, workspaces and investigations"
+cost = "spec/analysis.md#Usage and cost"
+tool_outcomes = "spec/analysis.md#Tool calls"
+time = "spec/analysis.md#Time"
+session_facts = "spec/analysis.md#Session facts"
+lineage = "spec/analysis.md#Lineage marks and tree cost"
+embeddings = "spec/analysis.md#Embeddings and semantic search"
+git = "spec/analysis.md#Git correlation and the changes view"
+measures = "spec/analysis.md#Measures and their definitions"
+compaction = "spec/analysis.md#Compaction"
+reports = "spec/analysis.md#Reports built from the above"
+proof = "spec/analysis.md#What a record proves"
+model_read = "spec/workflows.md#How do my agents behave"
+live_state = "spec/model.md#Live state"
+runs = "spec/model.md#Run"
+deliveries = "spec/model.md#Delivery"
+variants = "spec/model.md#Variant"
+config_in_force = "spec/model.md#Configuration in force"
+work_graph = "spec/model.md#The work graph"
+processes = "spec/model.md#Process"
+branches = "spec/rendering.md#Inherited messages and branches"
+merge_routes = "spec/convergence.md#Sessions built from several inputs"
+sources = "spec/sources/README.md"
+raw_retention = "spec/storage/blobs.md"
+excision = "spec/storage/archive-db.md#How excision works"
+mcp = "spec/surfaces/mcp-and-hooks.md#MCP server for agents"
+hooks = "spec/surfaces/mcp-and-hooks.md#Briefings injected by hooks"
+cli = "spec/surfaces/cli.md#Verbs"
+status = "spec/surfaces/cli.md#Status"
+web_reader = "spec/surfaces/web.md"
+export = "spec/export-format.md#The document"
+otel_export = "spec/export-format.md#OpenTelemetry export"
+render_for_models = "spec/rendering.md#Rendering for models"
+live_view = "spec/rendering.md#The live view"
+lineage_view = "spec/rendering.md#The lineage view"
+privacy = "spec/behavior.md#Privacy"
+sql = "spec/workflows.md#Ask the archive in SQL"
+
+[[use]]
+id = "distill-thread"
+title = "A long chat distilled into a kept artifact"
+act = "distill this 400-message chat into a standalone document I can read instead, and keep it current as the chat grows"
+level = 1
+query = "notes where kind:distillate stale:true"
+output = "2 rows\n  chatgpt:6a57fc1e  distillate r3  covers 412 of 431 messages  stale: 19 newer\n  claude-ai:3f20…   distillate r1  covers 88 of 140 messages   stale: 52 newer"
+source_note = "covered and newer counts from note_target rows and their seen_hash against the session's current messages; revision from the note's root family"
+degrades = "a session with no distillate is not listed; a distillate whose target messages were excised shows `target gone`"
+reads = ["sessions", "messages", "notes"]
+needs = ["model_read", "notes", "render_for_models"]
+shows = "a distillate note on the session citing the message range it covers, shown as stale once the chat grows past it"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (distill-thread; the most repeated request)"
+
+[[use]]
+id = "merge-branches"
+title = "Branches and copies of one chat brought together"
+act = "which of these branches of the same chat says what, and how do they differ?"
+level = 2
+query = "messages where written_by:human inherited:* \"chrono\""
+output = "3 rows\n  #8  Shorter, and mention chrono.\n  #2  let's use chrono, not time\n  #4  let's use chrono, not time   (inherited from #2)"
+source_note = "rows from message; the inherited mark and its source from message.inherited_from (lineage marks)"
+degrades = "a copy whose source session is missing is shown as its holder's own message with `source not in archive`"
+expected = { "kind" = "count", "value" = 3 }
+reads = ["sessions", "messages", "links"]
+needs = ["branches", "merge_routes", "lineage"]
+shows = "the branches side by side with shared messages counted once"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (merge-branches)"
+
+[[use]]
+id = "ask-not-reread"
+title = "Ask the archive instead of rereading old chats"
+act = "did any old chat cover how to structure the capture daemon? just answer"
+level = 1
+query = "messages where near:\"how to structure the capture daemon\" | limit 10"
+output = "10 rows ranked by similarity, each: session, date, first line, score"
+source_note = "similarity from embeddings.db vectors; dates from message.at"
+degrades = "without embeddings the result is `degraded` with the note `semantic search is not enabled`, and a full-text query is suggested"
+reads = ["messages", "blocks"]
+needs = ["search", "semantic", "model_read"]
+shows = "an answer with references to the messages it rests on"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (ask-not-reread)"
+
+[[use]]
+id = "chats-vs-project"
+title = "Chats reconciled with a project as it stands"
+act = "of everything discussed about Polylogue in web chats, what was done, what is still relevant, and what was never realized?"
+level = 1
+query = "messages where session.origin:(chatgpt|claude-ai|aistudio) \"polylogue\" since:2026-01-01 | group by session | count"
+output = "one row per web chat mentioning the project, with the count of matching messages; the done/open/abandoned split is a model-read pass over these chats"
+source_note = "rows from message and the full-text index"
+degrades = "chats whose provider export lacks dates are left out of `since:` and counted in `notes`"
+reads = ["sessions", "messages", "notes"]
+needs = ["search", "model_read", "git", "checked_claims"]
+shows = "three lists (done, open, abandoned), each item citing the chat and, where done, the commit or session that did it"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (chats-vs-project, several 2026-06 requests)"
+gaps = ["no entity identity: a person, project or concept mentioned across sessions is not an entity, so nothing joins its mentions with each other or with Sinex's sources (joint gap, also found by Sinex)", "stated plans and todo lists are not units: Claude Code todos/ and plans/ are stored but not parsed, and plans stated in chats have no structure, so 'what was planned' cannot be queried"]
+
+[[use]]
+id = "idea-ledger"
+title = "All my ideas, and how they tie together"
+act = "list every idea I have had about the exocortex, and which ideas are the same idea in different words"
+level = 0
+reads = ["messages", "notes"]
+needs = ["semantic", "embeddings", "model_read", "notes"]
+shows = "a ledger of ideas, each with its first and latest mention and links between ideas"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (idea-ledger)"
+gaps = ["no entity identity: a person, project or concept mentioned across sessions is not an entity, so nothing joins its mentions with each other or with Sinex's sources (joint gap, also found by Sinex)", "query language cannot express grouping rows by meaning: `near:` ranks rows by similarity to one target, but no stage clusters a set into groups of the same idea in different words (planned extension: `cluster by near`, query.md)"]
+
+[[use]]
+id = "chats-to-notes"
+title = "Notes written from chats"
+act = "turn what this chat settled into notes in my vault, linked back to the messages"
+level = 1
+query = "notes where author:operator source:* since:2026-10-01"
+output = "rows of notes written from inline markers, each with the message it came from"
+source_note = "note.source is the message an inline marker came from"
+degrades = "a note whose source message was excised keeps its text and shows `source excised`"
+reads = ["messages", "notes"]
+needs = ["model_read", "notes", "export"]
+shows = "note files citing the chat messages they came from"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (chats-to-notes)"
+
+[[use]]
+id = "stance-map"
+title = "A map of my stated views, checked for contradictions"
+act = "what have I said I believe about agent autonomy, and where do my statements contradict each other?"
+level = 1
+query = "notes where kind:claim key:stance rubric:stance-pass | group by value | count"
+output = "one row per stated position (value), with how many messages state it; contradictions are pairs judged in the pass"
+source_note = "rows written by an annotation pass under the `stance-pass` rubric"
+degrades = "positions not yet passed over are absent; the pass's sampled agreement is shown in `notes`"
+reads = ["messages", "notes"]
+needs = ["search", "model_read", "checked_claims", "judgment"]
+shows = "stated positions with dates, contradictions paired, each judged by me"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (stance-map)"
+gaps = ["no entity identity: a person, project or concept mentioned across sessions is not an entity, so nothing joins its mentions with each other or with Sinex's sources (joint gap, also found by Sinex)"]
+
+[[use]]
+id = "my-voice"
+title = "Replies drafted in my own voice"
+act = "draft a reply the way I would write it, from how I have written before"
+level = 1
+query = "messages where written_by:human words > 80 | sort by random(3) | limit 20"
+output = "20 of my own longer messages, as the examples a drafting client is given"
+source_note = "human-written messages and their word counts"
+degrades = "with fewer than 20 such messages all are returned"
+reads = ["messages"]
+needs = ["search", "semantic", "export"]
+shows = "a draft, with the past messages it took as examples"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (my-voice)"
+gaps = ["generation is outside the substrate: Polylogue can supply the operator's own writing as context, but drafting in their voice is a client of it, not a feature"]
+
+[[use]]
+id = "prompted-review"
+title = "Learning by prompts, not flashcards"
+act = "ask me now and then about things I learned in past chats, so I keep them"
+level = 1
+query = "messages where written_by:model has:code_lang session.tag:learning | sort by random(7) | limit 1"
+output = "one past answer, as the prompt for a review question"
+source_note = "message rows; the tag on the session"
+degrades = "with no tagged sessions the result is `empty`; when to show it is not a query"
+reads = ["messages", "notes"]
+needs = ["model_read", "notes", "signals"]
+shows = "a question from a past chat at a chosen moment, with the answer from that chat"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (prompted-review)"
+gaps = ["no outgoing surface: Polylogue answers queries and injects at hook points, but cannot surface something unasked (a notification, a scheduled review), and no rule says when it may"]
+
+[[use]]
+id = "topic-threads"
+title = "Long-lived chats per topic"
+act = "everything about home networking, as one running thread across all the chats where it came up"
+level = 1
+query = "messages where \"home network\" | sort by at asc"
+output = "every message mentioning the topic across all chats, oldest first, grouped under each session's title"
+source_note = "full-text index over message text"
+degrades = "messages in sessions whose text is excised are left out and counted in `notes`"
+reads = ["sessions", "messages", "notes"]
+needs = ["search", "notes", "pages"]
+shows = "one reading view assembled from many chats on a topic, ordered in time"
+consumer = "view"
+mark = "plausible"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (topic-threads)"
+gaps = ["no entity identity: a person, project or concept mentioned across sessions is not an entity, so nothing joins its mentions with each other or with Sinex's sources (joint gap, also found by Sinex)"]
+
+[[use]]
+id = "branch-tree"
+title = "A conversation as a tree with named branches"
+act = "show this chat as a tree and let me name the branches"
+level = 1
+query = "messages where session.id:chatgpt:6a57fc1e active:*"
+output = "the session's messages including abandoned branches, each with its parent and branch point; names come from title notes on branch points"
+source_note = "message parent ids and active path from the provider's tree (ChatGPT mapping)"
+degrades = "a provider that records no tree (most agent harnesses) shows one path and says so"
+reads = ["sessions", "messages", "notes"]
+needs = ["branches", "notes", "web_reader"]
+shows = "the branch tree with names (title notes on branch points)"
+consumer = "view"
+mark = "plausible"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (branch-tree)"
+
+[[use]]
+id = "fuzzy-recall"
+title = "A half-remembered chat found again"
+act = "there was a chat where a model compared three backup tools, I think in spring, find it"
+level = 1
+query = "sessions where origin:(chatgpt|claude-ai) \"backup\" started between 2026-03-01 and 2026-06-01"
+output = "sessions ranked by relevance, each with title, date and the best-matching passage"
+source_note = "full-text index; started from session.started"
+degrades = "a session whose start is unknown is excluded from the window and counted in `notes`"
+reads = ["sessions", "messages"]
+needs = ["search", "semantic", "recall"]
+shows = "candidate chats ranked, each with the matching passage"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (fuzzy-recall); evidence/real-questions.md B1-B6"
+
+[[use]]
+id = "quote-back"
+title = "What a model told me, quoted back"
+act = "what exactly did the model say about my situation back then? quote it"
+level = 2
+query = "messages where written_by:human \"chrono\" session.origin:claude-code"
+expected = { kind = "count", value = 1 }
+output = "up to 3 rows: date, session title, and the full message text"
+source_note = "message text from the text table, verbatim"
+degrades = "an excised message is not returned"
+reads = ["messages", "blocks"]
+needs = ["search", "render_for_models"]
+shows = "the exact message text with its date and session"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (quote-back); spec/workflows.md §3"
+
+[[use]]
+id = "kept-analysis"
+title = "An analysis reused instead of redone"
+act = "I analyzed this in another chat; use that instead of redoing it"
+level = 1
+query = "notes where kind:saved_query value:\"dbus analysis\""
+output = "the kept result with its query and the time it was computed"
+source_note = "saved_query notes and kept results (user-data.md)"
+degrades = "a kept result whose inputs changed since is marked `stale`"
+reads = ["messages", "notes"]
+needs = ["search", "saved_queries", "notes"]
+shows = "the earlier analysis found and cited, kept as a result"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (kept-analysis)"
+
+[[use]]
+id = "model-behaviour-study"
+title = "Model behaviour studied across chats"
+act = "in which chats did a model seem to fight itself or reverse its own advice?"
+level = 0
+reads = ["messages", "sessions"]
+needs = ["search", "model_read", "checked_claims"]
+shows = "chats where it happened, each with the reversing messages"
+mark = "plausible"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (model-behaviour-study); spec/workflows.md §21"
+
+[[use]]
+id = "all-providers"
+title = "All my AI chats in one place"
+act = "ChatGPT, Claude, Gemini, Grok and agent sessions, searchable together"
+level = 2
+query = "sessions | group by origin | count"
+output = "claude-code 3, codex 2, chatgpt 1, claude-ai 1"
+source_note = "session.origin over top-level sessions (subagents excluded by default)"
+degrades = "an origin whose location is unreadable is listed in `status`, not here"
+expected = { "kind" = "groups", "value" = { "claude-code" = 3, "codex" = 2, "chatgpt" = 1, "claude-ai" = 1 } }
+reads = ["sessions", "messages"]
+needs = ["sources", "search", "merge_routes"]
+shows = "one archive across providers"
+consumer = "workflow"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (all-providers)"
+
+[[use]]
+id = "context-control"
+title = "What enters an agent's context, controlled"
+act = "give the new agent exactly the relevant past context, not too much"
+level = 2
+query = "deliveries where recipient:claude-code:7f3a2c10-0004 event:prompt_reference"
+expected = { kind = "count", value = 1 }
+output = "1 row: what the briefing included, what it left out (`left_out`), bytes against budget"
+source_note = "the delivery row recorded by the hook"
+degrades = "a briefing that timed out is recorded with outcome `timeout` and what was cut"
+reads = ["sessions", "messages", "notes", "deliveries"]
+needs = ["briefings", "hooks", "deliveries"]
+shows = "a briefing within budget, recorded with what it left out"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (context-control)"
+
+[[use]]
+id = "memory-substrate"
+title = "One substrate for agent memory and my own marks"
+act = "my highlights and an agent's memory entries should be the same kind of thing"
+level = 1
+query = "notes where author:* kind:(note|tag) target:claude-code:7f3a2c10-0002"
+output = "every note and tag on the session, by operator and agents alike, with author"
+source_note = "note rows; author is `operator` or a session id"
+degrades = "withdrawn notes are left out unless `withdrawn:*`"
+reads = ["notes", "messages"]
+needs = ["notes", "markers"]
+shows = "highlights and memory as notes with kind, author and target"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (memory-substrate)"
+
+[[use]]
+id = "code-memory"
+title = "Agent memory generated from a codebase"
+act = "what does an agent need to know about this repository that past sessions already found out?"
+level = 0
+reads = ["sessions", "tool_calls", "files", "notes"]
+needs = ["briefings", "session_facts", "git"]
+shows = "a project briefing from past sessions' findings about the code"
+mark = "plausible"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (code-memory)"
+gaps = ["no index of code facts (modules, functions, their history) across sessions; directory briefings are the only code-shaped memory"]
+
+[[use]]
+id = "coordination-substrate"
+title = "Polylogue as where agents coordinate"
+act = "which agents are working where, on what, and who can take over when quota runs out?"
+level = 1
+query = "sessions where running:true | group by repo | count"
+output = "repositories with the number of live agents in each, then per session: live state, task, harness"
+source_note = "live state computed at read time from hook and process rows"
+degrades = "sessions with only file-growth evidence are `unknown`, never `working`"
+reads = ["sessions", "processes", "runs", "events"]
+needs = ["live_state", "runs", "mcp", "cost"]
+shows = "live agents by repository with their tasks and remaining quota"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (coordination-substrate, 2026-07-09)"
+
+[[use]]
+id = "cockpit"
+title = "A cockpit: what is happening now, in five seconds"
+act = "what needs me right now?"
+level = 2
+query = "sessions where live:waiting"
+expected = { world = "live", clock = "2026-10-09 15:00:00", kind = "rows", value = ["V1"] }
+output = "waiting first (with what each waits on), then working, idle and unknown"
+source_note = "live, waiting_on from the live-state rules"
+degrades = "a stopped daemon gives exit code 6; with no process evidence a session can only be `unknown` or `stale`"
+reads = ["sessions", "processes", "events"]
+needs = ["live_state", "live_view", "status"]
+shows = "waiting agents first, then working ones, then stale ones, with what each waits on"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (cockpit); evidence/meta-vision.md scene 1"
+prototype = "prototype/crates/daemon"
+
+[[use]]
+id = "pre-solved-work"
+title = "Issues that carry their own solution"
+act = "write this task so the next agent only implements it, using what past sessions found"
+level = 1
+query = "messages where written_by:model \"root cause\" session.repo:polylogue since:30d"
+output = "model messages stating causes in the repository's sessions, as the evidence a task text cites"
+source_note = "full-text index; session repo from git evidence"
+degrades = "sessions without git evidence have no repo and are not matched"
+reads = ["sessions", "messages", "notes"]
+needs = ["model_read", "notes", "briefings"]
+shows = "a task text citing the sessions whose findings it rests on"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (pre-solved-work); spec/workflows.md §7"
+
+[[use]]
+id = "secretary"
+title = "A secretary agent fed by the archives"
+act = "collect every obligation raised in my sessions into a backlog, with where each came from"
+level = 1
+query = "notes where kind:claim key:obligation check:(fails|unknown)"
+output = "open obligations collected by a pass, each with its source message and why it is not yet met"
+source_note = "claims written by a pass; check evaluated at read time"
+degrades = "obligations whose check cannot be evaluated show `unknown` with the reason"
+reads = ["messages", "notes"]
+needs = ["model_read", "checked_claims", "notes", "signals"]
+shows = "a backlog of obligations, each citing its message, checked off by later evidence"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (secretary, 2025-11-03)"
+gaps = ["no outgoing surface: Polylogue answers queries and injects at hook points, but cannot surface something unasked (a notification, a scheduled review), and no rule says when it may", "stated plans and todo lists are not units: Claude Code todos/ and plans/ are stored but not parsed, and plans stated in chats have no structure, so 'what was planned' cannot be queried"]
+
+[[use]]
+id = "prompt-improvement"
+title = "Better prompts for agent loops, from history"
+act = "which of my prompts to agents led to good outcomes, and which wasted runs?"
+level = 2
+query = "messages where written_by:human | group by session.origin | count"
+output = "claude-code 9, chatgpt 3, codex 3, claude-ai 2"
+source_note = "human-written messages (prompt_kind) grouped by the owning session's origin"
+degrades = "an edited prompt on an abandoned branch is excluded unless `active:*`"
+expected = { "kind" = "groups", "value" = { "claude-code" = 9, "chatgpt" = 3, "codex" = 3, "claude-ai" = 2 } }
+reads = ["messages", "sessions", "notes"]
+needs = ["search", "session_facts", "checked_claims"]
+shows = "prompts grouped with the outcomes of the sessions they started"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (prompt-improvement); spec/workflows.md §20"
+
+[[use]]
+id = "second-opinion"
+title = "A second opinion from another model"
+act = "show another model the project and these discussions and ask what it thinks"
+level = 0
+reads = ["sessions", "messages"]
+needs = ["export", "render_for_models"]
+shows = "a bounded excerpt rendered for a model, with its references"
+mark = "plausible"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (second-opinion)"
+
+[[use]]
+id = "trajectory"
+title = "A project's trajectory and velocity"
+act = "how fast did this project move over time, and what slowed it?"
+level = 1
+prototype = "prototypes/vision/trajectory.py"
+query = "sessions where repo:morrow | group by week(started) | agg count, sum:tool_calls, sum:cost"
+output = "one row per week: sessions, tool calls, cost (with unknown cost counted)"
+source_note = "session facts; week in the operator's time zone"
+degrades = "weeks with no sessions are absent, not zero"
+reads = ["sessions", "tool_calls", "runs"]
+needs = ["git", "measures", "time", "reports"]
+shows = "activity and commits over time, with the sessions behind each change"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (trajectory); spec/workflows.md §17"
+gaps = ["query language has no series statistics over grouped rows (median, longest empty run, later half against earlier)", "session counts measure activity, not velocity; commits beside sessions are needed"]
+
+[[use]]
+id = "plans-projected"
+title = "What the project would be if its plans were carried out"
+act = "what would Polylogue be if every plan we wrote down were done?"
+level = 0
+reads = ["notes", "messages"]
+needs = ["pages", "model_read"]
+shows = "a projected design assembled from stated plans, each item citing where it was planned"
+mark = "plausible"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (plans-projected)"
+gaps = ["stated plans and todo lists are not units: Claude Code todos/ and plans/ are stored but not parsed, and plans stated in chats have no structure, so 'what was planned' cannot be queried"]
+
+[[use]]
+id = "lifetime-cost"
+title = "Lifetime spend, priced as the API would charge"
+act = "what would all my agent use have cost at API prices?"
+level = 3
+prototype = "prototypes/vision/lifetime-cost.py"
+query = "kind:* | agg count, sum:cost"
+output = "count 8, sum_cost 6.20 (exact 6.1956), unknown_cost 2, partial_cost 0"
+source_note = "per-message cost from the price table; unknown where the provider reports no usage"
+degrades = "unknown costs are counted, never added as zero"
+expected = { "kind" = "agg", "value" = { "count" = 8, "sum_cost" = 6.1956, "unknown_cost" = 2, "partial_cost" = 0 } }
+reads = ["messages", "sessions"]
+needs = ["cost"]
+shows = "total and per-month cost by model, with unknowns counted"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (lifetime-cost); spec/workflows.md §5"
+gaps = ["no Codex (OpenAI) prices: 603 million Codex output tokens unpriced, so any cost total must lead with its unpriced share until prices exist (slice 3)"]
+
+[[use]]
+id = "proof-of-work"
+title = "The archive as evidence of work for others"
+act = "show what I built this year, with the evidence, for someone else"
+level = 0
+reads = ["sessions", "notes", "runs"]
+needs = ["export", "privacy", "git", "reports"]
+shows = "a shareable report with excerpts redacted by rule"
+mark = "plausible"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (proof-of-work); spec/workflows.md §19"
+
+[[use]]
+id = "voice-text"
+title = "Speech turned into a living text"
+act = "what I say about a topic over months becomes one text that grows"
+level = 0
+reads = ["messages", "notes"]
+needs = ["pages", "model_read"]
+shows = "a page kept current from spoken notes"
+mark = "speculative"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (voice-text); evidence/meta-vision.md scene 8"
+gaps = ["no speech source: voice recordings and their transcripts are not a Polylogue source"]
+
+[[use]]
+id = "ambient-interface"
+title = "The exocortex as an interface"
+act = "I use it as the interface to my machine and my history, not as an app I open"
+level = 1
+query = "deliveries where event:session_start since:1d | group by outcome | count"
+output = "how many briefings were delivered, timed out or failed today"
+source_note = "delivery rows from the hook"
+degrades = "a harness without hooks installed delivers nothing and `status` says so"
+reads = ["sessions", "notes", "events"]
+needs = ["mcp", "hooks", "briefings"]
+shows = "history arriving where I already work (briefings, MCP answers)"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (ambient-interface, Sinex section, both)"
+
+[[use]]
+id = "project-ledger"
+title = "Projects and goals from the journal and chats"
+act = "completed and open projects and goals, how they relate, and their priority"
+level = 1
+query = "notes where kind:tag key:project | group by value | count"
+output = "projects with the count of sessions tagged with each; goals and relations need the entity gap closed"
+source_note = "tag notes"
+degrades = "untagged sessions are not counted"
+reads = ["notes", "sessions"]
+needs = ["notes", "pages", "model_read"]
+shows = "a ledger of projects and goals linked to the sessions that served them"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (project-ledger, Sinex section, both)"
+gaps = ["no entity identity: a person, project or concept mentioned across sessions is not an entity, so nothing joins its mentions with each other or with Sinex's sources (joint gap, also found by Sinex)", "stated plans and todo lists are not units: Claude Code todos/ and plans/ are stored but not parsed, and plans stated in chats have no structure, so 'what was planned' cannot be queried"]
+
+[[use]]
+id = "intentions-vs-actions"
+title = "Intentions against what happened"
+act = "what did I say I would do, and what did my sessions actually do?"
+level = 1
+query = "notes where kind:claim key:intention check:*"
+output = "stated intentions from a pass, each with its check: holds (a later session did it), fails, unknown"
+source_note = "claims with checks evaluated at read time"
+degrades = "intentions with no check are `unchecked`"
+reads = ["messages", "sessions", "notes"]
+needs = ["model_read", "checked_claims"]
+shows = "stated intentions paired with the sessions that served them or none"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "polylogue-sinex-joint/vision/uses-from-chats.md (intentions-vs-actions, Sinex section)"
+gaps = ["stated plans and todo lists are not units: Claude Code todos/ and plans/ are stored but not parsed, and plans stated in chats have no structure, so 'what was planned' cannot be queried"]
+
+[[use]]
+id = "continue-work"
+title = "Continue where I left off"
+act = "continue from the session I closed yesterday in this repository"
+level = 1
+query = "cwd:/realm/project/polylogue ending:open | sort by last_active desc | limit 3"
+output = "up to 3 sessions with why each is open (unanswered prompt, unfinished tool call, open note)"
+source_note = "ending signals from records (resume candidates)"
+degrades = "a session whose last record is unparsed shows `ending unknown`"
+reads = ["sessions", "messages", "notes"]
+needs = ["resume", "briefings", "hooks"]
+shows = "a resume briefing: goal, state, open threads"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §1; evidence/real-questions.md A1-A9"
+prototype = "prototype/crates/daemon"
+
+[[use]]
+id = "morning-check"
+title = "What's going on, in the morning"
+act = "what happened overnight across my agents?"
+level = 2
+query = "kind:* since:2026-10-09 | group by live | count"
+expected = { world = "live", clock = "2026-10-09 15:00:00", kind = "groups", value = { stale = 1, waiting = 1, working = 1 } }
+output = "sessions active since yesterday by live state, waiting and stale first"
+source_note = "live state at read time; since: by overlap"
+degrades = "with no process evidence states are `unknown`"
+reads = ["sessions", "events", "processes"]
+needs = ["live_state", "status", "stages"]
+shows = "overnight sessions by state, with failures and waits first"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §2; evidence/meta-vision.md scene 1"
+
+[[use]]
+id = "decision-why"
+title = "What did we decide about X, and why"
+act = "what did we decide about the merge rule, and why?"
+level = 2
+query = "notes where kind:decision"
+output = "1 row: \"decided: chrono, not time\" on #2, with the message it rests on"
+source_note = "decision notes and their targets"
+degrades = "a decision whose target message changed is marked `stale`"
+expected = { "kind" = "notes", "value" = ["decided: chrono, not time"] }
+reads = ["notes", "messages"]
+needs = ["notes", "search", "judgment"]
+shows = "the decision note with the messages it rests on"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §3; evidence/real-questions.md C1-C4"
+
+[[use]]
+id = "what-agent-did"
+title = "What the agent did and where it went wrong"
+act = "what did this agent actually do, and where did it go wrong?"
+level = 2
+query = "tool_calls where outcome:error"
+output = "2 rows: #2 `cargo test` (exit 101), #4 `cargo clippy` (exit 1)"
+source_note = "tool call outcomes by the outcome rules (analysis.md)"
+degrades = "calls with no result are `unknown`, never `ok`"
+expected = { "kind" = "count", "value" = 2 }
+reads = ["tool_calls", "turns", "messages"]
+needs = ["tool_outcomes", "render_for_models"]
+shows = "a turn-by-turn account with the first failing call"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §4; spec/workflows.md §18"
+prototype = "prototype/out/session-2.html"
+
+[[use]]
+id = "agent-behaviour"
+title = "How my agents behave"
+act = "which tools fail most, and in which harness?"
+level = 3
+prototype = "prototypes/vision/agent-behaviour.py"
+query = "tool_calls where outcome:error | group by session | count"
+output = "#2: 1, #4: 1"
+source_note = "tool call outcomes grouped by owning session"
+degrades = "sessions with only unknown outcomes appear only with `outcome:*`"
+expected = { "kind" = "groups", "value" = { "#2" = 1, "#4" = 1 } }
+reads = ["tool_calls", "sessions"]
+needs = ["tool_outcomes", "stages", "measures"]
+shows = "failure rates by tool and harness with denominators"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §6; evidence/real-questions.md D1-D7"
+gaps = ["query language cannot group by a derived key (a command's program word)", "query language cannot give, per row, the distance to the next later matching row in the session (seq finds existence only)", "a failure rate must exclude unknown outcomes from its denominator and say how many: exports with no outcomes showed 0% failure in the old archive"]
+
+[[use]]
+id = "leave-for-next"
+title = "Leave something for the next agent"
+act = "note for whoever comes next: the flaky test is the DST one"
+level = 1
+query = "notes where kind:note target:repo:morrow current:true"
+output = "notes left for the repository, newest first, as the next briefing shows them"
+source_note = "note rows targeting the repository reference"
+degrades = "withdrawn notes are not shown"
+reads = ["notes"]
+needs = ["notes", "briefings"]
+shows = "a note that appears in the next briefing for that repository"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §7; spec/workflows.md §14"
+
+[[use]]
+id = "import-web-export"
+title = "Bring in a web chat export"
+act = "import this ChatGPT export and merge it with what I already have"
+level = 2
+query = "origin:(chatgpt|claude-ai)"
+output = "#8, #7"
+source_note = "sessions from both web routes, merged where one conversation arrived twice"
+degrades = "a conversation seen only in an export missing its dates sorts last"
+expected = { "kind" = "rows", "value" = ["#8", "#7"] }
+reads = ["sessions", "messages"]
+needs = ["merge_routes", "sources"]
+shows = "merged sessions, nothing counted twice"
+consumer = "workflow"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §8"
+
+[[use]]
+id = "mine-prompts"
+title = "Mine my own prompts"
+act = "everything I asked agents about testing this month"
+level = 3
+prototype = "prototypes/vision/mine-prompts.py"
+query = "messages where written_by:human \"chrono\""
+output = "2 rows: #8 \"Shorter, and mention chrono.\", #2 \"let's use chrono, not time\""
+source_note = "human-written messages; full-text match"
+degrades = "inherited copies are excluded by default"
+expected = { "kind" = "count", "value" = 2 }
+reads = ["messages"]
+needs = ["search", "stages", "export"]
+shows = "my own prompts only, filtered and exported"
+consumer = "workflow"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §9; evidence/real-questions.md G5"
+gaps = ["query language cannot group by a normalized-text fingerprint (near-duplicate prompts); group by takes fields only", "pasted context packs counted as human-authored fill a prompt library: prompt_kind must separate prose from pastes (evidence/vision-prototypes.md)"]
+
+[[use]]
+id = "read-long-session"
+title = "Read a long session quickly"
+act = "what happened in this 2,000-message session?"
+level = 2
+query = "turns where session.id:claude-code:7f3a2c10-0002"
+expected = { kind = "count", value = 3 }
+output = "one row per turn: prompt first line, tool calls, outcome, duration"
+source_note = "turns from human prose prompts (joint #22)"
+degrades = "a session with no human prompt has one turn from its first message"
+reads = ["turns", "messages", "tool_calls"]
+needs = ["render_for_models", "session_facts"]
+shows = "turns with prompts, calls and outcomes, collapsible"
+consumer = "workflow"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §10"
+
+[[use]]
+id = "is-anything-lost"
+title = "Is anything lost?"
+act = "which sessions did a harness delete, and are they safe here?"
+level = 1
+query = "source:gone"
+output = "sessions whose provider files were all deleted, with gone_at and the stored copy"
+source_note = "observation rows (deleted, back) per location"
+degrades = "an unreadable location is not `gone`; it is listed in `status`"
+reads = ["sessions", "events"]
+needs = ["raw_retention", "status"]
+shows = "sessions whose source is gone, with the archive's copy"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §11; evidence/real-questions.md F4-F5"
+
+[[use]]
+id = "investigation"
+title = "Investigate across sessions"
+act = "gather everything about the hook latency problem into one place"
+level = 1
+query = "referenced_by:page:hook-latency"
+output = "sessions the investigation page cites, with each slot's excerpt"
+source_note = "page slot references (user-data.md, pages)"
+degrades = "a cited session that was excised shows `excised` in its slot"
+reads = ["sessions", "messages", "notes"]
+needs = ["pages", "search", "notes"]
+shows = "an investigation page with cited excerpts and open questions"
+consumer = "view"
+mark = "plausible"
+origin = "seeded"
+cite = "spec/workflows.md §12; evidence/meta-vision.md scene 4"
+
+[[use]]
+id = "claim-check"
+title = "Check an agent's claim against what happened"
+act = "the agent said the tests pass; did they?"
+level = 2
+query = "sessions where seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok)"
+output = "#2"
+source_note = "tool call order and outcomes within each session's own calls"
+degrades = "inherited calls are excluded, so #4's copy of #2 does not match"
+expected = { "kind" = "rows", "value" = ["#2"] }
+reads = ["messages", "tool_calls"]
+needs = ["checked_claims", "tool_outcomes", "proof"]
+shows = "holds, fails or unknown, with the tool calls that decide it"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §13; evidence/real-questions.md C10"
+
+[[use]]
+id = "archive-sql"
+title = "Ask the archive in SQL"
+act = "I want to write my own SQL over the index"
+level = 2
+query = "sessions where tool_calls > 5"
+output = "#4 (8), #2 (13), #1 (6); the same rows as `SELECT … FROM session WHERE tool_call_count > 5` over index.db"
+source_note = "session facts columns"
+degrades = "SQL over index.db is read-only and sees the same rows"
+expected = { "kind" = "rows", "value" = ["#4", "#2", "#1"] }
+reads = ["sessions", "messages", "tool_calls"]
+needs = ["sql"]
+shows = "read-only SQL over index.db"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §15"
+
+[[use]]
+id = "self-usage"
+title = "How Polylogue itself is used"
+act = "which queries do agents actually run, and which fail?"
+level = 2
+query = "deliveries | group by outcome | count"
+expected = { kind = "groups", value = { delivered = 1 } }
+output = "briefings by hook event and outcome"
+source_note = "delivery rows"
+degrades = "deliveries before hooks were installed do not exist"
+reads = ["deliveries", "events"]
+needs = ["deliveries", "measures"]
+shows = "query and briefing use with failures"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §16"
+
+[[use]]
+id = "project-story"
+title = "The story of a project from the archive"
+act = "tell the story of this project from its sessions and checked notes"
+level = 1
+query = "sessions where tag:project:morrow | sort by started asc"
+output = "#1, #2, #4, #5, #6 in start order, each a chapter of the story; the narrative is a model-read pass whose claims are checked"
+source_note = "tag notes and session start times"
+degrades = "untagged sessions of the project are missing unless repo:morrow is also used"
+reads = ["sessions", "notes", "runs"]
+needs = ["reports", "checked_claims", "git", "model_read"]
+shows = "a narrative where each claim is checked against stored facts"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §17; evidence/meta-vision.md scene 9"
+
+[[use]]
+id = "session-report"
+title = "A report of one session"
+act = "a one-page report of what this session did and cost"
+level = 1
+query = "id:claude-code:7f3a2c10-0002 with tool_calls(tool, command, outcome)"
+output = "the session's facts with its tool calls listed under it"
+source_note = "session facts and its tool call rows"
+degrades = "cost shows `unknown (prices are slice 3)` until prices exist"
+reads = ["sessions", "turns", "tool_calls"]
+needs = ["reports", "cost", "tool_outcomes"]
+shows = "the session report page"
+consumer = "view"
+mark = "plausible"
+origin = "seeded"
+cite = "spec/workflows.md §18"
+prototype = "prototype/crates/render"
+
+[[use]]
+id = "instruction-history"
+title = "Improve agent instructions from history"
+act = "which instruction changes made agents do better?"
+level = 1
+query = "events where kind:hook_run session.repo:polylogue | group by month(at) | count"
+output = "instruction-bearing events per month; outcomes per instruction revision come from configuration in force"
+source_note = "event rows; configuration in force per session (model.md)"
+degrades = "sessions with no recorded configuration are counted as `unknown`"
+reads = ["sessions", "notes", "events"]
+needs = ["config_in_force", "session_facts", "checked_claims"]
+shows = "instruction revisions against session outcomes"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "spec/workflows.md §20; evidence/real-questions.md D2"
+
+[[use]]
+id = "rate-limits"
+title = "When did I hit the limit"
+act = "when did I hit the weekly limit, and when did it reset?"
+level = 1
+query = "events where kind:rate_limit | sort by at desc"
+output = "limit events with the window they belong to and the reset time"
+source_note = "rate_limit events from provider records"
+degrades = "providers that record no limit events never appear"
+reads = ["events"]
+needs = ["cost", "time"]
+shows = "limit events and window resets over time"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "evidence/real-questions.md E4"
+
+[[use]]
+id = "tokens-per-commit"
+title = "Tokens per commit"
+act = "how many tokens did each commit take?"
+level = 0
+reads = ["messages", "tool_calls"]
+needs = ["git", "cost"]
+shows = "tokens and cost between successive commits"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "evidence/real-questions.md E5"
+gaps = ["query language cannot express grouping by commit: a commit's span is now defined (analysis.md, git correlation), but commits are a session field, not a unit, so tokens per commit has no query (planned extension: a `commits` unit, query.md)"]
+
+[[use]]
+id = "measured-trend"
+title = "When did we last reach that speed"
+act = "when did the ingest last reach 50 MB/s, from numbers agents printed?"
+level = 0
+reads = ["tool_calls"]
+needs = ["search", "tool_outcomes"]
+shows = "past measurements of a quantity over time"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "evidence/real-questions.md G7"
+gaps = ["query language cannot express a number inside tool output as a value: `output:` matches words, so a measured quantity (timings, counts, rates) has no trend query (planned extension: `extract number`, query.md)"]
+
+[[use]]
+id = "paste-a-url"
+title = "Open a chat from its provider link"
+act = "here is a chatgpt.com/c/ link; open our copy"
+level = 1
+query = "id:chatgpt:6a57fc1e-0cec-83eb-b0e9-bcaea3e722b8"
+output = "the archived session for that conversation"
+source_note = "native id from the provider's URL"
+degrades = "an id the archive lacks gives `empty` with `not in archive`"
+reads = ["sessions"]
+needs = ["query", "cli"]
+shows = "the archived session for that link"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "evidence/real-questions.md B7"
+
+[[use]]
+id = "fresh-agent-knows"
+title = "A fresh agent knows the project"
+act = "a new agent starts in this repository and already knows what matters"
+level = 1
+query = "notes where target:repo:polylogue kind:(decision|note) current:true | sort by created_at desc | limit 10"
+output = "the decisions and notes a new agent's briefing leads with"
+source_note = "note rows on the repository"
+degrades = "a repository with no notes falls back to its recent sessions"
+reads = ["sessions", "notes", "messages"]
+needs = ["briefings", "hooks", "notes"]
+shows = "a project briefing, decisions and open questions first"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "evidence/meta-vision.md scene 2"
+
+[[use]]
+id = "steer-by-questions"
+title = "Steer by asking the archive"
+act = "I ask questions of the archive and models do the judging"
+level = 1
+query = "notes where kind:judgment author:operator | group by value | count"
+output = "accepted and rejected judgments, as the record of what was steered"
+source_note = "judgment notes"
+degrades = "claims never judged are not counted"
+reads = ["sessions", "messages", "notes"]
+needs = ["query", "model_read", "judgment"]
+shows = "answers with references, judged passes kept"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "evidence/meta-vision.md scene 3"
+
+[[use]]
+id = "agents-improve"
+title = "Agents get better because the evidence says so"
+act = "which agent habits correlate with failed runs, and what should change?"
+level = 0
+reads = ["sessions", "tool_calls", "runs", "notes"]
+needs = ["measures", "checked_claims", "config_in_force"]
+shows = "habits with outcomes and a proposed instruction change"
+mark = "plausible"
+origin = "seeded"
+cite = "evidence/meta-vision.md scene 5"
+
+[[use]]
+id = "two-machines"
+title = "Two machines, one archive"
+act = "sessions from my laptop and desktop in one archive"
+level = 0
+reads = ["sessions"]
+needs = ["sources", "merge_routes"]
+shows = "one archive across machines, each session marked with its host"
+mark = "plausible"
+origin = "seeded"
+cite = "evidence/meta-vision.md scene 7"
+
+[[use]]
+id = "watch-thinking"
+title = "Watch an agent think, live"
+act = "show me what the running agent is doing right now"
+level = 0
+reads = ["messages", "events", "processes"]
+needs = ["live_view", "live_state"]
+shows = "the live session view following new records"
+mark = "plausible"
+origin = "seeded"
+cite = "evidence/meta-vision.md scene 10"
+
+[[use]]
+id = "own-failure-history"
+title = "An agent reads its own past failures"
+act = "before running cargo test here, what went wrong the last times agents did it?"
+level = 0
+reads = ["tool_calls", "sessions"]
+needs = ["tool_outcomes", "briefings", "mcp"]
+shows = "the last failures of that command in this repository, with their fixes"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "peer-solutions"
+title = "Learn from a peer agent's solution"
+act = "has any agent already solved this error message in another repository?"
+level = 0
+reads = ["messages", "tool_calls"]
+needs = ["search", "tool_outcomes", "mcp"]
+shows = "sessions where the same error was followed by a passing run"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "skill-extraction"
+title = "Extract a reusable procedure from history"
+act = "turn the steps agents repeat for releases into a written procedure"
+level = 0
+reads = ["tool_calls", "turns", "sessions"]
+needs = ["model_read", "tool_outcomes", "notes"]
+shows = "a procedure drafted from repeated tool sequences, each step cited"
+mark = "speculative"
+origin = "expanded"
+
+[[use]]
+id = "dead-ends"
+title = "Dead ends not to try again"
+act = "what approaches were tried for the slow import and abandoned?"
+level = 0
+reads = ["sessions", "notes", "messages"]
+needs = ["search", "notes", "model_read"]
+shows = "abandoned approaches with why they failed"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "retry-loops"
+title = "Agents stuck in loops"
+act = "which sessions repeated the same failing call more than five times?"
+level = 0
+reads = ["tool_calls"]
+needs = ["tool_outcomes", "stages"]
+shows = "loop episodes with their cost"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "correction-memory"
+title = "Corrections remembered"
+act = "what have I corrected agents about more than once?"
+level = 0
+reads = ["messages", "notes"]
+needs = ["notes", "search", "model_read"]
+shows = "repeated corrections, as candidates for standing instructions"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "instruction-drift"
+title = "Instructions agents ignore"
+act = "which written instructions are broken most often?"
+level = 0
+reads = ["tool_calls", "notes", "sessions"]
+needs = ["config_in_force", "checked_claims", "model_read"]
+shows = "instructions with the sessions that broke them"
+mark = "speculative"
+origin = "expanded"
+
+[[use]]
+id = "views-over-time"
+title = "How my views changed"
+act = "how did my view on the daemon-only design change over the year?"
+level = 0
+reads = ["messages"]
+needs = ["search", "semantic", "model_read"]
+shows = "statements over time with the turning points"
+mark = "plausible"
+origin = "expanded"
+gaps = ["no entity identity: a person, project or concept mentioned across sessions is not an entity, so nothing joins its mentions with each other or with Sinex's sources (joint gap, also found by Sinex)"]
+
+[[use]]
+id = "recurring-questions"
+title = "Questions I keep asking"
+act = "what do I ask models again and again?"
+level = 0
+reads = ["messages"]
+needs = ["semantic", "embeddings", "stages"]
+shows = "clusters of my own questions with counts"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "unresolved-threads"
+title = "Unresolved threads"
+act = "which questions I raised were never answered or acted on?"
+level = 0
+reads = ["messages", "notes"]
+needs = ["model_read", "checked_claims"]
+shows = "open questions with where they were raised"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "energy-patterns"
+title = "When I do my best work with agents"
+act = "at what hours do my sessions end solved rather than abandoned?"
+level = 0
+reads = ["sessions", "notes"]
+needs = ["time", "session_facts", "measures"]
+shows = "outcomes by hour and day of week, with counts"
+mark = "speculative"
+origin = "expanded"
+
+[[use]]
+id = "attention-split"
+title = "Where my attention went"
+act = "how was my time with agents split across projects this month?"
+level = 0
+reads = ["sessions"]
+needs = ["time", "stages", "measures"]
+shows = "active time by project"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "prompt-style"
+title = "How my prompting changed"
+act = "are my prompts getting longer, more specific, or more delegating?"
+level = 0
+reads = ["messages"]
+needs = ["stages", "measures"]
+shows = "prompt length and kind over time"
+mark = "speculative"
+origin = "expanded"
+
+[[use]]
+id = "own-evals"
+title = "Evals built from my real tasks"
+act = "make an evaluation set from tasks agents solved in my repositories"
+level = 0
+reads = ["sessions", "tool_calls", "runs", "notes"]
+needs = ["export", "session_facts", "tool_outcomes"]
+shows = "task, context and accepted outcome triples"
+mark = "speculative"
+origin = "expanded"
+gaps = ["no dataset export shaped for training or evaluation (pairs, filters, de-duplication, redaction rules); export writes sessions, not datasets"]
+
+[[use]]
+id = "model-comparison"
+title = "Models compared on my own work"
+act = "which model solved my kind of tasks with fewer failed calls and less cost?"
+level = 0
+reads = ["sessions", "tool_calls"]
+needs = ["measures", "cost", "tool_outcomes"]
+shows = "models compared on matched tasks with denominators"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "harness-comparison"
+title = "Harnesses compared"
+act = "Codex against Claude Code on similar tasks: time, cost, outcome"
+level = 0
+reads = ["sessions", "runs"]
+needs = ["measures", "cost", "session_facts"]
+shows = "a comparison table with counts and unknowns"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "finetune-set"
+title = "A personal fine-tuning set"
+act = "export my accepted agent exchanges as training data"
+level = 0
+reads = ["messages", "notes"]
+needs = ["export", "privacy"]
+shows = "a filtered, redacted dataset"
+mark = "speculative"
+origin = "expanded"
+gaps = ["no dataset export shaped for training or evaluation (pairs, filters, de-duplication, redaction rules); export writes sessions, not datasets"]
+
+[[use]]
+id = "format-drift-watch"
+title = "Provider format changes noticed"
+act = "what changed in Claude Code's record format this week?"
+level = 0
+reads = ["events"]
+needs = ["status", "sources"]
+shows = "new and vanished fields by provider version"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "token-efficiency"
+title = "Where tokens go"
+act = "which kinds of turns consume most tokens: reading, tool output, thinking?"
+level = 0
+reads = ["messages", "blocks"]
+needs = ["cost", "measures"]
+shows = "token share by block kind"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "handoff-across-harness"
+title = "Hand off across harnesses"
+act = "Codex continues what Claude Code started, with the same briefing"
+level = 1
+query = "id:claude-code:7f3a2c10-0002 with messages(role, text)[written_by:human, last:3]"
+output = "the session with its last three human prompts, the core of a takeover briefing"
+source_note = "message rows of the session"
+degrades = "a session with no human prompt shows its first message"
+reads = ["sessions", "notes"]
+needs = ["briefings", "resume", "mcp"]
+shows = "a takeover briefing usable by any harness"
+consumer = "push"
+mark = "intended"
+origin = "expanded"
+
+[[use]]
+id = "claims-on-work"
+title = "Who is working on what"
+act = "is anyone already working on this file?"
+level = 0
+reads = ["sessions", "processes", "tool_calls"]
+needs = ["live_state", "tool_outcomes"]
+shows = "live sessions that touched the file recently"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "conflict-warning"
+title = "Two agents in one repository"
+act = "warn when two agents edit the same checkout"
+level = 2
+query = "sessions where running:true peers_live > 0"
+expected = { world = "live", clock = "2026-10-09 15:00:00", kind = "rows", value = ["V2", "V1"] }
+output = "live sessions sharing a repository or checkout with another live one"
+source_note = "peers from live state (same repo_root, checkout or cwd)"
+degrades = "sessions without git evidence are compared by working directory"
+reads = ["sessions", "processes"]
+needs = ["live_state", "hooks"]
+shows = "the peers warning in briefings and status"
+consumer = "push"
+mark = "intended"
+origin = "expanded"
+prototype = "prototype/crates/daemon"
+
+[[use]]
+id = "overnight-batch"
+title = "What an overnight batch did"
+act = "the batch of six workers ran overnight; what did each produce?"
+level = 0
+reads = ["runs", "sessions", "tool_calls"]
+needs = ["runs", "git", "reports"]
+shows = "per-worker outcome, commits and failures"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "ping-agent"
+title = "Ping a specific agent"
+act = "ask the agent that wrote this note to continue it"
+level = 0
+reads = ["notes", "sessions"]
+needs = ["pages", "mcp", "signals"]
+shows = "a resume of that agent's session from the note"
+mark = "plausible"
+origin = "expanded"
+gaps = ["no outgoing surface: Polylogue answers queries and injects at hook points, but cannot surface something unasked (a notification, a scheduled review), and no rule says when it may"]
+
+[[use]]
+id = "decision-log"
+title = "A decision log with provenance"
+act = "every decision about storage, with what it rested on and whether it still holds"
+level = 1
+query = "notes where kind:decision check:*"
+output = "every decision with its check state and the messages it rests on"
+source_note = "decision notes; checks evaluated at read time"
+degrades = "decisions with no check are `unchecked`"
+reads = ["notes", "messages"]
+needs = ["notes", "checked_claims"]
+shows = "decisions with sources and current check results"
+consumer = "agent"
+mark = "intended"
+origin = "expanded"
+
+[[use]]
+id = "project-memory-long"
+title = "Project memory over years"
+act = "what did this project know a year ago that has since been forgotten?"
+level = 0
+reads = ["notes", "sessions"]
+needs = ["evidence_until", "notes"]
+shows = "notes current then and withdrawn or missing now"
+mark = "speculative"
+origin = "expanded"
+
+[[use]]
+id = "evidence-cutoff-reading"
+title = "The archive as it was then"
+act = "what did the archive say about this session on the day I made the decision?"
+level = 0
+reads = ["sessions", "messages"]
+needs = ["evidence_until"]
+shows = "the session as Polylogue knew it at that time"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "context-for-question"
+title = "Context assembled for one question"
+act = "gather what I need to answer whether to move to Postgres"
+level = 0
+reads = ["messages", "notes", "sessions"]
+needs = ["search", "semantic", "briefings", "pages"]
+shows = "a bounded pack of the relevant passages and decisions"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "blog-from-sessions"
+title = "A post from my sessions"
+act = "draft a post about how we built the ingest, from the sessions"
+level = 0
+reads = ["sessions", "messages", "notes"]
+needs = ["model_read", "export", "privacy"]
+shows = "a draft citing sessions, private parts left out"
+mark = "speculative"
+origin = "expanded"
+gaps = ["generation is outside the substrate: Polylogue can supply the operator's own writing as context, but drafting in their voice is a client of it, not a feature"]
+
+[[use]]
+id = "quote-collection"
+title = "Good lines I wrote"
+act = "collect the formulations I liked, marked as I went"
+level = 0
+reads = ["messages", "notes"]
+needs = ["markers", "notes"]
+shows = "a collection of marked passages with sources"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "cross-chat-outline"
+title = "An outline from scattered chats"
+act = "an outline of everything I said about exocortex design, ordered by topic"
+level = 0
+reads = ["messages"]
+needs = ["semantic", "model_read", "pages"]
+shows = "a page outline with citations"
+mark = "plausible"
+origin = "expanded"
+gaps = ["no entity identity: a person, project or concept mentioned across sessions is not an entity, so nothing joins its mentions with each other or with Sinex's sources (joint gap, also found by Sinex)"]
+
+[[use]]
+id = "onboard-agent"
+title = "Onboard a new agent to a project"
+act = "give a new agent the ten things it most needs here"
+level = 1
+query = "tool_calls where session.repo:polylogue outcome:error | group by command_norm | count | sort by count desc | limit 10"
+output = "the ten most frequent failing commands in the repository, the trap list a briefing leads with"
+source_note = "normalized commands and outcomes"
+degrades = "commands with unknown outcomes are not counted"
+reads = ["notes", "sessions", "tool_calls"]
+needs = ["briefings", "notes", "tool_outcomes"]
+shows = "a ranked briefing of decisions, traps and commands"
+consumer = "push"
+mark = "intended"
+origin = "expanded"
+
+[[use]]
+id = "trap-list"
+title = "Traps of this repository"
+act = "what has bitten agents in this repository more than once?"
+level = 0
+reads = ["tool_calls", "notes"]
+needs = ["tool_outcomes", "notes", "stages"]
+shows = "repeated failures with their causes"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "command-cookbook"
+title = "Commands that work here"
+act = "which commands succeed in this repository, in what order?"
+level = 0
+reads = ["tool_calls"]
+needs = ["tool_outcomes", "stages"]
+shows = "successful command sequences with counts"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "quota-steering"
+title = "Steer work by quota"
+act = "which model should take the next task given remaining quota?"
+level = 0
+reads = ["events", "messages"]
+needs = ["cost", "live_state"]
+shows = "remaining window per provider and the cheapest capable model"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "cost-anomaly"
+title = "Cost spikes explained"
+act = "why did yesterday cost three times more?"
+level = 0
+reads = ["sessions", "messages", "tool_calls"]
+needs = ["cost", "measures", "tool_outcomes"]
+shows = "the sessions and turns behind the spike"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "waste-finder"
+title = "Wasted spend"
+act = "how much went to sessions that ended abandoned?"
+level = 0
+reads = ["sessions", "notes"]
+needs = ["cost", "session_facts"]
+shows = "spend by outcome with counts"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "subscription-value"
+title = "Is the subscription worth it"
+act = "what would my use have cost at API prices against what I paid?"
+level = 0
+reads = ["messages"]
+needs = ["cost"]
+shows = "API-equivalent cost against subscription price per month"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "share-excerpt"
+title = "Share an excerpt safely"
+act = "share these ten messages without paths or secrets"
+level = 1
+query = "messages where session.id:claude-code:7f3a2c10-0002 has:* | limit 10"
+output = "the ten messages, rendered with paths and secrets redacted by the export rules"
+source_note = "message rows; redaction by behavior.md privacy rules"
+degrades = "a block flagged `looks_like_secret` is replaced, never shown"
+reads = ["messages", "blocks"]
+needs = ["export", "privacy"]
+shows = "a redacted excerpt with a list of what was removed"
+consumer = "workflow"
+mark = "intended"
+origin = "expanded"
+
+[[use]]
+id = "excise-session"
+title = "Remove a session completely"
+act = "this session had a secret; remove it everywhere"
+level = 1
+query = "id:claude-code:7f3a2c10-0001"
+output = "the preview of what excision removes: the session, its copies in other sessions, notes on it"
+source_note = "copies from lineage marks; notes from note_target"
+degrades = "excision is refused while a copy would be left with content"
+reads = ["sessions"]
+needs = ["excision"]
+shows = "the session and its copies removed, with a preview first"
+consumer = "workflow"
+mark = "intended"
+origin = "expanded"
+
+[[use]]
+id = "public-profile"
+title = "A public summary of my agent work"
+act = "a summary of my year with agents I can publish"
+level = 0
+reads = ["sessions", "runs"]
+needs = ["reports", "privacy"]
+shows = "aggregate figures with no content"
+mark = "speculative"
+origin = "expanded"
+
+[[use]]
+id = "design-page"
+title = "A page holds the current design"
+act = "the current design of the hook lives in one page agents and I edit"
+level = 0
+reads = ["notes"]
+needs = ["pages", "notes"]
+shows = "a page with revisions and the sessions that changed it"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "page-checks"
+title = "A page whose claims are checked"
+act = "each statement on the design page shows whether the archive still supports it"
+level = 0
+reads = ["notes"]
+needs = ["pages", "checked_claims"]
+shows = "a page with holds/fails/unknown beside each claim"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "weekly-review"
+title = "A weekly review page"
+act = "each week, a page of what was done, decided and left open"
+level = 0
+reads = ["sessions", "notes"]
+needs = ["pages", "reports", "model_read", "signals"]
+shows = "a weekly page built from the week's sessions and notes"
+mark = "plausible"
+origin = "expanded"
+gaps = ["no outgoing surface: Polylogue answers queries and injects at hook points, but cannot surface something unasked (a notification, a scheduled review), and no rule says when it may"]
+
+[[use]]
+id = "forecast-log"
+title = "Forecasts I made"
+act = "what did I predict about the rewrite, and was I right?"
+level = 0
+reads = ["notes"]
+needs = ["judgment", "notes"]
+shows = "forecasts with resolution and calibration"
+mark = "speculative"
+origin = "expanded"
+gaps = ["forecasts have no automatic resolution against later evidence; calibration is a later feature"]
+
+[[use]]
+id = "lineage-cost"
+title = "What a whole task tree cost"
+act = "the orchestrator and all its subagents: total cost and time"
+level = 2
+query = "parent:claude-code:7f3a2c10-0002-4000-8000-000000000002"
+output = "#4 (continuation, resume), #3 (subagent, fresh); the tree cost of #2 is $3.01"
+source_note = "links and tree cost (lineage marks)"
+degrades = "a child with a missing parent shows `parent:missing`"
+expected = { "kind" = "rows", "value" = ["#4", "#3"] }
+reads = ["sessions", "links"]
+needs = ["lineage", "cost", "lineage_view"]
+shows = "the tree with cost per node and the total"
+consumer = "agent"
+mark = "intended"
+origin = "expanded"
+
+[[use]]
+id = "compaction-loss"
+title = "What compaction dropped"
+act = "what did the agent forget at compaction, and did it matter?"
+level = 0
+reads = ["events", "messages"]
+needs = ["compaction", "model_read"]
+shows = "what was summarized away, with later references to it"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "otel-feed"
+title = "Sessions in my observability stack"
+act = "send session traces to my tracing tool"
+level = 0
+reads = ["sessions", "tool_calls"]
+needs = ["otel_export"]
+shows = "OpenTelemetry spans per session"
+mark = "speculative"
+origin = "expanded"
+
+[[use]]
+id = "external-witness"
+title = "Polylogue as a witness in my life record"
+act = "my agent sessions on the same timeline as my other activity"
+level = 0
+reads = ["sessions", "events"]
+needs = ["export", "time"]
+shows = "sessions placed on Sinex's timeline"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "missing-sessions"
+title = "Sessions a harness knows but we lack"
+act = "which sessions does Codex's index list that were never stored?"
+level = 1
+query = "source:missing"
+output = "sessions a harness index lists with no stored transcript"
+source_note = "harness indexes (Claude Code history.jsonl, Codex state_5.sqlite)"
+degrades = "a harness with no index can show none"
+reads = ["sessions"]
+needs = ["status", "sources"]
+shows = "missing sessions with where they are listed"
+consumer = "agent"
+mark = "intended"
+origin = "expanded"
+
+[[use]]
+id = "file-provenance"
+title = "Where a file came from"
+act = "where did this stray file in the repository root come from?"
+level = 2
+query = "tool_calls where path:Cargo.toml action:(file_write|file_edit) | group by session | count"
+expected = { kind = "groups", value = { "#1" = 1, "#2" = 1 } }
+output = "the calls that wrote or created the file, with their sessions"
+source_note = "tool call paths; shell commands searched by path substring"
+degrades = "a file created by a shell command whose output names no path is found only by text search"
+reads = ["tool_calls", "files"]
+needs = ["tool_outcomes", "search"]
+shows = "the session and call that created it"
+consumer = "agent"
+mark = "intended"
+origin = "seeded"
+cite = "evidence/real-questions.md D4"
+
+[[use]]
+id = "model-switch-impact"
+title = "Did a model switch change outcomes"
+act = "since switching to the new model, are runs failing less?"
+level = 0
+reads = ["sessions", "runs", "tool_calls"]
+needs = ["measures", "variants", "tool_outcomes"]
+shows = "outcome rates before and after, with counts"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "time-to-solve"
+title = "Time from request to passing tests"
+act = "how long from my prompt to the first passing test, by project?"
+level = 0
+reads = ["turns", "tool_calls"]
+needs = ["time", "tool_outcomes", "measures"]
+shows = "durations per turn ending in a passing test"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "interrupt-analysis"
+title = "When I interrupt agents"
+act = "when do I interrupt agents, and what were they doing?"
+level = 0
+reads = ["tool_calls", "events", "turns"]
+needs = ["tool_outcomes", "time"]
+shows = "interruptions with the preceding calls"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "permission-friction"
+title = "Permission prompts that block agents"
+act = "which permission requests keep agents waiting longest?"
+level = 0
+reads = ["events", "sessions"]
+needs = ["live_state", "time", "measures"]
+shows = "permission waits by tool with total waiting time"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "briefing-effect"
+title = "Do briefings help"
+act = "do sessions that got a briefing need fewer corrections?"
+level = 0
+reads = ["deliveries", "sessions", "notes"]
+needs = ["deliveries", "session_facts", "measures"]
+shows = "outcomes with and without briefings, with counts"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "chat-to-task"
+title = "A chat's conclusion becomes a task"
+act = "turn what this chat concluded into a task with the chat as its source"
+level = 0
+reads = ["messages", "notes"]
+needs = ["model_read", "notes", "mcp"]
+shows = "a task text citing the messages, ready for the task tracker"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "duplicate-work"
+title = "Work done twice without knowing"
+act = "where did two sessions solve the same problem independently?"
+level = 0
+reads = ["sessions", "messages", "tool_calls"]
+needs = ["semantic", "embeddings", "model_read"]
+shows = "pairs of sessions with overlapping work"
+mark = "speculative"
+origin = "expanded"
+
+[[use]]
+id = "unanswerable"
+title = "Questions models could not answer"
+act = "which of my questions got no usable answer from any model?"
+level = 0
+reads = ["messages", "notes"]
+needs = ["model_read", "judgment"]
+shows = "questions with the attempts, as research candidates"
+mark = "speculative"
+origin = "expanded"
+
+[[use]]
+id = "learning-trail"
+title = "What I learned about a subject"
+act = "what have I learned about Rust lifetimes from chats, in order?"
+level = 0
+reads = ["messages"]
+needs = ["search", "semantic", "model_read"]
+shows = "a dated trail of explanations I asked for"
+mark = "plausible"
+origin = "expanded"
+gaps = ["no entity identity: a person, project or concept mentioned across sessions is not an entity, so nothing joins its mentions with each other or with Sinex's sources (joint gap, also found by Sinex)"]
+
+[[use]]
+id = "trust-calibration"
+title = "How often each model was corrected"
+act = "which models' claims were later corrected most often?"
+level = 0
+reads = ["notes", "messages"]
+needs = ["checked_claims", "judgment", "measures"]
+shows = "correction rates by model with denominators"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "attachments-index"
+title = "Files I gave to chats"
+act = "every file I uploaded to a chat, with the conversation"
+level = 0
+reads = ["files", "sessions"]
+needs = ["search", "sources"]
+shows = "attachments by date and chat"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "link-harvest"
+title = "Links models gave me"
+act = "all the URLs models recommended about home servers"
+level = 0
+reads = ["blocks", "messages"]
+needs = ["search"]
+shows = "links with the message that gave them"
+mark = "plausible"
+origin = "expanded"
+
+[[use]]
+id = "delegation-discourse"
+title = "How an agent writes work orders to its subagents"
+act = "how does the orchestrating agent instruct its subagents: how directive, what it forbids, how much autonomy, what output and verification it demands, when it asks them to escalate?"
+level = 0
+reads = ["sessions", "messages", "tool_calls", "notes"]
+needs = ["lineage", "checked_claims"]
+shows = "a descriptive packet over the subagent prompts of a chosen agent: the dimensions labelled separately (directive mode, prohibitions, autonomy, output contract, scope control, verification demand, checkpoint and escalation, rationale given), each a pass under a rubric with blind sampled judging, aggregated with explicit denominators and missing counts, with typical cases, extremes and counterexamples; never a single sentiment or strictness score, and a not-supported answer naming the gap when coverage is too thin"
+mark = "plausible"
+origin = "seeded"
+cite = "polylogue-212.9.1 (the Fable-as-Foreman packet; its Python implementation was built, found unreachable, deleted, and rebuilt with a CLI entry, never produced)"
+prototype = ""
+gaps = []
+
+# How each gap found by the uses is resolved (README.md, Gaps): fixed in the spec, set aside,
+# kept by design, planned as an extension, or joint (needs Sinex). check_uses.py requires one per gap.
+
+[[disposition]]
+match = "no entity identity"
+outcome = "set_aside"
+where = "SET-ASIDE.md#No entity identity across sessions and sources"
+note = "with Sinex's knowledge-graph layer (the operator, 2026-05-25); the narrow evidence-only form is the way back; a joint gap too"
+
+[[disposition]]
+match = "stated plans and todo lists are not units"
+outcome = "set_aside"
+where = "SET-ASIDE.md#Stated plans and todo lists are not units"
+note = "a plans unit from TodoWrite calls and todo files"
+
+[[disposition]]
+match = "no outgoing surface"
+outcome = "fixed"
+where = "spec/user-data.md#Saved queries and kept results"
+note = "signals: a watch with a delivery rule in the shape both projects share (joint evaluator polylogue-sinex-joint/prototype/signals/)"
+
+[[disposition]]
+match = "generation is outside the substrate"
+outcome = "by_design"
+where = "spec/purpose.md#Explicitly not in scope"
+note = "drafting in the operator's voice is a client; Polylogue supplies the examples"
+
+[[disposition]]
+match = "no dataset export shaped for training"
+outcome = "set_aside"
+where = "SET-ASIDE.md#No dataset export for training or evaluation"
+note = "an export mode for (context, prompt, accepted outcome) records"
+
+[[disposition]]
+match = "query language cannot express grouping rows by meaning"
+outcome = "planned"
+where = "spec/query.md#Planned extensions"
+note = "`cluster by near`, an extension; degraded without embeddings"
+
+[[disposition]]
+match = "no index of code facts"
+outcome = "set_aside"
+where = "SET-ASIDE.md#No index of code facts across sessions"
+note = "a derived table of files, symbols and sessions"
+
+[[disposition]]
+match = "query language has no series statistics"
+outcome = "planned"
+where = "spec/query.md#Planned extensions"
+note = "`| series` over grouped periods, complete periods only"
+
+[[disposition]]
+match = "session counts measure activity, not velocity"
+outcome = "planned"
+where = "spec/query.md#Planned extensions"
+note = "commits as a unit read each commit's span (analysis.md, git correlation)"
+
+[[disposition]]
+match = "no Codex (OpenAI) prices"
+outcome = "planned"
+where = "spec/analysis.md#Price table"
+note = "prices are slice 3; until then a displayed total leads with its unpriced share"
+
+[[disposition]]
+match = "no speech source"
+outcome = "joint"
+where = "polylogue-sinex-joint/vision/uses.toml#speech-as-source"
+note = "Sinex captures speech; Polylogue reads its transcript segments as context, never captures"
+
+[[disposition]]
+match = "query language cannot group by a derived key"
+outcome = "planned"
+where = "spec/query.md#Planned extensions"
+note = "derived grouping keys: program(command), day(at), fingerprint(text)"
+
+[[disposition]]
+match = "query language cannot give, per row, the distance"
+outcome = "planned"
+where = "spec/query.md#Planned extensions"
+note = "the gap between sequence steps: gap_steps and gap_time on seq match rows"
+
+[[disposition]]
+match = "a failure rate must exclude unknown outcomes"
+outcome = "fixed"
+where = "spec/analysis.md#Failure statistics"
+note = "failure rates are bounds [error / n, (error + unknown + pending) / n], so unknown never counts as success"
+
+[[disposition]]
+match = "query language cannot group by a normalized-text fingerprint"
+outcome = "planned"
+where = "spec/query.md#Planned extensions"
+note = "fingerprint(text) among the derived grouping keys"
+
+[[disposition]]
+match = "pasted context packs counted as human-authored"
+outcome = "fixed"
+where = "spec/model.md#Message"
+note = "text_origin separates provider reports from clipboard candidates; proxy metrics never claim authored bytes (joint #30); specified and synthetic matcher checked, production integration unqualified"
+
+[[disposition]]
+match = "query language cannot express grouping by commit"
+outcome = "planned"
+where = "spec/query.md#Planned extensions"
+note = "commits as a unit"
+
+[[disposition]]
+match = "query language cannot express a number inside tool output"
+outcome = "planned"
+where = "spec/query.md#Planned extensions"
+note = "numbers inside tool output, a read-time extraction"
+
+[[disposition]]
+match = "forecasts have no automatic resolution"
+outcome = "planned"
+where = "spec/analysis.md#Measures and their definitions"
+note = "forecast notes resolved against later evidence, with calibration (analysis.md, outcomes and forecasts)"
+
+[[use]]
+id = "stray-idea-triage"
+title = "A stray idea dropped anywhere reaches an agent that decides what to do with it"
+act = "I type 'check whether the catch-up loop is idempotent under a crash' into a capture line; a triage agent queues it as a task or brings it to tomorrow's briefing"
+level = 0
+reads = ["notes"]
+needs = ["notes", "signals", "pages", "mcp"]
+shows = "consumer: a triage agent woken by a signal on new idea notes, which writes a task reference or a briefing item back as a note; the operator sees one line"
+mark = "plausible"
+origin = "seeded"
+cite = "operator decision record 2026-05-24 `polylogue-v1-sketch`, example A; depends on questions.md #47 (conversing with agents or directing them)"
+prototype = ""
+gaps = []
+
+[[use]]
+id = "spawn-through-polylogue"
+title = "An agent asks Polylogue to start an agent of a given kind, instead of a native subagent"
+act = "an agent calls Polylogue to start a reviewer agent on this branch; the new session is recorded with its parent, kind and task from the first record"
+level = 0
+reads = ["sessions"]
+needs = ["mcp", "lineage", "runs", "live_state"]
+shows = "the spawned session linked to its spawner, with its kind and task, live in status"
+consumer = "agent"
+mark = "speculative"
+origin = "seeded"
+cite = "operator chats 2026-06-14 (\"agent could MCP call polylogue to spawn agent of given kind… IDK it might be that native subagents are usually enough\") and 2026-06-17 (\"didn't think it through properly yet\"), via evidence/intent-web-journal.md; related to questions.md #47"
+prototype = ""
+gaps = []
+
+[[use]]
+id = "context-reboot"
+title = "Start a fresh session instead of compacting, losing none of the direct prose"
+act = "a long session is getting heavy; I start a new one and paste the old session's ID; the new agent gets my prompts verbatim, the plan and open items, and the archive keeps the whole old history"
+level = 1
+query = "links where kind:reference"
+output = "the reference links from each rebooted session to the session it took over, with how (briefing or mention)"
+source_note = "the delivery row of the takeover briefing, and the pasted ID in the first prompt"
+degrades = "a reboot whose first prompt names no session ID has no link; it is an ordinary new session"
+reads = ["sessions", "messages"]
+needs = ["briefings", "hooks", "lineage", "resume"]
+shows = "a takeover briefing of the old session (the operator's prompts verbatim, todo list, open items), the new session linked to it by a reference link"
+consumer = "push"
+mark = "intended"
+origin = "seeded"
+cite = "operator journal 2026-05-03 (\"drop very long codex/claude code session histories… polylogue as actual archive and claudecode's state being just current state\") and 2026-06-29 (\"'direct prose' is the actually important part of the session to preserve… compaction, but better\"), via evidence/intent-web-journal.md"
+prototype = ""
+gaps = []
+
+[[use]]
+id = "firehose"
+title = "Everything happening across all sessions, at full detail, in one stream"
+act = "I watch one scrolling view of every prompt, tool call, result and note as they land, across every live agent, and stop on anything"
+level = 0
+reads = ["messages", "tool_calls", "notes"]
+needs = ["live_view", "live_state", "web_reader"]
+shows = "a time-ordered stream of new records from every session, each with its session and a link into the reader"
+consumer = "view"
+mark = "plausible"
+origin = "seeded"
+cite = "operator journal 2026-05-09 (\"a visual scrubbable timeline, perhaps somehow semantically zoomable… a firehose view, integrating everything at full detail\"), via evidence/intent-web-journal.md"
+prototype = ""
+gaps = []
