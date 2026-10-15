@@ -1677,6 +1677,99 @@ mod tests {
         serde_json::from_slice(&field.range(0, 65536).unwrap().bytes).unwrap()
     }
     #[test]
+    fn dependency_catalog_pins_admission_identity_and_survives_index_registration_gap() {
+        let mut f = Fixture::new();
+        f.ready("catalog", 0, 1, "model", false, &[(0, 1)]);
+        let old = f.session();
+        let old_archive_counter = old.source_archive_counter();
+        let hash = f.writer.put_file_blob(b"{malformed}\n").unwrap();
+        let input = f
+            .writer
+            .retain_immutable_input(
+                hash,
+                InputFormat::ClaudeCodeJsonl,
+                &["claude-main", "context-only"],
+                &ImportObservation {
+                    id: "catalog-gap",
+                    machine: "synthetic",
+                    host: "synthetic",
+                    path: "synthetic/context.jsonl",
+                    seen_at: 0,
+                },
+                65536,
+            )
+            .unwrap();
+        assert!(old.next_dependency(None, 1).is_err());
+        let (old_cursor, old_input) = old.next_dependency(None, 65536).unwrap().unwrap();
+        assert_ne!(old_input.id(), input.id);
+        assert!(
+            old.next_dependency(Some(&old_cursor), 65536)
+                .unwrap()
+                .is_none()
+        );
+        // The native crash-repair gap is visible from archive admission even
+        // before a disposable input_ref or any Message exists for this input.
+        f.writer
+            ._index
+            .execute("DELETE FROM input_ref WHERE pk=?1", [input.input_pk])
+            .unwrap();
+        let fresh = f.session();
+        assert!(fresh.source_archive_counter() > old_archive_counter);
+        assert!(matches!(
+            fresh.next_dependency(Some(&old_cursor), 65536),
+            Err(Error::MessagePredecessorChanged)
+        ));
+        let mut after = None;
+        let mut found = false;
+        while let Some((cursor, dependency)) = fresh.next_dependency(after.as_ref(), 65536).unwrap()
+        {
+            if dependency.id() == input.id {
+                assert_eq!(dependency.context(), ["claude-main", "context-only"]);
+                assert!(dependency.registered().is_none());
+                assert!(dependency.head().is_none());
+                found = true;
+            }
+            after = Some(cursor);
+        }
+        assert!(found);
+        // Mutating admitted identity does not redirect a pinned old catalog;
+        // a fresh reader refuses the hash/context inconsistency.
+        f.writer
+            .archive
+            .execute(
+                "UPDATE input SET context_json='[\"claude-main\",\"changed\"]' WHERE id=?1",
+                [&input.id],
+            )
+            .unwrap();
+        let newer = f.session();
+        let mut after = None;
+        let mut refused = false;
+        loop {
+            match newer.next_dependency(after.as_ref(), 65536) {
+                Ok(Some((cursor, _))) => after = Some(cursor),
+                Ok(None) => break,
+                Err(Error::Invariant(_)) => {
+                    refused = true;
+                    break;
+                }
+                Err(e) => panic!("unexpected: {e}"),
+            }
+        }
+        assert!(refused);
+        // Previously pinned metadata still has its original validated identity.
+        let mut after = None;
+        let mut original = false;
+        while let Some((cursor, dependency)) = fresh.next_dependency(after.as_ref(), 65536).unwrap()
+        {
+            if dependency.id() == input.id {
+                assert_eq!(dependency.context(), ["claude-main", "context-only"]);
+                original = true;
+            }
+            after = Some(cursor);
+        }
+        assert!(original);
+    }
+    #[test]
     fn session_snapshot_pins_all_heads_and_reports_pending_and_catalog_incomplete() {
         fn assert_send<T: Send>() {}
         assert_send::<MessageView>();

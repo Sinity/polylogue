@@ -837,6 +837,31 @@ fn session_qualification_includes_malformed_only_source_but_excludes_unrelated_p
     assert_eq!(socket, first);
     assert_eq!(end["unknown"], first["result"]["unknown"]);
     assert_eq!(end["notes"], first["result"]["notes"]);
+    // A subagent's parent is not proved by its folder or by any matching row.
+    // Its malformed record cannot be attributed to A; the dependency is named.
+    let subagent = world.input("unresolved-subagent.jsonl", b"{unreadable}\n");
+    let unresolved = wait_import_context(
+        &world,
+        &subagent,
+        "01900000-0000-7000-8000-000000000424",
+        "20",
+        &["claude-subagent", "synthetic-agent"],
+    );
+    assert_eq!(unresolved.status.code(), Some(2), "{unresolved:?}");
+    let qualified = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(qualified.status.code(), Some(5));
+    let first: Value = serde_json::from_slice(&qualified.stdout).unwrap();
+    assert_eq!(first["result"]["unknown"]["record_errors"], 1);
+    assert!(
+        first["result"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("dependency shapes remain unresolved"))
+    );
     // Another observation/path into the identical context-qualified input is
     // the same failure identity, not a second Session/candidate dependency.
     let copied = world.input("copied-malformed.jsonl", b"{not json}\n");
@@ -861,6 +886,7 @@ fn session_qualification_includes_malformed_only_source_but_excludes_unrelated_p
     fs::remove_file(&malformed).unwrap();
     fs::remove_file(&copied).unwrap();
     fs::remove_file(&peer).unwrap();
+    fs::remove_file(&subagent).unwrap();
     world.restart();
     let replay = wait_import(
         &world,

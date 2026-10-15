@@ -537,6 +537,7 @@ dependencies = [
  "polylogue-engine",
  "polylogue-model",
  "polylogue-store",
+ "rustix",
  "serde",
  "serde_json",
  "socket2",

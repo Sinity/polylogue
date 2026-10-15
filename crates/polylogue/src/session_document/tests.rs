@@ -405,3 +405,71 @@ fn duplicate_source_sequence_refuses_instead_of_sorting_messages_by_primary_key(
     assert!(error.to_string().contains("order is unresolved"), "{error}");
     assert!(bytes.is_empty());
 }
+
+#[test]
+fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_releases_computation() {
+    let world = World::new();
+    let raw=(json!({"type":"user","uuid":"basis-row","sessionId":SID,"timestamp":"2026-10-01T08:00:00Z","message":{"role":"user","content":"pinned context"}}).to_string()+"\n").into_bytes();
+    let input = world.import(&raw, "01900000-0000-7000-8000-000000000601");
+    world.wait_selected(&input, &["basis-row"]);
+    let until = Instant::now() + WAIT;
+    while !matches!(
+        world.progress(&input).source_rows.state,
+        polylogue_model::settlement::SourceRowState::Settled
+    ) {
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let pinned = world
+        .reader
+        .selected_session(&world.session(), 65536)
+        .unwrap()
+        .unwrap();
+    let old_counter = pinned.source_archive_counter();
+    let mut first = Vec::new();
+    write(&pinned, &mut first, Instant::now() + WAIT).unwrap();
+    let first: Value = serde_json::from_slice(&first).unwrap();
+    assert!(first["result"]["unknown"].get("record_errors").is_none());
+    let later = world.import(b"{not json}\n", "01900000-0000-7000-8000-000000000602");
+    let until = Instant::now() + WAIT;
+    while !matches!(
+        world.progress(&later).source_rows.state,
+        polylogue_model::settlement::SourceRowState::Unavailable { .. }
+    ) {
+        assert!(Instant::now() < until);
+        thread::yield_now();
+    }
+    let fresh = world
+        .reader
+        .selected_session(&world.session(), 65536)
+        .unwrap()
+        .unwrap();
+    assert!(fresh.source_archive_counter() > old_counter);
+    let mut second = Vec::new();
+    write(&fresh, &mut second, Instant::now() + WAIT).unwrap();
+    let second: Value = serde_json::from_slice(&second).unwrap();
+    assert_eq!(second["result"]["unknown"]["record_errors"], 1);
+    assert_eq!(second["messages"], first["messages"]);
+    let mut old_again = Vec::new();
+    write(&pinned, &mut old_again, Instant::now() + WAIT).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&old_again).unwrap(), first);
+    let mut attempts = 0;
+    let cancelled = polylogue_engine::session_qualification::qualify_with_cancel(
+        &fresh,
+        Instant::now() + WAIT,
+        65536,
+        &mut || {
+            attempts += 1;
+            attempts > 1
+        },
+    );
+    assert!(matches!(cancelled, Err(polylogue_store::Error::Cancelled)));
+    drop(fresh);
+    drop(pinned);
+    // Read cancellation is not owner cancellation or a writer gate.
+    assert!(matches!(
+        world.progress(&input).source_rows.state,
+        polylogue_model::settlement::SourceRowState::Settled
+    ));
+    assert_eq!(world.document().0["result"]["unknown"]["record_errors"], 1);
+}

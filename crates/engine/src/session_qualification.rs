@@ -41,11 +41,22 @@ pub fn qualify(
     until: Instant,
     allowance: usize,
 ) -> Result<Qualification, Error> {
+    qualify_with_cancel(session, until, allowance, &mut || false)
+}
+pub fn qualify_with_cancel(
+    session: &SessionView,
+    until: Instant,
+    allowance: usize,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<Qualification, Error> {
     let mut result = Qualification::default();
     let mut cursor = None;
     let target = session.header()?.id.clone();
     loop {
         deadline(until)?;
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
         let Some((next, dependency)) = session.next_dependency(cursor.as_ref(), allowance)? else {
             break;
         };
@@ -64,7 +75,13 @@ pub fn qualify(
         let Some(input) = dependency.registered() else {
             // Context remains available before disposable input_ref repair.
             match dependency.context() {
-                [kind, stem] if kind == "claude-main" && stem != &session.header()?.native_id => {
+                [kind, stem]
+                    if kind == "claude-main"
+                        && polylogue_sources::claude_code::FileCtx::main(stem)
+                            .direct_main_session()
+                            .as_ref()
+                            != Some(&target) =>
+                {
                     continue;
                 }
                 _ => add(&mut result.pending_inputs, 1)?,
@@ -93,9 +110,7 @@ pub fn qualify(
             add(&mut result.pending_inputs, 1)?;
             continue;
         }
-        if dependency.failure().is_some() {
-            add(&mut result.unavailable_inputs, 1)?;
-        }
+        let mut unavailable = dependency.failure().is_some();
         let receipt = session.dependency_cell(
             &dependency,
             polylogue_store::parser_state::SOURCE_ROWS_NAMESPACE,
@@ -109,7 +124,7 @@ pub fn qualify(
                     receipt.rows.state,
                     polylogue_model::settlement::SourceRowState::Unavailable { .. }
                 ) {
-                    add(&mut result.unavailable_inputs, 1)?;
+                    unavailable = true;
                 }
             }
             None if head.status == "done" => {
@@ -119,7 +134,17 @@ pub fn qualify(
             }
             None => add(&mut result.pending_inputs, 1)?,
         }
-        count_record_failures(session, &dependency, until, allowance, &mut result)?;
+        if unavailable {
+            add(&mut result.unavailable_inputs, 1)?;
+        }
+        count_record_failures(
+            session,
+            &dependency,
+            until,
+            allowance,
+            &mut result,
+            cancelled,
+        )?;
     }
     Ok(result)
 }
@@ -129,12 +154,16 @@ fn count_record_failures(
     until: Instant,
     allowance: usize,
     result: &mut Qualification,
+    cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<(), Error> {
     let head = dependency.head().ok_or(Error::Range)?;
     let mut previous: Option<RecordFailureId> = None;
     let mut count = 0u64;
     for step in 1..=head.token.step {
         deadline(until)?;
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
         let key = serde_json::to_vec(&step).map_err(|e| Error::Invariant(e.to_string()))?;
         let bytes = session
             .dependency_cell(dependency, claude::EFFECTS, &key, allowance)?
@@ -145,6 +174,9 @@ fn count_record_failures(
             .map_err(|e| Error::Invariant(format!("Session dependency dispositions: {e}")))?;
         for record_start in effects.undecodable {
             deadline(until)?;
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
             let id = RecordFailureId {
                 input: dependency.id().into(),
                 chain: head.token.chain,
