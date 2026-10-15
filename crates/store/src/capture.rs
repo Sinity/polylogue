@@ -537,7 +537,7 @@ mod cooperative_tests {
     }
     #[test]
     fn explicit_file_capture_refuses_fifo_symlink_and_nonregular_descriptor() {
-        use std::os::unix::{ffi::OsStrExt, fs::symlink};
+        use std::os::unix::fs::symlink;
         let root = tempfile::tempdir().unwrap();
         let input = tempfile::tempdir().unwrap();
         let mut w = Writer::open(root.path()).unwrap();
@@ -557,9 +557,12 @@ mod cooperative_tests {
                 .is_err()
         );
         let fifo = input.path().join("pipe");
-        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
-        // SAFETY: name is a live NUL-terminated path, mode has no pointer data.
-        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let status = std::process::Command::new("mkfifo")
+            .arg("--mode=600")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success(), "mkfifo fixture failed: {status}");
         assert!(
             capture
                 .capture_regular_file(&fifo, &AtomicBool::new(false))
