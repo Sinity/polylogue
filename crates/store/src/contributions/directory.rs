@@ -116,7 +116,7 @@ fn load(
     let mut rows = db(path, || stmt.query([pk]))?;
     let mut total = Counts::default();
     while let Some(row) = db(path, || rows.next())? {
-        let slot: usize = db(path, || row.get(0))?;
+        let slot = usize::from(db(path, || row.get::<_, u8>(0))?);
         if slot >= 16 || node.edges[slot].is_some() {
             return Err(bad("directory edge slot out of range or duplicated"));
         }
@@ -301,7 +301,7 @@ pub(super) fn collect(tx: &Transaction<'_>, path: &Path, pk: i64) -> Result<bool
     })?;
     let mut rows = db(path, || stmt.query([pk]))?;
     while let Some(row) = db(path, || rows.next())? {
-        let slot: usize = db(path, || row.get(0))?;
+        let slot = usize::from(db(path, || row.get::<_, u8>(0))?);
         if slot >= 16 {
             return Err(bad("retirement edge slot"));
         }
@@ -394,7 +394,7 @@ mod tests {
         )
     }
     fn leaf(tx: &Transaction<'_>, ordinal: u64) -> Edge {
-        tx.execute("INSERT INTO block(message_pk,session_pk,group_ordinal,local_ordinal,slot_kind,kind) VALUES(1,1,0,?1,'ordinary','text')",[ordinal]).unwrap();
+        tx.execute("INSERT INTO block(message_pk,session_pk,group_ordinal,local_ordinal,slot_kind,kind) VALUES(1,1,0,?1,'ordinary','text')",[i64::try_from(ordinal).unwrap()]).unwrap();
         Edge {
             link: Link::Block {
                 pk: tx.last_insert_rowid(),
@@ -513,6 +513,113 @@ mod tests {
         drop(reader);
         drop(writer);
     }
+    #[test]
+    fn max_depth_abort_drains_one_node_per_transaction_without_collecting_shared_live_path() {
+        let (_dir, mut writer, owner, body) = fixture();
+        let file = writer.root.join("index.db");
+        let tx = writer._index.transaction().unwrap();
+        let item = leaf(&tx, 0);
+        let (old, _) = install(&tx, &file, owner, body, None, 0, item);
+        let build: i64 = tx
+            .query_row("SELECT pk FROM message_build WHERE message_pk=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        acquire(&tx, &file, owner, old).unwrap();
+        tx.execute("INSERT INTO message_build_frontier(build_pk,message_pk,session_pk,depth,node_pk,next_slot) VALUES(?1,1,1,1,?2,0)",params![build,old]).unwrap();
+        tx.commit().unwrap();
+        let tx = writer._index.transaction().unwrap();
+        let item2 = leaf(&tx, 1);
+        let (new, _) = install(&tx, &file, owner, body, Some(old), 1, item2);
+        tx.commit().unwrap();
+        let tx = writer._index.transaction().unwrap();
+        tx.execute(
+            "DELETE FROM message_build_frontier WHERE build_pk=?1 AND depth=0",
+            [build],
+        )
+        .unwrap();
+        release(&tx, &file, owner, new).unwrap();
+        tx.commit().unwrap();
+        let mut drained = 0;
+        loop {
+            let next = writer
+                ._index
+                .query_row(
+                    "SELECT pk FROM message_body_node WHERE incoming=0 ORDER BY pk LIMIT 1",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()
+                .unwrap();
+            let Some(next) = next else { break };
+            let tx = writer._index.transaction().unwrap();
+            assert!(collect(&tx, &file, next).unwrap());
+            tx.commit().unwrap();
+            drained += 1;
+        }
+        assert_eq!(drained, 16);
+        assert_eq!(
+            lookup(
+                &writer._index,
+                &file,
+                owner,
+                Kind::Blocks,
+                Some(old),
+                0,
+                &mut Work::default()
+            )
+            .unwrap(),
+            Some(item)
+        );
+        assert!(
+            lookup(
+                &writer._index,
+                &file,
+                owner,
+                Kind::Blocks,
+                Some(old),
+                1,
+                &mut Work::default()
+            )
+            .unwrap()
+            .is_none()
+        );
+        let tx = writer._index.transaction().unwrap();
+        tx.execute(
+            "DELETE FROM message_build_frontier WHERE build_pk=?1 AND depth=1",
+            [build],
+        )
+        .unwrap();
+        release(&tx, &file, owner, old).unwrap();
+        tx.commit().unwrap();
+        let mut remaining = 0;
+        loop {
+            let next = writer
+                ._index
+                .query_row(
+                    "SELECT pk FROM message_body_node WHERE incoming=0 ORDER BY pk LIMIT 1",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()
+                .unwrap();
+            let Some(next) = next else { break };
+            let tx = writer._index.transaction().unwrap();
+            assert!(collect(&tx, &file, next).unwrap());
+            tx.commit().unwrap();
+            remaining += 1;
+        }
+        assert_eq!(remaining, 16);
+        assert_eq!(
+            writer
+                ._index
+                .query_row("SELECT count(*) FROM message_body_node", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
     #[test]
     fn lease_vs_collector_and_rollback_preserve_shared_children() {
         let (_dir, mut writer, owner, body) = fixture();

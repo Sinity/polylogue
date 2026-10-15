@@ -27,6 +27,7 @@ mod native;
 mod retained;
 pub use retained::{ImportObservation, InputFormat, RetainedInput};
 pub mod parser_state;
+pub mod values;
 mod wal;
 
 pub const ARCHIVE_VERSION: u32 = 0;
