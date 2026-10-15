@@ -76,3 +76,15 @@ old mutable Message columns. The inbox index8 executable comparison remains
 separate and cannot qualify this forward representation. These schema checks do
 not establish canonical publication, public-client restart or giant-value/search
 resource acceptance.
+
+Canonical normalized payloads now use `values`: at most64KiB per immutable
+append/range read, UTF8 validation and bounded ordinary-BLAKE3 proof steps outside
+write transactions. Process restart keeps appended bytes and restarts hashing at
+zero; sealing performs fixed metadata/digest work. JSON typed encoding remains
+its producer contract. No complete payload is hidden in a final readiness row.
+
+Message directory primitives copy a fixed radix16 path and retain unchanged
+children through counted references. Collection drains one at-most16-edge node
+per transaction, with pinned readers retaining their historical WAL snapshot.
+These primitives are still being connected to canonical Message activation and
+public reads; they do not certify those unfinished runtime operations.

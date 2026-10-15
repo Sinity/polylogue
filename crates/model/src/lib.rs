@@ -5,6 +5,7 @@ pub mod measures;
 pub mod merge;
 pub mod time;
 pub mod types;
+pub mod version_evidence;
 
 pub use content::*;
 pub use identity::{BlobHash, BlockId, BlockSlot, IdError, MessageId, Origin, SessionId};

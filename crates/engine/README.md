@@ -32,3 +32,9 @@ Canonical Message/body selection, indexed contribution folding, version/hash
 finalization, search statistics isolation, fairness and actual public-client
 read/write/restart behavior remain unfinished. No live collection or product
 query is registered by this crate.
+
+The model's `version_evidence::Framer` streams the owning source-evidence recipe
+in admitted byte chunks. Its digest is distinct from normalized payload content
+integrity. Providers still own exact membership/order/canonicalization; lost
+ephemeral hash progress replays from zero. This prerequisite does not qualify
+append-local hash updates or canonical publication.
