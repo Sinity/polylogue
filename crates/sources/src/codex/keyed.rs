@@ -229,6 +229,8 @@ pub struct KeyedRecords<V> {
     retained_bytes: usize,
     sizes: BTreeMap<Key, usize>,
     current_raw: Vec<u8>,
+    // Intrinsic field provenance is separate from volatile-free version bytes.
+    current_time_raw: Option<Vec<u8>>,
     pending_versions: BTreeMap<usize, u64>,
     effective_item: Option<Value>,
     effective_raw: Vec<u8>,
@@ -339,6 +341,7 @@ impl<V: ReadView> KeyedRecords<V> {
             retained_bytes: 0,
             sizes: BTreeMap::new(),
             current_raw: Vec::new(),
+            current_time_raw: None,
             pending_versions: BTreeMap::new(),
             effective_item: None,
             effective_raw: Vec::new(),
@@ -791,6 +794,7 @@ impl<V: ReadView> RecordParser for KeyedRecords<V> {
             return Err(e.clone());
         }
         // Capture exact provider bytes before decoded Value can normalize numbers.
+        self.current_time_raw = raw::canonical_field(rec.bytes, &["timestamp"]).ok();
         self.current_raw = raw::canonical(rec.bytes)?;
         self.effective_item = None;
         self.replacement_block = None;
@@ -814,9 +818,8 @@ impl<V: ReadView> KeyedRecords<V> {
         }
     }
     fn witness_time(&mut self, i: usize, completed: bool) {
-        let raw = self.current_raw.clone();
-        if let Ok(bytes) = raw::field(&raw, &["timestamp"]) {
-            if let Ok(text) = serde_json::from_slice::<String>(bytes) {
+        if let Some(bytes) = self.current_time_raw.clone() {
+            if let Ok(text) = serde_json::from_slice::<String>(&bytes) {
                 if let Some(at) = parse_timestamp(&text) {
                     let (key, field) = if completed {
                         (
@@ -826,7 +829,7 @@ impl<V: ReadView> KeyedRecords<V> {
                     } else {
                         ("at", polylogue_model::merge::MessageField::At)
                     };
-                    self.witness(i, key, super::presence::message(field, bytes, Some(at)));
+                    self.witness(i, key, super::presence::message(field, &bytes, Some(at)));
                 }
             }
         }

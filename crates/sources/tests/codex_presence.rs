@@ -204,3 +204,31 @@ fn textual_exit_is_not_a_supplied_outcome_and_unowned_native_facts_stay_outside_
     assert_eq!(resume.message_count(), 2);
     assert!(resume.normalization_incomplete());
 }
+
+#[test]
+fn intrinsic_time_provenance_is_separate_from_volatile_free_version_units() {
+    let bytes=header()+&line("response_item",json!({"type":"function_call","id":"call","name":"tool","call_id":"c","arguments":"{}"}))
+        +&json!({"timestamp":"2026-10-09T14:31:00Z","type":"response_item","payload":{"type":"message","id":"answer","role":"assistant","content":[{"text":"hi"}]}}).to_string()+"\n"
+        +&json!({"type":"response_item","payload":{"type":"message","id":"no-time","role":"user","content":[{"text":"next"}]}}).to_string()+"\n"
+        +&json!({"timestamp":"unreadable","type":"response_item","payload":{"type":"message","id":"bad-time","role":"assistant","content":[{"text":"last"}]}}).to_string()+"\n";
+    let (view, _) = parse(&bytes);
+    let first = slots(&view, 0);
+    assert_eq!(first[&Slot::Message(M::At)], br#""2026-10-09T14:30:00Z""#);
+    assert_eq!(
+        first[&Slot::Message(M::CompletedAt)],
+        br#""2026-10-09T14:31:00Z""#
+    );
+    for message in [1, 2] {
+        assert!(!slots(&view, message).contains_key(&Slot::Message(M::At)));
+    }
+    for (key, cell) in &view.cells {
+        if matches!(key, Key::Evidence(_, _, _)) {
+            if let Cell::Evidence(unit) = cell {
+                if unit.whole_record {
+                    let value: Value = serde_json::from_slice(&unit.canonical).unwrap();
+                    assert!(value.get("timestamp").is_none());
+                }
+            }
+        }
+    }
+}
