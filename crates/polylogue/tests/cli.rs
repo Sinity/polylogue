@@ -26,6 +26,7 @@ fn unsupported_features_and_bad_arguments_never_return_empty_success() {
         assert!(!archive.exists());
     }
     assert_eq!(Command::new(env!("CARGO_BIN_EXE_polylogue")).arg("--archive").output().unwrap().status.code(),Some(2));
+    assert_eq!(Command::new(env!("CARGO_BIN_EXE_polylogue")).args(["--archive","","daemon"]).output().unwrap().status.code(),Some(2));
 }
 
 #[test]

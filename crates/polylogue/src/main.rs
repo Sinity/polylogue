@@ -12,7 +12,7 @@ fn run() -> Result<i32, Failure> {
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--archive" {
-            if i+1 == args.len() { return Err(error(ErrorKind::InvalidQuery,"--archive needs a directory")); }
+            if i+1 == args.len() || args[i+1].is_empty() { return Err(error(ErrorKind::InvalidQuery,"--archive needs a directory")); }
             archive = Some(PathBuf::from(args.remove(i+1))); args.remove(i);
         } else { i += 1; }
     }
@@ -22,7 +22,7 @@ fn run() -> Result<i32, Failure> {
     }
     if args == ["--version"] { writeln!(out,"polylogue {}",env!("CARGO_PKG_VERSION")).map_err(io_error)?;return Ok(0); }
     if args == ["config","schema"] { serde_json::to_writer(&mut out,&schema()).map_err(io_error)?;writeln!(out).map_err(io_error)?;return Ok(0); }
-    let archive = archive.or_else(||env::var_os("XDG_DATA_HOME").map(|p|PathBuf::from(p).join("polylogue"))).or_else(||env::var_os("HOME").map(|p|PathBuf::from(p).join(".local/share/polylogue"))).ok_or_else(||error(ErrorKind::InvalidQuery,"no archive selected; pass --archive DIR"))?;
+    let archive = archive.or_else(||env::var_os("XDG_DATA_HOME").filter(|value|!value.is_empty()).map(|p|PathBuf::from(p).join("polylogue"))).or_else(||env::var_os("HOME").filter(|value|!value.is_empty()).map(|p|PathBuf::from(p).join(".local/share/polylogue"))).ok_or_else(||error(ErrorKind::InvalidQuery,"no archive selected; pass --archive DIR"))?;
     let archive = if archive.is_absolute() { archive } else { env::current_dir().map_err(io_error)?.join(archive) };
     if args != ["daemon"] && args != ["status"] && !args.is_empty() { return Err(error(ErrorKind::NotYetAvailable,format!("operation is not registered; archive {}",archive.display()))); }
     let runtime = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).ok_or_else(||error(ErrorKind::InvalidQuery,format!("XDG_RUNTIME_DIR is required; archive {}",archive.display())))?;
