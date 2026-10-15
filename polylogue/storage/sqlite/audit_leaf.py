@@ -67,7 +67,7 @@ class VerifiedAuditLeaf:
         self._lock_writer = lock_writer
         path_flag = getattr(os, "O_PATH", None)
         if path_flag is None:
-            raise AuditLeafError("lock-preserving identity custody requires the pending portable custody capability")
+            raise AuditLeafError("lock-preserving identity custody requires O_PATH")
         # Closing an ordinary descriptor for any SQLite inode releases every
         # POSIX lock this process holds on it, including other native readers.
         self._identity_open_flag = path_flag

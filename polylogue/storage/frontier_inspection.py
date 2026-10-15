@@ -1141,7 +1141,9 @@ def _prepare_frontier_inspection_frame(
             archive_root=archive_root,
             input_demand=input_demand,
         )
-        ops_descriptor = os.open(archive_root / "ops.db", os.O_RDONLY | os.O_CLOEXEC)
+        from polylogue.storage.sqlite.physical_file import open_physical_identity
+
+        ops_descriptor = open_physical_identity(archive_root / "ops.db")
         ops_stat = os.fstat(ops_descriptor)
         ops_identity = (ops_stat.st_dev, ops_stat.st_ino)
         ops_owner = _open_readonly_owner(

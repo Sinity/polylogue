@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -34,6 +35,112 @@ class PhysicalFileDigest:
     ctime_ns: int
 
 
+def open_physical_identity(path: str | Path, *, dir_fd: int | None = None) -> int:
+    """Return a caller-owned Linux identity pin, never an ordinary data FD."""
+    path_flag = getattr(os, "O_PATH", None)
+    if path_flag is None:
+        raise OSError(errno.ENOTSUP, "lock-preserving file identity requires O_PATH", str(path))
+    return os.open(path, path_flag | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=dir_fd)
+
+
+def require_physical_identity(descriptor: int) -> os.stat_result:
+    """An ordinary descriptor's eventual close would drop native SQLite locks."""
+    path_flag = getattr(os, "O_PATH", None)
+    if path_flag is None or not fcntl.fcntl(descriptor, fcntl.F_GETFL) & path_flag:
+        raise ValueError("SQLite identity requires an O_PATH descriptor")
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise OSError(errno.EINVAL, "physical identity is not a regular file")
+    return metadata
+
+
+def validate_physical_identity_path(
+    path: str | Path, descriptor: int, *, expected_parent: tuple[int, int] | None = None
+) -> tuple[int, int]:
+    """Recheck the actual native pathname and its parent around SQLite open."""
+    metadata = require_physical_identity(descriptor)
+    native_path = Path(path)
+    selected = native_path.parent.resolve(strict=True) / native_path.name
+    leaf = selected.stat(follow_symlinks=False)
+    if not stat.S_ISREG(leaf.st_mode):
+        raise OSError(errno.ESTALE, "physical identity is not a regular native leaf", str(path))
+    _require_identity(leaf, metadata.st_dev, metadata.st_ino, selected)
+    parent = _directory_identity_at(selected.parent)
+    if expected_parent is not None and parent != expected_parent:
+        raise OSError(errno.ESTALE, "physical identity parent changed during SQLite open", str(path))
+    return parent
+
+
+def physical_identity_operation(
+    descriptor: int,
+    *,
+    copy_directory_fd: int | None = None,
+    copy_name: str | None = None,
+    chmod: int | None = None,
+    progress: Callable[[], None] | None = None,
+) -> PhysicalFileDigest | None:
+    """Hash/copy or chmod a borrowed pin in the existing isolated child.
+
+    Copy destinations are new private leaves in a caller-pinned directory.
+    The caller owns partial destination cleanup and the original identity pin.
+    """
+    from polylogue.core.compute_cancel import check_compute_cancelled
+
+    metadata = require_physical_identity(descriptor)
+    request: dict[str, object] = {"identity_fd": descriptor}
+    descriptors = [descriptor]
+    if copy_directory_fd is not None:
+        if not copy_name or copy_name in {".", ".."} or "/" in copy_name:
+            raise ValueError("physical copy requires a single destination leaf")
+        _directory_identity(copy_directory_fd)
+        descriptors.append(copy_directory_fd)
+        request.update(copy_directory_fd=copy_directory_fd, copy_name=copy_name)
+    elif copy_name is not None:
+        raise ValueError("physical copy requires a pinned destination directory")
+    if chmod is not None:
+        if copy_directory_fd is not None:
+            raise ValueError("physical chmod cannot also copy")
+        request["chmod"] = chmod
+
+    def check() -> None:
+        check_compute_cancelled()
+        if progress is not None:
+            progress()
+
+    payload = _run_physical_child(request, tuple(descriptors), check)
+    if chmod is not None:
+        if json.loads(payload) != {"chmod": chmod}:
+            raise OSError(errno.EPROTO, "physical chmod did not acknowledge its operation")
+        return None
+    return _decode_child_result(payload, expected_device=metadata.st_dev, expected_inode=metadata.st_ino)
+
+
+def _run_physical_child(
+    request: dict[str, object], descriptors: tuple[int, ...], check_cancelled: Callable[[], None]
+) -> bytes:
+    check_cancelled()
+    command = f"import sys; sys.path[:] = {sys.path!r}; {_CHILD}"
+    process = subprocess.Popen(
+        [sys.executable, "-c", command],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        pass_fds=descriptors,
+    )
+    try:
+        assert process.stdin is not None
+        process.stdin.write(json.dumps(request, separators=(",", ":")).encode("ascii"))
+        process.stdin.close()
+        payload = _read_child_result(process, check_cancelled)
+        _wait_child(process, check_cancelled)
+        if process.returncode != 0:
+            raise OSError(errno.EIO, "physical file child failed")
+        return payload
+    finally:
+        _settle_child(process)
+
+
 def physical_file_sha256(path: Path, *, expected_device: int, expected_inode: int) -> PhysicalFileDigest:
     """Hash one selected regular leaf in a child process.
 
@@ -51,7 +158,6 @@ def physical_file_sha256(path: Path, *, expected_device: int, expected_inode: in
 
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
     directory_fd = os.open(selected.parent, directory_flags)
-    process: subprocess.Popen[bytes] | None = None
     try:
         directory_identity = _directory_identity(directory_fd)
         if _directory_identity_at(selected.parent) != directory_identity:
@@ -64,42 +170,26 @@ def physical_file_sha256(path: Path, *, expected_device: int, expected_inode: in
             "device": expected_device,
             "inode": expected_inode,
         }
-        command = f"import sys; sys.path[:] = {sys.path!r}; {_CHILD}"
-        process = subprocess.Popen(
-            [sys.executable, "-c", command],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            pass_fds=(directory_fd,),
-        )
-        assert process.stdin is not None and process.stdout is not None
-        process.stdin.write(json.dumps(result, separators=(",", ":")).encode("ascii"))
-        process.stdin.close()
-        payload = _read_child_result(process, check_compute_cancelled)
-        _wait_child(process, check_compute_cancelled)
+        payload = _run_physical_child(result, (directory_fd,), check_compute_cancelled)
         after_metadata = _named_leaf_metadata(directory_fd, name)
         _require_identity(after_metadata, expected_device, expected_inode, selected)
         if _directory_identity_at(selected.parent) != directory_identity:
             raise OSError(errno.ESTALE, "physical file parent changed during hash", str(selected.parent))
-        if process.returncode != 0:
-            raise OSError(errno.EIO, "physical file hash child failed", str(selected))
         digest = _decode_child_result(payload, expected_device=expected_device, expected_inode=expected_inode)
         if _metadata(after_metadata) != _digest_metadata(digest):
             raise OSError(errno.ESTALE, "physical file changed during hash", str(selected))
         return digest
     finally:
-        try:
-            if process is not None:
-                _settle_child(process)
-        finally:
-            os.close(directory_fd)
+        os.close(directory_fd)
 
 
 def _physical_file_hash_child() -> None:
     """Child entrypoint; this path imports standard-library modules only."""
     try:
         request = json.loads(sys.stdin.buffer.read(_RESULT_LIMIT + 1))
+        if isinstance(request, dict) and "identity_fd" in request:
+            _physical_identity_child(request)
+            return
         if not isinstance(request, dict) or set(request) != {"directory_fd", "name", "device", "inode"}:
             raise OSError(errno.EPROTO, "invalid physical file hash request")
         directory_fd = request["directory_fd"]
@@ -156,6 +246,76 @@ def _physical_file_hash_child() -> None:
             os.close(descriptor)
     except BaseException:
         raise SystemExit(1) from None
+
+
+def _physical_identity_child(request: dict[str, object]) -> None:
+    """Only this child opens ordinary source descriptors for identity pins."""
+    identity_fd = request["identity_fd"]
+    if type(identity_fd) is not int:
+        raise OSError(errno.EPROTO, "invalid physical identity")
+    selected = require_physical_identity(identity_fd)
+    descriptor = os.open(f"/proc/self/fd/{identity_fd}", os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+    destination = -1
+    try:
+        before = os.fstat(descriptor)
+        _require_identity(before, selected.st_dev, selected.st_ino, Path(str(identity_fd)))
+        if "chmod" in request:
+            mode = request["chmod"]
+            if set(request) != {"identity_fd", "chmod"} or type(mode) is not int:
+                raise OSError(errno.EPROTO, "invalid physical chmod")
+            os.fchmod(descriptor, mode)
+            result: dict[str, object] = {"chmod": mode}
+        else:
+            if "copy_directory_fd" in request:
+                directory = request["copy_directory_fd"]
+                name = request.get("copy_name")
+                if (
+                    set(request) != {"identity_fd", "copy_directory_fd", "copy_name"}
+                    or type(directory) is not int
+                    or not isinstance(name, str)
+                    or not name
+                    or name in {".", ".."}
+                    or "/" in name
+                ):
+                    raise OSError(errno.EPROTO, "invalid physical copy")
+                _directory_identity(directory)
+                destination = os.open(
+                    name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory
+                )
+            elif set(request) != {"identity_fd"}:
+                raise OSError(errno.EPROTO, "invalid physical read")
+            digest = hashlib.sha256()
+            size_bytes = 0
+            while chunk := os.read(descriptor, _READ_CHUNK):
+                digest.update(chunk)
+                size_bytes += len(chunk)
+                if destination >= 0:
+                    remaining = memoryview(chunk)
+                    while remaining:
+                        written = os.write(destination, remaining)
+                        if written <= 0:
+                            raise OSError(errno.EIO, "physical copy made no write progress")
+                        remaining = remaining[written:]
+            after = os.fstat(descriptor)
+            if _metadata(before) != _metadata(after) or size_bytes != after.st_size:
+                raise OSError(errno.ESTALE, "physical identity changed while reading")
+            if destination >= 0:
+                os.fchmod(destination, stat.S_IMODE(before.st_mode))
+            result = {
+                "sha256": digest.hexdigest(),
+                "size_bytes": size_bytes,
+                "device": before.st_dev,
+                "inode": before.st_ino,
+                "mode": before.st_mode,
+                "mtime_ns": before.st_mtime_ns,
+                "ctime_ns": before.st_ctime_ns,
+            }
+        sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+    finally:
+        if destination >= 0:
+            os.close(destination)
+        os.close(descriptor)
 
 
 def _read_child_result(process: subprocess.Popen[bytes], check_cancelled: Callable[[], None]) -> bytes:
@@ -275,4 +435,11 @@ def _digest_metadata(value: PhysicalFileDigest) -> tuple[int, int, int, int, int
     return value.device, value.inode, value.mode, value.size_bytes, value.mtime_ns, value.ctime_ns
 
 
-__all__ = ["PhysicalFileDigest", "physical_file_sha256"]
+__all__ = [
+    "PhysicalFileDigest",
+    "open_physical_identity",
+    "require_physical_identity",
+    "validate_physical_identity_path",
+    "physical_identity_operation",
+    "physical_file_sha256",
+]
