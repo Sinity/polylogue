@@ -153,6 +153,30 @@ pub struct Store {
     frame: usize,
 }
 
+/// Read capability over existing roots. Construction performs no filesystem writes.
+///
+/// ```compile_fail
+/// let reader = hashed_blobs::Reader::new("unused", vec![]);
+/// reader.put(&b"not permitted"[..], 1);
+/// ```
+pub struct Reader(Store);
+
+impl Reader {
+    pub fn new(root: impl Into<PathBuf>, extra_roots: Vec<PathBuf>) -> Self {
+        let root = root.into();
+        let mut roots = vec![root.clone()];
+        roots.extend(extra_roots);
+        Self(Store { write_root: root, roots, mode: 0o600, frame: DEFAULT_FRAME })
+    }
+
+    /// The existing checked decoder, with no write capability exposed.
+    pub fn read(&self, hash: &Hash) -> Result<impl Read> { self.0.read(hash) }
+
+    pub fn read_range(&self, hash: &Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
+        self.0.read_range(hash, offset, len)
+    }
+}
+
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn hkdf32(ikm: &[u8; 32], info: &[u8]) -> [u8; 32] {
