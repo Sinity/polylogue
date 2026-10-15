@@ -248,6 +248,26 @@ pub enum SourceSelection {
     AlreadySelected,
     Contested,
 }
+impl crate::parser_state::Snapshot {
+    /// Source certification and selected-body membership share this pinned view.
+    pub fn selected_source_projection(
+        &self,
+        logical: &[u8; 32],
+        allowance: usize,
+    ) -> Result<Option<SourceProjection>> {
+        let source = read_current(&self.db, &self.path, &self.head.token, logical, allowance)?;
+        let Some(source) = source else {
+            return Ok(None);
+        };
+        let selected: bool = db(&self.path, || {
+            self.db.query_row("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND session_pk=?2 AND selected_body_pk=?3 AND hidden=0)",params![source.body.message,source.body.session,source.body.pk],|r|r.get(0))
+        })?;
+        if !selected {
+            return Err(Error::MessagePredecessorChanged);
+        }
+        Ok(Some(source))
+    }
+}
 impl Writer {
     /// Read one fixed current reference and its certificate. The parser must be
     /// at the caller's exact predecessor with no partially applied work. A

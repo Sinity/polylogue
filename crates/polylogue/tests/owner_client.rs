@@ -68,7 +68,7 @@ fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplet
             .as_u64()
             .is_some_and(|n| n > 0 && n < bytes.len() as u64)
     });
-    assert_eq!(unfinished["canonical_complete"], false);
+    assert_eq!(unfinished["source_rows"]["scope"], "imported_source_rows");
     assert_eq!(request(running.socket()).unwrap()["outcome"], "ok");
     let peer = import(
         running.socket(),
@@ -81,7 +81,7 @@ fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplet
         during["parser"]["parsed_upto"].as_u64().unwrap() < bytes.len() as u64,
         "{during}"
     );
-    assert_eq!(during["canonical_complete"], false);
+    assert_eq!(during["source_rows"]["scope"], "imported_source_rows");
     running.stop();
     drop(running);
     // Neither the provider pathname nor a capture worker is recovery authority.
@@ -99,8 +99,11 @@ fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplet
     });
     assert_eq!(eof["parser"]["parsed_upto"], bytes.len() as u64);
     assert_eq!(eof["parser"]["records"]["framed"], 10001);
-    assert_eq!(eof["parser"]["finalization_pending"], true);
-    assert_eq!(eof["canonical_complete"], false);
+    assert_eq!(
+        eof["parser"]["finalization_pending"],
+        eof["source_rows"]["state"] != "settled"
+    );
+    assert_eq!(eof["source_rows"]["scope"], "imported_source_rows");
     let search = request_value(
         running.socket(),
         &json!({"command":"search","query":"synthetic"}),
@@ -149,7 +152,7 @@ fn public_partial_tail_restart_waits_without_advancing_or_claiming_done() {
     assert_eq!(before["parser"], after["parser"]);
     thread::sleep(Duration::from_millis(30));
     assert_eq!(progress(running.socket(), &id)["parser"], after["parser"]);
-    assert_eq!(after["canonical_complete"], false);
+    assert_eq!(after["source_rows"]["scope"], "imported_source_rows");
 }
 
 #[test]

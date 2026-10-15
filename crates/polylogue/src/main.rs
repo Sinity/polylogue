@@ -1,4 +1,5 @@
 mod import_cli;
+mod source_wait;
 use polylogue_model::types::{ErrorKind, Failure, ResultOutcome};
 use serde_json::json;
 use std::{
@@ -44,7 +45,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|import PATH --format NAME [--context FILE]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read --format json|config schema>\nImport retains one regular file. Selected Message terminal reads and Session JSON reads have explicit degraded coverage. Session queries, search, export and MCP remain unavailable.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read --format json|config schema>\nImport retains one regular file. Selected Message terminal reads and Session JSON reads have explicit degraded coverage. Session queries, search, export and MCP remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -182,6 +183,25 @@ fn run() -> Result<i32, Failure> {
             command["seen_at"]
         );
     }
+    let mut command = command;
+    let (wait, wait_seconds) =
+        if let Some(request) = command.as_mut().filter(|v| v["command"] == "import") {
+            let object = request
+                .as_object_mut()
+                .ok_or_else(|| error(ErrorKind::InvalidQuery, "invalid import request"))?;
+            (
+                object
+                    .remove("wait")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                object
+                    .remove("wait_seconds")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(30),
+            )
+        } else {
+            (false, 30)
+        };
     let mut value = match &command {
         Some(command) => polylogue::request_value(&socket, command),
         None => polylogue::request(&socket),
@@ -199,6 +219,9 @@ fn run() -> Result<i32, Failure> {
             format!("archive {}: {e}", archive.display()),
         )
     })?;
+    if wait && value["outcome"] == "ok" {
+        value = source_wait::wait(&socket, value, std::time::Duration::from_secs(wait_seconds));
+    }
     if let Some(command) = command.filter(|v| v["command"] == "import") {
         value["request_id"] = command["id"].clone();
         value["seen_at"] = command["seen_at"].clone();

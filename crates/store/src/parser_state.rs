@@ -1119,3 +1119,55 @@ mod tests {
         panic!("crash callback must exit before commit");
     }
 }
+
+/// Existing parser state owns its source-row audit receipt. The source owner
+/// supplies disposition/effect proof; storage binds it to one exact predecessor.
+pub const SOURCE_ROWS_NAMESPACE: &str = "source.rows.v1";
+impl crate::Writer {
+    pub fn publish_source_rows(
+        &mut self,
+        expected: &Head,
+        receipt: &[u8],
+        settled: bool,
+    ) -> Result<Head> {
+        if receipt.is_empty() || receipt.len() > 16384 {
+            return Err(StoreError::ParserAdmission {
+                resource: "source row settlement receipt",
+                required: receipt.len() as u64,
+            });
+        }
+        let path = self.root.join("index.db");
+        let tx = sql!(&path, self._index.transaction())?;
+        let now = current(&tx, &path, &expected.token)?;
+        validate_expected_head(expected, &now)?;
+        prepared::ensure_idle(&tx, &path, &expected.token)?;
+        if now.status != "finalizing"
+            || !now.finalization_pending
+            || now.parsed_upto != now.acquired_upto
+        {
+            return Err(StoreError::ParserPredecessorChanged);
+        }
+        let excised: bool = sql!(
+            &path,
+            tx.query_row(
+                "SELECT excised FROM input_ref WHERE pk=?1",
+                [now.token.input_pk],
+                |r| r.get(0)
+            )
+        )?;
+        if excised {
+            return Err(StoreError::ParserPredecessorChanged);
+        }
+        sql!(&path,tx.execute("INSERT INTO parser_cell(input_pk,chain,state_generation,namespace,key,value) VALUES(?1,?2,?3,?4,x'',?5) ON CONFLICT DO NOTHING",rusqlite::params![now.token.input_pk,now.token.chain,now.token.generation,SOURCE_ROWS_NAMESPACE,receipt]))?;
+        if tx.changes() != 1 {
+            return Err(StoreError::ParserPredecessorChanged);
+        }
+        if settled {
+            sql!(&path,tx.execute("UPDATE parse_state SET status='done',finalization_pending=0 WHERE input_pk=?1 AND chain=?2",rusqlite::params![now.token.input_pk,now.token.chain]))?;
+        }
+        let result = head(&tx, &path, now.token.input_pk, now.token.chain)?
+            .ok_or(StoreError::ParserPredecessorChanged)?;
+        sql!(&path, tx.commit())?;
+        Ok(result)
+    }
+}

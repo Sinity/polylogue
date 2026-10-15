@@ -185,7 +185,7 @@ impl World {
         let receipt: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(receipt["request_id"], request_id);
         assert_eq!(receipt["seen_at"], 17);
-        assert_eq!(receipt["canonical_complete"], false);
+        assert_eq!(receipt["source_rows"]["scope"], "imported_source_rows");
         receipt
     }
     fn raw_progress(&self, id: &str) -> Value {
@@ -195,7 +195,7 @@ impl World {
     }
     fn progress(&self, id: &str) -> Value {
         let progress = self.raw_progress(id);
-        assert_eq!(progress["canonical_complete"], false);
+        assert_eq!(progress["source_rows"]["scope"], "imported_source_rows");
         assert!(progress["failure"].is_null(), "{progress}; {}", self.log());
         assert!(progress["recovery_error"].is_null(), "{progress}");
         progress
@@ -212,7 +212,10 @@ impl World {
                     "{out:?}"
                 );
                 if document["messages"].as_array().unwrap().len() == messages {
-                    assert_eq!(p["parser"]["finalization_pending"], true);
+                    assert_eq!(
+                        p["parser"]["finalization_pending"],
+                        p["source_rows"]["state"] != "settled"
+                    );
                     return document;
                 }
             } else {
@@ -472,7 +475,7 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
     let deadline = Instant::now() + WAIT;
     loop {
         let p = world.raw_progress(pending["retained"]["id"].as_str().unwrap());
-        assert_eq!(p["canonical_complete"], false);
+        assert_eq!(p["source_rows"]["scope"], "imported_source_rows");
         if !p["failure"].is_null() {
             break;
         }
