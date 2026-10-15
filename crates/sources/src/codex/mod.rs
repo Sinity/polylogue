@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 pub mod keyed;
 mod keyed_codec;
+pub mod projection;
 mod raw;
 pub const PARSER_VERSION: u32 = 2;
 
