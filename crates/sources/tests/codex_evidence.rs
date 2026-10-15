@@ -329,3 +329,33 @@ fn distinct_native_calls_with_duplicate_call_ids_keep_both_wrapper_occurrences()
     assert_eq!(view.message(0).unwrap().unwrap().blocks.len(), 2);
     assert_eq!(head(&view, 0).items, 2);
 }
+
+#[test]
+fn unmapped_message_content_is_preserved_without_completed_empty_text() {
+    let item = json!({"type":"message","id":"image-prompt","role":"user","content":[{"type":"input_image","image_url":"synthetic://image"}]});
+    let (view, resume) = run(
+        MemoryReadView::default(),
+        Resume::default(),
+        &(header() + &line("response_item", item.clone())),
+    );
+    assert!(resume.normalization_incomplete());
+    let message = view.message(0).unwrap().unwrap();
+    assert!(matches!(&message.blocks[0].content,BlockContent::Other{data,..} if data==&item));
+}
+#[test]
+fn explicitly_unreadable_model_context_does_not_reuse_a_stale_model() {
+    let known = line("turn_context", json!({"model":"model-before"}));
+    let unknown = line("turn_context", json!({"model":null}));
+    let answer = line(
+        "response_item",
+        json!({"type":"message","id":"answer","role":"assistant","content":[{"text":"hello"}]}),
+    );
+    let (view, resume) = run(
+        MemoryReadView::default(),
+        Resume::default(),
+        &(header() + &known + &unknown + &answer),
+    );
+    assert!(resume.normalization_incomplete());
+    assert!(view.message(0).unwrap().unwrap().model.is_none());
+    assert!(units(&view, 0).contains(&("context:model".into(), b"null".to_vec())));
+}

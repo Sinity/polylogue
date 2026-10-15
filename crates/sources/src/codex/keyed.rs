@@ -1469,13 +1469,13 @@ impl<V: ReadView> KeyedRecords<V> {
                 self.context_for(i, false, true);
             }
             let p = self.effective(p);
-            let text = texts(p.get("content")).join("\n");
             self.edit(i, |m| {
                 if let Some(phase) = p.get("phase") {
                     m.attrs = Some(serde_json::json!({ "phase": phase }));
                 }
             });
-            self.owned_block(i, BlockContent::Text { text });
+            let content = self.message_content(&p);
+            self.owned_block(i, content);
             return RecordOutcome::Used;
         }
         if let Some(i) = self.known_owner(p) {
@@ -1511,7 +1511,8 @@ impl<V: ReadView> KeyedRecords<V> {
                     message.written_by = WrittenBy::Harness;
                 });
             }
-            self.owned_block(i, BlockContent::Text { text });
+            let content = self.message_content(&effective);
+            self.owned_block(i, content);
             return RecordOutcome::Used;
         }
         self.close_request();
@@ -1525,10 +1526,8 @@ impl<V: ReadView> KeyedRecords<V> {
         };
         let mut m = Message::new(id, item_id_kind(p), r, wb);
         m.at = at.map(provider_time);
-        if let Err(e) = m.push(
-            BlockSlot::Item(0),
-            BlockContent::Text { text: text.clone() },
-        ) {
+        let content = self.message_content(p);
+        if let Err(e) = m.push(BlockSlot::Item(0), content) {
             self.failure = Some(e.to_string());
             return RecordOutcome::Used;
         }
@@ -1549,6 +1548,27 @@ impl<V: ReadView> KeyedRecords<V> {
         RecordOutcome::Used
     }
 
+    fn message_content(&mut self, item: &Value) -> BlockContent {
+        let content = item.get("content");
+        let textual = match content {
+            Some(Value::String(_)) => true,
+            Some(Value::Array(items)) => items
+                .iter()
+                .all(|item| item.is_string() || item.get("text").is_some_and(Value::is_string)),
+            _ => false,
+        };
+        if textual {
+            BlockContent::Text {
+                text: texts(content).join("\n"),
+            }
+        } else {
+            self.s.normalization_incomplete = true;
+            BlockContent::Other {
+                type_name: "codex_unmapped_message_content".into(),
+                data: item.clone(),
+            }
+        }
+    }
     fn classify_prompt(&mut self, index: usize, text: &str) {
         self.edit(index, |message| {
             message.written_by = WrittenBy::Harness;
@@ -2228,8 +2248,11 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             "session_meta" => self.event("repeated_session_meta", at, false, &p),
             "turn_context" => {
-                if let Some(m) = p.get("model").and_then(Value::as_str) {
-                    self.s.model = Some(m.to_owned());
+                if let Some(model) = p.get("model") {
+                    self.s.model = model.as_str().map(str::to_owned);
+                    if !model.is_string() {
+                        self.s.normalization_incomplete = true;
+                    }
                     let context_raw = self.current_raw.clone();
                     self.raw_context(&context_raw, &["payload", "model"], 1, "context:model");
                 }
