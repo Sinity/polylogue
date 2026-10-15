@@ -61,6 +61,16 @@ leaves retained owner work runnable. Retry the
 same receipt after provider deletion/restart. Import/progress no longer expose a
 hardcoded `canonical_complete` placeholder; Session read coverage remains explicit.
 
+Session JSON reads qualify direct Claude main-file dependencies from one pinned
+admission/index view, independently of selected Message rows. Retained malformed
+records carry `result.unknown.record_errors` and named notes in both the document
+and socket completion. Repeated observations of one immutable input count once;
+unrelated main contexts do not add pending work. Unresolved subagent/linked
+shapes and the existing Session coverage gaps remain explicit. A read keeps its
+captured view when later inputs arrive; this is not an exact historical query or
+complete Session settlement. Deadline/disconnect stops read-side qualification
+without cancelling retained owner work.
+
 The actor uses fixed record/cell/request admission allowances. Oversized records
 fail explicitly with owed work retained; configurable larger allowances and full
 resource qualification remain unfinished. Its current source scheduling follows

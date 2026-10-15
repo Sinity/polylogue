@@ -75,16 +75,16 @@ pub fn qualify_with_cancel(
         let Some(input) = dependency.registered() else {
             // Context remains available before disposable input_ref repair.
             match dependency.context() {
-                [kind, stem]
-                    if kind == "claude-main"
-                        && polylogue_sources::claude_code::FileCtx::main(stem)
-                            .direct_main_session()
-                            .as_ref()
-                            != Some(&target) =>
-                {
-                    continue;
+                [kind, stem] if kind == "claude-main" => {
+                    if polylogue_sources::claude_code::FileCtx::main(stem)
+                        .direct_main_session()
+                        .as_ref()
+                        == Some(&target)
+                    {
+                        add(&mut result.pending_inputs, 1)?;
+                    }
                 }
-                _ => add(&mut result.pending_inputs, 1)?,
+                _ => add(&mut result.unresolved_inputs, 1)?,
             }
             continue;
         };

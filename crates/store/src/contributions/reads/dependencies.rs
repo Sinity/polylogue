@@ -73,19 +73,6 @@ impl SessionView {
             .as_ref()
             .ok_or_else(|| Error::Invariant("Session admission snapshot missing".into()))?;
         let path = self.path.with_file_name("archive.db");
-        // Current removal authority is independent of a computational snapshot.
-        let visibility = read
-            .archive_visibility
-            .as_ref()
-            .ok_or_else(|| Error::Invariant("Session archive authority missing".into()))?;
-        let excision: bool = db(&path, || {
-            visibility.query_row("SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)", [], |r| {
-                r.get(0)
-            })
-        })?;
-        if excision {
-            return Err(Error::ExcisionCheckRequired);
-        }
         let row: Option<(
             u64,
             Option<String>,

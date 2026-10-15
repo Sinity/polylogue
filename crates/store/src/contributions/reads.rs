@@ -819,6 +819,18 @@ impl ReadHandle {
 impl SessionView {
     fn visible(&self) -> Result<()> {
         let read = locked(&self.read)?;
+        if let Some(archive) = &read.archive_visibility {
+            let archive_path = self.path.with_file_name("archive.db");
+            let excision: bool = db(&archive_path, || {
+                archive.query_row("SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)", [], |r| {
+                    r.get(0)
+                })
+            })?;
+            if excision {
+                return Err(Error::ExcisionCheckRequired);
+            }
+        }
+
         let visible: bool = db(&self.path, || {
             read.visibility.query_row("SELECT EXISTS(SELECT 1 FROM session WHERE pk=?1 AND id=?2) AND EXISTS(SELECT 1 FROM meta WHERE key='generation' AND value=?3)",params![self.pk,self.header.id.as_str(),self.generation],|r|r.get(0))
         })?;

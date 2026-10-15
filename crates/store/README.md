@@ -207,3 +207,11 @@ fixed metadata transaction. This producer-supplied semantic proof is distinct
 from arbitrary row counts and from Session/query/search completeness. Missing or
 corrupt authority refuses; no second progress ledger or automatic migration is
 introduced.
+
+Session views also pin immutable admission metadata. The archive counter is
+read before and after establishing the index snapshot; movement refuses rather
+than mixing two catalogs. Archive admission missing disposable registration is
+a visible pending dependency. Opaque cursors and input cell reads share the
+same view; immutable import identity validation is shared with the writer.
+Current excision authority conservatively refuses Session dependency reads;
+partial-excision qualification remains open. No new schema or migration is added.

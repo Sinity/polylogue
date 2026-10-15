@@ -11,3 +11,10 @@ Session JSON carries its actual degraded result metadata under the export
 qualification contract `a9947de`; current import/export roundtrip propagation
 and complete ordinary clients remain unqualified. These prose changes do not
 change the separately pinned index18 schema.
+
+Session source qualification adds the direct Claude main-input binding required
+by `query.md` (scoped retained interpretation failures and requested settlement)
+and `sources/claude-code.md` (file/context owns main membership). It does not
+promote source-row completion into complete Session/query coverage. Unknown
+subagent/linked dependency shapes, non-native input catalog qualification,
+portable upstream overlap handling, full export and search remain open.
