@@ -38,19 +38,30 @@ sending; reuse both with `--request-id ID --seen-at MICROS` to retry the same
 action, including after the original path disappears. A reused ID with changed
 metadata is refused. Provider work runs outside the writer actor, which admits
 one provider installation transaction between peer requests. `progress` reports
-raw offsets, accounting, failure and pending finalization; EOF does not make
-`canonical_complete` true. `retry INPUT` explicitly retries a failed disposable
-parse. `--wait`, `--dry-run`, archives/directories, symlinks and other source
+raw offsets, accounting, failure and pending finalization; EOF alone does not
+establish source-row settlement. `retry INPUT` explicitly retries a failed disposable
+parse. `--dry-run`, archives/directories, symlinks and other source
 formats remain unavailable. Claude context is explicitly supplied with a version 1
 `--context FILE` declaration and persisted with the retained input; automatic
 format recognition remains unavailable.
 The declaration names interpretation context, not the collector machine or proof
 of provider freshness.
 
+`import --wait` waits for the admitted immutable source basis and its required
+canonical row effects. Its typed `source_rows` result is independent of Session
+completeness, global freshness and search readiness. Existing step dispositions
+and current source certificates are audited before a durable source receipt is
+published; unsupported effects or retained malformed records remain named
+unavailable. Usable partial rows give degraded exit5; otherwise a typed error.
+`--wait-timeout SECONDS` controls only the caller's post-admission wait (default30,
+maximum86400). Timeout/disconnect leaves retained owner work runnable. Retry the
+same receipt after provider deletion/restart. Import/progress no longer expose a
+hardcoded `canonical_complete` placeholder; Session read coverage remains explicit.
+
 The actor uses fixed record/cell/request admission allowances. Oversized records
 fail explicitly with owed work retained; configurable larger allowances and full
 resource qualification remain unfinished. Its current source scheduling follows
-one imported input to provider EOF; cross-input fair parse rounds and canonical
+one imported input to provider EOF; cross-input fair parse rounds and complete Session
 finalization are still owed. Public search refuses even after provider EOF.
 
 The canonical worker prepares uncontested Codex Text/Thinking and supported
@@ -59,7 +70,7 @@ then selects a whole certified source body. Claude signatures and derived tool
 reasons are retained without increasing source-presence rank. Declared legacy
 call identity uses the proved source Session and supplied call ID; global
 pairing and cross-input operation selection remain unfinished. Terminal Message-reference and Session JSON reads are exposed; search and export remain unavailable. Competing inputs, unsupported operations and unresolved
-mapping remain pending; `canonical_complete` remains false. Hash validation is
+mapping remain pending; Session/query completeness remains unqualified. Hash validation is
 cooperative off actor but can still process a whole Message/value per worker
 call, and normalized-leaf windowing can repeat serialization. These costs have
 not earned bounded worker-turn or append-local resource acceptance.
@@ -72,7 +83,7 @@ escaped for terminal safety. The command explicitly exits 5 (degraded) because
 history and complete source-locator coverage remain incomplete. The terminal renderer supports Text and Thinking blocks. Pending references, truncated streams and unsupported formats fail explicitly. The explicit `message:` route does not accept JSON format.
 
 
-Read a known Session with `polylogue --archive DIR SID read --format json`. This streams a normalized `polylogue-session` version 1 document from one pinned Session/Message snapshot, using the same document writer intended for export. Supported Message fields include typed UTC millisecond times, usage/service tier, retained signatures, tool payloads/channels, exact source citations and field-origin descriptors. Text streams in bounded ranges; an individual nontext JSON leaf above 64 KiB is explicitly refused. Credential-bearing metadata strings are masked; structural keys, identities or interpretation selectors requiring a change are refused. The result exits 5 with a coverage warning. Known pending members and ambiguous source order refuse rather than silently return a selected subset. Source catalog completeness, display-title reductions, non-Message populations, conflict-alternative export and partial-excision verdicts remain unavailable. Omitted populations are not fabricated as empty arrays. This path does not make `import --wait` or `canonical_complete: true` available.
+Read a known Session with `polylogue --archive DIR SID read --format json`. This streams a normalized `polylogue-session` version 1 document from one pinned Session/Message snapshot, using the same document writer intended for export. Supported Message fields include typed UTC millisecond times, usage/service tier, retained signatures, tool payloads/channels, exact source citations and field-origin descriptors. Text streams in bounded ranges; an individual nontext JSON leaf above 64 KiB is explicitly refused. Credential-bearing metadata strings are masked; structural keys, identities or interpretation selectors requiring a change are refused. The result exits 5 with a coverage warning. Known pending members and ambiguous source order refuse rather than silently return a selected subset. Source catalog completeness, display-title reductions, non-Message populations, conflict-alternative export and partial-excision verdicts remain unavailable. Omitted populations are not fabricated as empty arrays. Source-row settlement does not remove these read qualifications. The standalone document retains its actual degraded result metadata.
 
 Import accepts paired `--machine ID --host LABEL` acquisition-observation metadata. These identify the collector, not the original session machine or the immutable interpretation context. Without the pair, the client reads `/etc/machine-id` and the local hostname. Explicit retries must reuse the original observation metadata, request ID and timestamp.
 
@@ -110,13 +121,13 @@ failures remain distinguishable. `scripts/test-check-morrow.py --checker PATH`
 tests that reporting boundary with synthetic replies and broken oracles; optional
 `--binary /nix/store/.../bin/polylogue` adds the real launch refusal. These are
 controller checks, not canonical-product acceptance.
-The base/append cases require `import --wait` to affirm `canonical_complete: true`
-before comparing answers. The malformed case instead requires degraded exit5,
-`canonical_complete: false`, and the retained interpretation failure in result
-diagnostics/unknown coverage through wait, listing, read and export. Its known
-rows still face the unchanged oracle; freshness may be true despite degradation.
-Standalone documents and manifests must retain their own result qualifiers. A missing, null or mistyped field cannot stand in
-for completion; this assertion alone does not qualify source accounting.
+The driver requires `import --wait` to return typed `source_rows` for the
+admitted input: settled for base/append/empty, unavailable/degraded5 with usable
+rows for malformed. This source-only proof does not satisfy its later ordinary
+listing/read/export assertions, which still require complete results and the
+unchanged independent oracle. Missing or mismatched scope/basis cannot stand
+in for that proof.
+The controller checks alone do not qualify native source accounting.
 Source accounting, provenance, observed durability boundaries, provider loss
 and real MCP acceptance remain separate unfinished checks in the report.
 

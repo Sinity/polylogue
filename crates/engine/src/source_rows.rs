@@ -155,7 +155,13 @@ impl Audit {
                     self.unsupported |= !effects.events.is_empty() || !effects.links.is_empty();
                     self.ignored = self
                         .ignored
-                        .checked_add(effects.ignored.values().sum::<u64>())
+                        .checked_add(
+                            effects
+                                .ignored
+                                .values()
+                                .try_fold(0u64, |n, v| n.checked_add(*v))
+                                .ok_or(Error::Range)?,
+                        )
                         .ok_or(Error::Range)?;
                     self.unrecognized = self
                         .unrecognized
@@ -175,7 +181,7 @@ impl Audit {
                             .into());
                         }
                     }
-                    self.step += 1;
+                    self.step = self.step.checked_add(1).ok_or(Error::Range)?;
                 }
                 InputFormat::CodexRollout => {
                     let attempt = codex::Attempt::new(snapshot, reads);
@@ -204,7 +210,7 @@ impl Audit {
                             }
                             codex::EffectStep::Done => {
                                 self.effect = None;
-                                self.step += 1;
+                                self.step = self.step.checked_add(1).ok_or(Error::Range)?;
                             }
                             _ => {}
                         }

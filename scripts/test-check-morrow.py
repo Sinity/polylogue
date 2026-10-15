@@ -43,6 +43,14 @@ ANSWER = {"result": {"outcome":"ok","notes":[],"unknown":{}}, "format": "polylog
                         "blocks": [{"id": "claude-code:synthetic:prompt:0", "kind": "text", "text": "retained prompt"}]}]}
 
 
+def admission(errors=0):
+    rows={"scope":"imported_source_rows","basis":{"input":"synthetic-input","length":7},
+          "state":"unavailable" if errors else "settled"}
+    if errors: rows.update(usable_result=True)
+    return {"outcome":"degraded" if errors else "ok","retained":{"id":"synthetic-input","length":7},"source_rows":rows,
+            "notes":["one undecodable record"] if errors else [],"unknown":{"record_errors":errors} if errors else {}}
+
+
 class CapturedReplies(driver.Run):
     def client(self, archive, *argv, **kwargs):
         if "read" in argv:
@@ -77,7 +85,7 @@ class ControllerTests(unittest.TestCase):
         def client(archive, *argv, **kwargs):
             calls.append((argv,kwargs))
             if "import" in argv:
-                return dict(qualifier, canonical_complete=not errors)
+                return admission(errors)
             if "read" in argv:
                 return dict(deepcopy(ANSWER), result=deepcopy(qualifier))
             return dict(deepcopy(qualifier),up_to_date=True,unit="sessions",count=1,rows=[{"id":SID}],next_cursor=None)
@@ -105,11 +113,11 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(all(kw['expected']==(0,) for _,kw in calls))
 
     def test_malformed_wait_rejects_false_success_missing_diagnostics_and_wrong_coverage(self):
-        for mutation in [dict(outcome='ok'),dict(canonical_complete=True),dict(canonical_complete=None),dict(notes=[]),dict(unknown={}),dict(unknown={'record_errors':True})]:
+        for mutation in [dict(outcome='ok'),dict(source_rows={"scope":"imported_source_rows","basis":{"input":"synthetic-input","length":7},"state":"settled"}),dict(source_rows=None),dict(notes=[]),dict(unknown={}),dict(unknown={'record_errors':True})]:
             output=self.output/str(len(list(self.output.iterdir())));output.mkdir()
             run=driver.Run(output,None)
             comparisons=[];run.answers=lambda *a: comparisons.append(a)
-            receipt={'outcome':'degraded','canonical_complete':False,'notes':['one undecodable record'],'unknown':{'record_errors':1}}
+            receipt=admission(1)
             receipt.update(mutation);run.client=lambda *a,**kw: receipt
             expected=dict(EXPECTED,record_errors=1)
             with self.subTest(mutation=mutation),self.assertRaises(ValueError):
@@ -143,6 +151,17 @@ class ControllerTests(unittest.TestCase):
                 run.command=altered
                 with self.subTest(target=target,replacement=replacement),self.assertRaises(ValueError):
                     run.admit(output/'archive',output/'input',expected,'malformed',checker)
+
+    def test_source_rows_settled_cannot_qualify_an_incomplete_session_read(self):
+        run,expected,_=self.captured_case(0)
+        original=run.client
+        def incomplete(archive,*argv,**kwargs):
+            answer=original(archive,*argv,**kwargs)
+            if 'read' in argv: answer['result']={'outcome':'degraded','notes':['catalog incomplete'],'unknown':{}}
+            return answer
+        run.client=incomplete
+        with self.assertRaisesRegex(ValueError,'expected ok outcome'):
+            run.admit(self.output/'archive',self.output/'input',expected,'base',checker)
 
     def test_snapshot_append_preserves_prefix_and_refuses_replacement(self):
         provider, prepared = self.output / 'provider.jsonl', self.output / 'prepared.jsonl'
@@ -208,7 +227,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(run.control_result["reason"], "wrong message count")
         self.assertIn("intentional", message)
 
-    def test_missing_or_mistyped_completion_never_reaches_answer_comparison(self):
+    def test_legacy_or_missing_source_settlement_never_reaches_answer_comparison(self):
         run = driver.Run(self.output, None)
         comparisons = []
         run.answers = lambda *a: comparisons.append(a)
@@ -217,14 +236,14 @@ class ControllerTests(unittest.TestCase):
                         {"canonical_complete": "true"}]:
             with self.subTest(receipt=receipt):
                 run.client = lambda *a, **kw: receipt
-                with self.assertRaisesRegex(ValueError, "canonical completion"):
+                with self.assertRaisesRegex(ValueError, "source-row settlement"):
                     run.admit(self.output / "archive", self.output / "input", EXPECTED, "base", checker)
         self.assertEqual(comparisons, [])
 
     def test_affirmative_completion_proceeds_to_independent_answer_comparison(self):
         run = driver.Run(self.output, None)
         comparisons = []
-        run.client = lambda *a, **kw: {"canonical_complete": True}
+        run.client = lambda *a, **kw: admission()
         run.answers = lambda *a: comparisons.append(a)
         run.admit(self.output / "archive", self.output / "input", EXPECTED, "base", checker)
         self.assertEqual(len(comparisons), 1)
@@ -233,7 +252,7 @@ class ControllerTests(unittest.TestCase):
     def test_loose_import_retains_explicit_context_and_passes_exact_file(self):
         run = driver.Run(self.output, None)
         calls = []
-        run.client = lambda *a, **kw: calls.append(a) or {"canonical_complete": True}
+        run.client = lambda *a, **kw: calls.append(a) or admission()
         run.answers = lambda *a: None
         expected = deepcopy(EXPECTED)
         # The native ID is declared independently; never split the opaque reference.

@@ -90,3 +90,13 @@ whole source records; it does not establish a cumulative record-work bound. No w
 does not establish bounded worker computation, append locality or RSS. The CLI exposes only the selected terminal Message-reference consumer with
 degraded coverage. Session query/JSON read/export/search and the Claude Code
 demonstration remain unfinished.
+
+Immutable import source-row settlement audits the retained step dispositions and
+effects plus selected current source certificates. A fixed parser-token/basis
+receipt in existing parser state survives restart; source EOF and canonical
+iteration end merely start this audit. Unsupported effect/normalization cohorts
+and retained malformed records stay unavailable. This does not settle Session
+metadata/history/catalog, global freshness or search. Restart replays an unfinished
+audit from its beginning. Claude's admitted whole Effects cell remains a whole
+decode and may contain multiple bounded-admission obligations; universal worker
+CPU/RSS/append-locality acceptance is still open.

@@ -186,13 +186,21 @@ class Run:
         errors = expected.get("record_errors", 0)
         admitted = self.client(archive, "import", str(path), "--format", "claude-code-jsonl",
                                "--context", str(context_path), "--wait", "--json", expected=(5,) if errors else (0,))
+        rows=admitted.get("source_rows")
+        require(isinstance(rows,dict) and rows.get("scope")=="imported_source_rows"
+                and isinstance(rows.get("basis"),dict)
+                and rows["basis"].get("input")==admitted.get("retained",{}).get("id")
+                and type(rows["basis"].get("length")) is int
+                and rows["basis"]["length"]==admitted.get("retained",{}).get("length"),
+                "import --wait needs an explicitly bound source-row settlement")
         if errors:
-            qualification(admitted, errors, "import --wait")
-            require(admitted.get("canonical_complete") is False,
-                    "retained interpretation failure cannot affirm canonical completion")
+            qualification(admitted,errors,"import --wait")
+            require(rows.get("state")=="unavailable" and rows.get("usable_result") is True,
+                    "retained interpretation failure cannot affirm source-row settlement")
         else:
-            require(admitted.get("canonical_complete") is True,
-                    "import --wait did not affirm canonical completion; source EOF is insufficient")
+            require(rows.get("state")=="settled", "source-row settlement is still pending")
+        # This narrower proof does not satisfy the ordinary Session/read/export
+        # assertions below. The full Morrow outcome remains unchanged.
         self.answers(archive, expected, name, checker)
 
     def answers(self, archive, expected, name, checker):

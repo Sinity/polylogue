@@ -550,6 +550,8 @@ fn source_row_wait_settles_fixed_basis_then_provider_loss_restart_replays_withou
     let read = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(read.status.code(), Some(5));
     let first: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(first["result"]["outcome"], "degraded");
+    assert!(!first["result"]["notes"].as_array().unwrap().is_empty());
     fs::remove_file(&path).unwrap();
     world.restart();
     let replay = wait_import(&world, &path, id, "20");
@@ -662,4 +664,77 @@ fn disconnecting_a_source_waiter_keeps_the_retained_owner_and_peer_available() {
         world.raw_progress(receipt["retained"]["id"].as_str().unwrap())["source_rows"]["state"],
         "pending"
     );
+}
+
+#[test]
+fn source_wait_never_turns_no_usable_interpretation_or_unsupported_body_into_empty_success() {
+    for (name, bytes, id) in [
+        (
+            "only-malformed",
+            b"{invalid json}\n".to_vec(),
+            "01900000-0000-7000-8000-000000000407",
+        ),
+        (
+            "unsupported-image",
+            simple(
+                "unsupported",
+                json!([{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]),
+            ),
+            "01900000-0000-7000-8000-000000000408",
+        ),
+    ] {
+        let mut world = World::new();
+        let path = world.input(name, &bytes);
+        let out = wait_import(&world, &path, id, "20");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{name}: {out:?}; {}",
+            world.log()
+        );
+        let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(reply["outcome"], "error");
+        assert_eq!(reply["source_rows"]["state"], "unavailable");
+        assert_eq!(reply["source_rows"]["usable_result"], false);
+        assert!(reply["error"]["message"].as_str().unwrap().len() > 0);
+        fs::remove_file(&path).unwrap();
+        world.restart();
+        let retry = wait_import(&world, &path, id, "20");
+        assert_eq!(retry.status.code(), Some(2), "{retry:?}");
+    }
+}
+#[test]
+fn retained_byte_eof_stays_pending_until_real_message_effects_are_published() {
+    let world = World::new();
+    let text = "source effect ".repeat(42000);
+    let bytes = simple("large-canonical-effect", json!(text));
+    let path = world.input("eof-before-effects.jsonl", &bytes);
+    let id = "01900000-0000-7000-8000-000000000409";
+    let receipt = world.import(&path, id);
+    let input = receipt["retained"]["id"].as_str().unwrap();
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let p = world.raw_progress(input);
+        if p["parser"]["parsed_upto"] == receipt["retained"]["length"] {
+            assert_eq!(
+                p["source_rows"]["state"], "pending",
+                "did not observe the actual EOF-before-canonical boundary: {p}"
+            );
+            assert_eq!(p["parser"]["finalization_pending"], true);
+            break;
+        }
+        assert!(Instant::now() < deadline, "{p}");
+        thread::sleep(Duration::from_millis(2));
+    }
+    let settled = wait_import(&world, &path, id, "30");
+    assert_eq!(
+        settled.status.code(),
+        Some(0),
+        "{settled:?}; {}",
+        world.log()
+    );
+    let read = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(read.status.code(), Some(5));
+    let doc: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(doc["messages"][0]["blocks"][0]["text"], text);
 }

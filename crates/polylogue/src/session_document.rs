@@ -14,6 +14,17 @@ use std::{
     io::{self, Write},
     time::Instant,
 };
+pub(crate) const COVERAGE_GAPS: &[&str] = &[
+    "source_catalog_coverage",
+    "canonical_history_coverage",
+    "session_metadata_reductions",
+    "links_events_notes_runs_deliveries",
+    "tool_population_and_pairing",
+    "partial_excision_coverage",
+];
+fn result_qualification() -> Value {
+    json!({"outcome":"degraded","notes":COVERAGE_GAPS,"unknown":{}})
+}
 const LEAF: usize = 65536;
 const PIECE: usize = 4096;
 #[derive(Debug)]
@@ -149,7 +160,9 @@ pub(crate) fn write(
     e.syntax(b"{\"format\":\"polylogue-session\",\"version\":1,\"exported_by\":\"polylogue ")?;
     // Package version is fixed build metadata, not provider text.
     e.syntax(env!("CARGO_PKG_VERSION").as_bytes())?;
-    e.syntax(b"\",\"session\":{")?;
+    e.syntax(b"\"")?;
+    member(&mut e, "result", &result_qualification())?;
+    e.syntax(b",\"session\":{")?;
     let h = stored(session.header())?;
     e.key("id")?;
     e.identity(h.id.as_str())?;
