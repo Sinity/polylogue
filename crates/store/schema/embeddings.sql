@@ -12,7 +12,6 @@ CREATE TABLE embedded (
   UNIQUE (text_hash, model, chunk)
 ) STRICT;
 
-
 -- A text the provider permanently rejected (HTTP 400 and similar): recorded once
 -- with the provider's error, listed in `status`, retried only when the
 -- embedding key or the text changes.
