@@ -232,3 +232,35 @@ fn intrinsic_time_provenance_is_separate_from_volatile_free_version_units() {
         }
     }
 }
+
+#[test]
+fn native_children_and_legacy_array_results_keep_only_direct_fields() {
+    let bytes = header()
+        + &line(
+            "response_item",
+            json!({"type":"custom_tool_call","id":"wrapper","name":"exec","call_id":"w","input":""}),
+        )
+        + &line(
+            "event_msg",
+            json!({"type":"item_completed","turn_id":"t","item":{"type":"CommandExecution","id":"child","parent_call_id":"w","source":"agent","command":"","aggregated_output":"","status":"completed","exit_code":0,"duration":{"secs":0,"nanos":0},"extra":{}}}),
+        );
+    let (view, _) = parse(&bytes);
+    let fields = slots(&view, 0);
+    assert!(fields.contains_key(&block(1, B::Command)));
+    assert!(!fields.contains_key(&block(1, B::Tool)));
+    assert!(!fields.contains_key(&block(1, B::CallId)));
+    assert!(!fields.contains_key(&block(1, B::Input)));
+    assert_eq!(fields[&block(2, B::DurationMs)], br#"{"nanos":0,"secs":0}"#);
+    assert_eq!(fields[&block(2, B::Output)], br#""""#);
+    assert!(fields.contains_key(&Slot::Extra {
+        block: Some(BlockSlot::Item(1)),
+        key: "extra".into()
+    }));
+    assert!(!fields.contains_key(&Slot::Extra {
+        block: Some(BlockSlot::Item(2)),
+        key: "extra".into()
+    }));
+    let legacy=[json!({"id":"legacy:synthetic","timestamp":"2025-08-11T12:00:00Z"}),json!({"type":"function_call","id":"call","name":"tool","call_id":"c","arguments":"{}"}),json!({"type":"function_call_output","id":"result","call_id":"c","output":[{"text":"{\"is_error\":false}"}]})].iter().map(|v|v.to_string()+"\n").collect::<String>();
+    let (view, _) = parse(&legacy);
+    assert_eq!(slots(&view, 1)[&block(0, B::Outcome)], b"false");
+}

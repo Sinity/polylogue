@@ -219,30 +219,12 @@ pub(super) fn block(
                     add(B::DurationMs, raw)?;
                 }
             }
-            // Status embedded in an opaque output may directly supply fields.
-            // Textual success/error recognition is an inferred outcome: excluded.
+            // The outcome classifier gives explicit exit codes priority across
+            // all supported candidate objects. A code supplies ExitCode; the
+            // derived Ok/Error is not a second supplied Outcome field.
             if let Some(output) = output {
-                let parsed = value(output);
-                let inner = parsed
-                    .as_ref()
-                    .and_then(Value::as_str)
-                    .map(str::as_bytes)
-                    .unwrap_or(output);
-                for (name, field) in [("is_error", B::Outcome), ("exit_code", B::ExitCode)] {
-                    let raw = raw::field(inner, &[name])
-                        .or_else(|_| raw::field(inner, &["metadata", name]));
-                    if let Ok(raw) = raw {
-                        let valid = value(raw).is_some_and(|v| {
-                            if name == "is_error" {
-                                v.is_boolean()
-                            } else {
-                                v.as_i64().is_some()
-                            }
-                        });
-                        if valid {
-                            add(field, raw)?;
-                        }
-                    }
+                for (field, raw) in output_status(output)? {
+                    add(field, &raw)?;
                 }
             }
         }
@@ -325,4 +307,56 @@ pub(super) fn matches_message_key(key: &str, w: &Witness) -> bool {
         ) => w.source_time.is_none() && name.strip_prefix("extra:") == Some(extra.as_str()),
         _ => false,
     }
+}
+
+fn output_status(output: &[u8]) -> Result<Vec<(B, Vec<u8>)>, String> {
+    let mut code = None;
+    let mut is_error = None;
+    let mut candidate = |raw: &[u8]| {
+        if code.is_none() {
+            if let Ok(raw) = raw::field(raw, &["exit_code"])
+                .or_else(|_| raw::field(raw, &["metadata", "exit_code"]))
+            {
+                if value(raw).is_some_and(|v| v.as_i64().is_some()) {
+                    code = Some(raw.to_vec());
+                }
+            }
+        }
+        if is_error.is_none() {
+            if let Ok(raw) = raw::field(raw, &["is_error"])
+                .or_else(|_| raw::field(raw, &["metadata", "is_error"]))
+            {
+                if value(raw).is_some_and(|v| v.is_boolean()) {
+                    is_error = Some(raw.to_vec());
+                }
+            }
+        }
+    };
+    match output.first() {
+        Some(b'"') => {
+            if let Ok(inner) = serde_json::from_slice::<String>(output) {
+                candidate(inner.as_bytes());
+            }
+        }
+        Some(b'{') => candidate(output),
+        Some(b'[') => {
+            let items: Vec<&serde_json::value::RawValue> =
+                serde_json::from_slice(output).map_err(|e| e.to_string())?;
+            for item in items {
+                if let Ok(text) = raw::field(item.get().as_bytes(), &["text"]) {
+                    if let Ok(inner) = serde_json::from_slice::<String>(text) {
+                        candidate(inner.as_bytes());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(if let Some(code) = code {
+        vec![(B::ExitCode, code)]
+    } else if let Some(value) = is_error {
+        vec![(B::Outcome, value)]
+    } else {
+        vec![]
+    })
 }
