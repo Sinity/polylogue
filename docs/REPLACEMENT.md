@@ -1,6 +1,6 @@
-# Foundation replacement disposition
+# Foundation disposition
 
-Predecessor base: `b4b61c7eab8daf740bfdccb146e530906839726d`. This replacement exists only in the isolated branch. Primary master, hosted publication, installed consumers, task routing, services and archives remain unchanged.
+Predecessor base: `b4b61c7eab8daf740bfdccb146e530906839726d`. The Rust foundation is published as the repository source. Runtime activation, archive migration and consumer routing require separate qualification.
 
 ## Exact predecessor top-level paths
 
@@ -8,7 +8,7 @@ Predecessor base: `b4b61c7eab8daf740bfdccb146e530906839726d`. This replacement e
 |---|---|
 | `.agent` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
 | `.agentctl` | Replaced with declared isolated Nix foundation operations. |
-| `.circleci` | Replaced with the same quick-gate job name running actual Nix foundation checks; hosted execution remains unrun. |
+| `.circleci` | Replaced with the same quick-gate job name running actual Nix foundation checks. |
 | `.claude` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
 | `.codex` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
 | `.config` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
@@ -48,8 +48,8 @@ The replacement is the target `Cargo.toml`/lock, `crates/`, `xtask/`, Nix packag
 
 ## Operational boundary
 
-This is a foundation source replacement, not a usable M1 product. Known predecessor package consumers have explicit immutable source pins published in [Sinnix e9bdd3a75](https://github.com/Sinity/sinnix/commit/e9bdd3a750227d02baf8df851c95945b6a25b282) and [Lynchpin 0383336](https://github.com/Sinity/sinity-lynchpin/commit/03833361456999be6c84536fb6e0936b62d27ccb). Their locked graphs remain unchanged. These source declarations do not prove installed state, and explicit input overrides remain outside their scope. The current branch does not change those consumers. The successor CircleCI job definition keeps the existing quick-gate name and invokes actual target checks, but it has not run on the forge. Required protections and hosted review must be rechecked at publication.
+The Rust foundation was published through protected PR 6181 as `99972871d8ee48614a6206a10761e5b703c21f54`. Publication does not qualify runtime activation, archive migration, full canonical convergence or M1 behavior. Predecessor deployment consumers and retained data have separate operational custody. Known predecessor package consumers have explicit immutable source pins in [Sinnix e9bdd3a75](https://github.com/Sinity/sinnix/commit/e9bdd3a750227d02baf8df851c95945b6a25b282) and [Lynchpin 0383336](https://github.com/Sinity/sinity-lynchpin/commit/03833361456999be6c84536fb6e0936b62d27ccb). These declarations do not prove installed state; explicit input overrides remain outside their scope.
 
-The shared file layer is the canonical Polylogue owner candidate plus a reviewed read-only capability; source/adaptation digests are recorded in shared-crate-source.json. Package metadata and a disposable local-tag consumer prepare `hashed-blobs-v0.1.0`; [the release procedure](shared-file-layer-release.md) names the exact publication and vendor-replacement gates. The remote owner tag and real downstream pin remain open. No remote tag has been invented.
+The shared file layer is published under the annotated `hashed-blobs-v0.1.0` tag targeting that same commit. The independent extracted-package and Git-consumer checks passed before the tag was pushed; Sinex now consumes the owner repository rather than a vendored copy. [The release procedure](shared-file-layer-release.md) records the release boundaries. Current source changes still require their own package/client verification; shared-library publication does not qualify parser, search or export behavior.
 
-M1 acquisition, interpretation, retained revision/inline protocols, full query/read/export/MCP and index recovery remain later work. Physical data preservation, purchased vectors, provider inputs and task stores are separate operational responsibilities; this source branch neither imports nor deletes them.
+Retained Codex acquisition, parser-state restart and a limited selected-message terminal read have component and actual-client evidence. Complete canonical convergence, Claude/Morrow, JSON read/export, search/MCP, provenance and resource acceptance remain open. Physical data preservation, purchased vectors, provider inputs and task stores are separate operational responsibilities; synthetic verification neither imports nor deletes live provider data.

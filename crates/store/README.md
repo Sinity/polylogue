@@ -11,7 +11,7 @@ revisions, parsing or M1 support.
 
 All three schemas are exact SQL-fence extractions from the owning snapshot;
 a drift test compares their text. Archive version 1 adds the immutable import
-identity tuple; embeddings version remains zero and index version is 12. No
+identity tuple; embeddings version remains zero and index version is 15. No
 pre-release durable migration is supplied. Existing schemas and versions are checked before database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 it. Retained state without its coordination lock requires controlled recovery;
@@ -55,8 +55,8 @@ checkpoint share the final step transaction; the store primitive does not infer
 canonical completion from EOF. A per-index monotonic allocator survives head
 and input-key removal. Snapshot, stale-result, bounded retirement and actual
 child-process crash tests qualify this component, including the real archive
-writer lock. Provider ingestion, canonical message finalization and public
-client stepping are still unregistered.
+writer lock. The Codex owner uses this provider-state protocol through public import/progress
+requests. Canonical message finalization remains unfinished.
 
 Larger provider deltas can be staged in admitted encoded-cell batches, sealed,
 and applied in bounded cell/byte steps. New parser snapshots wait while this
@@ -69,7 +69,7 @@ message-local selection to final publication. Whole-cell encoding, decoding and
 SQLite page work remain explicitly unqualified for arbitrarily large cells.
 
 
-The forward index12 SQL is extracted from the pinned owning specification revision
+The forward index SQL is extracted from the pinned owning specification revision
 `INDEX_SPEC_COMMIT` and checked against `INDEX_SQL_BLAKE3`, copied Markdown, and
 actual SQLite application. Its Message head/body/directory schema replaces the
 old mutable Message columns. The inbox index8 executable comparison remains
@@ -86,8 +86,12 @@ its producer contract. No complete payload is hidden in a final readiness row.
 Message directory primitives copy a fixed radix16 path and retain unchanged
 children through counted references. Collection drains one at-most16-edge node
 per transaction, with pinned readers retaining their historical WAL snapshot.
-These primitives are still being connected to canonical Message activation and
-public reads; they do not certify those unfinished runtime operations.
+`ReadHandle::selected_message` pins one SQLite snapshot; block ordinals traverse
+at most32 fixed directory nodes and text reads return admitted value ranges.
+Unselected preparation is invisible. Current hidden/removal epochs revoke old
+snapshot reads; ordinary replacement preserves the pinned incarnation. This read
+primitive does not register a
+public consumer or qualify election and ready-body retirement.
 
 Pending Message preparation is separate from body selection. `prepare_message`
 reserves a committed, basis-pinned body/candidate without making it eligible or
@@ -100,8 +104,28 @@ value lease even after the source basis changes. Unpublished invalidated builds 
 one fixed-size directory node, one fact/source row, or final control metadata per
 turn. `collect_retiring_value` drains one chunk or final value row; building and
 ready unleased generic values are excluded. Candidate reconciliation, body
-activation, ready-body retirement and public-client/whole-path resource acceptance
+activation and public-client/whole-path resource acceptance
 remain open.
+
+`write_text_block` installs a Text/Thinking leaf through the group and local
+block directories. Its producer lease, both directory roots and projection cursor
+commit together. Old unleased paths release known text leaves and shared payload
+leases during bounded node collection. Field and no-output projection units use
+the same cursor CAS. `finish_message_projection` checks fixed roots and records a
+source producer's completed projection/evidence metadata. Body and candidate
+remain unready and ineligible, so interrupted folding still uses bounded abort.
+Restart recovers that projection through `prepare_message`. Source semantic
+coverage and the exact evidence proof remain required caller prerequisites.
+
+`retire_message_body` checks selection, active-build ownership and an indexed
+eligible-candidate liveness probe. One turn detaches an ineligible candidate's
+payload pointer, or deletes one unselected body and releases its fixed roots.
+Immutable rank/digest certificates and shared canonical/frontier leaves survive.
+Known leaf release reclaims facts/text only after directory and source-body
+ownership ends; `collect_message_candidate` drains one locator or its unused
+certificate. These APIs are being qualified independently of canonical election
+and public consumers. They do not implement privacy/excision closure or giant
+search retirement.
 
 Occupied field-conflict leaves pin a shared immutable witness subtree. They
 remain distinct from missing fields, contribute no new source-rank facts, and
@@ -128,3 +152,34 @@ replays the retained result before opening its provider path. Archive commit
 precedes repairable disposable `input_ref` registration. Capture cancellation is
 cooperative around decoder reads; seek tables, record/cell allocations and physical
 IO work remain outside a complete memory/latency qualification.
+
+Text and thinking preparation can hold one private block while its normalized
+field values stream. Each field changes one local field-directory path and the
+same source cursor; installation transfers the complete block to its prepared
+body directory atomically. Restart retains the active block, and abort releases
+its text/field leases before bounded collection. Block-local semantic keys omit
+the public ordinal; the mapper proves membership and the selected block root
+owns correspondence. Thinking text and encryption may remain unknown. These
+primitives do not certify source completeness or select a canonical body.
+
+`select_uncontested_source_message` activates one certified source body only
+when an indexed probe finds no competing eligible input candidate. Selection,
+index counter and session change marker commit together. A competing candidate
+keeps the prior selected body intact and leaves merge work pending. This first
+Codex path does not implement the full chain/input fold, fill, conflicts,
+operation summaries or search publication.
+
+`message_reference` resolves an opaque Message ID through its stored Session
+relation and distinguishes absent from not-yet-selected bodies. `block_at`
+uses the same fixed-depth order-statistic traversal as ordinal block reads,
+including interleaved separate reasoning IDs. The terminal client streams
+selected UTF-8 ranges; it reports degraded coverage rather than treating this
+consumer as complete source accounting or export support.
+
+Index 15 pins exact candidate source-span sets. Abort and historical candidate
+collection remove one full `(input, chain, start, end)` key per turn, with native
+failure rollback. Provider record citations are separate from field selectors
+and lazy payload extents. Historical field-origin descriptors and their second
+producer lease are the next owning schema/runtime seam, still unimplemented.
+
+Field facts may retain a separate chunked JSON origin descriptor. Preparation owns independent normalized-value and origin-value leases, including two counts when deduplication aliases them. Fact publication transfers both atomically; `FieldView::origin_range` reads the descriptor through the same selected snapshot. Integrity-ready JSON is only a carrier: source selector/transform validation, pinned-span membership and export remain separate unfinished obligations.

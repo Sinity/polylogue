@@ -190,10 +190,12 @@ CREATE TABLE message_candidate (
   ready INTEGER NOT NULL DEFAULT 0 CHECK(ready IN(0,1)), -- immutable preparation certificate
   eligible INTEGER NOT NULL DEFAULT 0 CHECK(eligible IN(0,1)), -- mutable source-basis eligibility
   CHECK(facts_ready=0 OR (source_blocks IS NOT NULL AND source_text_blocks IS NOT NULL AND source_fields IS NOT NULL)),
-  CHECK(eligible=0 OR ready=1),
-  CHECK(ready=0 OR (facts_ready=1 AND body_pk IS NOT NULL AND body_ready IS NOT NULL
-        AND source_blocks IS NOT NULL AND source_text_blocks IS NOT NULL
-        AND source_fields IS NOT NULL AND version_hash IS NOT NULL)),
+  CHECK(body_pk IS NOT NULL OR body_ready IS NULL),
+  CHECK(eligible=0 OR (ready=1 AND body_pk IS NOT NULL AND body_ready IS NOT NULL)),
+  CHECK(ready=0 OR ((body_pk IS NULL)=(body_ready IS NULL))),
+  CHECK(ready=0 OR (facts_ready=1 AND source_blocks IS NOT NULL
+        AND source_text_blocks IS NOT NULL AND source_fields IS NOT NULL
+        AND version_hash IS NOT NULL)),
   FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
   FOREIGN KEY(body_pk,message_pk,session_pk,body_ready) REFERENCES message_body(pk,message_pk,session_pk,ready),
   UNIQUE(pk,message_pk,session_pk,input_pk,version_hash,ready),
@@ -208,6 +210,7 @@ CREATE UNIQUE INDEX message_candidate_effective ON message_candidate(
 CREATE INDEX message_candidate_input ON message_candidate(input_pk,chain,revision);
 CREATE INDEX message_candidate_owner ON message_candidate(message_pk,session_pk);
 CREATE INDEX message_candidate_body ON message_candidate(body_pk) WHERE body_pk IS NOT NULL;
+CREATE INDEX message_candidate_required_body ON message_candidate(body_pk) WHERE eligible=1; -- fixed liveness probe without scanning retired pointers
 CREATE INDEX message_candidate_chain_rank ON message_candidate(message_pk,input_pk,chain,
   finish DESC,route DESC,source_blocks DESC,source_text_blocks DESC,source_fields DESC,
   revision_length DESC,version_hash DESC) WHERE eligible=1;
@@ -325,6 +328,9 @@ CREATE TABLE message_field_fact (
   slot_pk INTEGER NOT NULL,
   value_pk INTEGER NOT NULL,
   value_state TEXT NOT NULL DEFAULT 'ready' CHECK(value_state='ready'),
+  origin_value_pk INTEGER, -- immutable source-owned selector/transform + direct raw origins; NULL means unknown
+  origin_value_state TEXT NOT NULL DEFAULT 'ready' CHECK(origin_value_state='ready'),
+  origin_value_codec TEXT NOT NULL DEFAULT 'json' CHECK(origin_value_codec='json'),
   source_time INTEGER,
   supplied INTEGER NOT NULL CHECK(supplied IN(0,1)), -- mapper-owned before fill/enrichment
   FOREIGN KEY(candidate_pk,message_pk,session_pk)
@@ -332,12 +338,15 @@ CREATE TABLE message_field_fact (
   FOREIGN KEY(slot_pk,message_pk,session_pk)
     REFERENCES message_field_slot(pk,message_pk,session_pk),
   FOREIGN KEY(value_pk,value_state) REFERENCES body_value(pk,state),
-  UNIQUE(pk,message_pk,session_pk),
-  UNIQUE(candidate_pk,slot_pk)
+  FOREIGN KEY(origin_value_pk,origin_value_state,origin_value_codec)
+    REFERENCES body_value(pk,state,codec),
+  UNIQUE(pk,message_pk,session_pk)
 ) STRICT;
 CREATE INDEX message_field_fact_owner ON message_field_fact(message_pk,session_pk);
+CREATE INDEX message_field_fact_candidate ON message_field_fact(candidate_pk,slot_pk,pk);
 CREATE INDEX message_field_fact_slot ON message_field_fact(slot_pk);
 CREATE INDEX message_field_fact_value ON message_field_fact(value_pk);
+CREATE INDEX message_field_fact_origin ON message_field_fact(origin_value_pk);
 
 -- Message-local immutable directories. Outer groups reference block roots;
 -- separate field roots retain donor facts without serializing/copying a map.
@@ -437,17 +446,22 @@ CREATE TABLE message_build (
   removal_epoch INTEGER NOT NULL CHECK(removal_epoch>=0),
   phase TEXT NOT NULL CHECK(phase IN('project','rank','fold','hash','layout','ready','retiring')),
   active_value_pk INTEGER REFERENCES body_value(pk), -- durable producer lease, transferred/released atomically
+  active_origin_value_pk INTEGER REFERENCES body_value(pk), -- independent producer lease for the pending field's origin descriptor
+  active_block_pk INTEGER, -- one private mutable block; transferred to its directory atomically
   source_cursor INTEGER NOT NULL DEFAULT 0 CHECK(source_cursor>=0),
   group_cursor INTEGER NOT NULL DEFAULT 0 CHECK(group_cursor>=0),
   local_cursor INTEGER NOT NULL DEFAULT 0 CHECK(local_cursor>=0),
   field_cursor INTEGER NOT NULL DEFAULT 0 CHECK(field_cursor>=0),
   hash_offset INTEGER NOT NULL DEFAULT 0 CHECK(hash_offset>=0),
   FOREIGN KEY(body_pk,message_pk,session_pk) REFERENCES message_body(pk,message_pk,session_pk),
+  FOREIGN KEY(active_block_pk,message_pk,session_pk) REFERENCES block(pk,message_pk,session_pk),
   UNIQUE(message_pk),
   UNIQUE(pk,message_pk,session_pk)
 ) STRICT;
 CREATE INDEX message_build_body ON message_build(body_pk);
 CREATE INDEX message_build_value ON message_build(active_value_pk);
+CREATE INDEX message_build_origin_value ON message_build(active_origin_value_pk);
+CREATE INDEX message_build_block ON message_build(active_block_pk) WHERE active_block_pk IS NOT NULL;
 -- Fixed frontier slots lease ready nodes while paths are copied. A path through
 -- an outer group/block path or field/conflict-witness path has at most 32 radix16 nodes. Root
 -- leases owned by bodies/representatives are separate incoming references.
@@ -464,8 +478,9 @@ CREATE TABLE message_build_frontier (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_build_frontier_node ON message_build_frontier(node_pk);
 
--- Exact contributor locators, pinned to source candidate/input/chain. A citation
--- never substitutes a current chain for the retained chain in this row.
+-- Exact contributor spans, pinned to source candidate/input/chain. Several
+-- disjoint records may supply one candidate; no bounding-envelope fallback.
+-- A citation never substitutes a current chain for this retained chain.
 CREATE TABLE message_source (
   candidate_pk      INTEGER NOT NULL,
   message_pk        INTEGER NOT NULL,
@@ -476,7 +491,7 @@ CREATE TABLE message_source (
   source_end        INTEGER NOT NULL CHECK(source_end>=source_start),
   FOREIGN KEY(candidate_pk,message_pk,session_pk,input_pk,chain)
     REFERENCES message_candidate(pk,message_pk,session_pk,input_pk,chain),
-  PRIMARY KEY (candidate_pk, input_pk, chain)
+  PRIMARY KEY (candidate_pk, input_pk, chain, source_start, source_end)
 ) STRICT;
 CREATE INDEX message_source_message ON message_source(message_pk);
 CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
@@ -503,6 +518,8 @@ CREATE TABLE block (
   slot_kind         TEXT NOT NULL CHECK(slot_kind IN('ordinary','reasoning','attachment')),
   attach_key        TEXT,
   kind              TEXT NOT NULL CHECK(kind IN('text','thinking','tool_call','tool_result','image','file','other')),
+  source_block INTEGER NOT NULL DEFAULT 0 CHECK(source_block IN(0,1)),
+  source_text INTEGER NOT NULL DEFAULT 0 CHECK(source_text IN(0,1) AND source_text<=source_block),
   field_root_pk INTEGER,
   field_root_kind TEXT NOT NULL DEFAULT 'fields' CHECK(field_root_kind='fields'),
   field_root_state TEXT NOT NULL DEFAULT 'ready' CHECK(field_root_state='ready'),
@@ -515,7 +532,7 @@ CREATE TABLE block (
   direction         TEXT,                   -- image/file: input | output | unknown
   produced_by_pk    INTEGER,                -- image/file output: the block of the tool call or image request that made it
   size              INTEGER,                -- image/file
-  encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
+  encrypted         INTEGER CHECK(encrypted IS NULL OR encrypted IN(0,1)), -- unknown remains unknown
   result_outcome    TEXT,                   -- tool_result: provider fact, retained even without a paired call
   result_reason     TEXT,                   -- unknown/error reason in the exported vocabulary
   result_exit_code  INTEGER,

@@ -5,3 +5,7 @@ pub mod converge;
 pub mod owner;
 pub mod source_turn;
 pub mod state;
+
+pub mod version_proof;
+
+pub mod canonical_message;

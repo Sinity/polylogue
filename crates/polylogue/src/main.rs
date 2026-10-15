@@ -44,7 +44,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|import PATH --format codex-rollout|progress INPUT|retry INPUT|config schema>\nImport retains one regular file. Canonical queries, search, export and MCP remain unavailable.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|import PATH --format codex-rollout|progress INPUT|retry INPUT|message:REF read --format terminal|config schema>\nImport retains one regular file. Only selected message: terminal reads are registered; their coverage remains degraded. Session queries, JSON read, search, export and MCP remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -78,7 +78,12 @@ fn run() -> Result<i32, Failure> {
     } else {
         env::current_dir().map_err(io_error)?.join(archive)
     };
-    let command = if args.first().map(String::as_str) == Some("import") {
+    let terminal_read = args.first().is_some_and(|s| s.starts_with("message:"))
+        && (args.len() == 2 && args[1] == "read"
+            || args.len() == 4 && args[1..] == ["read", "--format", "terminal"]);
+    let command = if terminal_read {
+        Some(json!({"command":"read","reference":args[0],"format":"terminal"}))
+    } else if args.first().map(String::as_str) == Some("import") {
         Some(import_cli::request(&args)?)
     } else if args.first().map(String::as_str) == Some("progress") && args.len() == 2 {
         Some(json!({"command":"progress","input":args[1]}))
@@ -140,6 +145,21 @@ fn run() -> Result<i32, Failure> {
         )
     })?;
     let socket = polylogue::socket_path(&resolved, &runtime);
+    if terminal_read {
+        let reply =
+            polylogue::reference_read::request(&socket, &args[0], &mut out).map_err(io_error)?;
+        if reply["outcome"] == "error" {
+            return Err(
+                serde_json::from_value::<Failure>(reply["error"].clone()).map_err(io_error)?
+            );
+        }
+        if reply["outcome"] == "degraded" {
+            eprintln!(
+                "Read coverage is incomplete: canonical history and source provenance remain pending."
+            );
+        }
+        return reply_exit_code(&reply);
+    }
     if let Some(command) = command.as_ref().filter(|v| v["command"] == "import") {
         eprintln!(
             "import request {} --seen-at {}",

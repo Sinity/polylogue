@@ -1,7 +1,9 @@
 //! Single Writer actor for retained Codex immutable imports and provider-state
-//! progress. Capture and raw-window computation run on separate workers. This
-//! does not publish canonical Messages, search, or complete history coverage.
+//! progress plus the first uncontested Codex Message materialization path.
+//! Capture, provider interpretation and canonical encoding run outside the actor.
+//! Search, contested merges and complete history coverage remain pending.
 use crate::{
+    canonical_message,
     converge::{self, PendingInstall, Recovery, Turn},
     source_turn::{
         self, Budgets, CommitGuard, CommittedContinuation, Computation, SourceContext, Window,
@@ -26,7 +28,7 @@ use std::{
 };
 // These are admission limits, not format limits or a hard RSS bound. A rejected
 // record/cell remains owed and its required capacity is kept in the diagnostic.
-// Configurable larger admissions and canonical publication are separate work.
+// Configurable larger admissions and full canonical convergence remain open.
 const COMMANDS: usize = 16;
 const REQUEST_BYTES: usize = 65_536;
 const WINDOW_BYTES: u64 = 65_536;
@@ -37,6 +39,7 @@ const CONTEXT: &str =
 pub enum Error {
     Store(StoreError),
     Source(source_turn::Error),
+    Canonical(canonical_message::Error),
     Busy,
     Stopped,
     RequestTooLarge { required: usize, maximum: usize },
@@ -59,6 +62,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::Store(e) => std::fmt::Display::fmt(e, f),
             Self::Source(e) => std::fmt::Display::fmt(e, f),
+            Self::Canonical(e) => std::fmt::Display::fmt(e, f),
             Self::Busy => f.write_str("owner is busy; retry the unchanged request"),
             Self::Stopped => f.write_str("owner stopped"),
             Self::RequestTooLarge { required, maximum } => write!(
@@ -114,6 +118,7 @@ enum Message {
     Retry(String, Reply<()>),
     Captured(Result<PreparedBlob>),
     Computed(Result<Computation>),
+    CanonicalComputed(Result<Option<canonical_message::Action>>),
     Wake,
 }
 struct Inner {
@@ -244,17 +249,31 @@ struct ComputeJob {
     head: Head,
     join: JoinHandle<()>,
 }
+struct CanonicalJob {
+    input: ImmutableImport,
+    head: Head,
+    ordinal: usize,
+    handle: Option<canonical_message::Handle>,
+    join: JoinHandle<()>,
+}
 enum Active {
     Begin(ImmutableImport),
     Recover(ImmutableImport, Head),
     Compute(ImmutableImport, Head, Option<CommittedContinuation>),
     Install(ImmutableImport, Head, PendingInstall, CommitGuard),
+    Canonical(
+        ImmutableImport,
+        Head,
+        usize,
+        Option<canonical_message::Handle>,
+    ),
 }
 struct Actor {
     writer: Writer,
     inner: Arc<Inner>,
     capture: Option<CaptureJob>,
     compute: Option<ComputeJob>,
+    canonical: Option<CanonicalJob>,
     active: Option<Active>,
     after: String,
     scanning: bool,
@@ -270,6 +289,7 @@ impl Actor {
             inner,
             capture: None,
             compute: None,
+            canonical: None,
             active: None,
             after: String::new(),
             scanning: true,
@@ -294,6 +314,7 @@ impl Actor {
             }
             let immediate = !self.stopping
                 && self.compute.is_none()
+                && self.canonical.is_none()
                 && (self.active.is_some() || self.scanning);
             let message = match rx.try_recv() {
                 Ok(m) => Some(m),
@@ -323,7 +344,11 @@ impl Actor {
                     self.begin_stop();
                 }
             }
-            if self.stopping && self.capture.is_none() && self.compute.is_none() {
+            if self.stopping
+                && self.capture.is_none()
+                && self.compute.is_none()
+                && self.canonical.is_none()
+            {
                 // Closing accepting under its mutex precedes this drain; no
                 // request accepted before shutdown can lose its explicit reply.
                 while let Ok(message) = rx.try_recv() {
@@ -334,6 +359,9 @@ impl Actor {
         }
     }
     fn active_id(&self) -> Option<&str> {
+        if let Some(job) = &self.canonical {
+            return Some(&job.input.input.id);
+        }
         if let Some(job) = &self.compute {
             return Some(&job.input.input.id);
         }
@@ -342,7 +370,8 @@ impl Actor {
                 Active::Begin(i)
                 | Active::Recover(i, _)
                 | Active::Compute(i, _, _)
-                | Active::Install(i, _, _, _),
+                | Active::Install(i, _, _, _)
+                | Active::Canonical(i, _, _, _),
             ) => Some(&i.input.id),
             None => None,
         }
@@ -363,7 +392,11 @@ impl Actor {
                 match replay {
                     Ok(Some(input)) => {
                         self.scan_again = true;
-                        if !self.scanning && self.active.is_none() && self.compute.is_none() {
+                        if !self.scanning
+                            && self.active.is_none()
+                            && self.compute.is_none()
+                            && self.canonical.is_none()
+                        {
                             self.restart_scan();
                         }
                         let _ = reply.send(Ok(input));
@@ -456,7 +489,11 @@ impl Actor {
                 });
                 if result.is_ok() {
                     self.scan_again = true;
-                    if !self.scanning && self.active.is_none() && self.compute.is_none() {
+                    if !self.scanning
+                        && self.active.is_none()
+                        && self.compute.is_none()
+                        && self.canonical.is_none()
+                    {
                         self.restart_scan();
                     }
                 }
@@ -487,6 +524,57 @@ impl Actor {
                     }
                     Ok(Computation::Idle { .. }) => {}
                     Err(e) => self.fail(&job.head, e.to_string())?,
+                }
+            }
+            Message::CanonicalComputed(result) => {
+                let job = self
+                    .canonical
+                    .take()
+                    .ok_or(Error::InvalidRequest("unexpected canonical completion"))?;
+                job.join.join().map_err(|_| Error::WorkerPanicked)?;
+                if self.stopping {
+                    return Ok(());
+                }
+                match result {
+                    Ok(Some(action)) => {
+                        let operation = action.operation();
+                        match canonical_message::apply(&mut self.writer, action) {
+                            Ok(canonical_message::Applied::Prepared(handle)) => {
+                                self.active = Some(Active::Canonical(
+                                    job.input,
+                                    job.head,
+                                    job.ordinal,
+                                    Some(handle),
+                                ));
+                            }
+                            Ok(canonical_message::Applied::Progress) => {
+                                self.active = Some(Active::Canonical(
+                                    job.input,
+                                    job.head,
+                                    job.ordinal,
+                                    job.handle,
+                                ));
+                            }
+                            Ok(
+                                canonical_message::Applied::Source(source)
+                                | canonical_message::Applied::Existing(source),
+                            ) => {
+                                match self.writer.select_uncontested_source_message(&source, 65536) {
+                                Ok(polylogue_store::contributions::SourceSelection::Contested) => self.fail(&job.head, "canonical Message has competing input candidates; merge remains pending".into())?,
+                                Ok(_) => {
+                                    let next = job.ordinal.checked_add(1).ok_or(StoreError::Range)?;
+                                    self.active = Some(Active::Canonical(job.input, job.head, next, None));
+                                }
+                                Err(e) => self.fail(&job.head, format!("canonical selection: {e}"))?,
+                            }
+                            }
+                            Err(e) => {
+                                self.fail(&job.head, format!("canonical {operation}: {e}"))?
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => self.fail(&job.head, format!("canonical compute: {e}"))?,
                 }
             }
             Message::Wake => {}
@@ -536,7 +624,7 @@ impl Actor {
         }
         self.scan_again = true;
         self.recovery_error = None;
-        if self.active.is_none() && self.compute.is_none() {
+        if self.active.is_none() && self.compute.is_none() && self.canonical.is_none() {
             self.restart_scan();
         }
         Ok(())
@@ -554,7 +642,7 @@ impl Actor {
         Ok(())
     }
     fn tick(&mut self) -> Result<()> {
-        if self.compute.is_some() {
+        if self.compute.is_some() || self.canonical.is_some() {
             return Ok(());
         }
         let active = match self.active.take() {
@@ -615,11 +703,15 @@ impl Actor {
                     Ok(Recovery::Reparse) => {
                         if !settled(&head) {
                             self.active = Some(Active::Compute(input, head, None));
+                        } else if head.status == "finalizing" {
+                            self.active = Some(Active::Canonical(input, head, 0, None));
                         }
                     }
                     Ok(Recovery::Published(head)) => {
                         if !settled(&head) {
                             self.active = Some(Active::Compute(input, head, None));
+                        } else if head.status == "finalizing" {
+                            self.active = Some(Active::Canonical(input, head, 0, None));
                         }
                     }
                     Err(e) => self.fail(&head, e.to_string())?,
@@ -682,6 +774,96 @@ impl Actor {
                     Err(e) => self.fail(&head, e.to_string())?,
                 }
             }
+            Active::Canonical(input, head, ordinal, handle) => {
+                let snapshot = self.writer.parser_snapshot(&head.token)?;
+                let reader = self.writer.read_handle()?;
+                let state = handle
+                    .as_ref()
+                    .map(|h| canonical_message::inspect(&mut self.writer, h, 65536))
+                    .transpose();
+                let state = match state {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.fail(&head, format!("canonical inspect: {e}"))?;
+                        return Ok(());
+                    }
+                };
+                let logical_key = canonical_key(ordinal)?;
+                let current = if state.is_none() {
+                    self.writer
+                        .current_source_projection(&head.token, &logical_key, 65536)?
+                } else {
+                    None
+                };
+                let source_hash = input.hash;
+                let cancelled = Arc::clone(&self.inner.cancelled);
+                let sender = self.inner.sender.clone();
+                let join = thread::Builder::new()
+                    .name("polylogue-canonical".into())
+                    .spawn(move || {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                            || -> Result<Option<canonical_message::Action>> {
+                                if cancelled.load(Ordering::Acquire) {
+                                    return Err(StoreError::Cancelled.into());
+                                }
+                                let action = if let Some(state) = state {
+                                    canonical_message::compute(
+                                        &snapshot,
+                                        &reader,
+                                        &state,
+                                        canonical_budgets(),
+                                        &cancelled,
+                                    )
+                                    .map_err(Error::Canonical)?
+                                } else {
+                                    let attempt = crate::state::codex::Attempt::new(
+                                        &snapshot,
+                                        source_budgets().reads,
+                                    );
+                                    let resume = attempt.resume();
+                                    if let Some(e) = attempt.take_failure() {
+                                        return Err(e.into());
+                                    }
+                                    let resume = resume.map_err(|e| {
+                                        Error::Canonical(canonical_message::Error::Source(e))
+                                    })?;
+                                    if ordinal >= resume.message_count() {
+                                        return Ok(None);
+                                    }
+                                    canonical_message::start(
+                                        &snapshot,
+                                        &canonical_message::Request {
+                                            message: ordinal,
+                                            revision: 1,
+                                            logical_key,
+                                            source_hash,
+                                        },
+                                        current,
+                                        source_budgets().reads,
+                                        65536,
+                                    )
+                                    .map_err(Error::Canonical)?
+                                };
+                                Ok(Some(action))
+                            },
+                        ))
+                        .map_err(|_| Error::WorkerPanicked)
+                        .and_then(|r| r);
+                        let _ = sender.send(Message::CanonicalComputed(result));
+                    });
+                match join {
+                    Ok(join) => {
+                        self.canonical = Some(CanonicalJob {
+                            input,
+                            head,
+                            ordinal,
+                            handle,
+                            join,
+                        })
+                    }
+                    Err(e) => self.fail(&head, e.to_string())?,
+                }
+            }
             Active::Install(input, head, mut install, guard) => {
                 match install.turn(&mut self.writer, install_budget()) {
                     Ok(Turn::Yielded) => {
@@ -692,6 +874,8 @@ impl Actor {
                             if !settled(&published) {
                                 self.active =
                                     Some(Active::Compute(input, published, Some(continuation)));
+                            } else if published.status == "finalizing" {
+                                self.active = Some(Active::Canonical(input, published, 0, None));
                             }
                         }
                         Err(e) => self.fail(&published, e.to_string())?,
@@ -709,6 +893,7 @@ fn settled(head: &Head) -> bool {
 fn basis(hash: &BlobHash) -> [u8; 32] {
     let mut bytes = b"polylogue.codex.immutable.parser-basis.v1\0".to_vec();
     bytes.extend_from_slice(&codex::PARSER_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&crate::state::codex::STATE_LAYOUT_VERSION.to_be_bytes());
     bytes.extend_from_slice(hash.bytes());
     bytes.extend_from_slice(CONTEXT.as_bytes());
     *BlobHash::of(&bytes).bytes()
@@ -815,6 +1000,66 @@ mod tests {
     }
     fn raw() -> &'static [u8] {
         b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"synthetic-session\",\"source\":\"cli\"}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"u\",\"role\":\"user\",\"content\":[{\"text\":\"hello\"}]}}\n"
+    }
+    #[test]
+    fn actor_selects_a_source_message_but_never_certifies_history_done() {
+        use polylogue_sources::{
+            codex::keyed::{KeyedRecords, MemoryReadView, Resume},
+            frame::drive_jsonl,
+        };
+        let framed = drive_jsonl(
+            KeyedRecords::new(MemoryReadView::default(), Resume::default()),
+            raw(),
+            0,
+        );
+        let delta = framed.output.unwrap();
+        let mut memory = MemoryReadView::default();
+        memory.apply(&delta);
+        let message = memory.projected_message(0).unwrap().unwrap().id;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic-canonical.jsonl");
+        std::fs::write(&path, raw()).unwrap();
+        let writer = Writer::open(&dir.path().join("archive")).unwrap();
+        let reader = writer.read_handle().unwrap();
+        let service = Owner::start(writer, Arc::new(AtomicBool::new(false))).unwrap();
+        let retained = import(
+            &service.handle(),
+            request(&path, "synthetic-canonical-request"),
+        );
+        std::fs::remove_file(&path).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let p = progress(&service.handle(), &retained.id);
+            assert!(p.failure.is_none(), "{:?}", p.failure);
+            assert!(!p.canonical_complete);
+            if let Some(view) = reader.selected_message(&message).unwrap() {
+                let block = view
+                    .block(polylogue_model::BlockSlot::Item(0))
+                    .unwrap()
+                    .unwrap();
+                let range = block.text_range(0, 64).unwrap().unwrap();
+                assert_eq!(range.bytes, b"hello");
+                assert!(p.parser.unwrap().finalization_pending);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "canonical source message did not become readable"
+            );
+            thread::yield_now();
+        }
+        // Receipt replay still works after provider loss while the actor serves
+        // selected-message readers; retention is independent of finalization.
+        assert_eq!(
+            import(
+                &service.handle(),
+                request(&path, "synthetic-canonical-request")
+            )
+            .id,
+            retained.id
+        );
+        service.shutdown().unwrap();
+        assert!(reader.selected_message(&message).unwrap().is_some());
     }
     #[test]
     fn retained_receipt_replays_before_missing_source_and_recovers_provider_state() {
@@ -959,5 +1204,20 @@ mod tests {
             reply.recv_timeout(Duration::from_secs(10)),
             Ok(Ok(_)) | Ok(Err(Error::Stopped))
         ));
+    }
+}
+
+fn canonical_key(ordinal: usize) -> Result<[u8; 32]> {
+    let ordinal = u64::try_from(ordinal).map_err(|_| StoreError::Range)?;
+    let mut bytes = b"polylogue.codex.logical-message.v1\0".to_vec();
+    bytes.extend_from_slice(&ordinal.to_be_bytes());
+    Ok(*BlobHash::of(&bytes).bytes())
+}
+fn canonical_budgets() -> canonical_message::Budgets {
+    canonical_message::Budgets {
+        read: source_budgets().reads,
+        metadata: 65536,
+        value_chunk: 65536,
+        hash_bytes: 65536,
     }
 }

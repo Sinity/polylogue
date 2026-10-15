@@ -134,7 +134,7 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
             }
             _ => Err(failed(
                 ErrorKind::NotYetAvailable,
-                "operation is not registered; canonical read, search and export remain unavailable",
+                "operation is not registered; only selected message: terminal reads are available, with incomplete coverage",
             )),
         }
     };

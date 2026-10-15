@@ -640,7 +640,7 @@ mod tests {
             .stage_parser(&work.token, &[change("a", "one")], budget())
             .unwrap();
         drop(writer);
-        let mut writer = crate::Writer::open(&root).unwrap();
+        let mut writer = reopen_after_drop(&root);
         let resumed = writer.parser_work(&head.token).unwrap().unwrap();
         assert_eq!(resumed.token, work.token);
         let work = writer
@@ -649,7 +649,7 @@ mod tests {
         let work = writer.seal_parser(&work.token).unwrap();
         let work = writer.apply_parser(&work.token, budget()).unwrap();
         drop(writer);
-        let mut writer = crate::Writer::open(&root).unwrap();
+        let mut writer = reopen_after_drop(&root);
         let resumed = writer.parser_work(&head.token).unwrap().unwrap();
         assert_eq!(resumed.token, work.token);
         assert_eq!(resumed.token.applied, 1);
@@ -662,7 +662,7 @@ mod tests {
         assert_eq!(published.status, "done");
         assert_eq!(published.counts.used, 1);
         drop(writer);
-        let writer = crate::Writer::open(&root).unwrap();
+        let writer = reopen_after_drop(&root);
         assert!(writer.parser_work(&published.token).unwrap().is_none());
         assert_eq!(
             writer

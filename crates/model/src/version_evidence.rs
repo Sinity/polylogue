@@ -39,6 +39,11 @@ pub struct Framer {
     used: u64,
 }
 impl Framer {
+    /// Fixed compound prefix and unit-count work before the first unit.
+    pub const fn compound_minimum_bytes() -> u64 {
+        PREFIX.len() as u64 + 8
+    }
+
     /// The sole whole-record/no-required-body exception has no prefix or tag.
     /// This constructor is a producer assertion of that exact source recipe.
     pub fn single_whole_record(payload_length: u64, allowance: u64) -> Self {

@@ -1,7 +1,11 @@
 //! Source-supplied witnesses, captured beside the single mapping core. Values
 //! remain canonical raw fields, not normalized DTO values. A group has one entry
 //! per semantic slot; replacement removes only that source owner's old fields.
-use super::{has_nonempty_text, has_recorded_output, is_shell_tool, native_duration, raw};
+use super::origins::Origins;
+use super::selection::{FactSelection, Transform};
+use super::{
+    has_nonempty_text, has_recorded_output, is_shell_tool, native_duration, raw, text_parts,
+};
 use polylogue_model::merge::{BlockField as B, MessageField as M, Slot, UsageField as U};
 use polylogue_model::{BlockSlot, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -19,6 +23,48 @@ pub struct Witness {
     pub canonical: Vec<u8>,
     pub source_time: Option<Timestamp>,
     pub owner: Owner,
+    #[serde(default)]
+    pub origins: Origins,
+    #[serde(default)]
+    pub selection: Option<FactSelection>,
+}
+impl Witness {
+    fn valid_selection(&self) -> bool {
+        let Some(selection) = &self.selection else {
+            return true;
+        };
+        if selection.validate().is_err() {
+            return false;
+        }
+        let expected = match &self.slot {
+            Slot::Message(M::At | M::CompletedAt) => Transform::ProviderTimeV1,
+            Slot::Message(M::Model) => Transform::JsonStringV1,
+            Slot::Block {
+                field: B::Text | B::ThinkingText,
+                ..
+            } => Transform::TextJoinLfV1,
+            Slot::Block {
+                field: B::ThinkingData,
+                ..
+            } => Transform::JsonStringV1,
+            Slot::Extra { .. } => Transform::JsonValueV1,
+            _ => return false,
+        };
+        if expected != selection.transform {
+            return false;
+        }
+        let Some(base) = self.origins.selected() else {
+            return false;
+        };
+        selection.inputs.iter().all(|input| {
+            input.record == base.record
+                && if selection.transform == Transform::TextJoinLfV1 {
+                    input.path.starts_with(&base.path)
+                } else {
+                    input.path == base.path
+                }
+        })
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Group {
@@ -34,7 +80,8 @@ impl Group {
                 matches!(
                     w.slot,
                     Slot::Block { .. } | Slot::Extra { block: Some(_), .. }
-                ) && w.source_time.is_none()
+                ) && w.valid_selection()
+                    && w.source_time.is_none()
                     && slots.insert(&w.slot)
             })
     }
@@ -66,6 +113,8 @@ fn witness(slot: Slot, raw: &[u8], owner: Owner) -> Result<Witness, String> {
             .map_err(|e| e.to_string())?,
         source_time: None,
         owner,
+        origins: Origins::Unknown,
+        selection: None,
     })
 }
 pub(super) fn message(field: M, raw: &[u8], time: Option<Timestamp>) -> Result<Witness, String> {
@@ -101,6 +150,7 @@ pub(super) fn block(
     slot: &BlockSlot,
     kind: Kind,
     owner: Owner,
+    origins: &Origins,
 ) -> Result<Group, String> {
     let itemraw = raw::field(record, path)?;
     let item: Value = serde_json::from_slice(itemraw).map_err(|e| e.to_string())?;
@@ -108,8 +158,8 @@ pub(super) fn block(
         nonempty: true,
         ..Group::default()
     };
-    let mut add = |field: B, fieldraw: &[u8]| -> Result<(), String> {
-        let w = witness(
+    let mut add = |field: B, fieldraw: &[u8], source_field: &str| -> Result<(), String> {
+        let mut w = witness(
             Slot::Block {
                 block: slot.clone(),
                 field,
@@ -117,6 +167,30 @@ pub(super) fn block(
             fieldraw,
             owner,
         )?;
+        w.origins = origins.field(source_field);
+        w.selection = match field {
+            B::Text | B::ThinkingText => {
+                let selected = w.origins.selected();
+                selected.and_then(|base| {
+                    let inputs: Vec<_> = super::text_parts_with_paths(item.get(source_field))
+                        .map(|(path, _)| {
+                            let mut selected = base.clone();
+                            selected.path.extend(path);
+                            selected
+                        })
+                        .collect();
+                    (!inputs.is_empty())
+                        .then(|| FactSelection::new(Transform::TextJoinLfV1, inputs))
+                })
+            }
+            B::ThinkingData => w
+                .origins
+                .selected()
+                .map(|raw| FactSelection::new(Transform::JsonStringV1, vec![raw])),
+            // Inner-string decoding and result/continuation composition are
+            // explicitly unsupported until their source-owned recipes exist.
+            _ => None,
+        };
         group.fields.retain(|old| old.slot != w.slot);
         group.fields.push(w);
         Ok(())
@@ -130,20 +204,20 @@ pub(super) fn block(
             }
             group.nonempty_text = true;
             if let Some(raw) = get("content") {
-                add(B::Text, raw)?;
+                add(B::Text, raw, "content")?;
             }
         }
         Kind::Thinking => {
             if let Some(raw) = get("summary") {
-                if value(raw).is_some_and(|v| v.is_array() || v.is_string()) {
-                    add(B::ThinkingText, raw)?;
+                if text_parts(item.get("summary")).next().is_some() {
+                    add(B::ThinkingText, raw, "summary")?;
                 }
                 group.nonempty_text = has_nonempty_text(item.get("summary"));
             }
             if let Some(raw) =
                 get("encrypted_content").filter(|raw| value(raw).is_some_and(|v| v.is_string()))
             {
-                add(B::ThinkingData, raw)?;
+                add(B::ThinkingData, raw, "encrypted_content")?;
             }
             // encrypted is derived from summary/data, never a supplied boolean.
         }
@@ -155,11 +229,19 @@ pub(super) fn block(
             ] {
                 if let Some(raw) = get(name).filter(|raw| value(raw).is_some_and(|v| v.is_string()))
                 {
-                    add(field, raw)?;
+                    add(field, raw, name)?;
                 }
             }
             if let Some(raw) = get("arguments").or_else(|| get("input")) {
-                add(B::Input, raw)?;
+                add(
+                    B::Input,
+                    raw,
+                    if get("arguments").is_some() {
+                        "arguments"
+                    } else {
+                        "input"
+                    },
+                )?;
             }
             if item
                 .get("name")
@@ -180,7 +262,15 @@ pub(super) fn block(
                             v.is_string()
                                 || v.as_array().is_some_and(|a| a.iter().all(Value::is_string))
                         }) {
-                            add(B::Command, command)?;
+                            add(
+                                B::Command,
+                                command,
+                                if get("arguments").is_some() {
+                                    "arguments"
+                                } else {
+                                    "input"
+                                },
+                            )?;
                         }
                     }
                 }
@@ -193,30 +283,46 @@ pub(super) fn block(
                 if let Some(raw) =
                     get("call_id").filter(|raw| value(raw).is_some_and(|v| v.is_string()))
                 {
-                    add(B::CallId, raw)?;
+                    add(B::CallId, raw, "call_id")?;
                 }
             }
             let output = get("aggregated_output").or_else(|| get("output"));
             if let Some(raw) = output.filter(|raw| {
                 owner != Owner::Status && value(raw).is_some_and(|v| has_recorded_output(Some(&v)))
             }) {
-                add(B::Output, raw)?;
+                add(
+                    B::Output,
+                    raw,
+                    if get("aggregated_output").is_some() {
+                        "aggregated_output"
+                    } else {
+                        "output"
+                    },
+                )?;
             }
             if let Some(raw) = get("status").filter(|raw| {
                 value(raw).is_some_and(|v| {
                     matches!(v.as_str(), Some("completed" | "failed" | "declined"))
                 })
             }) {
-                add(B::Outcome, raw)?;
+                add(B::Outcome, raw, "status")?;
             }
             if let Some(raw) =
                 get("exit_code").filter(|raw| value(raw).is_some_and(|v| v.as_i64().is_some()))
             {
-                add(B::ExitCode, raw)?;
+                add(B::ExitCode, raw, "exit_code")?;
             }
             if native_duration(&item).is_some() {
                 if let Some(raw) = get("duration_ms").or_else(|| get("duration")) {
-                    add(B::DurationMs, raw)?;
+                    add(
+                        B::DurationMs,
+                        raw,
+                        if get("duration_ms").is_some() {
+                            "duration_ms"
+                        } else {
+                            "duration"
+                        },
+                    )?;
                 }
             }
             // The outcome classifier gives explicit exit codes priority across
@@ -224,14 +330,25 @@ pub(super) fn block(
             // derived Ok/Error is not a second supplied Outcome field.
             if let Some(output) = output {
                 for (field, raw) in output_status(output)? {
-                    add(field, &raw)?;
+                    add(
+                        field,
+                        &raw,
+                        if get("aggregated_output").is_some() {
+                            "aggregated_output"
+                        } else {
+                            "output"
+                        },
+                    )?;
                 }
             }
         }
         Kind::Other => {
             // An unmapped payload is retained but is not a claim that all its
             // semantic fields were recognized. The owning evidence stays pending.
-            add(B::OtherData, itemraw)?;
+            add(B::OtherData, itemraw, "")?;
+            if let Some(w) = group.fields.last_mut() {
+                w.origins = origins.clone();
+            }
             return Ok(group);
         }
     }
@@ -268,45 +385,50 @@ pub(super) fn block(
             ) {
                 continue;
             }
-            group.fields.push(witness(
+            let mut w = witness(
                 Slot::Extra {
                     block: Some(slot.clone()),
                     key,
                 },
                 raw.get().as_bytes(),
                 owner,
-            )?);
+            )?;
+            if let Slot::Extra { key, .. } = &w.slot {
+                w.origins = origins.field(key);
+                w.selection = w
+                    .origins
+                    .selected()
+                    .map(|raw| FactSelection::new(Transform::JsonValueV1, vec![raw]));
+            }
+            group.fields.push(w);
         }
     }
     Ok(group)
 }
 
+/// Source-owned identity for message witness insertion and deletion. No old
+/// normalized value or guessed semantic name is needed to remove a witness.
+pub fn message_slot(key: &str) -> Option<Slot> {
+    Some(match key {
+        "at" => Slot::Message(M::At),
+        "completed_at" => Slot::Message(M::CompletedAt),
+        "model" => Slot::Message(M::Model),
+        "usage:input_tokens" => Slot::Usage(U::Input),
+        "usage:output_tokens" => Slot::Usage(U::Output),
+        "usage:cached_input_tokens" => Slot::Usage(U::CacheRead),
+        "usage:cache_write_input_tokens" => Slot::Usage(U::CacheWrite),
+        "usage:reasoning_output_tokens" => Slot::Usage(U::Reasoning),
+        key if key.starts_with("extra:") => Slot::Extra {
+            block: None,
+            key: key[6..].into(),
+        },
+        _ => return None,
+    })
+}
 pub(super) fn matches_message_key(key: &str, w: &Witness) -> bool {
-    match (&w.slot, key) {
-        (Slot::Message(M::At), "at") | (Slot::Message(M::CompletedAt), "completed_at") => {
-            w.source_time.is_some()
-        }
-        (Slot::Message(M::Model), "model") => w.source_time.is_none(),
-        (Slot::Usage(field), name) => {
-            w.source_time.is_none()
-                && matches!(
-                    (field, name),
-                    (U::Input, "usage:input_tokens")
-                        | (U::Output, "usage:output_tokens")
-                        | (U::CacheRead, "usage:cached_input_tokens")
-                        | (U::CacheWrite, "usage:cache_write_input_tokens")
-                        | (U::Reasoning, "usage:reasoning_output_tokens")
-                )
-        }
-        (
-            Slot::Extra {
-                block: None,
-                key: extra,
-            },
-            name,
-        ) => w.source_time.is_none() && name.strip_prefix("extra:") == Some(extra.as_str()),
-        _ => false,
-    }
+    w.valid_selection()
+        && message_slot(key).as_ref() == Some(&w.slot)
+        && (matches!(w.slot, Slot::Message(M::At | M::CompletedAt)) == w.source_time.is_some())
 }
 
 fn output_status(output: &[u8]) -> Result<Vec<(B, Vec<u8>)>, String> {

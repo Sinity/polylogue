@@ -31,12 +31,19 @@ enum Phase {
     AdvanceBlock,
     Done,
 }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+enum Scope {
+    Message,
+    Header,
+    Block(usize),
+}
 /// Persist only with its pinned predecessor and after the emitted unit commits.
 /// A read failure fuses this cursor; restart from the last committed cursor.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cursor {
     message: usize,
     mode: Mode,
+    scope: Scope,
     phase: Phase,
     id: Option<MessageId>,
     blocks: usize,
@@ -99,6 +106,7 @@ impl Cursor {
         Self {
             message,
             mode,
+            scope: Scope::Message,
             phase: Phase::Header,
             id: None,
             blocks: 0,
@@ -109,6 +117,19 @@ impl Cursor {
             failed: false,
             after_presence: None,
         }
+    }
+    /// Select only the current header; no witness or block enumeration.
+    pub fn header(message: usize, mode: Mode) -> Self {
+        let mut cursor = Self::new(message, mode);
+        cursor.scope = Scope::Header;
+        cursor
+    }
+    /// Select one block through this same interpretation/projection machine.
+    /// Header/ID reanchor, presence, result chunks and annotations are unchanged.
+    pub fn block(message: usize, block: usize, mode: Mode) -> Self {
+        let mut cursor = Self::new(message, mode);
+        cursor.scope = Scope::Block(block);
+        cursor
     }
     pub fn advance(&mut self, view: &impl ReadView) -> Result<Step, String> {
         if self.failed {
@@ -153,7 +174,19 @@ impl Cursor {
                 };
                 self.id = Some(message.id.clone());
                 self.blocks = blocks;
-                self.phase = Phase::MessageWitness(String::new());
+                self.phase = match self.scope {
+                    Scope::Message => Phase::MessageWitness(String::new()),
+                    Scope::Header => Phase::Done,
+                    Scope::Block(index) => {
+                        if index >= blocks {
+                            return Err(
+                                "selected Codex projection block exceeds header count".into()
+                            );
+                        }
+                        self.block = index;
+                        Phase::Block
+                    }
+                };
                 Ok(Step::Unit(Unit::Header(message)))
             }
             Phase::MessageWitness(ref after) => {
@@ -334,6 +367,10 @@ impl Cursor {
                 }))
             }
             Phase::AdvanceBlock => {
+                if matches!(self.scope, Scope::Block(_)) {
+                    self.phase = Phase::Done;
+                    return Ok(Step::Continue);
+                }
                 self.block = self
                     .block
                     .checked_add(1)

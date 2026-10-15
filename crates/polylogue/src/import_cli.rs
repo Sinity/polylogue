@@ -33,10 +33,12 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
     let mut format = None;
     let mut id = None;
     let mut seen_at = None;
+    let mut machine = None;
+    let mut host = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--format" | "--request-id" | "--seen-at" => {
+            "--format" | "--request-id" | "--seen-at" | "--machine" | "--host" => {
                 let flag = &args[i];
                 i += 1;
                 let value = args
@@ -46,7 +48,9 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
                 let slot = match flag.as_str() {
                     "--format" => &mut format,
                     "--request-id" => &mut id,
-                    _ => &mut seen_at,
+                    "--seen-at" => &mut seen_at,
+                    "--machine" => &mut machine,
+                    _ => &mut host,
                 };
                 if slot.replace(value).is_some() {
                     return Err(invalid(format!("duplicate {flag}")));
@@ -114,12 +118,28 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
     let path = path
         .to_str()
         .ok_or_else(|| invalid("source path must be UTF-8"))?;
-    let machine = fs::read_to_string("/etc/machine-id")
-        .map_err(|e| Failure::new(ErrorKind::Io, format!("collector machine identity: {e}")))?;
-    let host = fs::read_to_string("/proc/sys/kernel/hostname")
-        .map_err(|e| Failure::new(ErrorKind::Io, format!("collector host identity: {e}")))?;
+    let (machine, host) = match (machine, host) {
+        (Some(machine), Some(host)) => (machine, host),
+        (None, None) => (
+            fs::read_to_string("/etc/machine-id")
+                .map_err(|e| {
+                    Failure::new(ErrorKind::Io, format!("collector machine identity: {e}"))
+                })?
+                .trim()
+                .to_owned(),
+            fs::read_to_string("/proc/sys/kernel/hostname")
+                .map_err(|e| Failure::new(ErrorKind::Io, format!("collector host identity: {e}")))?
+                .trim()
+                .to_owned(),
+        ),
+        _ => {
+            return Err(invalid(
+                "observation identity requires both --machine and --host",
+            ));
+        }
+    };
     Ok(
-        json!({"command":"import","context":[],"id":id,"format":"codex-rollout","path":path,"machine":machine.trim(),"host":host.trim(),"seen_at":seen_at}),
+        json!({"command":"import","context":[],"id":id,"format":"codex-rollout","path":path,"machine":machine,"host":host,"seen_at":seen_at}),
     )
 }
 #[cfg(test)]
@@ -132,6 +152,37 @@ mod tests {
             "12345678-9abc-7fff-bfff-ffffffffffff"
         );
         assert!(uuid_v7(1 << 48, [0; 16]).is_err());
+    }
+    #[test]
+    fn explicit_observation_identity_is_paired_and_preserved() {
+        let base = [
+            "import",
+            "/synthetic/provider.jsonl",
+            "--format",
+            "codex-rollout",
+            "--request-id",
+            "synthetic-request",
+            "--seen-at",
+            "17",
+        ];
+        let mut args = base.into_iter().map(String::from).collect::<Vec<_>>();
+        args.extend(
+            [
+                "--machine",
+                "00112233445566778899aabbccddeeff",
+                "--host",
+                "synthetic-collector",
+            ]
+            .map(String::from),
+        );
+        let request = request(&args).unwrap();
+        assert_eq!(request["machine"], "00112233445566778899aabbccddeeff");
+        assert_eq!(request["host"], "synthetic-collector");
+        args.truncate(args.len() - 2);
+        assert!(super::request(&args).is_err());
+        let mut args = base.into_iter().map(String::from).collect::<Vec<_>>();
+        args.extend(["--host", "synthetic-collector"].map(String::from));
+        assert!(super::request(&args).is_err());
     }
     #[test]
     fn unsupported_import_options_fail_before_acquisition() {
