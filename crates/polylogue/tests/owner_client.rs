@@ -15,7 +15,11 @@ fn progress(socket: &Path, id: &str) -> Value {
     request_value(socket, &json!({"command":"progress","input":id})).unwrap()
 }
 fn wait(socket: &Path, id: &str, condition: impl Fn(&Value) -> bool) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(90);
+    // This debug-build recovery control checks continued progress and exact EOF,
+    // not throughput. Keep the full 10,000-message fixture under shared IO load.
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let mut last_parser = Value::Null;
+    let mut last_change = Instant::now();
     loop {
         let value = progress(socket, id);
         assert_eq!(value["outcome"], "ok", "{value}");
@@ -24,11 +28,19 @@ fn wait(socket: &Path, id: &str, condition: impl Fn(&Value) -> bool) -> Value {
         if condition(&value) {
             return value;
         }
+        if value["parser"] != last_parser {
+            last_parser = value["parser"].clone();
+            last_change = Instant::now();
+        }
+        assert!(
+            last_change.elapsed() < Duration::from_secs(30),
+            "source progress stalled: {value}"
+        );
         assert!(
             Instant::now() < deadline,
-            "source progress timed out: {value}"
+            "source progress exceeded recovery bound: {value}"
         );
-        thread::sleep(Duration::from_millis(2));
+        thread::sleep(Duration::from_millis(20));
     }
 }
 #[test]
