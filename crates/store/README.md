@@ -10,7 +10,7 @@ All three schemas are exact SQL-fence extractions from the owning copied
 specification under `docs/rewrite/polylogue-spec/spec/storage/`; a drift test
 compares the extracted text. Every table exists initially. Archive and
 embeddings migration versions are zero because there are no pre-release
-migration steps. The index has version one. Startup checks every existing
+migration steps. The index has version two, adding required parser incarnation metadata. Startup checks every existing
 schema/version before target database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 the old index. A missing or empty main file with retained nonempty WAL or
@@ -35,3 +35,13 @@ creation or chmod, alias locks and privacy. Compile-fail examples verify that
 read handles have no writer method and connections remain private. These tests
 do not qualify cross-file product snapshots, ingestion, excision or index
 rebuilds.
+
+
+Disposable parser state uses typed Writer admission and read-only pinned
+snapshots, with no connection or SQL escape. State cells, supplied output and
+checkpoint share the final step transaction; the store primitive does not infer
+canonical completion from EOF. A per-index monotonic allocator survives head
+and input-key removal. Snapshot, stale-result, bounded retirement and actual
+child-process crash tests qualify this component, including the real archive
+writer lock. Provider ingestion, canonical message finalization and public
+client stepping are still unregistered.

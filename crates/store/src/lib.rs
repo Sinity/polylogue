@@ -23,10 +23,11 @@ use std::{
     sync::OnceLock,
 };
 mod native;
+pub mod parser_state;
 
 pub const ARCHIVE_VERSION: u32 = 0;
 pub const EMBEDDINGS_VERSION: u32 = 0;
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 2;
 const ARCHIVE_SQL: &str = include_str!("../schema/archive.sql");
 const INDEX_SQL: &str = include_str!("../schema/index.sql");
 const EMBEDDINGS_SQL: &str = include_str!("../schema/embeddings.sql");
@@ -34,6 +35,12 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("parser predecessor changed; discard the attempted step")]
+    ParserPredecessorChanged,
+    #[error("{resource} requires a larger admission ({required})")]
+    ParserAdmission { resource: &'static str, required: u64 },
+    #[error("parser state invariant: {0}")]
+    Invariant(String),
     #[error("filesystem: {0}")]
     Io(#[from] io::Error),
     #[error("SQLite at {file}: {source}")]
@@ -355,6 +362,7 @@ fn initialize_db(
             })?;
         }
         if name == "index.db" {
+            db(&path, || conn.execute("INSERT INTO meta(key,value) VALUES ('generation',lower(hex(randomblob(16)))),('parser_generation','0')", []))?;
             db(&path, || {
                 conn.execute(
                     "INSERT INTO meta(key,value) VALUES ('INDEX_VERSION', ?1)",
