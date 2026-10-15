@@ -722,6 +722,50 @@ impl crate::Writer {
     pub fn parser_head(&self, input_pk: i64, chain: i64) -> Result<Option<Head>> {
         head(&self._index, &self.root.join("index.db"), input_pk, chain)
     }
+    /// A source failure remains diagnostic owed work, never a completion claim.
+    /// Reads are fixed-admitted; large diagnostics are refused before loading.
+    pub fn parser_failure(&self, predecessor: &Token) -> Result<Option<String>> {
+        let path = self.root.join("index.db");
+        current(&self._index, &path, predecessor)?;
+        let (length,detail):(Option<i64>,Option<String>)=sql!(&path,self._index.query_row(
+            "SELECT length(CAST(detail AS BLOB)), CASE WHEN length(CAST(detail AS BLOB))<=4096 THEN detail ELSE NULL END FROM parse_state WHERE input_pk=?1 AND chain=?2",
+            params![predecessor.input_pk,predecessor.chain],|r|Ok((r.get(0)?,r.get(1)?))))?;
+        if let Some(length) = length.filter(|n| *n > 4096) {
+            return Err(StoreError::ParserAdmission {
+                resource: "parser diagnostic bytes",
+                required: length as u64,
+            });
+        }
+        Ok(detail)
+    }
+    /// Bound diagnostic persistence to the exact predecessor. Clearing a failure
+    /// permits an explicit retry; neither operation clears pending finalization.
+    pub fn record_parser_failure(
+        &mut self,
+        predecessor: &Token,
+        detail: Option<&str>,
+        allowance: usize,
+    ) -> Result<()> {
+        let required = detail.map_or(0, str::len);
+        if required > allowance.min(4096) {
+            return Err(StoreError::ParserAdmission {
+                resource: "parser diagnostic bytes",
+                required: required as u64,
+            });
+        }
+        let path = self.root.join("index.db");
+        let tx = sql!(&path, self._index.transaction())?;
+        current(&tx, &path, predecessor)?;
+        sql!(
+            &path,
+            tx.execute(
+                "UPDATE parse_state SET detail=?3 WHERE input_pk=?1 AND chain=?2",
+                params![predecessor.input_pk, predecessor.chain, detail]
+            )
+        )?;
+        sql!(&path, tx.commit())?;
+        Ok(())
+    }
     /// Admit a verified contiguous retained-source basis. This does not publish
     /// messages and never certifies row finalization merely from byte EOF.
     pub fn begin_parser(&mut self, basis: &Basis<'_>) -> Result<Head> {
@@ -787,6 +831,52 @@ mod tests {
             value: Some(value.as_bytes().to_vec()),
         }
     }
+    #[test]
+    fn parser_failure_is_bounded_predecessor_diagnostic_not_completion() {
+        let (_dir, _root, mut writer, input_pk) = fixture();
+        let basis = Basis {
+            input_pk,
+            chain: 1,
+            parser_version: 1,
+            digest: [9; 32],
+            acquired_upto: 20,
+            companions_json: None,
+            excisions_seen: 0,
+        };
+        let head = writer.begin_parser(&basis).unwrap();
+        writer
+            .record_parser_failure(&head.token, Some("retry required"), 4096)
+            .unwrap();
+        assert_eq!(
+            writer.parser_failure(&head.token).unwrap().as_deref(),
+            Some("retry required")
+        );
+        let after = writer.parser_head(input_pk, 1).unwrap().unwrap();
+        assert_eq!(after.token, head.token);
+        assert_eq!(after.parsed_upto, 0);
+        assert_eq!(after.status, "parsing");
+        assert!(matches!(
+            writer.record_parser_failure(&head.token, Some(&"x".repeat(4097)), usize::MAX),
+            Err(StoreError::ParserAdmission { .. })
+        ));
+        writer
+            .record_parser_failure(&head.token, None, 4096)
+            .unwrap();
+        assert_eq!(writer.parser_failure(&head.token).unwrap(), None);
+        let newer = writer
+            .begin_parser(&Basis {
+                digest: [8; 32],
+                ..basis
+            })
+            .unwrap();
+        assert_ne!(newer.token, head.token);
+        assert!(matches!(
+            writer.record_parser_failure(&head.token, Some("stale"), 4096),
+            Err(StoreError::ParserPredecessorChanged)
+        ));
+        assert!(writer.parser_failure(&newer.token).unwrap().is_none());
+    }
+
     #[test]
     fn parser_snapshot_retains_archive_authority_after_its_factory_closes() {
         let (_dir, root, mut writer, input) = fixture();

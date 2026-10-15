@@ -41,6 +41,34 @@ pub struct ImmutableImport {
     pub format: InputFormat,
 }
 
+fn request_hash(
+    format: InputFormat,
+    observation: &ImportObservation<'_>,
+    allowance: usize,
+) -> Result<BlobHash> {
+    let mut length = 64usize + format.name().len();
+    for field in [
+        observation.id,
+        observation.machine,
+        observation.host,
+        observation.path,
+    ] {
+        if field.is_empty() {
+            return Err(Error::Invariant("empty immutable-import provenance".into()));
+        }
+        length = length.checked_add(field.len()).ok_or(Error::Range)?;
+    }
+    if length > allowance {
+        return Err(Error::ParserAdmission {
+            resource: "immutable import metadata bytes",
+            required: length as u64,
+        });
+    }
+    let value = serde_json::json!({"command":"import","format":format.name(),"machine":observation.machine,"host":observation.host,"path":observation.path,"seen_at":observation.seen_at});
+    let bytes = serde_json::to_vec(&value).map_err(|e| Error::Invariant(e.to_string()))?;
+    Ok(BlobHash::of(&bytes))
+}
+
 impl Writer {
     /// Provider acquisition must check this before copying any source bytes.
     /// Until the refusal-aware collector is wired, even an unrelated excision
@@ -70,6 +98,25 @@ impl Writer {
             "SELECT i.id,i.format,r.length,r.blake3 FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.id>?1 AND r.produced='imported' AND r.chain=1 ORDER BY i.id LIMIT 1", [after],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()
         })?;
+        self.decode_immutable_import(row)
+    }
+
+    /// Exact retained-import lookup. Does not inspect provider records or paths.
+    pub fn immutable_import(&mut self, id: &str) -> Result<Option<ImmutableImport>> {
+        self.check_import_acquisition()?;
+        let file = self.root.join("archive.db");
+        let row = db(&file, || {
+            self.archive.query_row(
+            "SELECT i.id,i.format,r.length,r.blake3 FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.id=?1 AND r.produced='imported' AND r.chain=1", [id],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()
+        })?;
+        self.decode_immutable_import(row)
+    }
+
+    fn decode_immutable_import(
+        &mut self,
+        row: Option<(String, String, i64, Vec<u8>)>,
+    ) -> Result<Option<ImmutableImport>> {
         let Some((id, format, length, digest)) = row else {
             return Ok(None);
         };
@@ -99,6 +146,47 @@ impl Writer {
             hash,
             format,
         }))
+    }
+
+    /// Retry the same write request without opening its source path again.
+    /// An existing request ID with changed command metadata is refused.
+    pub fn replay_immutable_import(
+        &mut self,
+        format: InputFormat,
+        observation: &ImportObservation<'_>,
+        allowance: usize,
+    ) -> Result<Option<RetainedInput>> {
+        let expected = request_hash(format, observation, allowance)?;
+        self.check_import_acquisition()?;
+        let file = self.root.join("archive.db");
+        let previous: Option<Vec<u8>> = db(&file, || {
+            self.archive
+                .query_row(
+                    "SELECT content_hash FROM client_request WHERE id=?1",
+                    [observation.id],
+                    |r| r.get(0),
+                )
+                .optional()
+        })?;
+        let Some(previous) = previous else {
+            return Ok(None);
+        };
+        if previous.as_slice() != expected.bytes() {
+            return Err(Error::Invariant(
+                "immutable import request ID reused with changed content".into(),
+            ));
+        }
+        let id: String = db(&file, || {
+            self.archive.query_row(
+                "SELECT input FROM observation WHERE id=?1 AND class='imported'",
+                [observation.id],
+                |r| r.get(0),
+            )
+        })?;
+        let imported = self.immutable_import(&id)?.ok_or_else(|| {
+            Error::Invariant("import receipt has no retained immutable input".into())
+        })?;
+        Ok(Some(imported.input))
     }
 
     fn register_import_reference(&mut self, id: String, length: u64) -> Result<RetainedInput> {
@@ -139,23 +227,16 @@ impl Writer {
         observation: &ImportObservation<'_>,
         metadata_allowance: usize,
     ) -> Result<RetainedInput> {
-        let mut metadata = 64usize + format.name().len();
-        for value in [
-            observation.id,
-            observation.machine,
-            observation.host,
-            observation.path,
-        ] {
-            if value.is_empty() {
-                return Err(Error::Invariant("empty immutable-import provenance".into()));
+        let request_hash = request_hash(format, observation, metadata_allowance)?;
+        if let Some(previous) =
+            self.replay_immutable_import(format, observation, metadata_allowance)?
+        {
+            if previous.id != hash.to_string() {
+                return Err(Error::Invariant(
+                    "immutable import retry supplied different retained bytes".into(),
+                ));
             }
-            metadata = metadata.checked_add(value.len()).ok_or(Error::Range)?;
-        }
-        if metadata > metadata_allowance {
-            return Err(Error::ParserAdmission {
-                resource: "immutable import metadata bytes",
-                required: metadata as u64,
-            });
+            return Ok(previous);
         }
         let id = hash.to_string();
         let index_file = self.root.join("index.db");
@@ -173,6 +254,16 @@ impl Writer {
         }
         let file = self.root.join("archive.db");
         let tx = db(&file, || self.archive.transaction())?;
+        let request_inserted = db(&file, || {
+            tx.execute(
+                "INSERT INTO client_request(id,content_hash,created_at) VALUES(?1,?2,?3)",
+                params![
+                    observation.id,
+                    request_hash.bytes().as_slice(),
+                    observation.seen_at
+                ],
+            )
+        })?;
         // This foundation primitive does not interpret refused_json or guess
         // session/text removal closure. Until the collector owns that check,
         // refuse explicitly instead of reintroducing removed provider bytes.
@@ -198,12 +289,13 @@ impl Writer {
             .checked_add(1)
             .filter(|value| *value <= i64::MAX as u64)
             .ok_or(Error::Range)?;
-        let mut changed = db(&file, || {
-            tx.execute(
-                "INSERT OR IGNORE INTO input(id,format) VALUES(?1,?2)",
-                params![id, format.name()],
-            )
-        })?;
+        let mut changed = request_inserted
+            + db(&file, || {
+                tx.execute(
+                    "INSERT OR IGNORE INTO input(id,format) VALUES(?1,?2)",
+                    params![id, format.name()],
+                )
+            })?;
         let existing_format: String = db(&file, || {
             tx.query_row("SELECT format FROM input WHERE id=?1", [&id], |r| r.get(0))
         })?;
@@ -444,6 +536,64 @@ mod tests {
             writer.next_immutable_import(""),
             Err(Error::ExcisionCheckRequired)
         ));
+    }
+
+    #[test]
+    fn request_retry_replays_retained_result_and_rejects_changed_arguments() {
+        let root = tempfile::tempdir().unwrap();
+        let mut writer = Writer::open(root.path()).unwrap();
+        let hash = writer.put_file_blob(b"original").unwrap();
+        let imported = writer
+            .retain_immutable_input(
+                hash,
+                InputFormat::CodexRollout,
+                &observation("request"),
+                4096,
+            )
+            .unwrap();
+        let counter = writer.status().unwrap().write_counter;
+        drop(writer);
+        let mut writer = Writer::open(root.path()).unwrap();
+        assert_eq!(
+            writer
+                .replay_immutable_import(InputFormat::CodexRollout, &observation("request"), 4096)
+                .unwrap(),
+            Some(imported.clone())
+        );
+        assert_eq!(
+            writer
+                .immutable_import(&imported.id)
+                .unwrap()
+                .unwrap()
+                .input,
+            imported
+        );
+        assert_eq!(writer.status().unwrap().write_counter, counter);
+        let changed = ImportObservation {
+            path: "/different-path",
+            ..observation("request")
+        };
+        assert!(
+            writer
+                .replay_immutable_import(InputFormat::CodexRollout, &changed, 4096)
+                .is_err()
+        );
+        assert!(
+            writer
+                .replay_immutable_import(
+                    InputFormat::ClaudeCodeJsonl,
+                    &observation("request"),
+                    4096
+                )
+                .is_err()
+        );
+        assert!(
+            writer
+                .replay_immutable_import(InputFormat::CodexRollout, &observation("new"), 4096)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(writer.status().unwrap().write_counter, counter);
     }
 
     #[test]
