@@ -1272,6 +1272,11 @@ impl crate::Writer {
         {
             return Err(StoreError::ParserPredecessorChanged);
         }
+        if settled && (now.counts.unrecognized > 0 || now.counts.undecodable > 0) {
+            return Err(StoreError::Invariant(
+                "known interpretation failures cannot certify settled source rows".into(),
+            ));
+        }
         let excised: bool = sql!(
             &path,
             tx.query_row(

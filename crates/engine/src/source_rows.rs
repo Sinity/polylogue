@@ -21,6 +21,7 @@ pub const RECIPE: u32 = 1;
 pub struct Receipt {
     pub predecessor: Token,
     pub dispositions: [u64; 5],
+    pub unsupported_effects: bool,
     pub rows: SourceRows,
 }
 impl Receipt {
@@ -31,6 +32,50 @@ impl Receipt {
             || matches!(self.rows.state, SourceRowState::Pending { .. })
         {
             return Err(Error::ParserPredecessorChanged.into());
+        }
+        Ok(())
+    }
+    fn validate_published(
+        &self,
+        head: &polylogue_store::parser_state::Head,
+        basis: &SourceRowBasis,
+    ) -> Result<()> {
+        self.validate(&head.token, basis)?;
+        let counts = [
+            head.counts.framed,
+            head.counts.used,
+            head.counts.ignored,
+            head.counts.unrecognized,
+            head.counts.undecodable,
+        ];
+        let missing =
+            self.unsupported_effects || head.counts.unrecognized > 0 || head.counts.undecodable > 0;
+        let state = match &self.rows.state {
+            SourceRowState::Settled => {
+                head.status == "done" && !head.finalization_pending && !missing
+            }
+            SourceRowState::Unavailable {
+                notes,
+                record_errors,
+                ..
+            } => {
+                head.status == "finalizing"
+                    && head.finalization_pending
+                    && missing
+                    && !notes.is_empty()
+                    && *record_errors == head.counts.undecodable
+            }
+            SourceRowState::Pending { .. } => false,
+        };
+        if self.dispositions != counts
+            || !state
+            || head.parsed_upto != basis.length
+            || head.acquired_upto != basis.length
+        {
+            return Err(Error::Invariant(
+                "source row receipt disagrees with its retained completion authority".into(),
+            )
+            .into());
         }
         Ok(())
     }
@@ -71,35 +116,7 @@ pub fn read(snapshot: &Snapshot, input: &ImmutableImport) -> Result<Option<Recei
     };
     let receipt: Receipt = serde_json::from_slice(&value)
         .map_err(|_| Error::Invariant("invalid source row settlement receipt".into()))?;
-    receipt.validate(&snapshot.head.token, &basis(input))?;
-    let h = &snapshot.head;
-    let counts = [
-        h.counts.framed,
-        h.counts.used,
-        h.counts.ignored,
-        h.counts.unrecognized,
-        h.counts.undecodable,
-    ];
-    let valid_state = match &receipt.rows.state {
-        SourceRowState::Settled => h.status == "done" && !h.finalization_pending,
-        SourceRowState::Unavailable {
-            notes,
-            record_errors,
-            ..
-        } => {
-            h.status == "finalizing"
-                && h.finalization_pending
-                && !notes.is_empty()
-                && *record_errors == h.counts.undecodable
-        }
-        SourceRowState::Pending { .. } => false,
-    };
-    if receipt.dispositions != counts || !valid_state {
-        return Err(Error::Invariant(
-            "source row receipt disagrees with its retained completion authority".into(),
-        )
-        .into());
-    }
+    receipt.validate_published(&snapshot.head, &basis(input))?;
     Ok(Some(receipt))
 }
 #[derive(Clone)]
@@ -344,6 +361,7 @@ impl Audit {
         };
         Ok(Turn::Complete(Receipt {
             predecessor: head.token.clone(),
+            unsupported_effects: self.unsupported,
             dispositions: [
                 head.counts.framed,
                 head.counts.used,
@@ -357,5 +375,116 @@ impl Audit {
                 state,
             },
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use polylogue_store::parser_state::{Accounting, Head};
+    fn fixture() -> (Receipt, Head) {
+        let token = Token {
+            index_generation: "synthetic-index".into(),
+            input_pk: 1,
+            chain: 1,
+            generation: 2,
+            step: 3,
+            basis: [4; 32],
+        };
+        let basis = SourceRowBasis {
+            input: "synthetic-input".into(),
+            original_hash: BlobHash::of(b"raw"),
+            chain: 1,
+            revision: 1,
+            length: 10,
+            parser_version: 1,
+            interpretation: BlobHash::of(b"interpretation"),
+        };
+        let head = Head {
+            token: token.clone(),
+            parser_version: 1,
+            acquired_upto: 10,
+            inspected_upto: 10,
+            parsed_upto: 10,
+            status: "done".into(),
+            finalization_pending: false,
+            counts: Accounting::default(),
+        };
+        (
+            Receipt {
+                predecessor: token,
+                dispositions: [0; 5],
+                unsupported_effects: false,
+                rows: SourceRows {
+                    scope: SourceRowScope::ImportedSourceRows,
+                    basis,
+                    state: SourceRowState::Settled,
+                },
+            },
+            head,
+        )
+    }
+    #[test]
+    fn receipt_binds_every_predecessor_coordinate_and_source_basis() {
+        let (receipt, head) = fixture();
+        receipt
+            .validate_published(&head, &receipt.rows.basis)
+            .unwrap();
+        for alter in [
+            |t: &mut Token| t.index_generation.push('x'),
+            |t: &mut Token| t.input_pk += 1,
+            |t: &mut Token| t.chain += 1,
+            |t: &mut Token| t.generation += 1,
+            |t: &mut Token| t.step += 1,
+            |t: &mut Token| t.basis[0] ^= 1,
+        ] {
+            let mut wrong = head.clone();
+            alter(&mut wrong.token);
+            assert!(
+                receipt
+                    .validate_published(&wrong, &receipt.rows.basis)
+                    .is_err()
+            );
+        }
+        let mut wrong = receipt.rows.basis.clone();
+        wrong.interpretation = BlobHash::of(b"new recipe");
+        assert!(receipt.validate_published(&head, &wrong).is_err());
+        let mut wrong = receipt.rows.basis.clone();
+        wrong.original_hash = BlobHash::of(b"different raw");
+        assert!(receipt.validate_published(&head, &wrong).is_err());
+    }
+    #[test]
+    fn same_generation_damaged_status_counts_and_missing_effects_do_not_become_settled() {
+        let (receipt, head) = fixture();
+        let mut wrong = head.clone();
+        wrong.finalization_pending = true;
+        assert!(
+            receipt
+                .validate_published(&wrong, &receipt.rows.basis)
+                .is_err()
+        );
+        let mut wrong = head.clone();
+        wrong.counts.framed = 1;
+        wrong.counts.undecodable = 1;
+        assert!(
+            receipt
+                .validate_published(&wrong, &receipt.rows.basis)
+                .is_err()
+        );
+        let mut wrong = receipt.clone();
+        wrong.unsupported_effects = true;
+        assert!(wrong.validate_published(&head, &wrong.rows.basis).is_err());
+        let mut wrong = head.clone();
+        wrong.parsed_upto = 9;
+        assert!(
+            receipt
+                .validate_published(&wrong, &receipt.rows.basis)
+                .is_err()
+        );
+        let encoded = serde_json::to_vec(&receipt).unwrap();
+        let decoded: Receipt = serde_json::from_slice(&encoded).unwrap();
+        decoded
+            .validate_published(&head, &decoded.rows.basis)
+            .unwrap();
     }
 }

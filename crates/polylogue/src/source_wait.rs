@@ -135,4 +135,37 @@ mod tests {
             assert_eq!(output["outcome"], "error", "{field}: {output}");
         }
     }
+    #[test]
+    fn later_interpretation_cannot_certify_the_captured_wait_basis() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let socket = dir.path().join("peer");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let mut reply = pending();
+        reply["source_rows"]["basis"]["interpretation"] =
+            json!(polylogue_model::BlobHash::of(b"later recipe"));
+        reply["source_rows"]["state"] = json!("settled");
+        reply["source_rows"]
+            .as_object_mut()
+            .unwrap()
+            .remove("obligations");
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&request).unwrap(),
+                json!({"command":"progress","input":"synthetic"})
+            );
+            writeln!(stream, "{reply}").unwrap();
+        });
+        let expected = pending()["source_rows"]["basis"].clone();
+        let out = wait(&socket, pending(), Duration::from_secs(5));
+        peer.join().unwrap();
+        assert_eq!(out["error"]["kind"], "conflict");
+        assert_eq!(out["requested_source_basis"], expected);
+    }
 }
