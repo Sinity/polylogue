@@ -210,7 +210,10 @@ impl Audit {
                             }
                             codex::EffectStep::Done => {
                                 self.effect = None;
-                                self.step = self.step.checked_add(1).ok_or(Error::Range)?;
+                                self.step = self
+                                    .step
+                                    .checked_add(1)
+                                    .ok_or_else(|| "source effect step overflow".to_string())?;
                             }
                             _ => {}
                         }
