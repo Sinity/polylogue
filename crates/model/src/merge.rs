@@ -132,13 +132,6 @@ impl PresenceFacts {
         if self.blocks_with_nonempty_text > self.nonempty_blocks {
             return Err(MergeError::InvalidPresence);
         }
-        if self
-            .slots
-            .keys()
-            .any(|slot| matches!(slot, Slot::Extra { key, .. } if key.is_empty()))
-        {
-            return Err(MergeError::InvalidPresence);
-        }
         Ok(Completeness {
             blocks: self.nonempty_blocks,
             text_blocks: self.blocks_with_nonempty_text,
@@ -211,6 +204,9 @@ pub struct Revision<'a> {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Chain<'a> {
+    /// Caller-supplied head authority, never inferred from snapshot count, IDs,
+    /// times or arrival. The sole chain of a proved complete immutable import
+    /// may be current for its own input without asserting provider freshness.
     pub current: bool,
     pub revisions: &'a [Revision<'a>],
 }
@@ -371,9 +367,6 @@ pub fn fold_input(
     if policy == RewritePolicy::Edit {
         let current = match chains.iter().find(|c| c.current) {
             Some(current) => current,
-            // An immutable complete import is unambiguous for its own input;
-            // this does not assert that it is the provider's freshest snapshot.
-            None if chains.len() == 1 && chains[0].revisions.len() == 1 => &chains[0],
             None => return Err(MergeError::UnresolvedEditHead),
         };
         if current.revisions.is_empty() {

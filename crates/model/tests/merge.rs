@@ -504,9 +504,20 @@ fn archival_edit_ambiguity_retains_other_inputs_until_head_resolves() {
         fold_input(&archives, RewritePolicy::Edit),
         Err(MergeError::UnresolvedEditHead)
     );
-    let imported = fold_input(&archives[..1], RewritePolicy::Edit)
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        fold_input(&archives[..1], RewritePolicy::Edit),
+        Err(MergeError::UnresolvedEditHead),
+        "one unproved archive is not immutable-head authority"
+    );
+    let imported = fold_input(
+        &[Chain {
+            current: true,
+            revisions: &ar,
+        }],
+        RewritePolicy::Edit,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(refs(&imported), BTreeSet::from([1]));
     // Other already-effective inputs can still be elected independently.
     assert_eq!(
@@ -557,4 +568,132 @@ fn an_unchanged_candidate_reference_can_be_retained_at_several_revisions() {
         ),
         BTreeSet::from([1])
     );
+}
+
+#[test]
+fn empty_extra_json_key_is_a_supplied_fact_not_a_schema_error() {
+    let c = with_slot(
+        candidate(1, 128),
+        Slot::Extra {
+            block: None,
+            key: String::new(),
+        },
+        0,
+    );
+    assert_eq!(c.presence.completeness().unwrap().supplied_fields, 1);
+    let wire = serde_json::to_vec(&c).unwrap();
+    assert_eq!(serde_json::from_slice::<Candidate>(&wire).unwrap(), c);
+}
+
+#[test]
+fn detached_immutable_copy_can_witness_content_that_a_proved_true_edit_removed() {
+    // M/F/N: A1 has a richer message M, field F, and another message N.
+    // A2 is a proved true edit, reducing M, removing F and deleting N.
+    let mut a1_m = with_slot(candidate(1, 240), slot(MessageField::Model), 10);
+    a1_m.presence.nonempty_blocks = 2;
+    let a2_m = candidate(2, 16);
+    let a1_n = candidate(4, 200);
+    let old_m = [Revision {
+        length: 100,
+        candidate: Some(&a1_m),
+    }];
+    let new_m = [Revision {
+        length: 50,
+        candidate: Some(&a2_m),
+    }];
+    let old_n = [Revision {
+        length: 100,
+        candidate: Some(&a1_n),
+    }];
+    let new_n = [Revision {
+        length: 50,
+        candidate: None,
+    }];
+    // Grouping is explicit input/chain authority. Byte length across chains is
+    // not chronology, and retained old A is not independently eligible.
+    let a_m = fold_input(
+        &[
+            Chain {
+                current: false,
+                revisions: &old_m,
+            },
+            Chain {
+                current: true,
+                revisions: &new_m,
+            },
+        ],
+        RewritePolicy::Edit,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(refs(&a_m), BTreeSet::from([2]));
+    assert!(!a_m.slots.contains_key(&slot(MessageField::Model)));
+    assert_eq!(
+        fold_input(
+            &[
+                Chain {
+                    current: false,
+                    revisions: &old_n
+                },
+                Chain {
+                    current: true,
+                    revisions: &new_n
+                }
+            ],
+            RewritePolicy::Edit
+        )
+        .unwrap(),
+        None
+    );
+    // Detached B is explicitly a separate immutable input holding A1, not an
+    // archival revision of A. Its own current marker asserts no live freshness.
+    let mut b_m = a1_m.clone();
+    b_m.reference = 3;
+    let mut b_n = a1_n.clone();
+    b_n.reference = 5;
+    let immutable = |candidate: &Candidate| {
+        fold_input(
+            &[Chain {
+                current: true,
+                revisions: &[Revision {
+                    length: 100,
+                    candidate: Some(candidate),
+                }],
+            }],
+            RewritePolicy::Edit,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let b_m = immutable(&b_m);
+    let b_n = immutable(&b_n);
+    for inputs in [
+        vec![a_m.clone(), b_m.clone()],
+        vec![b_m.clone(), a_m.clone()],
+    ] {
+        let selected = select_effective(&inputs).unwrap().unwrap();
+        assert_eq!(refs(&selected), BTreeSet::from([3]));
+        assert!(selected.slots.contains_key(&slot(MessageField::Model)));
+    }
+    assert_eq!(
+        refs(&select_effective(&[b_n]).unwrap().unwrap()),
+        BTreeSet::from([5])
+    );
+    // Rebuilding solely A's proved revision group cannot revive F or N.
+    let rebuilt = fold_input(
+        &[
+            Chain {
+                current: true,
+                revisions: &new_m,
+            },
+            Chain {
+                current: false,
+                revisions: &old_m,
+            },
+        ],
+        RewritePolicy::Edit,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(rebuilt, a_m);
 }
