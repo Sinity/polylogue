@@ -17,6 +17,8 @@ from tests.benchmarks import perf_floors
 
 def _report(metrics: dict[str, float], *, direction: str = "lower_is_better") -> dict[str, object]:
     return {
+        "quick": False,
+        "workload_version": 3,
         "generated_at": "2026-01-01T00:00:00Z",
         "git_sha": "deadbeef",
         "machine": {},
@@ -29,6 +31,8 @@ def _report(metrics: dict[str, float], *, direction: str = "lower_is_better") ->
 
 def _floors(metrics: dict[str, float]) -> dict[str, object]:
     return {
+        "quick": False,
+        "workload_version": 3,
         "default_tolerance_pct": 10.0,
         "metrics": {
             name: {"baseline": value, "unit": "ms", "direction": "lower_is_better", "tolerance_pct": 10.0}

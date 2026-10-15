@@ -27,6 +27,8 @@ from tests.benchmarks.perf_floors import (
 
 def _sample_report(*, throughput_value: float = 100.0, latency_value: float = 10.0) -> dict[str, Any]:
     return {
+        "quick": False,
+        "workload_version": 3,
         "generated_at": "2026-07-19T00:00:00+00:00",
         "git_sha": "abc123",
         "machine": {"hostname": "test-host"},
@@ -49,6 +51,8 @@ def _sample_report(*, throughput_value: float = 100.0, latency_value: float = 10
 
 def _floors_with(*, latency_tolerance_pct: float = 20.0) -> dict[str, Any]:
     return {
+        "quick": False,
+        "workload_version": 3,
         "default_tolerance_pct": 20.0,
         "metrics": {
             "throughput_metric": {
@@ -224,3 +228,69 @@ def test_run_perf_floor_set_quick_measures_every_curated_metric(tmp_path: Path) 
         assert entry["value"] >= 0.0, name
         assert entry["direction"] in ("higher_is_better", "lower_is_better")
         assert entry["unit"]
+
+
+@pytest.mark.parametrize("floor_quick,report_quick", ((False, True), (True, False)))
+def test_floor_modes_cannot_be_compared(floor_quick: bool, report_quick: bool) -> None:
+    from tests.benchmarks.perf_floors import FloorWorkloadMismatchError
+
+    floors, report = _floors_with(), _sample_report()
+    floors["quick"], report["quick"] = floor_quick, report_quick
+    with pytest.raises(FloorWorkloadMismatchError):
+        compare_to_floors(report, floors)
+
+
+def test_floor_update_cannot_replace_the_other_mode(tmp_path: Path) -> None:
+    from tests.benchmarks.perf_floors import FloorWorkloadMismatchError
+
+    path = tmp_path / "floors.json"
+    path.write_text(json.dumps(_floors_with()))
+    before = path.read_bytes()
+    report = _sample_report()
+    report["quick"] = True
+    with pytest.raises(FloorWorkloadMismatchError):
+        save_floors(path, report, default_tolerance_pct=20, measured_under_load=False, note=None)
+    assert path.read_bytes() == before
+
+
+def test_floor_workload_change_requires_new_measurements() -> None:
+    from tests.benchmarks.perf_floors import FloorWorkloadMismatchError
+
+    floors = _floors_with()
+    del floors["workload_version"]
+    with pytest.raises(FloorWorkloadMismatchError):
+        compare_to_floors(_sample_report(), floors)
+
+
+@pytest.mark.parametrize("quick", (False, True))
+def test_floor_cli_selects_the_mode_specific_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quick: bool
+) -> None:
+    from tests.benchmarks import perf_floors
+
+    normal, smoke = tmp_path / "floors.json", tmp_path / "floors.quick.json"
+    monkeypatch.setattr(perf_floors, "DEFAULT_FLOORS_PATH", normal)
+    monkeypatch.setattr(perf_floors, "QUICK_FLOORS_PATH", smoke)
+    report = _sample_report()
+    report["quick"] = quick
+    monkeypatch.setattr(perf_floors, "run_perf_floor_set", lambda **kwargs: report)
+    assert perf_floors.main(["--update-floors", *(["--quick"] if quick else [])]) == 0
+    assert (smoke if quick else normal).exists()
+    assert not (normal if quick else smoke).exists()
+
+
+def test_perf_floors_direct_script_help_resolves_its_imports(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    from tests.benchmarks import perf_floors
+
+    result = subprocess.run(
+        [sys.executable, str(Path(perf_floors.__file__).resolve()), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--update-floors" in result.stdout

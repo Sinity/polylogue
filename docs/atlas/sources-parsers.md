@@ -101,6 +101,14 @@ acquisition without claiming session candidacy. A malformed tail cannot turn a
 metadata prefix into exclusion proof; retained preparation owns decode refusal
 and accepted-prefix outcomes. Declared raw-only carriers retain their precedence.
 
+Resident and spilled message preparation share active-branch selection. A
+producer-marked leaf walks its native parent occurrence, or its declared
+parent position when no native parent resolves. Declared message positions
+remain coordinates, not message identities. Without a unique producer leaf,
+the last message not explicitly excluded becomes the fallback leaf; if all
+are excluded, the last remains a marked fallback without inventing a path.
+Repeated lowering keeps that fallback distinct from producer evidence.
+
 Sources acquire bytes and identify their material source. Detection chooses a
 provider parser by input shape. `RawObservationConvergenceOwner` coordinates
 retained preparation through `RawObservationDerivation`; JSONL and non-JSON

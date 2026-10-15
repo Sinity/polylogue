@@ -56,6 +56,8 @@ PROFILE_METRICS: tuple[str, ...] = (
     "mixed_load_quiet_background_throughput",
     "mixed_load_background_throughput_fraction",
     "mixed_load_writer_hold_budget_ms",
+    "mixed_load_queue_bytes_status",
+    "mixed_load_rss_status",
 )
 
 TERMINAL_COLUMNS: tuple[int, ...] = (40, 80, 120, 200)

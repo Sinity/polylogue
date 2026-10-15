@@ -1047,3 +1047,23 @@ def test_receipt_wait_binds_the_exchange_to_its_actual_wait_budget(
     assert client.await_operation("original-request", archive_root=str(tmp_path), timeout_ms=timeout_ms) is None
     assert captured == [(timeout_ms, timeout_ms, timeout_ms / 1000 + 1.0)]
     assert client.timeout_s == 0.1
+
+
+def test_transport_retains_submillisecond_roundtrip_duration(
+    _short_uds_runtime_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rounding to integer milliseconds would turn the observed interval into zero."""
+    from polylogue.daemon_client import DaemonClient
+
+    readings = iter((0.0, 0.0004))
+    monkeypatch.setattr("polylogue.daemon_client.perf_counter", lambda: next(readings))
+    socket_path = _short_uds_runtime_dir / "precision.sock"
+    with _raw_unix_http_responder(socket_path, status=200, payload={"value": 1}):
+        client = DaemonClient(socket_path)
+        response = client._request_json_response("GET", "/api/status")
+    assert response is not None
+    status, payload = response
+    assert status == 200
+    assert payload == {"value": 1}
+    assert client.last_elapsed_ms == pytest.approx(0.4)

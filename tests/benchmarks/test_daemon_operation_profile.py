@@ -16,12 +16,11 @@ import subprocess
 import sys
 import threading
 import uuid
-from collections import deque
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from pathlib import Path
-from resource import RUSAGE_SELF, getrusage
 from time import perf_counter, sleep
 from typing import Any, SupportsFloat, cast
 
@@ -35,7 +34,8 @@ from tests.benchmarks.cli_profile import INTERACTION_WORKLOADS, PROFILE_METRICS,
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_repeated
 from tests.infra.benchmark_archives import seed_benchmark_archive
 from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
-from tests.infra.workload_declarations import BenchmarkWorkloadTier
+from tests.infra.workload_artifacts import _peak_rss_kib, _reset_peak_rss
+from tests.infra.workload_declarations import BenchmarkWorkloadTier, benchmark_workload_profile
 
 pytest_plugins = ("tests.benchmarks.test_daemon_uds",)
 
@@ -123,7 +123,11 @@ class _RequestTimingHandoff:
             try:
                 return self._samples.pop(request_id)
             except KeyError as exc:
-                raise AssertionError(f"missing read-frame timing for request {request_id}") from exc
+                raise AssertionError(f"missing timing for request {request_id}") from exc
+
+    def assert_empty(self) -> None:
+        with self._lock:
+            assert not self._samples, "a measured request left an unconsumed timing sample"
 
 
 def _direct_invalidation_summary(samples_ms: list[float]) -> dict[str, object]:
@@ -226,12 +230,11 @@ def test_read_frame_timing_handoff_attributes_worker_delay_over_real_uds(
     archive_root.mkdir()
     socket_path = daemon_socket_path(archive_root)
 
-    def seed(root: Path) -> None:
-        seed_benchmark_archive(root / "index.db", BenchmarkWorkloadTier.SMOKE)
+    # Immutable clones require an empty destination; bootstrap opens the clone.
+    seed_benchmark_archive(archive_root / "index.db", BenchmarkWorkloadTier.SMOKE)
 
     with running_daemon_operations(
         archive_root,
-        seed_archive=seed,
         compute_workers=2,
         compute_queue_units=8,
         socket_path=socket_path,
@@ -296,6 +299,7 @@ def test_bench_daemon_warm_status(benchmark: BenchmarkFixture, bench_daemon_uds_
             check=False,
         )
         elapsed_ms = (perf_counter() - started) * 1000
+        _require_available_status(result)
         record_metrics(
             benchmark,
             warm_roundtrip_ms=elapsed_ms,
@@ -309,9 +313,17 @@ def test_bench_daemon_warm_status(benchmark: BenchmarkFixture, bench_daemon_uds_
     # status (exit 1) while still returning the complete JSON operation
     # envelope. Treat that as an available status response; an empty or
     # malformed payload remains an invalid measurement.
+    _require_available_status(result)
+
+
+def _require_available_status(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    """A typed degraded status is measured; a failed status read is not."""
     assert result.returncode in (0, 1), result.stderr
     payload = json.loads(result.stdout)
-    assert isinstance(payload, dict) and payload, result.stdout
+    assert isinstance(payload, dict)
+    snapshot = payload.get("status_snapshot")
+    assert isinstance(snapshot, dict) and snapshot.get("state") in {"fresh", "stale", "minimal", "refreshing"}
+    return payload
 
 
 @pytest.mark.benchmark
@@ -331,13 +343,18 @@ def test_bench_daemon_static_completion(benchmark: BenchmarkFixture, bench_daemo
 @pytest.mark.benchmark
 def test_bench_daemon_live_completion(benchmark: BenchmarkFixture, bench_daemon_uds_client: DaemonClient) -> None:
     def run() -> dict[str, object]:
-        return _operation(bench_daemon_uds_client, "completion", {"kind": "terminal-source", "incomplete": ""})
+        return _operation(bench_daemon_uds_client, "completion", {"source": "session_id", "incomplete": ""})
 
     result = benchmark_repeated(benchmark, run)
     assert isinstance(result["result"], dict)
+    completion = result["result"]["value_completions"]
+    assert isinstance(completion, dict)
+    assert completion["source"] == "session_id"
+    assert completion["values"]
+    assert bench_daemon_uds_client.last_elapsed_ms is not None
     record_metrics(
         benchmark,
-        live_completion_ms=bench_daemon_uds_client.last_elapsed_ms or 0,
+        live_completion_ms=bench_daemon_uds_client.last_elapsed_ms,
         bytes=len(json.dumps(result, separators=(",", ":")).encode()),
     )
 
@@ -411,7 +428,7 @@ def concurrent_read_round(
     read_index: Iterator[int],
     *,
     timeout_s: float = 2,
-    elapsed: list[int] | None = None,
+    elapsed: list[float] | None = None,
 ) -> list[dict[str, object]]:
     """Issue one round of the concurrent-reads lane: four parallel ``cli.query`` reads.
 
@@ -439,7 +456,7 @@ def concurrent_read_round(
 @pytest.mark.benchmark
 def test_bench_daemon_concurrent_reads(benchmark: BenchmarkFixture, bench_daemon_uds_client: DaemonClient) -> None:
     socket_path = bench_daemon_uds_client.socket_path
-    elapsed: list[int] = []
+    elapsed: list[float] = []
     # Offsets 100.. stay clear of the other lanes on this shared daemon, whose
     # reads would otherwise leave cache entries this lane's first round hits.
     read_index = itertools.count(100)
@@ -453,9 +470,10 @@ def test_bench_daemon_concurrent_reads(benchmark: BenchmarkFixture, bench_daemon
     record_metrics(benchmark, concurrent_interference_p95_ms=max(elapsed, default=0))
 
 
-#: Sessions in the SMOKE tier this lane seeds (tests/infra/workload_declarations.py:313).
-#: Every offset below stays far inside it, so no read can be handed an empty page.
-_MIXED_LOAD_SEEDED_SESSIONS = 1_000
+#: The offset guard counts sessions from the same declaration as the seeded artifact.
+_MIXED_LOAD_SEEDED_SESSIONS = sum(
+    count for _provider, count in benchmark_workload_profile(BenchmarkWorkloadTier.SMOKE).provider_session_counts
+)
 
 #: Distinct tag names each write worker cycles over one session. The write load
 #: has to stay bounded for the lane to take repeated rounds -- see
@@ -485,8 +503,8 @@ def mixed_load_read_params(read_index: int) -> dict[str, int]:
     return {"limit": 2 + read_index % 4, "offset": read_index}
 
 
-@pytest.fixture
-def bench_mixed_load_stack(
+@contextmanager
+def _running_bench_mixed_load_stack(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[DaemonOperationStack]:
@@ -519,16 +537,21 @@ def bench_mixed_load_stack(
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
     socket_path = daemon_socket_path(archive_root, runtime_dir=str(runtime_dir))
 
-    def seed(root: Path) -> None:
-        seed_benchmark_archive(root / "index.db", BenchmarkWorkloadTier.SMOKE)
+    # Immutable clones require an empty destination; bootstrap opens the clone.
+    seed_benchmark_archive(archive_root / "index.db", BenchmarkWorkloadTier.SMOKE)
 
     with running_daemon_operations(
         archive_root,
-        seed_archive=seed,
         compute_workers=4,
         compute_queue_units=16,
         socket_path=socket_path,
     ) as stack:
+        yield stack
+
+
+@pytest.fixture
+def bench_mixed_load_stack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[DaemonOperationStack]:
+    with _running_bench_mixed_load_stack(tmp_path, monkeypatch) as stack:
         yield stack
 
 
@@ -589,7 +612,7 @@ def test_bench_daemon_mixed_load(
     import polylogue.storage.search.cache as search_cache
 
     phase_lock = threading.Lock()
-    phase_name = "quiet"
+    phase_name: str | None = None
     phase_names = (
         "admission_queue",
         "read_frame_acquisition",
@@ -618,11 +641,9 @@ def test_bench_daemon_mixed_load(
     # Timing that concrete call gives invalidation its own measurement; it is
     # not inferred from a read's server-time remainder.
     monkeypatch.setattr(search_cache, "invalidate_search_cache", timed_invalidate_search_cache)
-    pending_compute: dict[str, deque[float]] = {
-        "quiet": deque(),
-        "writer": deque(),
-    }
+    compute_timings = _RequestTimingHandoff()
     frame_timings = _RequestTimingHandoff()
+    measured_request: ContextVar[str | None] = ContextVar("mixed_load_request", default=None)
 
     real_open_operation_read = daemon_execution.open_operation_read  # type: ignore[attr-defined]
 
@@ -637,9 +658,16 @@ def test_bench_daemon_mixed_load(
         with real_open_operation_read(*args, **kwargs) as snapshot:
             # Mutating operations intentionally open without a read execution
             # context. Correlate only measured reads that have a request id.
-            if isinstance(request_id, str) and request_id:
-                frame_timings.record(request_id, (perf_counter() - started) * 1000)
-            yield snapshot
+            with phase_lock:
+                measuring = phase_name is not None
+            active_request = request_id if measuring and isinstance(request_id, str) and request_id else None
+            if active_request is not None:
+                frame_timings.record(active_request, (perf_counter() - started) * 1000)
+            token = measured_request.set(active_request)
+            try:
+                yield snapshot
+            finally:
+                measured_request.reset(token)
 
     real_query_payload = daemon_reads._query_payload
 
@@ -649,9 +677,9 @@ def test_bench_daemon_mixed_load(
             return real_query_payload(*args, **kwargs)
         finally:
             elapsed_ms = (perf_counter() - started) * 1000
-            with phase_lock:
-                current_phase = phase_name
-                pending_compute[current_phase].append(elapsed_ms)
+            request_id = measured_request.get()
+            if request_id is not None:
+                compute_timings.record(request_id, elapsed_ms)
 
     monkeypatch.setattr(daemon_execution, "open_operation_read", timed_open_operation_read)
     monkeypatch.setattr(daemon_reads, "_query_payload", timed_query_payload)
@@ -668,7 +696,9 @@ def test_bench_daemon_mixed_load(
     items = page["items"]
     assert isinstance(items, list) and items, "mixed-load contention needs a seeded read page"
     session_ids = [str(item["id"]) for item in items if isinstance(item, dict)]
-    assert session_ids
+    assert len(session_ids) >= 2
+    _preseed_mixed_load_tags(bench_mixed_load_stack, session_ids)
+    _assert_mixed_load_tags(bench_mixed_load_stack.archive_root, session_ids)
 
     stop = threading.Event()
     background_completed = 0
@@ -827,9 +857,9 @@ def test_bench_daemon_mixed_load(
             # when two threads mutate as fast as the socket accepts.
             sleep(0.01)
 
-    elapsed: list[int] = []
+    elapsed: list[float] = []
     installed_cli_elapsed_ms: list[float] = []
-    read_index = itertools.count()
+    read_index = itertools.count(8)
 
     def percentile(values: list[float], fraction: float) -> float:
         ordered = sorted(values)
@@ -880,8 +910,9 @@ def test_bench_daemon_mixed_load(
         with phase_lock:
             current_phase = phase_name
             if current_phase == "writer":
-                elapsed.append(int(client_ms))
-            compute_ms = pending_compute[current_phase].popleft() if pending_compute[current_phase] else 0.0
+                elapsed.append(client_ms)
+            assert current_phase is not None
+            compute_ms = compute_timings.take(request_id)
             phase_samples[current_phase]["admission_queue"].append(max(0.0, admission_queue_ms))
             phase_samples[current_phase]["compute"].append(compute_ms)
             phase_samples[current_phase]["read_frame_acquisition"].append(max(0.0, frame_ms))
@@ -893,8 +924,12 @@ def test_bench_daemon_mixed_load(
 
     # Quiet control series: same varying semantic requests, before either
     # feeder starts.  It establishes the archive-path floor for comparison.
+    phase_name = "quiet"
     for index in range(8):
         phase_read(mixed_load_read_params(index))
+    assert len(phase_samples["quiet"]["compute"]) == 8
+    compute_timings.assert_empty()
+    frame_timings.assert_empty()
 
     def run() -> list[dict[str, object]]:
         def one(_slot: int) -> dict[str, object]:
@@ -912,22 +947,27 @@ def test_bench_daemon_mixed_load(
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(one, range(8)))
-        with phase_lock:
-            pending_compute["writer"].clear()
+        compute_timings.assert_empty()
+        frame_timings.assert_empty()
         return results
 
     feeders = [threading.Thread(target=keep_background_busy, daemon=True) for _ in range(2)]
     feeders += [threading.Thread(target=keep_writing, args=(worker,), daemon=True) for worker in range(2)]
+    rss_window_started = _reset_peak_rss()
+    window_peak_rss_kib: int | None = None
     started = perf_counter()
     for feeder in feeders:
         feeder.start()
     try:
         results = benchmark_repeated(benchmark, run)
+        with phase_lock:
+            phase_name = None
         # Sample the installed process once after the repeated direct-read
         # timing, while the same writer/bulk feeders are still active.
         installed_cli_read(next(read_index))
     finally:
         stop.set()
+        window_peak_rss_kib = _peak_rss_kib() if rss_window_started else None
         mixed_window_s = max(perf_counter() - started, 1e-6)
         with counters:
             background_completed_in_window = background_completed
@@ -968,16 +1008,7 @@ def test_bench_daemon_mixed_load(
     # user tags, so the write load must not have grown the tag set it reads.
     # A per-write fresh tag makes this red -- and that is the whole reason this
     # lane could previously take only one round.
-    tagged = _operation(bench_mixed_load_stack.client, "cli.query", {"params": {"limit": 5}})
-    tagged_page = tagged["result"]
-    assert isinstance(tagged_page, dict)
-    for row in tagged_page["items"]:
-        assert isinstance(row, dict)
-        bench_tags = [tag for tag in (row.get("tags") or []) if str(tag).startswith("bench-mixed-load-")]
-        assert len(bench_tags) <= _MIXED_LOAD_TAG_CYCLE, (
-            f"the write load grew the tag set the measured read joins: {len(bench_tags)} tags on "
-            f"{row.get('id')}, bound {_MIXED_LOAD_TAG_CYCLE}; later rounds were not reading round 1's shape"
-        )
+    _assert_mixed_load_tags(bench_mixed_load_stack.archive_root, session_ids)
     # A real percentile over the whole repeated window's reads, not the single
     # worst sample ``max()`` used to report under a p95's name. With five
     # rounds of eight reads there are forty samples to take it from.
@@ -988,7 +1019,7 @@ def test_bench_daemon_mixed_load(
         "p99_ms": percentile([float(value) for value in ordered], 0.99),
         "samples": len(ordered),
     }
-    interference_p95 = int(interactive_percentiles["p95_ms"])
+    interference_p95 = interactive_percentiles["p95_ms"]
     max_writer_hold_ms, writer_hold_budget_ms = max(write_hold_measurements, default=(0.0, 0.0))
     loaded_background_throughput = background_completed_in_window / mixed_window_s
     background_throughput_fraction = (
@@ -1018,8 +1049,9 @@ def test_bench_daemon_mixed_load(
         background_throughput=loaded_background_throughput,
         queue_delay_ms=int(snapshot.background_max_wait_s * 1000),
         peak_queue_units=peak_queue_units,
-        peak_queue_bytes=peak_queue_bytes,
-        peak_rss_kib=getrusage(RUSAGE_SELF).ru_maxrss,
+        mixed_load_queue_bytes_status="unmeasured:no-byte-reservations",
+        mixed_load_rss_status="window" if window_peak_rss_kib is not None else "unavailable",
+        **({"peak_rss_kib": window_peak_rss_kib} if window_peak_rss_kib is not None else {}),
         mixed_load_phase_percentiles=phase_report,
         mixed_load_cache_invalidation=_direct_invalidation_summary(invalidation_samples_ms),
         mixed_load_dominant_phase=dominant_phase,
@@ -1041,11 +1073,42 @@ def test_bench_daemon_mixed_load(
         mixed_load_background_throughput_fraction=round(background_throughput_fraction, 3),
         mixed_load_writer_hold_budget_ms=round(writer_hold_budget_ms, 3),
     )
+    assert len(phase_samples["writer"]["compute"]) == len(elapsed) > 0
     assert installed_cli_elapsed_ms, "the mixed-load window must include an installed CLI read"
     assert len(installed_cli_elapsed_ms) == 1, "one installed CLI sample is required under the mixed-load window"
     assert write_hold_measurements, "the mixed-load writer must produce coordinator hold measurements"
     assert writer_hold_budget_ms > 0
     assert all(hold_ms <= budget_ms for hold_ms, budget_ms in write_hold_measurements)
+
+
+def _mixed_load_tags(worker: int) -> list[str]:
+    return [f"bench-mixed-load-{worker}-{index}" for index in range(_MIXED_LOAD_TAG_CYCLE)]
+
+
+def _preseed_mixed_load_tags(stack: DaemonOperationStack, session_ids: list[str]) -> None:
+    for worker, session_id in enumerate(session_ids[:2]):
+        result = stack.client.operation(
+            "mutation.session.tag",
+            {
+                "session_ids": [session_id],
+                "tags": _mixed_load_tags(worker),
+            },
+            archive_root=str(stack.archive_root),
+        )
+        assert result is not None
+        assert result["outcome"] == "completed"
+        assert result["error"] is None
+
+
+def _assert_mixed_load_tags(archive_root: Path, session_ids: list[str]) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore.open_existing(archive_root) as archive:
+        for worker, session_id in enumerate(session_ids[:2]):
+            rows = archive.list_summaries(limit=1, session_id=session_id)
+            assert len(rows) == 1
+            tags = {tag for tag in rows[0].tags if tag.startswith("bench-mixed-load-")}
+            assert tags == set(_mixed_load_tags(worker)), "measurement changed its declared tag population"
 
 
 #: Latency the injection adds to one archive query. Leave enough separation
@@ -1096,7 +1159,7 @@ def test_read_series_separates_cache_hits_from_archive(
 
     socket_path = bench_daemon_uds_client.socket_path
 
-    def read(params: dict[str, object]) -> int:
+    def read(params: dict[str, object]) -> float:
         client = DaemonClient(socket_path, timeout_s=10)
         _operation(client, "cli.query", {"params": params})
         return client.last_elapsed_ms or 0
@@ -1188,7 +1251,7 @@ def test_concurrent_read_rounds_stay_on_the_archive_path(
     # earlier test left in the shared daemon's cache.
     rounds = 2
     read_index = itertools.count(300)
-    live: list[int] = []
+    live: list[float] = []
     for _ in range(rounds):
         concurrent_read_round(socket_path, read_index, timeout_s=10, elapsed=live)
     window = rounds * _CONCURRENT_READS_PER_ROUND
@@ -1198,8 +1261,8 @@ def test_concurrent_read_rounds_stay_on_the_archive_path(
     )
     assert len(injected) == window, f"{len(injected)} archive queries for {window} distinct reads"
 
-    def superseded_round() -> list[int]:
-        elapsed: list[int] = []
+    def superseded_round() -> list[float]:
+        elapsed: list[float] = []
         for index in range(_CONCURRENT_READS_PER_ROUND):
             client = DaemonClient(socket_path, timeout_s=10)
             _operation(client, "cli.query", {"params": {"limit": 5 + index, "offset": 400 + index}})
@@ -1256,7 +1319,7 @@ def test_mixed_load_series_stays_on_the_archive_path_across_rounds(
     monkeypatch.setattr(daemon_reads, "_query_payload", slow_query_payload)
     socket_path = bench_daemon_uds_client.socket_path
 
-    def read(params: Mapping[str, object]) -> int:
+    def read(params: Mapping[str, object]) -> float:
         client = DaemonClient(socket_path, timeout_s=10)
         _operation(client, "cli.query", {"params": dict(params)})
         return client.last_elapsed_ms or 0
@@ -1285,3 +1348,86 @@ def test_mixed_load_series_stays_on_the_archive_path_across_rounds(
         f"the superseded series ran {len(injected) - window} archive queries for {window} reads; "
         "four distinct params should have produced exactly four"
     )
+
+
+@pytest.mark.parametrize("state", ("fresh", "stale", "minimal", "refreshing"))
+def test_warm_status_accepts_available_degraded_snapshot(state: str) -> None:
+    result = subprocess.CompletedProcess([], 1, json.dumps({"ok": False, "status_snapshot": {"state": state}}), "")
+    assert _require_available_status(result)["status_snapshot"] == {"state": state}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"ok": False, "status_snapshot": {"state": "unavailable"}},
+        {"ok": False, "error": {"code": "operation_kernel_error"}},
+        {"ok": True},
+    ),
+)
+def test_warm_status_does_not_time_failed_status_reads(payload: dict[str, object]) -> None:
+    with pytest.raises(AssertionError):
+        _require_available_status(subprocess.CompletedProcess([], 1, json.dumps(payload), ""))
+
+
+def test_compute_handoff_is_not_an_arrival_order_fifo() -> None:
+    samples = _RequestTimingHandoff()
+    samples.record("second-read", 2.5)
+    samples.record("first-read", 11.75)
+    with pytest.raises(AssertionError):
+        samples.assert_empty()
+    assert samples.take("first-read") == 11.75
+    assert samples.take("second-read") == 2.5
+    samples.assert_empty()
+    with pytest.raises(AssertionError):
+        samples.take("first-read")
+
+
+def test_mixed_load_tag_check_cannot_reuse_the_seed_response(
+    bench_mixed_load_stack: DaemonOperationStack,
+) -> None:
+    stack = bench_mixed_load_stack
+    seed = _operation(stack.client, "cli.query", {"params": {"limit": 5}})
+    payload = cast(dict[str, object], seed["result"])
+    session_ids = [str(row["id"]) for row in cast(list[dict[str, object]], payload["items"])]
+    assert len(session_ids) >= 2
+    _preseed_mixed_load_tags(stack, session_ids)
+    _assert_mixed_load_tags(stack.archive_root, session_ids)
+    result = stack.client.operation(
+        "mutation.session.tag",
+        {
+            "session_ids": [session_ids[0]],
+            "tags": ["bench-mixed-load-0-unexpected"],
+        },
+        archive_root=str(stack.archive_root),
+    )
+    assert result is not None and result["outcome"] == "completed"
+    assert result["error"] is None
+    with pytest.raises(AssertionError):
+        _assert_mixed_load_tags(stack.archive_root, session_ids)
+
+
+def test_seeded_benchmark_callers_clone_before_daemon_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both callers admit an authentic small clone before any SQLite bootstrap."""
+    from polylogue.scenarios import CorpusSpec
+    from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
+
+    artifact = build_seeded_archive(
+        (CorpusSpec.for_provider("codex", count=1, messages_min=4, messages_max=4, seed=42, style="tool-heavy"),),
+        cache_root=tmp_path / "cache",
+    )
+
+    def seed_small(db_path: Path, tier: BenchmarkWorkloadTier) -> None:
+        assert tier is BenchmarkWorkloadTier.SMOKE
+        clone_seeded_archive(artifact, db_path.parent)
+
+    monkeypatch.setattr(sys.modules[__name__], "seed_benchmark_archive", seed_small)
+    timing_root = tmp_path / "timing"
+    timing_root.mkdir()
+    test_read_frame_timing_handoff_attributes_worker_delay_over_real_uds(timing_root, monkeypatch)
+    mixed_root = tmp_path / "mixed"
+    mixed_root.mkdir()
+    with _running_bench_mixed_load_stack(mixed_root, monkeypatch) as stack:
+        response = _operation(stack.client, "cli.query", {"params": {"limit": 2}})
+        assert response["error"] is None

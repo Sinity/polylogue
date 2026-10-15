@@ -128,7 +128,7 @@ class DaemonClient:
         self.socket_path = socket_path
         self.timeout_s = timeout_s
         self._auth_token = auth_token
-        self.last_elapsed_ms: int | None = None
+        self.last_elapsed_ms: float | None = None
         self.last_status: int | None = None
 
     @property
@@ -217,7 +217,7 @@ class DaemonClient:
                     raise DaemonOperationProtocolError("daemon response body is incomplete") from exc
                 except (UnicodeDecodeError, ValueError):
                     decoded = None
-                self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
+                self.last_elapsed_ms = (perf_counter() - started_at) * 1000
                 self.last_status = response.status
                 return response.status, decoded if isinstance(decoded, dict) else None
         except DaemonSocketOwnershipError:

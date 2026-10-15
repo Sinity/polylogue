@@ -6931,3 +6931,67 @@ def test_hermes_parent_identity_is_literal_across_profiles(
         assert row[0] == (f"hermes-session:{expected_native}" if parent_present else None)
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("previously_acquired", (False, True))
+def test_replacement_preserves_incoming_metadata_only_unowned_attachment(
+    tmp_path: Path, previously_acquired: bool
+) -> None:
+    """Dropping an owner changes the ref count, not whether incoming evidence survives."""
+    attachment = ParsedAttachment(
+        provider_attachment_id="metadata-evidence",
+        message_provider_id="owner",
+        name="evidence.txt",
+        mime_type="text/plain",
+    )
+    owned = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="replacement-owner",
+        messages=[ParsedMessage(provider_message_id="owner", role=Role.USER, text="before")],
+        attachments=[attachment],
+    )
+    unowned = owned.model_copy(
+        update={
+            "messages": [ParsedMessage(provider_message_id="other", role=Role.USER, text="after")],
+        }
+    )
+    replaced = _connect(tmp_path / "replaced" / "index.db")
+    fresh = _connect(tmp_path / "fresh" / "index.db")
+    try:
+        session_id = write_fixture_index_session(replaced, owned)
+        attachment_id = archive_tier_write._attachment_id(session_id, attachment)
+        assert (
+            replaced.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", (attachment_id,)).fetchone()[
+                0
+            ]
+            == 1
+        )
+        if previously_acquired:
+            replaced.execute(
+                "UPDATE attachments SET blob_hash = ?, acquisition_status = 'acquired' WHERE attachment_id = ?",
+                (b"b" * 32, attachment_id),
+            )
+            replaced.commit()
+        write_fixture_index_session(replaced, unowned)
+        write_fixture_index_session(fresh, unowned)
+        for conn in (replaced, fresh):
+            row = conn.execute(
+                "SELECT ref_count, acquisition_status, blob_hash FROM attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()
+            assert row is not None
+            assert row["ref_count"] == 0
+            assert row["acquisition_status"] == "unfetched"
+            assert row["blob_hash"] is None
+            assert (
+                conn.execute(
+                    "SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
+                ).fetchone()[0]
+                == 0
+            )
+            assert archive_tier_write.recorded_attachment_owner_gaps(conn, session_id) == (
+                (attachment_id, AttachmentOwnerResolutionReason.MESSAGE_MISSING),
+            )
+    finally:
+        replaced.close()
+        fresh.close()

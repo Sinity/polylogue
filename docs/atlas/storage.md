@@ -889,6 +889,19 @@ advances only after window publication, wraps over retryable debt, and resumes
 after restart. Attachment readiness includes pending attribution in its
 `allowed_unfetched` count (`operations/attachment_convergence.py`).
 
+The vocabulary ownership inventory runs with
+`python -m polylogue.storage.sqlite.archive_tiers.vocabulary_inventory`. It
+emits the complete inventory and returns failure when ownership is unknown.
+
+A replacement retains incoming metadata-only attachment evidence even when
+its message owner is missing. Its Index descriptor has the current reference
+count, and a zero-reference descriptor is unfetched without an Index blob
+claim. Acquired incoming bytes still require a resolvable owner. Attachments
+absent from the replacement still lose unreferenced Index rows; durable Source
+payload versions are unchanged. Recreating a child session profile refreshes
+its parent delegation cohorts from canonical session links, even when the
+previous profile deletion removed their derived facts.
+
 Attachment library states use the same read-side CAS hash verification as
 session attachments. An Index blob hash or acquired status alone does not
 establish physical availability. The shared preview classifier derives

@@ -22,7 +22,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from devtools.isolated_environment import isolated_home_environment
-from devtools.measurement_receipts import emit_receipt
+from devtools.measurement_receipts import emit_receipt, host_fingerprint
 
 SESSION_IDS = tuple(f"claude-code-session:ccccd500-0000-0000-0000-{i:012d}" for i in range(3))
 SEARCH_TOKEN = "coldqualificationuniquetoken"
@@ -114,14 +114,18 @@ def write_retained_measurement_receipt(receipt: dict[str, object], report_file: 
     discovery = receipt.get("discovery_measurement")
     intake = receipt.get("intake_counts")
     candidate = receipt.get("candidate")
+    host = receipt.get("host")
     if not isinstance(discovery, dict) or not isinstance(intake, dict) or not isinstance(candidate, dict):
         raise AssertionError("4096-sibling receipt is missing retained measurement evidence")
+    if not isinstance(host, dict) or not host:
+        raise AssertionError("retained measurement is missing its measurement host")
     survivors = receipt.get("process_tree_survivors")
     survivor_count = len(survivors) if isinstance(survivors, list) else None
 
     retained = {
         "format": "polylogue.daemon-cold-discovery-retained.v1",
         "candidate_sha": candidate.get("sha"),
+        "host": host,
         "schema_validation_mode": receipt.get("schema_validation_mode"),
         "workload": {
             "rejected_siblings": fixture.get("rejected"),
@@ -601,6 +605,7 @@ def qualify(
     rss_available = _proc_children_supported()
     receipt: dict[str, object] = {
         "format": "polylogue.daemon-cold-qualification.v1",
+        "host": host_fingerprint(),
         "candidate": {
             "sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=candidate_root, text=True).strip(),
             "import_root": str(candidate_root),
@@ -1006,10 +1011,19 @@ import polylogue.operations.intake_adapters as intake_adapters
 
 trace_path = Path(os.environ['COLD_DISCOVERY_TRACE'])
 hold_discovery = os.environ.get('COLD_HOLD_DISCOVERY') == '1'
+trace_rows = {}
+trace_lock = threading.Lock()
 def record(name, **fields):
     row = {'name': name, 'monotonic': time.monotonic(), **fields}
-    with trace_path.open('a', encoding='utf-8') as stream:
-        stream.write(json.dumps(row, sort_keys=True) + '\\n')
+    # There are four declared discovery milestones. Keep only each first
+    # observation and defer file I/O until after the measured process stops.
+    with trace_lock:
+        trace_rows.setdefault(name, row)
+
+def flush_trace():
+    with trace_path.open('w', encoding='utf-8') as stream:
+        for row in trace_rows.values():
+            stream.write(json.dumps(row, sort_keys=True) + '\\n')
 
 original_ordered = discovery._ordered_children
 original_steps = intake_adapters._source_path_steps
@@ -1074,5 +1088,8 @@ def steps_wrapper(*args, **kwargs):
 discovery._ordered_children = ordered_wrapper
 intake_adapters._source_path_steps = steps_wrapper
 from polylogue.daemon.commands import main
-main()
+try:
+    main()
+finally:
+    flush_trace()
 """

@@ -138,3 +138,20 @@ def test_reintroducing_a_duplicate_owner_makes_ownership_ambiguous(monkeypatch: 
         sum(item.disposition == "UNKNOWN_OWNERSHIP" for item in inventory.checks)
         == sum(item.disposition == "UNKNOWN_OWNERSHIP" for item in before.checks) + 1
     )
+
+
+def test_inventory_module_emits_the_complete_payload() -> None:
+    """Without the module guard this process succeeds with no inventory at all."""
+    import json
+    import subprocess
+    import sys
+
+    expected = build_inventory()
+    result = subprocess.run(
+        [sys.executable, "-m", vocabulary_inventory.__name__],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == (0 if expected.unknown_ownership == 0 else 1)
+    assert json.loads(result.stdout) == json.loads(json.dumps(expected.to_payload()))
