@@ -10,7 +10,7 @@ polylogue-model.workspace = true
 polylogue-store.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
-ctrlc = "0.4"
+ctrlc = "3.5.2"
 
 [dev-dependencies]
 tempfile.workspace = true
