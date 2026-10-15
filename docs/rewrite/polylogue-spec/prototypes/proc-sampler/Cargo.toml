@@ -1,0 +1,8 @@
+[package]
+name = "proc-sampler"
+description = "Measures one live-state process sample as the spec describes it (spec/sources/README.md, process spool)."
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]

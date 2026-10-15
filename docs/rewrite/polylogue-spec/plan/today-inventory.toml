@@ -1,0 +1,551 @@
+# What today's Python Polylogue declares (snapshot), and where each item goes in the rewrite. An item the spec names
+# needs no row; every other item has a row with exactly one disposition, so no capability is dropped silently.
+# Checked by check_today_inventory.py (flake check polylogue-today-inventory); refresh the snapshot with
+# `python3 plan/check_today_inventory.py --refresh` (reads /realm/project/polylogue/repo; the extraction is described
+# in that file's docstring). Dispositions: replaced (by what in the rewrite, "file#heading" where one exists),
+# set_aside (text of a SET-ASIDE.md row), dropped (why), merged (into another item). A row may list several `ids`.
+
+[today]
+cli = ["agent", "agent doctor", "agent install", "agent manifest", "agent manual", "agent session-start", "agent status", "agent uninstall", "agents", "agents status", "agents work-item", "analyze", "analyze by", "analyze cost-outlook", "analyze count", "analyze facets", "analyze insights", "analyze insights command-shapes", "analyze insights cost-rollups", "analyze insights costs", "analyze insights coverage", "analyze insights debt", "analyze insights profiles", "analyze insights tags", "analyze insights threads", "analyze insights tool-episodes", "analyze insights tool-usage", "analyze insights usage-timeline", "analyze latency", "analyze pace", "analyze portfolio", "analyze postmortem", "analyze tools", "analyze turns", "analyze usage", "annotations", "annotations import", "annotations join", "compare", "config", "config action-affordances", "config completions", "config paths", "config query-completions", "context", "continue", "delete", "demo", "demo receipts", "demo script", "demo seed", "demo tour", "demo verify", "facets", "hooks", "hooks install", "hooks status", "hooks uninstall", "import", "init", "insights", "insights fable-packet", "judge", "manual", "mark", "note", "ops", "ops auth", "ops backup", "ops debt", "ops debt list", "ops diagnostics", "ops diagnostics codex-title-census", "ops diagnostics drift", "ops diagnostics space", "ops diagnostics workload", "ops doctor", "ops embed", "ops embed backfill", "ops embed disable", "ops embed enable", "ops embed preflight", "ops embed resolve-failure", "ops embed status", "ops excise", "ops insights", "ops insights audit", "ops insights export", "ops insights fable-packet", "ops insights hermes-health", "ops insights status", "ops maintenance", "ops maintenance archive-read", "ops maintenance assertion-export", "ops maintenance backup-plan", "ops maintenance blob-conservation", "ops maintenance blob-gc", "ops maintenance blob-publications", "ops maintenance blob-reference-debt", "ops maintenance embedding-orphan-reconcile", "ops maintenance gc-history", "ops maintenance raw-authority-blocker-resolve", "ops maintenance raw-authority-blockers", "ops maintenance raw-authority-frontier", "ops maintenance restore-verified-backup", "ops maintenance verify-archive", "ops materialize-incident-evidence", "ops reconcile-work-effects", "ops reset", "ops scan-secrets", "ops status", "polylogued api", "polylogued api token", "polylogued api token show", "polylogued browser-capture", "polylogued browser-capture action", "polylogued browser-capture capture-health", "polylogued browser-capture native-host", "polylogued browser-capture native-host install", "polylogued browser-capture pairing", "polylogued browser-capture pairing start", "polylogued browser-capture serve", "polylogued browser-capture status", "polylogued browser-capture token", "polylogued browser-capture token show", "polylogued health", "polylogued run", "polylogued status", "polylogued watch", "read", "select", "setting", "setting get", "setting list", "setting set", "status", "tutorial"]
+mcp = ["context", "emit_decision", "explain", "get", "judge", "maintenance", "query", "read", "record_work_event", "run", "status", "write"]
+table = ["audit.archive_authority", "audit.audit_continuity_head", "audit.machine_request_parts", "audit.machine_requests", "audit.operation_attempts", "audit.operation_authorization_capabilities", "audit.operation_authorizations", "audit.operation_events", "audit.operation_preview_capabilities", "audit.operation_preview_targets", "audit.operation_previews", "audit.operation_run_capabilities", "audit.operation_runs", "audit.operation_targets", "embeddings.embedding_derivation_state", "embeddings.embedding_failures", "embeddings.embedding_status", "embeddings.excision_embedding_completions", "embeddings.in", "embeddings.message_embedding_refs", "embeddings.message_embeddings", "embeddings.message_embeddings_meta", "index.action_pairs", "index.attachment_native_ids", "index.attachment_owner_gaps", "index.attachment_refs", "index.attachments", "index.blocks", "index.delegation_facts", "index.delegation_refresh_scope", "index.derived_refresh_guard", "index.file_edits", "index.messages", "index.paste_spans", "index.query_unit_frame_state", "index.raw_existence_changes", "index.raw_existence_journal_control", "index.raw_revision_applications", "index.raw_revision_heads", "index.repo_checkouts", "index.repos", "index.session_agent_policies", "index.session_commits", "index.session_enrichment_bindings", "index.session_event_array_items", "index.session_events", "index.session_identity_claims", "index.session_identity_scopes", "index.session_latency_profiles", "index.session_links", "index.session_model_usage", "index.session_profile_demand", "index.session_profile_demand_state", "index.session_profiles", "index.session_provider_usage_events", "index.session_refs", "index.session_repos", "index.session_summary_bindings", "index.session_tags", "index.session_usage_rollup_bindings", "index.session_working_dirs", "index.sessions", "index.web_content_constructs", "index.work_evidence_edges", "index.work_evidence_graphs", "index.work_evidence_nodes", "ops.attachment_convergence_cursor", "ops.capture_health_history", "ops.context_injection_ledger", "ops.convergence_debt", "ops.cursor_lag_samples", "ops.daemon_event_retention", "ops.daemon_events", "ops.daemon_lifecycle", "ops.daemon_stage_events", "ops.daemon_termination_receipts", "ops.embedding_catchup_runs", "ops.fts_drift_samples", "ops.in", "ops.ingest_attempts", "ops.ingest_cursor", "ops.judgment_scheduler_receipts", "ops.mcp_call_log", "ops.mcp_call_session_refs", "ops.product_retry_incarnation", "ops.raw_frontier_cursor_changes", "ops.raw_frontier_cursor_journal_control", "ops.raw_frontier_inspection", "ops.raw_frontier_membership_inputs", "ops.raw_frontier_pending_heads", "ops.raw_frontier_pending_raws", "ops.schema_drift_samples", "ops.schema_drift_signature_chunks", "ops.schema_identity", "ops.secret_scan_status", "source.accepted_marker_inputs", "source.accepted_marker_stream", "source.audit_continuity_control", "source.blob_publication_reservations", "source.blob_refs", "source.coordinates", "source.excised_content", "source.excised_marker_inputs", "source.excision_policy_projections", "source.gc_generation_members", "source.gc_generations", "source.history_sidecars", "source.hook_event_carriers", "source.material_evidence_links", "source.material_observations", "source.ordinals", "source.pending_accepted_marker_inputs", "source.prepared_source_manifest_members", "source.prepared_source_manifests", "source.raw_artifacts", "source.raw_authority_blockers", "source.raw_authority_parser_census", "source.raw_authority_verdicts", "source.raw_capture_observations", "source.raw_container_coordinates", "source.raw_existence_changes", "source.raw_existence_journal_control", "source.raw_hook_events", "source.raw_legacy_append_resynthesis_receipts", "source.raw_membership_census", "source.raw_profile_identity_receipts", "source.raw_session_memberships", "source.raw_sessions", "source.records", "source.sinex_publication_obligations", "source.sinex_publication_payloads", "source.sinex_publication_receipts", "source.sinex_publication_segments", "source.source_attachments", "source.source_generations", "source.source_item_member_dispositions", "source.source_item_raw_members", "source.source_items", "source.verified_blob_receipts", "user.accepted_marker_delivery_cursor", "user.annotation_batches", "user.annotation_schemas", "user.assertions", "user.context_deliveries", "user.holdout_access_receipts", "user.queries", "user.query_edges", "user.query_evaluation_receipts", "user.query_excision_ledger", "user.query_names", "user.query_unit_frame_state", "user.result_set_holdout_policies", "user.result_set_members", "user.result_sets", "user.retained_query_runs", "user.retired_marker_assertions", "user.session_marker_delivery", "user.user_settings", "user.watched_query_baselines"]
+artifact = ["adopt_manifest", "agent_memory_document", "agent_sidecar_meta", "agent_transcript", "coordinator_session_stream", "export_asset", "export_asset_index", "hook_event_carrier", "metadata_document", "prompt_history_log", "session_document", "session_index", "skill_asset", "todo_snapshot", "tool_result_sidecar", "workflow_journal", "workflow_run_snapshot"]
+service = ["api_server", "blob_gc", "blob_publication_reconciliation", "browser_capture_server", "browser_host", "convergence_check", "db_optimize", "embedding_backlog", "embedding_orphan_reconcile", "fair_intake", "fts_merge", "health_check", "heartbeat", "judgment_automation", "lifecycle_heartbeat", "raw_observation_convergence", "schema_preflight_recheck", "secret_scan_sweep", "session_profile_audit", "status_snapshot_refresh", "termination_reconciliation", "uds_server", "wal_checkpoint", "watcher", "watcher_registered_bridge"]
+
+
+[[row]]
+category = "cli"
+ids = ["agent uninstall", "hooks uninstall"]
+replaced = "spec/surfaces/mcp-and-hooks.md#What `install-agent` installs (install-agent --remove deletes exactly the entries it recorded)"
+
+[[row]]
+category = "cli"
+ids = ["agents work-item"]
+replaced = "spec/model.md#The work graph"
+
+[[row]]
+category = "cli"
+ids = ["analyze cost-outlook"]
+replaced = "spec/analysis.md#Subscription windows (the usage outlook leads cost reporting)"
+
+[[row]]
+category = "cli"
+ids = ["analyze insights command-shapes"]
+replaced = "spec/analysis.md#Shell commands (normalized commands with last use)"
+
+[[row]]
+category = "cli"
+ids = ["analyze insights cost-rollups", "analyze insights usage-timeline"]
+replaced = "spec/analysis.md#Usage and cost (grouped by origin, model or logical day)"
+
+[[row]]
+category = "cli"
+ids = ["analyze insights tool-episodes"]
+replaced = "spec/analysis.md#Outcome rules (each call paired with its result and outcome)"
+
+[[row]]
+category = "cli"
+ids = ["analyze insights tool-usage"]
+replaced = "spec/analysis.md#Failure statistics (computed, not interpreted)"
+
+[[row]]
+category = "cli"
+ids = ["analyze portfolio"]
+dropped = "a sanitized report for outsiders; outward publication was ruled out (operator ruling 2026-06-27, polylogue-kph; deep-audit-2)"
+
+[[row]]
+category = "cli"
+ids = ["analyze postmortem"]
+replaced = "spec/workflows.md (the session report, workflow 18, and export views give the same bundle)"
+
+[[row]]
+category = "cli"
+ids = ["config action-affordances", "config query-completions"]
+replaced = "spec/query.md (completion and actions come from the one field and verb catalog that explain serves; no separate metadata dumps)"
+
+[[row]]
+category = "cli"
+ids = ["demo tour"]
+set_aside = "seeded a deterministic demo archive"
+
+[[row]]
+category = "cli"
+ids = ["init"]
+dropped = "detected sources and wrote polylogue.toml: the rewrite reads only canonical source locations, and configuration is declared in NixOS (plan/workspace.md)"
+
+[[row]]
+category = "cli"
+ids = ["insights fable-packet", "ops insights fable-packet"]
+replaced = "spec/user-data.md#Briefings for agents (a delegation packet for another model is a briefing with an export view)"
+
+[[row]]
+category = "cli"
+ids = ["ops diagnostics codex-title-census"]
+dropped = "an acceptance probe for one Python bead (polylogue-ih67), not a capability"
+
+[[row]]
+category = "cli"
+ids = ["ops diagnostics workload"]
+replaced = "spec/behavior.md#Status totals (status shows waiting work and slow plans from writer-kept counters)"
+
+[[row]]
+category = "cli"
+ids = ["ops embed disable", "ops embed enable", "ops embed resolve-failure"]
+replaced = "spec/analysis.md#Embeddings and semantic search (opt-in) (enabled by configuration; a failed embedding is a failed input shown in status and retried on change)"
+
+[[row]]
+category = "cli"
+ids = ["ops insights hermes-health"]
+replaced = "spec/behavior.md#Failures (status reports each source's health; no per-integration rollup)"
+
+[[row]]
+category = "cli"
+ids = ["ops maintenance archive-read", "ops maintenance assertion-export", "ops maintenance blob-conservation", "ops maintenance blob-gc", "ops maintenance blob-publications", "ops maintenance blob-reference-debt", "ops maintenance embedding-orphan-reconcile", "ops maintenance gc-history", "ops maintenance raw-authority-blocker-resolve", "ops maintenance raw-authority-blockers", "ops maintenance raw-authority-frontier"]
+set_aside = "`diagnostics`, `paths`, `maintenance`"
+
+[[row]]
+category = "cli"
+ids = ["ops maintenance backup-plan", "ops maintenance restore-verified-backup"]
+replaced = "spec/storage/README.md#Backup (the filesystem backup plus the SQLite backup API, run by Sinnix; restore drill law 125)"
+
+[[row]]
+category = "cli"
+ids = ["ops maintenance verify-archive"]
+replaced = "spec/storage/blobs.md#Crash safety without repair (corruption is found and never served, law 123)"
+
+[[row]]
+category = "cli"
+ids = ["polylogued browser-capture capture-health", "polylogued browser-capture native-host"]
+replaced = "spec/surfaces/extension-and-clients.md#Browser extension (capture-state words and the native host)"
+
+[[row]]
+category = "artifact"
+ids = ["agent_memory_document", "agent_sidecar_meta", "agent_transcript", "coordinator_session_stream", "prompt_history_log", "todo_snapshot", "tool_result_sidecar"]
+replaced = "spec/sources/claude-code.md (each file kind is listed with its role; evidence/python-artifact-kinds.md maps them)"
+
+[[row]]
+category = "artifact"
+ids = ["export_asset", "export_asset_index"]
+replaced = "spec/sources/chat-exports.md"
+
+[[row]]
+category = "artifact"
+ids = ["hook_event_carrier"]
+replaced = "spec/sources/README.md#Hooks (live capture from agent harnesses)"
+
+[[row]]
+category = "artifact"
+ids = ["metadata_document", "session_document"]
+replaced = "spec/sources/README.md#How sources work (each provider section names its documents: AI Studio Drive files and applet log in google.md, Antigravity brain/ and conversations in others.md)"
+
+[[row]]
+category = "artifact"
+ids = ["skill_asset"]
+dropped = "Hermes's shipped skill templates are program files, not sessions; spec/sources/others.md lists hermes-agent/ as not collected"
+
+[[row]]
+category = "artifact"
+ids = ["workflow_journal", "workflow_run_snapshot"]
+set_aside = "Claude Code workflow run records"
+
+[[row]]
+category = "service"
+ids = ["api_server"]
+set_aside = "HTTP API for other programs, with bearer tokens"
+
+[[row]]
+category = "service"
+ids = ["blob_gc"]
+replaced = "spec/storage/blobs.md#Blobs (a blob is deleted when nothing refers to it; no collector pass)"
+
+[[row]]
+category = "service"
+ids = ["blob_publication_reconciliation", "schema_preflight_recheck", "session_profile_audit"]
+dropped = "repair or audit passes over Python-tier machinery; the rewrite holds the invariant instead (row before file, a version number per parser, read-time profiles)"
+
+[[row]]
+category = "service"
+ids = ["browser_capture_server", "browser_host"]
+replaced = "spec/sources/README.md#Browser captures"
+
+[[row]]
+category = "service"
+ids = ["convergence_check", "fair_intake", "raw_observation_convergence", "watcher", "watcher_registered_bridge"]
+replaced = "spec/convergence.md#The loop (one loop: collect, store, parse, derive, wait)"
+
+[[row]]
+category = "service"
+ids = ["db_optimize", "fts_merge", "wal_checkpoint"]
+replaced = "spec/storage/README.md#Conventions for all three files (SQLite housekeeping inside the writer's own schedule)"
+
+[[row]]
+category = "service"
+ids = ["embedding_backlog", "embedding_orphan_reconcile"]
+replaced = "spec/analysis.md#Embeddings and semantic search (opt-in)"
+
+[[row]]
+category = "service"
+ids = ["health_check", "heartbeat", "lifecycle_heartbeat"]
+dropped = "process supervision is systemd's (the unit restarts the daemon); health is computed at read time by status"
+
+[[row]]
+category = "service"
+ids = ["judgment_automation"]
+replaced = "spec/user-data.md#Judgment"
+
+[[row]]
+category = "service"
+ids = ["secret_scan_sweep"]
+set_aside = "a separate pass that flagged secrets in stored text"
+
+[[row]]
+category = "service"
+ids = ["status_snapshot_refresh"]
+replaced = "spec/behavior.md#Status totals (writer-kept counters, no snapshot refresh)"
+
+[[row]]
+category = "service"
+ids = ["termination_reconciliation"]
+replaced = "spec/model.md#Process (end_kind and ended_after recorded when a process ends)"
+
+[[row]]
+category = "service"
+ids = ["uds_server"]
+replaced = "decisions/process.md#The request shape, and what keeps it small"
+
+[[row]]
+category = "table"
+ids = ["audit.archive_authority", "audit.audit_continuity_head", "audit.operation_attempts", "audit.operation_authorization_capabilities", "audit.operation_authorizations", "audit.operation_events", "audit.operation_preview_capabilities", "audit.operation_preview_targets", "audit.operation_previews", "audit.operation_run_capabilities", "audit.operation_runs", "audit.operation_targets"]
+dropped = "the Python mutation ceremony (authorize, preview, run receipts); the rewrite has none: notes are rows with history and excision previews and asks (spec/surfaces/cli.md)"
+
+[[row]]
+category = "table"
+ids = ["audit.machine_request_parts", "audit.machine_requests"]
+replaced = "spec/storage/archive-db.md#Tables (client_request: a request ID and content hash tell a retried write from a conflicting one)"
+
+[[row]]
+category = "table"
+ids = ["embeddings.embedding_derivation_state", "embeddings.embedding_failures", "embeddings.embedding_status", "embeddings.excision_embedding_completions", "embeddings.message_embedding_refs", "embeddings.message_embeddings", "embeddings.message_embeddings_meta"]
+replaced = "spec/analysis.md#Embeddings and semantic search (opt-in) (embeddings.db, decisions/storage-files.md)"
+
+[[row]]
+category = "table"
+ids = ["index.action_pairs", "index.attachment_native_ids", "index.attachment_owner_gaps", "index.attachment_refs", "index.file_edits", "index.session_event_array_items", "index.session_events", "index.session_links", "index.session_provider_usage_events", "index.session_refs", "index.web_content_constructs"]
+replaced = "spec/storage/index-db.md#Tables (tool_call with its paired result and path, attachment, event, link, provider_usage events, references)"
+
+[[row]]
+category = "table"
+ids = ["index.delegation_facts", "index.delegation_refresh_scope"]
+replaced = "spec/model.md#Link (subagent links with their evidence)"
+
+[[row]]
+category = "table"
+ids = ["index.paste_spans"]
+replaced = "spec/sources/claude-code.md#Pastes"
+
+[[row]]
+category = "table"
+ids = ["index.raw_existence_changes", "index.raw_existence_journal_control", "source.raw_existence_changes", "source.raw_existence_journal_control"]
+replaced = "spec/storage/archive-db.md#Tables (observation: insert-only, the authority for what was seen and when)"
+
+[[row]]
+category = "table"
+ids = ["index.raw_revision_applications", "index.raw_revision_heads"]
+replaced = "spec/convergence.md#Parse (parse_state per revision chain)"
+
+[[row]]
+category = "table"
+ids = ["index.repo_checkouts", "index.session_commits", "index.session_repos", "index.session_working_dirs"]
+replaced = "spec/analysis.md#Git correlation and the changes view (slice 11)"
+
+[[row]]
+category = "table"
+ids = ["index.derived_refresh_guard", "index.query_unit_frame_state", "user.query_unit_frame_state", "index.session_agent_policies", "index.session_enrichment_bindings", "index.session_profile_demand", "index.session_profile_demand_state", "index.session_profiles", "index.session_summary_bindings", "index.session_usage_rollup_bindings"]
+dropped = "materialized profiles, rollups and their refresh bookkeeping; the rewrite computes these at read time or in the writer's one pass (spec/behavior.md, status totals)"
+
+[[row]]
+category = "table"
+ids = ["index.session_identity_claims", "index.session_identity_scopes"]
+replaced = "spec/model.md#Identity"
+
+[[row]]
+category = "table"
+ids = ["index.session_latency_profiles"]
+replaced = "spec/analysis.md#Time"
+
+[[row]]
+category = "table"
+ids = ["index.session_tags"]
+replaced = "spec/user-data.md#Notes: one mechanism (a tag is a note)"
+
+[[row]]
+category = "table"
+ids = ["index.work_evidence_edges", "index.work_evidence_graphs", "index.work_evidence_nodes"]
+set_aside = "`materialize-incident-evidence`, `reconcile-work-effects`"
+
+[[row]]
+category = "table"
+ids = ["ops.attachment_convergence_cursor", "ops.cursor_lag_samples", "ops.daemon_event_retention", "ops.daemon_events", "ops.daemon_lifecycle", "ops.daemon_stage_events", "ops.daemon_termination_receipts", "ops.embedding_catchup_runs", "ops.fts_drift_samples", "ops.ingest_attempts", "ops.ingest_cursor", "ops.judgment_scheduler_receipts", "ops.product_retry_incarnation", "ops.raw_frontier_cursor_changes", "ops.raw_frontier_cursor_journal_control", "ops.raw_frontier_inspection", "ops.raw_frontier_membership_inputs", "ops.raw_frontier_pending_heads", "ops.raw_frontier_pending_raws", "ops.schema_drift_samples", "ops.schema_drift_signature_chunks", "ops.schema_identity"]
+dropped = "the disposable ops tier: cursors, telemetry samples and receipts; the rewrite finds its work by comparing what exists with what should (spec/convergence.md) and keeps live counts in meta"
+
+[[row]]
+category = "table"
+ids = ["ops.capture_health_history"]
+replaced = "spec/surfaces/extension-and-clients.md#Browser extension"
+
+[[row]]
+category = "table"
+ids = ["ops.context_injection_ledger", "user.context_deliveries"]
+replaced = "spec/model.md#Delivery (what each briefing gave and left out)"
+
+[[row]]
+category = "table"
+ids = ["ops.mcp_call_log", "ops.mcp_call_session_refs"]
+dropped = "a log of MCP calls; the rewrite records briefing deliveries and agents' notes, not every read (reads never write)"
+
+[[row]]
+category = "table"
+ids = ["ops.secret_scan_status"]
+set_aside = "a separate pass that flagged secrets in stored text"
+
+[[row]]
+category = "table"
+ids = ["source.raw_artifacts", "source.raw_sessions", "source.raw_capture_observations", "source.material_observations", "source.material_evidence_links", "source.raw_container_coordinates", "source.source_items", "source.source_item_raw_members", "source.source_item_member_dispositions", "source.source_attachments", "source.history_sidecars", "source.raw_session_memberships", "source.raw_membership_census"]
+replaced = "spec/storage/blobs.md#Inputs, revisions and extents (input, revision, extent, observation; which sessions an input feeds is derived)"
+
+[[row]]
+category = "table"
+ids = ["source.blob_refs", "source.verified_blob_receipts", "source.blob_publication_reservations"]
+replaced = "spec/storage/blobs.md#Blobs (the blob table, row before file)"
+
+[[row]]
+category = "table"
+ids = ["source.gc_generations", "source.gc_generation_members"]
+dropped = "blob collection generations; a blob is deleted when unreferenced, no collector"
+
+[[row]]
+category = "table"
+ids = ["source.excised_content", "source.excised_marker_inputs", "source.excision_policy_projections"]
+replaced = "spec/storage/archive-db.md#How excision works"
+
+[[row]]
+category = "table"
+ids = ["source.hook_event_carriers", "source.raw_hook_events"]
+replaced = "spec/sources/README.md#Hooks (live capture from agent harnesses)"
+
+[[row]]
+category = "table"
+ids = ["source.accepted_marker_inputs", "source.accepted_marker_stream", "source.pending_accepted_marker_inputs", "user.accepted_marker_delivery_cursor", "user.session_marker_delivery", "user.retired_marker_assertions"]
+replaced = "spec/user-data.md#Inline markers"
+
+[[row]]
+category = "table"
+ids = ["source.ordinals"]
+replaced = "spec/model.md#Identity (provisional IDs: content hash plus occurrence number)"
+
+[[row]]
+category = "table"
+ids = ["source.audit_continuity_control", "source.prepared_source_manifests", "source.prepared_source_manifest_members", "source.raw_authority_blockers", "source.raw_authority_parser_census", "source.raw_authority_verdicts", "source.raw_legacy_append_resynthesis_receipts", "source.raw_profile_identity_receipts", "source.source_generations"]
+dropped = "reindex-campaign machinery (raw authority frontier, prepared manifests, generations, receipts); the rewrite keeps every input and revision and rebuilds the index from them"
+
+[[row]]
+category = "table"
+ids = ["source.sinex_publication_obligations", "source.sinex_publication_payloads", "source.sinex_publication_receipts", "source.sinex_publication_segments"]
+replaced = "decisions/sinex.md#Transport (joint #8) (no send ledger: Polylogue asks Sinex what it holds)"
+
+[[row]]
+category = "table"
+ids = ["user.annotation_batches", "user.annotation_schemas"]
+replaced = "spec/user-data.md#Checked claims and annotation passes (passes under a rubric)"
+
+[[row]]
+category = "table"
+ids = ["user.assertions"]
+replaced = "spec/user-data.md#Notes: one mechanism (a claim is a note, with a check)"
+
+[[row]]
+category = "table"
+ids = ["user.holdout_access_receipts", "user.result_set_holdout_policies"]
+replaced = "spec/user-data.md#Judgment (blind sampled judging)"
+
+[[row]]
+category = "table"
+ids = ["user.query_edges", "user.query_names", "user.query_evaluation_receipts", "user.retained_query_runs", "user.result_sets", "user.result_set_members", "user.watched_query_baselines"]
+replaced = "spec/user-data.md#Saved queries and kept results (saved queries, kept results, watches and signals)"
+
+[[row]]
+category = "table"
+ids = ["user.query_excision_ledger"]
+replaced = "spec/storage/archive-db.md#How excision works"
+
+# Strict CLI matching (a multi-word path counts as named only by its full path), 2026-10-12: dispositions
+# for the 73 commands that had passed on their last word alone.
+[[row]]
+category = "cli"
+ids = ["agent install", "agent status", "agent doctor", "hooks install", "hooks status"]
+replaced = "spec/surfaces/cli.md#install-agent HARNESS (records what it will change, --remove restores; status reports a missing or stale entry)"
+
+[[row]]
+category = "cli"
+ids = ["agent session-start"]
+replaced = "spec/surfaces/cli.md#hook EVENT --harness"
+
+[[row]]
+category = "cli"
+ids = ["agent manifest"]
+replaced = "spec/surfaces/mcp-and-hooks.md#What `install-agent` installs (the MCP surface an agent sees, with --read-only)"
+
+[[row]]
+category = "cli"
+ids = ["agent manual"]
+set_aside = "`tutorial`, `manual`, `agent` (cold-start manual)"
+
+[[row]]
+category = "cli"
+ids = ["agents status"]
+set_aside = "`agents`, MCP `agent_coordination`"
+
+[[row]]
+category = "cli"
+ids = ["analyze by", "analyze count"]
+replaced = "spec/query.md#Stages (`| group by`, `| count`)"
+
+[[row]]
+category = "cli"
+ids = ["analyze facets", "analyze insights", "analyze insights profiles", "ops insights", "ops insights audit", "ops insights export", "ops insights status"]
+set_aside = "`insights`, `facets`"
+
+[[row]]
+category = "cli"
+ids = ["analyze insights costs", "analyze usage"]
+replaced = "spec/analysis.md#1. Usage and cost"
+
+[[row]]
+category = "cli"
+ids = ["analyze insights coverage"]
+replaced = "spec/analysis.md#6. Format drift (field coverage, `polylogue schema unread`)"
+
+[[row]]
+category = "cli"
+ids = ["analyze insights debt", "ops debt", "ops debt list"]
+set_aside = "`debt`"
+
+[[row]]
+category = "cli"
+ids = ["analyze insights tags"]
+replaced = "spec/query.md#notes (tags are notes; `notes where kind:tag | group by value`)"
+
+[[row]]
+category = "cli"
+ids = ["analyze insights threads"]
+set_aside = "`agents`, MCP `agent_coordination`"
+
+[[row]]
+category = "cli"
+ids = ["analyze latency"]
+dropped = "per-surface latency telemetry from the ops tier, which is dropped; the rewrite's targets are measured by the behaviour tests (spec/behavior.md), not stored"
+
+[[row]]
+category = "cli"
+ids = ["analyze pace", "analyze turns"]
+replaced = "spec/query.md#turns (turn spans and gaps; spec/analysis.md, 3. Time)"
+
+[[row]]
+category = "cli"
+ids = ["analyze tools"]
+replaced = "spec/analysis.md#2. Tool calls"
+
+[[row]]
+category = "cli"
+ids = ["annotations import", "annotations join"]
+set_aside = "`annotations`"
+
+[[row]]
+category = "cli"
+ids = ["config completions"]
+replaced = "spec/surfaces/cli.md#Completion and interactive selection"
+
+[[row]]
+category = "cli"
+ids = ["config paths", "ops diagnostics", "ops diagnostics drift", "ops diagnostics space", "ops doctor", "ops maintenance"]
+set_aside = "`diagnostics`, `paths`, `maintenance`"
+
+[[row]]
+category = "cli"
+ids = ["demo receipts", "demo script", "demo seed", "demo verify"]
+set_aside = "seeded a deterministic demo archive"
+
+[[row]]
+category = "cli"
+ids = ["ops auth"]
+replaced = "spec/sources/google.md#Google AI Studio (Drive) (`polylogue auth drive`)"
+
+[[row]]
+category = "cli"
+ids = ["ops backup"]
+set_aside = "`backup`"
+
+[[row]]
+category = "cli"
+ids = ["ops embed", "ops embed backfill", "ops embed preflight", "ops embed status"]
+replaced = "spec/analysis.md#8. Embeddings and semantic search (opt-in) (the daemon embeds as a derived product once a provider is set; status shows progress and cost)"
+
+[[row]]
+category = "cli"
+ids = ["ops excise"]
+replaced = "spec/surfaces/cli.md#Verbs (act on the matched set) (`excise`)"
+
+[[row]]
+category = "cli"
+ids = ["ops materialize-incident-evidence", "ops reconcile-work-effects"]
+set_aside = "`materialize-incident-evidence`, `reconcile-work-effects`"
+
+[[row]]
+category = "cli"
+ids = ["ops reset"]
+dropped = "a state reset command: the rewrite has no repair or reset commands (invariants instead of repair, operator ruling); a reset is deleting index.db, which the loop rebuilds"
+
+[[row]]
+category = "cli"
+ids = ["ops scan-secrets"]
+set_aside = "`scan-secrets`"
+
+[[row]]
+category = "cli"
+ids = ["ops status", "polylogued status", "polylogued health", "polylogued browser-capture status"]
+replaced = "spec/surfaces/cli.md#Status"
+
+[[row]]
+category = "cli"
+ids = ["polylogued run", "polylogued watch"]
+replaced = "spec/surfaces/cli.md#Commands (not about a matched set) (`daemon`: one loop that watches, collects and parses)"
+
+[[row]]
+category = "cli"
+ids = ["polylogued api", "polylogued api token", "polylogued api token show"]
+replaced = "spec/surfaces/web.md#Web reader (the access token file, handed over by `polylogue open`; no HTTP API for other programs)"
+
+[[row]]
+category = "cli"
+ids = ["polylogued browser-capture", "polylogued browser-capture serve"]
+replaced = "spec/surfaces/cli.md#browser-host"
+
+[[row]]
+category = "cli"
+ids = ["polylogued browser-capture native-host install"]
+replaced = "spec/surfaces/cli.md#install-agent chrome"
+
+[[row]]
+category = "cli"
+ids = ["polylogued browser-capture pairing", "polylogued browser-capture pairing start", "polylogued browser-capture token", "polylogued browser-capture token show"]
+dropped = "pairing and a bearer token for the capture receiver: native messaging admits only the extensions its host manifest lists, so no token exists (spec/surfaces/extension-and-clients.md)"
+
+[[row]]
+category = "cli"
+ids = ["polylogued browser-capture action"]
+replaced = "spec/surfaces/extension-and-clients.md#Browser extension (posting: request, send and observed reply kept apart)"
+
+[[row]]
+category = "cli"
+ids = ["setting get", "setting list", "setting set"]
+replaced = "spec/surfaces/cli.md#setting [KEY [VALUE]]"

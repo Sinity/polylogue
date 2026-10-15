@@ -1,0 +1,20 @@
+[package]
+name = "hashed-blobs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98.1"
+license-file = "../../LICENSE"
+repository = "https://github.com/Sinity/polylogue"
+description = "Content-addressed files with checked range reads, deltas and sealed encodings"
+publish = false
+
+[dependencies]
+blake3 = "1"
+zstd = "0.13"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

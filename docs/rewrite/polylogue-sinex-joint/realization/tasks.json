@@ -1,0 +1,167 @@
+{
+  "bootstrap_requirements": [
+    {
+      "id": "preservation",
+      "source": "polylogue-sinex-joint/REALIZATION-PLAN.md",
+      "statement": "Verified preservation refs, recoverable unique work and restore-tested bundle precede source replacement.",
+      "task": "preserve"
+    },
+    {
+      "id": "consumer-pins",
+      "source": "polylogue-sinex-joint/BOOTSTRAP-INVENTORY.md",
+      "statement": "Build and deployment consumers remain pinned to the preserved implementation until authorized cutover.",
+      "task": "preserve"
+    },
+    {
+      "id": "executable-workspace",
+      "source": "polylogue-sinex-joint/BOOTSTRAP-INVENTORY.md",
+      "statement": "Fresh checkout has real entrypoints, dependencies and isolated check routes; unsupported features return explicit errors.",
+      "task": "bootstrap"
+    },
+    {
+      "id": "ownership",
+      "source": "polylogue-sinex-joint/BOOTSTRAP-INVENTORY.md",
+      "statement": "Real identity and writer capabilities enforce ownership; deliberate forbidden dependency and write attempts fail.",
+      "task": "bootstrap"
+    },
+    {
+      "id": "task-routing",
+      "source": "polylogue-sinex-joint/REALIZATION-PLAN.md",
+      "statement": "New stores have verified routing and prefixes; historical tasks are reconciled without closing old operational obligations.",
+      "task": "routing"
+    },
+    {
+      "id": "inspectable-demo",
+      "source": "polylogue-sinex-joint/REALIZATION-PLAN.md",
+      "statement": "Packaged clients expose independently expected fixture facts, bad-input outcomes and crash/restart recovery in a reproducible report.",
+      "task": "evaluate"
+    }
+  ],
+  "tasks": [
+    {
+      "key": "preserve",
+      "title": "Preserve the predecessor and its deployment consumers",
+      "milestone": "M0",
+      "owner": "integrator",
+      "source": "polylogue-sinex-joint/BOOTSTRAP-INVENTORY.md",
+      "scope": "Preservation refs and private bundles; build consumers and packaging pins. No state reset, import, routing change or host activation.",
+      "acceptance": [
+        {
+          "id": "restore",
+          "text": "Refresh local/hosted heads, worktrees and writers; preserve unique work; restore the reviewed tree from a separate bundle checkout."
+        },
+        {
+          "id": "pins",
+          "text": "Name every build/deployment consumer and prove it cannot upgrade to unsupported stubs; keep private evidence out of published refs."
+        }
+      ],
+      "depends": []
+    },
+    {
+      "key": "routing",
+      "title": "Reconcile historical work and verify successor task routing",
+      "milestone": "M0",
+      "owner": "integrator",
+      "source": "polylogue-sinex-joint/realization/README.md",
+      "scope": "Separate task-store prefixes and routes; historical open-task dispositions; inspected graph import. Source preservation remains a separate prerequisite for replacement. No state reset or deployment.",
+      "acceptance": [
+        {
+          "id": "routing",
+          "text": "Choose separate new prefix/store routes, verify local and foreign lookup, and reconcile historical open tasks with dispositions. Perform live routing only with its operational authority."
+        },
+        {
+          "id": "import",
+          "text": "Inspect current stores by spec_id before import; preserve historical IDs and verify every imported node and blocking edge. Resolve ambiguous writes before retrying."
+        }
+      ],
+      "depends": []
+    },
+    {
+      "key": "bootstrap",
+      "title": "Replace the workspace with an executable foundation",
+      "milestone": "M0",
+      "owner": "product lead",
+      "source": "polylogue-sinex-joint/BOOTSTRAP-INVENTORY.md",
+      "scope": "Target workspace crates, identity/value types, storage capabilities, toolchain, build/check entrypoints, fixture support and successor hooks/docs. Remove predecessor callers coherently.",
+      "acceptance": [
+        {
+          "id": "build",
+          "text": "A fresh checkout builds packaged entrypoints and runs isolated checks; no supported route reaches todo! or an empty success stub."
+        },
+        {
+          "id": "boundary",
+          "text": "Real model/blob tests pass; a deliberate forbidden crate edge and unauthorized writer access fail through actual compiler/runtime boundaries."
+        },
+        {
+          "id": "replacement",
+          "text": "Replacement PR identifies removed capabilities and preserved files; successor hooks and commands work with their callers under required hosted checks. No usability or deployment claim."
+        },
+        {
+          "id": "configuration",
+          "text": "Run packaged schema/catalog exports without live services, reject bad or unsupported configuration, and demonstrate isolated endpoint/state ownership with occupied-endpoint and partial-start failures. Runtime connection settings have one configuration channel."
+        },
+        {
+          "id": "recovery-control",
+          "text": "Provide a test-only fault hook or observable boundary for the first path durability cases. The evaluator can interrupt a recorded owned process at that boundary; a timed sleep-and-kill cannot qualify crash recovery."
+        }
+      ],
+      "depends": [
+        "preserve"
+      ]
+    },
+    {
+      "key": "path",
+      "title": "Deliver the first retained-input-to-client path",
+      "milestone": "M1",
+      "owner": "product lead",
+      "source": "polylogue-sinex-joint/REALIZATION-PLAN.md",
+      "scope": {
+        "polylogue": "One Claude Code file through retained revision/parser/writer to search, read and export through CLI and MCP. Full slice 1 remains open.",
+        "sinex": "One Atuin source through retained material/observation/admission/search to CLI. Full slice 1 remains open; confirmed delivery and MCP require their own evidence."
+      },
+      "acceptance": [
+        {
+          "id": "facts",
+          "text": "Packaged clients return independently specified Morrow or Kestrel facts from retained input via production storage and request paths."
+        },
+        {
+          "id": "failure",
+          "text": "Append, empty source and malformed input have explicit expected outcomes; restart/retry agrees with an uninterrupted run."
+        },
+        {
+          "id": "scope",
+          "text": "List supported commands/sources and remaining slice obligations. Sinex confirmed delivery and MCP stay open unless actually delivered and demonstrated."
+        }
+      ],
+      "depends": [
+        "bootstrap",
+        "routing"
+      ]
+    },
+    {
+      "key": "evaluate",
+      "title": "Demonstrate the first path and its recovery independently",
+      "milestone": "M1",
+      "owner": "runtime evaluator",
+      "source": "polylogue-sinex-joint/REALIZATION-PLAN.md",
+      "scope": "Synthetic milestone demonstration script, independent expected facts and readable output from packaged clients. No private-corpus or deployed-service claim.",
+      "acceptance": [
+        {
+          "id": "repeat",
+          "text": "One documented command repeats the demonstration from isolated state; expected and actual answers, candidate revision, executable identity and exact exit statuses are inspectable."
+        },
+        {
+          "id": "oracle",
+          "text": "Expectations do not call the implementation; a deliberately wrong answer fails the comparison. Kill/restart exercises the relevant durability boundary."
+        },
+        {
+          "id": "limits",
+          "text": "Report failed-input handling and residual acceptance; retain raw logs in the owning run store. Operator usefulness and installed-client verification remain separate open criteria."
+        }
+      ],
+      "depends": [
+        "path"
+      ]
+    }
+  ]
+}

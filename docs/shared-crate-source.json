@@ -1,0 +1,79 @@
+{
+  "source_commit": "9c707593185673dd3985df4008174474999699ad",
+  "source_path": "polylogue-sinex-joint/prototype/hashed-blobs",
+  "canonical_target": "crates/hashed-blobs",
+  "status": "adapted owner release candidate; remote owner tag and downstream replacement remain unpublished",
+  "files": [
+    {
+      "path": "Cargo.toml",
+      "sha256": "eb543010cd87e8651878e1d3bfb2e3c5b73a5b7f5c007eb1a2e0c3591a82909e"
+    },
+    {
+      "path": "README.md",
+      "sha256": "d457836ca748d3c7ffe25d1681cfc0fabb1962a1ae31c918adad0694a484a650"
+    },
+    {
+      "path": "examples/pt5.rs",
+      "sha256": "c5fced14fbe419dc8f9b51081f34b848abe89f1f42ee44d9befbe54e9f26f067"
+    },
+    {
+      "path": "src/lib.rs",
+      "sha256": "e7371751ec02662081249488c121ba018c09e064ec694f07e13d0cc3e6553fb8"
+    },
+    {
+      "path": "src/tests.rs",
+      "sha256": "7084ba551aa14797de7f86e7e6f771c939d38a0986298d6b182ee9cf027a6b7f"
+    },
+    {
+      "path": "tests/sealed_lifetime.rs",
+      "sha256": "e416d99479502d26f6cd8a4f3eb880851376a21be0f45b79256ddc53129ad062"
+    }
+  ],
+  "adaptation": {
+    "commit": "94975a7d60",
+    "reason": "Reader capability constructs existing roots without IO and exposes only the unchanged checked decoder/range methods.",
+    "files": [
+      {
+        "path": "Cargo.toml",
+        "sha256": "eb543010cd87e8651878e1d3bfb2e3c5b73a5b7f5c007eb1a2e0c3591a82909e"
+      },
+      {
+        "path": "README.md",
+        "sha256": "d457836ca748d3c7ffe25d1681cfc0fabb1962a1ae31c918adad0694a484a650"
+      },
+      {
+        "path": "examples/pt5.rs",
+        "sha256": "c5fced14fbe419dc8f9b51081f34b848abe89f1f42ee44d9befbe54e9f26f067"
+      },
+      {
+        "path": "src/lib.rs",
+        "sha256": "799fa5b8a93584ecf08bc303ddaea35f037b6f07706ae38d3e690f69e8751d00"
+      },
+      {
+        "path": "src/tests.rs",
+        "sha256": "7084ba551aa14797de7f86e7e6f771c939d38a0986298d6b182ee9cf027a6b7f"
+      },
+      {
+        "path": "tests/read_only.rs",
+        "sha256": "8464bbdca13208b040af769f6bffce6504d38bee7a40983bd45fc22925aaa92b"
+      },
+      {
+        "path": "tests/sealed_lifetime.rs",
+        "sha256": "e416d99479502d26f6cd8a4f3eb880851376a21be0f45b79256ddc53129ad062"
+      }
+    ],
+    "file_set_sha256": "969613274d190ae1cb482ab665ce5e0c15a403101ab6b31068f36266d3b88392"
+  },
+  "release_preparation": {
+    "package": "hashed-blobs",
+    "version": "0.1.0",
+    "proposed_tag": "hashed-blobs-v0.1.0",
+    "repository": "https://github.com/Sinity/polylogue",
+    "minimum_rust": "1.98.1",
+    "changed_files": [
+      "Cargo.toml",
+      "README.md"
+    ],
+    "implementation_unchanged": true
+  }
+}

@@ -1,0 +1,180 @@
+# Where the two outlines meet: one entry per interface between Polylogue and Sinex.
+# Each entry names the joint decision rows and topic sections that define it, the components
+# that own each side (ids from polylogue-spec/outline/components.toml and
+# sinex-spec/outline/components.toml), and the shared type names compared by check_boundary.py.
+# README.md describes the boundary; check_boundary.py checks this file (flake check joint-outline).
+
+# Decision rows about one side's internals or about planning only, with no interface to place.
+[internal_only]
+10 = "sequencing: the order the two projects build in (topic 06), a plan, not an interface"
+13 = "xtask core: shared build and test tooling, no runtime interface; Polylogue's outline lists product components only and has no xtask component"
+
+[[boundary]]
+id = "material-transfer"
+title = "Source material into Sinex: placement on one host, slices from another"
+decisions = [3, 8, 11, 27]
+topics = ["topics/03-transport.md#Proposal", "topics/01-contract.md#1", "topics/04-content-store.md#More than one place to keep bytes"]
+polylogue = ["sinex.adapter", "store.inputs"]
+sinex = ["protocol.producer", "daemon.ingress", "store.content"]
+types = ["MaterialFrame"]
+note = "same host: Polylogue writes temp files into Sinex's incoming directory in batches, syncs once and announces digest, size and revision (MaterialFrame::Placed); Sinex verifies the BLAKE3, clones the bytes into a file it owns (a reflink; a rename would keep the operator as owner), writes the registry row, then moves its own file into place, and alone deletes anything unverified. Other hosts: Begin, Slice, End frames of 256 KiB. Polylogue keeps only a pending area of unconfirmed inputs in primary"
+
+[[boundary]]
+id = "framed-revisions"
+title = "A revision's events, framed and checked whole"
+decisions = [5, 26, 32]
+topics = ["topics/03-transport.md#Proposal", "topics/01-contract.md#3"]
+polylogue = ["sinex.adapter", "model.export"]
+sinex = ["protocol.producer", "daemon.ingress", "store.admission", "daemon.writer"]
+types = ["FramedBatch"]
+note = "begin (input, revision), parts with the events, end with the polylogue.revision event; checked whole at the end (a refusal writes nothing), written in transactions within the writer's bound, complete when the revision event is live; every event carries a volatile in_revision"
+
+[[boundary]]
+id = "have"
+title = "What Sinex holds: the receipt Polylogue asks for"
+decisions = [8, 26]
+topics = ["topics/03-transport.md#Proposal"]
+polylogue = ["sinex.adapter"]
+sinex = ["protocol.producer", "daemon.api"]
+types = ["Have"]
+note = "missing, checked or complete per revision; Polylogue resends from begin only on missing; a NATS accept is never confirmation (Sinex law L50: nothing a producer sent expires before admission)"
+
+[[boundary]]
+id = "confirmed-stream"
+title = "The confirmed stream Polylogue's backed reader follows"
+decisions = [8]
+topics = ["topics/03-transport.md#Proposal"]
+polylogue = ["sinex.adapter"]
+sinex = ["daemon.publisher"]
+types = []
+note = "commit_seq strictly increases and the stream is an in-order prefix of the commit log across outages (Sinex law L44); Polylogue drops anything at or below its last applied commit_seq, which is safe only because of that order, and keeps the position in index.db's meta"
+
+[[boundary]]
+id = "material-read-back"
+title = "Polylogue reading source material from Sinex's store in primary"
+decisions = [27, 7]
+topics = ["topics/02-projections.md#Proposal"]
+polylogue = ["store.inputs", "blobs.files", "engine.loop"]
+sinex = ["store.content", "daemon.privacy", "daemon.api"]
+types = []
+note = "plain materials read directly from the store root, read-only, through hashed-blobs; sealed ones only through Sinex's API while their class is unlocked, so Polylogue never holds a class key; index.db rebuilds by re-running Polylogue's parsers on them"
+
+[[boundary]]
+id = "resolved-objects"
+title = "What crosses the boundary: resolved sessions and messages"
+decisions = [1, 3, 4, 20, 28]
+topics = ["topics/01-contract.md#1", "topics/01-contract.md#2"]
+polylogue = ["model.merge", "model.identity", "model.export", "sinex.adapter"]
+sinex = ["store.admission", "automata.reconcilers"]
+types = []
+note = "Polylogue merges routes and publishes the preferred version with source references to every contributing input revision; Sinex never fuses AI sessions (its ai-session rule is gone) and links, never fuses, any capture of its own; identity is <origin>:<native id>, and a winning version moving to another route supersedes the event"
+
+[[boundary]]
+id = "lineage-and-turns"
+title = "Lineage as typed references; turns as spans"
+decisions = [5, 22]
+topics = ["topics/01-contract.md#4"]
+polylogue = ["model.lineage", "model.types"]
+sinex = ["model.events", "store.admission"]
+types = []
+note = "subagent, continuation and reference links as typed references with their evidence; polylogue.turn events with id, start and end, which Sinex joins with machine events by overlap"
+
+[[boundary]]
+id = "annotations-and-claims"
+title = "Agent annotations, checked claims and rubric passes, the same in both"
+decisions = [16]
+topics = ["topics/01-contract.md#5"]
+polylogue = ["store.notes", "engine.notes_logic"]
+sinex = ["analysis.runs", "ctl.cli"]
+types = []
+note = "anchored and authored annotations; a check is a query plus an expectation evaluated at read time; passes under a rubric, judged on a blind sample, withdrawn whole; in backed mode notes travel as polylogue.* events"
+
+[[boundary]]
+id = "read-as"
+title = "Queries read back as plain language, by the same rule"
+decisions = [17]
+topics = []
+polylogue = ["query.grammar"]
+sinex = ["daemon.api"]
+types = []
+note = "a convention both query engines implement, not a wire interface: each field, operator and stage declares a phrase; every result carries read_as"
+
+[[boundary]]
+id = "brief-machine-section"
+title = "Sinex's machine section inside Polylogue's session-start brief"
+decisions = [18, 31]
+topics = []
+polylogue = ["engine.briefings", "bin.hook"]
+sinex = ["daemon.brief-section", "daemon.api"]
+types = []
+note = "Polylogue's hook is the only injector; it asks Sinex's socket under a 100 ms deadline for a precomputed per-directory section, at most a declared share of the budget; late or down means 'machine context: could not read (<reason>)'; the reply also carries `rules`, the signal rules that supplied lines, which Polylogue's delivery line records as `machine_rules` so agents can judge which lines helped"
+
+[[boundary]]
+id = "purge-and-excision"
+title = "Excision in backed mode and Sinex's purge"
+decisions = [2, 6]
+topics = ["topics/01-contract.md#7", "topics/04-content-store.md#Excision and purge"]
+polylogue = ["store.excision", "sinex.adapter"]
+sinex = ["store.archive", "daemon.privacy"]
+types = []
+note = "Polylogue sends an explicit purge order (keys to tombstone, materials to shred, replacement revisions for shared inputs); copies stay as excised nodes; Sinex shreds only materials nothing live still uses; in primary the files are Sinex's to remove"
+
+[[boundary]]
+id = "shared-content-store"
+title = "The hashed-blobs crate: one format, two owners (one store in primary)"
+decisions = [9, 11, 12, 14, 19, 23, 24]
+topics = ["topics/04-content-store.md#Proposal", "topics/05-shared-crates.md#What is shared"]
+polylogue = ["blobs.files", "store.inputs"]
+sinex = ["store.content", "daemon.privacy"]
+types = []
+note = "BLAKE3-named seekable zstd files, patch-from deltas (writing one peaks near three times the base), sealed blobs with keyed names and per-blob frame keys; each project keeps its own metadata"
+
+[[boundary]]
+id = "shared-logical-day"
+title = "The logical-day rule both projects use"
+decisions = [15]
+topics = ["topics/05-shared-crates.md#What is shared"]
+polylogue = ["model.time"]
+sinex = ["analysis.descriptors"]
+types = []
+note = "day.logical_start and day.zone; one implementation tested on DST days; Polylogue groups at read time, Sinex stores the boundary with each day-grain value"
+
+[[boundary]]
+id = "shared-visual-language"
+title = "One visual language for both projects' pages"
+decisions = [21]
+topics = []
+polylogue = ["render.formats", "bin.http"]
+sinex = ["ctl.reading-surface"]
+types = []
+note = "visual-tokens.css in the joint folder; Polylogue's copy is checked equal by the polylogue-visual-tokens flake check"
+
+[[boundary]]
+id = "shared-pacing"
+title = "Pacing bulk writes on /realm by one pressure signal"
+decisions = [25]
+topics = []
+polylogue = ["engine.loop", "engine.collector"]
+sinex = ["daemon.writer"]
+types = []
+note = "both back off on the same IO-pressure and sync-latency signal; incoming placements count as Sinex writes; a delta write is a memory event paced one at a time"
+
+[[boundary]]
+id = "cross-system-query"
+title = "Queries that read both projects: namespaces and evaluation state"
+decisions = [29]
+topics = ["topics/02-projections.md#Proposal"]
+polylogue = ["query.grammar", "query.planner"]
+sinex = ["daemon.api", "ctl.mcp"]
+types = []
+note = "pl. and sx. prefixes, mandatory where session, event or near collide; a result records Polylogue's state, Sinex's commit position and Sinex's replicated Polylogue frontier, and proves compatibility, waits, or reports the lag"
+
+[[boundary]]
+id = "paste-attribution"
+title = "Clipboard content-match candidates in operator messages"
+decisions = [30]
+topics = ["topics/01-contract.md#1"]
+polylogue = ["sinex.adapter"]
+sinex = ["automata.reconcilers", "daemon.api"]
+types = []
+note = "Sinex derives reference.clipboard_match candidates with UTF-8 ranges, all copy revision references, ambiguity, normalization, observation coverage and the Polylogue revision; Polylogue keeps them separate from provider-reported pastes; clipboard text never crosses and origin remains unknown"

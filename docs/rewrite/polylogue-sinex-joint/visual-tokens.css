@@ -1,0 +1,76 @@
+/* One visual language for Sinex and Polylogue (joint decision 21).
+   Shared: type, spacing, every semantic color and mark. Each project keeps its accent, so the
+   operator always knows which system a page belongs to. Meaning is never carried by color alone:
+   the text always says it too. Terminals use the 16 ANSI colors only (pywal themes apply). */
+
+:root {
+  /* type */
+  --font-ui: "IBM Plex Sans", system-ui, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, monospace;   /* data, commands, IDs, citations */
+
+  /* spacing (4 px steps) and shape */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 40px;
+  --radius-small: 4px; --radius: 8px;
+
+  /* grounds and ink (light) */
+  --ground: #F4F5F2;
+  --surface: #FFFFFF;
+  --surface-sunk: #EEF0EC;
+  --ink: #1B1D1F;
+  --ink-muted: #4A5155;      /* 7.9:1 on surface */
+  --border: #DDE1DE;
+
+  /* project accents: the only per-project values */
+  --accent-sinex: #0F5F59;
+  --accent-polylogue: #1F5FA0;
+
+  /* semantic: failure, note, observed, partial, missing, not applicable */
+  --failure: #B42318;         --failure-bg: #F3DCDA;  --failure-ink: #7A1F17;
+  --note: #B45309;            --note-bg: #F7F1E8;     --note-ink: #4A3A21;
+  --observed-bg: #D9EDE9;     --observed-ink: #0A403C;
+  --partial-bg: #E5EEE0;      --partial-ink: #31512A;     /* rendered "≥ X" */
+  --pending-bg: #F1E3D2;      --pending-ink: #6E4413;     /* "not yet" */
+  --missing-ink: #4A5155;                                   /* hatched or dim, never a zero */
+  --missing-pattern: repeating-linear-gradient(135deg, #EEF0EC 0 6px, #DDE1DE 6px 8px);
+  --na-ink: #6B7378;                                        /* "n/a" */
+  /* inferred values are written "≈ X" in --ink-muted; no color of their own */
+
+  /* text-origin evidence: reported pastes and clipboard candidates have separate labelled
+     evidence lines; unmarked text makes no typing/authorship claim (joint decision 30). */
+  --unmarked-rule: #0F5F59;   --paste-report-fill: #DCEBE8;   --clipboard-match-rule: #9FC9C2;
+
+  /* check states (joint decision 16): one badge set */
+  --check-holds-bg: #D9EDE9;   --check-holds-ink: #0A403C;
+  --check-fails-bg: #F3DCDA;   --check-fails-ink: #7A1F17;
+  --check-unknown-bg: #EEF0EC; --check-unknown-ink: #4A5155;
+  --check-unchecked-bg: transparent; --check-unchecked-ink: #6B7378; /* outlined with --border */
+
+  /* provenance links: underlined, data font, the page's project accent */
+  --link-decoration: underline 1px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #16181B;
+    --surface: #1F2226;
+    --surface-sunk: #1A1D20;
+    --ink: #E7EAE8;
+    --ink-muted: #A7AFB3;
+    --border: #33393D;
+    --accent-sinex: #4FB3A9;
+    --accent-polylogue: #6EA6E0;
+    --failure: #F07167;          --failure-bg: #3A1F1D;  --failure-ink: #F5B7B1;
+    --note: #E0A458;             --note-bg: #33291C;     --note-ink: #F1D9B5;
+    --observed-bg: #183531;      --observed-ink: #A8DCD5;
+    --partial-bg: #26331F;       --partial-ink: #C3DDB5;
+    --pending-bg: #3A2E1F;       --pending-ink: #EFCFA4;
+    --missing-ink: #A7AFB3;
+    --missing-pattern: repeating-linear-gradient(135deg, #1A1D20 0 6px, #2A2F33 6px 8px);
+    --na-ink: #8A9297;
+    --unmarked-rule: #4FB3A9;    --paste-report-fill: #1F3431;  --clipboard-match-rule: #3E6E67;
+    --check-holds-bg: #183531;   --check-holds-ink: #A8DCD5;
+    --check-fails-bg: #3A1F1D;   --check-fails-ink: #F5B7B1;
+    --check-unknown-bg: #1A1D20; --check-unknown-ink: #A7AFB3;
+    --check-unchecked-ink: #8A9297;
+  }
+}

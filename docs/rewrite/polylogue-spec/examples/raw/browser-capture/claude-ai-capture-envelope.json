@@ -1,0 +1,346 @@
+{
+ "polylogue_capture_kind": "browser_llm_session",
+ "schema_version": 1,
+ "source": "browser-extension",
+ "provenance": {
+  "source_url": "<placeholder text, 203 chars>",
+  "page_title": null,
+  "captured_at": "2026-10-09T05:30:26.944Z",
+  "extension_id": "pllhcjjmdhchcbobnkdegdnjhkciojkp",
+  "extension_instance_id": "b1abff35-b512-4585-b054-41bfdf541e20",
+  "acquisition_sequence": 1,
+  "browser_profile": null,
+  "adapter_name": "claude-ai-native-v1",
+  "adapter_version": "0.3.0",
+  "capture_mode": "snapshot",
+  "capture_interruption": null,
+  "provider_meta": {}
+ },
+ "provider_meta": {
+  "capture_fidelity": "native_full"
+ },
+ "raw_provider_payload": {
+  "uuid": "3cbda3c0-3c14-476f-a96d-2fb8dc85cc3f",
+  "name": "Dense derivative artifact creation",
+  "summary": "<placeholder text, 1867 chars>",
+  "model": "claude-fable-5",
+  "created_at": "2026-08-25T10:06:33.790774Z",
+  "updated_at": "2026-08-25T10:44:04.372997Z",
+  "settings": {
+   "enabled_bananagrams": true,
+   "enabled_web_search": true,
+   "enabled_sourdough": true,
+   "enabled_foccacia": true,
+   "enabled_mcp_tools": {
+    "7a668626-fd3b-482f-840c-46c58bc991cd:search": true,
+    "008a1e8c-eb25-4dbc-a3cd-35fb31ece475:query-docs": true,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:list_tools": true,
+    "04ca2e7d-4c99-41f7-b231-daa0804f8d4c:create_file": true,
+    "8872c5f3-64e0-4661-b575-8c3efb9bbf2b:list_drafts": true,
+    "3b0a5938-953b-45af-86e7-78ef73c0199b:create_event": true,
+    "3b0a5938-953b-45af-86e7-78ef73c0199b:delete_event": true,
+    "3b0a5938-953b-45af-86e7-78ef73c0199b:update_event": true,
+    "8872c5f3-64e0-4661-b575-8c3efb9bbf2b:create_draft": true,
+    "8872c5f3-64e0-4661-b575-8c3efb9bbf2b:create_label": true,
+    "7a668626-fd3b-482f-840c-46c58bc991cd:create_playlist": true,
+    "3b0a5938-953b-45af-86e7-78ef73c0199b:respond_to_event": true,
+    "c83bfb24-0be7-471a-90c2-628f6f335958:search_sinex_code": false,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:get_diagram_title": true,
+    "008a1e8c-eb25-4dbc-a3cd-35fb31ece475:resolve-library-id": true,
+    "8466a275-bc0e-4970-b793-0d8358a146a0:execute_rag_search": false,
+    "263328d5-d5a1-4c72-9aca-c0bb3a8000e5:search_generic_code": false,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:get_diagram_summary": true,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:search_mermaid_icons": true,
+    "7a668626-fd3b-482f-840c-46c58bc991cd:get_currently_playing": true,
+    "8466a275-bc0e-4970-b793-0d8358a146a0:list_uploaded_documents": false,
+    "263328d5-d5a1-4c72-9aca-c0bb3a8000e5:fetch_generic_url_content": false,
+    "c83bfb24-0be7-471a-90c2-628f6f335958:fetch_generic_url_content": false,
+    "c83bfb24-0be7-471a-90c2-628f6f335958:fetch_sinex_documentation": false,
+    "c83bfb24-0be7-471a-90c2-628f6f335958:search_sinex_documentation": false,
+    "263328d5-d5a1-4c72-9aca-c0bb3a8000e5:fetch_generic_documentation": false,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:get_mermaid_syntax_document": true,
+    "263328d5-d5a1-4c72-9aca-c0bb3a8000e5:search_generic_documentation": false,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:validate_and_render_mermaid_diagram": true,
+    "263328d5-d5a1-4c72-9aca-c0bb3a8000e5:match_common_libs_owner_repo_mapping": false,
+    "7a668626-fd3b-482f-840c-46c58bc991cd:search-f8480212656c990fddaea3b3b8e0d4aa": true,
+    "008a1e8c-eb25-4dbc-a3cd-35fb31ece475:query-docs-065858e15fda02eda5b087beed100341": true,
+    "19e508f4-6957-42da-9000-31bf13429075:get_recipe-19f5833200172c4b9ca0f4dd03b30027": true,
+    "19e508f4-6957-42da-9000-31bf13429075:run_recipe-491b041a252fa5ef61bd396e654aa778": true,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:list_tools-8a5274917651f7b78439befe4e1de0ed": true,
+    "04ca2e7d-4c99-41f7-b231-daa0804f8d4c:create_file-3ca71e8850cf691f61eb5889ee8a3223": true,
+    "19e508f4-6957-42da-9000-31bf13429075:get_results-42b9b794e3f39bb496b6bb0e5cd9eda0": true,
+    "8872c5f3-64e0-4661-b575-8c3efb9bbf2b:list_drafts-c1556360569446d6be918143f988b009": true,
+    "19e508f4-6957-42da-9000-31bf13429075:list_recipes-cd9a6ff37f605a0a5a535d8da33158c5": true,
+    "3b0a5938-953b-45af-86e7-78ef73c0199b:create_event-a891358baf69d5e5e90b662a638c72bc": true,
+    "3b0a5938-953b-45af-86e7-78ef73c0199b:delete_event-6fe4fb772ff34e980beafc9d7dcdcfb0": true,
+    "3b0a5938-953b-45af-86e7-78ef73c0199b:update_event-1540988ed422518e6fc5d52d889fa49f": true,
+    "8872c5f3-64e0-4661-b575-8c3efb9bbf2b:create_draft-c06dfdd65e0dd0cfef7da9923f0ea6f9": true,
+    "8872c5f3-64e0-4661-b575-8c3efb9bbf2b:create_label-049cae793d4a681a40bde6d0fd375d8a": true,
+    "8872c5f3-64e0-4661-b575-8c3efb9bbf2b:create_label-4206fcda8a5ad32366032eedb2f165e1": true,
+    "8872c5f3-64e0-4661-b575-8c3efb9bbf2b:create_label-7535bd85d6a3c6f0bbf40dc7a1e8e32b": true,
+    "8872c5f3-64e0-4661-b575-8c3efb9bbf2b:label_thread-7d76b504f8b6905291a5b75609b8a5e4": true,
+    "19e508f4-6957-42da-9000-31bf13429075:create_recipe-99e3bc5d4018fcc63660f779fd8d8709": true,
+    "19e508f4-6957-42da-9000-31bf13429075:smart_extract-fa465a689e762c47f79e58d89a301e46": true,
+    "19e508f4-6957-42da-9000-31bf13429075:update_recipe-abb38a8ca1e06d2850ba88d82afcdfb8": true,
+    "8872c5f3-64e0-4661-b575-8c3efb9bbf2b:unlabel_thread-3d32c07ea1d901875a64b01272eb8328": true,
+    "7a668626-fd3b-482f-840c-46c58bc991cd:create_playlist-683f8a3e5d23d9d443f112d8a0a17364": true,
+    "3b0a5938-953b-45af-86e7-78ef73c0199b:respond_to_event-3981fc05adc93b4797ca7c54e1cd718b": true,
+    "19e508f4-6957-42da-9000-31bf13429075:update_batch_urls-04ddcef912610d07776709c98494d945": true,
+    "c83bfb24-0be7-471a-90c2-628f6f335958:search_sinex_code-7a1a83390dae2e184e1a99f342b2b776": true,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:get_diagram_title-b3f55f41d3ff0422c37fa0d66a4fc3b6": true,
+    "008a1e8c-eb25-4dbc-a3cd-35fb31ece475:resolve-library-id-600aae9e1813d498826ac154c2a83b18": true,
+    "19e508f4-6957-42da-9000-31bf13429075:get_latest_results-593047054d4b80d16701f7762557ae4f": true,
+    "8466a275-bc0e-4970-b793-0d8358a146a0:execute_rag_search-7a31b26a10347f299501576c98392e4e": true,
+    "19e508f4-6957-42da-9000-31bf13429075:get_results_history-d03c6244edee95904e17ed97b0665720": true,
+    "263328d5-d5a1-4c72-9aca-c0bb3a8000e5:search_generic_code-da0cdaf9d92798d7bb46068d3e50e7d8": true,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:get_diagram_summary-f084818ae31b2ce9d2d641d224803667": true,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:search_mermaid_icons-20af2ea5f28f3f478d1e5976dc8e0451": true,
+    "7a668626-fd3b-482f-840c-46c58bc991cd:get_currently_playing-d4a350933ac39804413c43d14c698275": true,
+    "8466a275-bc0e-4970-b793-0d8358a146a0:list_uploaded_documents-0e106f086893bafc85a04ef9de28a8e0": true,
+    "c83bfb24-0be7-471a-90c2-628f6f335958:fetch_generic_url_content-4c94bb511ac50538b50f8887ff37816f": true,
+    "c83bfb24-0be7-471a-90c2-628f6f335958:fetch_sinex_documentation-5d886639eaa1a50839c099be18ebf204": true,
+    "c83bfb24-0be7-471a-90c2-628f6f335958:search_sinex_documentation-cde10da379d4ec3d215997d897ba7958": true,
+    "263328d5-d5a1-4c72-9aca-c0bb3a8000e5:fetch_generic_documentation-7dea5ed6c6f854849c08e306eed0a6c9": true,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:get_mermaid_syntax_document-cd3aa131f6d411b90eda38a7124249aa": true,
+    "263328d5-d5a1-4c72-9aca-c0bb3a8000e5:search_generic_documentation-3b3015df9900f0a0adfc31e88e059cf3": true,
+    "d4998b54-f086-4ea3-bb0d-2e1447c8e4bf:validate_and_render_mermaid_diagram-54924c42bf235c4c362b4dca4b6ef0e4": true,
+    "263328d5-d5a1-4c72-9aca-c0bb3a8000e5:match_common_libs_owner_repo_mapping-5c71cfe22e71ac53afc7e304d513f08d": true
+   },
+   "enabled_monkeys_in_a_barrel": true,
+   "enabled_saffron": true,
+   "tool_search_mode": "auto",
+   "thinking_mode": "auto",
+   "effort_level": "high",
+   "preview_feature_uses_artifacts": true,
+   "preview_feature_uses_latex": true,
+   "enabled_artifacts_attachments": true,
+   "enabled_turmeric": true
+  },
+  "is_starred": false,
+  "is_archived": false,
+  "is_temporary": false,
+  "workspace_upgraded": false,
+  "is_multiplayer": false,
+  "platform": "CLAUDE_AI",
+  "is_wiggle_enabled": true,
+  "effective_thinking_mode": "auto",
+  "current_leaf_message_uuid": "01a03884-7684-76f4-a632-852802221078",
+  "chat_messages": [
+   {
+    "uuid": "01a03862-ca59-76c9-b07b-11c4121cde14",
+    "text": "<placeholder text, 0 chars>",
+    "content": [
+     {
+      "start_timestamp": "2026-08-25T10:06:35.472535Z",
+      "stop_timestamp": "2026-08-25T10:06:35.472535Z",
+      "type": "text",
+      "text": "<placeholder text, 236 chars>",
+      "citations": []
+     }
+    ],
+    "sender": "human",
+    "index": 0,
+    "created_at": "2026-08-25T10:06:35.472690Z",
+    "updated_at": "2026-08-25T10:06:35.472690Z",
+    "truncated": false,
+    "attachments": [],
+    "files": [
+     {
+      "success": true,
+      "path": "/mnt/user-data/uploads/chatgpt-synthesize-self-understanding-2026-08-25.md",
+      "file_kind": "blob",
+      "file_uuid": "14b5955c-23e1-4443-9fe5-4967e0d5ae06",
+      "file_name": "chatgpt-synthesize-self-understanding-2026-08-25.md",
+      "created_at": "2026-08-25T10:05:43.148508Z",
+      "size_bytes": 828233,
+      "uuid": "14b5955c-23e1-4443-9fe5-4967e0d5ae06"
+     }
+    ],
+    "sync_sources": [],
+    "parent_message_uuid": "00000000-0000-4000-8000-000000000000"
+   },
+   {
+    "uuid": "01a03862-ca59-7827-bb99-b6bc5f2948a4",
+    "text": "<placeholder text, 0 chars>",
+    "content": [
+     {
+      "start_timestamp": "2026-08-25T10:06:36.289006Z",
+      "stop_timestamp": "2026-08-25T10:06:37.014763Z",
+      "type": "tool_use",
+      "id": "toolu_015cDQccswxnjFPKYH2hYMTy",
+      "name": "view",
+      "input": {
+       "description": "<placeholder text, 48 chars>",
+       "path": "/mnt/skills/public/file-reading/SKILL.md"
+      },
+      "message": "<placeholder text, 48 chars>",
+      "integration_name": "File Creation",
+      "icon_name": "bookText",
+      "display_content": {
+       "type": "text",
+       "text": "<placeholder text, 48 chars>"
+      },
+      "tool_origin": "first_party"
+     },
+     {
+      "start_timestamp": "2026-08-25T10:06:37.030684Z",
+      "stop_timestamp": "2026-08-25T10:06:37.030701Z",
+      "type": "tool_result",
+      "tool_use_id": "toolu_015cDQccswxnjFPKYH2hYMTy",
+      "name": "view",
+      "content": [
+       {
+        "type": "text",
+        "text": "<placeholder text, 15941 chars>"
+       }
+      ],
+      "is_error": false,
+      "meta": {
+       "output_format_category": "md"
+      },
+      "integration_name": "File Creation",
+      "icon_name": "bookText",
+      "tool_origin": "first_party"
+     },
+     {
+      "note": "... 27 more"
+     }
+    ],
+    "sender": "assistant",
+    "index": 1,
+    "created_at": "2026-08-25T10:09:54.417642Z",
+    "updated_at": "2026-08-25T10:09:54.417642Z",
+    "truncated": false,
+    "stop_reason": "end_turn",
+    "attachments": [],
+    "files": [],
+    "sync_sources": [],
+    "parent_message_uuid": "01a03862-ca59-76c9-b07b-11c4121cde14"
+   },
+   {
+    "note": "... 2 more"
+   }
+  ]
+ },
+ "session": {
+  "provider": "claude-ai",
+  "provider_session_id": "3cbda3c0-3c14-476f-a96d-2fb8dc85cc3f",
+  "session_kind": "standard",
+  "title": "<placeholder text, 34 chars>",
+  "created_at": "2026-08-25T10:06:33.790774+00:00",
+  "updated_at": "2026-08-25T10:44:04.372997+00:00",
+  "turns": [
+   {
+    "provider_turn_id": "01a03862-ca59-76c9-b07b-11c4121cde14",
+    "role": "user",
+    "text": "<placeholder text, 236 chars>",
+    "timestamp": "2026-08-25T10:06:35.472690+00:00",
+    "ordinal": 0,
+    "parent_turn_id": "00000000-0000-4000-8000-000000000000",
+    "blocks": [
+     {
+      "type": "text",
+      "text": "<placeholder text, 236 chars>",
+      "tool_name": null,
+      "tool_id": null,
+      "tool_input": null,
+      "media_type": null,
+      "metadata": null,
+      "signature": null,
+      "is_error": null,
+      "exit_code": null,
+      "tool_outcome": null,
+      "outcome_unknown_reason": null,
+      "file_edit": null,
+      "web_constructs": []
+     }
+    ]
+   },
+   {
+    "provider_turn_id": "01a03862-ca59-7827-bb99-b6bc5f2948a4",
+    "role": "assistant",
+    "text": "<placeholder text, 342401 chars>",
+    "timestamp": "2026-08-25T10:09:54.417642+00:00",
+    "ordinal": 1,
+    "parent_turn_id": "01a03862-ca59-76c9-b07b-11c4121cde14",
+    "blocks": [
+     {
+      "type": "tool_use",
+      "text": null,
+      "tool_name": "view",
+      "tool_id": "toolu_015cDQccswxnjFPKYH2hYMTy",
+      "tool_input": {
+       "description": "<placeholder text, 48 chars>",
+       "path": "/mnt/skills/public/file-reading/SKILL.md"
+      },
+      "media_type": null,
+      "metadata": {
+       "start_timestamp": "2026-08-25T10:06:36.289006+00:00",
+       "stop_timestamp": "2026-08-25T10:06:37.014763+00:00",
+       "integration_name": "File Creation",
+       "display_content": {
+        "type": "text",
+        "text": "<placeholder text, 48 chars>"
+       }
+      },
+      "signature": null,
+      "is_error": null,
+      "exit_code": null,
+      "tool_outcome": null,
+      "outcome_unknown_reason": null,
+      "file_edit": null,
+      "web_constructs": []
+     },
+     {
+      "type": "tool_result",
+      "text": "<placeholder text, 15941 chars>",
+      "tool_name": null,
+      "tool_id": "toolu_015cDQccswxnjFPKYH2hYMTy",
+      "tool_input": null,
+      "media_type": null,
+      "metadata": {
+       "start_timestamp": "2026-08-25T10:06:37.030684+00:00",
+       "stop_timestamp": "2026-08-25T10:06:37.030701+00:00",
+       "integration_name": "File Creation"
+      },
+      "signature": null,
+      "is_error": false,
+      "exit_code": null,
+      "tool_outcome": null,
+      "outcome_unknown_reason": null,
+      "file_edit": null,
+      "web_constructs": []
+     },
+     {
+      "note": "... 27 more"
+     }
+    ]
+   },
+   {
+    "note": "... 2 more"
+   }
+  ],
+  "attachments": [
+   {
+    "provider_attachment_id": "14b5955c-23e1-4443-9fe5-4967e0d5ae06",
+    "message_provider_id": "01a03862-ca59-76c9-b07b-11c4121cde14",
+    "attachment_kind": null,
+    "name": "chatgpt-synthesize-self-understanding-2026-08-25.md",
+    "mime_type": null,
+    "size_bytes": 828233,
+    "url": null,
+    "provider_meta": {
+     "native_turn_ordinal": 0,
+     "provider_file_id": "14b5955c-23e1-4443-9fe5-4967e0d5ae06",
+     "provider_drive_id": null,
+     "path": null,
+     "native_attachment_ordinal": 0,
+     "native_raw_position": 0,
+     "asset_acquisition": {
+      "status": "no_resolvable_source"
+     }
+    }
+   }
+  ]
+ }
+}

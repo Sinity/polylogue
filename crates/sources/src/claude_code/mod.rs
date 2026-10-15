@@ -1,0 +1,1285 @@
+//! Claude Code's single point-keyed interpretation core. The caller supplies a
+//! pinned predecessor and companions; this library never opens source files.
+//! Response reconstruction, ordinary-index reflow, digest work and publication
+//! remain explicit obligations over addressable contribution cells.
+use crate::frame::{IgnoredKind, Record, RecordOutcome, RecordParser};
+use polylogue_model::*;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, HashSet};
+pub mod keyed;
+pub mod projection;
+mod raw;
+use keyed::*;
+pub const PARSER_VERSION: u32 = 2;
+
+#[derive(Clone, Debug)]
+pub enum FileCtx {
+    Main {
+        stem: String,
+    },
+    Subagent {
+        folder_owner: String,
+        agent: String,
+        meta: Option<Value>,
+    },
+}
+impl FileCtx {
+    pub fn main(stem: &str) -> Self {
+        Self::Main { stem: stem.into() }
+    }
+}
+fn origin() -> Origin {
+    Origin::new("claude-code").unwrap_or_else(|_| unreachable!("constant valid origin"))
+}
+fn sid(native: &str) -> Option<SessionId> {
+    SessionId::new(&origin(), native).ok()
+}
+fn provider_time(at: Timestamp) -> ProviderTime {
+    ProviderTime::Intrinsic {
+        at,
+        precision: Precision::Instant,
+        until: None,
+    }
+}
+fn parse_time(value: Option<&Value>) -> Option<ProviderTime> {
+    value
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<jiff::Timestamp>().ok())
+        .map(|t| provider_time(Timestamp(t.as_millisecond())))
+}
+
+/// Record kinds that carry nothing to keep in the index (their bytes stay stored).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ignored {
+    ProgressCountedOnly,
+}
+
+impl IgnoredKind for Ignored {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ProgressCountedOnly => "progress (counted only)",
+        }
+    }
+    fn reason(self) -> &'static str {
+        match self {
+            Self::ProgressCountedOnly => {
+                "transient progress of a running tool or query; counted per input, payload kept only in the stored bytes"
+            }
+        }
+    }
+}
+
+/// Changed metadata and per-record interpretation cells. No `Parsed` here is
+/// advertised as a complete reconstructed Message: even first publication must
+/// discharge the pending contribution/layout/evidence obligations.
+#[derive(Clone, Debug)]
+pub struct StepOutput {
+    pub header: Header,
+    pub delta: Delta,
+    pub events: Vec<(SessionId, Event)>,
+    pub links: Vec<Link>,
+}
+
+pub struct KeyedRecords<R: ReadView> {
+    ctx: FileCtx,
+    view: R,
+    header: Header,
+    sessions: Vec<SessionCell>,
+    by_id: HashMap<String, usize>,
+    responses: HashMap<(String, ResponseKey), ResponseCell>,
+    addresses: HashMap<(String, String), RecordAddress>,
+    contributions: HashMap<(MessageId, u64), Contribution>,
+    sides: HashMap<String, String>,
+    emitted_links: HashSet<LinkKey>,
+    link_order: Vec<LinkKey>,
+    links: Vec<Link>,
+    events: Vec<(SessionId, Event)>,
+    pending: BTreeMap<(String, String), PendingMessage>,
+}
+impl<R: ReadView> KeyedRecords<R> {
+    pub fn new(ctx: FileCtx, view: R) -> Result<Self, String> {
+        let header = view.header().map_err(|e| e.to_string())?;
+        Ok(Self {
+            ctx,
+            view,
+            header,
+            sessions: Vec::new(),
+            by_id: HashMap::new(),
+            responses: HashMap::new(),
+            addresses: HashMap::new(),
+            contributions: HashMap::new(),
+            sides: HashMap::new(),
+            emitted_links: HashSet::new(),
+            link_order: Vec::new(),
+            links: Vec::new(),
+            events: Vec::new(),
+            pending: BTreeMap::new(),
+        })
+    }
+    fn session_index(&mut self, native: &str, kind: SessionKind) -> Result<Option<usize>, String> {
+        if let Some(&i) = self.by_id.get(native) {
+            return Ok(Some(i));
+        }
+        let cell = match self.view.session(native).map_err(|e| e.to_string())? {
+            Some(cell) => cell,
+            None => {
+                let Some(id) = sid(native) else {
+                    return Ok(None);
+                };
+                let mut session =
+                    Session::new(id, origin(), native, kind).map_err(|e| e.to_string())?;
+                session.harness = Some("claude-code".into());
+                let ordinal = self.header.next_session_ordinal;
+                self.header.next_session_ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or("Claude session ordinal overflow")?;
+                SessionCell {
+                    session,
+                    ordinal,
+                    seen_own_user: false,
+                    last_message: None,
+                    facts_pending: false,
+                }
+            }
+        };
+        if cell.session.native_id != native || cell.session.origin != origin() {
+            return Err("Claude session cell disagrees with its lookup identity".into());
+        }
+        let i = self.sessions.len();
+        self.sessions.push(cell);
+        self.by_id.insert(native.into(), i);
+        Ok(Some(i))
+    }
+    fn response(&self, native: &str, key: &ResponseKey) -> Result<Option<ResponseCell>, String> {
+        match self.responses.get(&(native.into(), key.clone())) {
+            Some(cell) => Ok(Some(cell.clone())),
+            None => self.view.response(native, key).map_err(|e| e.to_string()),
+        }
+    }
+    fn address(&self, native: &str, uuid: &str) -> Result<Option<RecordAddress>, String> {
+        match self.addresses.get(&(native.into(), uuid.into())) {
+            Some(cell) => Ok(Some(cell.clone())),
+            None => self.view.record(native, uuid).map_err(|e| e.to_string()),
+        }
+    }
+    fn contribution(&self, message: &MessageId, slot: u64) -> Result<Option<Contribution>, String> {
+        match self.contributions.get(&(message.clone(), slot)) {
+            Some(cell) => Ok(Some(cell.clone())),
+            None => self
+                .view
+                .contribution(message, slot)
+                .map_err(|e| e.to_string()),
+        }
+    }
+    fn add_link(
+        &mut self,
+        kind: LinkKind,
+        how: LinkHow,
+        parent: &str,
+        child: &str,
+        evidence: &str,
+        attrs: Option<Value>,
+    ) -> Result<(), String> {
+        let (Some(parent_id), Some(child_id)) = (sid(parent), sid(child)) else {
+            return Ok(());
+        };
+        if parent_id == child_id {
+            return Ok(());
+        }
+        let key = LinkKey {
+            parent: parent.into(),
+            child: child.into(),
+            kind,
+            how,
+        };
+        if self.emitted_links.contains(&key)
+            || self.view.has_link(&key).map_err(|e| e.to_string())?
+        {
+            return Ok(());
+        }
+        self.emitted_links.insert(key.clone());
+        self.link_order.push(key);
+        let mut link =
+            Link::new(kind, how, parent_id, child_id, evidence).map_err(|e| e.to_string())?;
+        link.attrs = attrs;
+        self.links.push(link);
+        Ok(())
+    }
+    /// The session this message record belongs to, and the message it copies, if any.
+    fn route(
+        &mut self,
+        v: &Value,
+        uuid: &str,
+    ) -> Result<Option<(usize, Option<(String, String)>)>, String> {
+        let sid_field = v
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        Ok(match self.ctx.clone() {
+            FileCtx::Main { stem } => {
+                // A later supplement may omit every sidechain routing field.
+                // The first UUID's established membership remains authoritative.
+                let established = match self.sides.get(uuid) {
+                    Some(side) => Some(side.clone()),
+                    None => self.view.side(uuid).map_err(|e| e.to_string())?,
+                };
+                if let Some(side) = established {
+                    if v.get("isSidechain").and_then(Value::as_bool) == Some(false) {
+                        return Ok(None);
+                    }
+                    let i = match self.session_index(&side, SessionKind::Subagent)? {
+                        Some(i) => i,
+                        None => return Ok(None),
+                    };
+                    return Ok(Some((i, None)));
+                }
+                let parent = v
+                    .get("parentUuid")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+                    // A sidechain subtree in a main file: its own session, named by its root.
+                    let known = match self.sides.get(&parent) {
+                        Some(side) => Some(side.clone()),
+                        None => self.view.side(&parent).map_err(|e| e.to_string())?,
+                    };
+                    let side = if let Some(s) = known {
+                        s
+                    } else {
+                        let side = match v.get("agentId").and_then(Value::as_str) {
+                            Some(agent) => format!("{stem}/{agent}"),
+                            None => format!("{stem}~side-{uuid}"),
+                        };
+                        self.add_link(
+                            LinkKind::Subagent,
+                            LinkHow::Fresh,
+                            &stem,
+                            &side,
+                            "isSidechain",
+                            None,
+                        )?;
+                        side
+                    };
+                    self.sides.insert(uuid.to_owned(), side.clone());
+                    let i = match self.session_index(&side, SessionKind::Subagent)? {
+                        Some(i) => i,
+                        None => return Ok(None),
+                    };
+                    return Ok(Some((i, None)));
+                }
+                let i = match self.session_index(&stem, SessionKind::Main)? {
+                    Some(i) => i,
+                    None => return Ok(None),
+                };
+                if let Some(ff) = v.get("forkedFrom") {
+                    let Some(src) = ff.get("sessionId").and_then(Value::as_str) else {
+                        return Ok(None);
+                    };
+                    let Some(msg) = ff.get("messageUuid").and_then(Value::as_str) else {
+                        return Ok(None);
+                    };
+                    self.add_link(
+                        LinkKind::Continuation,
+                        LinkHow::Fork,
+                        src,
+                        &stem,
+                        "forkedFrom",
+                        None,
+                    )?;
+                    return Ok(Some((i, Some((src.into(), msg.into())))));
+                }
+                if !sid_field.is_empty() && sid_field != stem {
+                    self.add_link(
+                        LinkKind::Continuation,
+                        LinkHow::Resume,
+                        &sid_field,
+                        &stem,
+                        "copied-sessionId",
+                        None,
+                    )?;
+                    return Ok(Some((i, Some((sid_field.clone(), uuid.into())))));
+                }
+                Some((i, None))
+            }
+            FileCtx::Subagent {
+                folder_owner,
+                agent,
+                meta,
+            } => {
+                let owner = self
+                    .header
+                    .owner
+                    .get_or_insert_with(|| {
+                        if sid_field.is_empty() {
+                            folder_owner.clone()
+                        } else {
+                            sid_field.clone()
+                        }
+                    })
+                    .clone();
+                let own = format!("{owner}/{agent}");
+                if !self.by_id.contains_key(&own)
+                    && self
+                        .view
+                        .session(&own)
+                        .map_err(|e| e.to_string())?
+                        .is_none()
+                {
+                    let parent = match meta
+                        .as_ref()
+                        .and_then(|m| m.get("parentAgentId"))
+                        .and_then(Value::as_str)
+                    {
+                        Some(p) => format!("{owner}/{p}"),
+                        None => folder_owner.clone(),
+                    };
+                    let evidence = if parent == folder_owner {
+                        "folder"
+                    } else {
+                        "meta.parentAgentId"
+                    };
+                    let how = if meta
+                        .as_ref()
+                        .and_then(|m| m.get("isFork"))
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                    {
+                        LinkHow::Copied
+                    } else {
+                        LinkHow::Fresh
+                    };
+                    self.add_link(
+                        LinkKind::Subagent,
+                        how,
+                        &parent,
+                        &own,
+                        evidence,
+                        meta.clone(),
+                    )?;
+                }
+                let i = match self.session_index(&own, SessionKind::Subagent)? {
+                    Some(i) => i,
+                    None => return Ok(None),
+                };
+                if let Some(m) = &meta {
+                    let s = &mut self.sessions[i].session;
+                    s.team = m.get("teamName").and_then(Value::as_str).map(str::to_owned);
+                    s.agent_name = m.get("name").and_then(Value::as_str).map(str::to_owned);
+                }
+                let rec_agent = v
+                    .get("agentId")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&agent)
+                    .to_owned();
+                if rec_agent != agent {
+                    let src = format!("{owner}/{rec_agent}");
+                    self.add_link(
+                        LinkKind::Continuation,
+                        LinkHow::Resume,
+                        &src,
+                        &own,
+                        "copied-agentId",
+                        None,
+                    )?;
+                    return Ok(Some((i, Some((src, uuid.into())))));
+                }
+                Some((i, None))
+            }
+        })
+    }
+
+    fn message_record(
+        &mut self,
+        rec: &Record<'_>,
+        ty: &str,
+    ) -> Result<RecordOutcome<Ignored>, String> {
+        let incoming = &rec.value;
+        let Some(uuid) = incoming
+            .get("uuid")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(RecordOutcome::Unrecognized("message record without uuid"));
+        };
+        let Some((si, copy)) = self.route(incoming, uuid)? else {
+            return Ok(RecordOutcome::Unrecognized("unroutable record"));
+        };
+        let native = self.sessions[si].session.native_id.clone();
+        let address = self.address(&native, uuid)?;
+        let old = match &address {
+            Some(a) => Some(
+                self.contribution(&a.message, a.item)?
+                    .ok_or("missing committed Claude contribution")?,
+            ),
+            None => None,
+        };
+        if old.as_ref().is_some_and(|cell| cell.uuid != uuid) {
+            return Err("committed Claude contribution UUID disagrees with its address".into());
+        }
+        let raw = raw::overlay(old.as_ref().map(|c| c.raw.as_slice()), rec.bytes)?;
+        let v: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+        if v.get("type").and_then(Value::as_str) != Some(ty) {
+            return Ok(RecordOutcome::Unrecognized("UUID record type conflict"));
+        }
+        let Some(msg) = v.get("message").filter(|m| m.is_object()) else {
+            return Ok(RecordOutcome::Unrecognized(
+                "message record without typed message",
+            ));
+        };
+        let key = if ty == "assistant" {
+            let request = v.get("requestId").and_then(Value::as_str).unwrap_or("");
+            match (msg.get("id").and_then(Value::as_str), request) {
+                (None, "") => ResponseKey::new(uuid, ""),
+                (id, req) => ResponseKey::new(id.unwrap_or(""), req),
+            }
+        } else {
+            ResponseKey::user(uuid)
+        };
+        if address
+            .as_ref()
+            .is_some_and(|a| a.response != key || a.role != ty)
+        {
+            return Ok(RecordOutcome::Unrecognized(
+                "UUID response membership conflict",
+            ));
+        }
+        let (mut blocks, bodies) = self.blocks_and_bodies(&v, &raw)?;
+        let content = msg.get("content").unwrap_or(&Value::Null);
+        let old_same = old
+            .as_ref()
+            .is_some_and(|c| c.raw == raw && c.bodies == bodies);
+        let mut response = match self.response(&native, &key)? {
+            Some(cell) => cell,
+            None => {
+                if address.is_some() {
+                    return Err(
+                        "missing committed Claude response referenced by UUID address".into(),
+                    );
+                }
+                let id = MessageId::new(self.sessions[si].session.id.clone(), uuid)
+                    .map_err(|e| e.to_string())?;
+                let (written_by, prompt_kind, from_name) = if ty == "assistant" {
+                    (
+                        if v.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
+                            WrittenBy::Harness
+                        } else {
+                            WrittenBy::Model
+                        },
+                        None,
+                        None,
+                    )
+                } else if blocks
+                    .iter()
+                    .any(|b| matches!(b, BlockContent::ToolResult(_)))
+                {
+                    (WrittenBy::Harness, None, None)
+                } else {
+                    self.user_author(si, &v, content, copy.is_some())
+                };
+                let mut message = Message::new(
+                    id,
+                    IdKind::Provider,
+                    if ty == "assistant" {
+                        Role::Assistant
+                    } else {
+                        Role::User
+                    },
+                    written_by,
+                );
+                message.prompt_kind = prompt_kind;
+                message.from_name = from_name;
+                message.at = parse_time(v.get("timestamp"));
+                message.parent = v
+                    .get("parentUuid")
+                    .and_then(Value::as_str)
+                    .and_then(|p| MessageId::new(self.sessions[si].session.id.clone(), p).ok());
+                if let Some((source, msg)) = &copy {
+                    message.inherited_from = sid(source).and_then(|s| MessageId::new(s, msg).ok());
+                    message.copy_origin = Some(CopyOrigin::Known);
+                }
+                ResponseCell {
+                    message,
+                    items: 0,
+                    revision: 0,
+                    selected: Default::default(),
+                    incomplete_bodies: 0,
+                    selected_from: Default::default(),
+                    selected_facts: Default::default(),
+                }
+            }
+        };
+        if address
+            .as_ref()
+            .is_some_and(|a| a.message != response.message.id || a.item >= response.items)
+        {
+            return Err("committed Claude UUID address disagrees with its response".into());
+        }
+        if response.message.id.session() != &self.sessions[si].session.id {
+            return Err("committed Claude response belongs to a different session".into());
+        }
+        if old_same {
+            return Ok(RecordOutcome::Used);
+        }
+        let item = match &address {
+            Some(a) => a.item,
+            None => {
+                let item = response.items;
+                response.items = item
+                    .checked_add(1)
+                    .ok_or("Claude contribution ordinal overflow")?;
+                item
+            }
+        };
+        let revision = response
+            .revision
+            .checked_add(1)
+            .ok_or("Claude evidence revision overflow")?;
+        let raw_changed = old.as_ref().is_none_or(|previous| previous.raw != raw);
+        let mut projected = projection::record(
+            &v,
+            if raw_changed {
+                &rec.value
+            } else {
+                &Value::Null
+            },
+            &blocks,
+            revision,
+            old.as_ref().map(|c| &c.projection),
+        )?;
+        if item == 0 {
+            if let Some(previous) = &old {
+                let old_raw: Value =
+                    serde_json::from_slice(&previous.raw).map_err(|e| e.to_string())?;
+                if previous
+                    .projection
+                    .obligations
+                    .contains(&projection::CountingObligation::FirstAuthorUpdate)
+                    || [
+                        "origin",
+                        "promptSource",
+                        "isMeta",
+                        "isVisibleInTranscriptOnly",
+                        "isApiErrorMessage",
+                    ]
+                    .iter()
+                    .any(|key| old_raw.get(*key) != v.get(*key))
+                {
+                    projected
+                        .obligations
+                        .push(projection::CountingObligation::FirstAuthorUpdate);
+                }
+            }
+        }
+        // Stable item slots own blocks until the body finalizer assigns ordinary
+        // one-counter BlockIds. A changed count never mutates a historical body.
+        let contribution = Contribution {
+            uuid: uuid.into(),
+            raw,
+            blocks: std::mem::take(&mut blocks),
+            bodies,
+            projection: projected,
+        };
+        let old_missing = old.as_ref().map_or(0, |c| {
+            c.bodies.iter().filter(|b| b.payload.is_none()).count() as u64
+        });
+        let missing = contribution
+            .bodies
+            .iter()
+            .filter(|b| b.payload.is_none())
+            .count() as u64;
+        response.incomplete_bodies = response
+            .incomplete_bodies
+            .checked_sub(old_missing)
+            .and_then(|n| n.checked_add(missing))
+            .ok_or("Claude required-body counter mismatch")?;
+        response.revision = revision;
+        // Only newly supplied fields advance their response-level selection.
+        // Inherited fields in a same-UUID overlay do not become later updates.
+        if old
+            .as_ref()
+            .is_none_or(|previous| previous.raw != contribution.raw)
+        {
+            for (index, path) in METADATA_PATHS.iter().enumerate() {
+                if let Some(value) = raw::optional_field(rec.bytes, path)? {
+                    response.selected[index] = Some(raw::canonical(value)?);
+                    response.selected_from[index] = Some(item);
+                    let semantic: Value =
+                        serde_json::from_slice(value).map_err(|e| e.to_string())?;
+                    response.selected_facts[index] =
+                        projection::selected(index, &semantic, revision);
+                }
+            }
+        }
+        if item == 0 {
+            response.message.at = parse_time(v.get("timestamp"));
+            response.message.parent = v
+                .get("parentUuid")
+                .and_then(Value::as_str)
+                .and_then(|p| MessageId::new(self.sessions[si].session.id.clone(), p).ok());
+        }
+        apply_selected(&mut response)?;
+        if v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true) {
+            response.message.stop_reason = Some("aborted".into());
+            response.message.in_progress = Some(false);
+        }
+        response.message.version_hash = None;
+        let pending = PendingMessage {
+            message: response.message.id.clone(),
+            revision: response.revision,
+            items: response.items,
+            incomplete: response.incomplete_bodies != 0,
+        };
+        self.pending.insert(
+            (
+                response.message.id.session().as_str().into(),
+                response.message.id.as_str().into(),
+            ),
+            pending,
+        );
+        self.addresses.insert(
+            (native.clone(), uuid.into()),
+            RecordAddress {
+                response: key.clone(),
+                message: response.message.id.clone(),
+                item,
+                role: ty.into(),
+            },
+        );
+        self.contributions
+            .insert((response.message.id.clone(), item), contribution);
+        self.sessions[si].last_message = Some(response.message.id.clone());
+        self.sessions[si].facts_pending = true;
+        let session = &mut self.sessions[si].session;
+        if session.cwd.is_none() {
+            session.cwd = v.get("cwd").and_then(Value::as_str).map(str::to_owned);
+        }
+        if session.branch.is_none() {
+            session.branch = v
+                .get("gitBranch")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+        if session.harness_version.is_none() {
+            session.harness_version = v.get("version").and_then(Value::as_str).map(str::to_owned);
+        }
+        self.responses.insert((native, key), response);
+        Ok(RecordOutcome::Used)
+    }
+    /// `written_by` for a user record without tool results (`spec/sources/claude-code.md`, record types).
+    fn user_author(
+        &mut self,
+        si: usize,
+        v: &Value,
+        content: &Value,
+        is_copy: bool,
+    ) -> (WrittenBy, Option<PromptKind>, Option<String>) {
+        let b = &mut self.sessions[si];
+        let first_own = !is_copy && !b.seen_own_user;
+        if !is_copy {
+            b.seen_own_user = true;
+        }
+        let origin = v
+            .get("origin")
+            .and_then(|o| o.get("kind"))
+            .and_then(Value::as_str);
+        match origin {
+            Some("human") => return (WrittenBy::Human, Some(prompt_kind_of(content)), None),
+            Some("peer") => {
+                let name = v
+                    .get("origin")
+                    .and_then(|o| o.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                return (WrittenBy::Model, None, name);
+            }
+            Some("coordinator") => return (WrittenBy::Model, None, None),
+            Some("task-notification" | "auto-continuation") => {
+                return (WrittenBy::Harness, None, None);
+            }
+            _ => {}
+        }
+        if first_own && b.session.kind == SessionKind::Subagent {
+            // The instruction the parent model wrote in its Agent or Task call.
+            return (WrittenBy::Model, None, None);
+        }
+        match v.get("promptSource").and_then(Value::as_str) {
+            Some("typed" | "suggestion_accepted" | "queued") => {
+                return (WrittenBy::Human, Some(prompt_kind_of(content)), None);
+            }
+            Some("sdk" | "system") => return (WrittenBy::Harness, None, None),
+            _ => {}
+        }
+        if v.get("isMeta").and_then(Value::as_bool) == Some(true)
+            || v.get("isVisibleInTranscriptOnly").and_then(Value::as_bool) == Some(true)
+        {
+            return (WrittenBy::Harness, None, None);
+        }
+        if is_copy {
+            // A copy keeps the author it had in its source session; that is resolved at write.
+            return (WrittenBy::Unknown, None, None);
+        }
+        let text = match content {
+            Value::String(t) => t.as_str(),
+            Value::Array(a) => a
+                .iter()
+                .find_map(|b| b.get("text").and_then(Value::as_str))
+                .unwrap_or(""),
+            _ => "",
+        };
+        let t = text.trim_start();
+        // A typed slash command or `!` input: the person typed it (prompt_kind command).
+        if t.contains("<command-name>") || t.starts_with("<bash-input>") {
+            return (WrittenBy::Human, Some(PromptKind::Command), None);
+        }
+        // Its expansion and output, and other harness wrappers.
+        const HARNESS: [&str; 8] = [
+            "<local-command-stdout>",
+            "<local-command-stderr>",
+            "<bash-stdout>",
+            "<bash-stderr>",
+            "<command-message>",
+            "<system-reminder>",
+            "<task-notification>",
+            "[Request interrupted by user",
+        ];
+        if HARNESS.iter().any(|h| t.starts_with(h)) {
+            return (WrittenBy::Harness, None, None);
+        }
+        let has_source = v.get("promptSource").is_some();
+        // Versions before the field existed: a remaining prompt is the person's.
+        if !has_source
+            && v.get("version")
+                .and_then(Value::as_str)
+                .is_some_and(predates_prompt_source)
+        {
+            return (WrittenBy::Human, Some(prompt_kind_of(content)), None);
+        }
+        // Claude Code gives every submitted prompt a promptId.
+        if !has_source
+            && v.get("origin").is_none()
+            && v.get("promptId").and_then(Value::as_str).is_some()
+        {
+            return (WrittenBy::Human, Some(prompt_kind_of(content)), None);
+        }
+        (WrittenBy::Unknown, None, None)
+    }
+
+    /// The session a non-message record of this file belongs to.
+    fn file_session(&mut self, v: &Value) -> Result<Option<usize>, String> {
+        match self.ctx.clone() {
+            FileCtx::Main { stem } => self.session_index(&stem, SessionKind::Main),
+            FileCtx::Subagent {
+                folder_owner,
+                agent,
+                ..
+            } => {
+                let sid_field = v
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                let owner = self
+                    .header
+                    .owner
+                    .get_or_insert_with(|| {
+                        if sid_field.is_empty() {
+                            folder_owner.clone()
+                        } else {
+                            sid_field
+                        }
+                    })
+                    .clone();
+                self.session_index(&format!("{owner}/{agent}"), SessionKind::Subagent)
+            }
+        }
+    }
+
+    fn event(&mut self, rec: &Record<'_>, kind: &str) -> Result<RecordOutcome<Ignored>, String> {
+        let Some(si) = self.file_session(&rec.value)? else {
+            return Ok(RecordOutcome::Unrecognized("bad session id"));
+        };
+        let at = parse_time(rec.value.get("timestamp"));
+        let after_message = self.sessions[si].last_message.clone();
+        self.events.push((
+            self.sessions[si].session.id.clone(),
+            Event {
+                kind: kind.into(),
+                at,
+                after_message,
+                model_saw: None,
+                data: rec.value.clone(),
+            },
+        ));
+        Ok(RecordOutcome::Used)
+    }
+}
+
+/// The first Claude Code version writing `promptSource` (spec/sources/claude-code.md;
+/// measured over the operator's files, evidence/claude-code-real-accounting.md).
+const PROMPT_SOURCE_SINCE: [u32; 3] = [2, 1, 161];
+
+fn predates_prompt_source(version: &str) -> bool {
+    let parts: Vec<u32> = version.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+    let mut v = [0u32; 3];
+    for (i, p) in parts.iter().take(3).enumerate() {
+        v[i] = *p;
+    }
+    v < PROMPT_SOURCE_SINCE
+}
+
+fn prompt_kind_of(content: &Value) -> PromptKind {
+    let text = match content {
+        Value::String(s) => s.as_str(),
+        Value::Array(a) => a
+            .iter()
+            .find_map(|b| b.get("text").and_then(Value::as_str))
+            .unwrap_or(""),
+        _ => "",
+    };
+    let t = text.trim_start();
+    // A bare slash command typed as plain text (`/compact`, `/model opus`): one line whose first
+    // word is `/name`. Seen on real data without the `<command-name>` wrapper
+    // (evidence/briefing-trial.md), where it had been read as an unanswered prose prompt.
+    let slash = t.starts_with('/')
+        && !t.trim_end().contains('\n')
+        && t[1..].split_whitespace().next().is_some_and(|w| {
+            !w.is_empty()
+                && w.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':')
+        });
+    if slash
+        || t.starts_with("<command-name>")
+        || t.starts_with("<bash-input>")
+        || t.starts_with('!')
+        || t.starts_with('#')
+    {
+        PromptKind::Command
+    } else {
+        PromptKind::Prose
+    }
+}
+
+fn usage_of(u: &Value) -> Usage {
+    let g = |k: &str| u.get(k).and_then(Value::as_u64);
+    Usage {
+        input: g("input_tokens"),
+        output: g("output_tokens"),
+        cache_read: g("cache_read_input_tokens"),
+        cache_write: g("cache_creation_input_tokens"),
+        cache_write_5m: u
+            .get("cache_creation")
+            .and_then(|m| m.get("ephemeral_5m_input_tokens"))
+            .and_then(Value::as_u64),
+        cache_write_1h: u
+            .get("cache_creation")
+            .and_then(|m| m.get("ephemeral_1h_input_tokens"))
+            .and_then(Value::as_u64),
+        reasoning: u
+            .get("output_tokens_details")
+            .and_then(|m| m.get("thinking_tokens"))
+            .and_then(Value::as_u64),
+        ..Usage::default()
+    }
+}
+
+fn text_of(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(a) => {
+            let parts: Vec<&str> = a
+                .iter()
+                .filter_map(|x| x.get("text").and_then(Value::as_str))
+                .collect();
+            if parts.is_empty() && !a.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn blocks_of(content: &Value) -> Vec<BlockContent> {
+    match content {
+        Value::String(s) => vec![BlockContent::Text { text: s.clone() }],
+        Value::Array(items) => items
+            .iter()
+            .map(
+                |it| match it.get("type").and_then(Value::as_str).unwrap_or("") {
+                    "text" => BlockContent::Text {
+                        text: it
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned(),
+                    },
+                    "thinking" => BlockContent::Thinking(Thinking {
+                        text: it
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        signature: it
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        encrypted: it.get("encrypted").and_then(Value::as_bool),
+                        data: it.get("data").and_then(Value::as_str).map(str::to_owned),
+                    }),
+                    "tool_use" => {
+                        let input = it.get("input").cloned();
+                        BlockContent::ToolCall(ToolCall {
+                            tool: it.get("name").and_then(Value::as_str).map(str::to_owned),
+                            call_id: it.get("id").and_then(Value::as_str).map(str::to_owned),
+                            command: input
+                                .as_ref()
+                                .and_then(|v| v.get("command"))
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            input,
+                        })
+                    }
+                    "tool_result" => BlockContent::ToolResult(ToolResult {
+                        call_id: it
+                            .get("tool_use_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        outcome: if it.get("is_error").and_then(Value::as_bool) == Some(true) {
+                            ToolOutcome::Error { reason: None }
+                        } else {
+                            ToolOutcome::Ok
+                        },
+                        exit_code: it
+                            .get("content")
+                            .and_then(text_of)
+                            .as_deref()
+                            .and_then(exit_code_in),
+                        duration_ms: None,
+                        output: it.get("content").and_then(text_of).map(ToolOutput::Text),
+                    }),
+                    "image" => BlockContent::Image(Attachment {
+                        blob: None,
+                        name: None,
+                        media_type: it
+                            .get("source")
+                            .and_then(|s| s.get("media_type"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        size: None,
+                        url: None,
+                        direction: AttachmentDirection::Input,
+                        ..Attachment::default()
+                    }),
+                    other => BlockContent::Other {
+                        type_name: other.to_owned(),
+                        data: it.clone(),
+                    },
+                },
+            )
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The exit code a shell result states in its output text (`Exit code N`, `exit code: N`;
+/// spec/sources/claude-code.md, tool results); the last such line wins.
+fn exit_code_in(text: &str) -> Option<i64> {
+    text.lines().rev().find_map(|line| {
+        let l = line.trim().to_ascii_lowercase();
+        let rest = l
+            .strip_prefix("exit code:")
+            .or_else(|| l.strip_prefix("exit code"))?;
+        rest.trim().parse().ok()
+    })
+}
+
+impl<R: ReadView> RecordParser for KeyedRecords<R> {
+    type Error = String;
+    type Ignored = Ignored;
+    type Output = StepOutput;
+    fn record(
+        &mut self,
+        rec: &Record<'_>,
+    ) -> std::result::Result<RecordOutcome<Self::Ignored>, Self::Error> {
+        Ok({
+            let ty = rec.value.get("type").and_then(Value::as_str).unwrap_or("");
+            match ty {
+                "user"
+                    if rec.value.get("isCompactSummary").and_then(Value::as_bool) == Some(true) =>
+                {
+                    self.event(rec, "compaction_summary")?
+                }
+                "user" | "assistant" => self.message_record(rec, ty)?,
+                "system" => match rec.value.get("subtype").and_then(Value::as_str) {
+                    Some("compact_boundary") => self.event(rec, "compaction")?,
+                    Some("microcompact_boundary") => self.event(rec, "microcompaction")?,
+                    Some("model_refusal_no_fallback" | "model_refusal_fallback") => {
+                        self.event(rec, "model_refusal")?
+                    }
+                    // turn_duration, api_error, away_summary, stop_hook_summary, local_command,
+                    // scheduled_task_fire, bridge_status, informational and other subtypes: an event of
+                    // the same name (spec/sources/claude-code.md, record table).
+                    Some(sub) => {
+                        let sub = sub.to_owned();
+                        self.event(rec, &sub)?
+                    }
+                    None => RecordOutcome::Unrecognized("system without subtype"),
+                },
+                "attachment" => self.event(rec, "attachment")?,
+                "pr-link" => self.event(rec, "pr_link")?,
+                "permission-mode" => self.event(rec, "permission_mode")?,
+                "mode" => self.event(rec, "mode")?,
+                "queue-operation" => self.event(rec, "queue")?,
+                "last-prompt" => self.event(rec, "last_prompt")?,
+                "file-history-snapshot" | "file-history-delta" => {
+                    self.event(rec, "file_history")?
+                }
+                "cost-state" => self.event(rec, "provider_cost")?,
+                "bridge-session" | "frame-link" | "worktree-state" | "agent-name"
+                | "agent-color" | "relocated" => {
+                    let kind = ty.replace('-', "_");
+                    self.event(rec, &kind)?
+                }
+                "started" => self.event(rec, "workflow_started")?,
+                "result" => self.event(rec, "workflow_result")?,
+                "continued-in" => {
+                    if let (FileCtx::Main { stem }, Some(next)) = (
+                        self.ctx.clone(),
+                        rec.value
+                            .get("continuedInSessionId")
+                            .and_then(Value::as_str),
+                    ) {
+                        let next = next.to_owned();
+                        self.add_link(
+                            LinkKind::Continuation,
+                            LinkHow::AfterCompaction,
+                            &stem,
+                            &next,
+                            "continued-in",
+                            None,
+                        )?;
+                        RecordOutcome::Used
+                    } else {
+                        RecordOutcome::Unrecognized("continued-in without a target")
+                    }
+                }
+                // Evidence for the subagent link; the copied records themselves carry the lineage.
+                "fork-context-ref" => RecordOutcome::Used,
+                "custom-title" | "ai-title" | "summary" => {
+                    let (rank, field) = match ty {
+                        "custom-title" => (3, "customTitle"),
+                        "ai-title" => (2, "aiTitle"),
+                        _ => (1, "summary"),
+                    };
+                    if let Some(t) = rec.value.get(field).and_then(Value::as_str)
+                        && self.header.title.as_ref().is_none_or(|(r, _)| rank >= *r)
+                    {
+                        self.header.title = Some((rank, t.to_owned()));
+                        // Metadata-only changes explicitly touch their existing
+                        // owner without enumerating other historical sessions.
+                        if let FileCtx::Main { stem } = self.ctx.clone()
+                            && (self.by_id.contains_key(&stem)
+                                || self
+                                    .view
+                                    .session(&stem)
+                                    .map_err(|e| e.to_string())?
+                                    .is_some())
+                        {
+                            self.session_index(&stem, SessionKind::Main)?;
+                        }
+                    }
+                    RecordOutcome::Used
+                }
+                "progress" => match rec
+                    .value
+                    .get("data")
+                    .and_then(|d| d.get("type"))
+                    .and_then(Value::as_str)
+                {
+                    // Subagent evidence and hook runs are kept (spec/sources/claude-code.md, record table).
+                    Some("agent_progress") => RecordOutcome::Used,
+                    Some("hook_progress") => self.event(rec, "hook_run")?,
+                    // Counted only: payload not stored in the index.
+                    Some(
+                        "bash_progress"
+                        | "waiting_for_task"
+                        | "query_update"
+                        | "search_results_received"
+                        | "mcp_progress",
+                    ) => RecordOutcome::Ignored(Ignored::ProgressCountedOnly),
+                    _ => RecordOutcome::Unrecognized("progress kind"),
+                },
+                // The table: counted under unrecognized, its string kept in the stored input.
+                "atis-latch" => RecordOutcome::Unrecognized("atis-latch"),
+                _ => RecordOutcome::Unrecognized("record type"),
+            }
+        })
+    }
+    fn finish(self) -> Result<Self::Output, Self::Error> {
+        self.finish_output()
+    }
+}
+
+impl<R: ReadView> KeyedRecords<R> {
+    fn finish_output(mut self) -> Result<StepOutput, String> {
+        if let (FileCtx::Main { stem }, Some((_, title))) = (&self.ctx, &self.header.title) {
+            if let Some(&i) = self.by_id.get(stem) {
+                self.sessions[i].session.title = Some(title.clone());
+            }
+        }
+        self.sessions.sort_by_key(|c| c.ordinal);
+        let mut responses: Vec<_> = self
+            .responses
+            .into_iter()
+            .map(|((s, k), c)| (s, k, c))
+            .collect();
+        responses.sort_by(|a, b| {
+            (&a.0, a.1.role as u8, &a.1.response, &a.1.request).cmp(&(
+                &b.0,
+                b.1.role as u8,
+                &b.1.response,
+                &b.1.request,
+            ))
+        });
+        let mut addresses: Vec<_> = self
+            .addresses
+            .into_iter()
+            .map(|((s, u), c)| (s, u, c))
+            .collect();
+        addresses.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        let mut contributions: Vec<_> = self
+            .contributions
+            .into_iter()
+            .map(|((m, i), c)| (m, i, c))
+            .collect();
+        contributions.sort_by(|a, b| {
+            (a.0.session().as_str(), a.0.as_str(), a.1).cmp(&(
+                b.0.session().as_str(),
+                b.0.as_str(),
+                b.1,
+            ))
+        });
+        let mut sides: Vec<_> = self.sides.into_iter().collect();
+        sides.sort();
+        Ok(StepOutput {
+            header: self.header,
+            delta: Delta {
+                sessions: self.sessions,
+                responses,
+                addresses,
+                contributions,
+                sides,
+                links: self.link_order,
+                pending_messages: self.pending.into_values().collect(),
+            },
+            events: self.events,
+            links: self.links,
+        })
+    }
+}
+
+const METADATA_PATHS: [&[&str]; 4] = [
+    &["message", "usage"],
+    &["message", "stop_reason"],
+    &["message", "model"],
+    &["timestamp"],
+];
+fn apply_selected(response: &mut ResponseCell) -> Result<(), String> {
+    let values: Vec<Option<Value>> = response
+        .selected
+        .iter()
+        .map(|v| {
+            v.as_ref()
+                .map(|b| serde_json::from_slice(b).map_err(|e| e.to_string()))
+                .transpose()
+        })
+        .collect::<Result<_, _>>()?;
+    response.message.usage = values[0].as_ref().filter(|v| v.is_object()).map(usage_of);
+    response.message.stop_reason = values[1]
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if response.message.written_by == WrittenBy::Model {
+        response.message.model = values[2]
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+    }
+    response.message.completed_at = parse_time(values[3].as_ref());
+    Ok(())
+}
+
+impl<R: ReadView> KeyedRecords<R> {
+    fn blocks_and_bodies(
+        &self,
+        record: &Value,
+        _raw: &[u8],
+    ) -> Result<(Vec<BlockContent>, Vec<RequiredBody>), String> {
+        let content = record
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .unwrap_or(&Value::Null);
+        let mut blocks = blocks_of(content);
+        let mut bodies = Vec::new();
+        let Some(items) = content.as_array() else {
+            return Ok((blocks, bodies));
+        };
+        let result_count = items
+            .iter()
+            .filter(|it| it.get("type").and_then(Value::as_str) == Some("tool_result"))
+            .count();
+        for (index, item) in items.iter().enumerate() {
+            if item.get("type").and_then(Value::as_str) != Some("tool_result") {
+                continue;
+            }
+            let text = item.get("content").and_then(text_of).unwrap_or_default();
+            let path = item
+                .get("persistedOutputPath")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    if result_count == 1 {
+                        record
+                            .get("toolUseResult")
+                            .and_then(|r| r.get("persistedOutputPath"))
+                            .and_then(Value::as_str)
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    text.lines().find_map(|line| {
+                        line.strip_prefix("Full output saved to: ")
+                            .or_else(|| line.strip_prefix("Output has been saved to "))
+                    })
+                });
+            if let Some(path) = path {
+                let payload = match self.view.body(path).map_err(|e| e.to_string())? {
+                    Some(body) => Some(body),
+                    None => match path.rsplit('/').next().filter(|name| *name != path) {
+                        Some(name) => self.view.body(name).map_err(|e| e.to_string())?,
+                        None => None,
+                    },
+                };
+                let content_item =
+                    u32::try_from(index).map_err(|_| "Claude content-item overflow")?;
+                if let Some(BlockContent::ToolResult(result)) = blocks.get_mut(index) {
+                    match &payload {
+                        Some(body) => result.output = Some(ToolOutput::Blob(body.blob)),
+                        None => {
+                            result.outcome = ToolOutcome::Unknown {
+                                reason: UnknownReason::OutputNotRecorded,
+                            }
+                        }
+                    }
+                }
+                bodies.push(RequiredBody {
+                    content_item,
+                    payload,
+                });
+            }
+        }
+        Ok((blocks, bodies))
+    }
+}

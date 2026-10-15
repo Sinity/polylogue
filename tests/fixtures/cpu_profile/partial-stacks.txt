@@ -1,7 +1,0 @@
-worker 42 1.234000: 10000000 cpu-clock:u:
-	 abcdef sqlite3VdbeExec (libsqlite3.so)
-
- worker 43 1.244000: 10000000 cpu-clock:u:
-
-worker 42 1.254000: 10000000 cpu-clock:u:
-	 abcdef sqlite3VdbeExec (libsqlite3.so)

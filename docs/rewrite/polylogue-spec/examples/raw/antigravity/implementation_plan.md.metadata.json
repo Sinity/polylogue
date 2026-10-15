@@ -1,0 +1,6 @@
+{
+ "artifactType": "ARTIFACT_TYPE_IMPLEMENTATION_PLAN",
+ "summary": "Refactor sinex-document-ingestor to use SimpleIngestor.",
+ "updatedAt": "2026-01-21T17:00:04.576120555Z",
+ "version": "11"
+}

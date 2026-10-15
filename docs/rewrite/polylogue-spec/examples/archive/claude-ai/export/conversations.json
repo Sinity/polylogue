@@ -1,0 +1,78 @@
+[
+ {
+  "uuid": "0b9d4e6c-0008-4000-8000-000000000008",
+  "name": "README wording",
+  "summary": "",
+  "created_at": "2026-10-07T16:00:00.000Z",
+  "updated_at": "2026-10-07T16:05:00.000Z",
+  "account": {
+   "uuid": "00000000-0000-4000-8000-0000000000aa"
+  },
+  "chat_messages": [
+   {
+    "uuid": "0b9d4e6c-0008-4000-8000-000000000001",
+    "text": "Improve the first paragraph of my README for a Rust date-parsing crate called morrow.",
+    "content": [
+     {
+      "type": "text",
+      "text": "Improve the first paragraph of my README for a Rust date-parsing crate called morrow."
+     }
+    ],
+    "sender": "human",
+    "created_at": "2026-10-07T16:00:00.000Z",
+    "updated_at": "2026-10-07T16:00:00.000Z",
+    "attachments": [],
+    "files": [],
+    "parent_message_uuid": "00000000-0000-4000-8000-000000000000"
+   },
+   {
+    "uuid": "0b9d4e6c-0008-4000-8000-000000000002",
+    "text": "morrow turns phrases people actually write (\"tomorrow at noon\", \"next friday\", \"2026-10-03\") into dates, and refuses input it cannot read unambiguously.",
+    "content": [
+     {
+      "type": "text",
+      "text": "morrow turns phrases people actually write (\"tomorrow at noon\", \"next friday\", \"2026-10-03\") into dates, and refuses input it cannot read unambiguously."
+     }
+    ],
+    "sender": "assistant",
+    "created_at": "2026-10-07T16:01:00.000Z",
+    "updated_at": "2026-10-07T16:01:00.000Z",
+    "attachments": [],
+    "files": [],
+    "parent_message_uuid": "0b9d4e6c-0008-4000-8000-000000000001"
+   },
+   {
+    "uuid": "0b9d4e6c-0008-4000-8000-000000000003",
+    "text": "Shorter, and mention chrono.",
+    "content": [
+     {
+      "type": "text",
+      "text": "Shorter, and mention chrono."
+     }
+    ],
+    "sender": "human",
+    "created_at": "2026-10-07T16:04:00.000Z",
+    "updated_at": "2026-10-07T16:04:00.000Z",
+    "attachments": [],
+    "files": [],
+    "parent_message_uuid": "0b9d4e6c-0008-4000-8000-000000000002"
+   },
+   {
+    "uuid": "0b9d4e6c-0008-4000-8000-000000000004",
+    "text": "morrow parses human-written dates into chrono types and rejects ambiguous input.",
+    "content": [
+     {
+      "type": "text",
+      "text": "morrow parses human-written dates into chrono types and rejects ambiguous input."
+     }
+    ],
+    "sender": "assistant",
+    "created_at": "2026-10-07T16:05:00.000Z",
+    "updated_at": "2026-10-07T16:05:00.000Z",
+    "attachments": [],
+    "files": [],
+    "parent_message_uuid": "0b9d4e6c-0008-4000-8000-000000000003"
+   }
+  ]
+ }
+]

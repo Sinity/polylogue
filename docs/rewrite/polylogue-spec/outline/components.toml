@@ -1,0 +1,899 @@
+# The outline: every component of the finished Polylogue, breadth-first (README.md). Checked by check_outline.py.
+#
+# Fields: id; crate (a crate of plan/workspace.md, or "external" for programs outside the workspace);
+# slice (plan/slices.md); does (one sentence); owns (tables as "<db>:<table>", db = archive | index | embeddings,
+# or other state in words); writers (other components allowed to write the tables it owns); writes (tables of
+# other components it writes); uses (components it calls; the crate edge must be allowed by workspace.md);
+# interfaces; spec ("<file>#<heading text>"); provides (vision features); serves (vision uses, optional: a use is
+# also served when every feature it needs is provided); laws (plan/testing/laws.md numbers placed here);
+# solidity (outline | specified | prototyped | built); prototype (path, when prototyped).
+
+# ---------------------------------------------------------------- polylogue-model: types and pure rules
+
+[[component]]
+id = "model.types"
+crate = "polylogue-model"
+slice = "1"
+does = "the domain types: Session, Message, Block, Attachment, Link, ToolCall, Usage, Event, Note, with unknown enum values kept as data"
+owns = []
+uses = []
+interfaces = ["Session", "Message", "Block", "Link", "ToolCall", "Usage", "Event"]
+spec = ["spec/model.md#The entities", "spec/model.md#Value types"]
+provides = []
+laws = [65, 72]
+solidity = "prototyped"
+prototype = "prototype/crates/model/src/types.rs"
+
+[[component]]
+id = "model.identity"
+crate = "polylogue-model"
+slice = "1"
+does = "IDs computed from the provider's raw records, fallback IDs from raw text, so a parser change never moves an ID"
+owns = []
+uses = ["model.types"]
+interfaces = ["SessionId", "MessageId", "BlockId", "fallback_id(raw record, occurrence)"]
+spec = ["spec/model.md#Identity"]
+provides = []
+laws = [10, 32, 51]
+solidity = "prototyped"
+prototype = "prototype/crates/model/src/ids.rs"
+
+[[component]]
+id = "model.time"
+crate = "polylogue-model"
+slice = "1"
+does = "the wire time type, offsetless times read as each format declares, the logical day, calendar windows"
+owns = []
+uses = []
+interfaces = ["Timestamp", "TimeQuality", "Precision", "ProviderTime", "logical_day / day_bounds (joint #15)"]
+spec = ["spec/model.md#Time"]
+provides = []
+laws = [47, 69, 105, 106]
+solidity = "prototyped"
+prototype = "prototype/crates/model/src/time.rs; polylogue-sinex-joint/prototype/logical-day"
+
+[[component]]
+id = "model.merge"
+crate = "polylogue-model"
+slice = "1"
+does = "choosing between versions of one message across chains and routes: faithfulness, completeness, then the hash without volatile fields"
+owns = []
+uses = ["model.types", "model.identity"]
+interfaces = ["choose_version", "merge_routes"]
+spec = ["spec/convergence.md#Sessions built from several inputs", "decisions/merging.md"]
+provides = ["merge_routes"]
+laws = [4, 50, 98, 100, 108]
+solidity = "prototyped"
+prototype = "prototype/crates/model/src/merge.rs"
+
+[[component]]
+id = "model.lineage"
+crate = "polylogue-model"
+slice = "1"
+does = "link kinds and their evidence, inherited messages, branches, the rules that keep a tree free of cycles and double counts"
+owns = []
+uses = ["model.types"]
+interfaces = ["LinkKind", "LinkEvidence", "inherited_from"]
+spec = ["spec/model.md#Link", "decisions/lineage.md"]
+provides = []
+laws = [11, 29, 30, 31, 33, 39, 99]
+solidity = "specified"
+
+[[component]]
+id = "model.live_state"
+crate = "polylogue-model"
+slice = "2"
+does = "live state (working, waiting, idle, ended, stale) as a function of stored facts and the time asked; peers in one repository"
+owns = []
+uses = ["model.types", "model.time"]
+interfaces = ["live_state(facts, at) -> (state, since, until)"]
+spec = ["spec/model.md#Live state"]
+provides = ["live_state"]
+laws = [85, 89, 101, 102]
+solidity = "prototyped"
+prototype = "prototype/crates/daemon/src/live.rs"
+
+[[component]]
+id = "model.export"
+crate = "polylogue-model"
+slice = "1"
+does = "the export format: the document Polylogue writes and reads back unchanged, and the codec Sinex-backed modes publish"
+owns = []
+uses = ["model.types", "model.identity"]
+interfaces = ["export document v1", "read_export"]
+spec = ["spec/export-format.md#The document", "spec/export-format.md#Reading an export back"]
+provides = ["export"]
+laws = [9, 74]
+solidity = "prototyped"
+prototype = "prototype/crates/model/src/doc.rs"
+
+[[component]]
+id = "model.measures"
+crate = "polylogue-model"
+slice = "1"
+does = "the definitions of every measure: token and cost arithmetic, outcome rules, unknown kept apart from zero"
+owns = []
+uses = ["model.types"]
+interfaces = ["Usage arithmetic", "ToolOutcome", "PriceTable"]
+spec = ["spec/analysis.md#Measures and their definitions", "spec/analysis.md#Token accounting rules"]
+provides = ["measures"]
+laws = [14, 70]
+solidity = "specified"
+
+# ---------------------------------------------------------------- hashed-blobs: the shared file layer
+
+[[component]]
+id = "blobs.files"
+crate = "hashed-blobs"
+slice = "1"
+does = "seekable zstd files named by BLAKE3, patch-from deltas, sealed blobs, hash checks on every read (shared with Sinex)"
+owns = ["blob files under the archive's blobs/ directory"]
+uses = []
+interfaces = ["Store::put", "Store::put_delta_within", "Store::read_range", "Store::stored_size"]
+spec = ["spec/storage/blobs.md#Blobs", "decisions/sinex.md#Shared code (joint #9, #11–#14)"]
+provides = []
+laws = [18, 22, 42]
+solidity = "prototyped"
+prototype = "polylogue-sinex-joint/prototype/hashed-blobs"
+
+# ---------------------------------------------------------------- polylogue-sources: parsers
+
+[[component]]
+id = "sources.framework"
+crate = "polylogue-sources"
+slice = "1"
+does = "the per-record parse framework: framing, decoding, byte ranges, counting every record as used, ignored or unrecognized"
+owns = []
+uses = ["model.types", "model.identity", "model.time"]
+interfaces = ["RecordParser::record / finish", "drive_jsonl", "drive_json_array", "drive_rows", "Counts"]
+spec = ["spec/sources/README.md#How sources work"]
+provides = ["sources"]
+laws = [3, 12, 13, 47, 48, 49, 60, 73, 120, 136]
+solidity = "prototyped"
+prototype = "prototype/crates/sources/src/frame.rs"
+
+[[component]]
+id = "sources.claude_code"
+crate = "polylogue-sources"
+slice = "1"
+does = "Claude Code transcripts, subagent and workflow transcripts, companions, background jobs, with a carry for appends"
+owns = []
+uses = ["sources.framework", "model.lineage"]
+interfaces = ["parse(bytes, companions, carry)"]
+spec = ["spec/sources/claude-code.md#Claude Code"]
+provides = []
+laws = [2]
+solidity = "prototyped"
+prototype = "prototype/crates/sources/src/claude_code"
+
+[[component]]
+id = "sources.codex"
+crate = "polylogue-sources"
+slice = "2"
+does = "Codex rollouts (both layouts), its state database, with a carry; rewrites declared lossy"
+owns = []
+uses = ["sources.framework", "model.lineage"]
+interfaces = ["parse(bytes, carry)"]
+spec = ["spec/sources/codex.md"]
+provides = []
+laws = [96]
+solidity = "prototyped"
+prototype = "prototype/crates/sources/src/codex"
+
+[[component]]
+id = "sources.chat_exports"
+crate = "polylogue-sources"
+slice = "4"
+does = "ChatGPT, claude.ai and Claude Design account exports, Grok exports, with every export key mapped or excluded"
+owns = []
+uses = ["sources.framework"]
+interfaces = ["parse_export(document)"]
+spec = ["spec/sources/chat-exports.md"]
+provides = []
+laws = [79, 112]
+solidity = "prototyped"
+prototype = "prototype/crates/sources/src/chatgpt"
+
+[[component]]
+id = "sources.captures"
+crate = "polylogue-sources"
+slice = "4"
+does = "browser capture envelopes from the extension's spool, read as one more route to a web conversation"
+owns = []
+uses = ["sources.framework"]
+interfaces = ["parse_capture(envelope)"]
+spec = ["spec/sources/README.md#Browser captures"]
+provides = []
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "sources.google"
+crate = "polylogue-sources"
+slice = "5"
+does = "Gemini CLI sessions (whole-session JSON and per-turn JSONL) and AI Studio prompt files"
+owns = []
+uses = ["sources.framework"]
+interfaces = ["parse_gemini_cli", "parse_aistudio"]
+spec = ["spec/sources/google.md#Google AI Studio (Drive)"]
+provides = []
+laws = []
+solidity = "prototyped"
+prototype = "prototype/crates/sources/src/gemini"
+
+[[component]]
+id = "sources.others"
+crate = "polylogue-sources"
+slice = "5"
+does = "Hermes (state.db and session documents), Antigravity (steps), Grok CLI"
+owns = []
+uses = ["sources.framework"]
+interfaces = ["parse_hermes_rows", "parse_grok_cli", "parse_antigravity_steps"]
+spec = ["spec/sources/others.md#Hermes", "spec/sources/others.md#Antigravity", "spec/sources/others.md#Grok CLI"]
+provides = []
+laws = []
+solidity = "prototyped"
+prototype = "prototype/crates/sources/src/hermes.rs; prototype/crates/sources/src/grok_cli.rs; prototypes/antigravity-steps"
+
+[[component]]
+id = "sources.hooks"
+crate = "polylogue-sources"
+slice = "2"
+does = "hook spool lines and process lines: one event per line, never a session, process identity kept"
+owns = []
+uses = ["sources.framework", "model.time"]
+interfaces = ["parse_hook_line", "parse_proc_line"]
+spec = ["spec/sources/README.md#Hooks (live capture from agent harnesses)"]
+provides = []
+laws = [113, 116]
+solidity = "prototyped"
+prototype = "prototype/crates/sources/src/hooks.rs"
+
+[[component]]
+id = "sources.links"
+crate = "polylogue-sources"
+slice = "6"
+does = "provider links and pasted session IDs resolved to sessions, ambiguity kept ambiguous"
+owns = []
+uses = ["model.identity"]
+interfaces = ["resolve_reference(text) -> candidates"]
+spec = ["spec/sources/README.md#Provider links that resolve to sessions", "spec/sources/README.md#Which session is asking"]
+provides = []
+laws = []
+solidity = "specified"
+
+# ---------------------------------------------------------------- polylogue-query
+
+[[component]]
+id = "query.grammar"
+crate = "polylogue-query"
+slice = "1"
+does = "the query language, the full grammar from slice 1 (field support completes in slice 3): parsing to a syntax tree, its plain-language reading (read_as), corrections for strings that match nothing"
+owns = []
+uses = ["model.types"]
+interfaces = ["parse(text) -> Query", "read_as(Query)"]
+spec = ["spec/query.md#Grammar", "spec/query.md#Stages"]
+provides = ["query", "stages"]
+laws = [16, 110, 135, 137]
+solidity = "prototyped"
+prototype = "prototypes/query-ref/query_ref.py"
+
+[[component]]
+id = "query.planner"
+crate = "polylogue-query"
+slice = "1"
+does = "planning and compiling a query to SQL over index.db: search plans ranked inside FTS, paging, evidence_until, sequence patterns, unknown never a match"
+owns = []
+uses = ["query.grammar", "model.time"]
+interfaces = ["compile(Query, resolved) -> SQL + params", "SearchPlan"]
+spec = ["spec/query.md#Semantics rules", "spec/query.md#Full-text search", "spec/query.md#Results"]
+provides = ["search", "evidence_until"]
+laws = [15, 24, 35, 79, 82, 107, 114, 126, 128, 129, 130, 131, 132, 133, 134]
+solidity = "prototyped"
+prototype = "prototype/crates/query/src/search.rs"
+
+[[component]]
+id = "query.reference"
+crate = "polylogue-query"
+slice = "3"
+does = "the in-memory reference evaluator the compiled SQL is tested against; it also checks the spec's and the vision's example queries"
+owns = []
+uses = ["query.grammar"]
+interfaces = ["evaluate(Query, world)"]
+spec = ["spec/query.md#Examples against the Morrow archive"]
+provides = []
+laws = [17]
+solidity = "prototyped"
+prototype = "prototypes/query-ref"
+
+# ---------------------------------------------------------------- polylogue-store: the three files
+
+[[component]]
+id = "store.inputs"
+crate = "polylogue-store"
+slice = "1"
+does = "inputs, revisions as extents over immutable blobs, observations of every location, machines; every revision kept"
+owns = ["archive:input", "archive:revision", "archive:extent", "archive:observation", "archive:blob", "archive:machine"]
+writers = ["store.excision"]
+uses = ["blobs.files", "model.types"]
+interfaces = ["Blobs (the archive's blob store handle; hashes cross as BlobHash)", "first_batch (new paths, batched durability)", "append_piece / cover_pieces", "head_rewrite / rewrite (new chains)", "observe (renamed, deleted, back)", "read_range"]
+spec = ["spec/storage/blobs.md#Inputs, revisions and extents", "spec/storage/blobs.md#What an observation records", "spec/storage/blobs.md#Crash safety without repair"]
+provides = ["raw_retention"]
+laws = [7, 8, 40, 41, 55, 115]
+solidity = "prototyped"
+prototype = "prototype/crates/store/src/inputs.rs"
+
+[[component]]
+id = "store.snapshots"
+crate = "polylogue-store"
+slice = "2"
+does = "provider SQLite databases snapshotted through sqlite_dbpage in one read transaction, stored as page patches, never written"
+owns = ["index:page_map"]
+writers = ["store.writer"]
+uses = ["store.inputs", "store.writer"]
+interfaces = ["snapshot(db path) -> revision"]
+spec = ["spec/storage/blobs.md#Provider databases"]
+provides = []
+laws = [43, 111, 117]
+solidity = "specified"
+
+[[component]]
+id = "store.archive_meta"
+crate = "polylogue-store"
+slice = "1"
+does = "archive.db's own rules: schema version and migration, settings, client request IDs for idempotent writes, page checksums"
+owns = ["archive:meta", "archive:setting", "archive:client_request"]
+writers = ["store.notes", "store.excision"]
+uses = ["model.types"]
+interfaces = ["open (refuses a newer archive)", "migrate", "record_request(id, hash)"]
+spec = ["spec/storage/archive-db.md#Rules", "spec/storage/README.md#Conventions for all three files"]
+provides = []
+laws = [71, 93, 123, 124, 125]
+solidity = "specified"
+
+[[component]]
+id = "store.notes"
+crate = "polylogue-store"
+slice = "7"
+does = "notes of every kind with targets, relations and revisions; kept results; variants and their alignments"
+owns = ["archive:note", "archive:note_target", "archive:note_relation", "archive:kept_result", "archive:variant", "archive:variant_alignment"]
+writers = ["store.excision"]
+writes = ["archive:client_request"]
+uses = ["store.archive_meta", "model.types"]
+interfaces = ["write_note", "revise_note", "keep_result", "mutation over a query"]
+spec = ["spec/user-data.md#Notes: one mechanism", "spec/user-data.md#Saved queries and kept results", "spec/model.md#Variant"]
+provides = ["notes", "saved_queries", "variants", "markers"]
+laws = [54, 127]
+solidity = "prototyped"
+prototype = "prototype/crates/daemon/src/notes.rs"
+
+[[component]]
+id = "store.excision"
+crate = "polylogue-store"
+slice = "7"
+does = "excision: removing content from bytes, index, vectors, caches and notes, recording locations and hashes so it is never stored again"
+owns = ["archive:excision"]
+writes = ["archive:input", "archive:revision", "archive:extent", "archive:observation", "archive:blob", "archive:note", "archive:note_target", "archive:note_relation", "archive:kept_result", "archive:variant", "archive:variant_alignment", "archive:client_request", "embeddings:embedded"]
+uses = ["store.inputs", "blobs.files", "store.writer"]
+interfaces = ["excise(scope) after preview and confirmation"]
+spec = ["spec/storage/archive-db.md#How excision works", "spec/behavior.md#Privacy"]
+provides = ["excision", "privacy"]
+laws = [36, 56, 92]
+solidity = "specified"
+
+[[component]]
+id = "store.schema"
+crate = "polylogue-store"
+slice = "1"
+does = "the DDL of all three files created whole from slice 1 (rule R63), the version checks and bounded-batch migrations"
+owns = []
+uses = []
+interfaces = ["create(path) for archive.db, index.db, embeddings.db", "check_version", "migrate"]
+spec = ["spec/storage/archive-db.md#Rules", "spec/storage/index-db.md#Rules"]
+provides = []
+laws = []
+solidity = "prototyped"
+prototype = "prototype/crates/store/sql/copy-from-spec.py"
+
+[[component]]
+id = "store.writer"
+crate = "polylogue-store"
+slice = "1"
+does = "the one writer of index.db: bounded session steps per transaction, merged field by field, lineage marks, the secret flag, counters and the change counter"
+owns = ["index:session", "index:message", "index:message_source", "index:message_disagreement", "index:block", "index:text", "index:tool_call", "index:link", "index:event", "index:session_facts", "index:session_model_usage", "index:parsed", "index:parse_state", "index:input_ref", "index:removed_session", "index:unrecognized", "index:file_cursor", "index:marker", "index:meta"]
+writers = ["store.excision"]
+writes = ["index:text_fts", "index:output_fts", "index:tool_call_trigram", "index:process", "index:process_session", "index:run", "index:run_session", "index:delivery", "index:repo_command_last", "index:commit_link", "index:pr_link", "index:page_map"]
+uses = ["model.merge", "model.lineage", "model.types"]
+interfaces = ["write_session(batch) over a channel", "write counter", "generation"]
+spec = ["spec/convergence.md#Parse", "spec/storage/index-db.md#Rules", "spec/storage/index-db.md#Change counter and generation"]
+provides = ["privacy"]
+laws = [5, 7, 61, 64, 78, 122]
+solidity = "prototyped"
+prototype = "prototype/crates/store/src/write.rs"
+
+[[component]]
+id = "store.search_index"
+crate = "polylogue-store"
+slice = "1"
+does = "full-text indexes over text and tool output, the command trigram index, vocabulary tables for frequent words"
+owns = ["index:text_fts", "index:output_fts", "index:tool_call_trigram", "index:fts_vocab_text", "index:fts_vocab_output"]
+writers = ["store.writer"]
+uses = ["model.types"]
+interfaces = ["FTS5 tables", "frequent-word planning statistics"]
+spec = ["spec/storage/index-db.md#Full-text search"]
+provides = []
+laws = []
+solidity = "prototyped"
+prototype = "prototype/crates/store/src/write.rs"
+
+[[component]]
+id = "store.live_tables"
+crate = "polylogue-store"
+slice = "2"
+does = "live-state tables: processes, runs and their sessions, deliveries of briefings, the last command per repository (events are the writer's from slice 1)"
+owns = ["index:process", "index:process_session", "index:run", "index:run_session", "index:delivery", "index:repo_command_last"]
+writers = ["store.writer"]
+uses = ["model.types"]
+interfaces = ["write_process_lines"]
+spec = ["spec/model.md#Event", "spec/model.md#Process", "spec/model.md#Run", "spec/model.md#Delivery"]
+provides = ["runs", "deliveries", "processes"]
+laws = [97, 141]
+solidity = "prototyped"
+prototype = "prototype/crates/daemon/src/live.rs"
+
+[[component]]
+id = "store.git_tables"
+crate = "polylogue-store"
+slice = "11"
+does = "commit and PR links to sessions, from evidence in sessions and stored git lookups"
+owns = ["index:commit_link", "index:pr_link"]
+writers = ["store.writer"]
+uses = ["model.types"]
+interfaces = ["commit_link rows"]
+spec = ["spec/analysis.md#Git correlation and the changes view"]
+provides = []
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "store.embeddings"
+crate = "polylogue-store"
+slice = "9"
+does = "embeddings.db: vectors keyed by text hash and embedding key, rejected texts recorded once"
+owns = ["embeddings:embedded", "embeddings:embed_failure"]
+writers = ["store.excision"]
+uses = ["model.types"]
+interfaces = ["put_vectors", "scan_int8(query vector) -> top k"]
+spec = ["spec/storage/embeddings.md"]
+provides = []
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "store.readers"
+crate = "polylogue-store"
+slice = "1"
+does = "read-only connections: rows as model types, the read-only SQL views, failures reported, never an empty answer"
+owns = []
+uses = ["model.types"]
+interfaces = ["read(SQL, params) -> rows", "SQL views for `polylogue sql`"]
+spec = ["spec/storage/index-db.md#Read-only SQL views", "spec/storage/README.md#Access"]
+provides = ["sql"]
+laws = [45, 62, 76]
+solidity = "prototyped"
+prototype = "prototype/crates/daemon/src/lib.rs"
+
+# ---------------------------------------------------------------- polylogue-engine: the loop and derived data
+
+[[component]]
+id = "engine.collector"
+crate = "polylogue-engine"
+slice = "1"
+does = "observing every canonical location: the change classes (unchanged with the racy guard, appended, head_rewritten, rewritten, deleted, back; renamed and replaced from slice 2), full checks when quiet"
+owns = ["the collector's in-memory stat cache"]
+uses = ["store.inputs"]
+interfaces = ["classify(location) -> (class, Stat)", "repo_lookups(index) -> locations"]
+spec = ["spec/convergence.md#Collect", "spec/storage/blobs.md#Observing a file"]
+provides = []
+laws = [21, 104, 121]
+solidity = "prototyped"
+prototype = "prototype/crates/engine/src/collect.rs"
+
+[[component]]
+id = "engine.loop"
+crate = "polylogue-engine"
+slice = "1"
+does = "the convergence loop: collect, store, parse, write, derive, wait; work found by comparing state, carries for appends, failures confined to their input"
+owns = ["the loop's schedule"]
+uses = ["engine.collector", "store.inputs", "store.writer", "store.live_tables", "sources.framework", "sources.claude_code", "sources.codex", "sources.chat_exports", "sources.captures", "sources.google", "sources.others", "sources.hooks", "model.merge"]
+later = ["sources.codex", "sources.hooks", "store.live_tables", "sources.chat_exports", "sources.captures", "sources.google", "sources.others"]   # the loop gains each parser in its slice
+interfaces = ["converge_once", "converge until idle"]
+spec = ["spec/convergence.md#The loop", "spec/convergence.md#The first build and rebuilds", "spec/convergence.md#Failed inputs"]
+provides = []
+laws = [1, 2, 6, 37, 44, 57, 58, 59, 63, 81]
+solidity = "prototyped"
+prototype = "prototype/crates/engine/src/lib.rs"
+
+[[component]]
+id = "engine.import"
+crate = "polylogue-engine"
+slice = "1"
+does = "`polylogue import`: account exports and archives read as inputs keyed by their member paths, merged with the other routes"
+owns = []
+uses = ["store.inputs", "engine.loop"]
+interfaces = ["import(path)"]
+spec = ["spec/surfaces/cli.md#Import", "spec/sources/README.md#The same conversation through several routes"]
+provides = []
+laws = []
+solidity = "prototyped"
+prototype = "prototype/crates/engine/src/lib.rs (Engine::import)"
+
+[[component]]
+id = "engine.fetch"
+crate = "polylogue-engine"
+slice = "4"
+does = "fetching attachments and linked files from provider hosts only, politely, with retries that never block each other"
+owns = []
+uses = ["store.inputs"]
+interfaces = ["fetch(attachment ref)"]
+spec = ["spec/sources/chat-exports.md"]
+provides = []
+laws = [68]
+solidity = "specified"
+
+[[component]]
+id = "engine.drive"
+crate = "polylogue-engine"
+slice = "5"
+does = "listing the AI Studio Drive folder by modification time and storing changed prompt files as inputs"
+owns = ["Drive OAuth credentials (state)"]
+uses = ["store.inputs"]
+interfaces = ["list_changed", "download(file id)"]
+spec = ["spec/sources/google.md#Google AI Studio (Drive)"]
+provides = []
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "engine.derive"
+crate = "polylogue-engine"
+slice = "1"
+does = "derived products the writer could not finish: lineage marks and tree cost, compaction, late parents, version changes"
+owns = []
+uses = ["store.writer", "store.readers", "model.lineage"]
+interfaces = ["derive pass from state"]
+spec = ["spec/convergence.md#Derive", "spec/analysis.md#Lineage marks and tree cost", "spec/analysis.md#Compaction"]
+provides = ["lineage", "compaction", "branches"]
+laws = [25, 34, 94]
+solidity = "prototyped"
+prototype = "prototype/crates/engine/src/lib.rs (derive)"
+
+[[component]]
+id = "engine.analysis"
+crate = "polylogue-engine"
+slice = "3"
+does = "usage and cost, tool outcomes, time, session facts, what a record proves, reports, subscription windows"
+owns = ["the price table (prices.toml, data)"]
+uses = ["store.readers", "model.measures", "query.planner"]
+interfaces = ["facts for each session", "cost by window", "reports"]
+spec = ["spec/analysis.md#Usage and cost", "spec/analysis.md#Tool calls", "spec/analysis.md#Time", "spec/analysis.md#Session facts", "spec/analysis.md#What a record proves", "spec/analysis.md#Reports built from the above"]
+provides = ["cost", "tool_outcomes", "time", "session_facts", "reports", "proof"]
+laws = [109, 138]
+solidity = "specified"
+
+[[component]]
+id = "engine.live"
+crate = "polylogue-engine"
+slice = "2"
+does = "the process sampler (one /proc scan), process trees as they change, reboot endings, the facts live state reads"
+owns = ["the daemon's process spool"]
+uses = ["store.live_tables", "model.live_state"]
+interfaces = ["sample()", "reboot_lines()"]
+spec = ["spec/model.md#Process", "spec/model.md#Live state"]
+provides = ["live_state", "processes"]
+laws = [86, 87, 88, 103]
+solidity = "prototyped"
+prototype = "prototypes/proc-sampler; prototype/crates/daemon/src/live.rs"
+
+[[component]]
+id = "engine.briefings"
+crate = "polylogue-engine"
+slice = "2"
+does = "briefings within a budget (session start, resume, after compaction, takeover), resume candidates and recall, each delivery recorded"
+owns = []
+uses = ["query.planner", "store.readers", "store.notes", "sources.links"]
+later = ["store.notes", "sources.links"]   # notes, decisions and lessons join in slice 7 (until then those sections say "not available"); slice 2 takeovers resolve exact session IDs, provider links resolve from slice 6
+interfaces = ["brief(kind, cwd, budget) -> sections + delivery"]
+spec = ["spec/user-data.md#Briefings for agents", "spec/user-data.md#Resume candidates", "spec/user-data.md#Recall"]
+provides = ["briefings", "resume", "recall"]
+laws = [80]
+solidity = "prototyped"
+prototype = "prototype/crates/daemon/src/brief.rs"
+
+[[component]]
+id = "engine.notes_logic"
+crate = "polylogue-engine"
+slice = "7"
+does = "checked claims evaluated at read time, rubric passes refused outside their rubric, blind judging and withdrawal of a pass, distillates kept against their source"
+owns = []
+uses = ["store.notes", "query.planner", "store.readers"]
+interfaces = ["check(claim) -> holds | fails | unknown | unchecked", "rubric pass", "judge --blind"]
+spec = ["spec/user-data.md#Checked claims and annotation passes", "spec/user-data.md#Judgment"]
+provides = ["checked_claims", "judgment"]
+laws = [118, 119, 139]
+solidity = "prototyped"
+prototype = "prototype/crates/daemon/src/notes.rs"
+
+[[component]]
+id = "engine.model_read"
+crate = "polylogue-engine"
+slice = "11"
+does = "questions about meaning: the selection and the question rendered as one packet for an agent session to read through the CLI or MCP; Polylogue never calls the model (spec/purpose.md); the agent's answer comes back as an attributed note"
+owns = []
+uses = ["query.planner", "store.notes"]
+interfaces = ["question_packet(selection, question, budget_tokens) -> text"]
+spec = ["spec/workflows.md#How do my agents behave", "spec/analysis.md#Reports built from the above"]
+provides = ["model_read"]
+laws = []
+solidity = "outline"
+
+[[component]]
+id = "engine.config_in_force"
+crate = "polylogue-engine"
+slice = "6"
+does = "the agent configuration in force for a session: instruction files, skills, settings, linked by evidence"
+owns = []
+uses = ["store.inputs", "store.writer"]
+interfaces = ["config_for(session)"]
+spec = ["spec/model.md#Configuration in force"]
+provides = ["config_in_force"]
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "engine.work_graph"
+crate = "polylogue-engine"
+slice = "6"
+does = "tasks, runs and sessions joined by evidence (job variables, run IDs), never by prose"
+owns = []
+uses = ["store.live_tables", "store.readers"]
+interfaces = ["work graph nodes and edges"]
+spec = ["spec/model.md#The work graph"]
+provides = ["work_graph"]
+laws = [90]
+solidity = "specified"
+
+[[component]]
+id = "engine.git"
+crate = "polylogue-engine"
+slice = "11"
+does = "git correlation: commits, branches and PRs linked to sessions from stored lookups; the changes view"
+owns = []
+uses = ["store.git_tables", "store.readers"]
+interfaces = ["changes view"]
+spec = ["spec/analysis.md#Git correlation and the changes view"]
+provides = ["git"]
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "engine.embeddings"
+crate = "polylogue-engine"
+slice = "9"
+does = "vectors from Voyage or a local model after a cost estimate, near: and hybrid search, secret-flagged text never sent"
+owns = ["the embedding provider's credentials (state)"]
+uses = ["store.embeddings", "store.readers"]
+interfaces = ["embed pending texts", "near(text) -> hits"]
+spec = ["spec/analysis.md#Embeddings and semantic search", "spec/query.md#Semantic search"]
+provides = ["embeddings", "semantic"]
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "engine.schema"
+crate = "polylogue-engine"
+slice = "8"
+does = "offline schema inference over stored inputs, the synthetic input generator for the laws, format drift reported in status"
+owns = []
+uses = ["store.inputs", "sources.framework"]
+interfaces = ["polylogue schema", "generate archive"]
+spec = ["spec/analysis.md#Schema inference (offline)", "spec/analysis.md#Format drift"]
+provides = []
+laws = []
+solidity = "outline"
+
+[[component]]
+id = "engine.workbench"
+crate = "polylogue-engine"
+slice = "12"
+does = "pages, workspaces and investigations edited by the operator and agents; pings that resume a specific agent"
+owns = []
+uses = ["store.notes", "query.planner"]
+interfaces = ["page", "investigation", "ping(address)"]
+spec = ["spec/user-data.md#Pages, workspaces and investigations (later)"]
+provides = ["pages"]
+laws = []
+solidity = "outline"
+
+# ---------------------------------------------------------------- polylogue-render
+
+[[component]]
+id = "render.terminal"
+crate = "polylogue-render"
+slice = "1"
+does = "terminal views: search results, session reads, summary, live and lineage views, inherited messages and branches"
+owns = []
+uses = ["model.types"]
+interfaces = ["render(view, rows, sink)"]
+spec = ["spec/rendering.md#Views", "spec/rendering.md#The live view", "spec/rendering.md#The lineage view", "spec/rendering.md#Inherited messages and branches"]
+provides = ["live_view", "lineage_view", "branches"]
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "render.formats"
+crate = "polylogue-render"
+slice = "1"
+does = "Markdown, HTML and JSON output, rendering for models, the session report page, the OpenTelemetry export, shared visual tokens"
+owns = []
+uses = ["model.types", "model.export"]
+interfaces = ["markdown", "html", "json", "for_models(budget)", "otel spans"]
+spec = ["spec/rendering.md#Formats", "spec/rendering.md#Rendering for models", "spec/export-format.md#OpenTelemetry export (slice 13)"]
+provides = ["render_for_models", "otel_export"]
+laws = []
+solidity = "prototyped"
+prototype = "prototype/crates/render/src/report.rs"
+
+# ---------------------------------------------------------------- polylogue (binary)
+
+[[component]]
+id = "bin.daemon"
+crate = "polylogue"
+slice = "1"
+does = "the daemon process: the one socket answering newline-delimited JSON requests, warm state, scheduling the loop, file watching, the change feed"
+owns = ["the socket", "warm caches (plans, recent results, vectors)", "the archive lock"]
+uses = ["engine.loop", "engine.briefings", "engine.analysis", "engine.live", "query.planner", "query.grammar", "store.readers", "store.notes", "render.terminal", "render.formats"]
+later = ["engine.briefings", "engine.live", "engine.analysis", "store.notes"]   # verbs arrive with their slices (brief and running in 2, facts in 3, notes in 7)
+interfaces = ["request {verb, args, id} -> result", "change feed"]
+spec = ["decisions/process.md#The request shape, and what keeps it small", "spec/surfaces/README.md#Processes", "spec/behavior.md#Warm state"]
+provides = []
+laws = [52, 53, 66, 83, 91, 95]
+solidity = "prototyped"
+prototype = "prototype/crates/daemon"
+
+[[component]]
+id = "bin.cli"
+crate = "polylogue"
+slice = "1"
+does = "the CLI: verbs over a matched set, commands, output and exit codes, status honest about what it measured"
+owns = []
+uses = ["bin.daemon"]
+interfaces = ["polylogue <query> <verb>", "polylogue status", "exit codes (6: daemon stopped)"]
+spec = ["spec/surfaces/cli.md#Verbs (act on the matched set)", "spec/surfaces/cli.md#Status", "spec/surfaces/cli.md#Exit codes"]
+provides = ["cli", "status"]
+laws = [46, 67, 75, 84]
+solidity = "prototyped"
+prototype = "prototype/crates/client"
+
+[[component]]
+id = "bin.masking"
+crate = "polylogue"
+slice = "1"
+does = "credential masking applied once in the daemon's response encoding (CLI and export from slice 1, MCP with its slice, the web reader in slice 10), and --reveal only from an interactive terminal outside a harness"
+owns = []
+uses = ["store.writer"]
+interfaces = ["mask(text, flagged spans)", "reveal_allowed(terminal, harness env)"]
+spec = ["spec/behavior.md#Privacy"]
+provides = ["privacy"]
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "bin.mcp"
+crate = "polylogue"
+slice = "1"
+does = "the MCP stdio proxy giving agents the same requests as the CLI"
+owns = []
+uses = ["bin.daemon"]
+interfaces = ["MCP tools: search, read, brief, note, status"]
+spec = ["spec/surfaces/mcp-and-hooks.md#MCP server for agents"]
+provides = ["mcp"]
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "bin.hook"
+crate = "polylogue"
+slice = "2"
+does = "the hook command: one spool file per invocation, synced, process identity recorded, briefing requests within the hook budget; install-agent"
+owns = ["the hook spool (root SSD)"]
+uses = ["bin.daemon"]
+interfaces = ["polylogue hook <event>", "polylogue install-agent"]
+spec = ["spec/surfaces/mcp-and-hooks.md#Hook command", "spec/surfaces/mcp-and-hooks.md#Briefings injected by hooks"]
+provides = ["hooks"]
+laws = []
+solidity = "prototyped"
+prototype = "prototypes/hook-writer"
+
+[[component]]
+id = "bin.http"
+crate = "polylogue"
+slice = "10"
+does = "the web reader over loopback HTTP: the same requests as the socket, a token only the operator's listener receives"
+owns = ["the HTTP listener and its token"]
+uses = ["bin.daemon"]
+interfaces = ["GET/POST mapping of requests", "/live"]
+spec = ["spec/surfaces/web.md"]
+provides = ["web_reader"]
+laws = [74, 77]
+solidity = "outline"
+
+# ---------------------------------------------------------------- polylogue-sinex (optional)
+
+[[component]]
+id = "sinex.adapter"
+crate = "polylogue-sinex"
+slice = "13"
+does = "publishing to Sinex (have, framed revisions; material placed into Sinex's store on the same host or sliced from another, joint #27), the pending area of unconfirmed inputs in primary, reading the confirmed stream, rebuilding from Sinex's store"
+owns = ["the confirmed-stream position (index meta key)", "the pending area of unconfirmed inputs (primary only; each removed once have answers complete)"]
+uses = ["store.inputs", "store.readers", "model.export"]
+interfaces = ["polylogue.have", "framed revision publish", "material placement (batched temp files, one sync, Placed announcement)", "material slices", "confirmed stream reader"]
+spec = ["decisions/sinex.md#Transport (joint #8, #26, #27, #29)", "decisions/sinex.md#Rebuilding from Sinex (joint #7)", "decisions/sinex.md#Modes"]
+provides = []
+laws = [23, 38]
+solidity = "prototyped"
+prototype = "polylogue-sinex-joint/prototype/contract"
+
+# ---------------------------------------------------------------- programs outside the workspace
+
+[[component]]
+id = "ext.browser_extension"
+crate = "external"
+slice = "4"
+does = "the browser extension and native host: captures web conversations into the capture spool; in-page features later"
+owns = ["the capture spool"]
+uses = []
+interfaces = ["capture envelope", "native host reply naming the stored hash"]
+spec = ["spec/surfaces/extension-and-clients.md#Browser extension"]
+provides = []
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "ext.python_client"
+crate = "external"
+slice = "4"
+does = "the library and Python client: the socket's requests for programs such as Lynchpin"
+owns = []
+uses = []
+interfaces = ["Client.search / read / brief"]
+spec = ["spec/surfaces/extension-and-clients.md#Library and Python client"]
+provides = []
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "ext.sinex"
+crate = "external"
+slice = "13"
+does = "Sinex, when configured: holds published material and events, answers have, keeps the confirmed stream"
+owns = []
+uses = []
+interfaces = ["ingress.polylogue.material", "ingress.polylogue.revision", "confirmed stream"]
+spec = ["decisions/sinex.md#The rule"]
+provides = []
+laws = []
+solidity = "specified"
+
+[[component]]
+id = "engine.signals"
+crate = "polylogue-engine"
+slice = "11"
+does = "evaluate standing signal rules on data changes and clock deadlines, preserve watch baselines, apply quiet hours and interrupt budgets, and record deliveries"
+owns = []
+uses = ["store.notes", "store.readers", "query.planner"]
+interfaces = ["evaluate(now) -> deliveries", "next_deadline()"]
+spec = ["spec/user-data.md#Saved queries and kept results", "spec/user-data.md#Briefings"]
+provides = ["signals"]
+laws = [140]
+solidity = "specified"

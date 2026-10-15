@@ -1,266 +1,51 @@
-# Polylogue
+# Polylogue Rust foundation
 
-<p align="center">
-  <a href="https://pypi.org/project/polylogue/"><img src="https://img.shields.io/pypi/v/polylogue?label=PyPI" alt="PyPI release"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-4584b6?logo=python&logoColor=white" alt="Python 3.11+"></a>
-  <a href="https://github.com/Sinity/homebrew-polylogue"><img src="https://img.shields.io/badge/Homebrew-tap-fbb040?logo=homebrew&logoColor=111827" alt="Homebrew tap"></a>
-  <a href="https://github.com/sinity/polylogue/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/ci.yml?branch=master&label=ci" alt="CI status"></a>
-  <a href="https://github.com/sinity/polylogue/actions/workflows/codeql.yml"><img src="https://img.shields.io/github/actions/workflow/status/sinity/polylogue/codeql.yml?branch=master&label=CodeQL" alt="CodeQL analysis"></a>
-  <a href="https://sinity.github.io/polylogue/"><img src="https://img.shields.io/badge/docs-live-2563eb" alt="Live documentation"></a>
-</p>
+This branch prepares the standalone Rust replacement in isolated state. It implements foundation identity/value contracts, durable SQLite schema checks, shared content files, one archive writer, read-only handles and a real daemon/status client. Explicit immutable Codex regular-file import and provider-state progress are registered. Canonical Message finalization, search, read/export, MCP and HTTP remain unfinished. Status explicitly reports `product_path: "not_implemented"`; an initialized empty schema is not a completed ingestion or M1 demonstration.
 
-Polylogue is a local flight recorder for AI work: a cross-provider system of
-record where sessions, tool receipts, lineage, usage, and costs remain tied to
-their source evidence. It imports supported histories from ChatGPT, Claude and
-Claude Code, Codex, Gemini, Hermes, and other sources, then makes that archive
-available through a CLI, Python API, local HTTP reader, and MCP server.
+## Build and run
 
-By default, the archive stays on your machine.
-
-[Getting started](docs/getting-started.md) | [Live documentation](https://sinity.github.io/polylogue/) | [Demo](docs/demos.md) | [Published finding](https://sinity.github.io/polylogue/findings/claim-vs-evidence/) | [Architecture](docs/architecture.md) | [CLI reference](docs/cli-reference.md)
-
-## Try it without importing personal data
-
-Run the tour in a throwaway archive:
-
-```bash
-uvx --python 3.14t polylogue demo tour --root ./polylogue-demo-tour/archive
+```sh
+nix flake check
+nix build .#polylogue
+./result/bin/polylogue --help
+./result/bin/polylogue --version
+./result/bin/polylogue config schema
+./result/bin/polylogue --archive /path/to/isolated-archive daemon
+./result/bin/polylogue --archive /path/to/isolated-archive status
+./result/bin/polylogue --archive /path/to/isolated-archive import /path/to/rollout.jsonl --format codex-rollout
+./result/bin/polylogue --archive /path/to/isolated-archive progress INPUT
 ```
 
-The command is complete when the terminal prints `Polylogue demo tour:
-passed`. It writes a report, transcript, command outputs, and recording source
-under `polylogue-demo-tour/`.
+Use fresh isolated state. `XDG_RUNTIME_DIR` must be absolute. The archive defaults to `$XDG_DATA_HOME/polylogue`, or `$HOME/.local/share/polylogue`; an explicit `--archive` takes precedence. No product-specific environment variable selects an archive. Static help/version/schema do not open or create state. Unsupported commands and bad arguments return a non-success outcome instead of an empty answer.
 
-The tour imports sample files for the supported providers, queries structured
-tool results, and reconstructs a parent session with its child branch while
-preserving source references. It does not require a provider account or access
-to the author's archive.
-
-From a source checkout:
-
-```bash
-git clone https://github.com/Sinity/polylogue.git
-cd polylogue
-uv run polylogue demo tour --root ./polylogue-demo-tour/archive
-```
-
-## Search, analyze, audit, remember
-
-- Search conversations and coding sessions across supported sources.
-- Analyze tool calls, branches, usage, and costs from structured evidence.
-- Audit provider-reported outcomes without inferring success or failure from
-  prose.
-- Remember work through source references, lineage, notes, tags, and MCP access
-  for agents.
-
-See the [published structured-failure finding](https://sinity.github.io/polylogue/findings/claim-vs-evidence/) for a concrete example of a claim whose evidence and limitations remain visible.
-
-## Install
-
-```bash
-# Python package: CLI, daemon, and MCP server
-pipx install --python python3.14t polylogue
-# or
-uv tool install --python 3.14t polylogue
-
-# Homebrew CLI
-brew tap sinity/polylogue
-brew install polylogue
-
-# Nix, without installing
-nix run github:Sinity/polylogue -- --help
-```
-
-Verify the installation:
-
-```bash
-polylogue --version
-polylogue --help
-```
-
-## Build a local archive
-
-Detect supported sources already present on the machine:
-
-```bash
-polylogue init
-```
-
-Start continuous ingestion of configured live sources:
-
-```bash
-polylogued run
-```
-
-Import a one-off export or file:
-
-```bash
-polylogue import ~/Downloads/chatgpt-export.zip
-polylogue import some-file.json --explain
-```
-
-Run queries:
-
-```bash
-polylogue "css refactor"
-polylogue --origin claude-code-session find "migration" then read --view messages
-polylogue "actions where tool:shell AND command:pytest | group by is_error | count"
-```
-
-`polylogue init` writes a starter `polylogue.toml` from detected sources.
-`polylogued run` imports those sources and continues watching the live ones.
-
-## Example: query tool outcomes
-
-Tool execution is stored as structured data when the source provides it. Missing
-outcome fields remain unknown rather than being guessed from assistant text.
-
-```console
-$ polylogue "actions where tool:Bash AND command:pytest | group by is_error | count"
-is_error=0 count=12861
-is_error=1 count=1039
-is_error=unknown count=115
-```
-
-Example output from July 2026; abbreviated.
-
-## Supported sources
-
-| Source | Origin | Typical input |
-|---|---|---|
-| Claude Code | `claude-code-session` | watched JSONL under `~/.claude/projects` |
-| Codex CLI | `codex-session` | watched sessions under `~/.codex/sessions` |
-| ChatGPT | `chatgpt-export` | export archive or opt-in browser capture |
-| Claude web | `claude-ai-export` | export archive or opt-in browser capture |
-| Gemini and AI Studio | `aistudio-drive` | Drive or AI Studio export |
-| Gemini CLI | `gemini-cli-session` | watched local session data |
-| Hermes | `hermes-session` | runtime-root ATIF or ATOF artifacts |
-| Antigravity | `antigravity-session` | exported session data |
-
-Parsers preserve the structure available in each source, including roles, prose,
-thinking blocks, tool calls and results, attachments, and session metadata.
-Provider-specific limits are documented in
-[docs/provider-origin-identity.md](docs/provider-origin-identity.md).
-
-## Storage
-
-Polylogue keeps imported source artifacts and user-authored changes separate
-from data that can be rebuilt.
-
-| File | Contents | Durability |
-|---|---|---|
-| `source.db` | acquired source artifacts and runtime hook events | irreplaceable — back up |
-| `index.db` | normalized sessions, messages, blocks, actions, lineage, FTS, analytics | rebuildable |
-| `embeddings.db` | optional semantic-search vectors | expensive to rebuild — back up |
-| `user.db` | notes, tags, corrections, candidates, and judgments | irreplaceable — back up |
-| `audit.db` | previews, authorizations, attempts, continuity (append-only) | irreplaceable — back up |
-| `ops.db` | daemon cursors, convergence state, and telemetry | disposable |
-
-Large payloads are stored in a SHA-256 content-addressed blob store under the
-same archive root.
-
-The data model keeps several distinctions explicit:
-
-- Unknown tool outcomes remain unknown.
-- A message's provider role is stored separately from who or what supplied its
-  content.
-- Copied parent history is represented through lineage rather than counted as
-  new work in every child session.
-- Token counts are not combined when providers define them differently.
-
-See [docs/data-model.md](docs/data-model.md) and
-[docs/architecture.md](docs/architecture.md).
-
-## Interfaces
-
-### CLI
-
-The query-first CLI supports full-text search, field filters, booleans, date
-ranges, action queries, pipelines, and JSON output.
-
-```bash
-polylogue find 'repo:polylogue since:7d' then analyze --facets
-polylogue find "urgent" then mark --tag-add review
-polylogue find 'actions where tool:shell AND command:pytest' then read
-```
-
-### MCP
-
-`polylogue-mcp` exposes the archive over stdio. It is read-only by default and
-takes no CLI flags. Write, judge, and maintenance capability are each an
-independent `polylogue.toml` `[mcp]` opt-in (or `POLYLOGUE_MCP_*_ENABLED` env
-var) resolved at server startup, and remain subject to authorization and
-confirmation rules.
-
-```json
-{
-  "mcpServers": {
-    "polylogue": { "command": "polylogue-mcp" }
-  }
-}
-```
-
-See [docs/mcp-reference.md](docs/mcp-reference.md).
-
-### HTTP and Python
-
-`polylogued run` can serve a local HTTP reader and metrics endpoint. Python
-callers can use the asynchronous API over the same archive.
-
-Semantic search is optional. It requires an embedding provider and is the only
-normal path that sends archive text outside the machine. Run
-`polylogue ops embed preflight` to inspect the work and estimated cost first.
-
-<!-- BEGIN GENERATED: docs-surface -->
-## Documentation
-
-Live site: <https://sinity.github.io/polylogue/>.
-
-Start with the task-oriented guides below. The complete documentation map is in [docs/README.md](docs/README.md).
-
-| Document | Description |
-|----------|-------------|
-| [Getting Started](docs/getting-started.md) | Install Polylogue, create an archive, and run a first query. |
-| [Installation](docs/installation.md) | Package, source-checkout, Nix, and managed deployment options. |
-| [Demos and Proofs](docs/demos.md) | Run the private-data-free tour and see what each demo establishes. |
-| [Architecture](docs/architecture.md) | Storage, data flow, and component responsibilities. |
-| [Code Navigation](docs/code-navigation.md) | Find the owning package, runtime path, and verification for a code change. |
-| [Search & Query](docs/search.md) | Search syntax, filters, action queries, ranking, and output formats. |
-| [CLI Reference](docs/cli-reference.md) | Commands and options generated from the current CLI. |
-| [MCP Reference](docs/mcp-reference.md) | Configure an MCP client and read the current tool and capability contract. |
-| [Configuration](docs/configuration.md) | Paths, environment variables, and runtime settings. |
-| [Security](docs/security.md) | Local trust boundaries, authentication, and privacy controls. |
-| [Developer Tools](docs/devtools.md) | Repository commands and validation checks. |
-| [Providers](docs/providers/README.md) | Supported inputs and provider-specific parsing limits. |
-
-<!-- END GENERATED: docs-surface -->
-
-## Status
-
-Polylogue is pre-1.0. Import, continuous ingestion, local query, the demo, and
-the CLI, MCP, HTTP, and Python interfaces are implemented. Provider formats and
-public interfaces may still change between releases.
-
-## Security
-
-Polylogue assumes a trusted single-user machine. The daemon binds to loopback,
-protected routes use bearer tokens, and browser capture is opt-in with its own
-token. The archive may contain source code, credentials, and personal
-conversations. Use disk encryption and read [docs/security.md](docs/security.md)
-and [docs/daemon-threat-model.md](docs/daemon-threat-model.md) before exposing
-anything beyond localhost.
+The foreground daemon owns the archive lock, writable schema and its derived socket. Ctrl-C stops admission, closes clients and joins handlers and its capture/compute workers before releasing the writer. A second archive can run independently; competing archive aliases and occupied endpoints are refused. Startup never adopts a foreign listener. Missing/empty database files with retained recovery sidecars require explicit recovery, and newer durable schemas are refused before mutation.
 
 ## Development
 
-```bash
-devtools status
-# Optional local static check; the hosted candidate gate covers publication.
-devtools verify --quick
-```
+The declared AgentCTL operations run the Nix build/check and development-shell commands. `cargo run -p xtask -- check` checks target formatting, actual Cargo dependency boundaries and workspace tests. A synthetic Cargo-edge mutation and compile-fail examples demonstrate forbidden access. `.githooks` contains successor hooks; in linked worktrees select them through per-worktree Git configuration, never by changing another checkout's shared hook configuration.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [TESTING.md](TESTING.md), and
-[docs/devtools.md](docs/devtools.md).
+`crates/model` is pure. Only `crates/store` owns SQLite connections; public handles expose typed operations. `crates/hashed-blobs` is the reviewed shared file layer plus an explicit read-only capability, documented in [source provenance](docs/shared-crate-source.json). This is the shared-crate owner candidate; its protected source publication precedes the immutable release tag and Sinex consumer qualification. [Store limits](crates/store/README.md) distinguish these primitives from complete input acquisition and recovery.
 
-## License
+## Delivery boundary
 
-MIT
+[Replacement disposition](docs/REPLACEMENT.md) records predecessor removal and preserved legal/history material. [Contract snapshot](docs/rewrite/README.md) links current semantic owners; canonical DDL provenance lives beside `crates/store/schema`.
+
+This candidate does not change master, deployed packages, consumers, archives or task routing. Known package consumers have explicit immutable predecessor pins in Sinnix `e9bdd3a75` and Lynchpin `0383336`. Shared dependency release, hosted successor checks and protected source publication remain open. Checksum failures on main-database page reads report the actual file and page. Cold durable WAL startup uses a cancellable bounded-memory integrity guard under archive ownership; ambiguous, partial and stale-generation tails require controlled recovery without changing retained bytes. This can refuse legitimate crashes and does not prove an external expected history head. Full WAL recovery remains open. Index rebuild/swap, cross-file read views and the first canonical source-to-query product path require further work. No broad M0/M1 or deployment acceptance is claimed.
+
+An import reply certifies durable raw retention, independently of provider parse
+progress. The client prints its UUIDv7 request ID and acquisition time before
+sending; reuse both with `--request-id ID --seen-at MICROS` to retry the same
+action, including after the original path disappears. A reused ID with changed
+metadata is refused. Provider work runs outside the writer actor, which admits
+one provider installation transaction between peer requests. `progress` reports
+raw offsets, accounting, failure and pending finalization; EOF does not make
+`canonical_complete` true. `retry INPUT` explicitly retries a failed disposable
+parse. `--wait`, `--dry-run`, archives/directories, symlinks and other source
+formats remain unavailable. Claude context is retained by the store primitive
+but is not yet admitted by this public source route.
+
+The actor uses fixed record/cell/request admission allowances. Oversized records
+fail explicitly with owed work retained; configurable larger allowances and full
+resource qualification remain unfinished. Its current source scheduling follows
+one imported input to provider EOF; cross-input fair parse rounds and canonical
+finalization are still owed. Public search refuses even after provider EOF.
