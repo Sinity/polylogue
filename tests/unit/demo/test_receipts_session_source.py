@@ -17,9 +17,12 @@ from pathlib import Path
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
-from polylogue.demo.receipts import codex_session_source_rows
+from polylogue.demo.receipts import codex_session_source_rows, inspect_demo_receipts
+from polylogue.scenarios import DEMO_CODEX_RECEIPTS_SESSION_ID
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.action_pairing import action_stream
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.live_ingest import write_index_session
 
 
 def _codex(session_id: str) -> bytes:
@@ -74,3 +77,33 @@ def test_receipts_source_lookup_covers_revision_and_membership_bindings(tmp_path
     assert _rows(tmp_path, "native") == [native]
     assert _rows(tmp_path, "grouped") == [grouped]
     assert _rows(tmp_path, "absent") == []
+
+
+def test_receipt_inspector_reads_failed_and_recovery_result_rows(tmp_path: Path) -> None:
+    session = action_stream(
+        DEMO_CODEX_RECEIPTS_SESSION_ID.removeprefix("codex-session:"),
+        [
+            ("failed-call", "use", "failed", None),
+            ("failed-result", "result", "failed", True),
+            ("recovery-call", "use", "recovery", None),
+            ("recovery-result", "result", "recovery", False),
+        ],
+    )
+    for call in (session.messages[0], session.messages[2]):
+        call.blocks[0].tool_input = {"command": "pytest tests/test_clock.py"}
+    session.messages[1].blocks[0].exit_code = 1
+    session.messages[3].blocks[0].exit_code = 0
+    with ArchiveStore(tmp_path) as archive:
+        write_index_session(archive, session)
+
+    result = inspect_demo_receipts(tmp_path)
+
+    assert result.failed is not None
+    assert (result.failed.exit_code, result.failed.is_error, result.failed.output) == (1, True, "failed-result")
+    assert result.recovery is not None
+    assert (result.recovery.exit_code, result.recovery.is_error, result.recovery.output) == (
+        0,
+        False,
+        "recovery-result",
+    )
+    assert not any(problem.startswith("archive evidence unreadable:") for problem in result.problems)
