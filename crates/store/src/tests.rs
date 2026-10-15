@@ -499,3 +499,161 @@ fn public_reader_reports_corrupt_archive_page_without_repair() {
     );
     assert_eq!(fs::read(&file).unwrap(), before);
 }
+
+#[test]
+#[ignore = "owned subprocess helper for retained WAL probe"]
+fn retained_wal_probe_child() {
+    let Some(root) = std::env::var_os("POLYLOGUE_WAL_CHILD_ROOT") else {
+        return;
+    };
+    let ack = PathBuf::from(std::env::var_os("POLYLOGUE_WAL_CHILD_ACK").unwrap());
+    let mut writer = Writer::open(Path::new(&root)).unwrap();
+    writer
+        .archive
+        .pragma_update(None, "wal_autocheckpoint", 0)
+        .unwrap();
+    writer
+        .put_file_blob(b"first acknowledged WAL commit")
+        .unwrap();
+    writer
+        .put_file_blob(b"second acknowledged WAL commit")
+        .unwrap();
+    assert_eq!(writer.status().unwrap().write_counter, 3);
+    fs::write(ack, b"3").unwrap();
+    loop {
+        std::thread::park();
+    }
+}
+
+fn copy_fixture(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let destination = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_fixture(&entry.path(), &destination);
+        } else {
+            fs::copy(entry.path(), destination).unwrap();
+        }
+    }
+}
+
+struct WalProbeChild(std::process::Child);
+impl Drop for WalProbeChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+#[ignore = "bounded investigation; not a claimed WAL protection acceptance"]
+fn retained_wal_cold_reopen_probe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("original");
+    let ack = tmp.path().join("ack");
+    let mut initial = Writer::open(&root).unwrap();
+    initial.put_file_blob(b"checkpointed baseline").unwrap();
+    drop(initial);
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    let mut child = WalProbeChild(
+        command
+            .args([
+                "--exact",
+                "tests::retained_wal_probe_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("POLYLOGUE_WAL_CHILD_ROOT", &root)
+            .env("POLYLOGUE_WAL_CHILD_ACK", &ack)
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !ack.exists() {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            panic!("owned fixture exited before acknowledgment: {status}");
+        }
+        if std::time::Instant::now() > deadline {
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            panic!("owned fixture did not acknowledge");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(fs::read(&ack).unwrap(), b"3");
+    child.0.kill().unwrap();
+    assert!(!child.0.wait().unwrap().success());
+    let wal = fs::read(root.join("archive.db-wal")).unwrap();
+    let word = |bytes: &[u8]| u32::from_be_bytes(bytes.try_into().unwrap());
+    let page_size = word(&wal[8..12]) as usize;
+    assert!(page_size >= 512 && page_size.is_power_of_two());
+    let frame_size = page_size + 24;
+    assert_eq!((wal.len() - 32) % frame_size, 0);
+    let commits: Vec<_> = (0..(wal.len() - 32) / frame_size)
+        .filter(|frame| word(&wal[32 + frame * frame_size + 4..32 + frame * frame_size + 8]) != 0)
+        .collect();
+    assert_eq!(commits.len(), 2, "fixture requires two WAL commits");
+    let frame = commits[0] + 1;
+    let frame_start = 32 + frame * frame_size;
+    println!(
+        "WAL_PROBE fixture acknowledged=3 main_baseline=1 page_size={page_size} commits={commits:?} target_frame={} target_page={}",
+        frame + 1,
+        word(&wal[frame_start..frame_start + 4])
+    );
+    if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
+        copy_fixture(&root, &PathBuf::from(capture).join("original"));
+    }
+    for mutation in ["none", "payload", "page-number", "frame-checksum"] {
+        for shm in ["retained", "zeroed", "absent"] {
+            for api in ["reader", "writer"] {
+                let name = format!("{mutation}-{shm}-{api}");
+                let case = tmp.path().join(&name);
+                copy_fixture(&root, &case);
+                let wal_path = case.join("archive.db-wal");
+                let mut damaged = wal.clone();
+                match mutation {
+                    "payload" => damaged[frame_start + 24 + 200] ^= 0x40,
+                    "page-number" => damaged[frame_start + 3] ^= 0x80,
+                    "frame-checksum" => damaged[frame_start + 16] ^= 0x40,
+                    _ => {}
+                }
+                fs::write(&wal_path, &damaged).unwrap();
+                let shm_path = case.join("archive.db-shm");
+                match shm {
+                    "zeroed" => fs::write(
+                        &shm_path,
+                        vec![0; fs::metadata(&shm_path).unwrap().len() as usize],
+                    )
+                    .unwrap(),
+                    "absent" => fs::remove_file(&shm_path).unwrap(),
+                    _ => {}
+                }
+                if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
+                    copy_fixture(&case, &PathBuf::from(capture).join(&name));
+                }
+                let before = snapshot(&case);
+                let outcome = if api == "reader" {
+                    ReadHandle::open(&case).and_then(|read| read.status())
+                } else {
+                    Writer::open(&case).and_then(|writer| writer.status())
+                };
+                let result = match outcome {
+                    Ok(status) => format!("counter={}", status.write_counter),
+                    Err(err) => format!("error={err}"),
+                };
+                println!(
+                    "WAL_PROBE {name}: {result}; files_unchanged={}",
+                    snapshot(&case) == before
+                );
+                if mutation == "none" && shm != "absent" {
+                    assert_eq!(result, "counter=3");
+                }
+                if shm == "absent" {
+                    assert!(result.starts_with("error="));
+                    assert!(snapshot(&case) == before);
+                }
+            }
+        }
+    }
+}
