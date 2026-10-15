@@ -122,7 +122,7 @@ fn source_head(
     }
     Ok(head)
 }
-fn check(conn: &Connection, path: &Path, build: &Build, allow_retiring: bool) -> Result<()> {
+fn check(conn: &Connection, path: &Path, build: &Build) -> Result<()> {
     if path != build.path {
         return Err(Error::MessagePredecessorChanged);
     }
