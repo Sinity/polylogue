@@ -38,7 +38,7 @@ impl Running {
         }
         let listener = UnixListener::bind(&socket).map_err(|e| format!("cannot bind {}: {e}", socket.display()))?;
         let inode = fs::symlink_metadata(&socket).map_err(|e| e.to_string())?.ino();
-        let socket = OwnedSocket { path: socket, inode };
+        let socket = OwnedSocket { path: socket, inode: Some(inode) };
         if fail_after_bind { return Err("injected startup failure after bind".into()); }
         fs::set_permissions(&socket.path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -83,10 +83,12 @@ impl Running {
 }
 impl Drop for Running { fn drop(&mut self) { self.stop(); } }
 
-struct OwnedSocket { path: PathBuf, inode: u64 }
+struct OwnedSocket { path: PathBuf, inode: Option<u64> }
 impl OwnedSocket {
-    fn remove(&self) {
-        if fs::symlink_metadata(&self.path).is_ok_and(|m| m.ino() == self.inode) { let _ = fs::remove_file(&self.path); }
+    fn remove(&mut self) {
+        if let Some(inode) = self.inode.take() {
+            if fs::symlink_metadata(&self.path).is_ok_and(|m| m.ino() == inode) { let _ = fs::remove_file(&self.path); }
+        }
     }
 }
 impl Drop for OwnedSocket { fn drop(&mut self) { self.remove(); } }
@@ -135,6 +137,7 @@ mod tests {
         assert!(!first_path.exists());
         assert!(request(second.socket()).is_ok());
         let replacement = Running::start(&temp.path().join("a"), &runtime).unwrap();
+        drop(first);
         assert!(request(replacement.socket()).is_ok());
     }
     #[test]
