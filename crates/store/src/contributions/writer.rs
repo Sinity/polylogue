@@ -844,22 +844,28 @@ pub(super) fn field_key(slot: &polylogue_model::merge::Slot, allowance: usize) -
     let lower = extra.checked_add(attachment).ok_or(Error::Range)?;
     encoded_key(slot, lower, allowance)
 }
+/// Shared block-local field address codec. The block's root supplies its
+/// correspondence; an ordinal never becomes part of this semantic key.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) enum BlockFieldKey<'a> {
+    Field(polylogue_model::merge::BlockField),
+    Extra(#[serde(borrow)] std::borrow::Cow<'a, str>),
+}
 pub(super) fn block_field_key(
     slot: &polylogue_model::merge::Slot,
     allowance: usize,
 ) -> Result<Vec<u8>> {
     use polylogue_model::merge::Slot;
-    #[derive(serde::Serialize)]
-    enum Key<'a> {
-        Field(polylogue_model::merge::BlockField),
-        Extra(&'a str),
-    }
     match slot {
-        Slot::Block { field, .. } => encoded_key(&Key::Field(*field), 0, allowance),
+        Slot::Block { field, .. } => encoded_key(&BlockFieldKey::Field(*field), 0, allowance),
         Slot::Extra {
             block: Some(_),
             key,
-        } => encoded_key(&Key::Extra(key), key.len(), allowance),
+        } => encoded_key(
+            &BlockFieldKey::Extra(std::borrow::Cow::Borrowed(key)),
+            key.len(),
+            allowance,
+        ),
         _ => Err(bad("block field requires mapper-proved block membership")),
     }
 }
@@ -1042,7 +1048,7 @@ mod tests {
     }
     #[test]
     fn text_block_checkpoint_rolls_back_and_resumes_without_publication() {
-        use super::super::blocks::{BlockPresence, ProjectionStep, TextKind};
+        use super::super::blocks::{BlockKind, BlockPresence, ProjectionStep};
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
         f.value(&build, b"hello");
@@ -1052,11 +1058,11 @@ mod tests {
             next_cursor: b"next",
         };
         assert!(matches!(
-            f.writer.write_text_block(
+            f.writer.write_block(
                 &build,
                 0,
                 0,
-                TextKind::Text,
+                BlockKind::Text,
                 BlockPresence {
                     source_block: true,
                     source_text: true
@@ -1080,11 +1086,11 @@ mod tests {
             .unwrap();
         let mut f = f.reopen();
         f.writer
-            .write_text_block(
+            .write_block(
                 &build,
                 0,
                 0,
-                TextKind::Text,
+                BlockKind::Text,
                 BlockPresence {
                     source_block: true,
                     source_text: true,
@@ -1131,17 +1137,17 @@ mod tests {
     }
     #[test]
     fn text_directory_replacement_reclaims_only_unleased_leaves() {
-        use super::super::blocks::{BlockPresence, ProjectionStep, TextKind};
+        use super::super::blocks::{BlockKind, BlockPresence, ProjectionStep};
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
         for n in 0..3 {
             f.value(&build, b"shared");
             f.writer
-                .write_text_block(
+                .write_block(
                     &build,
                     0,
                     n % 2,
-                    TextKind::Text,
+                    BlockKind::Text,
                     BlockPresence {
                         source_block: true,
                         source_text: true,
@@ -1173,11 +1179,11 @@ mod tests {
         assert_eq!(f.scalar("SELECT incoming FROM body_value"), 1);
         f.value(&build, b"");
         assert!(matches!(
-            f.writer.write_text_block(
+            f.writer.write_block(
                 &build,
                 1,
                 0,
-                TextKind::Text,
+                BlockKind::Text,
                 BlockPresence {
                     source_block: true,
                     source_text: false
@@ -1198,7 +1204,7 @@ mod tests {
     }
     #[test]
     fn selected_read_pins_sparse_ordinals_payload_and_archive_authority() {
-        use super::super::blocks::{BlockPresence, ProjectionStep, TextKind};
+        use super::super::blocks::{BlockKind, BlockPresence, ProjectionStep};
         use polylogue_model::BlockSlot;
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
@@ -1210,11 +1216,11 @@ mod tests {
         ] {
             f.value(&build, text);
             f.writer
-                .write_text_block(
+                .write_block(
                     &build,
                     group,
                     local,
-                    TextKind::Text,
+                    BlockKind::Text,
                     BlockPresence {
                         source_block: true,
                         source_text: true,
@@ -1401,7 +1407,7 @@ mod tests {
     fn ready_source_retirement_preserves_shared_canonical_and_frontier_leases() {
         use super::super::{
             BodyRetirement as R, CandidateCollection as C,
-            blocks::{BlockPresence, ProjectionStep, TextKind},
+            blocks::{BlockKind, BlockPresence, ProjectionStep},
             directory as d,
         };
         use polylogue_model::{BlobHash, BlockSlot, merge::FinishState};
@@ -1411,11 +1417,11 @@ mod tests {
         let candidate = build.candidate_id();
         f.value(&build, b"shared text");
         f.writer
-            .write_text_block(
+            .write_block(
                 &build,
                 3,
                 7,
-                TextKind::Text,
+                BlockKind::Text,
                 BlockPresence {
                     source_block: true,
                     source_text: true,
@@ -2160,16 +2166,16 @@ mod tests {
     }
     #[test]
     fn staged_thinking_restart_fields_install_and_source_counts() {
-        use super::super::blocks::{BlockPresence, ProjectionStep, TextKind};
+        use super::super::blocks::{BlockKind, BlockPresence, ProjectionStep};
         use polylogue_model::{BlockSlot, merge::BlockField};
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
         f.writer
-            .begin_text_block(
+            .begin_block(
                 &build,
                 4,
                 91,
-                TextKind::Thinking { encrypted: None },
+                BlockKind::Thinking { encrypted: None },
                 BlockPresence {
                     source_block: true,
                     source_text: false,
@@ -2211,7 +2217,7 @@ mod tests {
         assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 0);
         assert!(f.prepare().unwrap().active_value.is_some());
         assert!(matches!(
-            f.writer.install_text_block(
+            f.writer.install_block(
                 &build,
                 &ProjectionStep {
                     expected_sequence: 1,
@@ -2252,11 +2258,35 @@ mod tests {
             Err(Error::ValueNotReady)
         ));
         assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 1);
+        let signature = Slot::Block {
+            block: BlockSlot::Item(0),
+            field: BlockField::ThinkingSignature,
+        };
+        seal_owned_json(
+            &mut f,
+            &build,
+            ValuePurpose::Normalized,
+            b"\"opaque-signature\"",
+        );
+        let signature_step = ProjectionStep {
+            expected_sequence: 2,
+            next_cursor: b"signature",
+        };
+        assert!(matches!(
+            f.writer
+                .write_block_field(&build, &signature, None, true, &signature_step, 4096),
+            Err(Error::Invariant(_))
+        ));
+        assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 1);
         f.writer
-            .install_text_block(
+            .write_block_field(&build, &signature, None, false, &signature_step, 4096)
+            .unwrap();
+        assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 2);
+        f.writer
+            .install_block(
                 &build,
                 &ProjectionStep {
-                    expected_sequence: 2,
+                    expected_sequence: 3,
                     next_cursor: b"installed",
                 },
                 4096,
@@ -2270,7 +2300,7 @@ mod tests {
             .finish_message_projection(
                 &build,
                 &ProjectionStep {
-                    expected_sequence: 3,
+                    expected_sequence: 4,
                     next_cursor: b"done",
                 },
                 polylogue_model::BlobHash::of(b"evidence"),
@@ -2304,21 +2334,28 @@ mod tests {
             Some(super::super::reads::FieldRead::Value(_))
         ));
         assert!(block.field(&slot, 4096).is_err());
+        match block.field(&signature, 4096).unwrap().unwrap() {
+            super::super::reads::FieldRead::Value(field) => {
+                assert!(!field.supplied);
+                assert_eq!(field.range(0, 100).unwrap().bytes, b"\"opaque-signature\"");
+            }
+            _ => panic!("unexpected signature conflict"),
+        }
     }
     #[test]
     fn two_blocks_share_local_semantic_keys_and_staged_abort_releases_only_private_leases() {
-        use super::super::blocks::{BlockPresence, ProjectionStep, TextKind};
+        use super::super::blocks::{BlockKind, BlockPresence, ProjectionStep};
         use polylogue_model::{BlockSlot, merge::BlockField};
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
         for n in 0..3 {
             f.value(&build, b"shared text");
             f.writer
-                .begin_text_block(
+                .begin_block(
                     &build,
                     0,
                     n,
-                    TextKind::Thinking {
+                    BlockKind::Thinking {
                         encrypted: Some(false),
                     },
                     BlockPresence {
@@ -2351,7 +2388,7 @@ mod tests {
                 .unwrap();
             if n < 2 {
                 f.writer
-                    .install_text_block(
+                    .install_block(
                         &build,
                         &ProjectionStep {
                             expected_sequence: n * 3 + 2,
@@ -2384,17 +2421,17 @@ mod tests {
     }
     #[test]
     fn empty_text_keeps_fields_without_completeness_and_active_block_blocks_finish() {
-        use super::super::blocks::{BlockPresence, ProjectionStep, TextKind};
+        use super::super::blocks::{BlockKind, BlockPresence, ProjectionStep};
         use polylogue_model::BlockSlot;
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
         f.value(&build, b"");
         f.writer
-            .begin_text_block(
+            .begin_block(
                 &build,
                 0,
                 0,
-                TextKind::Text,
+                BlockKind::Text,
                 BlockPresence::default(),
                 &ProjectionStep {
                     expected_sequence: 0,
@@ -2463,7 +2500,7 @@ mod tests {
             )
             .unwrap();
         f.writer
-            .install_text_block(
+            .install_block(
                 &build,
                 &ProjectionStep {
                     expected_sequence: 2,
@@ -3072,17 +3109,17 @@ mod tests {
     }
     #[test]
     fn uncontested_source_selection_is_atomic_and_contested_stays_pending() {
-        use super::super::{BlockPresence, ProjectionStep, SourceSelection, TextKind};
+        use super::super::{BlockKind, BlockPresence, ProjectionStep, SourceSelection};
         use polylogue_model::{BlobHash, BlockSlot, merge::FinishState};
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
         f.value(&build, b"selected text");
         f.writer
-            .write_text_block(
+            .write_block(
                 &build,
                 0,
                 0,
-                TextKind::Text,
+                BlockKind::Text,
                 BlockPresence {
                     source_block: true,
                     source_text: true,
@@ -3247,7 +3284,9 @@ mod tests {
     }
     #[test]
     fn reference_reads_distinguish_pending_and_preserve_interleaved_reasoning_source_order() {
-        use super::super::{BlockPresence, MessageLayout, MessageLookup, ProjectionStep, TextKind};
+        use super::super::{
+            BlockKind, BlockPresence, MessageLayout, MessageLookup, ProjectionStep,
+        };
         use polylogue_model::BlockSlot;
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
@@ -3276,22 +3315,27 @@ mod tests {
             )
             .unwrap();
         for (group, local, kind, text) in [
-            (7, 100, TextKind::Thinking { encrypted: None }, "reason one"),
-            (7, 500, TextKind::Text, "answer one"),
+            (
+                7,
+                100,
+                BlockKind::Thinking { encrypted: None },
+                "reason one",
+            ),
+            (7, 500, BlockKind::Text, "answer one"),
             (
                 900,
                 0,
-                TextKind::Thinking {
+                BlockKind::Thinking {
                     encrypted: Some(false),
                 },
                 "reason two",
             ),
-            (900, 2, TextKind::Text, "answer two"),
+            (900, 2, BlockKind::Text, "answer two"),
         ] {
             f.value(&build, text.as_bytes());
             let sequence = f.writer.message_projection(&build, 4096).unwrap().sequence;
             f.writer
-                .write_text_block(
+                .write_block(
                     &build,
                     group,
                     local,
@@ -3594,7 +3638,7 @@ mod tests {
     }
     #[test]
     fn pending_origin_blocks_skip_install_finish_and_abort_releases_both_aliases() {
-        use super::super::blocks::{BlockPresence, MessageLayout, ProjectionStep, TextKind};
+        use super::super::blocks::{BlockKind, BlockPresence, MessageLayout, ProjectionStep};
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
         let origin = seal_owned_json(&mut f, &build, ValuePurpose::Origin, b"null");
@@ -3612,11 +3656,11 @@ mod tests {
             Err(Error::MessagePreparationPending)
         ));
         assert!(matches!(
-            f.writer.begin_text_block(
+            f.writer.begin_block(
                 &build,
                 0,
                 0,
-                TextKind::Thinking { encrypted: None },
+                BlockKind::Thinking { encrypted: None },
                 BlockPresence::default(),
                 &step,
                 4096
@@ -3739,15 +3783,15 @@ mod tests {
     }
     #[test]
     fn pending_block_origin_cannot_be_bypassed_by_install_or_atomic_block_write() {
-        use super::super::blocks::{BlockPresence, ProjectionStep, TextKind};
+        use super::super::blocks::{BlockKind, BlockPresence, ProjectionStep};
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
         f.writer
-            .begin_text_block(
+            .begin_block(
                 &build,
                 0,
                 0,
-                TextKind::Thinking { encrypted: None },
+                BlockKind::Thinking { encrypted: None },
                 BlockPresence::default(),
                 &ProjectionStep {
                     expected_sequence: 0,
@@ -3762,15 +3806,15 @@ mod tests {
             next_cursor: b"install",
         };
         assert!(matches!(
-            f.writer.install_text_block(&build, &step, 4096),
+            f.writer.install_block(&build, &step, 4096),
             Err(Error::MessagePreparationPending)
         ));
         assert!(matches!(
-            f.writer.write_text_block(
+            f.writer.write_block(
                 &build,
                 1,
                 0,
-                TextKind::Thinking { encrypted: None },
+                BlockKind::Thinking { encrypted: None },
                 BlockPresence::default(),
                 &step,
                 4096

@@ -42,6 +42,7 @@ pub struct SessionCell {
     pub session: Session,
     pub ordinal: u64,
     pub seen_own_user: bool,
+    pub next_message_ordinal: u64,
     pub last_message: Option<MessageId>,
     pub facts_pending: bool,
 }
@@ -49,6 +50,9 @@ pub struct SessionCell {
 pub struct ResponseCell {
     /// Source metadata only. Blocks/version/time aggregates are not complete here.
     pub message: Message,
+    /// First response occurrence in THIS session; UUID spelling/time have no ordering authority.
+    pub ordinal: u64,
+    pub author_selection: Option<super::selection::AuthorSelection>,
     pub items: u64,
     pub revision: u64,
     /// Selected raw usage, stop_reason, model, timestamp, in this fixed order.
@@ -56,6 +60,11 @@ pub struct ResponseCell {
     pub incomplete_bodies: u64,
     pub selected_from: [Option<u64>; 4],
     pub selected_facts: [Vec<super::projection::Fact>; 4],
+    pub selected_origins: [Option<crate::selection::SelectedRaw>; 4],
+    /// Fixed extra leaf selected by the provider, with its exact original donor.
+    pub stop_sequence: Option<super::projection::Fact>,
+    /// Canonical RAW selected subtree, independently of normalized attrs.
+    pub stop_sequence_raw: Option<Vec<u8>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordAddress {
@@ -79,6 +88,7 @@ pub struct Contribution {
     pub uuid: String,
     /// Effective raw field-presence overlay; exact numeric tokens survive.
     pub raw: Vec<u8>,
+    pub origins: super::origins::RecordOrigins,
     /// Stable contribution-local positions, not final response BlockIds.
     pub blocks: Vec<BlockContent>,
     pub bodies: Vec<RequiredBody>,
@@ -93,6 +103,9 @@ pub struct LinkKey {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingMessage {
+    pub session_native: String,
+    pub response: ResponseKey,
+    pub ordinal: u64,
     pub message: MessageId,
     pub revision: u64,
     pub items: u64,
@@ -262,20 +275,26 @@ impl ResponseCell {
     }
     /// After the owner has reduced effective-record metadata in contribution
     /// order, append ONLY the selected raw subtrees that differ, in this order.
-    pub fn metadata_units(&self, baseline: &[Option<Vec<u8>>; 4]) -> Vec<EvidenceUnit> {
+    pub fn metadata_units(&self, baseline: &[Option<Vec<u8>>; 5]) -> Vec<EvidenceUnit> {
         [
             "response/usage",
             "response/stop_reason",
             "response/model",
             "response/completed_at",
+            "response/stop_sequence",
         ]
         .iter()
         .enumerate()
         .filter_map(|(i, tag)| {
-            if self.selected[i] == baseline[i] {
+            let selected = if i == 4 {
+                &self.stop_sequence_raw
+            } else {
+                &self.selected[i]
+            };
+            if *selected == baseline[i] {
                 return None;
             }
-            self.selected[i].as_ref().map(|raw| EvidenceUnit::Json {
+            selected.as_ref().map(|raw| EvidenceUnit::Json {
                 tag: (*tag).into(),
                 canonical: raw.clone(),
                 whole_record: false,
@@ -306,13 +325,16 @@ impl Contribution {
     }
     /// One admitted effective record, not a historical response scan. The owner
     /// reduces these fields while reading `next_contribution` slots in order.
-    pub fn final_fields(&self) -> Result<[Option<Vec<u8>>; 4], String> {
-        let mut fields: [Option<Vec<u8>>; 4] = Default::default();
+    pub fn final_fields(&self) -> Result<[Option<Vec<u8>>; 5], String> {
+        let mut fields: [Option<Vec<u8>>; 5] = Default::default();
         for (i, path) in super::METADATA_PATHS.iter().enumerate() {
             fields[i] = super::raw::optional_field(&self.raw, path)?
                 .map(super::raw::canonical)
                 .transpose()?;
         }
+        fields[4] = super::raw::optional_field(&self.raw, &["message", "stop_sequence"])?
+            .map(super::raw::canonical)
+            .transpose()?;
         Ok(fields)
     }
     /// Body units follow all raw-record/final-field units, in (item,content-item)

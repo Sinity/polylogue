@@ -525,9 +525,11 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ctrlc",
+ "jiff",
  "polylogue-engine",
  "polylogue-model",
  "polylogue-store",
+ "serde",
  "serde_json",
  "tempfile",
 ]

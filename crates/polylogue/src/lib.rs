@@ -3,8 +3,11 @@ use polylogue_engine::owner::{Handle, Owner};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, Writer};
 mod masking;
+mod output_json;
 mod protocol;
 pub mod reference_read;
+mod session_document;
+pub mod session_read;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -224,12 +227,15 @@ fn serve(
         Ok(request) if request == json!({"command":"status"}) => {
             match reader.lock().expect("reader lock").status() {
                 Ok(status) => {
-                    json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status","codex-immutable-retention","provider-progress","selected-message-terminal-read"],"product_path":"partial"})
+                    json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","provider-progress","selected-message-terminal-read","selected-session-json-read"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})
                 }
             }
+        }
+        Ok(request) if request["command"] == "session-read" => {
+            return session_read::serve(&mut stream, &request, reader).map_err(|e| e.to_string());
         }
         Ok(request) if request["command"] == "read" => {
             return reference_read::serve(&mut stream, &request, reader).map_err(|e| e.to_string());

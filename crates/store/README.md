@@ -107,10 +107,18 @@ ready unleased generic values are excluded. Candidate reconciliation, body
 activation and public-client/whole-path resource acceptance
 remain open.
 
-`write_text_block` installs a Text/Thinking leaf through the group and local
-block directories. Its producer lease, both directory roots and projection cursor
-commit together. Old unleased paths release known text leaves and shared payload
-leases during bounded node collection. Field and no-output projection units use
+`begin_block`/`write_block_field`/`install_block` stage Text, Thinking, ToolCall
+and ToolResult through the same group/local directories; `write_block` is the
+atomic convenience over those helpers. A call block owns one private summary
+with an opaque caller-proved operation identity. Tool names lease the same ready
+JSON field value; `write_tool_command` transfers an independently prepared UTF-8
+producer without decoding JSON in the writer. No prepared summary enters serving
+FTS. A result retains its own typed outcome facts without invented pairing.
+Producer leases, directory roots and the projection cursor commit together.
+Old unleased paths release known leaves and each counted payload lease during
+bounded node collection. Attached ToolItem versions and external serving owners
+retain summaries until their owning cleanup releases its known reference;
+this module does not implement global operation pairing or ToolItem cleanup. Field and no-output projection units use
 the same cursor CAS. `finish_message_projection` checks fixed roots and records a
 source producer's completed projection/evidence metadata. Body and candidate
 remain unready and ineligible, so interrupted folding still uses bounded abort.
@@ -140,8 +148,8 @@ Immutable inputs retain their original byte digest and explicit format-owned
 interpretation context. `InputId::imported` implements the pinned version-1
 framing from spec191adbec; physical CAS remains named by raw byte digest.
 Registration/recovery validates that tuple. The primitive accepts explicit
-Claude contexts; the public actor currently accepts only self-identifying Codex
-rollouts, with empty context. It does not choose a Claude pathname from competing
+Claude contexts; the public actor accepts self-identifying Codex rollouts with
+empty context and explicit Claude declarations. It does not choose a Claude pathname from competing
 observations. Any existing excision refuses acquisition until the refusal-aware
 collector is wired.
 

@@ -10,6 +10,10 @@ pub enum InputFormat {
     CodexRollout,
 }
 impl InputFormat {
+    /// Validate declared interpretation context without source IO or mutation.
+    pub fn validate_context(self, context: &[&str]) -> Result<()> {
+        validate_context(self, context)
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::ClaudeCodeJsonl => "claude-code-jsonl",

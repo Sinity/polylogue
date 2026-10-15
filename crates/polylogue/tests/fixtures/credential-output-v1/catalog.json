@@ -1,0 +1,268 @@
+{
+  "catalog_version": "credential-output-v1",
+  "source": {
+    "repository": "Sinex",
+    "commit": "c997df89764aa47d624355ae04fbe65e6f9a2bfa",
+    "handwritten_path": "crate/sinex-primitives/src/privacy/catalog.rs",
+    "handwritten_git_blob": "cd689365f1819186599c9e99cf0408fdbba20a28",
+    "vendored_path": "crate/sinex-primitives/src/privacy/third_party/gitleaks.toml",
+    "vendored_git_blob": "3387af74a034d07a96661eb786cb679ffc0380c1"
+  },
+  "families": [
+    {
+      "id": "aws_access_key",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)(?ai:AKIA|ASIA|ABIA|ACCA)[A-Za-z0-9]{16,}",
+      "extent": "match"
+    },
+    {
+      "id": "aws_secret_key",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)(?ai:aws_secret_access_key|secret_access_key|aws_secret)[ \\t]*[:=][ \\t]*[\"']?(?P<secret>[A-Za-z0-9/+=]{40,})",
+      "extent": "secret"
+    },
+    {
+      "id": "github_token",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{36,}",
+      "extent": "match"
+    },
+    {
+      "id": "gitlab_token",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)glpat-[A-Za-z0-9_-]{20,}",
+      "extent": "match"
+    },
+    {
+      "id": "npm_token",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)npm_[A-Za-z0-9]{36,}",
+      "extent": "match"
+    },
+    {
+      "id": "stripe_key",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)(?:sk|pk|rk)_(?:test|live)_[A-Za-z0-9]{24,}",
+      "extent": "match"
+    },
+    {
+      "id": "slack_token",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)xox[bpsar]-[A-Za-z0-9-]+",
+      "extent": "match"
+    },
+    {
+      "id": "jwt",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+",
+      "extent": "match"
+    },
+    {
+      "id": "google_api_key",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)AIza[A-Za-z0-9_-]{35,}",
+      "extent": "match"
+    },
+    {
+      "id": "azure_connection",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)AccountKey=(?P<secret>[A-Za-z0-9+/=]{44,})",
+      "extent": "secret"
+    },
+    {
+      "id": "cli_secret_flag",
+      "matcher": "regex",
+      "pattern": "(?<!\\S)--(?:password|token|secret|api-key|auth-token)(?:[ \\t]+|=)(?P<secret>\"[^\"\\r\\n]+\"|'[^'\\r\\n]+'|[^\\s\"']+)",
+      "extent": "secret"
+    },
+    {
+      "id": "basic_auth_header",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)(?ai:Authorization)[ \\t]*:[ \\t]*(?ai:Basic)[ \\t]+(?P<secret>[A-Za-z0-9+/]{8,}[A-Za-z0-9+/=]*)",
+      "extent": "secret"
+    },
+    {
+      "id": "bearer_token",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)(?ai:Bearer)[ \\t]+(?P<secret>[A-Za-z0-9._~+/=-]{20,})",
+      "extent": "secret"
+    },
+    {
+      "id": "anthropic_api_key",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)sk-ant-(?:api[0-9]{2}|oat[0-9]{2}|sid[0-9]{2})-[A-Za-z0-9_-]{20,}",
+      "extent": "match"
+    },
+    {
+      "id": "openai_api_key",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{48,})",
+      "extent": "match"
+    },
+    {
+      "id": "huggingface_token",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)hf_[A-Za-z0-9]{34,}",
+      "extent": "match"
+    },
+    {
+      "id": "gitleaks_mailchimp_api_key",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)[0-9a-fA-F]{32}-(?ai:us)[0-9]+",
+      "extent": "match"
+    },
+    {
+      "id": "gitleaks_sendgrid_api_token",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)SG\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}",
+      "extent": "match"
+    },
+    {
+      "id": "gitleaks_twilio_api_key",
+      "matcher": "regex",
+      "pattern": "(?<!\\w)SK[0-9a-f]{32,}",
+      "extent": "match"
+    },
+    {
+      "id": "url_credentials",
+      "matcher": "url_authority"
+    },
+    {
+      "id": "private_key_header",
+      "matcher": "pem_private_key"
+    },
+    {
+      "id": "basic_auth_cli",
+      "matcher": "regex",
+      "pattern": "(?<!\\S)(?:-u|--user)(?:[ \\t]+|=)(?P<secret>\"[^\"\\r\\n:]+:[^\"\\r\\n]+\"|'[^'\\r\\n:]+:[^'\\r\\n]+'|[^\\s:'\"]+:[^\\s'\"]+)",
+      "extent": "secret"
+    }
+  ],
+  "historical_dispositions": [
+    {
+      "id": "aws_access_key",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "aws_secret_key",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "url_credentials",
+      "status": "replaced",
+      "reason": "replace free-text first-@ regex with the explicit URI authority rule; preserve scheme and host"
+    },
+    {
+      "id": "private_key_header",
+      "status": "replaced",
+      "reason": "replace header-only suppression with matching-label PEM extent through END or EOF"
+    },
+    {
+      "id": "github_token",
+      "status": "replaced",
+      "reason": "retain token family; correct historical gh(?:[pousr]_|ithub_pat_) typo to explicit github_pat_; use maximal same-alphabet tail"
+    },
+    {
+      "id": "gitlab_token",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "npm_token",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "stripe_key",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "slack_token",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "jwt",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "google_api_key",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "azure_connection",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "generic_secret_assign",
+      "status": "excluded",
+      "reason": "optional admission policy only; token=ast_node, pass=2 and secret=chapter are not high-precision credentials"
+    },
+    {
+      "id": "cli_secret_flag",
+      "status": "replaced",
+      "reason": "retain explicit secret-value flags; exclude --user and --key because identity and public-key paths are ordinary recall"
+    },
+    {
+      "id": "basic_auth_header",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "basic_auth_cli",
+      "status": "retained",
+      "reason": "retain explicit user:password values after -u/--user; identity-only flags remain visible; mask quoted whole argument or bare userinfo"
+    },
+    {
+      "id": "bearer_token",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "database_url",
+      "status": "replaced",
+      "reason": "replace whole connection-string masking with URL userinfo only; passwordless database addresses remain visible"
+    },
+    {
+      "id": "ssh_public_key",
+      "status": "excluded",
+      "reason": "public keys are not authentication secrets; optional admission policy may hide identity if requested"
+    },
+    {
+      "id": "anthropic_api_key",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "openai_api_key",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "huggingface_token",
+      "status": "retained",
+      "reason": "retain the family under this catalog's exact extent and boundary rules"
+    },
+    {
+      "id": "gitleaks_mailchimp_api_key",
+      "status": "retained",
+      "reason": "retain the pinned vendored format, with this catalog's left boundary and maximal matching tail"
+    },
+    {
+      "id": "gitleaks_sendgrid_api_token",
+      "status": "retained",
+      "reason": "retain the pinned vendored format, with this catalog's left boundary and maximal matching tail"
+    },
+    {
+      "id": "gitleaks_twilio_api_key",
+      "status": "retained",
+      "reason": "retain the pinned vendored format, with this catalog's left boundary and maximal matching tail"
+    }
+  ]
+}

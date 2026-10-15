@@ -49,6 +49,7 @@ pub enum UsageField {
     CacheWrite5m,
     CacheWrite1h,
     Reasoning,
+    ServiceTier,
     ProviderCostNusd,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -58,6 +59,8 @@ pub enum BlockField {
     ThinkingText,
     Encrypted,
     ThinkingData,
+    /// Retained payload only. Never admitted as a source completeness/fill fact.
+    ThinkingSignature,
     Tool,
     CallId,
     Input,
@@ -130,7 +133,17 @@ pub struct PresenceFacts {
 }
 impl PresenceFacts {
     pub fn completeness(&self) -> Result<Completeness, MergeError> {
-        if self.blocks_with_nonempty_text > self.nonempty_blocks {
+        if self.blocks_with_nonempty_text > self.nonempty_blocks
+            || self.slots.keys().any(|slot| {
+                matches!(
+                    slot,
+                    Slot::Block {
+                        field: BlockField::ThinkingSignature,
+                        ..
+                    }
+                )
+            })
+        {
             return Err(MergeError::InvalidPresence);
         }
         Ok(Completeness {

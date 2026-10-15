@@ -1,21 +1,9 @@
 //! Exact original JSONL record contributors. Coordinates are never digest
 //! bytes, normalized payload extents, input identities or historical versions.
 use super::selection::{PathPart, SelectedRaw};
+pub use crate::selection::RecordRange;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct RecordRange {
-    pub start: u64,
-    pub end: u64,
-}
-impl RecordRange {
-    pub fn new(start: u64, end: u64) -> Result<Self, String> {
-        if start >= end {
-            return Err("invalid Codex original-record range".into());
-        }
-        Ok(Self { start, end })
-    }
-}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Origins {
     #[default]

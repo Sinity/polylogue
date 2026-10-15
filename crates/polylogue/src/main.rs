@@ -44,7 +44,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|import PATH --format codex-rollout|progress INPUT|retry INPUT|message:REF read --format terminal|config schema>\nImport retains one regular file. Only selected message: terminal reads are registered; their coverage remains degraded. Session queries, JSON read, search, export and MCP remain unavailable.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|import PATH --format NAME [--context FILE]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read --format json|config schema>\nImport retains one regular file. Selected Message terminal reads and Session JSON reads have explicit degraded coverage. Session queries, search, export and MCP remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -81,7 +81,12 @@ fn run() -> Result<i32, Failure> {
     let terminal_read = args.first().is_some_and(|s| s.starts_with("message:"))
         && (args.len() == 2 && args[1] == "read"
             || args.len() == 4 && args[1..] == ["read", "--format", "terminal"]);
-    let command = if terminal_read {
+    let session_json = args.len() == 4
+        && args[1..] == ["read", "--format", "json"]
+        && !args[0].starts_with("message:");
+    let command = if session_json {
+        Some(json!({"command":"session-read","reference":args[0],"format":"json"}))
+    } else if terminal_read {
         Some(json!({"command":"read","reference":args[0],"format":"terminal"}))
     } else if args.first().map(String::as_str) == Some("import") {
         Some(import_cli::request(&args)?)
@@ -122,7 +127,7 @@ fn run() -> Result<i32, Failure> {
         let mut running = polylogue::Running::start_cancellable(&archive, &runtime, &stop)
             .map_err(|e| error(ErrorKind::Io, format!("archive {}: {e}", archive.display())))?;
         eprintln!(
-            "listening: {} (immutable Codex import; canonical finalization incomplete)",
+            "listening: {} (immutable source imports; canonical finalization incomplete)",
             running.socket().display()
         );
         while !stop.load(Ordering::Acquire) {
@@ -145,18 +150,28 @@ fn run() -> Result<i32, Failure> {
         )
     })?;
     let socket = polylogue::socket_path(&resolved, &runtime);
-    if terminal_read {
-        let reply =
-            polylogue::reference_read::request(&socket, &args[0], &mut out).map_err(io_error)?;
+    if terminal_read || session_json {
+        let reply = if session_json {
+            polylogue::session_read::request(&socket, &args[0], &mut out)
+        } else {
+            polylogue::reference_read::request(&socket, &args[0], &mut out)
+        }
+        .map_err(io_error)?;
         if reply["outcome"] == "error" {
             return Err(
                 serde_json::from_value::<Failure>(reply["error"].clone()).map_err(io_error)?
             );
         }
         if reply["outcome"] == "degraded" {
-            eprintln!(
-                "Read coverage is incomplete: canonical history and source provenance remain pending."
-            );
+            if session_json {
+                eprintln!(
+                    "Read coverage is incomplete: source catalog, metadata reductions, history, tool pairing and non-Message populations remain pending."
+                );
+            } else {
+                eprintln!(
+                    "Read coverage is incomplete: canonical history and source provenance remain pending."
+                );
+            }
         }
         return reply_exit_code(&reply);
     }

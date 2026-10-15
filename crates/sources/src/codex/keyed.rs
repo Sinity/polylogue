@@ -2107,6 +2107,7 @@ impl<V: ReadView> KeyedRecords<V> {
             };
             self.edit_block(i, block, |value| {
                 *value = BlockContent::ToolResult(ToolResult {
+                    data: None,
                     call_id: Some(call_id.clone()),
                     outcome: outcome.clone(),
                     exit_code,
@@ -2235,6 +2236,7 @@ impl<V: ReadView> KeyedRecords<V> {
         if let Err(e) = m.push(
             BlockSlot::Item(0),
             BlockContent::ToolResult(ToolResult {
+                data: None,
                 call_id: Some(call_id.clone()),
                 outcome,
                 exit_code,
@@ -2486,6 +2488,7 @@ impl<V: ReadView> KeyedRecords<V> {
                     return RecordOutcome::Used;
                 };
                 let result = BlockContent::ToolResult(ToolResult {
+                    data: None,
                     call_id: Some(child_id.clone()),
                     outcome,
                     exit_code: exit,

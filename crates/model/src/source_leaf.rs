@@ -196,6 +196,14 @@ impl Serialize for Time<'_> {
         map.end()
     }
 }
+/// The same borrowed identity-relation wire used by normalized Parent leaves.
+/// Source recipes must independently prove the relation before calling this.
+pub fn write_message_reference(
+    value: &crate::MessageId,
+    sink: &mut impl Write,
+) -> Result<PresenceStatus, Error> {
+    encoded(&MessageRef::from(value), sink)
+}
 /// Encode a provider time through the same normalized leaf representation used
 /// by Message fields. A source selector must still prove where it came from.
 pub fn write_time(value: &ProviderTime, sink: &mut impl Write) -> Result<PresenceStatus, Error> {
@@ -241,9 +249,10 @@ pub fn write(
             MessageField::Model => optional(m.model.as_ref(), sink),
             MessageField::At => time(m.at.as_ref(), sink),
             MessageField::CompletedAt => time(m.completed_at.as_ref(), sink),
-            MessageField::Parent => {
-                optional(m.parent.as_ref().map(MessageRef::from).as_ref(), sink)
-            }
+            MessageField::Parent => match m.parent.as_ref() {
+                Some(parent) => write_message_reference(parent, sink),
+                None => Ok(PresenceStatus::Missing),
+            },
             MessageField::FromSession => {
                 optional(m.from_session.as_ref().map(|id| id.as_str()).as_ref(), sink)
             }
@@ -263,6 +272,7 @@ pub fn write(
                 UsageField::CacheWrite5m => optional(u.cache_write_5m.as_ref(), sink),
                 UsageField::CacheWrite1h => optional(u.cache_write_1h.as_ref(), sink),
                 UsageField::Reasoning => optional(u.reasoning.as_ref(), sink),
+                UsageField::ServiceTier => optional(u.service_tier.as_ref(), sink),
                 UsageField::ProviderCostNusd => optional(u.provider_cost_nusd.as_ref(), sink),
             }
         }
@@ -304,6 +314,7 @@ fn block_leaf(
         (BlockContent::Thinking(t), ThinkingText) => optional(t.text.as_ref(), sink),
         (BlockContent::Thinking(t), Encrypted) => optional(t.encrypted.as_ref(), sink),
         (BlockContent::Thinking(t), ThinkingData) => optional(t.data.as_ref(), sink),
+        (BlockContent::Thinking(t), ThinkingSignature) => optional(t.signature.as_ref(), sink),
         (BlockContent::ToolCall(c), Tool) => optional(c.tool.as_ref(), sink),
         (BlockContent::ToolCall(c), CallId) => optional(c.call_id.as_ref(), sink),
         (BlockContent::ToolCall(c), Input) => optional(c.input.as_ref(), sink),
@@ -381,6 +392,34 @@ mod tests {
         )
     }
     #[test]
+    fn usage_service_tier_is_a_typed_string_and_unknown_is_omitted() {
+        let mut m = message();
+        m.usage = Some(Usage::default());
+        let slot = Slot::Usage(UsageField::ServiceTier);
+        assert!(matches!(
+            encode(Subject::Message(&m), &slot, 64).unwrap(),
+            Projection::Missing
+        ));
+        assert!(
+            serde_json::to_value(m.usage.as_ref().unwrap())
+                .unwrap()
+                .get("service_tier")
+                .is_none()
+        );
+        for (value, expected) in [("standard", &b"\"standard\""[..]), ("", &b"\"\""[..])] {
+            m.usage.as_mut().unwrap().service_tier = Some(value.into());
+            assert_eq!(
+                bytes(encode(Subject::Message(&m), &slot, 64).unwrap()),
+                expected
+            );
+            assert_eq!(
+                serde_json::to_value(m.usage.as_ref().unwrap()).unwrap()["service_tier"],
+                value
+            );
+        }
+        assert!(serde_json::from_str::<Usage>(r#"{"service_tier":17}"#).is_err());
+    }
+    #[test]
     fn typed_time_and_integer_money_are_not_raw_source_spelling() {
         let mut m = message();
         m.at = Some(ProviderTime::Intrinsic {
@@ -449,6 +488,18 @@ mod tests {
         assert_eq!(
             bytes(block(&t, BlockField::Encrypted, 5).unwrap()),
             b"false"
+        );
+        assert_eq!(
+            block(&t, BlockField::ThinkingSignature, 32).unwrap(),
+            Projection::Missing
+        );
+        let signed = BlockContent::Thinking(Thinking {
+            signature: Some("opaque-signature".into()),
+            ..Thinking::default()
+        });
+        assert_eq!(
+            bytes(block(&signed, BlockField::ThinkingSignature, 32).unwrap()),
+            b"\"opaque-signature\""
         );
         let actual = BlockSlot::Item(7);
         assert_eq!(
@@ -523,6 +574,7 @@ mod tests {
     #[test]
     fn unknown_outcome_is_not_success_and_reason_encoding_is_capped() {
         let mut result = ToolResult {
+            data: None,
             call_id: None,
             outcome: ToolOutcome::Unknown {
                 reason: crate::UnknownReason::NoResult,
@@ -673,6 +725,7 @@ mod tests {
             cache_write_5m: Some(4),
             cache_write_1h: Some(5),
             reasoning: Some(6),
+            service_tier: Some("standard".into()),
             provider_cost_nusd: Some(Usd(9007199254740993)),
         });
         m.attrs = Some(json!({"null":null,"nested":{"z":false,"a":[]}}));
@@ -697,6 +750,7 @@ mod tests {
             UsageField::CacheWrite5m,
             UsageField::CacheWrite1h,
             UsageField::Reasoning,
+            UsageField::ServiceTier,
             UsageField::ProviderCostNusd,
         ] {
             equivalent(Subject::Message(&m), &Slot::Usage(field));
@@ -725,6 +779,7 @@ mod tests {
             },
             BlockContent::Thinking(Thinking {
                 text: Some(String::new()),
+                signature: Some("opaque replay signature".into()),
                 encrypted: Some(false),
                 data: Some("opaque encrypted bytes".into()),
                 ..Thinking::default()
@@ -736,6 +791,7 @@ mod tests {
                 command: Some("command".into()),
             }),
             BlockContent::ToolResult(ToolResult {
+                data: None,
                 call_id: Some("opaque:call".into()),
                 outcome: ToolOutcome::Error {
                     reason: Some(ErrorReason::Denied("policy".into())),
@@ -745,6 +801,7 @@ mod tests {
                 output: Some(ToolOutput::Text(String::new())),
             }),
             BlockContent::ToolResult(ToolResult {
+                data: None,
                 call_id: None,
                 outcome: ToolOutcome::Unknown {
                     reason: crate::UnknownReason::NoResult,
@@ -767,6 +824,7 @@ mod tests {
                 BlockField::ThinkingText,
                 BlockField::Encrypted,
                 BlockField::ThinkingData,
+                BlockField::ThinkingSignature,
                 BlockField::Tool,
                 BlockField::CallId,
                 BlockField::Input,

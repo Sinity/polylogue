@@ -31,6 +31,7 @@ fn uuid_v7(millis: u64, random: [u8; 16]) -> Result<String, Failure> {
 pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
     let mut path = None;
     let mut format = None;
+    let mut context_file = None;
     let mut id = None;
     let mut seen_at = None;
     let mut machine = None;
@@ -38,7 +39,7 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--format" | "--request-id" | "--seen-at" | "--machine" | "--host" => {
+            "--format" | "--context" | "--request-id" | "--seen-at" | "--machine" | "--host" => {
                 let flag = &args[i];
                 i += 1;
                 let value = args
@@ -47,6 +48,7 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
                     .clone();
                 let slot = match flag.as_str() {
                     "--format" => &mut format,
+                    "--context" => &mut context_file,
                     "--request-id" => &mut id,
                     "--seen-at" => &mut seen_at,
                     "--machine" => &mut machine,
@@ -74,12 +76,24 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
         i += 1;
     }
     let path = path.ok_or_else(|| invalid("import requires a regular file path"))?;
-    if format.as_deref() != Some("codex-rollout") {
-        return Err(Failure::new(
-            ErrorKind::NotYetAvailable,
-            "pass --format codex-rollout; other source imports are not registered",
-        ));
-    }
+    let format = match format.as_deref() {
+        Some("codex-rollout") => polylogue_store::InputFormat::CodexRollout,
+        Some("claude-code-jsonl") => polylogue_store::InputFormat::ClaudeCodeJsonl,
+        _ => {
+            return Err(Failure::new(
+                ErrorKind::NotYetAvailable,
+                "pass an explicit supported --format; automatic source recognition is not registered",
+            ));
+        }
+    };
+    let context = match context_file {
+        Some(path) => read_context(&path)?,
+        None => Vec::new(),
+    };
+    let parts = context.iter().map(String::as_str).collect::<Vec<_>>();
+    format
+        .validate_context(&parts)
+        .map_err(|e| invalid(e.to_string()))?;
     if id.is_some() != seen_at.is_some() {
         return Err(invalid(
             "a retry requires both --request-id and --seen-at from the original response",
@@ -139,8 +153,31 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
         }
     };
     Ok(
-        json!({"command":"import","context":[],"id":id,"format":"codex-rollout","path":path,"machine":machine,"host":host,"seen_at":seen_at}),
+        json!({"command":"import","context":context,"id":id,"format":format.name(),"path":path,"machine":machine,"host":host,"seen_at":seen_at}),
     )
+}
+// Context is a bounded explicit declaration, never inferred from the loose
+// capture filename. Its contents become immutable interpretation identity.
+fn read_context(path: &str) -> Result<Vec<String>, Failure> {
+    let file = fs::File::open(path).map_err(|e| Failure::new(ErrorKind::Io, e.to_string()))?;
+    let mut bytes = Vec::new();
+    file.take(65537)
+        .read_to_end(&mut bytes)
+        .map_err(|e| Failure::new(ErrorKind::Io, e.to_string()))?;
+    if bytes.len() > 65536 {
+        return Err(invalid("context declaration exceeds 64 KiB admission"));
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Declaration {
+        version: u64,
+        context: Vec<String>,
+    }
+    let value: Declaration = serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
+    if value.version != 1 {
+        return Err(invalid("context declaration version must be 1"));
+    }
+    Ok(value.context)
 }
 #[cfg(test)]
 mod tests {
@@ -182,6 +219,53 @@ mod tests {
         assert!(super::request(&args).is_err());
         let mut args = base.into_iter().map(String::from).collect::<Vec<_>>();
         args.extend(["--host", "synthetic-collector"].map(String::from));
+        assert!(super::request(&args).is_err());
+    }
+    #[test]
+    fn claude_context_is_explicit_versioned_and_not_inferred_from_filename() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("context.json");
+        fs::write(
+            &file,
+            r#"{"version":1,"context":["claude-main","native-session"]}"#,
+        )
+        .unwrap();
+        let mut args = [
+            "import",
+            "/arbitrary/download-name.jsonl",
+            "--format",
+            "claude-code-jsonl",
+            "--context",
+            file.to_str().unwrap(),
+            "--machine",
+            "synthetic-machine",
+            "--host",
+            "synthetic-host",
+            "--request-id",
+            "synthetic-request",
+            "--seen-at",
+            "17",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<_>>();
+        let value = super::request(&args).unwrap();
+        assert_eq!(value["context"], json!(["claude-main", "native-session"]));
+        assert_eq!(value["format"], "claude-code-jsonl");
+        assert_eq!(value["path"], "/arbitrary/download-name.jsonl");
+        for invalid in [
+            r#"{"version":2,"context":["claude-main","native-session"]}"#,
+            r#"{"version":1,"context":["claude-main","native-session"],"other":true}"#,
+            r#"{"version":1,"context":[]}"#,
+            r#"{"version":1,"context":["claude-main",3]}"#,
+            r#"{"version":1,"context":["claude-main","a"],"context":["claude-main","b"]}"#,
+        ] {
+            fs::write(&file, invalid).unwrap();
+            assert!(super::request(&args).is_err());
+        }
+        fs::write(&file, vec![b' '; 65537]).unwrap();
+        assert!(super::request(&args).is_err());
+        args.drain(4..6); // Removing context never gives the download name authority.
         assert!(super::request(&args).is_err());
     }
     #[test]

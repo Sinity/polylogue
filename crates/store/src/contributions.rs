@@ -3,7 +3,9 @@
 mod bodies;
 pub use bodies::{BodyId, BodyRetirement, CandidateCollection, CandidateId};
 mod blocks;
-pub use blocks::{BlockPresence, MessageLayout, ProjectionState, ProjectionStep, TextKind};
+pub use blocks::{
+    BlockKind, BlockPresence, MessageLayout, ProjectionState, ProjectionStep, ToolAction,
+};
 mod completion;
 pub use completion::PreparedProjection;
 mod directory;
@@ -12,7 +14,12 @@ pub use inheritance::InheritedProjection;
 mod origins;
 pub use origins::SourceRange;
 mod reads;
-pub use reads::{BlockView, FieldRead, FieldView, MessageHeader, MessageLookup, MessageView};
+pub use reads::{
+    BlockFieldAddress, BlockFieldEntry, BlockView, FieldCursor, FieldRead, FieldView,
+    MessageFieldEntry, MessageHeader, MessageLookup, MessageView, SessionCoverage, SessionCursor,
+    SessionHeader, SessionPosition, SessionStep, SessionView, SourceCursor, SourceSpan, SourceStep,
+    ToolResultHeader,
+};
 mod retirement;
 mod source;
 pub use source::{SourceProjection, SourceSelection};

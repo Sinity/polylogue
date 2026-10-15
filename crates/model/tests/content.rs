@@ -181,6 +181,7 @@ fn tool_result_requires_status_and_preserves_empty_output_and_unknown_reasons() 
             Some(ToolOutput::Blob(BlobHash::of(b""))),
         ] {
             let result = ToolResult {
+                data: None,
                 call_id: None,
                 outcome: outcome.clone(),
                 exit_code: Some(0),
@@ -289,4 +290,24 @@ fn source_version_digest_uses_validated_hex_wire_without_changing_policy() {
     assert_eq!(roundtrip(&msg), msg);
     wire["version_hash"] = json!([171, 171]);
     assert!(serde_json::from_value::<Message>(wire).is_err());
+}
+
+#[test]
+fn structured_tool_channels_preserve_known_empty_and_null_without_replacing_output() {
+    for data in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!({})),
+        Some(serde_json::json!({"stdout":"different channel", "stderr":"", "interrupted":false})),
+    ] {
+        let result = ToolResult {
+            call_id: Some("synthetic-call".into()),
+            outcome: ToolOutcome::Ok,
+            exit_code: Some(0),
+            duration_ms: None,
+            output: Some(ToolOutput::Text("inline presented output".into())),
+            data,
+        };
+        assert_eq!(roundtrip(&result), result);
+    }
 }

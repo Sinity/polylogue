@@ -7,10 +7,13 @@ use polylogue_model::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 pub mod keyed;
+pub mod origins;
 pub mod projection;
 mod raw;
+pub mod selection;
+mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 2;
+pub const PARSER_VERSION: u32 = 5;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -42,9 +45,11 @@ fn provider_time(at: Timestamp) -> ProviderTime {
     }
 }
 fn parse_time(value: Option<&Value>) -> Option<ProviderTime> {
-    value
-        .and_then(Value::as_str)
-        .and_then(|s| s.parse::<jiff::Timestamp>().ok())
+    value.and_then(Value::as_str).and_then(parse_time_text)
+}
+fn parse_time_text(text: &str) -> Option<ProviderTime> {
+    text.parse::<jiff::Timestamp>()
+        .ok()
         .map(|t| provider_time(Timestamp(t.as_millisecond())))
 }
 
@@ -94,7 +99,7 @@ pub struct KeyedRecords<R: ReadView> {
     link_order: Vec<LinkKey>,
     links: Vec<Link>,
     events: Vec<(SessionId, Event)>,
-    pending: BTreeMap<(String, String), PendingMessage>,
+    pending: BTreeMap<(String, u64), PendingMessage>,
 }
 impl<R: ReadView> KeyedRecords<R> {
     pub fn new(ctx: FileCtx, view: R) -> Result<Self, String> {
@@ -137,6 +142,7 @@ impl<R: ReadView> KeyedRecords<R> {
                     session,
                     ordinal,
                     seen_own_user: false,
+                    next_message_ordinal: 0,
                     last_message: None,
                     facts_pending: false,
                 }
@@ -395,6 +401,15 @@ impl<R: ReadView> KeyedRecords<R> {
         rec: &Record<'_>,
         ty: &str,
     ) -> Result<RecordOutcome<Ignored>, String> {
+        if !rec.table.is_empty()
+            || rec.end.checked_sub(rec.start) != u64::try_from(rec.bytes.len()).ok()
+        {
+            return Err("Claude original record does not have an exact JSONL byte range".into());
+        }
+        let source_range = crate::selection::RecordRange {
+            start: rec.start,
+            end: rec.end,
+        };
         let incoming = &rec.value;
         let Some(uuid) = incoming
             .get("uuid")
@@ -445,6 +460,12 @@ impl<R: ReadView> KeyedRecords<R> {
                 "UUID response membership conflict",
             ));
         }
+        let record_origins = origins::RecordOrigins::overlay(
+            old.as_ref().map(|c| &c.origins),
+            incoming,
+            &v,
+            Some(source_range),
+        );
         let (mut blocks, bodies) = self.blocks_and_bodies(&v, &raw)?;
         let content = msg.get("content").unwrap_or(&Value::Null);
         let old_same = old
@@ -460,24 +481,35 @@ impl<R: ReadView> KeyedRecords<R> {
                 }
                 let id = MessageId::new(self.sessions[si].session.id.clone(), uuid)
                     .map_err(|e| e.to_string())?;
-                let (written_by, prompt_kind, from_name) = if ty == "assistant" {
-                    (
-                        if v.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
-                            WrittenBy::Harness
-                        } else {
-                            WrittenBy::Model
-                        },
-                        None,
-                        None,
-                    )
-                } else if blocks
-                    .iter()
-                    .any(|b| matches!(b, BlockContent::ToolResult(_)))
-                {
-                    (WrittenBy::Harness, None, None)
-                } else {
-                    self.user_author(si, &v, content, copy.is_some())
+                let context = selection::AuthorContext {
+                    role: if ty == "assistant" {
+                        Role::Assistant
+                    } else {
+                        Role::User
+                    },
+                    first_subagent_instruction: ty == "user"
+                        && !blocks
+                            .iter()
+                            .any(|b| matches!(b, BlockContent::ToolResult(_)))
+                        && copy.is_none()
+                        && !self.sessions[si].seen_own_user
+                        && self.sessions[si].session.kind == SessionKind::Subagent,
+                    copied: copy.is_some(),
                 };
+                let (written_by, prompt_kind, from_name) =
+                    selection::classify_author(&v, content, context);
+                if ty == "user"
+                    && !blocks
+                        .iter()
+                        .any(|b| matches!(b, BlockContent::ToolResult(_)))
+                    && copy.is_none()
+                {
+                    self.sessions[si].seen_own_user = true;
+                }
+                let ordinal = self.sessions[si].next_message_ordinal;
+                self.sessions[si].next_message_ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or("Claude message ordinal overflow")?;
                 let mut message = Message::new(
                     id,
                     IdKind::Provider,
@@ -491,25 +523,29 @@ impl<R: ReadView> KeyedRecords<R> {
                 message.prompt_kind = prompt_kind;
                 message.from_name = from_name;
                 message.at = parse_time(v.get("timestamp"));
-                message.parent = v
-                    .get("parentUuid")
-                    .and_then(Value::as_str)
-                    .and_then(|p| MessageId::new(self.sessions[si].session.id.clone(), p).ok());
                 if let Some((source, msg)) = &copy {
                     message.inherited_from = sid(source).and_then(|s| MessageId::new(s, msg).ok());
                     message.copy_origin = Some(CopyOrigin::Known);
                 }
                 ResponseCell {
                     message,
+                    ordinal,
+                    author_selection: Some(selection::AuthorSelection::new(source_range, context)),
                     items: 0,
                     revision: 0,
                     selected: Default::default(),
                     incomplete_bodies: 0,
                     selected_from: Default::default(),
                     selected_facts: Default::default(),
+                    selected_origins: Default::default(),
+                    stop_sequence: None,
+                    stop_sequence_raw: None,
                 }
             }
         };
+        if response.ordinal >= self.sessions[si].next_message_ordinal {
+            return Err("Claude response ordinal exceeds its session counter".into());
+        }
         if address
             .as_ref()
             .is_some_and(|a| a.message != response.message.id || a.item >= response.items)
@@ -548,7 +584,45 @@ impl<R: ReadView> KeyedRecords<R> {
             revision,
             old.as_ref().map(|c| &c.projection),
         )?;
+        for fact in projected.facts.iter_mut().chain(&mut projected.retained) {
+            fact.selection = selection::for_fact(fact, &v, &record_origins);
+        }
         if item == 0 {
+            response.message.parent = None;
+            if let Some(parent_uuid) = v
+                .get("parentUuid")
+                .and_then(Value::as_str)
+                .filter(|p| !p.is_empty())
+            {
+                let resolved = self.address(&native, parent_uuid)?.filter(|parent| {
+                    parent.item == 0
+                        && parent.message != response.message.id
+                        && parent.message.session() == response.message.id.session()
+                });
+                let parent_fact = projected.facts.iter_mut().find(|fact| {
+                    matches!(
+                        fact.field,
+                        projection::Field::FirstMessage(
+                            polylogue_model::merge::MessageField::Parent
+                        )
+                    )
+                });
+                if let (Some(parent), Some(fact)) = (resolved, parent_fact) {
+                    fact.selection =
+                        selection::parent(parent_uuid, parent.message.clone(), &record_origins);
+                    if fact.selection.is_some() {
+                        response.message.parent = Some(parent.message);
+                    } else {
+                        projected
+                            .obligations
+                            .push(projection::CountingObligation::ParentResolution);
+                    }
+                } else {
+                    projected
+                        .obligations
+                        .push(projection::CountingObligation::ParentResolution);
+                }
+            }
             if let Some(previous) = &old {
                 let old_raw: Value =
                     serde_json::from_slice(&previous.raw).map_err(|e| e.to_string())?;
@@ -556,6 +630,14 @@ impl<R: ReadView> KeyedRecords<R> {
                     .projection
                     .obligations
                     .contains(&projection::CountingObligation::FirstAuthorUpdate)
+                    || response.author_selection.as_ref().is_some_and(|selection| {
+                        selection::classify_author(&v, content, selection.context)
+                            != (
+                                response.message.written_by,
+                                response.message.prompt_kind,
+                                response.message.from_name.clone(),
+                            )
+                    })
                     || [
                         "origin",
                         "promptSource",
@@ -577,6 +659,7 @@ impl<R: ReadView> KeyedRecords<R> {
         let contribution = Contribution {
             uuid: uuid.into(),
             raw,
+            origins: record_origins,
             blocks: std::mem::take(&mut blocks),
             bodies,
             projection: projected,
@@ -601,6 +684,30 @@ impl<R: ReadView> KeyedRecords<R> {
             .as_ref()
             .is_none_or(|previous| previous.raw != contribution.raw)
         {
+            if incoming
+                .get("message")
+                .and_then(|message| message.get("stop_sequence"))
+                .is_some()
+            {
+                let fact=contribution.projection.facts.iter().find(|fact|matches!(&fact.field,projection::Field::SelectedExtra{key} if key=="stop_sequence")).cloned().ok_or("Claude stop_sequence supplier lost its source fact")?;
+                let value = v
+                    .get("message")
+                    .and_then(|message| message.get("stop_sequence"))
+                    .cloned()
+                    .ok_or("Claude stop_sequence normalized value unavailable")?;
+                response.stop_sequence_raw = Some(raw::canonical(
+                    raw::optional_field(rec.bytes, &["message", "stop_sequence"])?
+                        .ok_or("Claude stop_sequence raw supplier unavailable")?,
+                )?);
+                response.stop_sequence = Some(fact);
+                let attrs = response
+                    .message
+                    .attrs
+                    .get_or_insert_with(|| serde_json::json!({}))
+                    .as_object_mut()
+                    .ok_or("Claude normalized extras carrier is not an object")?;
+                attrs.insert("stop_sequence".into(), value);
+            }
             for (index, path) in METADATA_PATHS.iter().enumerate() {
                 if let Some(value) = raw::optional_field(rec.bytes, path)? {
                     response.selected[index] = Some(raw::canonical(value)?);
@@ -609,15 +716,22 @@ impl<R: ReadView> KeyedRecords<R> {
                         serde_json::from_slice(value).map_err(|e| e.to_string())?;
                     response.selected_facts[index] =
                         projection::selected(index, &semantic, revision);
+                    let selected = crate::selection::SelectedRaw {
+                        record: source_range,
+                        path: path
+                            .iter()
+                            .map(|key| crate::selection::PathPart::Key((*key).into()))
+                            .collect(),
+                    };
+                    response.selected_origins[index] = Some(selected.clone());
+                    for fact in &mut response.selected_facts[index] {
+                        fact.selection = selection::for_selected(fact, index, &semantic, &selected);
+                    }
                 }
             }
         }
         if item == 0 {
             response.message.at = parse_time(v.get("timestamp"));
-            response.message.parent = v
-                .get("parentUuid")
-                .and_then(Value::as_str)
-                .and_then(|p| MessageId::new(self.sessions[si].session.id.clone(), p).ok());
         }
         apply_selected(&mut response)?;
         if v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true) {
@@ -626,6 +740,9 @@ impl<R: ReadView> KeyedRecords<R> {
         }
         response.message.version_hash = None;
         let pending = PendingMessage {
+            session_native: native.clone(),
+            response: key.clone(),
+            ordinal: response.ordinal,
             message: response.message.id.clone(),
             revision: response.revision,
             items: response.items,
@@ -634,7 +751,7 @@ impl<R: ReadView> KeyedRecords<R> {
         self.pending.insert(
             (
                 response.message.id.session().as_str().into(),
-                response.message.id.as_str().into(),
+                response.ordinal,
             ),
             pending,
         );
@@ -667,105 +784,6 @@ impl<R: ReadView> KeyedRecords<R> {
         self.responses.insert((native, key), response);
         Ok(RecordOutcome::Used)
     }
-    /// `written_by` for a user record without tool results (`spec/sources/claude-code.md`, record types).
-    fn user_author(
-        &mut self,
-        si: usize,
-        v: &Value,
-        content: &Value,
-        is_copy: bool,
-    ) -> (WrittenBy, Option<PromptKind>, Option<String>) {
-        let b = &mut self.sessions[si];
-        let first_own = !is_copy && !b.seen_own_user;
-        if !is_copy {
-            b.seen_own_user = true;
-        }
-        let origin = v
-            .get("origin")
-            .and_then(|o| o.get("kind"))
-            .and_then(Value::as_str);
-        match origin {
-            Some("human") => return (WrittenBy::Human, Some(prompt_kind_of(content)), None),
-            Some("peer") => {
-                let name = v
-                    .get("origin")
-                    .and_then(|o| o.get("name"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                return (WrittenBy::Model, None, name);
-            }
-            Some("coordinator") => return (WrittenBy::Model, None, None),
-            Some("task-notification" | "auto-continuation") => {
-                return (WrittenBy::Harness, None, None);
-            }
-            _ => {}
-        }
-        if first_own && b.session.kind == SessionKind::Subagent {
-            // The instruction the parent model wrote in its Agent or Task call.
-            return (WrittenBy::Model, None, None);
-        }
-        match v.get("promptSource").and_then(Value::as_str) {
-            Some("typed" | "suggestion_accepted" | "queued") => {
-                return (WrittenBy::Human, Some(prompt_kind_of(content)), None);
-            }
-            Some("sdk" | "system") => return (WrittenBy::Harness, None, None),
-            _ => {}
-        }
-        if v.get("isMeta").and_then(Value::as_bool) == Some(true)
-            || v.get("isVisibleInTranscriptOnly").and_then(Value::as_bool) == Some(true)
-        {
-            return (WrittenBy::Harness, None, None);
-        }
-        if is_copy {
-            // A copy keeps the author it had in its source session; that is resolved at write.
-            return (WrittenBy::Unknown, None, None);
-        }
-        let text = match content {
-            Value::String(t) => t.as_str(),
-            Value::Array(a) => a
-                .iter()
-                .find_map(|b| b.get("text").and_then(Value::as_str))
-                .unwrap_or(""),
-            _ => "",
-        };
-        let t = text.trim_start();
-        // A typed slash command or `!` input: the person typed it (prompt_kind command).
-        if t.contains("<command-name>") || t.starts_with("<bash-input>") {
-            return (WrittenBy::Human, Some(PromptKind::Command), None);
-        }
-        // Its expansion and output, and other harness wrappers.
-        const HARNESS: [&str; 8] = [
-            "<local-command-stdout>",
-            "<local-command-stderr>",
-            "<bash-stdout>",
-            "<bash-stderr>",
-            "<command-message>",
-            "<system-reminder>",
-            "<task-notification>",
-            "[Request interrupted by user",
-        ];
-        if HARNESS.iter().any(|h| t.starts_with(h)) {
-            return (WrittenBy::Harness, None, None);
-        }
-        let has_source = v.get("promptSource").is_some();
-        // Versions before the field existed: a remaining prompt is the person's.
-        if !has_source
-            && v.get("version")
-                .and_then(Value::as_str)
-                .is_some_and(predates_prompt_source)
-        {
-            return (WrittenBy::Human, Some(prompt_kind_of(content)), None);
-        }
-        // Claude Code gives every submitted prompt a promptId.
-        if !has_source
-            && v.get("origin").is_none()
-            && v.get("promptId").and_then(Value::as_str).is_some()
-        {
-            return (WrittenBy::Human, Some(prompt_kind_of(content)), None);
-        }
-        (WrittenBy::Unknown, None, None)
-    }
-
     /// The session a non-message record of this file belongs to.
     fn file_session(&mut self, v: &Value) -> Result<Option<usize>, String> {
         match self.ctx.clone() {
@@ -876,6 +894,10 @@ fn usage_of(u: &Value) -> Usage {
             .get("cache_creation")
             .and_then(|m| m.get("ephemeral_1h_input_tokens"))
             .and_then(Value::as_u64),
+        service_tier: u
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         reasoning: u
             .get("output_tokens_details")
             .and_then(|m| m.get("thinking_tokens"))
@@ -902,13 +924,14 @@ fn text_of(v: &Value) -> Option<String> {
     }
 }
 
-fn blocks_of(content: &Value) -> Vec<BlockContent> {
+fn blocks_of(record: &Value, content: &Value) -> Vec<BlockContent> {
     match content {
         Value::String(s) => vec![BlockContent::Text { text: s.clone() }],
         Value::Array(items) => items
             .iter()
+            .enumerate()
             .map(
-                |it| match it.get("type").and_then(Value::as_str).unwrap_or("") {
+                |(index, it)| match it.get("type").and_then(Value::as_str).unwrap_or("") {
                     "text" => BlockContent::Text {
                         text: it
                             .get("text")
@@ -941,24 +964,9 @@ fn blocks_of(content: &Value) -> Vec<BlockContent> {
                             input,
                         })
                     }
-                    "tool_result" => BlockContent::ToolResult(ToolResult {
-                        call_id: it
-                            .get("tool_use_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        outcome: if it.get("is_error").and_then(Value::as_bool) == Some(true) {
-                            ToolOutcome::Error { reason: None }
-                        } else {
-                            ToolOutcome::Ok
-                        },
-                        exit_code: it
-                            .get("content")
-                            .and_then(text_of)
-                            .as_deref()
-                            .and_then(exit_code_in),
-                        duration_ms: None,
-                        output: it.get("content").and_then(text_of).map(ToolOutput::Text),
-                    }),
+                    "tool_result" => {
+                        BlockContent::ToolResult(tool_result::decide(record, index, it).result)
+                    }
                     "image" => BlockContent::Image(Attachment {
                         blob: None,
                         name: None,
@@ -1135,14 +1143,7 @@ impl<R: ReadView> KeyedRecords<R> {
             .into_iter()
             .map(|((s, k), c)| (s, k, c))
             .collect();
-        responses.sort_by(|a, b| {
-            (&a.0, a.1.role as u8, &a.1.response, &a.1.request).cmp(&(
-                &b.0,
-                b.1.role as u8,
-                &b.1.response,
-                &b.1.request,
-            ))
-        });
+        responses.sort_by(|a, b| (&a.0, a.2.ordinal).cmp(&(&b.0, b.2.ordinal)));
         let mut addresses: Vec<_> = self
             .addresses
             .into_iter()
@@ -1221,7 +1222,7 @@ impl<R: ReadView> KeyedRecords<R> {
             .get("message")
             .and_then(|m| m.get("content"))
             .unwrap_or(&Value::Null);
-        let mut blocks = blocks_of(content);
+        let mut blocks = blocks_of(record, content);
         let mut bodies = Vec::new();
         let Some(items) = content.as_array() else {
             return Ok((blocks, bodies));

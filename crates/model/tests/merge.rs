@@ -15,6 +15,18 @@ fn candidate(reference: u64, digest: u8) -> Candidate {
         },
     }
 }
+#[test]
+fn thinking_signature_is_retained_payload_without_source_rank_or_fill_authority() {
+    let signed = with_slot(
+        candidate(1, 7),
+        Slot::Block {
+            block: polylogue_model::BlockSlot::Item(0),
+            field: BlockField::ThinkingSignature,
+        },
+        5,
+    );
+    assert_eq!(signed.rank(), Err(MergeError::InvalidPresence));
+}
 fn with_slot(mut candidate: Candidate, slot: Slot, value: u64) -> Candidate {
     candidate.presence.slots.insert(
         slot,

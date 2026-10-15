@@ -362,7 +362,7 @@ mod tests {
     }
     #[test]
     fn active_normalized_origin_or_block_lease_cannot_be_skipped_by_source_range() {
-        use super::super::blocks::{BlockPresence, TextKind};
+        use super::super::blocks::{BlockKind, BlockPresence};
         for choice in 0..3 {
             let mut f = Fixture::new();
             match choice {
@@ -376,11 +376,11 @@ mod tests {
                 }
                 _ => {
                     f.writer
-                        .begin_text_block(
+                        .begin_block(
                             &f.build,
                             0,
                             0,
-                            TextKind::Thinking { encrypted: None },
+                            BlockKind::Thinking { encrypted: None },
                             BlockPresence::default(),
                             &ProjectionStep {
                                 expected_sequence: 0,

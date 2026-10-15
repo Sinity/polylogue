@@ -31,6 +31,7 @@ fn fixture(children: usize) -> MemoryReadView {
         Cell::Block(Block {
             id: BlockId::new(old, 9),
             content: BlockContent::ToolResult(ToolResult {
+                data: None,
                 call_id: Some("wrapper:opaque".into()),
                 outcome: ToolOutcome::Unknown {
                     reason: UnknownReason::ResultWithoutStatus,
