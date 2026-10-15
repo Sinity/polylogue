@@ -71,9 +71,9 @@ progress. Deleting it loses nothing; the loop rebuilds it.
 
 `message` is an identity and visibility head. Public Message/detail/block/export/citation/fact reads follow its `selected_body_pk`, require `hidden=0`, and resolve immutable payloads through that body's roots. A reserved identity with no selected body is absent from public populations. Retained-history reads explicitly name their body/candidate; they never resolve old facts through today's mutable head. Directory rank derives public ordinary/reasoning block positions, while attachment keys remain explicit. Equal local ordinals in different contributions do not prove semantic field correspondence.
 
-A provider contributes addressable groups, blocks and source-field facts. `message_candidate` retains pre-fill mapper facts, not scores inferred from normalized defaults. Reduce eligible revisions within each chain, chain representatives within each input, then effective input representatives, as sources rules2/5 require. `message_chain_choice` and `message_input_choice` retain those representatives and field roots. Their indexed scalar rank summaries are copied from the selected candidate in the same transaction, never independently rescored. Finish ranks positively in-progress, unclassified, positively finished in ascending order. Edits first exclude superseded content and omissions; unresolved edit-head authority remains unresolved. A detached independent import keeps its own input contribution.
+A provider contributes addressable groups, blocks and source-field facts. `message_candidate` retains pre-fill mapper facts, not scores inferred from normalized defaults. Reduce eligible revisions within each chain, chain representatives within each input, then effective input representatives, as sources rules2/5 require. `message_chain_choice` and `message_input_choice` retain those representatives and field roots. Their indexed scalar rank summaries are copied from the selected candidate in the same transaction, never independently rescored. Within one retained archive revision, a ready replacement of the same format-owned logical candidate retires the earlier intermediate state from current eligibility and missing-field donors. Scheduling cuts create neither additional source witnesses nor historical input authority. This does not collapse distinct competing versions deliberately represented by a format, and actual historical revisions/chains retain the declared lossy/edit policy. Finish ranks positively in-progress, unclassified, positively finished in ascending order. Edits first exclude superseded content and omissions; unresolved edit-head authority remains unresolved. A detached independent import keeps its own input contribution.
 
-`message_build` owns the pinned contributor/removal basis and scalar phase/cursors. Its bounded frontier leases nodes while preparing copy-on-write paths. Outer group directories reference local block directories; a replacement copies at most the affected radix16 paths, without shifting later block payload rows. Field directories retain source-slot donors independently of filled output. An immutable node owns at most16 edges; internal height strictly decreases, group leaves enter block roots, and final leaves reference blocks or field facts. Cached counts are computed from those children by the typed writer before sealing the node. No ready node or ready body is mutated.
+`message_build` owns the pinned contributor/removal basis and scalar phase/cursors. Its bounded frontier leases nodes while preparing copy-on-write paths. Its active-value reference is a durable producer lease while normalized bytes are appended/verified; readiness transfers that reference to its field/text owner, and abort releases it before bounded payload retirement. Outer group directories reference local block directories; a replacement copies at most the affected radix16 paths, without shifting later block payload rows. Field directories retain source-slot donors independently of filled output. An immutable node owns at most16 edges; internal height strictly decreases, group leaves enter block roots, and final leaves reference blocks or field facts. Cached counts are computed from those children by the typed writer before sealing the node. No ready node or ready body is mutated.
 
 Bodies, representatives, frontier rows and incoming edges acquire/release node references in their small owning transaction. A zero-reference node is claimed as `retiring` before draining at most the admitted edge count; acquisition cannot attach a retiring node. Retirement releases children by stable keysets, then removes the empty owner. Payload/fact/value cleanup likewise checks remaining references and drains bounded chunks. No cascade, giant ID list or whole-body map is used. SQLite readers pinned before retirement retain their old complete graph through WAL. Index collection cannot delete archive-owned source bytes.
 
@@ -276,6 +276,7 @@ CREATE TABLE message_candidate (
   revision INTEGER NOT NULL CHECK(revision>0),
   revision_length INTEGER NOT NULL CHECK(revision_length>=0),
   evidence_revision INTEGER NOT NULL CHECK(evidence_revision>=0),
+  logical_key BLOB NOT NULL CHECK(length(logical_key)=32), -- format-owned candidate identity, never a scheduling cut
   parser_version INTEGER NOT NULL CHECK(parser_version>=0),
   basis_digest BLOB NOT NULL CHECK(length(basis_digest)=32),
   body_pk INTEGER,
@@ -301,6 +302,10 @@ CREATE TABLE message_candidate (
   UNIQUE(pk,message_pk,session_pk,input_pk),
   UNIQUE(pk,message_pk,session_pk,input_pk,chain)
 ) STRICT;
+-- One currently eligible effective state of one provider-owned candidate within
+-- a retained revision. Prior scheduling cuts are retained history, not donors.
+CREATE UNIQUE INDEX message_candidate_effective ON message_candidate(
+  message_pk,input_pk,chain,revision,logical_key) WHERE eligible=1;
 CREATE INDEX message_candidate_input ON message_candidate(input_pk,chain,revision);
 CREATE INDEX message_candidate_owner ON message_candidate(message_pk,session_pk);
 CREATE INDEX message_candidate_body ON message_candidate(body_pk) WHERE body_pk IS NOT NULL;
@@ -521,6 +526,7 @@ CREATE TABLE message_build (
   contributor_revision INTEGER NOT NULL CHECK(contributor_revision>=0),
   removal_epoch INTEGER NOT NULL CHECK(removal_epoch>=0),
   phase TEXT NOT NULL CHECK(phase IN('project','rank','fold','hash','layout','ready','retiring')),
+  active_value_pk INTEGER REFERENCES body_value(pk), -- durable producer lease, transferred/released atomically
   source_cursor INTEGER NOT NULL DEFAULT 0 CHECK(source_cursor>=0),
   group_cursor INTEGER NOT NULL DEFAULT 0 CHECK(group_cursor>=0),
   local_cursor INTEGER NOT NULL DEFAULT 0 CHECK(local_cursor>=0),
@@ -531,6 +537,7 @@ CREATE TABLE message_build (
   UNIQUE(pk,message_pk,session_pk)
 ) STRICT;
 CREATE INDEX message_build_body ON message_build(body_pk);
+CREATE INDEX message_build_value ON message_build(active_value_pk);
 -- Fixed frontier slots lease ready nodes while paths are copied. A path through
 -- an outer group tree and inner block tree has at most 32 radix16 nodes. Root
 -- leases owned by bodies/representatives are separate incoming references.

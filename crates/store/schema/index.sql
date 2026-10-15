@@ -175,6 +175,7 @@ CREATE TABLE message_candidate (
   revision INTEGER NOT NULL CHECK(revision>0),
   revision_length INTEGER NOT NULL CHECK(revision_length>=0),
   evidence_revision INTEGER NOT NULL CHECK(evidence_revision>=0),
+  logical_key BLOB NOT NULL CHECK(length(logical_key)=32), -- format-owned candidate identity, never a scheduling cut
   parser_version INTEGER NOT NULL CHECK(parser_version>=0),
   basis_digest BLOB NOT NULL CHECK(length(basis_digest)=32),
   body_pk INTEGER,
@@ -200,6 +201,10 @@ CREATE TABLE message_candidate (
   UNIQUE(pk,message_pk,session_pk,input_pk),
   UNIQUE(pk,message_pk,session_pk,input_pk,chain)
 ) STRICT;
+-- One currently eligible effective state of one provider-owned candidate within
+-- a retained revision. Prior scheduling cuts are retained history, not donors.
+CREATE UNIQUE INDEX message_candidate_effective ON message_candidate(
+  message_pk,input_pk,chain,revision,logical_key) WHERE eligible=1;
 CREATE INDEX message_candidate_input ON message_candidate(input_pk,chain,revision);
 CREATE INDEX message_candidate_owner ON message_candidate(message_pk,session_pk);
 CREATE INDEX message_candidate_body ON message_candidate(body_pk) WHERE body_pk IS NOT NULL;
@@ -420,6 +425,7 @@ CREATE TABLE message_build (
   contributor_revision INTEGER NOT NULL CHECK(contributor_revision>=0),
   removal_epoch INTEGER NOT NULL CHECK(removal_epoch>=0),
   phase TEXT NOT NULL CHECK(phase IN('project','rank','fold','hash','layout','ready','retiring')),
+  active_value_pk INTEGER REFERENCES body_value(pk), -- durable producer lease, transferred/released atomically
   source_cursor INTEGER NOT NULL DEFAULT 0 CHECK(source_cursor>=0),
   group_cursor INTEGER NOT NULL DEFAULT 0 CHECK(group_cursor>=0),
   local_cursor INTEGER NOT NULL DEFAULT 0 CHECK(local_cursor>=0),
@@ -430,6 +436,7 @@ CREATE TABLE message_build (
   UNIQUE(pk,message_pk,session_pk)
 ) STRICT;
 CREATE INDEX message_build_body ON message_build(body_pk);
+CREATE INDEX message_build_value ON message_build(active_value_pk);
 -- Fixed frontier slots lease ready nodes while paths are copied. A path through
 -- an outer group tree and inner block tree has at most 32 radix16 nodes. Root
 -- leases owned by bodies/representatives are separate incoming references.

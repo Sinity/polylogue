@@ -22,7 +22,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock, atomic::AtomicBool},
 };
-mod contributions;
+pub mod contributions;
 mod native;
 mod retained;
 pub use retained::{ImportObservation, InputFormat, RetainedInput};
@@ -32,11 +32,11 @@ mod wal;
 
 pub const ARCHIVE_VERSION: u32 = 0;
 pub const EMBEDDINGS_VERSION: u32 = 0;
-pub const INDEX_VERSION: u32 = 9;
+pub const INDEX_VERSION: u32 = 10;
 /// Exact owning forward-schema revision, independently qualified from inbox index8.
 pub const INDEX_SQL_BLAKE3: &str =
-    "150783961b52d6174dadfe75c439825bdcad0328e18ce2df23961d90eb2ace4b";
-pub const INDEX_SPEC_COMMIT: &str = "1389f5d11e0d484116ad8efd4647569fa889b9f9";
+    "d01863f84dc3f45acc2f17dceeaa4208c4532d08324e46ffca694d33d48b62a6";
+pub const INDEX_SPEC_COMMIT: &str = "f4ddfd5202e971996b6130ebef310200a1cef3f6";
 const ARCHIVE_SQL: &str = include_str!("../schema/archive.sql");
 const INDEX_SQL: &str = include_str!("../schema/index.sql");
 const EMBEDDINGS_SQL: &str = include_str!("../schema/embeddings.sql");
@@ -44,6 +44,14 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(
+        "normalized value chunk of {required} bytes must be split into chunks of at most {maximum} bytes"
+    )]
+    ValueChunkSplitRequired { required: usize, maximum: usize },
+    #[error("message preparation predecessor changed")]
+    MessagePredecessorChanged,
+    #[error("message has an unfinished preparation; resume or retire it first")]
+    MessagePreparationPending,
     #[error("normalized value predecessor changed")]
     ValuePredecessorChanged,
     #[error("normalized value is not integrity sealed")]

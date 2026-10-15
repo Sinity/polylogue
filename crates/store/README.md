@@ -88,3 +88,14 @@ children through counted references. Collection drains one at-most16-edge node
 per transaction, with pinned readers retaining their historical WAL snapshot.
 These primitives are still being connected to canonical Message activation and
 public reads; they do not certify those unfinished runtime operations.
+
+Pending Message preparation is separate from body selection. `prepare_message`
+reserves a committed, basis-pinned body/candidate without making it eligible or
+public. A build owns one active normalized value while bytes are appended and
+verified; sealing deduplicates and transfers that producer lease atomically.
+`write_message_field` transfers it into one source field fact and copies one
+fixed-depth directory path. Source changes, removal epochs and archive/index
+identity mismatches reject further preparation. Invalidation releases its active
+value lease even after the source basis changes. These APIs do not yet finish
+candidate reconciliation, body activation, or retirement draining; public-client
+and whole-path resource acceptance remain open.
