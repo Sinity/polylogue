@@ -67,8 +67,15 @@ _OPENER_NAMES = frozenset({"connect", "ArchiveStore"})
 
 def database_openers(source: str) -> list[str]:
     """Names of every connection-opening call in ``source``."""
+    tree = ast.parse(source)
+    imported_names = {
+        alias.asname or alias.name: alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
     found: list[str] = []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
@@ -76,7 +83,7 @@ def database_openers(source: str) -> list[str]:
             base = func.value
             prefix = base.id if isinstance(base, ast.Name) else ast.unparse(base)
             found.append(f"{prefix}.{func.attr}")
-        elif isinstance(func, ast.Name) and func.id in _OPENER_NAMES:
+        elif isinstance(func, ast.Name) and imported_names.get(func.id, func.id) in _OPENER_NAMES:
             found.append(func.id)
     return found
 
@@ -101,6 +108,11 @@ def test_the_detector_sees_a_planted_opener() -> None:
     assert database_openers("a = ArchiveStore.open_existing(root)\n") == ["ArchiveStore.open_existing"]
     assert database_openers("import aiosqlite\nc = await aiosqlite.connect(p)\n") == ["aiosqlite.connect"]
     assert database_openers("store = ArchiveStore(root)\n") == ["ArchiveStore"]
+    assert database_openers("from sqlite3 import connect as open_db\nopen_db('x.db')\n") == ["open_db"]
+    assert database_openers("from aiosqlite import connect as open_async\nawait open_async('x.db')\n") == ["open_async"]
+    assert database_openers(
+        "from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore as Store\nStore(root)\n"
+    ) == ["Store"]
     # And it must not fire on an ordinary call.
     assert database_openers("respond(payload)\n") == []
 

@@ -174,3 +174,30 @@ def test_session_counts_agree_across_full_append_and_refresh_paths(messages: lis
     finally:
         for conn in connections:
             conn.close()
+
+
+def test_repeated_native_id_does_not_increment_counts_across_append() -> None:
+    """A repeated singleton ID is replay; metadata still advances on this append."""
+    message = ParsedMessage(
+        provider_message_id="duplicate",
+        role=Role.USER,
+        text="retained words",
+        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+    )
+    conn = _new_connection()
+    try:
+        session_id = write_fixture_index_session(conn, _new_session([message]), standalone_memory=True)
+        replay = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="session-count-law",
+            title="Updated metadata",
+            messages=[message],
+        )
+        write_fixture_index_session(conn, replay, merge_append=True, standalone_memory=True)
+        assert conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == (
+            "Updated metadata"
+        )
+        assert _session_counts(conn, session_id) == _reference_counts([message])
+        assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
+    finally:
+        conn.close()

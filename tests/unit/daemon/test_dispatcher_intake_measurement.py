@@ -43,7 +43,7 @@ from tests.infra.workload_declarations import convergence_corpus_specs
 
 _MAX_DISPATCHER_PASSES = 64
 _THROUGHPUT_BOUND = 1.5
-_MEASUREMENT_PAIRS = 3
+_MEASUREMENT_PAIRS = 4
 _MEASURED_PAGE_FILES = 5
 
 
@@ -72,7 +72,7 @@ def _write_corpus(root: Path, *, prefix: str = "dispatcher-measure", keep_files:
 
     ``keep_files`` trims the corpus to its first N files. Each file is an
     independent session, so a trimmed corpus is still a well-formed page.
-    The throughput comparison runs eight ingests and each file costs both
+    The throughput comparison counterbalances both arm orders; each file costs both
     arms the same ~0.2 s, so the trim is what keeps that test inside a
     unit-test budget: 14 s idle here against 103 s untrimmed under load,
     with a 120 s default per-test timeout.
@@ -385,8 +385,8 @@ def test_dispatcher_intake_is_within_direct_ingest_bound(tmp_path: Path, monkeyp
       arm order biases the ratio by construction; the order alternates.
     * A single pair is not resolvable against this bound: one arm of one
       pair has been seen 4x slow on a busy host while every other reading
-      in the same run sat at ~1.0. The median of three absorbs one such
-      reading; it cannot absorb a real regression, which moves every pair.
+      in the same run sat at ~1.0. The median of counterbalanced pairs absorbs
+      an isolated reading; a real regression moves every pair.
 
     Both arms must also be the same unit of work: ``_run_direct_ingest``
     repeats the adapter's own ``ingest_files`` keywords, because
@@ -420,6 +420,7 @@ def test_dispatcher_intake_is_within_direct_ingest_bound(tmp_path: Path, monkeyp
         tmp_path / "warm-direct-archive",
     )
 
+    assert _MEASUREMENT_PAIRS > 0 and _MEASUREMENT_PAIRS % 2 == 0
     ratios: list[float] = []
     receipts: list[str] = []
     for pair in range(_MEASUREMENT_PAIRS):
