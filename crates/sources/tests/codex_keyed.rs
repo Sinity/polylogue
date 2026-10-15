@@ -369,6 +369,39 @@ fn missing_referenced_cells_fail_instead_of_becoming_provider_unknown_records() 
         (
             line(
                 "response_item",
+                json!({"type":"message","id":"msg","role":"assistant","content":[{"text":"before"}]}),
+            ),
+            Key::EvidenceHead(0),
+            line(
+                "response_item",
+                json!({"type":"message","id":"msg","role":"assistant","content":[{"text":"after"}]}),
+            ),
+            "evidence head",
+        ),
+        (
+            line(
+                "response_item",
+                json!({"type":"message","id":"msg","role":"assistant","content":[{"text":"before"}]}),
+            ),
+            Key::EvidenceItem(0, "msg".into()),
+            line(
+                "response_item",
+                json!({"type":"message","id":"msg","role":"assistant","content":[{"text":"after"}]}),
+            ),
+            "native item position",
+        ),
+        (
+            String::new(),
+            Key::Context(0),
+            line(
+                "response_item",
+                json!({"type":"message","id":"msg","role":"user","content":[{"text":"prompt"}]}),
+            ),
+            "required context evidence",
+        ),
+        (
+            line(
+                "response_item",
                 json!({"type":"function_call","id":"exec","name":"exec","call_id":"exec","arguments":"{}"}),
             ),
             Key::Call("exec".into()),

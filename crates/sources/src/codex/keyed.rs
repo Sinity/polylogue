@@ -2020,11 +2020,18 @@ impl<V: ReadView> KeyedRecords<V> {
                     .map(str::to_owned);
                 let owner = named.or_else(|| self.wrapper_one());
                 let prior_owner = self.known_owner(&item);
-                let mi = prior_owner.or_else(|| {
-                    owner
-                        .as_ref()
-                        .and_then(|place| self.call(place).map(|call| call.at.0))
-                });
+                let wrapper_message = if let Some(place) = owner.as_ref() {
+                    match self.call(place) {
+                        Some(call) => Some(call.at.0),
+                        None => {
+                            self.missing("wrapper call");
+                            return RecordOutcome::Used;
+                        }
+                    }
+                } else {
+                    None
+                };
+                let mi = prior_owner.or(wrapper_message);
                 let Some(mi) = mi else {
                     self.s.normalization_incomplete = true;
                     let child_id = item.get("id").and_then(Value::as_str).unwrap_or("");
