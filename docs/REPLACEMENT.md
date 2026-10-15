@@ -1,4 +1,4 @@
-# Isolated foundation disposition
+# Foundation replacement disposition
 
 Predecessor base: `b4b61c7eab8daf740bfdccb146e530906839726d`. This replacement exists only in the isolated branch. Primary master, hosted publication, installed consumers, task routing, services and archives remain unchanged.
 
@@ -48,7 +48,7 @@ The replacement is the target `Cargo.toml`/lock, `crates/`, `xtask/`, Nix packag
 
 ## Operational boundary
 
-This is a verified local foundation, not a ready source-replacement PR or a usable M1 product. Predecessor packages and transitive consumers must remain explicitly pinned before source replacement; the current branch does not change those consumers. The successor CircleCI job definition keeps the existing quick-gate name and invokes actual target checks, but it has not run on the forge. Required protections and hosted review must be rechecked at publication.
+This is a foundation source replacement, not a usable M1 product. Known predecessor package consumers have explicit immutable source pins published in [Sinnix e9bdd3a75](https://github.com/Sinity/sinnix/commit/e9bdd3a750227d02baf8df851c95945b6a25b282) and [Lynchpin 0383336](https://github.com/Sinity/sinity-lynchpin/commit/03833361456999be6c84536fb6e0936b62d27ccb). Their locked graphs remain unchanged. These source declarations do not prove installed state, and explicit input overrides remain outside their scope. The current branch does not change those consumers. The successor CircleCI job definition keeps the existing quick-gate name and invokes actual target checks, but it has not run on the forge. Required protections and hosted review must be rechecked at publication.
 
 The shared file layer is the canonical Polylogue owner candidate plus a reviewed read-only capability; source/adaptation digests are recorded in shared-crate-source.json. Package metadata and a disposable local-tag consumer prepare `hashed-blobs-v0.1.0`; [the release procedure](shared-file-layer-release.md) names the exact publication and vendor-replacement gates. The remote owner tag and real downstream pin remain open. No remote tag has been invented.
 
