@@ -642,10 +642,20 @@ fn retained_wal_cold_reopen_probe() {
                     Ok(status) => format!("counter={}", status.write_counter),
                     Err(err) => format!("error={err}"),
                 };
+                let main_before = before
+                    .iter()
+                    .find(|(file, _, _)| file.file_name().unwrap() == "archive.db")
+                    .unwrap();
+                let main_unchanged = fs::read(case.join("archive.db")).unwrap() == main_before.1;
+                let wal_unchanged = fs::read(&wal_path).ok().as_deref() == Some(damaged.as_slice());
                 println!(
-                    "WAL_PROBE {name}: {result}; files_unchanged={}",
-                    snapshot(&case) == before
+                    "WAL_PROBE {name}: {result}; files_unchanged={}; main_unchanged={main_unchanged}; wal_unchanged={wal_unchanged}; wal_exists={}",
+                    snapshot(&case) == before,
+                    wal_path.exists()
                 );
+                if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
+                    copy_fixture(&case, &PathBuf::from(capture).join("after").join(&name));
+                }
                 if mutation == "none" && shm != "absent" {
                     assert_eq!(result, "counter=3");
                 }
