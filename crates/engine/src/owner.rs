@@ -1106,7 +1106,7 @@ pub(crate) fn parser_version(format: InputFormat) -> u32 {
         InputFormat::ClaudeCodeJsonl => claude_code::PARSER_VERSION,
     }
 }
-fn parser_context(input: &ImmutableImport) -> Result<SourceContext> {
+pub(crate) fn parser_context(input: &ImmutableImport) -> Result<SourceContext> {
     let parts = input.context.iter().map(String::as_str).collect::<Vec<_>>();
     input.format.validate_context(&parts)?;
     match (input.format, parts.as_slice()) {

@@ -114,11 +114,19 @@ pub fn read(snapshot: &Snapshot, input: &ImmutableImport) -> Result<Option<Recei
         }
         return Ok(None);
     };
-    let receipt: Receipt = serde_json::from_slice(&value)
-        .map_err(|_| Error::Invariant("invalid source row settlement receipt".into()))?;
-    receipt.validate_published(&snapshot.head, &basis(input))?;
-    Ok(Some(receipt))
+    Ok(Some(decode(&value, &snapshot.head, input)?))
 }
+pub(crate) fn decode(
+    value: &[u8],
+    head: &polylogue_store::parser_state::Head,
+    input: &ImmutableImport,
+) -> Result<Receipt> {
+    let receipt: Receipt = serde_json::from_slice(value)
+        .map_err(|_| Error::Invariant("invalid source row settlement receipt".into()))?;
+    receipt.validate_published(head, &basis(input))?;
+    Ok(receipt)
+}
+
 #[derive(Clone)]
 pub struct Audit {
     step: i64,

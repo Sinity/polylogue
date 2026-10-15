@@ -25,9 +25,13 @@ pub struct MessageHeader {
 struct PinnedRead {
     connection: Connection,
     visibility: Connection,
+    archive: Option<Connection>,
+    archive_visibility: Option<Connection>,
     _lock: Arc<File>,
 }
 type SharedRead = Arc<Mutex<PinnedRead>>;
+mod dependencies;
+pub use dependencies::{SessionDependencyCursor, SessionInputDependency};
 fn locked(read: &SharedRead) -> Result<MutexGuard<'_, PinnedRead>> {
     read.lock()
         .map_err(|_| Error::Invariant("selected read snapshot mutex poisoned".into()))
@@ -124,6 +128,8 @@ impl ReadHandle {
             read: Arc::new(Mutex::new(PinnedRead {
                 connection,
                 visibility: crate::open(&path, true, false)?,
+                archive: None,
+                archive_visibility: None,
                 _lock: Arc::clone(&self._lock),
             })),
             path,
@@ -574,6 +580,7 @@ pub struct SessionView {
     pk: i64,
     generation: String,
     counter: u64,
+    archive_counter: u64,
 }
 /// Work cursor bound to one exact read snapshot. Its PK is a tie cursor only,
 /// never an ordering authority for distinct Messages with the same sequence.
@@ -648,6 +655,13 @@ impl ReadHandle {
                 id.as_str().len() as u64,
             ));
         }
+        // Admission metadata is immutable, but its catalog can grow before
+        // disposable registration. Pin it FIRST, then the index, and refuse an
+        // archive change across that interval rather than hide a crash gap.
+        let archive_path = self.root.join("archive.db");
+        let archive = crate::open(&archive_path, true, true)?;
+        db(&archive_path, || archive.execute_batch("BEGIN DEFERRED"))?;
+        let archive_counter = crate::counter(&archive, &archive_path)?;
         let path = self.root.join("index.db");
         let connection = crate::open(&path, true, false)?;
         db(&path, || connection.execute_batch("BEGIN DEFERRED"))?;
@@ -782,10 +796,15 @@ impl ReadHandle {
             last_activity_at,
             stub,
         };
+        if crate::counter(&self.archive, &archive_path)? != archive_counter {
+            return Err(Error::MessagePredecessorChanged);
+        }
         Ok(Some(SessionView {
             read: Arc::new(Mutex::new(PinnedRead {
                 connection,
                 visibility: crate::open(&path, true, false)?,
+                archive: Some(archive),
+                archive_visibility: Some(crate::open(&archive_path, true, true)?),
                 _lock: Arc::clone(&self._lock),
             })),
             path,
@@ -793,6 +812,7 @@ impl ReadHandle {
             pk,
             generation,
             counter,
+            archive_counter,
         }))
     }
 }

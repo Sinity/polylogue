@@ -11,3 +11,5 @@ pub mod version_proof;
 pub mod canonical_message;
 
 mod source_rows;
+
+pub mod session_qualification;
