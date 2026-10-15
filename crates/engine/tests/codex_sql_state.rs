@@ -588,3 +588,53 @@ fn native_value_admission_survives_provider_callback_and_retry_starts_fresh() {
     assert!(framed.output.is_ok());
     assert!(retry.take_failure().is_none());
 }
+
+#[test]
+fn sortable_neighbors_and_distinct_effects_steps_survive_equal_raw_offsets() {
+    let mut world = World::new(b"x");
+    let mut resume = Resume::default();
+    resume.parsed_upto = 0;
+    let delta = Delta {
+        resume,
+        cells: std::collections::BTreeMap::from([
+            (Key::Wrapper(9), Some(Cell::Text("nine".into()))),
+            (Key::Wrapper(10), Some(Cell::Text("ten".into()))),
+            (Key::Wrapper(256), Some(Cell::Text("later".into()))),
+        ]),
+        events: vec![],
+        links: vec![],
+        reached_back: false,
+        pending_versions: vec![],
+        conflicts: vec![],
+        pending_results: vec![],
+    };
+    let first = adapter::encode_delta(&delta, 1, budget()).unwrap();
+    world.install(&first.changes, 0, Accounting::default());
+    let second = adapter::encode_delta(&delta, 2, budget()).unwrap();
+    world.install(&second.changes, 0, Accounting::default());
+    world = world.reopen();
+    let snapshot = world.writer.parser_snapshot(&world.head.token).unwrap();
+    let attempt = adapter::Attempt::new(&snapshot, budget());
+    attempt.resume().unwrap();
+    assert!(matches!(
+        attempt.next(&Key::Wrapper(9)).unwrap(),
+        Some((Key::Wrapper(10), Cell::Text(_)))
+    ));
+    assert!(matches!(
+        attempt.previous(&Key::Wrapper(256)).unwrap(),
+        Some((Key::Wrapper(10), Cell::Text(_)))
+    ));
+    assert!(attempt.next(&Key::Model(0)).unwrap().is_none());
+    for step in [1u64, 2] {
+        assert!(
+            snapshot
+                .cell(
+                    adapter::EFFECTS_NAMESPACE,
+                    &step.to_be_bytes(),
+                    budget().encoded_bytes
+                )
+                .unwrap()
+                .is_some()
+        );
+    }
+}
