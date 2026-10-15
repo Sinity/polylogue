@@ -14,7 +14,10 @@ migration steps. The index has version one. Startup checks every existing
 schema/version before target database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 the old index. An orphan nonempty WAL without its shared-memory file requires
-explicit recovery before non-mutating inspection; no WAL is silently ignored. Rebuild and migration machinery remain later work.
+explicit recovery before non-mutating inspection; no WAL is silently ignored.
+An existing live WAL is inspected with its real SQLite view; SQLite may update
+coordination read marks in its existing shared-memory file. Durable database
+and WAL bytes are not changed by inspection. Rebuild and migration machinery remain later work.
 
 Bundled SQLite 3.53.2 is checked at build time and runtime. The unchanged
 matching upstream checksum VFS is statically linked and registered before

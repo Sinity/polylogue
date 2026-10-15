@@ -178,6 +178,19 @@ fn version(conn: &Connection, file: &Path) -> Result<u32> {
         conn.query_row("PRAGMA user_version", [], |row| row.get(0)),
     )
 }
+fn sibling(file: &Path, suffix: &str) -> PathBuf {
+    let mut name = file.as_os_str().to_os_string();
+    name.push(suffix);
+    name.into()
+}
+fn owned_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
+    match path.symlink_metadata() {
+        Ok(meta) if meta.file_type().is_symlink() => Err(Error::Schema(path.into())),
+        Ok(meta) => Ok(Some(meta)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(Error::Io(err)),
+    }
+}
 fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Result<()> {
     let file = root.join(name);
     if file
@@ -190,10 +203,10 @@ fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Re
         return Ok(());
     }
     // Read only: no journal mode, schema, counters, chmod, or blob mutations precede this check.
-    let wal = PathBuf::from(format!("{}-wal", file.display()));
-    let shm = PathBuf::from(format!("{}-shm", file.display()));
-    let has_wal = wal.metadata().is_ok_and(|m| m.len() != 0);
-    if has_wal && !shm.exists() {
+    let wal = sibling(&file, "-wal");
+    let shm = sibling(&file, "-shm");
+    let has_wal = owned_metadata(&wal)?.is_some_and(|m| m.len() != 0);
+    if has_wal && owned_metadata(&shm)?.is_none() {
         return Err(Error::Initialization(format!(
             "non-mutating inspection requires recovery of orphan WAL at {}",
             wal.display()
@@ -231,6 +244,29 @@ fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Re
             _ => INDEX_SQL,
         },
     )?;
+    if name != "embeddings.db" {
+        counter(&conn, &file)?;
+    }
+    if name == "index.db" {
+        let stored: String = db(
+            &file,
+            conn.query_row(
+                "SELECT value FROM meta WHERE key='INDEX_VERSION'",
+                [],
+                |r| r.get(0),
+            ),
+        )?;
+        let found = stored
+            .parse::<u32>()
+            .map_err(|_| Error::Schema(file.clone()))?;
+        if found != expected {
+            return Err(Error::IndexRebuildRequired {
+                file,
+                found,
+                expected,
+            });
+        }
+    }
     Ok(())
 }
 fn preflight(root: &Path) -> Result<()> {

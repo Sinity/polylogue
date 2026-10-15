@@ -247,10 +247,89 @@ fn readonly_byte_access_does_not_recreate_writer_scratch() {
 
 #[test]
 fn orphan_wal_is_refused_without_recovery_side_effects() {
-    let tmp=tempfile::tempdir().unwrap(); let root=tmp.path();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
     drop(Writer::open(root).unwrap());
-    fs::write(root.join("archive.db-wal"),b"retained orphan WAL marker").unwrap();
-    let before=snapshot(root);
-    assert!(matches!(Writer::open(root),Err(Error::Initialization(_))));
-    assert!(snapshot(root)==before,"inspection must preserve all retained files");
+    fs::write(root.join("archive.db-wal"), b"retained orphan WAL marker").unwrap();
+    let before = snapshot(root);
+    assert!(matches!(Writer::open(root), Err(Error::Initialization(_))));
+    assert!(
+        snapshot(root) == before,
+        "inspection must preserve all retained files"
+    );
+}
+
+#[test]
+fn index_metadata_version_is_checked_even_when_pragma_matches() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    drop(Writer::open(root).unwrap());
+    let conn = open(&root.join("index.db"), false, false).unwrap();
+    conn.execute("UPDATE meta SET value='98' WHERE key='INDEX_VERSION'", [])
+        .unwrap();
+    drop(conn);
+    let before = snapshot(root);
+    assert!(matches!(
+        Writer::open(root),
+        Err(Error::IndexRebuildRequired { found: 98, .. })
+    ));
+    assert!(snapshot(root) == before, "refusal must preserve files");
+}
+#[test]
+fn malformed_archive_counter_is_refused_before_mutation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    drop(Writer::open(root).unwrap());
+    let conn = open(&root.join("archive.db"), false, true).unwrap();
+    conn.execute(
+        "UPDATE meta SET value='unknown' WHERE key='write_counter'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let before = snapshot(root);
+    assert!(matches!(Writer::open(root), Err(Error::Schema(_))));
+    assert!(snapshot(root) == before, "refusal must preserve files");
+}
+
+#[test]
+fn non_utf8_path_reads_retained_wal_version_before_mutation() {
+    use std::os::unix::ffi::OsStringExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp
+        .path()
+        .join(std::ffi::OsString::from_vec(b"archive-\xff".to_vec()));
+    drop(Writer::open(&root).unwrap());
+    let file = root.join("archive.db");
+    let conn = open(&file, false, true).unwrap();
+    conn.pragma_update(None, "user_version", 99).unwrap();
+    assert!(sibling(&file, "-wal").metadata().unwrap().len() > 0);
+    let before = snapshot(&root);
+    assert!(matches!(
+        Writer::open(&root),
+        Err(Error::NewerSchema { found: 99, .. })
+    ));
+    let after = snapshot(&root);
+    // SQLite read marks in the existing SHM are coordination state, not durable conversation bytes.
+    let durable = |entries: Vec<(PathBuf, Vec<u8>, u32)>| {
+        entries
+            .into_iter()
+            .filter(|(p, _, _)| !p.as_os_str().as_bytes().ends_with(b"-shm"))
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        durable(before) == durable(after),
+        "refusal changed retained files"
+    );
+    drop(conn);
+}
+#[test]
+fn inaccessible_wal_metadata_is_not_treated_as_no_wal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    drop(Writer::open(root).unwrap());
+    // A self-referential symlink yields ELOOP when followed; it must never select immutable inspection.
+    let wal = root.join("archive.db-wal");
+    symlink("archive.db-wal", &wal).unwrap();
+    assert!(matches!(Writer::open(root), Err(Error::Schema(_))));
 }
