@@ -12,8 +12,7 @@ revisions, parsing or M1 support.
 All three schemas are exact SQL-fence extractions from the owning snapshot;
 a drift test compares their text. Archive version 1 adds the immutable import
 identity tuple; embeddings version remains zero and index version is 12. No
-pre-release durable migration is supplied. Existing schemas
-and versions are checked before database mutations. A newer durable file is
+pre-release durable migration is supplied. Existing schemas and versions are checked before database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 it. Retained state without its coordination lock requires controlled recovery;
 raw headers may explain a newer-version refusal without opening SQLite.
