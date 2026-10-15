@@ -228,7 +228,7 @@ pub struct Message {
     pub id_kind: IdKind,
     /// Filled only from complete source evidence, never normalized content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version_hash: Option<[u8; 32]>,
+    pub version_hash: Option<BlobHash>,
     pub role: Role,
     pub written_by: WrittenBy,
     #[serde(default, skip_serializing_if = "Option::is_none")]

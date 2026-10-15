@@ -277,3 +277,16 @@ fn record_outcome_is_copy_for_copy_ignore_reasons() {
     let _copy = outcome;
     assert_eq!(outcome, RecordOutcome::Ignored(3));
 }
+
+#[test]
+fn source_version_digest_uses_validated_hex_wire_without_changing_policy() {
+    let mut msg = message(&session("version"), "m");
+    assert_eq!(msg.version_hash, None);
+    let digest = BlobHash::from_bytes([0xab; 32]);
+    msg.version_hash = Some(digest);
+    let mut wire = serde_json::to_value(&msg).unwrap();
+    assert_eq!(wire["version_hash"], "ab".repeat(32));
+    assert_eq!(roundtrip(&msg), msg);
+    wire["version_hash"] = json!([171, 171]);
+    assert!(serde_json::from_value::<Message>(wire).is_err());
+}
