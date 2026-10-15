@@ -17,6 +17,7 @@ out.
 
 - `--format json`: one JSON document per session,
   `<dir>/<origin>/<native id with each byte outside [A-Za-z0-9._~-] written as %XX>.json`;
+  `origin` has the validated namespace grammar from `model.md`, Origins;
   the document's `id` field, not the file name, is the identity.
 - `--format jsonl`: one line per session in one file, same objects.
 - Each document starts with `"format": "polylogue-session"` and

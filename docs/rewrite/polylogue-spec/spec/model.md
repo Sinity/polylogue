@@ -81,7 +81,9 @@ One conversation or one agent run, as the provider understands it.
 | `grok` | Grok web | account export, browser capture |
 | `grok-cli` | Grok CLI | `~/.grok/sessions/` |
 
-The set of origins is open: the table lists those Polylogue parses itself, and a Polylogue export from another tool may carry any other origin name. Origins are short plain names, chosen fresh for the new archive (the current
+The set of origins is open: the table lists those Polylogue parses itself, and a Polylogue export from another tool may carry any other valid origin name. A name matches `[A-Za-z0-9][A-Za-z0-9._-]*`, with case preserved and compared exactly. Unknown names matching this grammar are retained. The same validation applies to constructors and imported wire values. Short names are a convention, with no fixed length cap; native session and message IDs retain their separate opaque-ID rules. The leading alphanumeric excludes `.` and `..` as origin directory components in `export-format.md`.
+
+Origins are chosen fresh for the new archive (the current
 `claude-code-session` style is not carried over: the rewrite re-ingests everything and keeps no compatibility path, so short names cost nothing; decision: `decisions/README.md`). Adding a provider adds a
 row; nothing else in the model changes.
 
