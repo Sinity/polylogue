@@ -28,10 +28,18 @@ def _open_fd_count() -> int:
 def test_builtin_connect_context_manager_leaks_the_descriptor(tmp_path: Path) -> None:
     """The premise: the builtin form commits but does not close."""
     before = _open_fd_count()
-    for index in range(20):
-        with sqlite3.connect(tmp_path / f"builtin-{index}.db") as connection:
-            connection.execute("CREATE TABLE t (x)")
-    assert _open_fd_count() - before == 20
+    connections: list[sqlite3.Connection] = []
+    try:
+        for index in range(20):
+            connection = sqlite3.connect(tmp_path / f"builtin-{index}.db")
+            connections.append(connection)
+            with connection:
+                connection.execute("CREATE TABLE t (x)")
+        assert _open_fd_count() - before == 20
+    finally:
+        for connection in connections:
+            connection.close()
+    assert _open_fd_count() == before
 
 
 @pytest.mark.skipif(not Path("/proc/self/fd").exists(), reason="descriptor count needs /proc")

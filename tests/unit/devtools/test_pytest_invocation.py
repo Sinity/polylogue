@@ -71,13 +71,20 @@ def test_the_corpus_runs_as_one_unpartitioned_collection() -> None:
     assert command[3:].count("-m") == 0
 
 
-def test_the_managed_width_fits_the_pytest_pool_by_construction() -> None:
+def test_the_managed_width_fits_the_pytest_pool_by_construction(monkeypatch: pytest.MonkeyPatch) -> None:
     """Corpus invocation retains the qualified width, independently of arithmetic fit."""
+    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
     command = build_verify_steps(quick=False, selection="all")[-1][1]
     workers = int(command[command.index("-n") + 1])
 
     assert workers == 2
     assert MEASURED_CHARGE.charge_mib(workers) <= PYTEST_SLICE_MEMORY_HIGH_MIB
+
+
+def test_zero_worker_override_keeps_the_supported_single_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "0")
+    command = build_verify_steps(quick=False, selection="all")[-1][1]
+    assert command[command.index("-n") + 1] == "0"
 
 
 def test_a_wider_configured_width_is_reduced_to_what_the_pool_holds(monkeypatch: pytest.MonkeyPatch) -> None:

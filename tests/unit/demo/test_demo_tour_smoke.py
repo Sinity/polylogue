@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -51,8 +52,10 @@ def test_public_demo_tour_runs_green_end_to_end(tmp_path: Path) -> None:
         assert step.bytes_written > 0, step.name
         assert step.output_path.is_file()
 
-    assert result.report_json_path.is_file()
-    assert result.report_markdown_path.is_file()
+    report = json.loads(result.report_json_path.read_text(encoding="utf-8"))
+    assert report["ok"] is True
+    assert len(report["steps"]) == _NARRATED_STEP_COUNT
+    assert result.report_markdown_path.read_text(encoding="utf-8").strip()
     assert result.transcript_path.read_text(encoding="utf-8").strip()
 
     with ArchiveStore.open_existing(result.archive_root) as archive:

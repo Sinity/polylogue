@@ -180,9 +180,10 @@ async def test_lexical_search_selects_the_same_sessions_on_both_read_routes(tmp_
     """Lexical search agrees on selection and cardinality, not on envelope shape.
 
     The generic route answers a ranked search envelope and the owner route a
-    typed page; what must not differ is *which* sessions matched and how many
-    the archive reports. Mutation: change the owner route's distinct-by-session
-    collapse or its lexical term extraction and the id sets diverge.
+    typed session page. Project the generic block matches to their first
+    session occurrence before comparing order and cardinality. Mutation: change
+    the owner route's distinct-by-session collapse, ordering or lexical term
+    extraction and the ID sequences diverge.
     """
 
     root = tmp_path / "archive"
@@ -203,7 +204,11 @@ async def test_lexical_search_selects_the_same_sessions_on_both_read_routes(tmp_
     assert isinstance(hits, list)
     generic_ids = [str(hit["session"]["id"]) for hit in hits]
 
-    assert set(owner_ids) == set(generic_ids) == set(seeded)
+    ordered_generic_ids = list(dict.fromkeys(generic_ids))
+    assert len(generic_ids) > len(ordered_generic_ids), "the fixture must expose repeated block matches per session"
+    assert owner_ids == ordered_generic_ids
+    assert len(owner_ids) == len(seeded)
+    assert set(owner_ids) == set(seeded)
     assert owner_page.total == envelope["total"]
     assert owner_page.next_offset == envelope["next_offset"]
 
