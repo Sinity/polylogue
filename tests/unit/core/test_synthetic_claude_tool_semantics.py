@@ -13,7 +13,7 @@ from polylogue.core.enums import BlockType
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.audit.workflow import audit_schema_bundle_privacy
 from polylogue.schemas.generation.workflow import build_provider_bundle_from_sources, persist_generated_provider_bundle
-from polylogue.schemas.record_structure import claude_todo_token_counts
+from polylogue.schemas.record_structure import PUBLIC_CLAUDE_TOOL_NAMES, claude_todo_token_counts
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.source_inference import SchemaSourceInput
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -300,6 +300,63 @@ def _qualify_mixed_tools(
 
 def test_inferred_mixed_claude_tools_preserve_named_semantics(tmp_path: Path) -> None:
     _qualify_mixed_tools(tmp_path)
+
+
+@pytest.mark.parametrize("tool_name", ["Read", "private_tool_neutral"])
+@pytest.mark.parametrize("metadata", ["absent", "null"])
+def test_same_record_call_and_result_without_dispatch_metadata_keep_their_class(
+    tmp_path: Path, tool_name: str, metadata: str
+) -> None:
+    """The first result can use the call emitted earlier in its own record."""
+    sources = tmp_path / "sources"
+    sources.mkdir()
+    record: JSONDocument = {
+        "type": "assistant",
+        "uuid": "neutral-message",
+        "sessionId": "neutral-session",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "neutral-call", "name": tool_name, "input": {"file_path": "neutral.txt"}},
+                {"type": "tool_result", "tool_use_id": "neutral-call", "content": "neutral result"},
+            ],
+        },
+    }
+    if metadata == "null":
+        record["toolUseResult"] = None
+    (sources / "neutral-session.jsonl").write_text(json.dumps(record) + "\n")
+    bundle = build_provider_bundle_from_sources(
+        "claude-code",
+        source_inputs=(SchemaSourceInput("claude-code", sources),),
+        cache_path=tmp_path / "evidence.sqlite3",
+        max_workers=1,
+        privacy_config=None,
+        prior_catalog=None,
+    )
+    assert bundle.result.success, (bundle.result.error, bundle.result.phase_receipt)
+    packages = tmp_path / "packages"
+    persist_generated_provider_bundle(packages, "claude-code", bundle)
+    registry = SchemaRegistry(storage_root=packages)
+    corpus = SyntheticCorpus.from_selection(select_synthetic_schema("claude-code", registry_factory=lambda: registry))
+    generated = corpus.iter_sessions(count=3, seed=42)
+    seen = 0
+    try:
+        for session in generated:
+            for line in b"".join(session.chunks).splitlines():
+                actual = json.loads(line)
+                assert ("toolUseResult" in actual) == (metadata == "null")
+                assert actual.get("toolUseResult") is None
+                call, result = actual["message"]["content"]
+                assert call["type"] == "tool_use" and result["type"] == "tool_result"
+                assert call["id"] == result["tool_use_id"]
+                if tool_name == "Read":
+                    assert call["name"] == "Read"
+                else:
+                    assert call["name"] not in PUBLIC_CLAUDE_TOOL_NAMES
+                seen += 1
+    finally:
+        generated.close()
+    assert seen == 3
 
 
 def test_inferred_mixed_claude_result_modes_follow_call_classes(tmp_path: Path) -> None:
