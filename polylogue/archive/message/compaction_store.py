@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import closing, contextmanager
 from dataclasses import asdict
-from typing import Any
+from typing import Any, cast
 
 from polylogue.archive.message.token_measure import TextMeasure, measure
 
@@ -40,21 +40,21 @@ class CompactionStore:
         self._active_count = 0
         with closing(
             connection.executescript(
-                "CREATE TABLE payload_chunks(payload INTEGER,part INTEGER,text TEXT NOT NULL,PRIMARY KEY(payload,part));"
-                "CREATE TABLE compact_sessions(id TEXT PRIMARY KEY,parent_id TEXT,branch TEXT,unresolved INTEGER NOT NULL);"
-                "CREATE TABLE compact_messages(session_id TEXT,position INTEGER,message_id TEXT,payload INTEGER NOT NULL,"
+                "CREATE TABLE payload_chunks(payload INTEGER,part INTEGER,text BLOB NOT NULL,PRIMARY KEY(payload,part));"
+                "CREATE TABLE compact_sessions(id BLOB PRIMARY KEY,parent_id BLOB,branch BLOB,unresolved INTEGER NOT NULL);"
+                "CREATE TABLE compact_messages(session_id BLOB,position INTEGER,message_id BLOB,payload INTEGER NOT NULL,"
                 "PRIMARY KEY(session_id,position));"
                 "CREATE INDEX compact_message_identity ON compact_messages(session_id,message_id);"
-                "CREATE TABLE compact_candidates(id INTEGER PRIMARY KEY,ref TEXT NOT NULL,session_id TEXT NOT NULL,"
-                "origin TEXT NOT NULL,score REAL NOT NULL,run INTEGER NOT NULL,original INTEGER NOT NULL,"
-                "payload INTEGER NOT NULL,reference INTEGER NOT NULL,retained INTEGER NOT NULL,active INTEGER NOT NULL DEFAULT 1,prefix TEXT);"
+                "CREATE TABLE compact_candidates(id INTEGER PRIMARY KEY,ref BLOB NOT NULL,session_id BLOB NOT NULL,"
+                "origin BLOB NOT NULL,score REAL NOT NULL,run INTEGER NOT NULL,original INTEGER NOT NULL,"
+                "payload INTEGER NOT NULL,reference INTEGER NOT NULL,retained INTEGER NOT NULL,active INTEGER NOT NULL DEFAULT 1,prefix BLOB);"
                 "CREATE INDEX compact_rank ON compact_candidates(active,score DESC,ref,id);"
                 "CREATE INDEX compact_runs ON compact_candidates(run,id);"
                 "CREATE INDEX compact_candidate_session ON compact_candidates(session_id,active);"
-                "CREATE TABLE compact_omissions(position INTEGER PRIMARY KEY,payload INTEGER NOT NULL,prefix TEXT NOT NULL);"
-                "CREATE TABLE compact_totals(session_id TEXT PRIMARY KEY,included INTEGER NOT NULL DEFAULT 0,"
+                "CREATE TABLE compact_omissions(position INTEGER PRIMARY KEY,payload INTEGER NOT NULL,prefix BLOB NOT NULL);"
+                "CREATE TABLE compact_totals(session_id BLOB PRIMARY KEY,included INTEGER NOT NULL DEFAULT 0,"
                 "dropped INTEGER NOT NULL DEFAULT 0,has_drop INTEGER NOT NULL DEFAULT 0,inc_order INTEGER,drop_order INTEGER,"
-                "inc_prefix TEXT,drop_prefix TEXT);"
+                "inc_prefix BLOB,drop_prefix BLOB);"
             )
         ):
             pass
@@ -96,11 +96,14 @@ class CompactionStore:
         return identifier
 
     def load(self, identifier: int) -> object:
-        return json.loads(
-            "".join(
-                str(row[0])
-                for row in self.rows("SELECT text FROM payload_chunks WHERE payload=? ORDER BY part", (identifier,))
-            )
+        return cast(
+            object,
+            json.loads(
+                "".join(
+                    str(row[0])
+                    for row in self.rows("SELECT text FROM payload_chunks WHERE payload=? ORDER BY part", (identifier,))
+                )
+            ),
         )
 
     def payload_parts(self, identifier: int) -> Iterator[str]:
@@ -138,6 +141,8 @@ class CompactionStore:
         payload = self.store(value)
         anchor = value["anchor"]
         assert isinstance(anchor, dict)
+        score = value["score"]
+        assert isinstance(score, float)
         self.execute(
             "INSERT INTO compact_candidates(id,ref,session_id,origin,score,run,original,payload,reference,retained) "
             "VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -146,7 +151,7 @@ class CompactionStore:
                 reference,
                 str(value["session_id"]),
                 str(value["material_origin"]),
-                float(value["score"]),
+                score,
                 run or identifier,
                 payload,
                 payload,

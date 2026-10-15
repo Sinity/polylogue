@@ -507,3 +507,21 @@ def test_streamed_wire_measure_matches_the_complete_estimator(text: str) -> None
 def _wire_estimate(text: str) -> int:
     words = sum(1 if len(word) <= 16 else (len(word) + 7) // 8 for word in text.split())
     return max(int(words * 1.3), (len(text.encode("utf-8")) + 3) // 4)
+
+
+def test_compaction_keeps_unicode_reference_rank_order() -> None:
+    identifiers = ["😀", "中", "é", "a"]
+    pack = compact_sessions(
+        [
+            {
+                "id": "neutral",
+                "messages": iter(
+                    [
+                        {"id": identifier, "text": "Neutral decision", "material_origin": "human_authored"}
+                        for identifier in identifiers
+                    ]
+                ),
+            }
+        ]
+    )
+    assert [item.anchor.ref.message_id for item in pack.items] == sorted(identifiers)
