@@ -180,6 +180,8 @@ pub struct Resume {
     mode: SessionMode,
     next_wrapper: usize,
     normalization_incomplete: bool,
+    has_source_context: bool,
+    has_model_context: bool,
 }
 #[derive(Clone, Debug)]
 pub struct Delta {
@@ -467,6 +469,11 @@ impl<V: ReadView> KeyedRecords<V> {
     fn push_message(&mut self, mut m: Message) {
         let i = self.s.messages;
         self.s.messages += 1;
+        self.put(
+            Key::EvidenceHead(i),
+            Cell::EvidenceHead(EvidenceHead::default()),
+        );
+        self.put(Key::BlockOrder(i), Cell::Position(0, 0));
         let blocks = std::mem::take(&mut m.blocks);
         let n = blocks.len();
         if m.written_by == WrittenBy::Model {
@@ -747,7 +754,10 @@ impl<V: ReadView> KeyedRecords<V> {
     fn evidence_head(&mut self, i: usize) -> EvidenceHead {
         match self.get(Key::EvidenceHead(i)) {
             Some(Cell::EvidenceHead(head)) => head,
-            None => EvidenceHead::default(),
+            None => {
+                self.missing("evidence head");
+                EvidenceHead::default()
+            }
             _ => {
                 self.missing("evidence head");
                 EvidenceHead::default()
@@ -851,6 +861,10 @@ impl<V: ReadView> KeyedRecords<V> {
             if wanted {
                 if let Some(Cell::Evidence(unit)) = self.get(Key::Context(key)) {
                     self.evidence_unit(i, 1, slot, unit);
+                } else if (key == 0 && self.s.has_source_context)
+                    || (key == 1 && self.s.has_model_context)
+                {
+                    self.missing("required context evidence");
                 }
             }
         }
@@ -859,6 +873,11 @@ impl<V: ReadView> KeyedRecords<V> {
         if let Ok(value) = raw::field(raw, path).and_then(|bytes| {
             polylogue_model::identity::canonical_record(bytes, &[]).map_err(|e| e.to_string())
         }) {
+            if key == 0 {
+                self.s.has_source_context = true;
+            } else if key == 1 {
+                self.s.has_model_context = true;
+            }
             self.put(
                 Key::Context(key),
                 Cell::Evidence(EvidenceUnit {
@@ -895,12 +914,17 @@ impl<V: ReadView> KeyedRecords<V> {
                     );
                 }
             }
+        } else if self.call(call_id).is_some() {
+            self.missing("call association evidence");
         }
     }
     fn next_block_id(&mut self, i: usize, message: &MessageId, thinking: bool) -> Option<BlockId> {
         let (normal, reasoning) = match self.get(Key::BlockOrder(i)) {
             Some(Cell::Position(n, r)) => (n, r),
-            None => (0, 0),
+            None => {
+                self.missing("block order");
+                return None;
+            }
             _ => {
                 self.missing("block order");
                 return None;
