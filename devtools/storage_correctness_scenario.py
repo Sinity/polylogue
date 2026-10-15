@@ -81,7 +81,7 @@ def _write_index_session(archive: ArchiveStore, session: ParsedSession) -> str:
                     manage_transaction=False,
                 )
     finally:
-        if seal is None or not seal.publication_lifetime_bound:
+        if seal is None or seal._publication_exclusion is not exclusion:
             exclusion.close()
 
 
