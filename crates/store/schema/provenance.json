@@ -1,0 +1,17 @@
+{
+  "spec_commit": "9c707593185673dd3985df4008174474999699ad",
+  "files": [
+    {
+      "source": "polylogue-spec/spec/storage/archive-db.md",
+      "sha256": "c6806fc809dd25de91d837b39fe342d7ce9e16301bacf2d580c40de09f2f7af3"
+    },
+    {
+      "source": "polylogue-spec/spec/storage/index-db.md",
+      "sha256": "d583559e28470818541863d0f4ab32fcfcdbf661663846b8aef6fa21ed3aefd6"
+    },
+    {
+      "source": "polylogue-spec/spec/storage/embeddings.md",
+      "sha256": "015c0adb3782df00357a7f4005ce78e04a64a947750c8badc550886128813566"
+    }
+  ]
+}
