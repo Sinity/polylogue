@@ -1323,6 +1323,11 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         s.started_at = at.map(provider_time);
         let forked = meta.get("forked_from_id").and_then(Value::as_str);
+        // This source core records the lineage link; cross-input replay-prefix
+        // correspondence has not been supplied, so inherited counts are open.
+        if forked.is_some() {
+            self.s.normalization_incomplete = true;
+        }
         if let Some(spawn) = spawned {
             let parent = spawn.get("parent_thread_id").and_then(Value::as_str);
             if let Some(parent) = parent.and_then(|p| {
@@ -1563,9 +1568,13 @@ impl<V: ReadView> KeyedRecords<V> {
         let content = item.get("content");
         let textual = match content {
             Some(Value::String(_)) => true,
-            Some(Value::Array(items)) => items
-                .iter()
-                .all(|item| item.is_string() || item.get("text").is_some_and(Value::is_string)),
+            Some(Value::Array(items)) => items.iter().all(|item| {
+                item.is_string()
+                    || (item.get("text").is_some_and(Value::is_string)
+                        && item.get("type").is_none_or(|kind| {
+                            matches!(kind.as_str(), Some("text" | "input_text" | "output_text"))
+                        }))
+            }),
             _ => false,
         };
         if textual {
@@ -1815,19 +1824,23 @@ impl<V: ReadView> KeyedRecords<V> {
                 .map(|call| call.tool)
                 .unwrap_or_default();
             let output = effective.get("output").cloned().unwrap_or(Value::Null);
-            let (outcome, exit_code) = if self.get(Key::Evidence(i, 1, 0)).is_some() {
-                old.as_ref()
-                    .map(|result| (result.outcome.clone(), result.exit_code))
-                    .unwrap_or_else(|| output_outcome(&tool, &output, text))
+            let (outcome, exit_code, duration) = if self.get(Key::Evidence(i, 1, 0)).is_some() {
+                if let Some(result) = old.as_ref() {
+                    (result.outcome.clone(), result.exit_code, result.duration_ms)
+                } else {
+                    let (outcome, exit) = output_outcome(&tool, &output, text);
+                    (outcome, exit, None)
+                }
             } else {
-                output_outcome(&tool, &output, text)
+                let (outcome, exit) = output_outcome(&tool, &output, text);
+                (outcome, exit, None)
             };
             self.edit_block(i, block, |value| {
                 *value = BlockContent::ToolResult(ToolResult {
                     call_id: Some(call_id.clone()),
                     outcome: outcome.clone(),
                     exit_code,
-                    duration_ms: None,
+                    duration_ms: duration,
                     output: recorded.clone(),
                 })
             });
@@ -1882,6 +1895,11 @@ impl<V: ReadView> KeyedRecords<V> {
             Some(Cell::Evidence(unit)) => Some(unit),
             _ => None,
         };
+        let duration = status_witness
+            .as_ref()
+            .and_then(unit_item)
+            .as_ref()
+            .and_then(native_duration);
         let (outcome, exit_code) = match self.remove(Key::Outcome(call_id.clone())) {
             Some(Cell::Outcome(o, r, e)) => (outcome_of_words(&o, r.as_deref()), e),
             _ => output_outcome(&tool, &output, &text),
@@ -1949,7 +1967,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 call_id: Some(call_id.clone()),
                 outcome,
                 exit_code,
-                duration_ms: None,
+                duration_ms: duration,
                 output: recorded,
             }),
         ) {
@@ -2008,7 +2026,6 @@ impl<V: ReadView> KeyedRecords<V> {
                     self.s.normalization_incomplete = true;
                     return self.event("non_agent_command_item", at, false, p);
                 }
-                let (outcome, exit) = native_outcome(&item);
                 let call_id = item
                     .get("call_id")
                     .and_then(Value::as_str)
@@ -2025,13 +2042,68 @@ impl<V: ReadView> KeyedRecords<V> {
                     .is_some_and(|c| c.tool != "exec");
                 if is_plain_call {
                     if let Some(c) = call_id {
-                        let (o, r) = outcome_words(&outcome);
-                        let witness = EvidenceUnit {
+                        let result = self.position(Key::Result(c.clone()));
+                        let previous = result
+                            .and_then(|(i, _)| self.get(Key::Evidence(i, 1, 0)))
+                            .or_else(|| self.get(Key::StatusWitness(c.clone())));
+                        let mut witness = EvidenceUnit {
                             tag: "status".into(),
                             canonical: self.current_raw.clone(),
                             whole_record: true,
                         };
-                        if let Some((mi, bi)) = self.position(Key::Result(c.clone())) {
+                        let mut effective = item.clone();
+                        if let Some(Cell::Evidence(old)) = previous {
+                            let id_path = ["payload", "item", "id"];
+                            let turn_path = ["payload", "turn_id"];
+                            let same_id = raw::field(&old.canonical, &id_path)
+                                .ok()
+                                .zip(raw::field(&self.current_raw, &id_path).ok())
+                                .is_some_and(|(a, b)| a == b);
+                            let same_turn = raw::field(&old.canonical, &turn_path).ok()
+                                == raw::field(&self.current_raw, &turn_path).ok();
+                            if same_id && same_turn {
+                                match raw::overlay(
+                                    &old.canonical,
+                                    &self.current_raw,
+                                    &["payload", "item"],
+                                ) {
+                                    Ok((canonical, fields)) => {
+                                        witness.whole_record = canonical == self.current_raw;
+                                        witness.canonical = canonical;
+                                        effective = fields.value;
+                                        if !fields.conflicts.is_empty() {
+                                            if let Some((message, _)) = result {
+                                                self.conflicts.push(NativeConflict {
+                                                    message,
+                                                    fields: fields.conflicts,
+                                                });
+                                            } else {
+                                                self.event(
+                                                    "native_status_conflict",
+                                                    at,
+                                                    false,
+                                                    &serde_json::json!({"fields":fields.conflicts}),
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        self.failure = Some(error);
+                                        return RecordOutcome::Used;
+                                    }
+                                }
+                            }
+                        }
+                        let (outcome, exit) = native_outcome(&effective);
+                        let duration = native_duration(&effective);
+                        if effective
+                            .get("duration")
+                            .is_some_and(|value| !value.is_null())
+                            && duration.is_none()
+                        {
+                            self.s.normalization_incomplete = true;
+                        }
+                        if let Some((mi, bi)) = result {
                             if !self.require_result(mi, bi) {
                                 return RecordOutcome::Used;
                             }
@@ -2039,10 +2111,12 @@ impl<V: ReadView> KeyedRecords<V> {
                                 if let BlockContent::ToolResult(result) = block {
                                     result.outcome = outcome.clone();
                                     result.exit_code = exit;
+                                    result.duration_ms = duration;
                                 }
                             });
                             self.evidence_unit(mi, 1, 0, witness);
                         } else {
+                            let (o, r) = outcome_words(&outcome);
                             self.put(Key::StatusWitness(c.clone()), Cell::Evidence(witness));
                             self.put(Key::Outcome(c), Cell::Outcome(o, r, exit));
                         }
@@ -2088,6 +2162,11 @@ impl<V: ReadView> KeyedRecords<V> {
                 let replacing = self.replacement_block.is_some();
                 let item = self.effective(&item);
                 let (outcome, exit) = native_outcome(&item);
+                let duration = native_duration(&item);
+                if item.get("duration").is_some_and(|value| !value.is_null()) && duration.is_none()
+                {
+                    self.s.normalization_incomplete = true;
+                }
                 let child_id = item
                     .get("id")
                     .and_then(Value::as_str)
@@ -2119,7 +2198,7 @@ impl<V: ReadView> KeyedRecords<V> {
                     call_id: Some(child_id.clone()),
                     outcome,
                     exit_code: exit,
-                    duration_ms: None,
+                    duration_ms: duration,
                     output: recorded_output(
                         item.get("aggregated_output").or_else(|| item.get("output")),
                     ),

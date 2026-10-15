@@ -112,6 +112,23 @@ fn texts(content: Option<&Value>) -> Vec<String> {
     }
 }
 
+fn native_duration(item: &Value) -> Option<u64> {
+    if let Some(milliseconds) = item.get("duration_ms").and_then(Value::as_u64) {
+        return Some(milliseconds);
+    }
+    let duration = item.get("duration")?;
+    let seconds = duration.get("secs")?.as_u64()?;
+    let nanos = duration.get("nanos")?.as_u64()?;
+    if nanos >= 1_000_000_000 {
+        return None;
+    }
+    seconds.checked_mul(1000)?.checked_add(nanos / 1_000_000)
+}
+fn unit_item(unit: &keyed::EvidenceUnit) -> Option<Value> {
+    let record: Value = serde_json::from_slice(&unit.canonical).ok()?;
+    record.get("payload")?.get("item").cloned()
+}
+
 fn native_outcome(item: &Value) -> (ToolOutcome, Option<i64>) {
     let exit = item.get("exit_code").and_then(Value::as_i64);
     let status = item.get("status").and_then(Value::as_str);

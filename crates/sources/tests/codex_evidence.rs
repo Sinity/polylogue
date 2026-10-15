@@ -399,3 +399,60 @@ fn a_promised_running_result_with_wrong_content_fails_the_attempt() {
     assert_eq!(framed.counts.used, 0);
     assert!(framed.counts.unrecognized.is_empty());
 }
+
+#[test]
+fn external_native_status_snapshots_overlay_missing_fields_and_keep_duration() {
+    let call = line(
+        "response_item",
+        json!({"type":"function_call","id":"call-item","call_id":"c","name":"exec_command","arguments":"{}"}),
+    );
+    let native = line(
+        "event_msg",
+        json!({"type":"item_completed","turn_id":"turn","item":{"type":"CommandExecution","id":"c","status":"failed","exit_code":1,"duration":{"secs":1,"nanos":2000000}}}),
+    );
+    let output = line(
+        "response_item",
+        json!({"type":"function_call_output","id":"output","call_id":"c","output":"Exit code: 0"}),
+    );
+    let updated = line(
+        "event_msg",
+        json!({"type":"item_completed","turn_id":"turn","item":{"type":"CommandExecution","id":"c","status":"completed"}}),
+    );
+    let output_changed = line(
+        "response_item",
+        json!({"id":"output","output":"different text"}),
+    );
+    for bytes in [
+        header() + &call + &native + &output + &updated + &output_changed,
+        header() + &call + &native + &updated + &output + &output_changed,
+    ] {
+        let (view, resume) = run(MemoryReadView::default(), Resume::default(), &bytes);
+        assert_eq!(resume.message_count(), 2);
+        let message = view.message(1).unwrap().unwrap();
+        assert!(
+            matches!(&message.blocks[0].content,BlockContent::ToolResult(result) if matches!(result.outcome,ToolOutcome::Error{..})&&result.exit_code==Some(1)&&result.duration_ms==Some(1002))
+        );
+        let status = units(&view, 1)
+            .into_iter()
+            .find(|(tag, _)| tag == "status")
+            .unwrap()
+            .1;
+        assert!(status.windows(13).any(|bytes| bytes == b"\"exit_code\":1"));
+        assert!(status.windows(6).any(|bytes| bytes == b"\"secs\""));
+    }
+}
+#[test]
+fn fork_lineage_does_not_claim_completed_inheritance_correspondence() {
+    let meta = line(
+        "session_meta",
+        json!({"id":"child","source":"cli","forked_from_id":"parent"}),
+    );
+    let framed = drive_jsonl(
+        KeyedRecords::new(MemoryReadView::default(), Resume::default()),
+        meta.as_bytes(),
+        0,
+    );
+    let delta = framed.output.unwrap();
+    assert!(delta.resume.normalization_incomplete());
+    assert_eq!(delta.links.len(), 1);
+}
