@@ -291,7 +291,7 @@ fn request_metadata(
         let address = socket2::SockAddr::unix(socket)?;
         let stream = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
         stream.connect_timeout(&address, remaining(deadline)?.unwrap())?;
-        UnixStream::from(stream)
+        UnixStream::from(std::os::fd::OwnedFd::from(stream))
     } else {
         UnixStream::connect(socket)?
     };
@@ -355,6 +355,46 @@ impl Write for MetadataTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metadata_write_uses_the_same_absolute_deadline_after_partial_progress() {
+        let (stream, _unread) = UnixStream::pair().unwrap();
+        socket2::SockRef::from(&stream)
+            .set_send_buffer_size(1024)
+            .unwrap();
+        let started = std::time::Instant::now();
+        let mut transport = MetadataTransport {
+            stream,
+            deadline: Some(started + Duration::from_millis(80)),
+        };
+        let error = transport.write_all(&vec![b'x'; 65536]).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+    #[test]
+    fn saturated_unix_connect_never_blocks_beyond_absolute_deadline() {
+        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let path = temp.path().join("socket");
+        let listener =
+            socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).unwrap();
+        listener
+            .bind(&socket2::SockAddr::unix(&path).unwrap())
+            .unwrap();
+        listener.listen(0).unwrap();
+        let _queued = UnixStream::connect(&path).unwrap();
+        let started = std::time::Instant::now();
+        assert!(
+            request_value_until(
+                &path,
+                &json!({"command":"progress"}),
+                started + Duration::from_millis(80)
+            )
+            .is_err()
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
     #[test]
     fn independent_stacks_shutdown_only_owned_clients_and_socket() {
         let temp = tempfile::tempdir().unwrap();

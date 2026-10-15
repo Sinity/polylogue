@@ -2,7 +2,7 @@
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     os::unix::net::{UnixListener, UnixStream},
     path::Path,
     process::{Command, Stdio},
@@ -88,32 +88,38 @@ fn exercise(mode: Peer) {
             Peer::Fast => stream.write_all(&reply).unwrap(),
             Peer::Delayed => {
                 thread::sleep(Duration::from_millis(2400));
-                let _ = stream.write_all(&reply);
+                assert!(
+                    stream.write_all(&reply).is_err(),
+                    "late peer can still write to client"
+                );
             }
             Peer::Trickle => {
                 // Each byte is timely under an idle timeout; the frame never
                 // completes before the ONE absolute deadline.
+                let mut disconnected = false;
                 for byte in reply {
                     if stream.write_all(&[byte]).is_err() {
+                        disconnected = true;
                         break;
                     }
                     thread::sleep(Duration::from_millis(40));
                 }
+                assert!(disconnected, "trickled peer did not observe client release");
             }
-            Peer::Stalled | Peer::Cancelled => {}
+            Peer::Stalled | Peer::Cancelled => {
+                thread::sleep(if matches!(mode, Peer::Cancelled) {
+                    Duration::from_millis(200)
+                } else {
+                    Duration::from_millis(1300)
+                });
+                // Request protocol half-closes writes before the response, so
+                // read EOF would not prove the exact transport was dropped.
+                assert!(
+                    stream.write_all(&reply).is_err(),
+                    "client transport remains owned after timeout/cancellation"
+                );
+            }
             _ => unreachable!(),
-        }
-        // Client must drop its exact stream on timeout/cancellation, without
-        // leaving a detached blocked transport helper owning the descriptor.
-        let mut byte = [0];
-        match stream.read(&mut byte) {
-            Ok(0) => {}
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
-                ) => {}
-            other => panic!("client transport remains open: {other:?}"),
         }
     });
     let provider = work.path().join("input.jsonl");
