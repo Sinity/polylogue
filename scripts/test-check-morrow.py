@@ -68,14 +68,18 @@ class ControllerTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.output = Path(self.temp.name)
 
+    def keep_run(self, run):
+        self.addCleanup(run.close_runtime)
+        return run
+
     def run_control(self, oracle):
-        run = CapturedReplies(self.output, "corrupt-answer")
+        run = self.keep_run(CapturedReplies(self.output, "corrupt-answer"))
         with self.assertRaises(ValueError) as error:
             run.answers(self.output / "unused", EXPECTED, "base", oracle)
         return run, str(error.exception)
 
     def captured_case(self, errors=1):
-        run = driver.Run(self.output, None)
+        run = self.keep_run(driver.Run(self.output, None))
         expected = deepcopy(EXPECTED)
         expected["record_errors"] = errors
         qualifier = {"outcome":"degraded" if errors else "ok",
@@ -115,7 +119,7 @@ class ControllerTests(unittest.TestCase):
     def test_malformed_wait_rejects_false_success_missing_diagnostics_and_wrong_coverage(self):
         for mutation in [dict(outcome='ok'),dict(source_rows={"scope":"imported_source_rows","basis":{"input":"synthetic-input","length":7},"state":"settled"}),dict(source_rows=None),dict(notes=[]),dict(unknown={}),dict(unknown={'record_errors':True})]:
             output=self.output/str(len(list(self.output.iterdir())));output.mkdir()
-            run=driver.Run(output,None)
+            run = self.keep_run(driver.Run(output,None))
             comparisons=[];run.answers=lambda *a: comparisons.append(a)
             receipt=admission(1)
             receipt.update(mutation);run.client=lambda *a,**kw: receipt
@@ -127,7 +131,7 @@ class ControllerTests(unittest.TestCase):
     def test_malformed_cannot_accept_ok_listing_or_unqualified_standalone_document(self):
         for where in ['listing','read']:
             output=self.output/where;output.mkdir()
-            run=driver.Run(output,None)
+            run = self.keep_run(driver.Run(output,None))
             def client(archive,*argv,**kwargs):
                 if 'read' in argv: return deepcopy(ANSWER)
                 return {'outcome':'ok' if where=='listing' else 'degraded','up_to_date':True,'notes':['undecodable record'],'unknown':{'record_errors':1},'unit':'sessions','count':1,'rows':[{'id':SID}],'next_cursor':None}
@@ -205,7 +209,7 @@ class ControllerTests(unittest.TestCase):
         for field in ('message', 'block'):
             output = self.output / field
             output.mkdir()
-            run = CapturedReplies(output, "corrupt-answer")
+            run = self.keep_run(CapturedReplies(output, "corrupt-answer"))
             original = run.client
             def reply(archive, *argv, **kwargs):
                 answer = original(archive, *argv, **kwargs)
@@ -228,7 +232,7 @@ class ControllerTests(unittest.TestCase):
         self.assertIn("intentional", message)
 
     def test_legacy_or_missing_source_settlement_never_reaches_answer_comparison(self):
-        run = driver.Run(self.output, None)
+        run = self.keep_run(driver.Run(self.output, None))
         comparisons = []
         run.answers = lambda *a: comparisons.append(a)
         for receipt in [{}, {"canonical_complete": None}, {"canonical_complete": False},
@@ -241,7 +245,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(comparisons, [])
 
     def test_affirmative_completion_proceeds_to_independent_answer_comparison(self):
-        run = driver.Run(self.output, None)
+        run = self.keep_run(driver.Run(self.output, None))
         comparisons = []
         run.client = lambda *a, **kw: admission()
         run.answers = lambda *a: comparisons.append(a)
@@ -250,7 +254,7 @@ class ControllerTests(unittest.TestCase):
         self.assertIs(comparisons[0][-1], checker)
 
     def test_loose_import_retains_explicit_context_and_passes_exact_file(self):
-        run = driver.Run(self.output, None)
+        run = self.keep_run(driver.Run(self.output, None))
         calls = []
         run.client = lambda *a, **kw: calls.append(a) or admission()
         run.answers = lambda *a: None
@@ -267,7 +271,7 @@ class ControllerTests(unittest.TestCase):
                                         "--context", str(context), "--wait", "--json"))
 
     def test_missing_or_invalid_context_refuses_before_import(self):
-        run = driver.Run(self.output, None)
+        run = self.keep_run(driver.Run(self.output, None))
         calls = []
         run.client = lambda *a: calls.append(a)
         for context in (None, {}, {"version": True, "context": ["claude-main", "s"]},
@@ -316,10 +320,34 @@ class ControllerTests(unittest.TestCase):
         for path in ['/etc/passwd', '../outside.txt', 'https://example.com', 'escape']:
             self.assertNotIn('<a ', artifact(moved, path))
 
+    @unittest.skipUnless(args.binary, "supply an immutable real binary for long result paths")
+    def test_real_daemon_uses_short_owned_socket_directory_for_long_results(self):
+        output = self.output / ("retained-result-" + "x" * 110)
+        output.mkdir()
+        self.assertGreater(len(str(output).encode()), 107)
+        run = self.keep_run(driver.Run(output, None))
+        run.binary = args.binary
+        runtime = Path(run.env["XDG_RUNTIME_DIR"])
+        try:
+            run.start(output / "archive")
+            self.assertEqual(run.commands[-1]["exit"], 0)
+            with self.assertRaisesRegex(ValueError, "must stop before runtime cleanup"):
+                run.close_runtime()
+            self.assertTrue(runtime.is_dir())
+            self.assertIsNone(run.daemon.poll())
+        finally:
+            run.stop(check=False)
+        self.assertEqual(run.processes[0]["exit"], 0)
+        self.assertFalse(run.processes[0].get("forced_kill", False))
+        self.assertTrue((output / "archive").is_dir())
+        run.close_runtime()
+        self.assertFalse(runtime.exists())
+        self.assertTrue(output.is_dir())
+
     @unittest.skipUnless(args.binary, "supply an immutable real binary for launch refusal")
     def test_real_package_launch_refusal_is_classified_and_reaped(self):
         self.assertTrue(str(args.binary.resolve()).startswith("/nix/store/"))
-        run = driver.Run(self.output, "launch-failure")
+        run = self.keep_run(driver.Run(self.output, "launch-failure"))
         run.binary = args.binary
         try:
             with self.assertRaises(ValueError):
