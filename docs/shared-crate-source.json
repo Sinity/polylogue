@@ -1,0 +1,32 @@
+{
+  "source_commit": "9c707593185673dd3985df4008174474999699ad",
+  "source_path": "polylogue-sinex-joint/prototype/hashed-blobs",
+  "canonical_target": "crates/hashed-blobs",
+  "status": "isolated preparation; owner-tag publication remains open",
+  "files": [
+    {
+      "path": "Cargo.toml",
+      "sha256": "eb543010cd87e8651878e1d3bfb2e3c5b73a5b7f5c007eb1a2e0c3591a82909e"
+    },
+    {
+      "path": "README.md",
+      "sha256": "d457836ca748d3c7ffe25d1681cfc0fabb1962a1ae31c918adad0694a484a650"
+    },
+    {
+      "path": "examples/pt5.rs",
+      "sha256": "c5fced14fbe419dc8f9b51081f34b848abe89f1f42ee44d9befbe54e9f26f067"
+    },
+    {
+      "path": "src/lib.rs",
+      "sha256": "e7371751ec02662081249488c121ba018c09e064ec694f07e13d0cc3e6553fb8"
+    },
+    {
+      "path": "src/tests.rs",
+      "sha256": "7084ba551aa14797de7f86e7e6f771c939d38a0986298d6b182ee9cf027a6b7f"
+    },
+    {
+      "path": "tests/sealed_lifetime.rs",
+      "sha256": "e416d99479502d26f6cd8a4f3eb880851376a21be0f45b79256ddc53129ad062"
+    }
+  ]
+}

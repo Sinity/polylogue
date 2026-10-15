@@ -1,220 +1,37 @@
 schema = 1
-
 [project]
 id = "polylogue"
-display_name = "Polylogue"
-root_markers = ["pyproject.toml", "polylogue"]
-
+display_name = "Polylogue Rust foundation"
+root_markers = ["Cargo.toml", "crates"]
 [environment]
-kind = "nix-develop"
-command = ["nix", "develop", "--accept-flake-config", "--command"]
-# The files the devShell evaluation reads. Jobs enter a cached `nix
-# print-dev-env` realization keyed on them instead of copying a dirty
-# worktree into the store per job (~7-30 s after an edit, ~1 s cached).
-cache_inputs = ["flake.nix", "flake.lock", "nix"]
-inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "UV_CACHE_DIR", "UV_LINK_MODE", "POLYLOGUE_PYTEST_WORKERS", "POLYLOGUE_LIFECYCLE_RECEIPT_DIR", "POLYLOGUE_VERIFICATION_EVIDENCE_PATH", "POLYLOGUE_FAKE_INDEXEDDB_PACKAGE", "OPENAI_API_KEY", "GITHUB_TOKEN"]
-unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX", "POLYLOGUE_ARCHIVE_ROOT", "XDG_DATA_HOME"]
-require = []
-
-[environment.values]
-POLYLOGUE_VERIFY_HISTORY_PATH = "/realm/project/polylogue/source/development/verify-history.jsonl"
-POLYLOGUE_RETIRED_VERIFY_HISTORY_PATHS = "/realm/activity/dev/polylogue/verify-history.jsonl:/realm/activity/development/polylogue/verify-history.jsonl:/realm/projects/polylogue/source/development/verify-history.jsonl"
-
-[workspace]
-root = "/realm/worktree"
-default_base = "origin/master"
-retain_artifacts = [
-  ".cache/verify/*.json",
-  ".cache/verify/*.jsonl",
-  ".cache/verify/*.log",
-  ".cache/verify/runs/**/*.json",
-  ".cache/verify/runs/**/*.jsonl",
-  ".cache/verify/runs/**/*.log",
-]
-# One agent's hard memory ceiling. Heavy work (a live-archive census, a
-# corpus scan) runs through the `scratch` operation in the bulk pool, never
-# inside the agent's own process.
-agent_memory_max = "3000M"
-# Review is intentionally omitted; the hosted candidate gate is the publication
-# check. The focused profile requires a behavioral selector; static and complete
-# verification remain separately named operations below.
-review = "none"
-verify = { candidate = "hosted:ci/circleci: quick-gate", focused = "pytest_focused" }
-publish = "pr"
-
-# Manual bounded selections and broad suites use the declared operations below.
-[operations.pytest_focused]
-description = "Run one managed pytest launch file, or a devtools test selection, in the host's quick pytest pool"
-exec = ["python", "-m", "devtools.pytest_slot"]
-pool = "pytest-quick"
-result = "pytest"
+kind = "direct"
+command = ["env"]
+inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR"]
+unset = ["PYTHONPATH", "PYTHONHOME"]
+[operations.foundation_check]
+description = "Build and test the exact isolated foundation candidate"
+exec = ["nix", "flake", "check", "--print-build-logs", "--max-jobs", "1"]
 arguments = "required"
-cache = "none"
-# A progressing selection may exceed two hours. AgentCTL remains the
-# cancellation owner; elapsed time alone does not establish a stalled test.
-timeout_seconds = 0
-
-[operations.verify_affected]
-description = "Run Polylogue's affected-test verification plan"
-exec = ["devtools", "verify"]
-pool = "pytest"
-result = "pytest"
-cache = "tree+environment"
-# A progressing selection may exceed two hours. AgentCTL remains the
-# cancellation owner; elapsed time alone does not establish a stalled test.
-timeout_seconds = 0
-
-[operations.scratch]
-description = "Run one bounded script from /realm/tmp/work in the bulk pool: workers' heavy censuses and probes"
-exec = ["python"]
 pool = "bulk"
 result = "exit"
+timeout_seconds = 1800
+scratch = "nvme"
 cache = "none"
-timeout_seconds = 28800
-
-[operations.fresh_build_bench]
-description = "Run measured fresh archive builds, paired daemon experiments or production components in the bulk pool"
-exec = ["devtools", "bench", "fresh-build"]
+[operations.foundation_build]
+description = "Build explicit isolated foundation outputs"
+exec = ["nix", "build", "--no-link", "--print-build-logs", "--max-jobs", "1"]
+arguments = "required"
 pool = "bulk"
 result = "exit"
+timeout_seconds = 1800
+scratch = "nvme"
 cache = "none"
-# Receipts record host load at start; compare runs made under similar load.
-# A few-hundred-MiB corpus takes minutes; the watchdog covers a multi-GiB
-# sample.
-timeout_seconds = 28800
-
-[operations.fresh_build_probe]
-description = "Run one explicitly selected small, already-sealed diagnostic through the ordinary daemon"
-exec = ["devtools", "bench", "fresh-build", "run"]
-pool = "normal"
-result = "exit"
+[operations.foundation_exec]
+description = "Run explicit Nix development-shell command in isolated foundation"
+exec = ["nix", "develop", "--command"]
 arguments = "required"
-cache = "none"
-# Recorded expectation only; the normal pool owns resource limits and backpressure.
-admission = { memory_mib = 2048 }
-# AgentCTL owns cancellation; the driver detects loss of useful progress.
-timeout_seconds = 0
-
-[operations.verify_quick]
-description = "Run Polylogue's static fast verification gates"
-exec = ["devtools", "verify", "--quick"]
-pool = "normal"
-result = "json"
-cache = "tree+environment"
-# Measured spread: 60-75 s idle and 4-8 min under load; 900 s was exceeded in a landing wave.
-timeout_seconds = 2400
-
-[operations.seeded_archive_cache_gc]
-description = "Preview or apply cancellation-owned GC pages for the seeded-archive fixture cache"
-exec = ["devtools", "cache", "gc", "--json"]
-pool = "normal"
-result = "json"
-cache = "none"
-timeout_seconds = 0
-
-[operations.verify_all]
-description = "Run Polylogue's explicit complete-corpus verification plan"
-exec = ["devtools", "verify", "--all"]
-# checkout = "candidate" (polylogue-p2mbi AC4). AgentCTL resolves this to its
-# own candidate worktree at [workspace].default_base, reset to that base on
-# every launch (agentctl/checkout.py candidate_tree()), independently of
-# whatever tree a caller passes or the operator's root checkout is on. This
-# keeps an explicit full run bound to the integrated candidate. The reading-side guard,
-# `devtools.verify_receipt_check --candidate`, still refuses a receipt whose
-# recorded tested SHA is not the candidate's, so a run on the wrong tree
-# remains unusable as evidence even if this declaration were ever wrong.
-checkout = "candidate"
-pool = "pytest-heavy"
-result = "pytest"
-cache = "tree+environment"
-timeout_seconds = 14400
-execution_readiness = "notify"
-
-[operations.dev_loop_proof]
-description = "Run the bounded browser-capture dev-loop proof through AgentCTL"
-exec = ["python", "-m", "devtools.dev_loop_service", "--json"]
-pool = "interactive"
-result = "json"
-cache = "none"
-timeout_seconds = 900
-
-[operations.deployment_browser_smoke]
-description = "Run the fixed deployed-web browser-render smoke through AgentCTL"
-exec = ["python", "-m", "devtools.deployment_browser_smoke_service", "--json"]
-pool = "interactive"
-result = "json"
-cache = "none"
-timeout_seconds = 180
-
-[operations.live_provider_proof]
-description = "Capture explicitly selected conversations in owned shared-Chrome windows"
-arguments = "required"
-exec = ["python", "-m", "devtools.live_provider_proof_service", "--json"]
-pool = "interactive"
-result = "json"
-cache = "none"
-timeout_seconds = 0
-
-[packets.defaults]
-backend = "claude"
-model = "claude-opus-5-5"
-effort = "medium"
-
-[packets.review]
-backend = "claude"
-model = "claude-opus-5-5"
-effort = "medium"
-
-# Codex quota is reserved (operator, 2026-09-29): batch workers, reviewers and
-# every bead model_policy run on Claude Opus 5.5.
-[packets.model_policy.provider-neutral-calibrated-v2]
-backend = "claude"
-model = "claude-opus-5-5"
-
-[packets.model_policy.provider-neutral-capability-v1]
-backend = "claude"
-model = "claude-opus-5-5"
-
-[packets.model_policy.provider-pinned-v1]
-backend = "claude"
-model = "claude-opus-5-5"
-
-[operations.parser_census]
-description = "Parse the recorded source denominator with no archive and diff it against the last census"
-exec = ["devtools", "bench", "parser-census"]
-pool = "bulk"
-# `exit` rather than `json`: the human summary and the per-origin table belong
-# in the job log, while the census document itself is the durable artifact.
-result = "exit"
-cache = "none"
-schedule = "Sun *-*-* 04:00"
-# The census resolves the archive root only to locate the recorded frontier and
-# the census directory beside it; it opens no archive tier, so a skewed
-# `source.db` cannot refuse it the way it refuses `schema_sources`
-# (polylogue-pv8xp).
-#
-# Measured 2026-09-16 at four workers on the 2026-09-15 frontier (47,537
-# members, 81.4 GB, of which 27.2 GB in 23 members is over the per-member
-# byte bound and recorded as `oversized`): claude-code 1.77 GB in 32.3 s
-# (54.7 MB/s), codex 4.72 GB in 72.2 s (65.3 MB/s). 54.3 GB at 55 MB/s
-# extrapolates to ~990 s, ~1,800 s at a pessimistic 30 MB/s. Four hours is the
-# watchdog, not the budget: `scratch`'s 3,600 s killed a 6,935 s provider run,
-# and headroom on a weekly job costs nothing.
-timeout_seconds = 14400
-
-[operations.schema_sources]
-description = "Infer and persist schema packages from declared ordinary sources"
-exec = ["devtools", "schema", "commit"]
 pool = "bulk"
 result = "exit"
+timeout_seconds = 1800
+scratch = "nvme"
 cache = "none"
-timeout_seconds = 28800
-
-[operations.publish_branch]
-description = "Push a selected branch with normal hooks in the managed environment"
-exec = ["git", "push"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-cache = "none"
-timeout_seconds = 2400
