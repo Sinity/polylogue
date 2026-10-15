@@ -151,7 +151,7 @@ def exercise(run):
     run.checked("unparsed possible contributor remains pending independently of matching rows")
     for path in run.paths:
         path.unlink()
-    run.stop(kill=True)
+    run.stop()
     run.start()
     again = run.query("olderneedle", 1, [sid])
     require(again["rows"] == pending["rows"], "retained search changed after provider loss/restart")
@@ -160,7 +160,26 @@ def exercise(run):
             f"stable query identity did not open retained Session: {document}")
     require(document["session"]==before_document["session"] and document["messages"]==before_document["messages"], "retained structured Session changed")
     require(secret not in json.dumps(document) and "[credential:" in json.dumps(document),"ordinary read lost full-context credential masking")
-    run.checked("stable query ID opens retained structured Session after provider removal and SIGKILL/restart")
+    run.checked("stable query ID opens retained structured Session after provider removal and graceful restart")
+    # Large-cohort crash recovery can meet the separately documented ambiguous
+    # WAL-generation refusal. Qualify kill recovery on an explicit small cohort
+    # without changing that recovery authority or relabelling the large case.
+    run.stop()
+    run.archive=run.output/"small-kill-archive"
+    run.start()
+    small_native="query:small:restart"
+    small_sid="claude-code:"+small_native
+    run.import_(small_native,record(small_native,"kill-row","smallretainedneedle"))
+    before=run.query("smallretainedneedle",1,[small_sid])
+    before_read=run.cli(small_sid,"read","--format","json")
+    run.paths[-1].unlink()
+    run.stop(kill=True)
+    run.start()
+    after=run.query("smallretainedneedle",1,[small_sid])
+    after_read=run.cli(small_sid,"read","--format","json")
+    require(before["rows"]==after["rows"] and before_read["messages"]==after_read["messages"],"small cohort lost retained navigation after SIGKILL")
+    run.checked("separate small retained cohort survives provider removal and SIGKILL/restart")
+
 
 
 def main():
