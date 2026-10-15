@@ -101,11 +101,11 @@ fn run() -> Result<i32, Failure> {
         ));
     }
     if args == ["daemon"] {
-        let mut running = polylogue::Running::start(&archive, &runtime)
-            .map_err(|e| error(ErrorKind::Io, format!("archive {}: {e}", archive.display())))?;
         let stop = Arc::new(AtomicBool::new(false));
         let signalled = Arc::clone(&stop);
         ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
+        let mut running = polylogue::Running::start_cancellable(&archive, &runtime, &stop)
+            .map_err(|e| error(ErrorKind::Io, format!("archive {}: {e}", archive.display())))?;
         eprintln!(
             "foundation listening: {} (no sources registered)",
             running.socket().display()

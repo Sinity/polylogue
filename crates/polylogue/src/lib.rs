@@ -35,8 +35,24 @@ impl Running {
     pub fn start(archive: &Path, runtime: &Path) -> Result<Self, String> {
         Self::start_inner(archive, runtime, false)
     }
+    pub fn start_cancellable(
+        archive: &Path,
+        runtime: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, String> {
+        Self::start_cancellable_inner(archive, runtime, false, cancelled)
+    }
     fn start_inner(archive: &Path, runtime: &Path, fail_after_bind: bool) -> Result<Self, String> {
-        let writer = Writer::open(archive).map_err(|e| e.to_string())?;
+        Self::start_cancellable_inner(archive, runtime, fail_after_bind, &AtomicBool::new(false))
+    }
+    fn start_cancellable_inner(
+        archive: &Path,
+        runtime: &Path,
+        fail_after_bind: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, String> {
+        let writer = Writer::open_cancellable(archive, cancelled).map_err(|e| e.to_string())?;
+        let reader = Arc::new(Mutex::new(writer.read_handle().map_err(|e| e.to_string())?));
         let archive = fs::canonicalize(archive).map_err(|e| e.to_string())?;
         let socket = socket_path(&archive, runtime);
         if socket.as_os_str().as_encoded_bytes().len() >= 108 {
@@ -97,10 +113,11 @@ impl Running {
                             .expect("client lock")
                             .insert(id, cancel);
                         let archive = archive.clone();
+                        let reader = Arc::clone(&reader);
                         let completed = Arc::clone(&thread_clients);
                         workers.retain(|worker| !worker.is_finished());
                         workers.push(thread::spawn(move || {
-                            if let Err(error) = serve(stream, &archive) {
+                            if let Err(error) = serve(stream, &archive, &reader) {
                                 eprintln!("client: {error}");
                             }
                             completed.lock().expect("client lock").remove(&id);
@@ -167,14 +184,14 @@ impl Drop for OwnedSocket {
     }
 }
 
-fn serve(mut stream: UnixStream, archive: &Path) -> Result<(), String> {
+fn serve(mut stream: UnixStream, archive: &Path, reader: &Mutex<ReadHandle>) -> Result<(), String> {
     let mut line = String::new();
     BufReader::new(stream.try_clone().map_err(|e| e.to_string())?)
         .read_line(&mut line)
         .map_err(|e| e.to_string())?;
     let reply = match serde_json::from_str::<Value>(&line) {
         Ok(request) if request == json!({"command":"status"}) => {
-            match ReadHandle::open(archive).and_then(|reader| reader.status()) {
+            match reader.lock().expect("reader lock").status() {
                 Ok(status) => {
                     json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status"],"product_path":"not_implemented"})
                 }

@@ -146,7 +146,10 @@ fn unrelated_version_zero_schema_is_not_adopted() {
         .execute_batch("CREATE TABLE unrelated(value TEXT)")
         .unwrap();
     let before = snapshot(root);
-    assert!(matches!(Writer::open(root), Err(Error::Schema(_))));
+    assert!(matches!(
+        Writer::open(root),
+        Err(Error::RecoveryRequired { .. })
+    ));
     assert!(snapshot(root) == before, "refusal changed retained files");
 }
 #[test]
@@ -168,7 +171,11 @@ fn same_archive_alias_cannot_get_second_writer() {
         Writer::open(&alias),
         Err(Error::WriterHeld { .. })
     ));
-    assert!(ReadHandle::open(&alias).is_ok());
+    assert!(matches!(
+        ReadHandle::open(&alias),
+        Err(Error::WriterHeld { .. })
+    ));
+    assert!(writer.read_handle().is_ok());
     drop(writer);
     assert!(Writer::open(&alias).is_ok());
 }
@@ -256,7 +263,10 @@ fn orphan_wal_is_refused_without_recovery_side_effects() {
     drop(Writer::open(root).unwrap());
     fs::write(root.join("archive.db-wal"), b"retained orphan WAL marker").unwrap();
     let before = snapshot(root);
-    assert!(matches!(Writer::open(root), Err(Error::Initialization(_))));
+    assert!(matches!(
+        Writer::open(root),
+        Err(Error::RecoveryRequired { .. })
+    ));
     assert!(
         snapshot(root) == before,
         "inspection must preserve all retained files"
@@ -349,7 +359,10 @@ fn missing_or_empty_main_never_overwrites_retained_wal_or_shm() {
             }
             fs::write(root.join(sidecar), b"retained recovery bytes").unwrap();
             let before = snapshot(root);
-            assert!(matches!(Writer::open(root), Err(Error::Initialization(_))));
+            assert!(matches!(
+                Writer::open(root),
+                Err(Error::RecoveryRequired { .. })
+            ));
             assert!(
                 snapshot(root) == before,
                 "recovery refusal changed retained files"
@@ -508,6 +521,25 @@ fn retained_wal_probe_child() {
     };
     let ack = PathBuf::from(std::env::var_os("POLYLOGUE_WAL_CHILD_ACK").unwrap());
     let mut writer = Writer::open(Path::new(&root)).unwrap();
+    if std::env::var("POLYLOGUE_WAL_CHILD_MODE").as_deref() == Ok("embeddings") {
+        writer
+            ._embeddings
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+        insert_synthetic_embedding(&writer._embeddings, 2);
+        insert_synthetic_embedding(&writer._embeddings, 3);
+        assert_eq!(
+            writer
+                ._embeddings
+                .query_row("SELECT count(*) FROM embedded", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+        fs::write(ack, b"3").unwrap();
+        loop {
+            std::thread::park();
+        }
+    }
     writer
         .archive
         .pragma_update(None, "wal_autocheckpoint", 0)
@@ -572,87 +604,105 @@ impl Drop for WalProbeChild {
 }
 
 #[test]
-#[ignore = "bounded investigation; not a claimed WAL protection acceptance"]
-fn retained_wal_cold_reopen_probe() {
-    let (tmp, root, _) = killed_wal_fixture("normal");
-    let wal = fs::read(root.join("archive.db-wal")).unwrap();
-    let word = |bytes: &[u8]| u32::from_be_bytes(bytes.try_into().unwrap());
-    let page_size = word(&wal[8..12]) as usize;
-    assert!(page_size >= 512 && page_size.is_power_of_two());
-    let frame_size = page_size + 24;
-    assert_eq!((wal.len() - 32) % frame_size, 0);
-    let commits: Vec<_> = (0..(wal.len() - 32) / frame_size)
-        .filter(|frame| word(&wal[32 + frame * frame_size + 4..32 + frame * frame_size + 8]) != 0)
-        .collect();
-    assert_eq!(commits.len(), 2, "fixture requires two WAL commits");
-    let frame = commits[0] + 1;
-    let frame_start = 32 + frame * frame_size;
-    println!(
-        "WAL_PROBE fixture acknowledged=3 main_baseline=1 page_size={page_size} commits={commits:?} target_frame={} target_page={}",
-        frame + 1,
-        word(&wal[frame_start..frame_start + 4])
-    );
-    if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
-        copy_fixture(&root, &PathBuf::from(capture).join("original"));
-    }
-    for mutation in ["none", "payload", "page-number", "frame-checksum"] {
-        for shm in ["retained", "zeroed", "absent"] {
-            for api in ["reader", "writer"] {
-                let name = format!("{mutation}-{shm}-{api}");
-                let case = tmp.path().join(&name);
-                copy_fixture(&root, &case);
-                let wal_path = case.join("archive.db-wal");
-                let mut damaged = wal.clone();
-                match mutation {
-                    "payload" => damaged[frame_start + 24 + 200] ^= 0x40,
-                    "page-number" => damaged[frame_start + 3] ^= 0x80,
-                    "frame-checksum" => damaged[frame_start + 16] ^= 0x40,
-                    _ => {}
-                }
-                fs::write(&wal_path, &damaged).unwrap();
-                let shm_path = case.join("archive.db-shm");
-                match shm {
-                    "zeroed" => fs::write(
-                        &shm_path,
-                        vec![0; fs::metadata(&shm_path).unwrap().len() as usize],
-                    )
-                    .unwrap(),
-                    "absent" => fs::remove_file(&shm_path).unwrap(),
-                    _ => {}
-                }
-                if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
-                    copy_fixture(&case, &PathBuf::from(capture).join(&name));
-                }
-                let before = snapshot(&case);
-                let outcome = if api == "reader" {
-                    ReadHandle::open(&case).and_then(|read| read.status())
-                } else {
-                    Writer::open(&case).and_then(|writer| writer.status())
-                };
-                let result = match outcome {
-                    Ok(status) => format!("counter={}", status.write_counter),
-                    Err(err) => format!("error={err}"),
-                };
-                let main_before = before
-                    .iter()
-                    .find(|(file, _, _)| file.file_name().unwrap() == "archive.db")
-                    .unwrap();
-                let main_unchanged = fs::read(case.join("archive.db")).unwrap() == main_before.1;
-                let wal_unchanged = fs::read(&wal_path).ok().as_deref() == Some(damaged.as_slice());
-                println!(
-                    "WAL_PROBE {name}: {result}; files_unchanged={}; main_unchanged={main_unchanged}; wal_unchanged={wal_unchanged}; wal_exists={}",
-                    snapshot(&case) == before,
-                    wal_path.exists()
-                );
-                if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
-                    copy_fixture(&case, &PathBuf::from(capture).join("after").join(&name));
-                }
-                if mutation == "none" && shm != "absent" {
-                    assert_eq!(result, "counter=3");
-                }
-                if shm == "absent" {
-                    assert!(result.starts_with("error="));
-                    assert!(snapshot(&case) == before);
+fn retained_wal_cold_reopen_gate() {
+    for tier in ["archive.db", "embeddings.db"] {
+        let (tmp, root, _) = killed_wal_fixture(if tier == "archive.db" {
+            "normal"
+        } else {
+            "embeddings"
+        });
+        let expected_counter = if tier == "archive.db" { 3 } else { 1 };
+        let wal = fs::read(root.join(format!("{tier}-wal"))).unwrap();
+        let word = |bytes: &[u8]| u32::from_be_bytes(bytes.try_into().unwrap());
+        let page_size = word(&wal[8..12]) as usize;
+        assert!(page_size >= 512 && page_size.is_power_of_two());
+        let frame_size = page_size + 24;
+        assert_eq!((wal.len() - 32) % frame_size, 0);
+        let commits: Vec<_> = (0..(wal.len() - 32) / frame_size)
+            .filter(|frame| {
+                word(&wal[32 + frame * frame_size + 4..32 + frame * frame_size + 8]) != 0
+            })
+            .collect();
+        assert_eq!(commits.len(), 2, "fixture requires two WAL commits");
+        let frame = commits[0] + 1;
+        let frame_start = 32 + frame * frame_size;
+        println!(
+            "WAL_PROBE {tier} fixture acknowledged=3 main_baseline=1 page_size={page_size} commits={commits:?} target_frame={} target_page={}",
+            frame + 1,
+            word(&wal[frame_start..frame_start + 4])
+        );
+        if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
+            copy_fixture(
+                &root,
+                &PathBuf::from(capture).join(format!("{tier}-original")),
+            );
+        }
+        for mutation in ["none", "payload", "page-number", "frame-checksum"] {
+            for shm in ["retained", "zeroed", "absent"] {
+                for api in ["reader", "writer"] {
+                    let name = format!("{tier}-{mutation}-{shm}-{api}");
+                    let case = tmp.path().join(&name);
+                    copy_fixture(&root, &case);
+                    let wal_path = case.join(format!("{tier}-wal"));
+                    let mut damaged = wal.clone();
+                    match mutation {
+                        "payload" => damaged[frame_start + 24 + 200] ^= 0x40,
+                        "page-number" => damaged[frame_start + 3] ^= 0x80,
+                        "frame-checksum" => damaged[frame_start + 16] ^= 0x40,
+                        _ => {}
+                    }
+                    fs::write(&wal_path, &damaged).unwrap();
+                    let shm_path = case.join(format!("{tier}-shm"));
+                    match shm {
+                        "zeroed" => fs::write(
+                            &shm_path,
+                            vec![0; fs::metadata(&shm_path).unwrap().len() as usize],
+                        )
+                        .unwrap(),
+                        "absent" => fs::remove_file(&shm_path).unwrap(),
+                        _ => {}
+                    }
+                    if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
+                        copy_fixture(&case, &PathBuf::from(capture).join(&name));
+                    }
+                    let before = snapshot(&case);
+                    let outcome = if api == "reader" {
+                        ReadHandle::open(&case).and_then(|read| read.status())
+                    } else {
+                        Writer::open(&case).and_then(|writer| writer.status())
+                    };
+                    let result = match outcome {
+                        Ok(status) => format!("counter={}", status.write_counter),
+                        Err(err) => format!("error={err}"),
+                    };
+                    let main_before = before
+                        .iter()
+                        .find(|(file, _, _)| file.file_name().unwrap() == tier)
+                        .unwrap();
+                    let main_unchanged = fs::read(case.join(tier)).unwrap() == main_before.1;
+                    let wal_unchanged =
+                        fs::read(&wal_path).ok().as_deref() == Some(damaged.as_slice());
+                    println!(
+                        "WAL_PROBE {name}: {result}; files_unchanged={}; main_unchanged={main_unchanged}; wal_unchanged={wal_unchanged}; wal_exists={}",
+                        snapshot(&case) == before,
+                        wal_path.exists()
+                    );
+                    if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
+                        copy_fixture(&case, &PathBuf::from(capture).join("after").join(&name));
+                    }
+                    if mutation == "none" && shm != "absent" {
+                        assert_eq!(result, format!("counter={expected_counter}"));
+                    } else {
+                        assert!(
+                            result.starts_with("error=controlled recovery required"),
+                            "{name}: {result}"
+                        );
+                        assert!(snapshot(&case) == before, "refusal changed retained bytes");
+                    }
+                    if shm == "absent" {
+                        assert!(result.starts_with("error="));
+                        assert!(snapshot(&case) == before);
+                    }
                 }
             }
         }
@@ -666,6 +716,9 @@ fn killed_wal_fixture(mode: &str) -> (tempfile::TempDir, PathBuf, u64) {
     let expected = if mode == "stale-generation" { 4 } else { 3 };
     let mut initial = Writer::open(&root).unwrap();
     initial.put_file_blob(b"checkpointed baseline").unwrap();
+    if mode == "embeddings" {
+        insert_synthetic_embedding(&initial._embeddings, 1);
+    }
     drop(initial);
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     let mut child = WalProbeChild(
@@ -701,8 +754,7 @@ fn killed_wal_fixture(mode: &str) -> (tempfile::TempDir, PathBuf, u64) {
 }
 
 #[test]
-#[ignore = "bounded investigation of legitimate WAL tails"]
-fn retained_wal_legitimate_tails_probe() {
+fn retained_wal_legitimate_tails_gate() {
     for mode in ["stale-generation", "uncommitted"] {
         let (tmp, root, expected) = killed_wal_fixture(mode);
         let original = fs::read(root.join("archive.db-wal")).unwrap();
@@ -728,20 +780,106 @@ fn retained_wal_legitimate_tails_probe() {
                 if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
                     copy_fixture(&case, &PathBuf::from(capture).join(&name));
                 }
+                let snapshot_before = snapshot(&case);
                 let outcome = if api == "reader" {
                     ReadHandle::open(&case).and_then(|r| r.status())
                 } else {
                     Writer::open(&case).and_then(|w| w.status())
                 };
-                let actual = outcome.unwrap().write_counter;
-                println!(
-                    "WAL_TAIL {name}: expected={expected} actual={actual} bytes={} wal_unchanged={}",
-                    before.len(),
-                    fs::read(case.join("archive.db-wal")).ok().as_deref()
-                        == Some(before.as_slice())
-                );
-                assert_eq!(actual, expected);
+                if mode == "stale-generation" || tail == "partial" {
+                    assert!(
+                        matches!(outcome, Err(Error::RecoveryRequired { .. })),
+                        "{name}: {outcome:?}"
+                    );
+                    assert!(
+                        snapshot(&case) == snapshot_before,
+                        "{name}: refusal changed files"
+                    );
+                } else {
+                    assert_eq!(outcome.unwrap().write_counter, expected);
+                }
+                assert!(!before.is_empty());
             }
         }
     }
+}
+
+#[test]
+fn startup_cancellation_and_mid_wal_scan_preserve_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = tmp.path().join("never-created");
+    let cancelled = AtomicBool::new(true);
+    assert!(matches!(
+        Writer::open_cancellable(&missing, &cancelled),
+        Err(Error::Cancelled)
+    ));
+    assert!(!missing.exists());
+    let (_tmp, root, _) = killed_wal_fixture("normal");
+    let before = snapshot(&root);
+    let mut polls = 0;
+    let error = wal::inspect(&root.join("archive.db-wal"), &mut || {
+        polls += 1;
+        polls == 3
+    })
+    .unwrap_err();
+    assert!(matches!(error, Error::Cancelled));
+    assert_eq!(polls, 3, "cancellation must be checked between pages");
+    assert!(snapshot(&root) == before);
+}
+
+#[test]
+fn owned_reader_keeps_archive_coordination_after_writer_drop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let writer = Writer::open(tmp.path()).unwrap();
+    let reader = writer.read_handle().unwrap();
+    drop(writer);
+    assert!(matches!(
+        Writer::open(tmp.path()),
+        Err(Error::WriterHeld { .. })
+    ));
+    assert!(reader.status().is_ok());
+    drop(reader);
+    assert!(Writer::open(tmp.path()).is_ok());
+}
+
+fn insert_synthetic_embedding(conn: &Connection, n: u8) {
+    let hash = BlobHash::of(&[n]);
+    conn.execute("INSERT INTO embedded(text_hash,model,chunk,dims,vector,embedded_at) VALUES(?1,'synthetic/test/1/document/unit',0,1,?2,0)", params![hash.bytes().as_slice(), 0f32.to_le_bytes().as_slice()]).unwrap();
+}
+
+#[test]
+fn active_owned_readers_see_commits_without_cold_start_scans() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut writer = Writer::open(tmp.path()).unwrap();
+    let reader = writer.read_handle().unwrap();
+    writer
+        .archive
+        .pragma_update(None, "wal_autocheckpoint", 0)
+        .unwrap();
+    for n in 0..20u8 {
+        writer.put_file_blob(&[n]).unwrap();
+        assert_eq!(reader.status().unwrap().write_counter, u64::from(n) + 1);
+        assert!(writer.read_handle().is_ok());
+        assert!(matches!(
+            ReadHandle::open(tmp.path()),
+            Err(Error::WriterHeld { .. })
+        ));
+    }
+}
+
+#[test]
+fn missing_lock_refuses_without_creating_coordination_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    drop(Writer::open(tmp.path()).unwrap());
+    fs::remove_file(tmp.path().join("writer.lock")).unwrap();
+    let before = snapshot(tmp.path());
+    assert!(matches!(
+        ReadHandle::open(tmp.path()),
+        Err(Error::RecoveryRequired { .. })
+    ));
+    assert!(matches!(
+        Writer::open(tmp.path()),
+        Err(Error::RecoveryRequired { .. })
+    ));
+    assert!(snapshot(tmp.path()) == before);
 }

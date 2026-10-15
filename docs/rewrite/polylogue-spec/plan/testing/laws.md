@@ -332,8 +332,23 @@ Variants from the conceptual audits (`evidence/conceptual-idempotency.md`,
 `conceptual-identity.md`, `conceptual-time.md`):
 - one message present in two location inputs with content that ties on route
   and completeness, stored in both orders: the same version wins (the
-  tie-break is the higher BLAKE3 of the record as canonical JSON without
-  its format's volatile fields, `spec/convergence.md`, never the input ID). Known-bad: an input-ID tie-break.
+  tie-break is the higher source-evidence digest from
+  `spec/sources/README.md`, "Message version evidence", never the input ID). Known-bad: an input-ID tie-break.
+- versions tied on route and block counts but differing in source field
+  presence (`sources/README.md`, rule 2): supplied zero/false/known-empty
+  values count, absent/default/unknown values do not; usage leaves count
+  independently, an opaque JSON payload does not gain points from nested
+  size, and provider-extra keys count once each. Repeat with added empty text
+  blocks, downloaded attachment bytes and clipboard enrichment: these do not
+  improve the rank. Compare before and after missing-field fill; retained
+  candidate rank facts stay the same in either input order and after rebuild.
+- compound message evidence: changing an unrelated interleaved record leaves
+  the digest unchanged; changing an owned supplement changes it. Different
+  unit boundaries and required-body slots cannot hash the same concatenated
+  bytes accidentally. Ordinary attachment fetch and replica relocation leave
+  the digest unchanged; changed required body bytes change it, and a missing
+  required body cannot produce a complete digest. Replaying in different
+  parser turns and rebuilding retain identical candidate evidence and ranks.
 - every fallback-ID format in the generated archives (and, slice 5, a
   Grok-shaped id-less session with two identical messages, imported twice and then as an
   extended export): any order, and after `delete_index`, gives the same
@@ -1737,6 +1752,36 @@ the `index.db` error makes the daemon rebuild the file from `archive.db`
 and the blobs. `index.db` has no checksums, so a flip SQLite does not
 notice is not detected; it is rebuildable, and that is accepted
 (`spec/storage/README.md`, the archive directory is not copy-on-write).
+
+WAL recovery variants (the intermediate boundary in `storage/README.md`):
+
+- In throwaway copies of each durable tier, an owned process acknowledges two
+  FULL-synchronous commits in a retained WAL, then is killed before checkpoint.
+  Flip one payload byte, one frame page number, or one frame checksum in the
+  acknowledged suffix, independently. Cold writer and reader startup refuse
+  with recovery required before any SQLite recovery, preserving main, WAL and
+  SHM bytes. They never successfully substitute the prior commit, checkpoint it,
+  or delete the evidence; do not infer a trustworthy page from damaged headers.
+- A complete checksum-valid uncommitted suffix is ignored normally. A torn
+  uncommitted frame and a real `RESTART` followed by old-salt trailing frames
+  both receive the conservative recovery-required refusal with unchanged
+  files. The latter two are legitimate crash cases, not proof of corruption;
+  their refusal records the accepted intermediate availability cost.
+- Missing SHM with retained WAL and missing archive coordination ownership
+  refuse without creating files. A busy cold reader refuses; active
+  writer-owned readers continue through their existing authority, including
+  while commits append. No cold scan races that append or serves requests
+  before validation finishes.
+- Cancel a scan between frames: it returns explicit cancellation and preserves
+  all retained files. Memory is bounded by a page; total IO grows with WAL
+  length. A newer durable schema still refuses before mutation.
+
+An aligned truncation to an earlier complete valid commit is a coverage limit,
+not a promised detection: the files alone do not identify an external expected
+head. Older consistent main/WAL pairs and valid-prefix salt/header/history
+changes share this limit. No test should relabel native checksum validation as
+proof that every acknowledged commit survives, or this intermediate guard as
+full M0 recovery/availability acceptance.
 
 **124. A fresh archive equals an upgraded one.**
 Slice: the first release with a migration step.

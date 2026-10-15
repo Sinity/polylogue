@@ -436,6 +436,14 @@ names the longest current read. Checkpoints name the
 schema (`PRAGMA main.wal_checkpoint`): an unqualified one also walks attached
 databases and fails on one attached read-only.
 
+A `RESTART` need not erase older-generation frames beyond the reused prefix.
+After a crash these can be legitimate retained bytes. The cold-start WAL guard
+(`README.md`, retained durable WAL) nevertheless refuses uncertain generation
+or partial tails before SQLite opens them. Checkpoint scheduling does not prove
+that an acknowledged commit survived, and this intermediate guard may require
+controlled recovery after a legitimate crash. Active writer-owned reads use the
+existing archive authority; they do not apply a cold scan to an append in flight.
+
 **Values too large for SQLite.** A single string or blob over SQLite's maximum
 length (1,000,000,000 bytes by default) is never truncated: it stays in the
 stored input. The block records the value's complete byte locator

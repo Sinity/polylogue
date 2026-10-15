@@ -20,10 +20,11 @@ use std::{
         fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     },
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Arc, OnceLock, atomic::AtomicBool},
 };
 mod native;
 pub mod parser_state;
+mod wal;
 
 pub const ARCHIVE_VERSION: u32 = 0;
 pub const EMBEDDINGS_VERSION: u32 = 0;
@@ -65,6 +66,16 @@ pub enum Error {
         #[source]
         source: rusqlite::Error,
     },
+    #[error(
+        "controlled recovery required at {file}: {reason} (frame {frame:?}); retained bytes were not changed"
+    )]
+    RecoveryRequired {
+        file: PathBuf,
+        reason: &'static str,
+        frame: Option<u64>,
+    },
+    #[error("store startup cancelled")]
+    Cancelled,
     #[error("archive writer already held at {archive} by {holder}")]
     WriterHeld { archive: PathBuf, holder: String },
     #[error(
@@ -111,7 +122,7 @@ pub struct Writer {
     _index: Connection,
     _embeddings: Connection,
     blobs: hashed_blobs::Store,
-    _lock: File,
+    _lock: Arc<File>,
 }
 
 /// Read-only SQLite handles and typed queries; never a raw connection or SQL surface.
@@ -120,6 +131,8 @@ pub struct ReadHandle {
     archive: Connection,
     index: Connection,
     embeddings: Connection,
+    // Fields drop in declaration order: connections close before authority releases.
+    _lock: Arc<File>,
 }
 
 fn initialize_sqlite() -> Result<()> {
@@ -229,19 +242,21 @@ fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Re
     let has_wal = wal_meta.as_ref().is_some_and(|m| m.len() != 0);
     if main.as_ref().is_none_or(|m| m.len() == 0) {
         if has_wal || shm_meta.as_ref().is_some_and(|m| m.len() != 0) {
-            return Err(Error::Initialization(format!(
-                "recovery required for missing or empty main database with retained WAL/shared-memory bytes at {}",
-                file.display()
-            )));
+            return Err(wal::required(
+                &file,
+                "missing or empty main with retained WAL/shared-memory bytes",
+                None,
+            ));
         }
         return Ok(());
     }
     // No journal mode, schema, counters, chmod, or blob mutations precede this check.
     if has_wal && shm_meta.is_none() {
-        return Err(Error::Initialization(format!(
-            "non-mutating inspection requires recovery of orphan WAL at {}",
-            wal.display()
-        )));
+        return Err(wal::required(
+            &wal,
+            "orphan WAL requires controlled recovery",
+            None,
+        ));
     }
     let conn = if has_wal {
         open(&file, true, durable)?
@@ -433,41 +448,93 @@ fn private_files(root: &Path) -> Result<()> {
     }
     Ok(())
 }
+// A retained archive must already have its coordination inode. Missing-lock
+// inspection may explain a refusal using raw headers, but never opens SQLite.
+fn startup_lock(root: &Path, create: bool, writable: bool) -> Result<File> {
+    let path = root.join("writer.lock");
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(writable)
+        .create_new(create)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path);
+    let lock = match lock {
+        Ok(lock) => lock,
+        Err(e) if create && e.kind() == io::ErrorKind::AlreadyExists => {
+            return startup_lock(root, false, writable);
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            for (name, supported) in [
+                ("archive.db", ARCHIVE_VERSION),
+                ("embeddings.db", EMBEDDINGS_VERSION),
+            ] {
+                let file = root.join(name);
+                let Some(meta) = owned_metadata(&file)? else {
+                    continue;
+                };
+                if meta.len() >= 100 {
+                    let mut header = [0; 100];
+                    File::open(&file)?.read_exact(&mut header)?;
+                    if &header[..16] == b"SQLite format 3\0" {
+                        let found = u32::from_be_bytes(header[60..64].try_into().unwrap());
+                        if found > supported {
+                            return Err(Error::NewerSchema {
+                                file,
+                                found,
+                                supported,
+                            });
+                        }
+                    }
+                }
+            }
+            let mut sidecar = false;
+            for entry in fs::read_dir(root)? {
+                let name = entry?.file_name();
+                sidecar |= name == "archive.db-wal" || name == "archive.db-shm";
+            }
+            if owned_metadata(&root.join("archive.db"))?.is_none() && !sidecar {
+                return Err(Error::MissingArchive(root.into()));
+            }
+            return Err(wal::required(
+                &path,
+                "missing archive coordination lock",
+                None,
+            ));
+        }
+        Err(e) => return Err(Error::Io(e)),
+    };
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(std::fs::TryLockError::WouldBlock) => Err(Error::WriterHeld {
+            archive: root.into(),
+            holder: fs::read_to_string(&path)
+                .unwrap_or_else(|_| "unknown holder".into())
+                .trim()
+                .into(),
+        }),
+        Err(std::fs::TryLockError::Error(e)) => Err(Error::Io(e)),
+    }
+}
 impl Writer {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_cancellable(path, &AtomicBool::new(false))
+    }
+    pub fn open_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Self> {
+        wal::check_cancel(cancelled)?;
         initialize_sqlite()?;
-        // A rejected newer durable file is inspected before even creating a lock or siblings.
-        preflight(path)?;
-        let fresh_root = !path.exists();
-        if fresh_root {
+        if !path.try_exists()? {
             private_dir(path)?;
         }
-        if fs::read_dir(path)?.next().is_none() {
-            native::no_cow(path)?;
-        }
         let root = fs::canonicalize(path)?;
-        let mut lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(root.join("writer.lock"))?;
-        match lock.try_lock() {
-            Ok(()) => (),
-            Err(std::fs::TryLockError::WouldBlock) => {
-                let holder = fs::read_to_string(root.join("writer.lock"))
-                    .unwrap_or_else(|_| "unknown holder".into());
-                return Err(Error::WriterHeld {
-                    archive: root,
-                    holder: holder.trim().into(),
-                });
-            }
-            Err(std::fs::TryLockError::Error(err)) => return Err(Error::Io(err)),
+        let empty = fs::read_dir(&root)?.next().is_none();
+        if empty {
+            native::no_cow(&root)?;
         }
-        // Repeat after acquisition: a prior writer may have committed while we waited.
+        let mut lock = startup_lock(&root, empty, true)?;
+        wal::validate(&root, cancelled)?;
         preflight(&root)?;
+        wal::check_cancel(cancelled)?;
         private_dir(&root)?;
         lock.set_len(0)?;
         writeln!(lock, "pid={}", std::process::id())?;
@@ -492,11 +559,11 @@ impl Writer {
             _index: index,
             _embeddings: embeddings,
             blobs,
-            _lock: lock,
+            _lock: Arc::new(lock),
         })
     }
     pub fn read_handle(&self) -> Result<ReadHandle> {
-        ReadHandle::open(&self.root)
+        ReadHandle::owned(self.root.clone(), Arc::clone(&self._lock))
     }
     pub fn status(&self) -> Result<Status> {
         self.read_handle()?.status()
@@ -531,14 +598,25 @@ impl Writer {
 }
 impl ReadHandle {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_cancellable(path, &AtomicBool::new(false))
+    }
+    pub fn open_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Self> {
+        wal::check_cancel(cancelled)?;
         initialize_sqlite()?;
         let root = fs::canonicalize(path)?;
+        let lock = startup_lock(&root, false, false)?;
+        wal::validate(&root, cancelled)?;
         preflight(&root)?;
+        wal::check_cancel(cancelled)?;
+        Self::owned(root, Arc::new(lock))
+    }
+    fn owned(root: PathBuf, lock: Arc<File>) -> Result<Self> {
         Ok(Self {
             archive: open(&root.join("archive.db"), true, true)?,
             index: open(&root.join("index.db"), true, false)?,
             embeddings: open(&root.join("embeddings.db"), true, true)?,
             root,
+            _lock: lock,
         })
     }
     pub fn status(&self) -> Result<Status> {

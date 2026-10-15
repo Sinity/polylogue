@@ -64,6 +64,48 @@ privacy).
   rebuild it, and a flip SQLite does not notice goes undetected, which is
   accepted because the file is rebuilt from the other two at any version
   change.
+- **Retained durable WAL is checked before cold recovery.** The checksum VFS
+  above protects main-database page reads; it does not wrap WAL reads. SQLite's
+  own WAL recovery stops at an invalid frame and may successfully expose an
+  earlier commit, including after damage to an acknowledged transaction. Native
+  WAL checksums alone do not establish that an acknowledged history survived.
+  Before opening any SQLite connection on a cold archive, acquire its existing
+  archive coordination lock without rewriting it. A missing lock on retained
+  state requires controlled recovery; busy means unavailable, never an empty
+  archive. A fresh empty archive may create its lock. Validate `archive.db-wal`
+  and `embeddings.db-wal` while quiescent, then open SQLite and inspect schemas
+  before any database mutation. No endpoint serves requests while this check is
+  pending. An active writer creates read handles through its already-owned
+  authority; those handles do not scan a concurrently appended WAL. Cold
+  standalone read handles acquire the same noncreating exclusive authority and
+  retain it for their lifetime.
+
+  Validation reads the pinned SQLite WAL format, header checksum, frame salts,
+  positive page numbers and rolling frame checksums with one page buffer. Total
+  IO is proportional to the retained WAL length, not constant. Cancellation is
+  checked before and between page reads; cancellation is an explicit non-success
+  and does not change retained files. Complete validated uncommitted frames are
+  allowed: SQLite may ignore them. An invalid header, bad current-generation
+  frame, incomplete frame, orphan WAL, or uncertain generation tail returns
+  **recovery required**, naming the file and reason (and frame when known),
+  before SQLite can recover, checkpoint or discard bytes. A damaged frame's
+  page number is not trusted enough to invent a named-page corruption error.
+  Nothing truncates, deletes, repairs, or automatically adopts an earlier
+  committed prefix on this refusal.
+
+  This is an intermediate integrity-first availability tradeoff, not complete
+  crash recovery. A legitimate unfinished write can leave a partial frame; a
+  `RESTART` can leave old-salt frames after the current generation. Both may
+  require controlled recovery and block startup. This explicitly qualifies the
+  ordinary logical-step restart behavior (`behavior.md`, failures); it is not a
+  claim that every crash resumes automatically. Nor does the guard prove all
+  history survived: aligned truncation to an earlier valid commit, replacement
+  by an older internally consistent main/WAL pair, salt/header/history changes
+  that leave a valid prefix, and checksum collisions cannot be ruled out from
+  these files alone without an independent expected durable head. There is no
+  external commit ledger by default. Preserve the originals for a separately
+  controlled recovery decision; do not label ambiguity as proven media
+  corruption or silently weaken this boundary to improve startup availability.
 - Only the daemon opens the database files and is their only writer
   (`decisions/process.md`). The daemon's read connections open `index.db`
   read-only with `archive.db` attached (`ATTACH … AS archive`), so a query
