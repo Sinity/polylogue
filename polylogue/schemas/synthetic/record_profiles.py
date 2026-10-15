@@ -1005,6 +1005,19 @@ class PublicRecordPlan:
                     raise ValueError("original progress child identity is not a native filename")
                 self.graph_values["$.data.agentId"] = value
 
+    def _defer_dispatch_result_class(self, form: SchemaRecord) -> bool:
+        fields = form.get("fields")
+        if (
+            form.get("tool_class") != ""
+            or not isinstance(fields, dict)
+            or fields.get("toolUseResult") not in ("absent", "null")
+        ):
+            return False
+        # The original dispatcher is measured before this record's calls.
+        # A call-first path binds its result class after emitting that call.
+        starts = _state_rows(self.content, "initial_states")
+        return bool(starts) and all(kind == "block:tool_use" for kind, _seen in starts)
+
     def _bind_dispatch_fields(self, rng: random.Random) -> None:
         rows = self.content.get("dispatch_forms")
         if not isinstance(rows, list) or not rows:
@@ -1023,7 +1036,7 @@ class PublicRecordPlan:
                 and tool_class not in PUBLIC_CLAUDE_TOOL_CLASSES | {"mixed"}
             ):
                 raise ValueError("dispatcher tool class contains an undeclared public name")
-            if isinstance(result_rows, list) and result_rows:
+            if isinstance(result_rows, list) and result_rows and not self._defer_dispatch_result_class(row):
                 supported = False
                 for operand in result_rows:
                     if not isinstance(operand, dict):
@@ -1087,7 +1100,11 @@ class PublicRecordPlan:
             self.header_types["$.origin"] = frozenset({"object"})
             self.scalars["$.origin.kind"] = "task-notification"
         selected_class = str(selected["tool_class"])
-        self.record_tool_class = selected_class if result_rows and selected_class != "mixed" else None
+        self.record_tool_class = (
+            selected_class
+            if result_rows and selected_class != "mixed" and not self._defer_dispatch_result_class(selected)
+            else None
+        )
         from polylogue.schemas.generation.workload_profiles import AgentChildCounts
 
         counts = AgentChildCounts.from_payload(selected.get("child_count_joint"))

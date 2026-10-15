@@ -364,7 +364,12 @@ def benchmark_corpus_specs(tier: BenchmarkWorkloadTier | str, *, seed: int = 42)
         for shape_count, messages_per_session in provider_shapes:
             session_shapes.append(
                 WorkloadSessionShape(
-                    provider, shape_count, messages_per_session, messages_per_session, len(session_shapes)
+                    provider,
+                    shape_count,
+                    messages_per_session,
+                    messages_per_session,
+                    len(session_shapes),
+                    style="demo" if profile.tier == BenchmarkWorkloadTier.SMOKE and provider == "chatgpt" else None,
                 )
             )
     return replace(profile.workload, seed=seed).corpus_specs(tuple(session_shapes))
@@ -420,7 +425,9 @@ class ConvergenceWorkloadProfile:
             if not shapes:
                 raise ValueError(f"convergence workload {self.tier.value!r} has no provider {provider!r}")
         session_shapes = tuple(
-            WorkloadSessionShape(name, count, messages, messages, offset, style="default")
+            WorkloadSessionShape(
+                name, count, messages, messages, offset, style="tool-heavy" if name == "claude-code" else "default"
+            )
             for offset, (name, count, messages) in shapes
         )
         return replace(self.workload, seed=self.workload.seed if seed is None else seed).corpus_specs(session_shapes)

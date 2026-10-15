@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.sources.dispatch import parse_payload
 from tests.infra.workload_artifacts import _manifest_file_entries, build_seeded_archive, seeded_archive_key
 from tests.infra.workload_declarations import (
     BENCHMARK_WORKLOAD_PROFILES,
@@ -18,6 +20,7 @@ from tests.infra.workload_declarations import (
     WorkloadSessionShape,
     benchmark_corpus_specs,
     benchmark_workload_profile,
+    convergence_corpus_specs,
     named_corpus_specs,
     named_workload_profile,
     raw_sample_corpus_specs,
@@ -233,3 +236,39 @@ def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None
     benchmark = benchmark_workload_profile(BenchmarkWorkloadTier.SMOKE)
     assert {spec.origin for spec in named.corpus_specs()} == {named.workload.origin}
     assert {spec.origin for spec in benchmark_corpus_specs(benchmark.tier)} == {benchmark.workload.origin}
+
+
+@pytest.mark.parametrize("workload", ("smoke-chatgpt", "convergence-claude"))
+def test_seeded_fixture_profiles_generate_exact_native_message_counts(workload: str) -> None:
+    if workload == "smoke-chatgpt":
+        spec = next(spec for spec in benchmark_corpus_specs("smoke") if spec.provider == "chatgpt")
+        assert (spec.style, spec.count, spec.messages_min, spec.messages_max, spec.seed) == ("demo", 2, 10, 10, 46)
+    else:
+        spec = convergence_corpus_specs("xs-tiny-files")[0]
+        assert (spec.provider, spec.style, spec.count, spec.messages_min, spec.messages_max, spec.seed) == (
+            "claude-code",
+            "tool-heavy",
+            10,
+            10,
+            10,
+            42,
+        )
+    batch = SyntheticCorpus.generate_batch_for_spec(spec)
+    assert batch.report.generated_count == spec.count
+    assert batch.report.workload_profile_id is not None
+    assert len(batch.artifacts) == spec.count
+    for index, artifact in enumerate(batch.artifacts):
+        payload = (
+            [json.loads(line) for line in artifact.raw_bytes.splitlines()]
+            if spec.provider == "claude-code"
+            else json.loads(artifact.raw_bytes)
+        )
+        parsed = parse_payload(spec.provider, payload, f"neutral-seeded-{index}")
+        assert len(parsed) == 1
+        assert len(parsed[0].messages) == artifact.facts.message_count == spec.messages_min
+        assert any(block.text for message in parsed[0].messages for block in message.blocks)
+        if spec.provider == "claude-code":
+            assert artifact.facts.paired_tool_ids
+            assert {
+                block.tool_id for message in parsed[0].messages for block in message.blocks if block.tool_id
+            } >= set(artifact.facts.paired_tool_ids)
