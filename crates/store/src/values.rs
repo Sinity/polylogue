@@ -16,7 +16,7 @@ pub enum Codec {
     Bytes,
 }
 impl Codec {
-    fn name(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Utf8 => "utf8",
             Self::Json => "json",
@@ -43,6 +43,7 @@ pub enum State {
 pub struct ValueId {
     pub(crate) pk: i64,
     pub(crate) index_generation: String,
+    pub(crate) index_path: std::path::PathBuf,
 }
 impl ValueId {
     pub fn pk(&self) -> i64 {
@@ -223,7 +224,7 @@ fn generation(db: &Connection, path: &Path) -> Result<String> {
     })
 }
 fn head(db: &Connection, path: &Path, id: &ValueId) -> Result<Head> {
-    if generation(db, path)? != id.index_generation {
+    if path != id.index_path || generation(db, path)? != id.index_generation {
         return Err(Error::ValuePredecessorChanged);
     }
     let row = crate::db(path, || {
@@ -335,11 +336,12 @@ impl Writer {
         let tx = crate::db(&path, || self._index.transaction())?;
         let index_generation = generation(&tx, &path)?;
         crate::db(&path, || {
-            tx.execute("INSERT INTO body_value(codec,length,hash,state,incoming) VALUES(?1,?2,NULL,'building',0)",params![codec.name(),length])
+            tx.execute("INSERT INTO body_value(codec,length,hash,state,incoming) VALUES(?1,?2,NULL,'building',0)",params![codec.as_str(),length])
         })?;
         let id = ValueId {
             pk: tx.last_insert_rowid(),
             index_generation,
+            index_path: path.clone(),
         };
         let h = head(&tx, &path, &id)?;
         crate::db(&path, || tx.commit())?;
@@ -404,7 +406,7 @@ impl Writer {
         let digest = *proof.hasher.finalize().as_bytes();
         let path = self.root.join("index.db");
         let tx = crate::db(&path, || self._index.transaction())?;
-        if generation(&tx, &path)? != proof.id.index_generation {
+        if path != proof.id.index_path || generation(&tx, &path)? != proof.id.index_generation {
             return Err(Error::ValuePredecessorChanged);
         }
         let row = crate::db(&path, || {
@@ -423,7 +425,7 @@ impl Writer {
             .optional()
         })?
         .ok_or(Error::ValuePredecessorChanged)?;
-        if row.0 != proof.codec.name()
+        if row.0 != proof.codec.as_str()
             || row.1 != integer(proof.length)?
             || row.2 != "building"
             || row.3.is_some()
@@ -433,7 +435,7 @@ impl Writer {
         let existing = crate::db(&path, || {
             tx.query_row(
                 "SELECT pk,length FROM body_value WHERE codec=?1 AND hash=?2 AND state='ready'",
-                params![proof.codec.name(), digest.as_slice()],
+                params![proof.codec.as_str(), digest.as_slice()],
                 |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
             )
             .optional()
@@ -452,6 +454,7 @@ impl Writer {
                 ValueId {
                     pk,
                     index_generation: proof.id.index_generation.clone(),
+                    index_path: path.clone(),
                 },
                 Some(proof.id.clone()),
             )
@@ -820,6 +823,45 @@ mod tests {
         .unwrap();
         assert!(matches!(proof.advance(&reader,1),Err(Error::Sqlite {file,..}) if file==path));
         assert!(proof.failed);
+        assert_eq!(proof.progress().hashed_upto, 0);
+    }
+}
+
+#[cfg(test)]
+mod archive_identity_tests {
+    use super::*;
+    #[test]
+    fn cloned_index_generation_does_not_let_another_archive_supply_hash_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = Writer::open(&dir.path().join("first")).unwrap();
+        let mut second = Writer::open(&dir.path().join("second")).unwrap();
+        let first_value = first.begin_value(Codec::Bytes, 1).unwrap();
+        first
+            .append_value_chunk(&first_value.id, 0, b"a", 1)
+            .unwrap();
+        let second_value = second.begin_value(Codec::Bytes, 1).unwrap();
+        second
+            .append_value_chunk(&second_value.id, 0, b"b", 1)
+            .unwrap();
+        let path = second.root.join("index.db");
+        crate::db(&path, || {
+            second._index.execute(
+                "UPDATE meta SET value=?1 WHERE key='generation'",
+                [&first_value.id.index_generation],
+            )
+        })
+        .unwrap();
+        // Simulates a copied index incarnation without filesystem mutation.
+        let reader = second.read_handle().unwrap();
+        let mut proof = first.validate_value(&first_value.id).unwrap();
+        assert!(matches!(
+            proof.advance(&reader, 1),
+            Err(Error::ValuePredecessorChanged)
+        ));
+        assert!(matches!(
+            reader.value_head(&first_value.id),
+            Err(Error::ValuePredecessorChanged)
+        ));
         assert_eq!(proof.progress().hashed_upto, 0);
     }
 }
