@@ -1376,7 +1376,7 @@ impl<V: ReadView> KeyedRecords<V> {
             return RecordOutcome::Used;
         };
         if let Some(c) = call_id {
-            let name = raw::canonical_field(
+            let raw_name = raw::canonical_field(
                 &self.current_raw,
                 if self.s.legacy {
                     &["name"]
@@ -1385,7 +1385,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 },
             )
             .ok();
-            let session = if name.as_deref() == Some(b"\"write_stdin\"") {
+            let session = if raw_name.as_deref() == Some(b"\"write_stdin\"") {
                 raw::session_argument(&self.current_raw, self.s.legacy).ok()
             } else {
                 None
@@ -1393,7 +1393,7 @@ impl<V: ReadView> KeyedRecords<V> {
             self.put(
                 Key::CallWitness(c.clone()),
                 Cell::Association {
-                    call_name: name,
+                    call_name: raw_name,
                     session,
                 },
             );
