@@ -52,3 +52,12 @@ result = "exit"
 timeout_seconds = 600
 scratch = "nvme"
 cache = "none"
+
+[operations.shared_credential_output_check]
+description = "Package and test the standalone credential crate and disposable tag consumer"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-shared-file-layer.py", "--package", "credential-output"]
+pool = "normal"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"

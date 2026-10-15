@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+credential-output.workspace = true
 polylogue-engine.workspace = true
 polylogue-model.workspace = true
 polylogue-store.workspace = true

@@ -151,6 +151,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "credential-output"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -524,6 +531,7 @@ name = "polylogue"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "credential-output",
  "ctrlc",
  "jiff",
  "polylogue-engine",

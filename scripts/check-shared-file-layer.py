@@ -8,12 +8,16 @@ import subprocess
 import tarfile
 import tempfile
 import tomllib
+import argparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / "crates/hashed-blobs"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--package", choices=["hashed-blobs", "credential-output"], default="hashed-blobs")
+NAME = parser.parse_args().package
+PACKAGE = ROOT / "crates" / NAME
 MANIFEST = tomllib.loads((PACKAGE / "Cargo.toml").read_text())["package"]
-TAG = f"hashed-blobs-v{MANIFEST['version']}"
+TAG = f"{NAME}-v{MANIFEST['version']}"
 
 
 def run(*args, cwd=ROOT, capture=False, env=None):
@@ -54,11 +58,11 @@ with tempfile.TemporaryDirectory(prefix="shared-file-layer-", dir=os.environ["TM
     scratch = Path(directory)
     target = scratch / "target"
     env = os.environ | {"CARGO_TARGET_DIR": str(target)}
-    run("cargo", "package", "--locked", "--offline", "--no-verify", "-p", "hashed-blobs", env=env)
-    archive = target / "package" / f"hashed-blobs-{MANIFEST['version']}.crate"
+    run("cargo", "package", "--locked", "--offline", "--no-verify", "-p", NAME, env=env)
+    archive = target / "package" / f"{NAME}-{MANIFEST['version']}.crate"
     with tarfile.open(archive) as package:
         package.extractall(scratch, filter="data")
-    extracted = scratch / f"hashed-blobs-{MANIFEST['version']}"
+    extracted = scratch / f"{NAME}-{MANIFEST['version']}"
     assert (extracted / "LICENSE").read_bytes() == (ROOT / "LICENSE").read_bytes()
     assert (extracted / "src/lib.rs").read_bytes() == (PACKAGE / "src/lib.rs").read_bytes()
     check_dependencies(extracted / "Cargo.toml", extracted)
@@ -73,7 +77,7 @@ with tempfile.TemporaryDirectory(prefix="shared-file-layer-", dir=os.environ["TM
     (consumer / "Cargo.toml").write_text(
         '[package]\nname = "shared-file-consumer"\nversion = "0.0.0"\nedition = "2021"\n'
         '[dependencies]\n'
-        f'hashed-blobs = {{ git = "{owner.as_uri()}", tag = "{TAG}" }}\n'
+        f'{NAME} = {{ git = "{owner.as_uri()}", tag = "{TAG}" }}\n'
     )
     (consumer / "src/main.rs").write_text('''use hashed_blobs::{DataKey, Hash, Reader, Store};
 use std::io::{Cursor, Read};
@@ -95,12 +99,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ''')
+    if NAME == "credential-output":
+        (consumer / "src/main.rs").write_text('''use credential_output::Masker;
+fn main() -> std::io::Result<()> {
+    let mut masker = Masker::new();
+    let mut out = Vec::new();
+    masker.push("before ghp_", &mut out)?;
+    masker.push(&"A".repeat(36), &mut out)?;
+    masker.push(" after", &mut out)?;
+    masker.finish(&mut out)?;
+    assert_eq!(String::from_utf8(out).unwrap(), "before [credential: GitHub token, masked] after");
+    Ok(())
+}
+''')
     # First resolution fetches the local git URL. Registry dependencies are cached by packaging.
     metadata = json.loads(run("cargo", "metadata", "--format-version", "1", cwd=consumer, capture=True))
-    blob = next(p for p in metadata["packages"] if p["name"] == "hashed-blobs")
+    blob = next(p for p in metadata["packages"] if p["name"] == NAME)
     assert blob["source"].endswith("#" + revision), blob["source"]
     check_dependencies(consumer / "Cargo.toml", consumer)
     run("cargo", "run", "--locked", "--offline", "--", scratch / "plain", cwd=consumer, env=env)
     run("cargo", "run", "--locked", "--offline", "--no-default-features", "--", scratch / "no-default", cwd=consumer, env=env)
     print("disposable local tag resolved exact candidate:", revision, flush=True)
-print("shared file layer: extracted tests, license, dependency isolation and local-tag consumer passed", flush=True)
+print(NAME + ": extracted tests, license, dependency isolation and local-tag consumer passed", flush=True)

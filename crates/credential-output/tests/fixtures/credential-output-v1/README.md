@@ -12,7 +12,7 @@ The source policy is `polylogue-sinex-joint/credential-masking.md` at that commi
 Run the focused tests through the declared operation:
 
 ```sh
-agentctl job start polylogue foundation_exec --workspace WORKTREE -- cargo test --locked -p polylogue masking::tests
+agentctl job start polylogue foundation_exec --workspace WORKTREE -- cargo test --locked -p credential-output
 ```
 
 Native markers may differ from the reference's display syntax. Tests normalize native markers to a sentinel and compare exact surrounding text, extent ordering and marker count against the authored regions. Every single byte cut is decoded to complete UTF-8 scalar values before passing `&str` pieces to the API, keeping at most three undecoded transport bytes.

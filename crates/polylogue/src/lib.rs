@@ -2,7 +2,6 @@
 use polylogue_engine::owner::{Handle, Owner};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, Writer};
-mod masking;
 mod output_json;
 mod protocol;
 pub mod reference_read;
