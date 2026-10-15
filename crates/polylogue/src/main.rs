@@ -101,11 +101,10 @@ fn run() -> Result<i32, Failure> {
     let mut query_args = args.clone();
     let json_output = query_args.iter().any(|a| a == "--json");
     query_args.retain(|a| a != "--json");
-    if query_args.last().is_some_and(|a| a == "list") {
+    if query_args.first().is_none_or(|a| a != "find")
+        && query_args.last().is_some_and(|a| a == "list")
+    {
         query_args.pop();
-    }
-    if query_args.first().is_some_and(|a| a == "find") {
-        query_args.remove(0);
     }
     let query = if args != ["daemon"] && args != ["status"] && command.is_none() {
         let text = query_args.join(" ");

@@ -131,6 +131,9 @@ def exercise(run):
     require(selected["ranking"]["state"]=="unavailable","fabricated canonical relevance")
     before_document=run.cli(sid,"read","--format","json")
     run.cli("olderneedle", "list")
+    literal=run.cli("find","list","--json")
+    require(literal["count"]==0,"find list silently widened into listing")
+    run.cli("find","--json",expected=(3,))
     run.checked("ordinary terminal and JSON listing use the daemon query")
     for query in ["messages olderneedle", "olderneedle OR prose", "sessions | group by origin", "--reveal"]:
         run.cli(query, "--json", expected=(2,))

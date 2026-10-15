@@ -70,10 +70,17 @@ pub fn bind(text: &str) -> Result<SessionQuery, Failure> {
     }
     let tokens = tokens(text)?;
     let mut plan = SessionQuery::default();
-    let mut i = 0;
-    if tokens
+    let explicit = tokens
         .first()
-        .is_some_and(|t| !t.quoted && t.value == "sessions")
+        .is_some_and(|t| !t.quoted && t.value == "find");
+    let mut i = usize::from(explicit);
+    if explicit && i == tokens.len() {
+        return Err(invalid(0, "find needs query text"));
+    }
+    if !explicit
+        && tokens
+            .first()
+            .is_some_and(|t| !t.quoted && t.value == "sessions")
     {
         i += 1;
         if tokens.get(i).is_some_and(|t| t.value == "where") {
@@ -136,30 +143,31 @@ pub fn bind(text: &str) -> Result<SessionQuery, Failure> {
             continue;
         }
         if !t.quoted
-            && (matches!(
-                t.value.as_str(),
-                "OR" | "NOT"
-                    | "where"
-                    | "messages"
-                    | "blocks"
-                    | "tool_calls"
-                    | "mcp"
-                    | "config"
-                    | "import"
-                    | "progress"
-                    | "retry"
-                    | "input"
-                    | "explain"
-                    | "query"
-                    | "sql"
-                    | "search"
-                    | "export"
-                    | "read"
-                    | "list"
-                    | "brief"
-                    | "status"
-                    | "daemon"
-            ) || t.value.starts_with("--")
+            && (matches!(t.value.as_str(), "OR" | "NOT" | "where")
+                || !explicit
+                    && matches!(
+                        t.value.as_str(),
+                        "messages"
+                            | "blocks"
+                            | "tool_calls"
+                            | "mcp"
+                            | "config"
+                            | "import"
+                            | "progress"
+                            | "retry"
+                            | "input"
+                            | "explain"
+                            | "query"
+                            | "sql"
+                            | "search"
+                            | "export"
+                            | "read"
+                            | "list"
+                            | "brief"
+                            | "status"
+                            | "daemon"
+                    )
+                || t.value.starts_with("--")
                 || t.value.contains(['(', ')', '|', '<', '>', '=']))
         {
             return Err(unsupported(t.at, &t.value));
@@ -243,7 +251,17 @@ mod tests {
         assert!(p.all_kinds && p.recent);
         assert_eq!(p.limit, Some(3));
         assert_eq!(p.text.len(), 2);
+        assert_eq!(
+            bind("find list").unwrap().text,
+            vec![TextTerm::Word("list".into())]
+        );
+        assert_eq!(
+            bind("find messages").unwrap().text,
+            vec![TextTerm::Word("messages".into())]
+        );
         for q in [
+            "find",
+            "find token OR other",
             "near:chrono",
             "messages chrono",
             "chrono OR parser",

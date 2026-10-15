@@ -959,6 +959,15 @@ fn ordinary_listing_and_prose_search_share_retained_ids_and_population_qualifica
                 .ends_with(":older")
         );
     }
+    for word in ["list", "status", "messages"] {
+        let output = world.cli(&["find", word, "--json"]);
+        assert_eq!(output.status.code(), Some(5), "{output:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()["count"],
+            0
+        );
+    }
+    assert_eq!(world.cli(&["find", "--json"]).status.code(), Some(3));
     let nohit = world.cli(&["absenttoken", "--json"]);
     assert_eq!(nohit.status.code(), Some(5));
     let nohit: Value = serde_json::from_slice(&nohit.stdout).unwrap();
