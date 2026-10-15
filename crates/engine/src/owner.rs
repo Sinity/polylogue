@@ -1,5 +1,5 @@
-//! Single Writer actor for retained Codex immutable imports and provider-state
-//! progress plus the first uncontested Codex Message materialization path.
+//! Single Writer actor for retained immutable imports and provider-state progress
+//! plus uncontested source Message materialization through one shared core.
 //! Capture, provider interpretation and canonical encoding run outside the actor.
 //! Search, contested merges and complete history coverage remain pending.
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
     },
 };
 use polylogue_model::BlobHash;
-use polylogue_sources::{codex, frame::StepBudget};
+use polylogue_sources::{claude_code, codex, frame::StepBudget};
 use polylogue_store::{
     Error as StoreError, ImmutableImport, ImportObservation, InputFormat, PreparedBlob,
     RetainedInput, Writer,
@@ -97,8 +97,10 @@ impl Observation {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ImportRequest {
+    pub format: InputFormat,
+    pub context: Vec<String>,
     pub path: PathBuf,
     pub observation: Observation,
     pub metadata_allowance: usize,
@@ -118,7 +120,7 @@ enum Message {
     Retry(String, Reply<()>),
     Captured(Result<PreparedBlob>),
     Computed(Result<Computation>),
-    CanonicalComputed(Result<Option<canonical_message::Action>>),
+    CanonicalComputed(Result<CanonicalTurn>),
     Wake,
 }
 struct Inner {
@@ -150,13 +152,23 @@ impl Handle {
             .saturating_add(o.id.len())
             .saturating_add(o.machine.len())
             .saturating_add(o.host.len())
-            .saturating_add(o.path.len());
+            .saturating_add(o.path.len())
+            .saturating_add(
+                request
+                    .context
+                    .iter()
+                    .map(|v| v.len().saturating_add(8))
+                    .fold(0usize, usize::saturating_add),
+            );
         if required > REQUEST_BYTES || request.metadata_allowance > REQUEST_BYTES {
             return Err(Error::RequestTooLarge {
                 required: required.max(request.metadata_allowance),
                 maximum: REQUEST_BYTES,
             });
         }
+        // Reject excessive declarations before allocating the borrowed slice.
+        let context: Vec<&str> = request.context.iter().map(String::as_str).collect();
+        request.format.validate_context(&context)?;
         if !request.path.is_absolute() || request.path.as_os_str() != std::ffi::OsStr::new(&o.path)
         {
             return Err(Error::InvalidRequest(
@@ -239,6 +251,8 @@ impl Drop for Owner {
     }
 }
 struct CaptureJob {
+    format: InputFormat,
+    context: Vec<String>,
     observation: Observation,
     allowance: usize,
     reply: Reply<RetainedInput>,
@@ -249,10 +263,57 @@ struct ComputeJob {
     head: Head,
     join: JoinHandle<()>,
 }
+// Keyset order schedules obligations only; source ordinals remain in the
+// provider's PendingMessage and do not derive from this traversal.
+#[derive(Clone)]
+enum CanonicalPosition {
+    Codex(usize),
+    ClaudeAfter(Option<crate::state::claude::PendingCursor>),
+    ClaudeMessage(
+        crate::state::claude::PendingCursor,
+        claude_code::keyed::PendingMessage,
+    ),
+}
+impl CanonicalPosition {
+    fn first(format: InputFormat) -> Self {
+        match format {
+            InputFormat::CodexRollout => Self::Codex(0),
+            InputFormat::ClaudeCodeJsonl => Self::ClaudeAfter(None),
+        }
+    }
+    fn next(self) -> Result<Self> {
+        match self {
+            Self::Codex(n) => Ok(Self::Codex(n.checked_add(1).ok_or(StoreError::Range)?)),
+            Self::ClaudeMessage(cursor, _) => Ok(Self::ClaudeAfter(Some(cursor))),
+            Self::ClaudeAfter(_) => Err(Error::InvalidRequest("no current Claude Message")),
+        }
+    }
+    fn logical_key(&self) -> Result<Option<[u8; 32]>> {
+        match self {
+            Self::Codex(n) => canonical_key(*n).map(Some),
+            Self::ClaudeMessage(_, p) => {
+                let mut h = blake3::Hasher::new();
+                h.update(b"polylogue.claude.logical-message.v1\0");
+                h.update(&(p.message.as_str().len() as u64).to_be_bytes());
+                h.update(p.message.as_str().as_bytes());
+                Ok(Some(*h.finalize().as_bytes()))
+            }
+            Self::ClaudeAfter(_) => Ok(None),
+        }
+    }
+}
+enum CanonicalTurn {
+    Action(canonical_message::Action),
+    Pending(
+        crate::state::claude::PendingCursor,
+        claude_code::keyed::PendingMessage,
+    ),
+    Done,
+}
 struct CanonicalJob {
     input: ImmutableImport,
     head: Head,
-    ordinal: usize,
+    position: CanonicalPosition,
     handle: Option<canonical_message::Handle>,
     join: JoinHandle<()>,
 }
@@ -264,7 +325,7 @@ enum Active {
     Canonical(
         ImmutableImport,
         Head,
-        usize,
+        CanonicalPosition,
         Option<canonical_message::Handle>,
     ),
 }
@@ -384,8 +445,12 @@ impl Actor {
                     return Ok(());
                 }
                 let replay = self.writer.replay_immutable_import(
-                    InputFormat::CodexRollout,
-                    &[],
+                    request.format,
+                    &request
+                        .context
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
                     &request.observation.borrowed(),
                     request.metadata_allowance,
                 );
@@ -439,6 +504,8 @@ impl Actor {
                 match join {
                     Ok(join) => {
                         self.capture = Some(CaptureJob {
+                            format: request.format,
+                            context: request.context,
                             observation: request.observation,
                             allowance: request.metadata_allowance,
                             reply,
@@ -481,8 +548,8 @@ impl Actor {
                     let hash = self.writer.retain_captured_blob(proof)?;
                     Ok(self.writer.retain_immutable_input(
                         hash,
-                        InputFormat::CodexRollout,
-                        &[],
+                        job.format,
+                        &job.context.iter().map(String::as_str).collect::<Vec<_>>(),
                         &job.observation.borrowed(),
                         job.allowance,
                     )?)
@@ -536,14 +603,14 @@ impl Actor {
                     return Ok(());
                 }
                 match result {
-                    Ok(Some(action)) => {
+                    Ok(CanonicalTurn::Action(action)) => {
                         let operation = action.operation();
                         match canonical_message::apply(&mut self.writer, action) {
                             Ok(canonical_message::Applied::Prepared(handle)) => {
                                 self.active = Some(Active::Canonical(
                                     job.input,
                                     job.head,
-                                    job.ordinal,
+                                    job.position,
                                     Some(handle),
                                 ));
                             }
@@ -551,7 +618,7 @@ impl Actor {
                                 self.active = Some(Active::Canonical(
                                     job.input,
                                     job.head,
-                                    job.ordinal,
+                                    job.position,
                                     job.handle,
                                 ));
                             }
@@ -562,7 +629,7 @@ impl Actor {
                                 match self.writer.select_uncontested_source_message(&source, 65536) {
                                 Ok(polylogue_store::contributions::SourceSelection::Contested) => self.fail(&job.head, "canonical Message has competing input candidates; merge remains pending".into())?,
                                 Ok(_) => {
-                                    let next = job.ordinal.checked_add(1).ok_or(StoreError::Range)?;
+                                    let next = job.position.next()?;
                                     self.active = Some(Active::Canonical(job.input, job.head, next, None));
                                 }
                                 Err(e) => self.fail(&job.head, format!("canonical selection: {e}"))?,
@@ -573,7 +640,15 @@ impl Actor {
                             }
                         }
                     }
-                    Ok(None) => {}
+                    Ok(CanonicalTurn::Pending(cursor, pending)) => {
+                        self.active = Some(Active::Canonical(
+                            job.input,
+                            job.head,
+                            CanonicalPosition::ClaudeMessage(cursor, pending),
+                            None,
+                        ));
+                    }
+                    Ok(CanonicalTurn::Done) => {}
                     Err(e) => self.fail(&job.head, format!("canonical compute: {e}"))?,
                 }
             }
@@ -591,9 +666,6 @@ impl Actor {
             .parser_head(input.input.input_pk, input.input.chain)?;
         let failure = match &parser {
             Some(head) => self.writer.parser_failure(&head.token)?,
-            None if input.format != InputFormat::CodexRollout => Some(
-                "source context for this provider is not registered by this Codex owner".into(),
-            ),
             None => None,
         };
         Ok(Progress {
@@ -610,11 +682,6 @@ impl Actor {
             .writer
             .immutable_import(id)?
             .ok_or(Error::UnknownInput)?;
-        if input.format != InputFormat::CodexRollout {
-            return Err(Error::InvalidRequest(
-                "this owner only interprets Codex immutable imports",
-            ));
-        }
         if let Some(head) = self
             .writer
             .parser_head(input.input.input_pk, input.input.chain)?
@@ -654,9 +721,6 @@ impl Actor {
                 match self.writer.next_immutable_import(&self.after) {
                     Ok(Some(input)) => {
                         self.after = input.input.id.clone();
-                        if input.format != InputFormat::CodexRollout {
-                            return Ok(());
-                        }
                         Active::Begin(input)
                     }
                     Ok(None) => {
@@ -676,14 +740,15 @@ impl Actor {
         };
         match active {
             Active::Begin(input) => {
-                let digest = basis(&input.hash);
+                let digest = parser_basis(&input);
+                let context_json = parser_context_json(&input)?;
                 match self.writer.begin_parser(&Basis {
                     input_pk: input.input.input_pk,
                     chain: input.input.chain,
-                    parser_version: codex::PARSER_VERSION,
+                    parser_version: parser_version(input.format),
                     digest,
                     acquired_upto: input.input.length,
-                    companions_json: Some(CONTEXT),
+                    companions_json: Some(&context_json),
                     excisions_seen: 0,
                 }) {
                     Ok(head) => {
@@ -704,14 +769,24 @@ impl Actor {
                         if !settled(&head) {
                             self.active = Some(Active::Compute(input, head, None));
                         } else if head.status == "finalizing" {
-                            self.active = Some(Active::Canonical(input, head, 0, None));
+                            self.active = Some(Active::Canonical(
+                                input.clone(),
+                                head,
+                                CanonicalPosition::first(input.format),
+                                None,
+                            ));
                         }
                     }
                     Ok(Recovery::Published(head)) => {
                         if !settled(&head) {
                             self.active = Some(Active::Compute(input, head, None));
                         } else if head.status == "finalizing" {
-                            self.active = Some(Active::Canonical(input, head, 0, None));
+                            self.active = Some(Active::Canonical(
+                                input.clone(),
+                                head,
+                                CanonicalPosition::first(input.format),
+                                None,
+                            ));
                         }
                     }
                     Err(e) => self.fail(&head, e.to_string())?,
@@ -739,6 +814,7 @@ impl Actor {
                     .ok_or(StoreError::Range)?
                     .min(WINDOW_BYTES);
                 let hash = input.hash;
+                let context = parser_context(&input)?;
                 let cancelled = Arc::clone(&self.inner.cancelled);
                 let sender = self.inner.sender.clone();
                 let join = thread::Builder::new()
@@ -760,7 +836,7 @@ impl Actor {
                                         offset,
                                         bytes: &bytes,
                                     },
-                                    SourceContext::Codex,
+                                    context,
                                     source_budgets(),
                                 )?)
                             },
@@ -774,7 +850,7 @@ impl Actor {
                     Err(e) => self.fail(&head, e.to_string())?,
                 }
             }
-            Active::Canonical(input, head, ordinal, handle) => {
+            Active::Canonical(input, head, position, handle) => {
                 let snapshot = self.writer.parser_snapshot(&head.token)?;
                 let reader = self.writer.read_handle()?;
                 let state = handle
@@ -788,21 +864,29 @@ impl Actor {
                         return Ok(());
                     }
                 };
-                let logical_key = canonical_key(ordinal)?;
+                let logical_key = position.logical_key()?;
                 let current = if state.is_none() {
-                    self.writer
-                        .current_source_projection(&head.token, &logical_key, 65536)?
+                    logical_key
+                        .as_ref()
+                        .map(|key| {
+                            self.writer
+                                .current_source_projection(&head.token, key, 65536)
+                        })
+                        .transpose()?
+                        .flatten()
                 } else {
                     None
                 };
                 let source_hash = input.hash;
+                let context = input.context.clone();
+                let work_position = position.clone();
                 let cancelled = Arc::clone(&self.inner.cancelled);
                 let sender = self.inner.sender.clone();
                 let join = thread::Builder::new()
                     .name("polylogue-canonical".into())
                     .spawn(move || {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                            || -> Result<Option<canonical_message::Action>> {
+                            || -> Result<CanonicalTurn> {
                                 if cancelled.load(Ordering::Acquire) {
                                     return Err(StoreError::Cancelled.into());
                                 }
@@ -815,7 +899,43 @@ impl Actor {
                                         &cancelled,
                                     )
                                     .map_err(Error::Canonical)?
+                                } else if let CanonicalPosition::ClaudeAfter(after) = &work_position
+                                {
+                                    let view = crate::state::claude::View::new(
+                                        &snapshot,
+                                        source_budgets().reads,
+                                    )?;
+                                    return Ok(match view.next_pending(after.as_ref())? {
+                                        Some((cursor, pending)) => {
+                                            CanonicalTurn::Pending(cursor, pending)
+                                        }
+                                        None => CanonicalTurn::Done,
+                                    });
+                                } else if let CanonicalPosition::ClaudeMessage(_, pending) =
+                                    &work_position
+                                {
+                                    canonical_message::start_claude(
+                                        &snapshot,
+                                        &canonical_message::ClaudeRequest {
+                                            pending: pending.clone(),
+                                            source_hash,
+                                            context,
+                                            revision: 1,
+                                            logical_key: logical_key.ok_or(
+                                                Error::InvalidRequest("missing Claude logical key"),
+                                            )?,
+                                        },
+                                        current,
+                                        source_budgets().reads,
+                                        65536,
+                                    )
+                                    .map_err(Error::Canonical)?
                                 } else {
+                                    let CanonicalPosition::Codex(ordinal) = work_position else {
+                                        return Err(Error::InvalidRequest(
+                                            "invalid canonical position",
+                                        ));
+                                    };
                                     let attempt = crate::state::codex::Attempt::new(
                                         &snapshot,
                                         source_budgets().reads,
@@ -828,14 +948,16 @@ impl Actor {
                                         Error::Canonical(canonical_message::Error::Source(e))
                                     })?;
                                     if ordinal >= resume.message_count() {
-                                        return Ok(None);
+                                        return Ok(CanonicalTurn::Done);
                                     }
                                     canonical_message::start(
                                         &snapshot,
                                         &canonical_message::Request {
                                             message: ordinal,
                                             revision: 1,
-                                            logical_key,
+                                            logical_key: logical_key.ok_or(
+                                                Error::InvalidRequest("missing Codex logical key"),
+                                            )?,
                                             source_hash,
                                         },
                                         current,
@@ -844,7 +966,7 @@ impl Actor {
                                     )
                                     .map_err(Error::Canonical)?
                                 };
-                                Ok(Some(action))
+                                Ok(CanonicalTurn::Action(action))
                             },
                         ))
                         .map_err(|_| Error::WorkerPanicked)
@@ -856,7 +978,7 @@ impl Actor {
                         self.canonical = Some(CanonicalJob {
                             input,
                             head,
-                            ordinal,
+                            position,
                             handle,
                             join,
                         })
@@ -875,7 +997,12 @@ impl Actor {
                                 self.active =
                                     Some(Active::Compute(input, published, Some(continuation)));
                             } else if published.status == "finalizing" {
-                                self.active = Some(Active::Canonical(input, published, 0, None));
+                                self.active = Some(Active::Canonical(
+                                    input.clone(),
+                                    published,
+                                    CanonicalPosition::first(input.format),
+                                    None,
+                                ));
                             }
                         }
                         Err(e) => self.fail(&published, e.to_string())?,
@@ -889,6 +1016,68 @@ impl Actor {
 }
 fn settled(head: &Head) -> bool {
     matches!(head.status.as_str(), "waiting_tail" | "finalizing" | "done")
+}
+fn parser_version(format: InputFormat) -> u32 {
+    match format {
+        InputFormat::CodexRollout => codex::PARSER_VERSION,
+        InputFormat::ClaudeCodeJsonl => claude_code::PARSER_VERSION,
+    }
+}
+fn parser_context(input: &ImmutableImport) -> Result<SourceContext> {
+    let parts = input.context.iter().map(String::as_str).collect::<Vec<_>>();
+    input.format.validate_context(&parts)?;
+    match (input.format, parts.as_slice()) {
+        (InputFormat::CodexRollout, []) => Ok(SourceContext::Codex),
+        (InputFormat::ClaudeCodeJsonl, ["claude-main", stem]) => {
+            Ok(SourceContext::Claude(claude_code::FileCtx::main(stem)))
+        }
+        (InputFormat::ClaudeCodeJsonl, ["claude-subagent", agent]) => {
+            Ok(SourceContext::Claude(claude_code::FileCtx::Subagent {
+                folder_owner: String::new(),
+                agent: (*agent).into(),
+                meta: None,
+            }))
+        }
+        (InputFormat::ClaudeCodeJsonl, ["claude-subagent", agent, owner]) => {
+            Ok(SourceContext::Claude(claude_code::FileCtx::Subagent {
+                folder_owner: (*owner).into(),
+                agent: (*agent).into(),
+                meta: None,
+            }))
+        }
+        _ => Err(Error::InvalidRequest("unsupported retained source context")),
+    }
+}
+fn parser_context_json(input: &ImmutableImport) -> Result<String> {
+    if input.format == InputFormat::CodexRollout {
+        return Ok(CONTEXT.into());
+    }
+    #[derive(serde::Serialize)]
+    struct Context<'a> {
+        format: &'static str,
+        context: &'a [String],
+    }
+    serde_json::to_string(&Context {
+        format: input.format.name(),
+        context: &input.context,
+    })
+    .map_err(|_| Error::InvalidRequest("source context serialization failed"))
+}
+fn parser_basis(input: &ImmutableImport) -> [u8; 32] {
+    if input.format == InputFormat::CodexRollout {
+        return basis(&input.hash);
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"polylogue.claude.immutable.parser-basis.v1\0");
+    hash.update(&parser_version(input.format).to_be_bytes());
+    hash.update(input.hash.bytes());
+    // The admitted portable context is source identity; frame each component.
+    hash.update(&(input.context.len() as u64).to_be_bytes());
+    for item in &input.context {
+        hash.update(&(item.len() as u64).to_be_bytes());
+        hash.update(item.as_bytes());
+    }
+    *hash.finalize().as_bytes()
 }
 fn basis(hash: &BlobHash) -> [u8; 32] {
     let mut bytes = b"polylogue.codex.immutable.parser-basis.v1\0".to_vec();
@@ -941,6 +1130,8 @@ mod tests {
 
     fn request(path: &Path, id: &str) -> ImportRequest {
         ImportRequest {
+            format: InputFormat::CodexRollout,
+            context: vec![],
             path: path.to_owned(),
             observation: Observation {
                 id: id.into(),
@@ -1000,6 +1191,132 @@ mod tests {
     }
     fn raw() -> &'static [u8] {
         b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"synthetic-session\",\"source\":\"cli\"}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"u\",\"role\":\"user\",\"content\":[{\"text\":\"hello\"}]}}\n"
+    }
+    #[test]
+    fn declared_claude_context_replays_without_provider_and_remains_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("untrusted-download-name.jsonl");
+        let raw=b"{\"type\":\"user\",\"sessionId\":\"declared-main\",\"uuid\":\"u\",\"message\":{\"role\":\"user\",\"content\":\"retained prompt\"}}\n";
+        std::fs::write(&path, raw).unwrap();
+        let mut request = request(&path, "claude-observation");
+        request.format = InputFormat::ClaudeCodeJsonl;
+        request.context = vec!["claude-main".into(), "declared-main".into()];
+        let root = dir.path().join("archive");
+        let service = owner(&root);
+        let retained = import(&service.handle(), request.clone());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let p = progress(&service.handle(), &retained.id);
+            assert!(!p.canonical_complete);
+            if let Some(head) = p.parser {
+                if head.parsed_upto == retained.length {
+                    assert_eq!(head.counts.used, 1);
+                    assert!(head.finalization_pending);
+                    assert_ne!(head.status, "done");
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Claude parser did not publish its checkpoint"
+            );
+            thread::yield_now();
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(import(&service.handle(), request.clone()), retained);
+        let mut wrong = request.clone();
+        wrong.context[1] = "another-main".into();
+        assert!(matches!(
+            service
+                .handle()
+                .try_import(wrong)
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap(),
+            Err(Error::Store(StoreError::ImportRequestConflict { .. }))
+        ));
+        service.shutdown().unwrap();
+        let service = owner(&root);
+        assert_eq!(import(&service.handle(), request), retained);
+        assert!(!progress(&service.handle(), &retained.id).canonical_complete);
+        service.shutdown().unwrap();
+    }
+    #[test]
+    fn claude_actor_selects_each_pending_locator_and_replays_after_provider_loss() {
+        use polylogue_sources::{claude_code::keyed::MemoryReadView, frame::drive_jsonl};
+        let raw = concat!(
+            "{\"type\":\"user\",\"sessionId\":\"declared-main\",\"uuid\":\"u\",\"promptSource\":\"typed\",\"message\":{\"role\":\"user\",\"content\":\"retained question\"}}\n",
+            "{\"type\":\"assistant\",\"sessionId\":\"declared-main\",\"uuid\":\"a\",\"parentUuid\":\"u\",\"message\":{\"id\":\"answer\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"retained answer\"}],\"stop_reason\":\"end_turn\"}}\n"
+        );
+        let framed = drive_jsonl(
+            claude_code::KeyedRecords::new(
+                claude_code::FileCtx::main("declared-main"),
+                MemoryReadView::default(),
+            )
+            .unwrap(),
+            raw.as_bytes(),
+            0,
+        );
+        let ids = framed
+            .output
+            .unwrap()
+            .delta
+            .pending_messages
+            .into_iter()
+            .map(|p| p.message)
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opaque-download.jsonl");
+        std::fs::write(&path, raw).unwrap();
+        let root = dir.path().join("archive");
+        let writer = Writer::open(&root).unwrap();
+        let reader = writer.read_handle().unwrap();
+        let service = Owner::start(writer, Arc::new(AtomicBool::new(false))).unwrap();
+        let mut r = request(&path, "claude-selected");
+        r.format = InputFormat::ClaudeCodeJsonl;
+        r.context = vec!["claude-main".into(), "declared-main".into()];
+        let retained = import(&service.handle(), r.clone());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let p = progress(&service.handle(), &retained.id);
+            assert!(p.failure.is_none(), "{:?}", p.failure);
+            assert!(!p.canonical_complete);
+            let selected = ids
+                .iter()
+                .map(|id| reader.selected_message(id).unwrap())
+                .collect::<Vec<_>>();
+            if selected.iter().all(Option::is_some) {
+                for (view, text) in selected
+                    .into_iter()
+                    .zip(["retained question", "retained answer"])
+                {
+                    let view = view.unwrap();
+                    let block = view
+                        .block(polylogue_model::BlockSlot::Item(0))
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        block.text_range(0, 64).unwrap().unwrap().bytes,
+                        text.as_bytes()
+                    );
+                }
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Claude pending locators did not become selected"
+            );
+            thread::yield_now();
+        }
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(import(&service.handle(), r.clone()), retained);
+        service.shutdown().unwrap();
+        drop(reader);
+        let service = owner(&root);
+        assert_eq!(import(&service.handle(), r), retained);
+        assert!(!progress(&service.handle(), &retained.id).canonical_complete);
+        service.shutdown().unwrap();
     }
     #[test]
     fn actor_selects_a_source_message_but_never_certifies_history_done() {

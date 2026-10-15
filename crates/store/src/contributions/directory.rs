@@ -422,6 +422,100 @@ pub(super) fn lookup(
     Err(bad("directory lookup escaped fixed height"))
 }
 
+/// Successor by retained key, including zero-ranked auxiliary leaves. A valid
+/// nonempty radix subtree needs at most the lower-bound path plus one minimum
+/// path (31 nodes). Empty non-root subtrees are refused rather than scanned.
+pub(super) fn next(
+    dbh: &Connection,
+    path: &Path,
+    owner: Owner,
+    kind: Kind,
+    root: Option<i64>,
+    after: Option<u64>,
+    work: &mut Work,
+) -> Result<Option<(u64, Edge)>> {
+    let lower = match after {
+        Some(key) => match key.checked_add(1) {
+            Some(key) => key,
+            None => return Ok(None),
+        },
+        None => 0,
+    };
+    let Some(root) = root else { return Ok(None) };
+    #[derive(Clone, Copy)]
+    struct Frame {
+        node: Node,
+        prefix: u64,
+        slot: u8,
+    }
+    let node = load(dbh, path, owner, kind, root, work)?;
+    if node.height != 15 {
+        return Err(bad("directory successor root height"));
+    }
+    let mut stack = [None; 16];
+    stack[0] = Some(Frame {
+        node,
+        prefix: 0,
+        slot: 0,
+    });
+    let mut depth = 0;
+    let mut visited = 1u8;
+    loop {
+        let frame = stack[depth]
+            .as_mut()
+            .ok_or_else(|| bad("missing successor frame"))?;
+        if frame.slot == 16 {
+            if depth == 0 {
+                return Ok(None);
+            }
+            stack[depth] = None;
+            depth -= 1;
+            continue;
+        }
+        let slot = frame.slot;
+        frame.slot += 1;
+        let Some(edge) = frame.node.edges[usize::from(slot)] else {
+            continue;
+        };
+        let height = frame.node.height;
+        let shift = u32::from(height) * 4;
+        let prefix = frame.prefix | (u64::from(slot) << shift);
+        let upper = prefix | ((1u64 << shift) - 1);
+        if upper < lower {
+            continue;
+        }
+        if height == 0 {
+            return Ok(Some((prefix, edge)));
+        }
+        let Link::Node {
+            pk,
+            kind: child_kind,
+            height: child_height,
+        } = edge.link
+        else {
+            return Err(bad("directory successor shape"));
+        };
+        if child_kind != kind || child_height != height - 1 || visited >= 31 {
+            return Err(bad(
+                "directory successor path is invalid or exceeds its fixed bound",
+            ));
+        }
+        let child = load(dbh, path, owner, kind, pk, work)?;
+        visited += 1;
+        if child.height != child_height || child.edges.iter().all(Option::is_none) {
+            return Err(bad(
+                "directory successor child is empty or has the wrong height",
+            ));
+        }
+        depth += 1;
+        stack[depth] = Some(Frame {
+            node: child,
+            prefix,
+            slot: 0,
+        });
+    }
+}
+
 /// Order-statistic selection from fixed-size validated node summaries. This is
 /// independent of sparse source group/local addresses and never flattens leaves.
 #[derive(Clone, Copy)]
@@ -541,6 +635,113 @@ mod tests {
                 ..Counts::default()
             },
         }
+    }
+    #[test]
+    fn successor_visits_only_bounded_paths_and_keeps_zero_ranked_leaves() {
+        let (_dir, mut writer, owner, body) = fixture();
+        let file = writer.root.join("index.db");
+        let keys = [0, 9, 10, 255, 256, u64::MAX];
+        let mut root = None;
+        let mut expected = Vec::new();
+        for (ordinal, key) in keys.into_iter().enumerate() {
+            let tx = writer._index.transaction().unwrap();
+            let mut edge = leaf(&tx, ordinal as u64);
+            if key == 10 {
+                edge.counts = Counts::default();
+            }
+            let (new, _) = install(&tx, &file, owner, body, root, key, edge);
+            tx.commit().unwrap();
+            root = Some(new);
+            expected.push((key, edge));
+        }
+        let mut after = None;
+        for item in expected {
+            let mut work = Work::default();
+            assert_eq!(
+                next(
+                    &writer._index,
+                    &file,
+                    owner,
+                    Kind::Blocks,
+                    root,
+                    after,
+                    &mut work
+                )
+                .unwrap(),
+                Some(item)
+            );
+            assert!(work.nodes_read <= 31);
+            assert!(work.edges_read <= 31 * 16);
+            assert_eq!(work.nodes_written, 0);
+            after = Some(item.0);
+        }
+        let mut work = Work::default();
+        assert!(
+            next(
+                &writer._index,
+                &file,
+                owner,
+                Kind::Blocks,
+                root,
+                Some(u64::MAX),
+                &mut work
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(work.nodes_read, 0);
+        for (after, expected) in [
+            (Some(8), 9),
+            (Some(10), 255),
+            (Some(254), 255),
+            (Some(257), u64::MAX),
+        ] {
+            assert_eq!(
+                next(
+                    &writer._index,
+                    &file,
+                    owner,
+                    Kind::Blocks,
+                    root,
+                    after,
+                    &mut Work::default()
+                )
+                .unwrap()
+                .unwrap()
+                .0,
+                expected
+            );
+        }
+        assert!(
+            next(
+                &writer._index,
+                &file,
+                owner,
+                Kind::Fields,
+                root,
+                None,
+                &mut Work::default()
+            )
+            .is_err()
+        );
+        // An exact missing native table remains a native error, not an empty
+        // successor stream. The read path performs no mutation itself.
+        writer
+            ._index
+            .execute("ALTER TABLE message_body_edge RENAME TO hidden_edges", [])
+            .unwrap();
+        assert!(matches!(
+            next(
+                &writer._index,
+                &file,
+                owner,
+                Kind::Blocks,
+                root,
+                None,
+                &mut Work::default()
+            ),
+            Err(Error::Sqlite { .. })
+        ));
     }
     fn install(
         tx: &Transaction<'_>,

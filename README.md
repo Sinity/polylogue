@@ -1,6 +1,6 @@
 # Polylogue Rust foundation
 
-This repository contains the standalone Rust foundation. It implements foundation identity/value contracts, durable SQLite schema checks, shared content files, one archive writer, read-only handles and a real daemon/status client. Explicit immutable Codex regular-file import and provider-state progress are registered. Selected uncontested Codex Messages have a streaming terminal reference read. Full canonical finalization, session JSON read/export, search, MCP and HTTP remain unfinished. Status reports `product_path: "partial"`; an initialized empty schema is not a completed ingestion or M1 demonstration.
+This repository contains the standalone Rust foundation. It implements foundation identity/value contracts, durable SQLite schema checks, shared content files, one archive writer, read-only handles and a real daemon/status client. Explicit immutable Codex and context-declared Claude regular-file imports and provider-state progress are registered. Selected uncontested Messages have a streaming terminal reference read, and known selected Session catalogs have a degraded normalized JSON read. Full canonical finalization, export, search, MCP and HTTP remain unfinished. Status reports `product_path: "partial"`; an initialized empty schema is not a completed ingestion or M1 demonstration.
 
 ## Build and run
 
@@ -41,8 +41,11 @@ one provider installation transaction between peer requests. `progress` reports
 raw offsets, accounting, failure and pending finalization; EOF does not make
 `canonical_complete` true. `retry INPUT` explicitly retries a failed disposable
 parse. `--wait`, `--dry-run`, archives/directories, symlinks and other source
-formats remain unavailable. Claude context is retained by the store primitive
-but is not yet admitted by this public source route.
+formats remain unavailable. Claude context is explicitly supplied with a version 1
+`--context FILE` declaration and persisted with the retained input; automatic
+format recognition remains unavailable.
+The declaration names interpretation context, not the collector machine or proof
+of provider freshness.
 
 The actor uses fixed record/cell/request admission allowances. Oversized records
 fail explicitly with owed work retained; configurable larger allowances and full
@@ -50,10 +53,12 @@ resource qualification remain unfinished. Its current source scheduling follows
 one imported input to provider EOF; cross-input fair parse rounds and canonical
 finalization are still owed. Public search refuses even after provider EOF.
 
-The first canonical worker path prepares uncontested Codex Text/Thinking
-Messages and typed source fields through durable private roots, then selects a
-whole certified Message body. Only the terminal Message-reference read is exposed; session JSON read, search
-and export remain unavailable. Competing inputs, unsupported operations and unresolved
+The canonical worker prepares uncontested Codex Text/Thinking and supported
+Claude Messages through the same durable private roots and field-origin checks,
+then selects a whole certified source body. Claude signatures and derived tool
+reasons are retained without increasing source-presence rank. Declared legacy
+call identity uses the proved source Session and supplied call ID; global
+pairing and cross-input operation selection remain unfinished. Terminal Message-reference and Session JSON reads are exposed; search and export remain unavailable. Competing inputs, unsupported operations and unresolved
 mapping remain pending; `canonical_complete` remains false. Hash validation is
 cooperative off actor but can still process a whole Message/value per worker
 call, and normalized-leaf windowing can repeat serialization. These costs have
@@ -64,10 +69,11 @@ read --format terminal`. This uses the stored Session relation, preserves one
 whole selected body and its interleaved reasoning/text order, and streams UTF-8
 payload ranges without collecting the full Message. Control characters are
 escaped for terminal safety. The command explicitly exits 5 (degraded) because
-history and source-locator coverage remain incomplete. Pending references,
-truncated streams and unsupported formats fail explicitly; `read --format json`
-is not a substitute export shape.
+history and complete source-locator coverage remain incomplete. The terminal renderer supports Text and Thinking blocks. Pending references, truncated streams and unsupported formats fail explicitly. The explicit `message:` route does not accept JSON format.
+
+
+Read a known Session with `polylogue --archive DIR SID read --format json`. This streams a normalized `polylogue-session` version 1 document from one pinned Session/Message snapshot, using the same document writer intended for export. Supported Message fields include typed UTC millisecond times, usage/service tier, retained signatures, tool payloads/channels, exact source citations and field-origin descriptors. Text streams in bounded ranges; an individual nontext JSON leaf above 64 KiB is explicitly refused. Credential-bearing metadata strings are masked; structural keys, identities or interpretation selectors requiring a change are refused. The result exits 5 with a coverage warning. Known pending members and ambiguous source order refuse rather than silently return a selected subset. Source catalog completeness, display-title reductions, non-Message populations, conflict-alternative export and partial-excision verdicts remain unavailable. Omitted populations are not fabricated as empty arrays. This path does not make `import --wait` or `canonical_complete: true` available.
 
 Import accepts paired `--machine ID --host LABEL` acquisition-observation metadata. These identify the collector, not the original session machine or the immutable interpretation context. Without the pair, the client reads `/etc/machine-id` and the local hostname. Explicit retries must reuse the original observation metadata, request ID and timestamp.
 
-Selected terminal reads mask supported credential shapes in the daemon before socket encoding. The streaming adapter covers GitHub/GitLab/npm/Hugging Face/Google/Stripe/AWS/Anthropic/OpenAI prefix families, six PEM private-key headers and lowercase HTTP(S) credentials. It preserves matches across text pieces and merges overlapping matches; undecided URL regions above 512 bytes return an explicit error. Retained bytes and canonical values are unchanged. Generic secret assignments, JWT/Bearer patterns, derived `has:secret`/status counts and reveal remain unsupported; this is not comprehensive credential-policy qualification.
+Selected terminal body reads and Session JSON string values apply the fixed shared `credential-output-v1` catalog through the daemon’s streaming masker before socket encoding. All 22 families are implemented, including contextual secret-only extents, Unicode boundaries, non-HTTP URL userinfo and matching-label PEM bodies. Markers show the credential kind without a preview. Undecided text above 512 UTF-8 bytes or more than 2,048 simultaneous regex candidates returns an explicit error; recognized token runs and PEM bodies stream without accumulating their contents. The pinned 132-vector module qualification and precise limits are documented in [credential masking](docs/rewrite/credential-masking.md). Retained bytes and canonical values are unchanged. Derived `has:secret`/status counts and reveal remain unsupported. Module conformance does not qualify every response encoder or complete product privacy behavior.

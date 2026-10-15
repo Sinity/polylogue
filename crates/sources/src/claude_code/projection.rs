@@ -12,7 +12,16 @@ pub enum Field {
     /// Applies only to contribution zero, never filled from a later record.
     FirstMessage(MessageField),
     SelectedMessage(MessageField),
+    /// Fixed provider extra whose one response-level winner is source-owned.
+    SelectedExtra {
+        key: String,
+    },
     Usage(UsageField),
+    /// Named structured result member; the container itself has no rank slot.
+    ResultData {
+        local: u32,
+        key: String,
+    },
     Block {
         local: u32,
         field: BlockField,
@@ -31,16 +40,20 @@ pub struct Fact {
     /// File interpretation order of the last supplied fact. Not arrival time,
     /// not part of version evidence, and never a cross-input tie breaker.
     pub supplied_revision: u64,
+    pub selection: Option<super::selection::LeafSelection>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CountingObligation {
     MissingText { local: u32 },
     UnmappedField { path: Vec<String> },
     FirstAuthorUpdate,
+    ParentResolution,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordFacts {
     pub facts: Vec<Fact>,
+    /// Derived auxiliary leaves retained with origins, absent from rank/fill.
+    pub retained: Vec<Fact>,
     pub block_counts: Vec<(bool, bool)>,
     pub obligations: Vec<CountingObligation>,
     /// Positive proof on this effective record only. Removing/replacing the
@@ -54,6 +67,18 @@ pub struct RecordCursor {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Unit {
+    Retained {
+        item: u64,
+        fact: Fact,
+        value: Value,
+    },
+    /// Stored/exported auxiliary value; deliberately absent from ranking facts.
+    Signature {
+        item: u64,
+        local: u32,
+        value: String,
+        selection: Option<super::selection::LeafSelection>,
+    },
     RecordHeader {
         item: u64,
         uuid: String,
@@ -88,6 +113,8 @@ pub struct HeaderUnit {
     /// Header only: this has no response blocks and its version remains pending.
     pub message: Message,
     pub revision: u64,
+    pub ordinal: u64,
+    pub author_selection: Option<super::selection::AuthorSelection>,
     pub contributions: u64,
     pub finish: FinishState,
     /// Existing active-path/global operation pairing remain separate owner work.
@@ -118,6 +145,8 @@ impl ResponseCell {
         Ok(HeaderUnit {
             message: self.message.clone(),
             revision: self.revision,
+            ordinal: self.ordinal,
+            author_selection: self.author_selection.clone(),
             contributions: self.items,
             finish,
             active_path_unresolved: self.message.on_active_path.is_none(),
@@ -146,6 +175,21 @@ impl ResponseCell {
     }
 }
 impl Contribution {
+    /// One source-owned, non-ranking auxiliary at an exact contribution-local block.
+    pub fn signature_unit(&self, item: u64, local: u32) -> Result<Option<Unit>, String> {
+        let Some(BlockContent::Thinking(thinking)) = self.blocks.get(local as usize) else {
+            return Ok(None);
+        };
+        let Some(value) = &thinking.signature else {
+            return Ok(None);
+        };
+        Ok(Some(Unit::Signature {
+            item,
+            local,
+            value: value.clone(),
+            selection: super::selection::signature(self, local),
+        }))
+    }
     /// One loaded/admitted source cell, one output unit per call. The caller
     /// persists this cursor and uses the existing ContributionCursor between
     /// groups. This never walks other records or assigns prefix block offsets.
@@ -225,9 +269,40 @@ impl Contribution {
                     Some(_) => self.body_unit(item, n)?.map(Unit::Evidence),
                     None => None,
                 },
+                6 => {
+                    if let Some(fact) = self.projection.retained.get(n) {
+                        let source: Value =
+                            serde_json::from_slice(&self.raw).map_err(|e| e.to_string())?;
+                        let value = at(&source, &fact.source_path)
+                            .ok_or("Claude retained leaf lost its raw value")?
+                            .clone();
+                        Some(Unit::Retained {
+                            item,
+                            fact: fact.clone(),
+                            value,
+                        })
+                    } else {
+                        cursor.phase = 8;
+                        return Ok(None);
+                    }
+                }
+                7 => Some(
+                    self.signature_unit(item, cursor.position)?
+                        .ok_or("signature cursor lost its thinking signature")?,
+                ),
                 _ => return Ok(None),
             };
-            if matches!(cursor.phase, 0 | 4) {
+            if cursor.phase == 1
+                && matches!(&unit,Some(Unit::Block {content:BlockContent::Thinking(thinking),..}) if thinking.signature.is_some())
+            {
+                cursor.phase = 7;
+            } else if cursor.phase == 7 {
+                cursor.phase = 1;
+                cursor.position = cursor
+                    .position
+                    .checked_add(1)
+                    .ok_or("Claude signature cursor overflow")?;
+            } else if matches!(cursor.phase, 0 | 4) {
                 cursor.phase += 1;
                 cursor.position = 0;
             } else if unit.is_some() {
@@ -264,6 +339,7 @@ fn add(facts: &mut Vec<Fact>, field: Field, source_path: Vec<String>, revision: 
         field,
         source_path,
         supplied_revision: revision,
+        selection: None,
     })
 }
 fn extra(facts: &mut Vec<Fact>, local: Option<u32>, source_path: Vec<String>, revision: u64) {
@@ -289,10 +365,13 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
                         "output_tokens" => Some(UsageField::Output),
                         "cache_read_input_tokens" => Some(UsageField::CacheRead),
                         "cache_creation_input_tokens" => Some(UsageField::CacheWrite),
+                        "service_tier" => Some(UsageField::ServiceTier),
                         _ => None,
                     };
                     if let Some(field) = field {
-                        if value.as_u64().is_some() {
+                        if (field == UsageField::ServiceTier && value.is_string())
+                            || (field != UsageField::ServiceTier && value.as_u64().is_some())
+                        {
                             add(
                                 &mut facts,
                                 Field::Usage(field),
@@ -429,16 +508,7 @@ pub(super) fn record(
                 | "isApiErrorMessage"
                 | "isAbortedMidStream"
                 | "thinkingDurationMs" => {}
-                "toolUseResult" => {
-                    if value
-                        .as_object()
-                        .is_some_and(|m| m.keys().any(|k| k != "persistedOutputPath"))
-                    {
-                        result
-                            .obligations
-                            .push(CountingObligation::UnmappedField { path: path(&[key]) })
-                    }
-                }
+                "toolUseResult" | "toolDenialKind" => {} // reduced once on its attributed result below
                 "costUSD" | "durationMs" => result
                     .obligations
                     .push(CountingObligation::UnmappedField { path: path(&[key]) }),
@@ -472,7 +542,16 @@ pub(super) fn record(
                 key.as_str(),
                 "id" | "role" | "type" | "model" | "content" | "usage" | "stop_reason" | "ttftMs"
             ) {
-                extra(&mut result.facts, None, path(&["message", key]), revision)
+                if key == "stop_sequence" {
+                    add(
+                        &mut result.facts,
+                        Field::SelectedExtra { key: key.clone() },
+                        path(&["message", key]),
+                        revision,
+                    )
+                } else {
+                    extra(&mut result.facts, None, path(&["message", key]), revision)
+                }
             }
         }
     }
@@ -535,19 +614,61 @@ pub(super) fn record(
                 leaf("input", BlockField::Input, call.input.is_some());
             }
             BlockContent::ToolResult(output) => {
-                known.extend(["tool_use_id", "is_error", "content", "persistedOutputPath"]);
-                leaf("tool_use_id", BlockField::CallId, output.call_id.is_some());
-                leaf(
+                known.extend([
+                    "tool_use_id",
                     "is_error",
-                    BlockField::Outcome,
-                    raw.get("is_error").is_some_and(Value::is_boolean),
-                );
+                    "content",
+                    "persistedOutputPath",
+                    "toolDenialKind",
+                    "backgroundTaskId",
+                ]);
+                leaf("tool_use_id", BlockField::CallId, output.call_id.is_some());
                 leaf(
                     "content",
                     BlockField::Output,
                     raw.get("content")
                         .is_some_and(|value| value.is_string() || value.is_array()),
                 );
+                let decision = super::tool_result::decide(v, index, raw);
+                for (field, path) in [
+                    (BlockField::Outcome, decision.outcome),
+                    (BlockField::ExitCode, decision.exit),
+                ] {
+                    if let Some(path) = path {
+                        add(
+                            &mut result.facts,
+                            Field::Block { local, field },
+                            path,
+                            revision,
+                        );
+                    }
+                }
+                // A reason derived from the same status witness is retained,
+                // not a second supplied semantic status slot.
+                if let Some(path) = decision.reason {
+                    add(
+                        &mut result.retained,
+                        Field::Block {
+                            local,
+                            field: BlockField::OutcomeReason,
+                        },
+                        path,
+                        revision,
+                    );
+                }
+                for (key, path) in decision.data {
+                    add(
+                        &mut result.facts,
+                        Field::ResultData { local, key },
+                        path,
+                        revision,
+                    );
+                }
+                for path in decision.unresolved {
+                    result
+                        .obligations
+                        .push(CountingObligation::UnmappedField { path });
+                }
                 if raw
                     .get("content")
                     .and_then(Value::as_array)
@@ -591,10 +712,33 @@ pub(super) fn record(
             }
         }
     }
+    if v.get("toolUseResult").is_some()
+        && !blocks
+            .iter()
+            .any(|b| matches!(b, BlockContent::ToolResult(_)))
+    {
+        result.obligations.push(CountingObligation::UnmappedField {
+            path: path(&["toolUseResult"]),
+        });
+    }
+    if v.get("toolDenialKind").is_some()
+        && !blocks
+            .iter()
+            .any(|b| matches!(b, BlockContent::ToolResult(_)))
+    {
+        result.obligations.push(CountingObligation::UnmappedField {
+            path: path(&["toolDenialKind"]),
+        });
+    }
     if let Some(old) = old {
-        for fact in &mut result.facts {
+        for fact in result.facts.iter_mut().chain(&mut result.retained) {
             if at(incoming, &fact.source_path).is_none() {
-                if let Some(before) = old.facts.iter().find(|f| f.field == fact.field) {
+                if let Some(before) = old
+                    .facts
+                    .iter()
+                    .chain(&old.retained)
+                    .find(|f| f.field == fact.field)
+                {
                     fact.supplied_revision = before.supplied_revision;
                 }
             }

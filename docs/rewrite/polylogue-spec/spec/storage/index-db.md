@@ -888,7 +888,10 @@ CREATE TABLE tool_call (
   FOREIGN KEY (result_block_pk, session_pk) REFERENCES block(pk, session_pk),
   UNIQUE(pk,call_block_pk,message_pk,session_pk)
 ) STRICT;
-CREATE INDEX tool_call_block ON tool_call(call_block_pk);
+-- One summary per immutable call-block incarnation; NULL permits session-owned items.
+-- Different body-specific facts or pairings require distinct call blocks while an
+-- older body still leases its summary. Operation IDs need not be unique here.
+CREATE UNIQUE INDEX tool_call_block ON tool_call(call_block_pk);
 CREATE INDEX tool_call_item ON tool_call(tool_item_pk);
 CREATE INDEX tool_call_item_version ON tool_call(tool_item_version_pk);
 CREATE INDEX tool_call_message ON tool_call(message_pk);

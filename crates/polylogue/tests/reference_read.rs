@@ -253,15 +253,21 @@ fn expected(session: &str, native: &str, text: &str) -> String {
     format!("codex:{session}:{native}\nassistant · model\n\n{text}\n")
 }
 fn negatives(world: &World, reference: &str) {
+    // Session JSON is now registered, but this exact opaque identity is absent.
+    // A recognized absent reference is distinct from an unsupported operation.
+    let absent = world.cli(&[
+        "session:codex:reference-session",
+        "read",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(absent.status.code(), Some(4));
+    assert!(absent.stdout.is_empty());
+    assert!(!absent.stderr.is_empty());
+
     for args in [
         vec!["search", "retained phrase"],
         vec![reference, "read", "--format", "json"],
-        vec![
-            "session:codex:reference-session",
-            "read",
-            "--format",
-            "json",
-        ],
         vec!["export", reference],
     ] {
         let out = world.cli(&args);
@@ -405,14 +411,47 @@ fn daemon_masks_credentials_before_both_cli_and_socket_text_frames() {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
     let token = format!("ghp_{}", "A".repeat(36));
-    for (session, prefix, secret, tail) in [
-        ("mask-within", "before ".to_owned(), token.clone(), ""),
-        ("mask-cross", "x".repeat(4090), token.clone(), ""),
+    for (session, prefix, secret, lead, tail, matched) in [
+        (
+            "mask-within",
+            "before ".to_owned(),
+            token.clone(),
+            "",
+            "",
+            true,
+        ),
+        // The catalog requires a non-word boundary; keep the token at byte4090.
+        (
+            "mask-cross",
+            "x".repeat(4089) + " ",
+            token.clone(),
+            "",
+            "",
+            true,
+        ),
+        (
+            "mask-word-boundary",
+            "identifier".to_owned(),
+            token.clone(),
+            "",
+            "",
+            false,
+        ),
+        (
+            "mask-dense",
+            "before ".to_owned(),
+            "-u=a:b ".repeat(585),
+            "",
+            "",
+            true,
+        ),
         (
             "mask-overlap",
             "before ".to_owned(),
             format!("https://u:{token}!private@host"),
-            "host",
+            "https://",
+            "@host",
+            true,
         ),
     ] {
         let world = World::new();
@@ -462,25 +501,38 @@ fn daemon_masks_credentials_before_both_cli_and_socket_text_frames() {
                 break;
             }
         }
-        assert!(
-            !body.contains(&token),
-            "raw credential reached daemon response"
-        );
-        assert!(
-            !body.contains("!private"),
-            "overlapping outer credential leaked"
-        );
-        let marker = body
-            .strip_prefix(&prefix)
-            .unwrap()
-            .strip_suffix(" after")
-            .unwrap()
-            .strip_suffix(tail)
-            .unwrap();
-        assert!(
-            marker.starts_with("[credential:") && marker.ends_with(", masked]"),
-            "{marker}"
-        );
+        if session == "mask-dense" {
+            let expected_body = format!(
+                "before {} after",
+                "-u=[credential: CLI credentials, masked] ".repeat(585)
+            );
+            assert!(expected_body.len() > 16384);
+            assert_eq!(body, expected_body);
+        } else if matched {
+            assert!(
+                !body.contains(&token),
+                "raw catalog credential reached daemon response: {session}"
+            );
+            assert!(
+                !body.contains("!private"),
+                "overlapping outer credential leaked"
+            );
+            let marker = body
+                .strip_prefix(&(prefix.clone() + lead))
+                .unwrap()
+                .strip_suffix(" after")
+                .unwrap()
+                .strip_suffix(tail)
+                .unwrap();
+            assert!(
+                marker.starts_with("[credential:") && marker.ends_with(", masked]"),
+                "{marker}"
+            );
+        } else {
+            // A token-shaped substring inside a word is outside the v1 family;
+            // this is an intentional catalog boundary, independent of framing.
+            assert_eq!(body, text);
+        }
         assert_eq!(output.stdout, expected(session, "masked", &body).as_bytes());
         assert_eq!(fs::read(&path).unwrap(), original);
         assert_eq!(

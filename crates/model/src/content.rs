@@ -205,6 +205,8 @@ pub struct Usage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_cost_nusd: Option<Usd>,
 }
 
@@ -413,6 +415,9 @@ pub struct ToolResult {
     pub exit_code: Option<i64>,
     pub duration_ms: Option<u64>,
     pub output: Option<ToolOutput>,
+    /// Named structured result channels and provider metadata. These do not
+    /// replace or concatenate the separately presented output.
+    pub data: Option<Value>,
 }
 
 /// The export shape of a tool result: `outcome` plus `outcome_reason`, and
@@ -432,6 +437,9 @@ struct ToolResultWire {
     text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     blob: Option<BlobHash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "present_json")]
+    data: Option<Value>,
 }
 
 impl From<ToolResult> for ToolResultWire {
@@ -455,6 +463,7 @@ impl From<ToolResult> for ToolResultWire {
             duration_ms: r.duration_ms,
             text,
             blob,
+            data: r.data,
         }
     }
 }
@@ -491,6 +500,7 @@ impl TryFrom<ToolResultWire> for ToolResult {
             exit_code: w.exit_code,
             duration_ms: w.duration_ms,
             output,
+            data: w.data,
         })
     }
 }

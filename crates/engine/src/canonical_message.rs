@@ -1,11 +1,13 @@
-//! Codex's first final-head Message materialization slice. Worker computation
+//! Final-head Codex and Claude Message materialization through one durable core. Worker computation
 //! owns decoding/serialization/hash work; apply owns one bounded writer turn.
 //! This certifies source projections only. Effects-v3 dirty updates, full merge,
 //! canonical selection, operations, search and exports remain separate work.
-//! Immutable Codex imports bind raw CAS identity before selector evaluation.
+//! Immutable provider imports bind raw CAS identity/context before selectors.
 //! Each field replays admitted source records/leaf/descriptor serialization on
 //! the worker; this is not a universal CPU/RSS or append-locality bound.
+mod claude;
 use crate::{state::codex::Attempt, version_proof};
+pub use claude::{ClaudeRequest, start as start_claude};
 use polylogue_model::{
     merge::{FinishState, RouteKind, Slot},
     source_leaf::{self, Subject},
@@ -21,8 +23,8 @@ use polylogue_sources::codex::{
 use polylogue_store::{
     Error as StoreError, ReadHandle, Writer,
     contributions::{
-        BlockPresence, Build, Identity, MessageLayout, Preparation, PreparedProjection,
-        ProjectionState, ProjectionStep, Source, SourceProjection, SourceRange, TextKind,
+        BlockKind, BlockPresence, Build, Identity, MessageLayout, Preparation, PreparedProjection,
+        ProjectionState, ProjectionStep, Source, SourceProjection, SourceRange,
     },
     parser_state::{Budget, Snapshot, Token},
     values,
@@ -54,9 +56,21 @@ pub enum Error {
     Leaf(source_leaf::Error),
     Proof(version_proof::Error),
     Unsupported(&'static str),
+    UnsupportedField {
+        path: Vec<String>,
+        reason: &'static str,
+    },
     Cancelled,
     Selection(selection::ValueError<ResolveError>),
     Descriptor(selection::Error),
+    ClaudeSelection(
+        polylogue_sources::selection::ValueError<
+            ResolveError,
+            polylogue_sources::claude_code::selection::Error,
+        >,
+    ),
+    ClaudeDescriptor(polylogue_sources::claude_code::selection::EncodeError),
+    Evidence(polylogue_model::version_evidence::Error),
     Invariant(&'static str),
 }
 impl From<StoreError> for Error {
@@ -82,8 +96,12 @@ impl std::fmt::Display for Error {
             Self::Leaf(e) => write!(f, "{e}"),
             Self::Proof(e) => write!(f, "{e}"),
             Self::Unsupported(e) | Self::Invariant(e) => f.write_str(e),
+            Self::UnsupportedField { path, reason } => write!(f, "{reason}: {path:?}"),
             Self::Selection(e) => write!(f, "{e}"),
             Self::Descriptor(e) => write!(f, "{e}"),
+            Self::ClaudeSelection(e) => write!(f, "{e}"),
+            Self::ClaudeDescriptor(e) => write!(f, "{e}"),
+            Self::Evidence(e) => write!(f, "{e}"),
             Self::Cancelled => f.write_str("Message materialization cancelled"),
         }
     }
@@ -107,8 +125,47 @@ impl std::fmt::Display for ResolveError {
 impl std::error::Error for ResolveError {}
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct EvidenceGuard {
-    head: EvidenceHead,
+    head: EvidenceBasis,
     source_hash: BlobHash,
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum EvidenceBasis {
+    Codex(EvidenceHead),
+    Claude(claude::Head),
+}
+impl EvidenceBasis {
+    fn revision(&self) -> u64 {
+        match self {
+            Self::Codex(h) => h.revision,
+            Self::Claude(h) => h.pending.revision,
+        }
+    }
+    fn codex(&self) -> Result<&EvidenceHead> {
+        match self {
+            Self::Codex(h) => Ok(h),
+            _ => Err(Error::Invariant("expected Codex evidence basis")),
+        }
+    }
+}
+enum EvidenceProof {
+    Codex(version_proof::Proof),
+    Claude(claude::Proof),
+}
+impl EvidenceProof {
+    fn validate(&self, handle: &Handle) -> Result<BlobHash> {
+        match self {
+            Self::Codex(p)
+                if p.token() == handle.build.predecessor()
+                    && p.head() == handle.head.codex()?
+                    && p.message() == handle.request.message =>
+            {
+                Ok(p.digest())
+            }
+            Self::Claude(p) => p.validate(handle),
+            _ => Err(Error::Invariant("source proof does not match preparation")),
+        }
+    }
 }
 type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone)]
@@ -140,7 +197,7 @@ pub struct Handle {
     identity: IdentityOwned,
     request: Request,
     build: Build,
-    head: EvidenceHead,
+    head: EvidenceBasis,
     guard: Vec<u8>,
     previous: Option<SourceProjection>,
 }
@@ -181,12 +238,13 @@ impl Action {
                 Change::SourceRange { .. } => "source_range",
                 Change::BeginOrigin { .. } => "origin_begin",
                 Change::SealOrigin(_) => "origin_seal",
-                Change::Layout(_) => "layout",
+                Change::Layout { .. } => "layout",
                 Change::BeginValue { .. } => "value_begin",
                 Change::Append { .. } => "value_append",
                 Change::Seal(_) => "value_seal",
                 Change::Field { .. } => "field",
                 Change::BeginBlock { .. } => "block_begin",
+                Change::Command(_) => "tool_command",
                 Change::Install(_) => "block_install",
                 Change::Finish { .. } => "finish",
                 Change::Publish(_) => "source_publish",
@@ -196,12 +254,13 @@ impl Action {
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Cursor {
-    source: SourceCursor,
+    source: Option<SourceCursor>,
     stage: Stage,
     verified: Option<Verified>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 enum Stage {
+    Claude(claude::Cursor),
     Citations(Citations),
     Layout,
     Next,
@@ -257,7 +316,7 @@ enum ActionKind {
         identity: IdentityOwned,
         request: Request,
         token: Token,
-        head: EvidenceHead,
+        head: EvidenceBasis,
         guard: Vec<u8>,
         previous: Option<SourceProjection>,
         allowance: usize,
@@ -283,7 +342,10 @@ enum Change {
     },
     SealOrigin(values::Validation),
     Advance(Vec<u8>),
-    Layout(Vec<u8>),
+    Layout {
+        layout: MessageLayout,
+        next: Vec<u8>,
+    },
     BeginValue {
         codec: values::Codec,
         length: u64,
@@ -298,21 +360,62 @@ enum Change {
         slot: Slot,
         time: Option<i64>,
         block: bool,
+        supplied: bool,
         next: Vec<u8>,
     },
     BeginBlock {
-        index: usize,
-        kind: TextKind,
+        group: u64,
+        local: u64,
+        kind: OwnedBlockKind,
         presence: BlockPresence,
         next: Vec<u8>,
     },
+    Command(Vec<u8>),
     Install(Vec<u8>),
     Finish {
-        proof: version_proof::Proof,
+        proof: EvidenceProof,
         finish: FinishState,
         next: Vec<u8>,
     },
     Publish(PreparedProjection),
+}
+enum OwnedBlockKind {
+    Text,
+    Thinking {
+        encrypted: Option<bool>,
+    },
+    ToolCall {
+        operation: String,
+    },
+    ToolResult {
+        outcome: ToolOutcome,
+        exit_code: Option<i64>,
+        duration_ms: Option<u64>,
+    },
+}
+impl OwnedBlockKind {
+    fn borrowed(&self) -> BlockKind<'_> {
+        match self {
+            Self::Text => BlockKind::Text,
+            Self::Thinking { encrypted } => BlockKind::Thinking {
+                encrypted: *encrypted,
+            },
+            Self::ToolCall { operation } => BlockKind::ToolCall {
+                operation_id: operation,
+                at: None,
+                action: None,
+            },
+            Self::ToolResult {
+                outcome,
+                exit_code,
+                duration_ms,
+            } => BlockKind::ToolResult {
+                outcome,
+                exit_code: *exit_code,
+                duration_ms: *duration_ms,
+            },
+        }
+    }
 }
 pub enum Applied {
     Prepared(Handle),
@@ -383,7 +486,7 @@ pub fn start(
         return Err(Error::Invariant("Codex Message/Session relation mismatch"));
     }
     let typed_guard = EvidenceGuard {
-        head: head.clone(),
+        head: EvidenceBasis::Codex(head.clone()),
         source_hash: request.source_hash,
     };
     let guard = bounded_json(&typed_guard, allowance)?;
@@ -422,7 +525,7 @@ pub fn start(
             },
             request: request.clone(),
             token: snapshot.head.token.clone(),
-            head,
+            head: EvidenceBasis::Codex(head),
             guard,
             previous: current,
             allowance,
@@ -439,7 +542,7 @@ pub fn inspect(writer: &mut Writer, handle: &Handle, allowance: usize) -> Result
         Source {
             predecessor: handle.build.predecessor(),
             revision: handle.request.revision,
-            evidence_revision: handle.head.revision,
+            evidence_revision: handle.head.revision(),
             logical_key: handle.request.logical_key,
             route: RouteKind::Native,
         },
@@ -593,7 +696,7 @@ fn citation_turn(
         } => {
             let key = match current {
                 Some(key) => key,
-                None => match state.handle.head.next_slot(message, &mut slots) {
+                None => match state.handle.head.codex()?.next_slot(message, &mut slots) {
                     Some(key) => key,
                     None => {
                         return citation_progress(
@@ -627,7 +730,7 @@ fn citation_turn(
                     };
                     citation_progress(state, cursor, Stage::Citations(next), range, b)
                 }
-                None if !state.handle.head.required_slot(&key) => citation_progress(
+                None if !state.handle.head.codex()?.required_slot(&key) => citation_progress(
                     state,
                     cursor,
                     Stage::Citations(Citations::Evidence {
@@ -771,12 +874,69 @@ impl Write for DigestSink<'_> {
         Ok(())
     }
 }
+#[derive(Clone, Copy)]
+enum FieldSelector<'a> {
+    Codex(&'a FactSelection),
+    Claude(&'a polylogue_sources::claude_code::selection::LeafSelection),
+    Author(&'a polylogue_sources::claude_code::selection::AuthorSelection),
+}
+impl FieldSelector<'_> {
+    fn write_bound(&self, binding: Binding<'_>, sink: &mut impl Write) -> Result<()> {
+        let cb = polylogue_sources::claude_code::selection::Binding {
+            input: binding.input,
+            chain: binding.chain,
+        };
+        match self {
+            Self::Codex(s) => s.write_bound(binding, sink).map_err(Error::Descriptor),
+            Self::Claude(s) => s.write_bound(cb, sink).map_err(Error::ClaudeDescriptor),
+            Self::Author(s) => s.write_bound(cb, sink).map_err(Error::ClaudeDescriptor),
+        }
+    }
+    fn write_value(
+        &self,
+        resolver: impl FnMut(RecordRange) -> std::result::Result<Vec<u8>, ResolveError>,
+        allowance: usize,
+        sink: &mut impl Write,
+    ) -> Result<()> {
+        match self {
+            Self::Codex(s) => s
+                .write_value(resolver, allowance, sink)
+                .map_err(Error::Selection),
+            Self::Claude(s) => s
+                .write_value(resolver, allowance, sink)
+                .map_err(Error::ClaudeSelection),
+            Self::Author(s) => s
+                .write_value(resolver, allowance, sink)
+                .map_err(Error::ClaudeSelection),
+        }
+    }
+}
+struct FieldDescriptor<'a> {
+    slot: &'a Slot,
+    time: Option<i64>,
+    supplied: bool,
+    selection: FieldSelector<'a>,
+}
+impl<'a> FieldDescriptor<'a> {
+    fn codex(w: &'a Witness) -> Result<Self> {
+        Ok(Self {
+            slot: &w.slot,
+            time: w.source_time.map(|t| t.0),
+            supplied: true,
+            selection: FieldSelector::Codex(
+                w.selection
+                    .as_ref()
+                    .ok_or(Error::Unsupported("source field selector is unavailable"))?,
+            ),
+        })
+    }
+}
 fn field_turn(
     snapshot: &Snapshot,
     reader: &ReadHandle,
     state: &State,
     cursor: &mut Cursor,
-    witness: &Witness,
+    witness: FieldDescriptor<'_>,
     source: ValueSource<'_>,
     block: bool,
     next: Stage,
@@ -784,10 +944,7 @@ fn field_turn(
     b: Budgets,
     flag: &AtomicBool,
 ) -> Result<Action> {
-    let selection = witness
-        .selection
-        .as_ref()
-        .ok_or(Error::Unsupported("source field selector is unavailable"))?;
+    let selection = witness.selection;
     if let ValueTurn::Action(change) =
         value_turn(reader, state, source, values::Codec::Json, b, flag)?
     {
@@ -808,9 +965,7 @@ fn field_turn(
         chain: state.handle.build.predecessor().chain,
     };
     let mut descriptor = DigestSink::new(flag);
-    let described = selection
-        .write_bound(binding, &mut descriptor)
-        .map_err(Error::Descriptor);
+    let described = selection.write_bound(binding, &mut descriptor);
     cancelled(flag)?;
     described?;
     if let Some(verified) = &cursor.verified {
@@ -830,30 +985,28 @@ fn field_turn(
             ));
         }
         let mut value = DigestSink::new(flag);
-        let evaluated = selection
-            .write_value(
-                |range| {
-                    if flag.load(Ordering::Acquire) {
-                        return Err(ResolveError::Cancelled);
-                    }
-                    if !snapshot
-                        .has_message_source(&state.handle.build, cited(range))
-                        .map_err(ResolveError::Store)?
-                    {
-                        return Err(ResolveError::Unbound);
-                    }
-                    let length = range
-                        .end
-                        .checked_sub(range.start)
-                        .ok_or(ResolveError::Unbound)?;
-                    reader
-                        .read_blob_range(state.handle.request.source_hash, range.start, length)
-                        .map_err(ResolveError::Store)
-                },
-                b.read.encoded_bytes,
-                &mut value,
-            )
-            .map_err(Error::Selection);
+        let evaluated = selection.write_value(
+            |range| {
+                if flag.load(Ordering::Acquire) {
+                    return Err(ResolveError::Cancelled);
+                }
+                if !snapshot
+                    .has_message_source(&state.handle.build, cited(range))
+                    .map_err(ResolveError::Store)?
+                {
+                    return Err(ResolveError::Unbound);
+                }
+                let length = range
+                    .end
+                    .checked_sub(range.start)
+                    .ok_or(ResolveError::Unbound)?;
+                reader
+                    .read_blob_range(state.handle.request.source_hash, range.start, length)
+                    .map_err(ResolveError::Store)
+            },
+            b.read.encoded_bytes,
+            &mut value,
+        );
         cancelled(flag)?;
         evaluated?;
         if value.length != active.length || value.digest() != value_hash {
@@ -899,8 +1052,9 @@ fn field_turn(
                 b,
                 Change::Field {
                     slot: witness.slot.clone(),
-                    time: witness.source_time.map(|t| t.0),
+                    time: witness.time,
                     block,
+                    supplied: witness.supplied,
                     next: bounded_json(cursor, b.metadata)?,
                 },
             ))
@@ -926,9 +1080,12 @@ pub fn compute(
     if b.value_chunk == 0 || b.value_chunk > 65536 || b.hash_bytes == 0 {
         return Err(Error::Invariant("invalid materializer byte allowance"));
     }
+    if matches!(state.handle.head, EvidenceBasis::Claude(_)) {
+        return claude::compute(snapshot, reader, state, b, flag);
+    }
     let attempt = Attempt::new(snapshot, b.read);
     let current_head = evidence(&attempt, state.handle.request.message)?;
-    if current_head != state.handle.head {
+    if &current_head != state.handle.head.codex()? {
         return Err(Error::Invariant("materializer evidence head changed"));
     }
     let input_id = snapshot.message_source_input_id(&state.handle.build, b.metadata)?;
@@ -944,7 +1101,10 @@ pub fn compute(
     let mut cursor: Cursor = match &state.projection.cursor {
         Some(bytes) => serde_json::from_slice(bytes).map_err(|e| Error::Source(e.to_string()))?,
         None if state.projection.sequence == 0 => Cursor {
-            source: SourceCursor::new(state.handle.request.message, Mode::Message),
+            source: Some(SourceCursor::new(
+                state.handle.request.message,
+                Mode::Message,
+            )),
             stage: Stage::Citations(Citations::Evidence {
                 slots: EvidenceCursor::default(),
                 current: None,
@@ -973,12 +1133,19 @@ pub fn compute(
             Ok(action(
                 state,
                 b,
-                Change::Layout(bounded_json(&cursor, b.metadata)?),
+                Change::Layout {
+                    layout: MessageLayout::SeparateReasoning,
+                    next: bounded_json(&cursor, b.metadata)?,
+                },
             ))
         }
         Stage::Next | Stage::AwaitPresence { .. } => {
-            let before = cursor.source.clone();
-            let step = cursor.source.advance(&attempt);
+            let source = cursor
+                .source
+                .as_mut()
+                .ok_or(Error::Invariant("Codex projection lost its cursor"))?;
+            let before = source.clone();
+            let step = source.advance(&attempt);
             if let Some(e) = attempt.take_failure() {
                 return Err(e.into());
             }
@@ -991,7 +1158,7 @@ pub fn compute(
                     let mut driver = version_proof::Driver::start(
                         snapshot,
                         message,
-                        state.handle.head.revision,
+                        state.handle.head.revision(),
                         b.read,
                     )?;
                     let proof = loop {
@@ -1012,7 +1179,7 @@ pub fn compute(
                         }
                     };
                     if proof.token() != state.handle.build.predecessor()
-                        || proof.head() != &state.handle.head
+                        || proof.head() != state.handle.head.codex()?
                         || proof.message() != message
                     {
                         return Err(Error::Invariant("Message version proof basis mismatch"));
@@ -1028,7 +1195,7 @@ pub fn compute(
                         state,
                         b,
                         Change::Finish {
-                            proof,
+                            proof: EvidenceProof::Codex(proof),
                             finish,
                             next: bounded_json(&cursor, b.metadata)?,
                         },
@@ -1080,7 +1247,7 @@ pub fn compute(
                 reader,
                 state,
                 &mut cursor,
-                &w,
+                FieldDescriptor::codex(&w)?,
                 ValueSource::Leaf {
                     subject: Subject::Message(&h),
                     slot: &w.slot,
@@ -1095,10 +1262,10 @@ pub fn compute(
         Stage::Text { index } => {
             let (value, group) = block(&attempt, message, index)?;
             let (text, kind) = match &value.content {
-                BlockContent::Text { text } => (Some(text.as_str()), TextKind::Text),
+                BlockContent::Text { text } => (Some(text.as_str()), OwnedBlockKind::Text),
                 BlockContent::Thinking(t) => (
                     t.text.as_deref(),
-                    TextKind::Thinking {
+                    OwnedBlockKind::Thinking {
                         encrypted: t.encrypted,
                     },
                 ),
@@ -1123,7 +1290,9 @@ pub fn compute(
                 state,
                 b,
                 Change::BeginBlock {
-                    index,
+                    group: 0,
+                    local: u64::try_from(index)
+                        .map_err(|_| Error::Invariant("Codex block index overflow"))?,
                     kind,
                     presence: BlockPresence {
                         source_block: group.nonempty,
@@ -1150,7 +1319,7 @@ pub fn compute(
                 reader,
                 state,
                 &mut cursor,
-                w,
+                FieldDescriptor::codex(w)?,
                 ValueSource::Leaf {
                     subject: Subject::Block {
                         slot: value.id.slot(),
@@ -1173,6 +1342,7 @@ pub fn compute(
                 Change::Install(bounded_json(&cursor, b.metadata)?),
             ))
         }
+        Stage::Claude(_) => Err(Error::Invariant("Claude cursor on Codex evidence basis")),
         Stage::Proof => Err(Error::Invariant(
             "proof cursor lacks completed source projection",
         )),
@@ -1180,7 +1350,7 @@ pub fn compute(
 }
 enum ValueSource<'a> {
     Descriptor {
-        selection: &'a FactSelection,
+        selection: FieldSelector<'a>,
         binding: Binding<'a>,
     },
     Text(&'a str),
@@ -1231,7 +1401,7 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                 Source {
                     predecessor: &token,
                     revision: request.revision,
-                    evidence_revision: head.revision,
+                    evidence_revision: head.revision(),
                     logical_key: request.logical_key,
                     route: RouteKind::Native,
                 },
@@ -1293,9 +1463,9 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                     },
                     guard.metadata,
                 )?,
-                Change::Layout(next) => writer.set_message_layout(
+                Change::Layout { layout, next } => writer.set_message_layout(
                     build,
-                    MessageLayout::SeparateReasoning,
+                    layout,
                     &ProjectionStep {
                         expected_sequence: guard.sequence,
                         next_cursor: &next,
@@ -1318,6 +1488,7 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                     slot,
                     time,
                     block,
+                    supplied,
                     next,
                 } => {
                     if block {
@@ -1325,7 +1496,7 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                             build,
                             &slot,
                             time,
-                            true,
+                            supplied,
                             &ProjectionStep {
                                 expected_sequence: guard.sequence,
                                 next_cursor: &next,
@@ -1337,7 +1508,7 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                             build,
                             &slot,
                             time,
-                            true,
+                            supplied,
                             &ProjectionStep {
                                 expected_sequence: guard.sequence,
                                 next_cursor: &next,
@@ -1347,17 +1518,17 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                     }
                 }
                 Change::BeginBlock {
-                    index,
+                    group,
+                    local,
                     kind,
                     presence,
                     next,
                 } => {
-                    writer.begin_text_block(
+                    writer.begin_block(
                         build,
-                        0,
-                        u64::try_from(index)
-                            .map_err(|_| Error::Invariant("Codex block index overflow"))?,
-                        kind,
+                        group,
+                        local,
+                        kind.borrowed(),
                         presence,
                         &ProjectionStep {
                             expected_sequence: guard.sequence,
@@ -1366,8 +1537,18 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                         guard.metadata,
                     )?;
                 }
+                Change::Command(next) => {
+                    writer.write_tool_command(
+                        build,
+                        &ProjectionStep {
+                            expected_sequence: guard.sequence,
+                            next_cursor: &next,
+                        },
+                        guard.metadata,
+                    )?;
+                }
                 Change::Install(next) => {
-                    writer.install_text_block(
+                    writer.install_block(
                         build,
                         &ProjectionStep {
                             expected_sequence: guard.sequence,
@@ -1381,19 +1562,14 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                     finish,
                     next,
                 } => {
-                    if proof.token() != build.predecessor()
-                        || proof.head() != &guard.handle.head
-                        || proof.message() != guard.handle.request.message
-                    {
-                        return Err(Error::Invariant("source proof does not match preparation"));
-                    }
+                    let digest = proof.validate(&guard.handle)?;
                     writer.finish_message_projection(
                         build,
                         &ProjectionStep {
                             expected_sequence: guard.sequence,
                             next_cursor: &next,
                         },
-                        proof.digest(),
+                        digest,
                         finish,
                         guard.metadata,
                     )?;
@@ -1416,9 +1592,7 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
 impl ValueSource<'_> {
     fn write(&self, sink: &mut impl Write) -> Result<()> {
         match self {
-            Self::Descriptor { selection, binding } => selection
-                .write_bound(*binding, sink)
-                .map_err(Error::Descriptor),
+            Self::Descriptor { selection, binding } => selection.write_bound(*binding, sink),
             Self::Text(text) => sink
                 .write_all(text.as_bytes())
                 .map_err(|e| Error::Store(StoreError::Io(e))),

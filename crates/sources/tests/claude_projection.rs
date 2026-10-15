@@ -19,9 +19,10 @@ fn step(memory: &mut MemoryReadView, value: Value) {
     let framed = drive_jsonl(
         KeyedRecords::new(FileCtx::main("s"), &*memory).unwrap(),
         text.as_bytes(),
-        0,
+        memory.header().unwrap().parsed_upto,
     );
-    let out = framed.output.unwrap();
+    let mut out = framed.output.unwrap();
+    out.header.parsed_upto = framed.parsed_upto;
     memory.apply(out.header, out.delta);
 }
 fn response(memory: &MemoryReadView) -> ResponseCell {

@@ -885,3 +885,6 @@ fn source_set_is_exact_noncontiguous_and_includes_timestamp_only_witness() {
     drop(snapshot);
     world.complete(&handle);
 }
+
+#[path = "canonical_message/claude_tests.rs"]
+mod claude_tests;

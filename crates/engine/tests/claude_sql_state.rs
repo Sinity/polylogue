@@ -116,7 +116,7 @@ impl World {
         }
         self.head = writer.publish_parser(&work.token).unwrap();
     }
-    fn parse(&mut self, bytes: &[u8]) -> (adapter::Usage, usize) {
+    fn parse(&mut self, bytes: &[u8]) -> (adapter::Usage, Vec<CellChange>) {
         let snapshot = self.writer().parser_snapshot(&self.head.token).unwrap();
         let view = adapter::View::new(&snapshot, broad()).unwrap();
         let framed = drive_jsonl(
@@ -134,15 +134,11 @@ impl World {
             broad(),
         )
         .unwrap();
-        let size = changes
-            .iter()
-            .map(|c| c.namespace.len() + c.key.len() + c.value.as_ref().map_or(0, Vec::len))
-            .sum();
         let usage = view.usage();
         drop(view);
         drop(snapshot);
         self.commit(&changes, framed.parsed_upto, &framed.counts);
-        (usage, size)
+        (usage, changes)
     }
 }
 fn line(v: Value) -> String {
@@ -247,7 +243,77 @@ fn reopen_each_line_preserves_effective_replacement_and_pending_evidence_cells()
     assert!(view.take_error().is_none());
 }
 
-fn prefix_cost(size: usize) -> (adapter::Usage, usize) {
+#[test]
+fn pending_keyset_is_one_admitted_lookup_with_reopenable_cursor_and_identity_checks() {
+    let text: String = fixture().into_iter().map(line).collect();
+    let mut world = World::new(text.as_bytes());
+    world.parse(text.as_bytes());
+    world.restart();
+    let snapshot = world.writer().parser_snapshot(&world.head.token).unwrap();
+    let one = Budget {
+        cells: 1,
+        encoded_bytes: 65536,
+    };
+    let mut cursor = None;
+    let mut found = Vec::new();
+    loop {
+        let view = adapter::View::new(&snapshot, one).unwrap();
+        let row = view.next_pending(cursor.as_ref()).unwrap();
+        assert_eq!(view.usage().cells, 1);
+        let Some((next, pending)) = row else { break };
+        assert_eq!(
+            adapter::View::new(&snapshot, one)
+                .unwrap()
+                .pending(&pending.message)
+                .unwrap(),
+            Some(pending.clone())
+        );
+        cursor = Some(serde_json::from_slice(&serde_json::to_vec(&next).unwrap()).unwrap());
+        found.push(pending);
+    }
+    assert!(found.len() >= 3);
+    let no_reads = adapter::View::new(
+        &snapshot,
+        Budget {
+            cells: 0,
+            encoded_bytes: 65536,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        no_reads.next_pending(None),
+        Err(StoreError::ParserAdmission { .. })
+    ));
+    drop(snapshot);
+    // A damaged key must not schedule a different opaque Message. Keep the
+    // payload valid and alter only its address so the check tests binding.
+    let pending = &found[0];
+    let key = serde_json::to_vec(&(pending.message.session().as_str(), "wrong-opaque-id")).unwrap();
+    world.commit(
+        &[CellChange {
+            namespace: "claude.pending.v1".into(),
+            key,
+            value: Some(serde_json::to_vec(pending).unwrap()),
+        }],
+        world.head.parsed_upto,
+        &Counts::default(),
+    );
+    let snapshot = world.writer().parser_snapshot(&world.head.token).unwrap();
+    let view = adapter::View::new(&snapshot, broad()).unwrap();
+    let mut cursor = None;
+    loop {
+        match view.next_pending(cursor.as_ref()) {
+            Ok(Some((next, _))) => cursor = Some(next),
+            Err(StoreError::Invariant(message)) => {
+                assert!(message.contains("identity mismatch"));
+                break;
+            }
+            other => panic!("damaged pending address was accepted: {other:?}"),
+        }
+    }
+}
+
+fn prefix_cost(size: usize) -> (usize, usize, usize) {
     let mut prefix = line(user("u"));
     for n in 0..size {
         prefix += &line(assistant(&format!("a{n:05}"), &format!("m{n:05}"), "r"));
@@ -257,17 +323,77 @@ fn prefix_cost(size: usize) -> (adapter::Usage, usize) {
     let mut world = World::new(text.as_bytes());
     world.parse(prefix.as_bytes());
     world.restart();
-    let cost = world.parse(append.as_bytes());
-    assert!(cost.0.encoded_bytes < 8192 && cost.1 < 8192);
-    cost
+    let (usage, changes) = world.parse(append.as_bytes());
+    let size_bytes: usize = changes
+        .iter()
+        .map(|c| c.namespace.len() + c.key.len() + c.value.as_ref().map_or(0, Vec::len))
+        .sum();
+    assert!(usage.encoded_bytes < 8192 && size_bytes < 8192);
+    // Absolute byte positions and the one u64 ordinal counter have bounded
+    // decimal width. Remove ONLY that exact scalar encoding overhead; all
+    // names, keys, payloads, cell/cardinality and other metadata remain intact.
+    fn width(value: u64) -> usize {
+        let width = serde_json::to_vec(&value).unwrap().len();
+        assert!((1..=20).contains(&width));
+        width
+    }
+    fn positions(value: &mut Value, base: u64, end: u64) -> usize {
+        match value {
+            Value::Object(object)
+                if object.len() == 2
+                    && object.contains_key("start")
+                    && object.contains_key("end") =>
+            {
+                let start = object["start"].as_u64().unwrap();
+                let stop = object["end"].as_u64().unwrap();
+                if start >= base {
+                    assert_eq!(start, base);
+                    assert_eq!(stop, end);
+                    object.insert("start".into(), json!(0));
+                    object.insert("end".into(), json!(end - base));
+                    width(start) + width(stop) - width(0) - width(end - base)
+                } else {
+                    assert!(stop <= base);
+                    0
+                }
+            }
+            Value::Object(object) => object.values_mut().map(|v| positions(v, base, end)).sum(),
+            Value::Array(array) => array.iter_mut().map(|v| positions(v, base, end)).sum(),
+            _ => 0,
+        }
+    }
+    let base = prefix.len() as u64;
+    let record_end = base + append.trim_end_matches('\n').len() as u64;
+    let mut scalar_overhead = 0;
+    let mut normalized = 0;
+    for change in &changes {
+        let bytes = change.value.as_ref().unwrap();
+        let mut value: Value = serde_json::from_slice(bytes).unwrap();
+        let mut overhead = positions(&mut value, base, record_end);
+        let scalar = match change.namespace.as_str() {
+            "claude.header.v1" => Some(("parsed_upto", text.len() as u64)),
+            "claude.session.v1" => Some(("next_message_ordinal", size as u64 + 1)),
+            _ => None,
+        };
+        if let Some((name, expected)) = scalar {
+            assert_eq!(value[name].as_u64(), Some(expected));
+            overhead += width(expected) - width(0);
+            value[name] = json!(0);
+        }
+        let count = serde_json::to_vec(&value).unwrap().len();
+        assert_eq!(bytes.len(), count + overhead);
+        scalar_overhead += overhead;
+        normalized += change.namespace.len() + change.key.len() + count;
+    }
+    assert_eq!(size_bytes, normalized + scalar_overhead);
+    // The read predecessor differs only in Header.parsed_upto and the Session
+    // counter; the early response/contribution and all lookup keys are fixed.
+    let normalized_read = usage.encoded_bytes - width(base) - width(size as u64 + 1);
+    (usage.cells, normalized_read, normalized)
 }
 #[test]
 fn append_only_loads_point_cells_after_large_unique_prefix() {
-    let small = prefix_cost(2);
-    let large = prefix_cost(1000);
-    assert_eq!(small.0.cells, large.0.cells);
-    assert!(small.0.encoded_bytes.abs_diff(large.0.encoded_bytes) < 64);
-    assert!(small.1.abs_diff(large.1) < 64);
+    assert_eq!(prefix_cost(2), prefix_cost(1000));
 }
 
 #[test]

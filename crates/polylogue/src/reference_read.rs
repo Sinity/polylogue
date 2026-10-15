@@ -9,12 +9,12 @@ use std::{
     path::Path,
     time::Duration,
 };
-const FRAME: u64 = 65536;
+pub(crate) const FRAME: u64 = 65536;
 const PIECE: usize = 4096;
 fn failed(kind: ErrorKind, error: impl ToString) -> Value {
     json!({"type":"end","outcome":"error","error":Failure::new(kind,error.to_string())})
 }
-fn frame(out: &mut impl Write, value: Value) -> io::Result<()> {
+pub(crate) fn frame(out: &mut impl Write, value: Value) -> io::Result<()> {
     struct Encoded(Vec<u8>);
     impl Write for Encoded {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -34,35 +34,61 @@ fn frame(out: &mut impl Write, value: Value) -> io::Result<()> {
     out.write_all(&encoded.0)
 }
 
-// Collect only one admitted masked piece before the response encoder. No raw
-// text frame is emitted until this boundary adapter has settled that piece.
-fn masked_frame(
+// Masking can expand dense short credentials far beyond the input piece.
+// Encode settled output into bounded frames; the masker still owns undecided
+// bytes. UTF-8 fragments across individual Write calls retain at most3 bytes.
+pub(crate) fn text_frames<T>(
     stream: &mut UnixStream,
-    run: impl FnOnce(&mut MaskedPiece) -> io::Result<()>,
-) -> io::Result<()> {
-    let mut output = MaskedPiece(Vec::new());
-    run(&mut output)?;
-    if !output.0.is_empty() {
-        let text = String::from_utf8(output.0)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        frame(stream, json!({"type":"text","data":text}))?;
-    }
-    Ok(())
+    run: impl FnOnce(&mut TextFrames<'_>) -> io::Result<T>,
+) -> io::Result<T> {
+    let mut output = TextFrames {
+        stream,
+        bytes: Vec::new(),
+    };
+    let result = run(&mut output)?;
+    output.emit(true)?;
+    Ok(result)
 }
-struct MaskedPiece(Vec<u8>);
-impl Write for MaskedPiece {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > 16384usize.saturating_sub(self.0.len()) {
-            return Err(io::Error::other("masked response piece exceeds admission"));
+pub(crate) struct TextFrames<'a> {
+    stream: &'a mut UnixStream,
+    bytes: Vec<u8>,
+}
+impl TextFrames<'_> {
+    fn emit(&mut self, complete: bool) -> io::Result<()> {
+        let valid = match std::str::from_utf8(&self.bytes) {
+            Ok(_) => self.bytes.len(),
+            Err(error) if error.error_len().is_none() && !complete => error.valid_up_to(),
+            Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+        };
+        if valid != 0 {
+            let text = std::str::from_utf8(&self.bytes[..valid])
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            // PIECE source bytes need at most6*PIECE JSON escaping bytes, below
+            // FRAME. Only this one bounded encoding is retained while writing.
+            frame(self.stream, json!({"type":"text","data":text}))?;
+            self.bytes.drain(..valid);
         }
-        self.0
-            .try_reserve_exact(bytes.len())
-            .map_err(io::Error::other)?;
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
+        Ok(())
+    }
+}
+impl Write for TextFrames<'_> {
+    fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
+        let length = bytes.len();
+        while !bytes.is_empty() {
+            let take = bytes.len().min(PIECE - self.bytes.len());
+            self.bytes
+                .try_reserve_exact(take)
+                .map_err(io::Error::other)?;
+            self.bytes.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if self.bytes.len() == PIECE {
+                self.emit(false)?;
+            }
+        }
+        Ok(length)
     }
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        self.emit(false)
     }
 }
 
@@ -146,7 +172,7 @@ pub(crate) fn serve(
                 let text =
                     std::str::from_utf8(&bytes[..valid]).map_err(|e| failed(ErrorKind::Io, e))?;
                 if !text.is_empty() {
-                    masked_frame(stream, |output| masker.push(text, output))
+                    text_frames(stream, |output| masker.push(text, output))
                         .map_err(|e| failed(ErrorKind::Io, e))?;
                 }
                 pending = bytes[valid..].to_vec();
@@ -164,13 +190,13 @@ pub(crate) fn serve(
                 }
                 offset = range.next_offset;
             }
-            masked_frame(stream, |output| masker.block_boundary(output))
+            text_frames(stream, |output| masker.block_boundary(output))
                 .map_err(|e| failed(ErrorKind::Io, e))?;
             index = index
                 .checked_add(1)
                 .ok_or_else(|| failed(ErrorKind::Io, "block position overflow"))?;
         }
-        masked_frame(stream, |output| masker.finish(output))
+        text_frames(stream, |output| masker.finish(output))
             .map_err(|e| failed(ErrorKind::Io, e))?;
         Ok(())
     };

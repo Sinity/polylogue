@@ -35,6 +35,11 @@ pub struct Usage {
     pub encoded_bytes: usize,
 }
 
+/// Opaque keyset position for scheduling retained obligations. Its byte order
+/// has no authority over source Message order or candidate selection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingCursor(Vec<u8>);
+
 pub struct View<'a> {
     snapshot: &'a Snapshot,
     budget: Budget,
@@ -72,6 +77,51 @@ impl<'a> View<'a> {
     }
     pub fn pending(&self, message: &MessageId) -> Result<Option<PendingMessage>> {
         self.get(PENDING, &(message.session().as_str(), message.as_str()))
+    }
+    /// Read at most one obligation without collecting a session's responses.
+    /// The returned cursor belongs to this pinned snapshot; callers restart at
+    /// the beginning after a new predecessor and use source receipts for replay.
+    pub fn next_pending(
+        &self,
+        after: Option<&PendingCursor>,
+    ) -> Result<Option<(PendingCursor, PendingMessage)>> {
+        let key = after.map_or(&[][..], |cursor| cursor.0.as_slice());
+        let mut usage = self.usage.get();
+        usage.cells = usage.cells.saturating_add(1);
+        self.usage.set(usage);
+        if usage.cells > self.budget.cells {
+            return Err(admission("Claude state point attempts", usage.cells));
+        }
+        self.charge(PENDING.len().saturating_add(key.len()))?;
+        let row = self
+            .snapshot
+            .neighbor(PENDING, key, true, self.remaining())
+            .map_err(|error| match error {
+                StoreError::ParserAdmission { required, .. } => StoreError::ParserAdmission {
+                    resource: "Claude state read encoded bytes",
+                    required: (self.usage.get().encoded_bytes as u64).saturating_add(required),
+                },
+                error => error,
+            })?;
+        let Some((key, bytes)) = row else {
+            return Ok(None);
+        };
+        self.charge(key.len().saturating_add(bytes.len()))?;
+        let pending: PendingMessage = serde_json::from_slice(&bytes).map_err(|error| {
+            StoreError::Invariant(format!("invalid Claude pending state: {error}"))
+        })?;
+        let identity: (String, String) = serde_json::from_slice(&key).map_err(|error| {
+            StoreError::Invariant(format!("invalid Claude pending key: {error}"))
+        })?;
+        if identity.0 != pending.message.session().as_str()
+            || identity.1 != pending.message.as_str()
+            || pending.session_native.is_empty()
+        {
+            return Err(StoreError::Invariant(
+                "Claude pending key/Message identity mismatch".into(),
+            ));
+        }
+        Ok(Some((PendingCursor(key), pending)))
     }
     pub fn effects(&self, step: i64) -> Result<Option<Effects>> {
         self.get(EFFECTS, &step)

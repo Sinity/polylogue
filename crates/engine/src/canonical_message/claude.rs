@@ -1,0 +1,1083 @@
+//! Claude-specific cursors and pinned source selection. Durable mutation and
+//! value/origin verification remain in the parent's one materializer core.
+use super::*;
+use crate::state::claude::View;
+use polylogue_model::{
+    merge::{BlockField, MessageField},
+    version_evidence::Framer,
+};
+use polylogue_sources::claude_code::{
+    self as source,
+    keyed::{Contribution, PendingMessage, ReadView, ResponseCell},
+    projection::{Fact, Field},
+    selection::AuthorLeaf,
+};
+
+#[derive(Clone, Debug)]
+pub struct ClaudeRequest {
+    pub pending: PendingMessage,
+    pub source_hash: BlobHash,
+    pub context: Vec<String>,
+    /// Archive revision, independently of pending.revision (provider evidence).
+    pub revision: u64,
+    pub logical_key: [u8; 32],
+}
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct Head {
+    pub pending: PendingMessage,
+    context: Vec<String>,
+    parser_version: u32,
+}
+pub(super) struct Proof {
+    token: Token,
+    head: Head,
+    source_hash: BlobHash,
+    digest: BlobHash,
+}
+impl Proof {
+    pub(super) fn validate(&self, h: &Handle) -> Result<BlobHash> {
+        if self.token != *h.build.predecessor()
+            || h.head != EvidenceBasis::Claude(self.head.clone())
+            || self.source_hash != h.request.source_hash
+        {
+            return Err(Error::Invariant("Claude evidence proof basis changed"));
+        }
+        Ok(self.digest)
+    }
+}
+fn callback<T>(view: &View<'_>, result: std::result::Result<T, String>) -> Result<T> {
+    if let Some(e) = view.take_error() {
+        return Err(e.into());
+    }
+    result.map_err(Error::Source)
+}
+fn response(view: &View<'_>, head: &Head) -> Result<ResponseCell> {
+    let p = &head.pending;
+    if view.pending(&p.message)?.as_ref() != Some(p) {
+        return Err(Error::Unsupported("Claude pending work locator changed"));
+    }
+    let r = callback(view, view.response(&p.session_native, &p.response))?
+        .ok_or(Error::Unsupported("Claude response unavailable"))?;
+    if r.message.id != p.message
+        || r.ordinal != p.ordinal
+        || r.revision != p.revision
+        || r.items != p.items
+        || r.incomplete_bodies != 0
+        || p.incomplete
+    {
+        return Err(Error::Unsupported(
+            "Claude pending locator no longer matches complete source evidence",
+        ));
+    }
+    Ok(r)
+}
+fn contribution(snapshot: &Snapshot, head: &Head, item: u64, b: Budget) -> Result<Contribution> {
+    let view = View::new(snapshot, b)?;
+    let c = callback(&view, view.contribution(&head.pending.message, item))?
+        .ok_or(Error::Unsupported("Claude contribution unavailable"))?;
+    if !c.projection.obligations.is_empty() {
+        return Err(Error::Unsupported(
+            "Claude source mapping/counting obligation remains pending",
+        ));
+    }
+    if c.bodies.iter().any(|body| body.payload.is_none()) {
+        return Err(Error::Unsupported(
+            "Claude required companion remains unavailable",
+        ));
+    }
+    Ok(c)
+}
+pub fn start(
+    snapshot: &Snapshot,
+    request: &ClaudeRequest,
+    current: Option<SourceProjection>,
+    budget: Budget,
+    allowance: usize,
+) -> Result<Action> {
+    if snapshot.head.status != "finalizing" || !snapshot.head.finalization_pending {
+        return Err(Error::Unsupported(
+            "Claude materializer requires a finalizing source head",
+        ));
+    }
+    let view = View::new(snapshot, budget)?;
+    let head = Head {
+        pending: request.pending.clone(),
+        context: request.context.clone(),
+        parser_version: source::PARSER_VERSION,
+    };
+    let r = response(&view, &head)?;
+    let session = callback(&view, view.session(&head.pending.session_native))?
+        .ok_or(Error::Unsupported("Claude source Session unavailable"))?;
+    if r.message.id.session() != &session.session.id {
+        return Err(Error::Invariant("Claude Message/Session relation mismatch"));
+    }
+    let common = Request {
+        message: usize::try_from(request.pending.ordinal)
+            .map_err(|_| Error::Invariant("Claude ordinal overflow"))?,
+        revision: request.revision,
+        logical_key: request.logical_key,
+        source_hash: request.source_hash,
+    };
+    let basis = EvidenceBasis::Claude(head);
+    let typed = EvidenceGuard {
+        head: basis.clone(),
+        source_hash: request.source_hash,
+    };
+    let guard = bounded_json(&typed, allowance)?;
+    if let Some(previous) = &current {
+        if previous.message() != &r.message.id {
+            return Err(Error::Invariant(
+                "Claude current reference names another Message",
+            ));
+        }
+        let prior: EvidenceGuard = serde_json::from_slice(previous.evidence_guard())
+            .map_err(|e| Error::Source(e.to_string()))?;
+        if previous.predecessor() == &snapshot.head.token {
+            if prior != typed {
+                return Err(Error::Invariant("same-token Claude guard changed"));
+            }
+            return Ok(Action {
+                inner: ActionKind::Existing {
+                    token: snapshot.head.token.clone(),
+                    request: common,
+                    source: previous.clone(),
+                    allowance,
+                },
+            });
+        }
+    }
+    Ok(Action {
+        inner: ActionKind::Prepare {
+            identity: IdentityOwned {
+                session: session.session.id,
+                origin: session.session.origin,
+                native: session.session.native_id,
+                kind: session.session.kind,
+                message: r.message.id,
+                role: r.message.role,
+                by: r.message.written_by,
+            },
+            request: common,
+            token: snapshot.head.token.clone(),
+            head: basis,
+            guard,
+            previous: current,
+            allowance,
+        },
+    })
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) enum Cursor {
+    Citations {
+        item: u64,
+        after: Option<Vec<String>>,
+        envelope: bool,
+    },
+    SelectedCitations {
+        index: u8,
+    },
+    AuthorCitation,
+    Layout,
+    Author {
+        index: u8,
+    },
+    MessageFields {
+        item: u64,
+        index: usize,
+    },
+    Block {
+        item: u64,
+        local: u32,
+        phase: BlockPhase,
+    },
+    Selected {
+        index: u8,
+        fact: usize,
+    },
+    Finish,
+}
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub(super) enum BlockPhase {
+    Begin,
+    Command,
+    Fields(usize),
+    Retained(usize),
+    Signature,
+    Install,
+}
+fn stage(cursor: &mut super::Cursor, next: Cursor) {
+    cursor.stage = Stage::Claude(next)
+}
+fn progress(state: &State, cursor: &mut super::Cursor, next: Cursor, b: Budgets) -> Result<Action> {
+    stage(cursor, next);
+    advance(state, cursor, b)
+}
+fn cite(
+    state: &State,
+    cursor: &mut super::Cursor,
+    next: Cursor,
+    range: polylogue_sources::selection::RecordRange,
+    b: Budgets,
+) -> Result<Action> {
+    stage(cursor, next);
+    Ok(action(
+        state,
+        b,
+        Change::SourceRange {
+            range: cited(range),
+            next: bounded_json(cursor, b.metadata)?,
+        },
+    ))
+}
+fn slot(field: &Field) -> Result<Slot> {
+    Ok(match field {
+        Field::FirstMessage(f) | Field::SelectedMessage(f) => Slot::Message(*f),
+        Field::Usage(f) => Slot::Usage(*f),
+        Field::SelectedExtra { key } => Slot::Extra {
+            block: None,
+            key: key.clone(),
+        },
+        Field::Block { local, field } => Slot::Block {
+            block: BlockSlot::Item(*local),
+            field: *field,
+        },
+        Field::ResultData { local, key } => Slot::Extra {
+            block: Some(BlockSlot::Item(*local)),
+            key: key.clone(),
+        },
+        Field::Extra { local, path } => Slot::Extra {
+            block: local.map(BlockSlot::Item),
+            key: path
+                .last()
+                .ok_or(Error::Unsupported("Claude extra key unavailable"))?
+                .clone(),
+        },
+    })
+}
+fn local(field: &Field) -> Option<u32> {
+    match field {
+        Field::Block { local, .. } | Field::ResultData { local, .. } => Some(*local),
+        Field::Extra { local, .. } => *local,
+        _ => None,
+    }
+}
+fn is_message(field: &Field, item: u64) -> bool {
+    match field {
+        Field::FirstMessage(_) => item == 0,
+        Field::Extra { local: None, .. } => true,
+        _ => false,
+    }
+}
+fn field<'a>(fact: &'a Fact, slot: &'a Slot, supplied: bool) -> Result<FieldDescriptor<'a>> {
+    Ok(FieldDescriptor {
+        slot,
+        time: None,
+        supplied,
+        selection: FieldSelector::Claude(
+            fact.selection
+                .as_ref()
+                .ok_or(Error::Unsupported("Claude field selector unavailable"))?,
+        ),
+    })
+}
+fn leaf<'a>(
+    fact: &Fact,
+    slot: &'a Slot,
+    r: &'a ResponseCell,
+    c: Option<&'a Contribution>,
+    content: Option<&'a BlockContent>,
+) -> Result<ValueSource<'a>> {
+    let subject = match &fact.field {
+        Field::FirstMessage(_)
+        | Field::SelectedMessage(_)
+        | Field::Usage(_)
+        | Field::SelectedExtra { .. } => Subject::Message(&r.message),
+        Field::ResultData { local, .. } => {
+            let c = c.ok_or(Error::Invariant(
+                "Claude structured result lost its contribution",
+            ))?;
+            let BlockContent::ToolResult(result) = c
+                .blocks
+                .get(*local as usize)
+                .ok_or(Error::Invariant("Claude result block unavailable"))?
+            else {
+                return Err(Error::Invariant("Claude result field on non-result block"));
+            };
+            let Slot::Extra { block, .. } = slot else {
+                return Err(Error::Invariant("Claude structured data slot changed"));
+            };
+            Subject::Extras {
+                block: block.as_ref(),
+                values: result.data.as_ref().ok_or(Error::Unsupported(
+                    "Claude structured result data unavailable",
+                ))?,
+            }
+        }
+        Field::Extra { local: None, .. } => {
+            return Err(Error::UnsupportedField {
+                path: fact.source_path.clone(),
+                reason: "Claude message extra normalization remains pending",
+            });
+        }
+        Field::Extra { .. } => {
+            return Err(Error::UnsupportedField {
+                path: fact.source_path.clone(),
+                reason: "Claude block extra normalization remains pending",
+            });
+        }
+        Field::Block { .. } => {
+            let Slot::Block { block, .. } = slot else {
+                return Err(Error::Invariant("Claude block semantic slot changed"));
+            };
+            Subject::Block {
+                slot: block,
+                content: content.ok_or(Error::Invariant("Claude normalized block unavailable"))?,
+            }
+        }
+    };
+    Ok(ValueSource::Leaf { subject, slot })
+}
+
+pub(super) fn compute(
+    snapshot: &Snapshot,
+    reader: &ReadHandle,
+    state: &State,
+    b: Budgets,
+    flag: &AtomicBool,
+) -> Result<Action> {
+    let EvidenceBasis::Claude(head) = &state.handle.head else {
+        return Err(Error::Invariant(
+            "Claude materializer has another provider basis",
+        ));
+    };
+    let view = View::new(snapshot, b.read)?;
+    let r = response(&view, head)?;
+    let input = snapshot.message_source_input_id(&state.handle.build, b.metadata)?;
+    let context: Vec<_> = head.context.iter().map(String::as_str).collect();
+    if input
+        != InputId::imported(
+            &state.handle.request.source_hash,
+            "claude-code-jsonl",
+            &context,
+        )
+        .as_str()
+    {
+        return Err(Error::Invariant(
+            "raw source hash/context does not identify this immutable Claude input",
+        ));
+    }
+    if let Some(prepared) = &state.preparation.projection {
+        return Ok(action(state, b, Change::Publish(prepared.clone())));
+    }
+    let mut cursor: super::Cursor = match &state.projection.cursor {
+        Some(bytes) => serde_json::from_slice(bytes).map_err(|e| Error::Source(e.to_string()))?,
+        None if state.projection.sequence == 0 => super::Cursor {
+            source: None,
+            stage: Stage::Claude(Cursor::Citations {
+                item: 0,
+                after: None,
+                envelope: false,
+            }),
+            verified: None,
+        },
+        _ => return Err(Error::Invariant("Claude materializer lost durable cursor")),
+    };
+    let Stage::Claude(position) = cursor.stage.clone() else {
+        return Err(Error::Invariant(
+            "Claude materializer found another provider cursor",
+        ));
+    };
+    let owns_origin = matches!(
+        position,
+        Cursor::Author { .. }
+            | Cursor::MessageFields { .. }
+            | Cursor::Selected { .. }
+            | Cursor::Block {
+                phase: BlockPhase::Fields(_) | BlockPhase::Retained(_) | BlockPhase::Signature,
+                ..
+            }
+    );
+    if state.preparation.active_origin_value.is_some()
+        && (!owns_origin || cursor.verified.is_none())
+    {
+        return Err(Error::Unsupported(
+            "Claude origin producer has no verified owning field",
+        ));
+    }
+    match position {
+        Cursor::Citations {
+            item,
+            after,
+            envelope,
+        } => {
+            if item >= r.items {
+                return progress(
+                    state,
+                    &mut cursor,
+                    Cursor::SelectedCitations { index: 0 },
+                    b,
+                );
+            }
+            let c = contribution(snapshot, head, item, b.read)?;
+            if !envelope {
+                let range = c
+                    .origins
+                    .envelope
+                    .ok_or(Error::Unsupported("Claude record provenance unavailable"))?;
+                return cite(
+                    state,
+                    &mut cursor,
+                    Cursor::Citations {
+                        item,
+                        after: None,
+                        envelope: true,
+                    },
+                    range,
+                    b,
+                );
+            }
+            if let Some((key, origin)) = c.origins.next(after.as_deref()) {
+                return cite(
+                    state,
+                    &mut cursor,
+                    Cursor::Citations {
+                        item,
+                        after: Some(key.to_vec()),
+                        envelope: true,
+                    },
+                    origin.record,
+                    b,
+                );
+            }
+            progress(
+                state,
+                &mut cursor,
+                Cursor::Citations {
+                    item: item
+                        .checked_add(1)
+                        .ok_or(Error::Invariant("Claude contribution cursor overflow"))?,
+                    after: None,
+                    envelope: false,
+                },
+                b,
+            )
+        }
+        Cursor::SelectedCitations { index } => {
+            if index >= 5 {
+                return progress(state, &mut cursor, Cursor::AuthorCitation, b);
+            }
+            let next = Cursor::SelectedCitations { index: index + 1 };
+            if index == 4 {
+                return match r
+                    .stop_sequence
+                    .as_ref()
+                    .and_then(|fact| fact.selection.as_ref())
+                {
+                    Some(selection) => cite(
+                        state,
+                        &mut cursor,
+                        next,
+                        selection
+                            .inputs
+                            .first()
+                            .ok_or(Error::Unsupported("Claude stop_sequence donor missing"))?
+                            .record,
+                        b,
+                    ),
+                    None => progress(state, &mut cursor, next, b),
+                };
+            }
+            match &r.selected_origins[usize::from(index)] {
+                Some(origin) => cite(state, &mut cursor, next, origin.record, b),
+                None => progress(state, &mut cursor, next, b),
+            }
+        }
+        Cursor::AuthorCitation => {
+            let author = r
+                .author_selection
+                .as_ref()
+                .ok_or(Error::Unsupported("Claude author recipe unavailable"))?;
+            cite(state, &mut cursor, Cursor::Layout, author.input.record, b)
+        }
+        Cursor::Layout => {
+            stage(&mut cursor, Cursor::Author { index: 0 });
+            Ok(action(
+                state,
+                b,
+                Change::Layout {
+                    layout: MessageLayout::Flat,
+                    next: bounded_json(&cursor, b.metadata)?,
+                },
+            ))
+        }
+        Cursor::Author { index } => {
+            // written_by is fixed identity metadata; prompt_kind has a separate
+            // retained leaf, derived by the source classifier and unranked.
+            if index != 0 || r.message.prompt_kind.is_none() {
+                return progress(
+                    state,
+                    &mut cursor,
+                    Cursor::MessageFields { item: 0, index: 0 },
+                    b,
+                );
+            }
+            let recipe = r
+                .author_selection
+                .as_ref()
+                .ok_or(Error::Unsupported("Claude author recipe unavailable"))?
+                .for_leaf(AuthorLeaf::PromptKind);
+            let slot = Slot::Message(MessageField::PromptKind);
+            field_turn(
+                snapshot,
+                reader,
+                state,
+                &mut cursor,
+                FieldDescriptor {
+                    slot: &slot,
+                    time: None,
+                    supplied: false,
+                    selection: FieldSelector::Author(&recipe),
+                },
+                ValueSource::Leaf {
+                    subject: Subject::Message(&r.message),
+                    slot: &slot,
+                },
+                false,
+                Stage::Claude(Cursor::MessageFields { item: 0, index: 0 }),
+                &input,
+                b,
+                flag,
+            )
+        }
+        Cursor::MessageFields { item, index } => {
+            if item >= r.items {
+                return progress(
+                    state,
+                    &mut cursor,
+                    Cursor::Selected { index: 0, fact: 0 },
+                    b,
+                );
+            }
+            let c = contribution(snapshot, head, item, b.read)?;
+            let Some(fact) = c.projection.facts.get(index) else {
+                return progress(
+                    state,
+                    &mut cursor,
+                    Cursor::Block {
+                        item,
+                        local: 0,
+                        phase: BlockPhase::Begin,
+                    },
+                    b,
+                );
+            };
+            let next = Cursor::MessageFields {
+                item,
+                index: index
+                    .checked_add(1)
+                    .ok_or(Error::Invariant("Claude fact cursor overflow"))?,
+            };
+            if !is_message(&fact.field, item) {
+                return progress(state, &mut cursor, next, b);
+            }
+            let slot = slot(&fact.field)?;
+            field_turn(
+                snapshot,
+                reader,
+                state,
+                &mut cursor,
+                field(fact, &slot, true)?,
+                leaf(fact, &slot, &r, Some(&c), None)?,
+                false,
+                Stage::Claude(next),
+                &input,
+                b,
+                flag,
+            )
+        }
+        Cursor::Selected { index, fact } => {
+            if index >= 5 {
+                return progress(state, &mut cursor, Cursor::Finish, b);
+            }
+            if index == 4 {
+                let next = Stage::Claude(Cursor::Finish);
+                let Some(value) = &r.stop_sequence else {
+                    return progress(state, &mut cursor, Cursor::Finish, b);
+                };
+                let slot = slot(&value.field)?;
+                return field_turn(
+                    snapshot,
+                    reader,
+                    state,
+                    &mut cursor,
+                    field(value, &slot, true)?,
+                    leaf(value, &slot, &r, None, None)?,
+                    false,
+                    next,
+                    &input,
+                    b,
+                    flag,
+                );
+            }
+            let selected = r
+                .selected_unit(index)
+                .ok_or(Error::Invariant("Claude selected field cursor invalid"))?;
+            let Some(value) = selected.facts.get(fact) else {
+                return progress(
+                    state,
+                    &mut cursor,
+                    Cursor::Selected {
+                        index: index + 1,
+                        fact: 0,
+                    },
+                    b,
+                );
+            };
+            let slot = slot(&value.field)?;
+            field_turn(
+                snapshot,
+                reader,
+                state,
+                &mut cursor,
+                field(value, &slot, true)?,
+                leaf(value, &slot, &r, None, None)?,
+                false,
+                Stage::Claude(Cursor::Selected {
+                    index,
+                    fact: fact
+                        .checked_add(1)
+                        .ok_or(Error::Invariant("Claude selected fact overflow"))?,
+                }),
+                &input,
+                b,
+                flag,
+            )
+        }
+        Cursor::Block {
+            item,
+            local: block_local,
+            phase,
+        } => {
+            let c = contribution(snapshot, head, item, b.read)?;
+            let Some(content) = c.blocks.get(block_local as usize) else {
+                return progress(
+                    state,
+                    &mut cursor,
+                    Cursor::MessageFields {
+                        item: item
+                            .checked_add(1)
+                            .ok_or(Error::Invariant("Claude contribution cursor overflow"))?,
+                        index: 0,
+                    },
+                    b,
+                );
+            };
+            let address = BlockSlot::Item(block_local);
+            match phase {
+                BlockPhase::Begin => {
+                    let (text, kind) = match content {
+                        BlockContent::Text { text } => (Some(text.as_str()), OwnedBlockKind::Text),
+                        BlockContent::Thinking(thinking) => (
+                            thinking.text.as_deref(),
+                            OwnedBlockKind::Thinking {
+                                encrypted: thinking.encrypted,
+                            },
+                        ),
+                        BlockContent::ToolCall(call) => {
+                            if r.message.copy_origin.is_some() || r.message.inherited_from.is_some()
+                            {
+                                return Err(Error::Unsupported(
+                                    "copied Claude call lacks proved original operation scope",
+                                ));
+                            }
+                            let raw_id = call.call_id.as_deref().filter(|s| !s.is_empty()).ok_or(
+                                Error::Unsupported("Claude call has no supplied invocation ID"),
+                            )?;
+                            if !c.projection.facts.iter().any(|f|matches!(f.field,Field::Block{local,field:BlockField::CallId} if local==block_local)&&f.selection.is_some()){return Err(Error::Unsupported("Claude call ID donor unavailable"))}
+                            let operation =
+                                DeclaredOperationId::new(&state.handle.identity.session, raw_id)
+                                    .map_err(|_| {
+                                        Error::Unsupported(
+                                            "Claude declared operation scope unavailable",
+                                        )
+                                    })?;
+                            (
+                                None,
+                                OwnedBlockKind::ToolCall {
+                                    operation: operation.as_str().into(),
+                                },
+                            )
+                        }
+                        BlockContent::ToolResult(result) => (
+                            None,
+                            OwnedBlockKind::ToolResult {
+                                outcome: result.outcome.clone(),
+                                exit_code: result.exit_code,
+                                duration_ms: result.duration_ms,
+                            },
+                        ),
+                        _ => {
+                            return Err(Error::Unsupported(
+                                "Claude block kind has no canonical projection",
+                            ));
+                        }
+                    };
+                    if let Some(text) = text {
+                        if let ValueTurn::Action(change) = value_turn(
+                            reader,
+                            state,
+                            ValueSource::Text(text),
+                            values::Codec::Utf8,
+                            b,
+                            flag,
+                        )? {
+                            return Ok(action(state, b, change));
+                        }
+                    } else if state.preparation.active_value.is_some() {
+                        return Err(Error::Invariant(
+                            "textless Claude block has unexpected value producer",
+                        ));
+                    }
+                    let (source_block, source_text) = c
+                        .projection
+                        .block_counts
+                        .get(block_local as usize)
+                        .copied()
+                        .ok_or(Error::Unsupported("Claude block suppliedness unavailable"))?;
+                    stage(
+                        &mut cursor,
+                        Cursor::Block {
+                            item,
+                            local: block_local,
+                            phase: BlockPhase::Command,
+                        },
+                    );
+                    Ok(action(
+                        state,
+                        b,
+                        Change::BeginBlock {
+                            group: item,
+                            local: u64::from(block_local),
+                            kind,
+                            presence: BlockPresence {
+                                source_block,
+                                source_text,
+                            },
+                            next: bounded_json(&cursor, b.metadata)?,
+                        },
+                    ))
+                }
+                BlockPhase::Command => {
+                    let next = Cursor::Block {
+                        item,
+                        local: block_local,
+                        phase: BlockPhase::Fields(0),
+                    };
+                    let command = match content {
+                        BlockContent::ToolCall(call) => call.command.as_deref(),
+                        _ => None,
+                    };
+                    if let Some(command) = command {
+                        if let ValueTurn::Action(change) = value_turn(
+                            reader,
+                            state,
+                            ValueSource::Text(command),
+                            values::Codec::Utf8,
+                            b,
+                            flag,
+                        )? {
+                            return Ok(action(state, b, change));
+                        }
+                        stage(&mut cursor, next);
+                        return Ok(action(
+                            state,
+                            b,
+                            Change::Command(bounded_json(&cursor, b.metadata)?),
+                        ));
+                    }
+                    progress(state, &mut cursor, next, b)
+                }
+                BlockPhase::Fields(index) | BlockPhase::Retained(index) => {
+                    let retained = matches!(phase, BlockPhase::Retained(_));
+                    let facts = if retained {
+                        &c.projection.retained
+                    } else {
+                        &c.projection.facts
+                    };
+                    let Some(fact) = facts.get(index) else {
+                        return progress(
+                            state,
+                            &mut cursor,
+                            Cursor::Block {
+                                item,
+                                local: block_local,
+                                phase: if retained {
+                                    BlockPhase::Signature
+                                } else {
+                                    BlockPhase::Retained(0)
+                                },
+                            },
+                            b,
+                        );
+                    };
+                    let next =
+                        Cursor::Block {
+                            item,
+                            local: block_local,
+                            phase: if retained {
+                                BlockPhase::Retained(index.checked_add(1).ok_or(
+                                    Error::Invariant("Claude retained field cursor overflow"),
+                                )?)
+                            } else {
+                                BlockPhase::Fields(index.checked_add(1).ok_or(Error::Invariant(
+                                    "Claude block field cursor overflow",
+                                ))?)
+                            },
+                        };
+                    if local(&fact.field) != Some(block_local) {
+                        return progress(state, &mut cursor, next, b);
+                    }
+                    let slot = slot(&fact.field)?;
+                    field_turn(
+                        snapshot,
+                        reader,
+                        state,
+                        &mut cursor,
+                        field(fact, &slot, !retained)?,
+                        leaf(fact, &slot, &r, Some(&c), Some(content))?,
+                        true,
+                        Stage::Claude(next),
+                        &input,
+                        b,
+                        flag,
+                    )
+                }
+                BlockPhase::Signature => {
+                    let next = Cursor::Block {
+                        item,
+                        local: block_local,
+                        phase: BlockPhase::Install,
+                    };
+                    if !matches!(content,BlockContent::Thinking(t) if t.signature.is_some()) {
+                        return progress(state, &mut cursor, next, b);
+                    }
+                    // Obtain the existing source-owned auxiliary selector through
+                    // its projection unit, not by manufacturing a raw path.
+                    let Some(source::projection::Unit::Signature {
+                        selection: Some(recipe),
+                        ..
+                    }) = c.signature_unit(item, block_local).map_err(Error::Source)?
+                    else {
+                        return Err(Error::Unsupported("Claude signature selector unavailable"));
+                    };
+                    let slot = Slot::Block {
+                        block: address.clone(),
+                        field: BlockField::ThinkingSignature,
+                    };
+                    field_turn(
+                        snapshot,
+                        reader,
+                        state,
+                        &mut cursor,
+                        FieldDescriptor {
+                            slot: &slot,
+                            time: None,
+                            supplied: false,
+                            selection: FieldSelector::Claude(&recipe),
+                        },
+                        ValueSource::Leaf {
+                            subject: Subject::Block {
+                                slot: &address,
+                                content,
+                            },
+                            slot: &slot,
+                        },
+                        true,
+                        Stage::Claude(next),
+                        &input,
+                        b,
+                        flag,
+                    )
+                }
+                BlockPhase::Install => {
+                    stage(
+                        &mut cursor,
+                        Cursor::Block {
+                            item,
+                            local: block_local
+                                .checked_add(1)
+                                .ok_or(Error::Invariant("Claude block cursor overflow"))?,
+                            phase: BlockPhase::Begin,
+                        },
+                    );
+                    Ok(action(
+                        state,
+                        b,
+                        Change::Install(bounded_json(&cursor, b.metadata)?),
+                    ))
+                }
+            }
+        }
+        Cursor::Finish => {
+            let proof = proof(snapshot, head, state.handle.request.source_hash, b, flag)?;
+            let finish = match r.message.in_progress {
+                Some(true) => FinishState::InProgress,
+                Some(false) => FinishState::Finished,
+                None => r.output_header().map_err(Error::Source)?.finish,
+            };
+            Ok(action(
+                state,
+                b,
+                Change::Finish {
+                    proof: EvidenceProof::Claude(proof),
+                    finish,
+                    next: bounded_json(&cursor, b.metadata)?,
+                },
+            ))
+        }
+    }
+}
+
+/// Selected-evidence replay uses point reads and bounded byte feeds. The entire
+/// Message proof runs on this worker; restart replays from zero. This does not
+/// certify a bounded worker-turn duration or append-local hash work.
+fn proof(
+    snapshot: &Snapshot,
+    head: &Head,
+    source_hash: BlobHash,
+    b: Budgets,
+    flag: &AtomicBool,
+) -> Result<Proof> {
+    let view = View::new(snapshot, b.read)?;
+    let response = response(&view, head)?;
+    let mut baseline: [Option<Vec<u8>>; 5] = Default::default();
+    let mut bodies = 0u64;
+    for item in 0..response.items {
+        cancelled(flag)?;
+        let c = contribution(snapshot, head, item, b.read)?;
+        for (previous, current) in baseline
+            .iter_mut()
+            .zip(c.final_fields().map_err(Error::Source)?)
+        {
+            if current.is_some() {
+                *previous = current
+            }
+        }
+        let mut previous = None;
+        for body in &c.bodies {
+            if previous.is_some_and(|n| n >= body.content_item) {
+                return Err(Error::Invariant(
+                    "Claude required bodies are not in source item order",
+                ));
+            }
+            previous = Some(body.content_item);
+            bodies = bodies
+                .checked_add(1)
+                .ok_or(Error::Invariant("Claude evidence count overflow"))?;
+        }
+    }
+    let metadata = response.metadata_units(&baseline);
+    let count = response
+        .items
+        .checked_add(metadata.len() as u64)
+        .and_then(|n| n.checked_add(bodies))
+        .ok_or(Error::Invariant("Claude evidence count overflow"))?;
+    if count == 0 {
+        return Err(Error::Unsupported(
+            "Claude Message has no selected raw evidence",
+        ));
+    }
+    let mut framer = if count == 1 && response.items == 1 {
+        let c = contribution(snapshot, head, 0, b.read)?;
+        Framer::single_whole_record(c.raw.len() as u64, 0)
+    } else {
+        Framer::compound(count, Framer::compound_minimum_bytes()).map_err(Error::Evidence)?
+    };
+    for item in 0..response.items {
+        cancelled(flag)?;
+        let c = contribution(snapshot, head, item, b.read)?;
+        feed(
+            &mut framer,
+            c.record_unit(item),
+            count == 1 && response.items == 1,
+            b,
+            flag,
+        )?;
+    }
+    for unit in metadata {
+        feed(&mut framer, unit, false, b, flag)?
+    }
+    for item in 0..response.items {
+        cancelled(flag)?;
+        let c = contribution(snapshot, head, item, b.read)?;
+        for index in 0..c.bodies.len() {
+            let unit = c
+                .body_unit(item, index)
+                .map_err(Error::Source)?
+                .ok_or(Error::Unsupported("Claude required body evidence missing"))?;
+            feed(&mut framer, unit, false, b, flag)?;
+        }
+    }
+    Ok(Proof {
+        token: snapshot.head.token.clone(),
+        head: head.clone(),
+        source_hash,
+        digest: framer.finish().map_err(Error::Evidence)?,
+    })
+}
+fn feed(
+    f: &mut Framer,
+    unit: source::keyed::EvidenceUnit,
+    single: bool,
+    b: Budgets,
+    flag: &AtomicBool,
+) -> Result<()> {
+    use source::keyed::EvidenceUnit;
+    let chunk = usize::try_from(b.hash_bytes)
+        .unwrap_or(usize::MAX)
+        .min(65536);
+    if chunk == 0 {
+        return Err(Error::Invariant("Claude evidence chunk allowance is zero"));
+    }
+    let (tag, json, body) = match unit {
+        EvidenceUnit::Json { tag, canonical, .. } => (tag, Some(canonical), None),
+        EvidenceUnit::Body { tag, payload } => (tag, None, Some(payload)),
+    };
+    if !single {
+        let fixed = 17u64
+            .checked_add(tag.len() as u64)
+            .ok_or(Error::Invariant("Claude evidence tag length overflow"))?;
+        f.grant(fixed).map_err(Error::Evidence)?;
+        if let Some(json) = &json {
+            f.begin_json(tag.len() as u64, json.len() as u64)
+                .map_err(Error::Evidence)?
+        } else {
+            f.begin_body(tag.len() as u64).map_err(Error::Evidence)?
+        }
+        // Provider tags here contain only ASCII integers and fixed ASCII labels.
+        if !tag.is_ascii() {
+            return Err(Error::Invariant("Claude evidence tag is not ASCII"));
+        }
+        for piece in tag.as_bytes().chunks(chunk) {
+            cancelled(flag)?;
+            f.tag(
+                std::str::from_utf8(piece)
+                    .map_err(|_| Error::Invariant("Claude tag encoding changed"))?,
+            )
+            .map_err(Error::Evidence)?
+        }
+    }
+    if let Some(json) = json {
+        for piece in json.chunks(chunk) {
+            cancelled(flag)?;
+            f.grant(piece.len() as u64).map_err(Error::Evidence)?;
+            f.json(piece).map_err(Error::Evidence)?
+        }
+    }
+    if let Some(body) = body {
+        cancelled(flag)?;
+        f.grant(40).map_err(Error::Evidence)?;
+        f.body(body.length, body.blob).map_err(Error::Evidence)?
+    }
+    Ok(())
+}

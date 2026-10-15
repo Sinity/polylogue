@@ -42,7 +42,8 @@ append-local hash updates or canonical publication.
 
 `source_turn` computes one window from the existing provider cores. Its linear
 commit guard releases framing continuation only after the actual prepared-store
-publication receipt matches. `owner` connects Codex imports to one Writer actor,
+publication receipt matches. `owner` connects explicit Codex and context-declared
+Claude imports to one Writer actor,
 one capture worker and one compute worker, with bounded metadata requests.
 Restart enumerates retained imports and resumes or discards durable prepared
 state before interpreting again. Peer requests can run between installation
@@ -60,11 +61,19 @@ replays hashing from zero. This proof alone does not certify source-field mappin
 canonical publication, lineage or search readiness.
 
 `canonical_message` uses the provider-owned projection/presence/evidence cores
-to prepare a final-head Codex Text/Thinking Message and typed supplied fields.
+to prepare final-head Codex Text/Thinking and supported Claude Messages with
+typed supplied fields. Both providers use the same State/action/value/origin
+producer and publication core. Claude work is scheduled by one-row keyset
+lookups over retained pending locators; source ordinals determine Message and
+block order, independently of scheduling key order. Archive revision and
+provider evidence revision remain separate.
 Worker computation produces one opaque action; the actor applies one value,
 field, block, cursor or source-certificate transaction between peer commands.
 The store selects its whole body only when no other input candidate competes.
-Unsupported mappings and operations stop with explicit pending diagnostics.
+Unsupported mappings stop with explicit pending diagnostics. Claude calls and
+results use the existing staged block roots and immutable private summaries.
+Signatures and derived outcome reasons are retained as non-ranking fields.
+Global call pairing, native ToolItems and cross-input election remain pending.
 Restart reconstructs preparation from its durable scalar cursor and active
 value and origin producer. Before attaching a supported field origin, it retains
 the exact record citation set, evaluates the source-owned selector against retained

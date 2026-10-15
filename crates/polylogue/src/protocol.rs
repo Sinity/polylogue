@@ -71,18 +71,38 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                 if object.keys().any(|k| !allowed.contains(&k.as_str())) {
                     return Err(failed(ErrorKind::InvalidQuery, "unknown import field"));
                 }
-                if request.get("context") != Some(&json!([])) {
-                    return Err(failed(
-                        ErrorKind::InvalidQuery,
-                        "Codex immutable import requires explicit empty context",
-                    ));
-                }
-                if text(request, "format")? != "codex-rollout" {
-                    return Err(failed(
-                        ErrorKind::NotYetAvailable,
-                        "only explicit codex-rollout regular files are admitted; Claude public source route is not registered",
-                    ));
-                }
+                let format = match text(request, "format")? {
+                    "codex-rollout" => polylogue_store::InputFormat::CodexRollout,
+                    "claude-code-jsonl" => polylogue_store::InputFormat::ClaudeCodeJsonl,
+                    _ => {
+                        return Err(failed(
+                            ErrorKind::NotYetAvailable,
+                            "source import format is not registered",
+                        ));
+                    }
+                };
+                let context = request
+                    .get("context")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        failed(
+                            ErrorKind::InvalidQuery,
+                            "context must be an explicit string array",
+                        )
+                    })?
+                    .iter()
+                    .map(|v| {
+                        v.as_str().map(str::to_owned).ok_or_else(|| {
+                            failed(
+                                ErrorKind::InvalidQuery,
+                                "context must be an explicit string array",
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                format
+                    .validate_context(&context.iter().map(String::as_str).collect::<Vec<_>>())
+                    .map_err(|e| failed(ErrorKind::InvalidQuery, e.to_string()))?;
                 if !valid_request_id(text(request, "id")?) {
                     return Err(failed(
                         ErrorKind::InvalidQuery,
@@ -91,6 +111,8 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                 }
                 let path = text(request, "path")?.to_owned();
                 let request = ImportRequest {
+                    format,
+                    context,
                     path: PathBuf::from(&path),
                     metadata_allowance: METADATA_BYTES,
                     observation: Observation {

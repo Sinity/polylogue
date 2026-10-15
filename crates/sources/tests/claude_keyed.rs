@@ -199,7 +199,7 @@ fn selected_metadata_evidence_corrects_base_slot_order_without_coordinate_salt()
         999,
     );
     let cell = response(&memory, "s", &key);
-    let mut baseline: [Option<Vec<u8>>; 4] = Default::default();
+    let mut baseline: [Option<Vec<u8>>; 5] = Default::default();
     let mut cursor = ContributionCursor::default();
     let mut n = 0;
     while let Some((message, item)) = cell.next_contribution(&mut cursor) {
@@ -366,21 +366,80 @@ fn append_cost(prefix: usize) -> (usize, usize) {
         reads: Cell::new(0),
         fail: None,
     };
+    let base = memory.header().unwrap().parsed_upto;
+    assert_eq!(base, text.len() as u64);
     let text = line(assistant("continued", "m00000", "r"));
     let framed = drive_jsonl(
         KeyedRecords::new(FileCtx::main("s"), &meter).unwrap(),
         text.as_bytes(),
-        0,
+        base,
     );
-    let out = framed.output.unwrap();
+    let mut out = framed.output.unwrap();
     assert_eq!(out.delta.sessions.len(), 1);
     assert_eq!(out.delta.responses.len(), 1);
     assert_eq!(out.delta.contributions.len(), 1);
     assert_eq!(out.delta.pending_messages[0].items, 2);
-    (
-        meter.reads.get(),
-        serde_json::to_vec(&out.delta).unwrap().len(),
-    )
+    assert_eq!(out.delta.addresses.len(), 1);
+    assert_eq!(out.delta.pending_messages.len(), 1);
+    assert_eq!(out.delta.responses[0].2.ordinal, 1);
+    assert_eq!(meter.reads.get(), 5);
+    let encoded_bytes = serde_json::to_vec(&out.delta).unwrap().len();
+    // The u64 counter and absolute original-record coordinates are bounded
+    // scalars, not historical collections. Account for their decimal widths
+    // exactly, retaining the rest of the serialized delta unchanged.
+    fn width(value: u64) -> usize {
+        let digits = serde_json::to_vec(&value).unwrap().len();
+        assert!((1..=20).contains(&digits));
+        digits
+    }
+    fn relative(
+        range: &mut polylogue_sources::selection::RecordRange,
+        base: u64,
+        length: u64,
+    ) -> usize {
+        assert_eq!(range.start, base);
+        assert_eq!(range.end, base.checked_add(length).unwrap());
+        let absolute_width = width(range.start) + width(range.end);
+        range.start = 0;
+        range.end = length;
+        absolute_width - width(range.start) - width(range.end)
+    }
+    let counter = &mut out.delta.sessions[0].next_message_ordinal;
+    assert_eq!(*counter, u64::try_from(prefix).unwrap() + 1);
+    let mut scalar_width = width(*counter) - width(0);
+    *counter = 0;
+    let record_length = text.trim_end_matches('\n').len() as u64;
+    let origins = &mut out.delta.contributions[0].2.origins;
+    scalar_width += relative(origins.envelope.as_mut().unwrap(), base, record_length);
+    for origin in origins.fields.values_mut() {
+        scalar_width += relative(&mut origin.record, base, record_length);
+    }
+    for origin in out.delta.responses[0]
+        .2
+        .selected_origins
+        .iter_mut()
+        .flatten()
+    {
+        scalar_width += relative(&mut origin.record, base, record_length);
+    }
+    let projection = &mut out.delta.contributions[0].2.projection;
+    for fact in projection.facts.iter_mut().chain(&mut projection.retained) {
+        if let Some(selection) = &mut fact.selection {
+            for input in &mut selection.inputs {
+                scalar_width += relative(&mut input.record, base, record_length);
+            }
+        }
+    }
+    for fact in out.delta.responses[0].2.selected_facts.iter_mut().flatten() {
+        if let Some(selection) = &mut fact.selection {
+            for input in &mut selection.inputs {
+                scalar_width += relative(&mut input.record, base, record_length);
+            }
+        }
+    }
+    let normalized_bytes = serde_json::to_vec(&out.delta).unwrap().len();
+    assert_eq!(encoded_bytes - scalar_width, normalized_bytes);
+    (meter.reads.get(), normalized_bytes)
 }
 #[test]
 fn single_record_append_point_work_is_independent_of_unique_history() {
