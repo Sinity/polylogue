@@ -63,7 +63,7 @@ def _write_index_session(archive: ArchiveStore, session: ParsedSession) -> str:
     root = archive.index_db_path.parent
     exclusion = ActiveWriterLease(root)
     exclusion.acquire()
-    seal: PreparedIndexMutation | None = None
+    publication_retained = False
     try:
         with PreparedIndexMutation(archive.index_db_path, archive_root=root) as seal:
             with seal.original_read_snapshot():
@@ -71,6 +71,7 @@ def _write_index_session(archive: ArchiveStore, session: ParsedSession) -> str:
                     seal.observer("index"), session, merge_append=False, before_input=seal.before_index_input
                 )
             seal.retain_publication_lifetime(exclusion, prepared.close)
+            publication_retained = True
             with archive.index_mutation_scope(prepared_seal=seal) as scope:
                 return write_parsed_session_to_archive(
                     archive._conn,
@@ -81,7 +82,7 @@ def _write_index_session(archive: ArchiveStore, session: ParsedSession) -> str:
                     manage_transaction=False,
                 )
     finally:
-        if seal is None or not seal.publication_lifetime_bound:
+        if not publication_retained:
             exclusion.close()
 
 

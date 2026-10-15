@@ -116,7 +116,7 @@ def test_publication_exclusion_survives_failed_original_owner_cleanup(tmp_path: 
         try:
             with pytest.raises((OSError, NativeConnectionSettlementError)):
                 seal.close()
-            assert exclusion.held and not seal._closed and seal.publication_lifetime_bound
+            assert exclusion.held and not seal._closed and seal.preparation_lifetime_bound
             assert retained_native_settlement_owners_on_current_thread(entry) == (seal,), settlement_owner_summary(
                 retained_native_settlement_owners_on_current_thread(entry)
             )
@@ -125,7 +125,7 @@ def test_publication_exclusion_survives_failed_original_owner_cleanup(tmp_path: 
             payload_fails = False
             cursor.allow_cleanup.set()
             seal.close()
-            assert not exclusion.held and seal._closed and seal.publication_lifetime_bound
+            assert not exclusion.held and seal._closed and seal.preparation_lifetime_bound
             assert payload_attempts == (2 if failed_resource == "payload" else 1)
             assert cursor.close_attempts == (2 if failed_resource == "cursor" else 1)
             assert retained_native_settlement_owners_on_current_thread(entry) == ()
@@ -2699,3 +2699,42 @@ def test_overlapping_literal_cancellation_preserves_exact_native_obligations(
     finally:
         cancelled.clear()
         compute_cancel.reset(token)
+
+
+def test_unpublished_replacement_retains_payload_until_original_native_retry(tmp_path: Path) -> None:
+    import errno
+    import tempfile
+
+    from polylogue.storage.derived.raw import RawObservationReplacement
+    from polylogue.storage.sqlite.connection_profile import native_sql_children
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    with write_lease("test.unpublished-replacement", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        seal = PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+        cursor = seal.observer("user").cursor(factory=ControlledCursor)
+        cursor.execute("SELECT 1 UNION ALL SELECT 2")
+        next(cursor)
+        cursor.cleanup_failure = OSError(errno.EIO, "synthetic native close failure")
+        cursor.allow_cleanup.clear()
+        scratch = tempfile.TemporaryDirectory(dir=tmp_path)
+        payload = Path(scratch.name) / "payload.bin"
+        payload.write_bytes(b"retained original bytes")
+        replacement = RawObservationReplacement("raw", "binding", None, (), reference_seal=seal, scratch_owner=scratch)
+        try:
+            with pytest.raises(NativeConnectionSettlementError):
+                replacement.close()
+            assert seal.preparation_lifetime_bound and not seal._closed
+            assert payload.read_bytes() == b"retained original bytes"
+            assert any(not owner._settled for owner in native_sql_children(seal))
+            cursor.allow_cleanup.set()
+            replacement.close()
+            assert seal._closed and seal.preparation_lifetime_bound
+            assert not payload.exists()
+            attempts = cursor.close_attempts
+            replacement.close()
+            assert cursor.close_attempts == attempts
+        finally:
+            cursor.allow_cleanup.set()
+            replacement.close()

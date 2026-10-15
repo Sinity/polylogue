@@ -958,3 +958,12 @@ memberships and parse failures, on both first and duplicate delivery. It keeps
 the actual session/message change counts and reports a degraded terminal outcome
 until those original alternatives are resolved by new authority. Drive readiness
 exposes `drive_membership_conflict` independently of materialization progress.
+
+Retained replacements hand their preparation payload to the original reference
+seal before closing, including an already-current result after in-place Source
+publication. Native readers settle before carried scratch retires. The same
+owner retains failed cleanup for retry; repeated close cannot bind a second
+payload or reopen settled work. A publication exclusion remains a separate
+physical resource owned only when the publisher actually acquired it.
+An in-place Source commit cannot take the already-current shortcut before the
+same continuation publishes its prepared Index effects through ordinary replay.

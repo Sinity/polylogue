@@ -2258,7 +2258,7 @@ class PreparedIndexMutation:
         self._mutation_custody: ArchiveWriteCustody | None = None
         self._publication_exclusion: ActiveWriterLease | None = None
         self._publication_payload_cleanup: Callable[[], None] | None = None
-        self._publication_lifetime_bound = False
+        self._preparation_lifetime_bound = False
         self._closed = False
         self._cleanup_requested = False
         self._session_namespace_noted = False
@@ -9447,6 +9447,7 @@ class PreparedIndexMutation:
         if self._publication_payload_cleanup is not None:
             raise ReferenceSealError("reference seal already owns a preparation payload")
         self._publication_payload_cleanup = close_payload
+        self._preparation_lifetime_bound = True
 
     def retain_publication_lifetime(self, exclusion: ActiveWriterLease, close_payload: Callable[[], None]) -> None:
         """Keep this publication's rebuild exclusion through physical cleanup."""
@@ -9460,12 +9461,11 @@ class PreparedIndexMutation:
             raise ReferenceSealError("reference seal already owns a publication lifetime")
         self.retain_preparation_payload(close_payload)
         self._publication_exclusion = exclusion
-        self._publication_lifetime_bound = True
 
     @property
-    def publication_lifetime_bound(self) -> bool:
-        """Whether this seal ever accepted its publication's terminal lifetime."""
-        return self._publication_lifetime_bound
+    def preparation_lifetime_bound(self) -> bool:
+        """Whether this seal accepted its original preparation's payload cleanup."""
+        return self._preparation_lifetime_bound
 
     def close(self) -> None:
         if self._closed:
