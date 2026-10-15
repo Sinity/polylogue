@@ -22,10 +22,12 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock, atomic::AtomicBool},
 };
+mod capture;
+pub use capture::{BlobCapture, PreparedBlob};
 pub mod contributions;
 mod native;
 mod retained;
-pub use retained::{ImportObservation, InputFormat, RetainedInput};
+pub use retained::{ImmutableImport, ImportObservation, InputFormat, RetainedInput};
 pub mod parser_state;
 pub mod values;
 mod wal;
@@ -143,7 +145,6 @@ pub struct Writer {
     archive: Connection,
     _index: Connection,
     _embeddings: Connection,
-    blobs: hashed_blobs::Store,
     _lock: Arc<File>,
 }
 
@@ -570,7 +571,7 @@ impl Writer {
             EMBEDDINGS_VERSION,
             true,
         )?;
-        let blobs = hashed_blobs::Store::open(&root, vec![], 0o600)?;
+        hashed_blobs::Store::open(&root, vec![], 0o600)?;
         private_dir(&root.join("blobs"))?;
         private_dir(&root.join("blobs/tmp"))?;
         private_files(&root)?;
@@ -580,7 +581,6 @@ impl Writer {
             archive,
             _index: index,
             _embeddings: embeddings,
-            blobs,
             _lock: Arc::new(lock),
         })
     }
@@ -592,30 +592,10 @@ impl Writer {
     }
     /// Foundation byte storage, not provider ingestion or a revision protocol.
     pub fn put_file_blob(&mut self, bytes: &[u8]) -> Result<BlobHash> {
-        let hash = BlobHash::of(bytes);
-        let h = self.blobs.put(bytes, 3)?;
-        private_dir(&self.root.join("blobs").join(&h.hex()[..2]))?;
-        let stored = i64::try_from(self.blobs.stored_size(&h)?).map_err(|_| Error::Range)?;
-        let length = i64::try_from(bytes.len()).map_err(|_| Error::Range)?;
-        let file = self.root.join("archive.db");
-        let tx = db(&file, || self.archive.transaction())?;
-        let inserted = db(&file, || {
-            tx.execute("INSERT OR IGNORE INTO blob(hash,size,stored_size,place,encoding,state) VALUES(?1,?2,?3,'file','plain','present')", params![hash.bytes().as_slice(),length,stored])
-        })?;
-        if inserted != 0 {
-            let next = counter(&tx, &file)?
-                .checked_add(1)
-                .filter(|n| *n <= i64::MAX as u64)
-                .ok_or_else(|| Error::Schema(file.clone()))?;
-            db(&file, || {
-                tx.execute(
-                    "UPDATE meta SET value=?1 WHERE key='write_counter'",
-                    [next.to_string()],
-                )
-            })?;
-        }
-        db(&file, || tx.commit())?;
-        Ok(hash)
+        let proof = self
+            .blob_capture()?
+            .capture(bytes, &AtomicBool::new(false))?;
+        self.retain_captured_blob(proof)
     }
 }
 impl ReadHandle {

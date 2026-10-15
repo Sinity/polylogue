@@ -9,7 +9,7 @@ pub enum InputFormat {
     CodexRollout,
 }
 impl InputFormat {
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::ClaudeCodeJsonl => "claude-code-jsonl",
             Self::CodexRollout => "codex-rollout",
@@ -34,7 +34,98 @@ pub struct RetainedInput {
     pub length: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct ImmutableImport {
+    pub input: RetainedInput,
+    pub hash: BlobHash,
+    pub format: InputFormat,
+}
+
 impl Writer {
+    /// Provider acquisition must check this before copying any source bytes.
+    /// Until the refusal-aware collector is wired, even an unrelated excision
+    /// prevents source acquisition. Generic blob storage is not that collector.
+    pub fn check_import_acquisition(&self) -> Result<()> {
+        let file = self.root.join("archive.db");
+        let exists: bool = db(&file, || {
+            self.archive
+                .query_row("SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)", [], |r| {
+                    r.get(0)
+                })
+        })?;
+        if exists {
+            return Err(Error::ExcisionCheckRequired);
+        }
+        Ok(())
+    }
+
+    /// Recover one immutable import in primary-key order. Archive metadata is
+    /// authoritative; repair its disposable index reference after a crash gap.
+    /// This does not enumerate growable/native inputs or choose Claude context.
+    pub fn next_immutable_import(&mut self, after: &str) -> Result<Option<ImmutableImport>> {
+        self.check_import_acquisition()?;
+        let file = self.root.join("archive.db");
+        let row: Option<(String, String, i64, Vec<u8>)> = db(&file, || {
+            self.archive.query_row(
+            "SELECT i.id,i.format,r.length,r.blake3 FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.id>?1 AND r.produced='imported' AND r.chain=1 ORDER BY i.id LIMIT 1", [after],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()
+        })?;
+        let Some((id, format, length, digest)) = row else {
+            return Ok(None);
+        };
+        let hash = BlobHash::from_bytes(
+            digest
+                .try_into()
+                .map_err(|_| Error::Invariant("invalid immutable import hash".into()))?,
+        );
+        if id != hash.to_string() {
+            return Err(Error::Invariant(
+                "unsupported immutable import identity".into(),
+            ));
+        }
+        let format = match format.as_str() {
+            "codex-rollout" => InputFormat::CodexRollout,
+            "claude-code-jsonl" => InputFormat::ClaudeCodeJsonl,
+            _ => {
+                return Err(Error::Invariant(
+                    "unsupported immutable import format".into(),
+                ));
+            }
+        };
+        let length = u64::try_from(length).map_err(|_| Error::Range)?;
+        let input = self.register_import_reference(id, length)?;
+        Ok(Some(ImmutableImport {
+            input,
+            hash,
+            format,
+        }))
+    }
+
+    fn register_import_reference(&mut self, id: String, length: u64) -> Result<RetainedInput> {
+        let file = self.root.join("index.db");
+        let tx = db(&file, || self._index.transaction())?;
+        db(&file, || {
+            tx.execute("INSERT OR IGNORE INTO input_ref(id) VALUES(?1)", [&id])
+        })?;
+        let (input_pk, excised): (i64, bool) = db(&file, || {
+            tx.query_row("SELECT pk,excised FROM input_ref WHERE id=?1", [&id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+        })?;
+        if excised {
+            return Err(Error::Invariant(
+                "immutable input is excised in index".into(),
+            ));
+        }
+        db(&file, || tx.commit())?;
+        Ok(RetainedInput {
+            input_pk,
+            id,
+            chain: 1,
+            length,
+        })
+    }
+
     /// Register an already retained whole blob as one immutable imported input.
     /// No source filesystem access or provider interpretation occurs here. This
     /// does not infer lineage with any live file that happens to share messages.
@@ -190,30 +281,8 @@ impl Writer {
             })?;
         }
         db(&file, || tx.commit())?;
-        // An interrupted/disposable index can always reconstruct this reference
-        // from archive input. No index reference certifies canonical convergence.
-        let file = self.root.join("index.db");
-        let tx = db(&file, || self._index.transaction())?;
-        db(&file, || {
-            tx.execute("INSERT OR IGNORE INTO input_ref(id) VALUES(?1)", [&id])
-        })?;
-        let (input_pk, excised): (i64, bool) = db(&file, || {
-            tx.query_row("SELECT pk,excised FROM input_ref WHERE id=?1", [&id], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-        })?;
-        if excised {
-            return Err(Error::Invariant(
-                "immutable input is excised in index".into(),
-            ));
-        }
-        db(&file, || tx.commit())?;
-        Ok(RetainedInput {
-            input_pk,
-            id,
-            chain: 1,
-            length: length_u64,
-        })
+        // An interrupted disposable index reconstructs this reference from archive.
+        self.register_import_reference(id, length_u64)
     }
 }
 
@@ -328,6 +397,55 @@ mod tests {
         assert_eq!(imported.chain, 1);
         assert_eq!(imported.length, 22);
     }
+    #[test]
+    fn immutable_import_recovery_pages_and_repairs_only_registered_archive_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let mut writer = Writer::open(root.path()).unwrap();
+        for (bytes, id) in [(b"a".as_slice(), "a"), (b"b".as_slice(), "b")] {
+            let hash = writer.put_file_blob(bytes).unwrap();
+            writer
+                .retain_immutable_input(hash, InputFormat::CodexRollout, &observation(id), 1024)
+                .unwrap();
+        }
+        writer._index.execute("DELETE FROM input_ref", []).unwrap();
+        drop(writer);
+        let mut writer = Writer::open(root.path()).unwrap();
+        let first = writer.next_immutable_import("").unwrap().unwrap();
+        assert_eq!(first.input.id, first.hash.to_string());
+        assert_eq!(first.input.length, 1);
+        assert_eq!(
+            writer
+                ._index
+                .query_row("SELECT count(*) FROM input_ref", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let second = writer
+            .next_immutable_import(&first.input.id)
+            .unwrap()
+            .unwrap();
+        assert!(second.input.id > first.input.id);
+        assert!(
+            writer
+                .next_immutable_import(&second.input.id)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            writer.next_immutable_import("").unwrap().unwrap().input,
+            first.input
+        );
+        writer.archive.execute("INSERT INTO excision(id,scope,created_at,local_seq) VALUES('removal','session:unknown',1,1)",[]).unwrap();
+        assert!(matches!(
+            writer.check_import_acquisition(),
+            Err(Error::ExcisionCheckRequired)
+        ));
+        assert!(matches!(
+            writer.next_immutable_import(""),
+            Err(Error::ExcisionCheckRequired)
+        ));
+    }
+
     #[test]
     fn provenance_conflict_admission_and_missing_bytes_do_not_mutate_archive() {
         let root = tempfile::tempdir().unwrap();
