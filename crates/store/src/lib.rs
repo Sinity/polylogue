@@ -38,6 +38,8 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("retaining another input requires the excision-aware collector")]
+    ExcisionCheckRequired,
     #[error("parser predecessor changed; discard the attempted step")]
     ParserPredecessorChanged,
     #[error("provider state has unfinished prepared work; resume it before admitting a new parse")]

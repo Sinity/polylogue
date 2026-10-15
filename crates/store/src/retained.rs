@@ -39,6 +39,8 @@ impl Writer {
     /// No source filesystem access or provider interpretation occurs here. This
     /// does not infer lineage with any live file that happens to share messages.
     /// Metadata allowance is caller admission, not a provider semantic size cap.
+    /// Archives with any excision require the not-yet-wired refusal-aware
+    /// collector and return ExcisionCheckRequired before changing metadata.
     pub fn retain_immutable_input(
         &mut self,
         hash: BlobHash,
@@ -80,6 +82,17 @@ impl Writer {
         }
         let file = self.root.join("archive.db");
         let tx = db(&file, || self.archive.transaction())?;
+        // This foundation primitive does not interpret refused_json or guess
+        // session/text removal closure. Until the collector owns that check,
+        // refuse explicitly instead of reintroducing removed provider bytes.
+        let has_excisions: bool = db(&file, || {
+            tx.query_row("SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)", [], |r| {
+                r.get(0)
+            })
+        })?;
+        if has_excisions {
+            return Err(Error::ExcisionCheckRequired);
+        }
         let length: Option<i64> = db(&file, || {
             tx.query_row(
                 "SELECT size FROM blob WHERE hash=?1 AND state='present'",
@@ -108,21 +121,19 @@ impl Writer {
         }
         changed += db(&file, || {
             tx.execute(
-                "INSERT OR IGNORE INTO revision(input,number,produced,chain,length,blake3,local_seq,excised) VALUES(?1,1,'imported',1,?2,?3,?4,0)",
+                "INSERT OR IGNORE INTO revision(input,number,produced,chain,length,blake3,local_seq) VALUES(?1,1,'imported',1,?2,?3,?4)",
                 params![id, length, hash.bytes().as_slice(), next as i64],
             )
         })?;
         let valid_revision: bool = db(&file, || {
             tx.query_row(
-                "SELECT produced='imported' AND chain=1 AND length=?2 AND blake3=?3 AND excised=0 FROM revision WHERE input=?1 AND number=1",
+                "SELECT produced='imported' AND chain=1 AND length=?2 AND blake3=?3 FROM revision WHERE input=?1 AND number=1",
                 params![id, length, hash.bytes().as_slice()],
                 |r| r.get(0),
             )
         })?;
         if !valid_revision {
-            return Err(Error::Invariant(
-                "immutable input revision changed or excised".into(),
-            ));
+            return Err(Error::Invariant("immutable input revision changed".into()));
         }
         changed += db(&file, || {
             tx.execute(
@@ -354,6 +365,39 @@ mod tests {
                 .query_row("SELECT count(*) FROM input", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn existing_excisions_require_the_collector_before_retaining_input_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let mut writer = Writer::open(root.path()).unwrap();
+        let hash = writer.put_file_blob(b"synthetic retained bytes").unwrap();
+        writer.archive.execute("INSERT INTO excision(id,scope,created_at,local_seq) VALUES('synthetic-removal','session:unknown',1,1)", []).unwrap();
+        let before = writer.status().unwrap().write_counter;
+        assert!(matches!(
+            writer.retain_immutable_input(
+                hash,
+                InputFormat::CodexRollout,
+                &observation("new-observation"),
+                1024
+            ),
+            Err(Error::ExcisionCheckRequired)
+        ));
+        assert_eq!(writer.status().unwrap().write_counter, before);
+        assert_eq!(
+            writer
+                .archive
+                .query_row("SELECT count(*) FROM input", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            writer
+                ._index
+                .query_row("SELECT count(*) FROM input_ref", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
         );
     }
 }
