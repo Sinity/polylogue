@@ -5,7 +5,7 @@
 //! Ready proves completeness/BLAKE3 integrity, not JSON syntax or raw-source
 //! version evidence. JSON canonical encoding remains its producer's contract.
 use crate::{Error, ReadHandle, Result, Writer};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 
 pub const MAX_CHUNK: usize = 65_536;
@@ -96,6 +96,7 @@ pub struct Validation {
     offset: u64,
     chunk: Option<(u64, u64)>,
     hasher: blake3::Hasher,
+    digest: Option<[u8; 32]>,
     utf8: Utf8,
     failed: bool,
 }
@@ -103,7 +104,10 @@ impl Validation {
     pub fn progress(&self) -> ValidationProgress {
         ValidationProgress {
             hashed_upto: self.offset,
-            complete: !self.failed && self.offset == self.length && self.utf8.len == 0,
+            complete: !self.failed
+                && self.offset == self.length
+                && self.utf8.len == 0
+                && self.digest.is_some(),
         }
     }
     pub fn value(&self) -> &ValueId {
@@ -158,8 +162,11 @@ impl Validation {
             .checked_add(piece.bytes.len() as u64)
             .ok_or(Error::Range)?;
         self.chunk = Some((piece.start, piece.end));
-        if self.offset == self.length && self.utf8.len != 0 {
-            return Err(invalid("payload ends in an incomplete UTF-8 codepoint"));
+        if self.offset == self.length {
+            if self.utf8.len != 0 {
+                return Err(invalid("payload ends in an incomplete UTF-8 codepoint"));
+            }
+            self.digest = Some(*self.hasher.finalize().as_bytes());
         }
         Ok(self.progress())
     }
@@ -223,7 +230,7 @@ fn generation(db: &Connection, path: &Path) -> Result<String> {
         })
     })
 }
-fn head(db: &Connection, path: &Path, id: &ValueId) -> Result<Head> {
+pub(crate) fn head(db: &Connection, path: &Path, id: &ValueId) -> Result<Head> {
     if path != id.index_path || generation(db, path)? != id.index_generation {
         return Err(Error::ValuePredecessorChanged);
     }
@@ -331,19 +338,9 @@ fn piece(db: &Connection, path: &Path, h: &Head, offset: u64, allowance: usize) 
 }
 impl Writer {
     pub fn begin_value(&mut self, codec: Codec, length: u64) -> Result<Head> {
-        let length = integer(length)?;
         let path = self.root.join("index.db");
         let tx = crate::db(&path, || self._index.transaction())?;
-        let index_generation = generation(&tx, &path)?;
-        crate::db(&path, || {
-            tx.execute("INSERT INTO body_value(codec,length,hash,state,incoming) VALUES(?1,?2,NULL,'building',0)",params![codec.as_str(),length])
-        })?;
-        let id = ValueId {
-            pk: tx.last_insert_rowid(),
-            index_generation,
-            index_path: path.clone(),
-        };
-        let h = head(&tx, &path, &id)?;
+        let h = begin_in(&tx, &path, codec, length, 0)?;
         crate::db(&path, || tx.commit())?;
         Ok(h)
     }
@@ -360,10 +357,10 @@ impl Writer {
             return Err(invalid("zero-byte canonical payload chunks are forbidden"));
         }
         if bytes.len() > MAX_CHUNK {
-            return Err(admission(
-                "normalized value maximum chunk bytes",
-                bytes.len(),
-            ));
+            return Err(Error::ValueChunkSplitRequired {
+                required: bytes.len(),
+                maximum: MAX_CHUNK,
+            });
         }
         if bytes.len() > allowance {
             return Err(admission("normalized value append bytes", bytes.len()));
@@ -397,88 +394,137 @@ impl Writer {
     pub fn validate_value(&self, id: &ValueId) -> Result<Validation> {
         validation(&self._index, &self.root.join("index.db"), id)
     }
-    /// Constant-size digest finalization and metadata CAS. This method never
-    /// reads payload chunks or hashes a hidden prefix inside its transaction.
+    /// Consume the precomputed digest and CAS metadata. This method never
+    /// reads payload chunks or performs hashing inside its transaction.
     pub fn seal_value(&mut self, proof: &Validation) -> Result<Seal> {
         if !proof.progress().complete {
             return Err(Error::ValueNotReady);
         }
-        let digest = *proof.hasher.finalize().as_bytes();
         let path = self.root.join("index.db");
         let tx = crate::db(&path, || self._index.transaction())?;
-        if path != proof.id.index_path || generation(&tx, &path)? != proof.id.index_generation {
-            return Err(Error::ValuePredecessorChanged);
-        }
-        let row = crate::db(&path, || {
-            tx.query_row(
-                "SELECT codec,length,state,hash FROM body_value WHERE pk=?1",
-                [proof.id.pk],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, Option<Vec<u8>>>(3)?,
-                    ))
-                },
-            )
-            .optional()
-        })?
-        .ok_or(Error::ValuePredecessorChanged)?;
-        if row.0 != proof.codec.as_str()
-            || row.1 != integer(proof.length)?
-            || row.2 != "building"
-            || row.3.is_some()
-        {
-            return Err(Error::ValuePredecessorChanged);
-        }
-        let existing = crate::db(&path, || {
-            tx.query_row(
-                "SELECT pk,length FROM body_value WHERE codec=?1 AND hash=?2 AND state='ready'",
-                params![proof.codec.as_str(), digest.as_slice()],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
-            )
-            .optional()
-        })?;
-        let (id, retired_duplicate) = if let Some((pk, length)) = existing {
-            if length != integer(proof.length)? {
-                return Err(invalid("equal payload digest has inconsistent length"));
-            }
-            let changed = crate::db(&path, || {
-                tx.execute("UPDATE body_value SET state='retiring' WHERE pk=?1 AND state='building' AND incoming=0",[proof.id.pk])
-            })?;
-            if changed != 1 {
-                return Err(Error::ValuePredecessorChanged);
-            }
-            (
-                ValueId {
-                    pk,
-                    index_generation: proof.id.index_generation.clone(),
-                    index_path: path.clone(),
-                },
-                Some(proof.id.clone()),
-            )
-        } else {
-            let changed = crate::db(&path, || {
-                tx.execute("UPDATE body_value SET state='ready',hash=?2 WHERE pk=?1 AND state='building' AND hash IS NULL",params![proof.id.pk,digest.as_slice()])
-            })?;
-            if changed != 1 {
-                return Err(Error::ValuePredecessorChanged);
-            }
-            (proof.id.clone(), None)
-        };
+        let result = seal_in(&tx, &path, proof, |_, _| Ok(()))?;
         crate::db(&path, || tx.commit())?;
-        Ok(Seal {
-            ready: ReadyValue {
-                id,
-                codec: proof.codec,
-                length: proof.length,
-                hash: digest,
-            },
-            retired_duplicate,
-        })
+        Ok(result)
     }
 }
+/// Allocate inside the owning transaction, including its producer lease count.
+/// The caller must install matching ownership and commit before exposing Head.
+/// Any error must roll back that transaction; no external receipt exists yet.
+pub(crate) fn begin_in(
+    tx: &Transaction<'_>,
+    path: &Path,
+    codec: Codec,
+    length: u64,
+    incoming: u64,
+) -> Result<Head> {
+    let length = integer(length)?;
+    let incoming = integer(incoming)?;
+    let index_generation = generation(tx, path)?;
+    crate::db(path, || {
+        tx.execute("INSERT INTO body_value(codec,length,hash,state,incoming) VALUES(?1,?2,NULL,'building',?3)",params![codec.as_str(),length,incoming])
+    })?;
+    let id = ValueId {
+        pk: tx.last_insert_rowid(),
+        index_generation,
+        index_path: path.to_path_buf(),
+    };
+    head(tx, path, &id)
+}
+/// Consume an already-complete private digest proof without hashing or reading
+/// payload bytes. The owner callback must verify its relation and move leases
+/// atomically, without modifying payload bytes. A duplicate is retired only
+/// after that callback leaves incoming0.
+/// The caller MUST roll back on any error and commit before exposing Seal/IDs.
+pub(crate) fn seal_in<F>(
+    tx: &Transaction<'_>,
+    path: &Path,
+    proof: &Validation,
+    transfer: F,
+) -> Result<Seal>
+where
+    F: FnOnce(&Transaction<'_>, &ReadyValue) -> Result<()>,
+{
+    if !proof.progress().complete {
+        return Err(Error::ValueNotReady);
+    }
+    let digest = proof.digest.ok_or(Error::ValueNotReady)?;
+    if path != proof.id.index_path || generation(tx, path)? != proof.id.index_generation {
+        return Err(Error::ValuePredecessorChanged);
+    }
+    let row = crate::db(path, || {
+        tx.query_row(
+            "SELECT codec,length,state,hash FROM body_value WHERE pk=?1",
+            [proof.id.pk],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<Vec<u8>>>(3)?,
+                ))
+            },
+        )
+        .optional()
+    })?
+    .ok_or(Error::ValuePredecessorChanged)?;
+    if row.0 != proof.codec.as_str()
+        || row.1 != integer(proof.length)?
+        || row.2 != "building"
+        || row.3.is_some()
+    {
+        return Err(Error::ValuePredecessorChanged);
+    }
+    let existing = crate::db(path, || {
+        tx.query_row(
+            "SELECT pk,length FROM body_value WHERE codec=?1 AND hash=?2 AND state='ready'",
+            params![proof.codec.as_str(), digest.as_slice()],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()
+    })?;
+    let (id, retired_duplicate) = if let Some((pk, length)) = existing {
+        if length != integer(proof.length)? {
+            return Err(invalid("equal payload digest has inconsistent length"));
+        }
+        (
+            ValueId {
+                pk,
+                index_generation: proof.id.index_generation.clone(),
+                index_path: path.to_path_buf(),
+            },
+            Some(proof.id.clone()),
+        )
+    } else {
+        let changed = crate::db(path, || {
+            tx.execute("UPDATE body_value SET state='ready',hash=?2 WHERE pk=?1 AND state='building' AND hash IS NULL",params![proof.id.pk,digest.as_slice()])
+        })?;
+        if changed != 1 {
+            return Err(Error::ValuePredecessorChanged);
+        }
+        (proof.id.clone(), None)
+    };
+
+    let ready = ReadyValue {
+        id,
+        codec: proof.codec,
+        length: proof.length,
+        hash: digest,
+    };
+    transfer(tx, &ready)?;
+    if retired_duplicate.is_some() {
+        let changed = crate::db(path, || {
+            tx.execute("UPDATE body_value SET state='retiring' WHERE pk=?1 AND state='building' AND incoming=0",[proof.id.pk])
+        })?;
+        if changed != 1 {
+            return Err(Error::ValuePredecessorChanged);
+        }
+    }
+    Ok(Seal {
+        ready,
+        retired_duplicate,
+    })
+}
+
 fn validation(db: &Connection, path: &Path, id: &ValueId) -> Result<Validation> {
     let h = head(db, path, id)?;
     if h.state != State::Building || h.hash.is_some() {
@@ -487,13 +533,16 @@ fn validation(db: &Connection, path: &Path, id: &ValueId) -> Result<Validation> 
     if h.appended != h.length {
         return Err(Error::ValueNotReady);
     }
+    let hasher = blake3::Hasher::new();
+    let digest = (h.length == 0).then(|| *hasher.finalize().as_bytes());
     Ok(Validation {
         id: id.clone(),
         codec: h.codec,
         length: h.length,
         offset: 0,
         chunk: None,
-        hasher: blake3::Hasher::new(),
+        hasher,
+        digest,
         utf8: Utf8::default(),
         failed: false,
     })
@@ -663,10 +712,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             writer.append_value_chunk(&h.id, 0, &bytes[..MAX_CHUNK + 1], usize::MAX),
-            Err(Error::ParserAdmission {
-                resource: "normalized value maximum chunk bytes",
-                ..
-            })
+            Err(Error::ValueChunkSplitRequired {required,maximum}) if required==MAX_CHUNK+1 && maximum==MAX_CHUNK
         ));
         assert!(matches!(
             writer.append_value_chunk(&h.id, 0, b"xx", 1),
@@ -863,5 +909,189 @@ mod archive_identity_tests {
             Err(Error::ValuePredecessorChanged)
         ));
         assert_eq!(proof.progress().hashed_upto, 0);
+    }
+}
+
+#[cfg(test)]
+mod transaction_helper_tests {
+    use super::*;
+    fn world() -> (tempfile::TempDir, Writer) {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = Writer::open(&dir.path().join("archive")).unwrap();
+        (dir, writer)
+    }
+    fn incoming(writer: &Writer, id: &ValueId) -> i64 {
+        crate::db(&writer.root.join("index.db"), || {
+            writer._index.query_row(
+                "SELECT incoming FROM body_value WHERE pk=?1",
+                [id.pk],
+                |r| r.get(0),
+            )
+        })
+        .unwrap()
+    }
+    #[test]
+    fn begin_helper_rollback_exposes_no_committed_allocation() {
+        let (_dir, mut writer) = world();
+        let path = writer.root.join("index.db");
+        {
+            let tx = crate::db(&path, || writer._index.transaction()).unwrap();
+            let pending = begin_in(&tx, &path, Codec::Bytes, 0, 1).unwrap();
+            let count: i64 = crate::db(&path, || {
+                tx.query_row(
+                    "SELECT incoming FROM body_value WHERE pk=?1",
+                    [pending.id.pk],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+            assert_eq!(count, 1);
+            // Head never escapes this uncommitted scope; SQLite may legitimately
+            // reuse a rolled-back pk. Only the committed wrapper exposes IDs.
+            drop(pending);
+            crate::db(&path, || tx.rollback()).unwrap();
+        }
+        let count: i64 = crate::db(&path, || {
+            writer
+                ._index
+                .query_row("SELECT count(*) FROM body_value", [], |r| r.get(0))
+        })
+        .unwrap();
+        assert_eq!(count, 0);
+        let committed = writer.begin_value(Codec::Bytes, 0).unwrap();
+        assert_eq!(
+            writer.value_head(&committed.id).unwrap().state,
+            State::Building
+        );
+    }
+    #[test]
+    fn leased_dedup_requires_atomic_owner_transfer_and_rolls_back_callback_errors() {
+        let (_dir, mut writer) = world();
+        let path = writer.root.join("index.db");
+        let first = writer.begin_value(Codec::Bytes, 0).unwrap();
+        let proof = writer.validate_value(&first.id).unwrap();
+        let first = writer.seal_value(&proof).unwrap().ready;
+        crate::db(&path,||writer._index.execute_batch("CREATE TEMP TABLE producer_lease(id INTEGER PRIMARY KEY,value_pk INTEGER NOT NULL)")).unwrap();
+        let pending = {
+            let tx = crate::db(&path, || writer._index.transaction()).unwrap();
+            let h = begin_in(&tx, &path, Codec::Bytes, 0, 1).unwrap();
+            crate::db(&path, || {
+                tx.execute(
+                    "INSERT INTO producer_lease(id,value_pk) VALUES(1,?1)",
+                    [h.id.pk],
+                )
+            })
+            .unwrap();
+            crate::db(&path, || tx.commit()).unwrap();
+            h
+        };
+        let proof = writer.validate_value(&pending.id).unwrap();
+        {
+            let tx = crate::db(&path, || writer._index.transaction()).unwrap();
+            assert!(matches!(
+                seal_in(&tx, &path, &proof, |_, _| Ok(())),
+                Err(Error::ValuePredecessorChanged)
+            ));
+            crate::db(&path, || tx.rollback()).unwrap();
+        }
+        let transfer = |tx: &Transaction<'_>, ready: &ReadyValue| -> Result<()> {
+            let changed = crate::db(&path, || {
+                tx.execute(
+                    "UPDATE producer_lease SET value_pk=?2 WHERE id=1 AND value_pk=?1",
+                    params![pending.id.pk, ready.id.pk],
+                )
+            })?;
+            if changed != 1 {
+                return Err(Error::ValuePredecessorChanged);
+            }
+            let changed = crate::db(&path, || {
+                tx.execute(
+                    "UPDATE body_value SET incoming=incoming-1 WHERE pk=?1 AND incoming=1",
+                    [pending.id.pk],
+                )
+            })?;
+            if changed != 1 {
+                return Err(Error::ValuePredecessorChanged);
+            }
+            crate::db(&path, || {
+                tx.execute(
+                    "UPDATE body_value SET incoming=incoming+1 WHERE pk=?1 AND state='ready'",
+                    [ready.id.pk],
+                )
+            })?;
+            Ok(())
+        };
+        {
+            let tx = crate::db(&path, || writer._index.transaction()).unwrap();
+            let result = seal_in(&tx, &path, &proof, |tx, ready| {
+                transfer(tx, ready)?;
+                Err(Error::Cancelled)
+            });
+            assert!(matches!(result, Err(Error::Cancelled)));
+            crate::db(&path, || tx.rollback()).unwrap();
+        }
+        assert_eq!(
+            writer.value_head(&pending.id).unwrap().state,
+            State::Building
+        );
+        assert_eq!(incoming(&writer, &pending.id), 1);
+        assert_eq!(incoming(&writer, &first.id), 0);
+        let result = {
+            let tx = crate::db(&path, || writer._index.transaction()).unwrap();
+            let result = seal_in(&tx, &path, &proof, transfer).unwrap();
+            crate::db(&path, || tx.commit()).unwrap();
+            result
+        };
+        assert_eq!(result.ready.id, first.id);
+        assert_eq!(result.retired_duplicate, Some(pending.id.clone()));
+        assert_eq!(
+            writer.value_head(&pending.id).unwrap().state,
+            State::Retiring
+        );
+        assert_eq!(incoming(&writer, &pending.id), 0);
+        assert_eq!(incoming(&writer, &first.id), 1);
+        let owner: i64 = crate::db(&path, || {
+            writer
+                ._index
+                .query_row("SELECT value_pk FROM producer_lease WHERE id=1", [], |r| {
+                    r.get(0)
+                })
+        })
+        .unwrap();
+        assert_eq!(owner, first.id.pk);
+    }
+    #[test]
+    fn nonduplicate_owned_seal_preserves_lease_and_rollback_does_not_publish_ready() {
+        let (_dir, mut writer) = world();
+        let path = writer.root.join("index.db");
+        let pending = {
+            let tx = crate::db(&path, || writer._index.transaction()).unwrap();
+            let h = begin_in(&tx, &path, Codec::Utf8, 0, 1).unwrap();
+            crate::db(&path, || tx.commit()).unwrap();
+            h
+        };
+        let proof = writer.validate_value(&pending.id).unwrap();
+        {
+            let tx = crate::db(&path, || writer._index.transaction()).unwrap();
+            assert!(matches!(
+                seal_in(&tx, &path, &proof, |_, _| Err(Error::Cancelled)),
+                Err(Error::Cancelled)
+            ));
+            crate::db(&path, || tx.rollback()).unwrap();
+        }
+        assert_eq!(
+            writer.value_head(&pending.id).unwrap().state,
+            State::Building
+        );
+        assert_eq!(incoming(&writer, &pending.id), 1);
+        let result = {
+            let tx = crate::db(&path, || writer._index.transaction()).unwrap();
+            let result = seal_in(&tx, &path, &proof, |_, _| Ok(())).unwrap();
+            crate::db(&path, || tx.commit()).unwrap();
+            result
+        };
+        assert_eq!(result.ready.id, pending.id);
+        assert!(result.retired_duplicate.is_none());
+        assert_eq!(incoming(&writer, &pending.id), 1);
     }
 }
