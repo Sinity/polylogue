@@ -274,7 +274,10 @@ mod tests {
     #[test]
     fn independent_stacks_shutdown_only_owned_clients_and_socket() {
         let temp = tempfile::tempdir().unwrap();
-        let runtime = temp.path().join("runtime");
+        // Unix socket names have a kernel length limit independent of TMPDIR.
+        // Only socket dentries live here; database/blob work stays in managed TMPDIR.
+        let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
+        let runtime = runtime_owner.path().join("runtime");
         let mut first = Running::start(&temp.path().join("a"), &runtime).unwrap();
         let second = Running::start(&temp.path().join("b"), &runtime).unwrap();
         assert_eq!(
@@ -296,7 +299,10 @@ mod tests {
     fn startup_failure_removes_only_its_bound_socket_and_releases_writer() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("archive");
-        let runtime = temp.path().join("runtime");
+        // Unix socket names have a kernel length limit independent of TMPDIR.
+        // Only socket dentries live here; database/blob work stays in managed TMPDIR.
+        let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
+        let runtime = runtime_owner.path().join("runtime");
         assert!(Running::start_inner(&archive, &runtime, true).is_err());
         let socket = socket_path(&fs::canonicalize(&archive).unwrap(), &runtime);
         assert!(!socket.exists());
@@ -309,7 +315,10 @@ mod tests {
         let archive = temp.path().join("archive");
         let writer = Writer::open(&archive).unwrap();
         drop(writer);
-        let runtime = temp.path().join("runtime");
+        // Unix socket names have a kernel length limit independent of TMPDIR.
+        // Only socket dentries live here; database/blob work stays in managed TMPDIR.
+        let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
+        let runtime = runtime_owner.path().join("runtime");
         let socket = socket_path(&fs::canonicalize(&archive).unwrap(), &runtime);
         fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let foreign = UnixListener::bind(&socket).unwrap();
@@ -322,8 +331,8 @@ mod tests {
     #[test]
     fn replaced_socket_survives_owner_drop() {
         let temp = tempfile::tempdir().unwrap();
-        let running =
-            Running::start(&temp.path().join("archive"), &temp.path().join("runtime")).unwrap();
+        let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
+        let running = Running::start(&temp.path().join("archive"), runtime_owner.path()).unwrap();
         let path = running.socket().to_owned();
         fs::remove_file(&path).unwrap();
         let foreign = UnixListener::bind(&path).unwrap();

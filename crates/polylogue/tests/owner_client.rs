@@ -35,7 +35,10 @@ fn wait(socket: &Path, id: &str, condition: impl Fn(&Value) -> bool) -> Value {
 fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplete() {
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
-    let runtime = temp.path().join("runtime");
+    // Unix socket names have a kernel length limit independent of TMPDIR.
+    // Only socket dentries live here; database/blob work stays in managed TMPDIR.
+    let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
+    let runtime = runtime_owner.path().join("runtime");
     let large = temp.path().join("large.jsonl");
     let small = temp.path().join("small.jsonl");
     let mut bytes = json!({"type":"session_meta","payload":{"id":"synthetic-large","source":"cli"}})
@@ -113,7 +116,10 @@ fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplet
 fn public_partial_tail_restart_waits_without_advancing_or_claiming_done() {
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
-    let runtime = temp.path().join("runtime");
+    // Unix socket names have a kernel length limit independent of TMPDIR.
+    // Only socket dentries live here; database/blob work stays in managed TMPDIR.
+    let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
+    let runtime = runtime_owner.path().join("runtime");
     let path = temp.path().join("tail.jsonl");
     let prefix = json!({"type":"session_meta","payload":{"id":"synthetic-tail","source":"cli"}})
         .to_string()

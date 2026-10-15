@@ -73,7 +73,10 @@ fn actual_daemon_and_client_restart_in_owned_state() {
     }
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
-    let runtime = temp.path().join("runtime");
+    // Unix socket names have a kernel length limit independent of TMPDIR.
+    // Only socket dentries live here; database/blob work stays in managed TMPDIR.
+    let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
+    let runtime = runtime_owner.path().join("runtime");
     std::fs::create_dir(&runtime).unwrap();
     let binary = env!("CARGO_BIN_EXE_polylogue");
     let start = || {
