@@ -35,6 +35,8 @@ impl Key {
             Self::OutputChunk(_, _, _) => "output_chunk",
             Self::PendingResult(_, _) => "pending_result",
             Self::ContinuationTarget(_) => "continuation_target",
+            Self::Presence(_, _) => "presence",
+            Self::PresenceBlock(_, _) => "presence_block",
         }
     }
     /// Exact size for the legacy in-memory convenience API. Admitted callers
@@ -68,8 +70,8 @@ impl Key {
             | Self::Context(_) => (9, None),
             Self::Evidence(_, _, _) | Self::OutputChunk(_, _, _) => (25, None),
             Self::PendingResult(_, _) => (17, None),
-            Self::EvidenceItem(_, s) => (11, Some(s)),
-            Self::Block(_, _) => (17, None),
+            Self::EvidenceItem(_, s) | Self::Presence(_, s) => (11, Some(s)),
+            Self::Block(_, _) | Self::PresenceBlock(_, _) => (17, None),
             Self::Call(s)
             | Self::Reasoning(s)
             | Self::Running(s)
@@ -243,6 +245,16 @@ impl Key {
                 out.write_all(&[28])?;
                 text(out, s)?;
             }
+            Self::Presence(i, s) => {
+                out.write_all(&[29])?;
+                number(out, *i)?;
+                text(out, s)?;
+            }
+            Self::PresenceBlock(i, b) => {
+                out.write_all(&[30])?;
+                number(out, *i)?;
+                number(out, *b)?;
+            }
         }
         Ok(())
     }
@@ -321,6 +333,8 @@ impl Key {
             26 => Self::OutputChunk(r.number()?, r.number()?, r.number()?),
             27 => Self::PendingResult(r.number()?, r.number()?),
             28 => Self::ContinuationTarget(r.text()?),
+            29 => Self::Presence(r.number()?, r.text()?),
+            30 => Self::PresenceBlock(r.number()?, r.number()?),
             _ => return Err("unknown Codex cell key tag".into()),
         };
         if !r.0.is_empty() {

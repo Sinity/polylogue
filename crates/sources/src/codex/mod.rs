@@ -7,9 +7,10 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 pub mod keyed;
 mod keyed_codec;
+pub mod presence;
 pub mod projection;
 mod raw;
-pub const PARSER_VERSION: u32 = 2;
+pub const PARSER_VERSION: u32 = 3;
 
 /// Record kinds that carry nothing to keep in the index (their bytes stay stored).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -19,7 +19,9 @@ pub enum Mode {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum Phase {
     Header,
+    MessageWitness(String),
     Block,
+    BlockPresence,
     PendingResult,
     ChunkZero,
     ChunkAfter(usize),
@@ -43,10 +45,16 @@ pub struct Cursor {
     wrapper: bool,
     children: usize,
     failed: bool,
+    after_presence: Option<Phase>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unit {
     Header(Message),
+    MessageWitness(super::presence::Witness),
+    BlockPresence {
+        index: usize,
+        group: Option<super::presence::Group>,
+    },
     Block {
         index: usize,
         value: Block,
@@ -99,6 +107,7 @@ impl Cursor {
             wrapper: false,
             children: 0,
             failed: false,
+            after_presence: None,
         }
     }
     pub fn advance(&mut self, view: &impl ReadView) -> Result<Step, String> {
@@ -144,8 +153,45 @@ impl Cursor {
                 };
                 self.id = Some(message.id.clone());
                 self.blocks = blocks;
-                self.phase = Phase::Block;
+                self.phase = Phase::MessageWitness(String::new());
                 Ok(Step::Unit(Unit::Header(message)))
+            }
+            Phase::MessageWitness(ref after) => {
+                let key = Key::Presence(self.message, after.clone());
+                match view.next(&key)? {
+                    Some((Key::Presence(message, name), Cell::Witness(w)))
+                        if message == self.message && name > *after =>
+                    {
+                        self.phase = Phase::MessageWitness(name);
+                        Ok(Step::Unit(Unit::MessageWitness(w)))
+                    }
+                    Some((found, _)) if found <= key || !found.same_family(&key) => {
+                        Err("invalid Codex presence neighbor".into())
+                    }
+                    Some((Key::Presence(message, _), _)) if message == self.message => {
+                        Err("invalid Codex message witness".into())
+                    }
+                    _ => {
+                        self.phase = Phase::Block;
+                        Ok(Step::Continue)
+                    }
+                }
+            }
+            Phase::BlockPresence => {
+                let value = self.cell(view, &Key::PresenceBlock(self.message, self.block))?;
+                self.phase = self
+                    .after_presence
+                    .take()
+                    .ok_or("missing Codex block projection phase")?;
+                let group = match value {
+                    Some(Cell::Presence(group)) => Some(group),
+                    None => None,
+                    _ => return Err("invalid Codex block presence".into()),
+                };
+                Ok(Step::Unit(Unit::BlockPresence {
+                    index: self.block,
+                    group,
+                }))
             }
             Phase::Block => {
                 if self.block > self.blocks {
@@ -184,6 +230,8 @@ impl Cursor {
                     }
                     _ => Phase::AdvanceBlock,
                 };
+                self.after_presence = Some(self.phase.clone());
+                self.phase = Phase::BlockPresence;
                 Ok(Step::Unit(Unit::Block {
                     index: self.block,
                     value,
@@ -343,7 +391,9 @@ pub fn collect(
                             _ => return Err("projection chunk replaced nontext output".into()),
                         }
                     }
-                    Unit::ResultEnd { .. } => {}
+                    Unit::ResultEnd { .. }
+                    | Unit::MessageWitness(_)
+                    | Unit::BlockPresence { .. } => {}
                     Unit::Continuation { call_id } => continued.push(Value::String(call_id)),
                     Unit::WrapperStart { call_id, .. } => {
                         children.insert(call_id, Value::Array(Vec::new()));

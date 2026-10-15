@@ -39,6 +39,8 @@ pub enum Key {
     OutputChunk(usize, usize, usize),
     PendingResult(usize, usize),
     ContinuationTarget(String),
+    Presence(usize, String),
+    PresenceBlock(usize, usize),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Cell {
@@ -60,6 +62,8 @@ pub enum Cell {
     Present,
     Evidence(EvidenceUnit),
     EvidenceHead(EvidenceHead),
+    Witness(super::presence::Witness),
+    Presence(super::presence::Group),
     Association {
         call_name: Option<Vec<u8>>,
         session: Option<Vec<u8>>,
@@ -272,6 +276,12 @@ impl Cell {
         self.fits(key)
     }
     fn fits(&self, k: &Key) -> bool {
+        if let (Key::Presence(_, key), Self::Witness(w)) = (k, self) {
+            return super::presence::matches_message_key(key, w);
+        }
+        if let (Key::PresenceBlock(_, _), Self::Presence(group)) = (k, self) {
+            return group.valid();
+        }
         matches!((k,self),
         (Key::Message(_),Self::Header{message,..}) if message.blocks.is_empty())
             || matches!(
@@ -525,6 +535,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 blocks: n,
             },
         );
+        self.witness_time(i, false);
         for (b, v) in blocks.into_iter().enumerate() {
             let next = match v.id.slot() {
                 BlockSlot::Item(n) => (*n as usize + 1, 0),
@@ -538,6 +549,8 @@ impl<V: ReadView> KeyedRecords<V> {
                 }
             }
             self.put(Key::Block(i, b), Cell::Block(v));
+            let raw = self.current_raw.clone();
+            self.witness_block_raw(i, b, &raw, super::presence::Owner::Primary);
         }
     }
     fn push_block(&mut self, i: usize, content: BlockContent) -> Option<usize> {
@@ -794,6 +807,86 @@ impl<V: ReadView> RecordParser for KeyedRecords<V> {
 }
 
 impl<V: ReadView> KeyedRecords<V> {
+    fn witness(&mut self, i: usize, key: &str, value: Result<super::presence::Witness, String>) {
+        match value {
+            Ok(w) => self.put(Key::Presence(i, key.into()), Cell::Witness(w)),
+            Err(e) => self.failure = Some(e),
+        }
+    }
+    fn witness_time(&mut self, i: usize, completed: bool) {
+        let raw = self.current_raw.clone();
+        if let Ok(bytes) = raw::field(&raw, &["timestamp"]) {
+            if let Ok(text) = serde_json::from_slice::<String>(bytes) {
+                if let Some(at) = parse_timestamp(&text) {
+                    let (key, field) = if completed {
+                        (
+                            "completed_at",
+                            polylogue_model::merge::MessageField::CompletedAt,
+                        )
+                    } else {
+                        ("at", polylogue_model::merge::MessageField::At)
+                    };
+                    self.witness(i, key, super::presence::message(field, bytes, Some(at)));
+                }
+            }
+        }
+    }
+    fn witness_block_raw(&mut self, i: usize, b: usize, raw: &[u8], owner: super::presence::Owner) {
+        use super::presence::{Kind, Owner};
+        let Some(Cell::Block(block)) = self.get(Key::Block(i, b)) else {
+            self.missing("presence block");
+            return;
+        };
+        let kind = match block.content {
+            BlockContent::Text { .. } => Kind::Text,
+            BlockContent::Thinking(_) => Kind::Thinking,
+            BlockContent::ToolCall(_) => Kind::Call,
+            BlockContent::ToolResult(_) => Kind::Result,
+            _ => Kind::Other,
+        };
+        let path = if self.s.legacy {
+            vec![]
+        } else if raw::field(raw, &["payload", "item"]).is_ok() {
+            vec!["payload", "item"]
+        } else {
+            vec!["payload"]
+        };
+        match super::presence::block(raw, &path, block.id.slot(), kind, owner) {
+            Ok(next) => {
+                let mut group = match self.get(Key::PresenceBlock(i, b)) {
+                    Some(Cell::Presence(group)) => group,
+                    None => super::presence::Group::default(),
+                    _ => {
+                        self.missing("presence group");
+                        return;
+                    }
+                };
+                let nonempty = next.nonempty;
+                group.replace(owner, next);
+                self.put(Key::PresenceBlock(i, b), Cell::Presence(group));
+                if owner == Owner::Primary && !nonempty {
+                    self.remove(Key::Presence(i, "extra:phase".into()));
+                    return;
+                }
+            }
+            Err(e) => self.failure = Some(e),
+        }
+        if owner == Owner::Primary {
+            if let Ok(phase) =
+                raw::field(raw, &path).and_then(|item| raw::canonical_field(item, &["phase"]))
+            {
+                self.witness(i, "extra:phase", super::presence::extra("phase", &phase));
+            }
+        }
+    }
+    fn witness_block(&mut self, i: usize, b: usize, owner: super::presence::Owner) {
+        let raw = if self.effective_raw.is_empty() {
+            self.current_raw.clone()
+        } else {
+            self.effective_raw.clone()
+        };
+        self.witness_block_raw(i, b, &raw, owner);
+    }
     fn raw_item_path(&self) -> Vec<&'static str> {
         if self.s.legacy {
             vec![]
@@ -897,9 +990,12 @@ impl<V: ReadView> KeyedRecords<V> {
                 }
             }
             self.edit_block(i, block, |value| *value = content);
+            self.witness_block(i, block, super::presence::Owner::Primary);
             Some(block)
         } else {
-            self.push_block(i, content)
+            let block = self.push_block(i, content)?;
+            self.witness_block(i, block, super::presence::Owner::Primary);
+            Some(block)
         }
     }
     fn pending_result(&mut self, i: usize, block: usize) {
@@ -918,6 +1014,7 @@ impl<V: ReadView> KeyedRecords<V> {
         }
     }
     fn result_chunk(&mut self, i: usize, block: usize, slot: usize, output: &Option<ToolOutput>) {
+        self.witness_block(i, block, super::presence::Owner::Continuation);
         if let Some(ToolOutput::Text(text)) = output {
             self.put(Key::OutputChunk(i, block, slot), Cell::Text(text.clone()));
             self.pending_result(i, block);
@@ -1130,6 +1227,21 @@ impl<V: ReadView> KeyedRecords<V> {
         for (wanted, key, slot) in [(source, 0, 1), (model, 1, 2)] {
             if wanted {
                 if let Some(Cell::Evidence(unit)) = self.get(Key::Context(key)) {
+                    if key == 1 {
+                        if serde_json::from_slice::<String>(&unit.canonical).is_ok() {
+                            self.witness(
+                                i,
+                                "model",
+                                super::presence::message(
+                                    polylogue_model::merge::MessageField::Model,
+                                    &unit.canonical,
+                                    None,
+                                ),
+                            );
+                        } else {
+                            self.remove(Key::Presence(i, "model".into()));
+                        }
+                    }
                     self.evidence_unit(i, 1, slot, unit);
                 } else if (key == 0 && self.s.has_source_context)
                     || (key == 1 && self.s.has_model_context)
@@ -1409,6 +1521,7 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         let reopen = self.s.legacy && self.s.output_since_open;
         if let (Some(i), false) = (self.s.open_request, reopen) {
+            self.witness_time(i, true);
             self.edit(i, |m| {
                 m.completed_at = at.map(provider_time).or(m.completed_at)
             });
@@ -1844,6 +1957,7 @@ impl<V: ReadView> KeyedRecords<V> {
                     output: recorded.clone(),
                 })
             });
+            self.witness_block(i, block, super::presence::Owner::Primary);
             self.put(Key::Result(call_id.clone()), Cell::Position(i, block));
             self.association_evidence(i, &call_id, &effective);
             if let Some(slot) = self.current_item_slot(i, &effective) {
@@ -1997,6 +2111,7 @@ impl<V: ReadView> KeyedRecords<V> {
             self.result_chunk(result_i, 0, slot, &output);
         }
         if let Some(unit) = status_witness {
+            self.witness_block_raw(result_i, 0, &unit.canonical, super::presence::Owner::Status);
             self.evidence_unit(result_i, 1, 0, unit);
         }
         if let Some(rid) = running_id.filter(|_| is_shell_tool(&tool)) {
@@ -2114,6 +2229,12 @@ impl<V: ReadView> KeyedRecords<V> {
                                     result.duration_ms = duration;
                                 }
                             });
+                            self.witness_block_raw(
+                                mi,
+                                bi,
+                                &witness.canonical,
+                                super::presence::Owner::Status,
+                            );
                             self.evidence_unit(mi, 1, 0, witness);
                         } else {
                             let (o, r) = outcome_words(&outcome);
@@ -2208,6 +2329,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 } else {
                     self.push_block(mi, result);
                 }
+                self.witness_block(mi, call_block + 1, super::presence::Owner::Primary);
                 if !replacing {
                     if let Some(wrapper) = owner {
                         self.child(wrapper, child_id);
@@ -2263,6 +2385,29 @@ impl<V: ReadView> KeyedRecords<V> {
             let target = self.s.open_request.or_else(|| self.last_model());
             match target {
                 Some(i) => {
+                    use polylogue_model::merge::UsageField as U;
+                    for (name, field) in [
+                        ("input_tokens", U::Input),
+                        ("output_tokens", U::Output),
+                        ("cached_input_tokens", U::CacheRead),
+                        ("cache_write_input_tokens", U::CacheWrite),
+                        ("reasoning_output_tokens", U::Reasoning),
+                    ] {
+                        let key = format!("usage:{name}");
+                        if last.get(name).and_then(Value::as_u64).is_some() {
+                            match raw::canonical_field(
+                                &self.current_raw,
+                                &["payload", "info", "last_token_usage", name],
+                            ) {
+                                Ok(raw) => {
+                                    self.witness(i, &key, super::presence::usage(field, &raw))
+                                }
+                                Err(e) => self.failure = Some(e),
+                            }
+                        } else {
+                            self.remove(Key::Presence(i, key));
+                        }
+                    }
                     self.edit(i, |m| m.usage = Some(usage));
                     match raw::field(&self.current_raw, &["payload", "info"]).and_then(|bytes| {
                         polylogue_model::identity::canonical_record(bytes, &[])

@@ -326,6 +326,8 @@ fn provider_key_codec_roundtrips_and_preserves_derived_key_order() {
         Key::OutputChunk(8, 0, 3),
         Key::PendingResult(8, 0),
         Key::ContinuationTarget("id".into()),
+        Key::Presence(2, "model\0name".into()),
+        Key::PresenceBlock(2, 9),
     ]);
     keys.sort();
     keys.dedup();
