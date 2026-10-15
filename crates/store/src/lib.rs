@@ -22,6 +22,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock, atomic::AtomicBool},
 };
+mod contributions;
 mod native;
 mod retained;
 pub use retained::{ImportObservation, InputFormat, RetainedInput};
@@ -33,7 +34,7 @@ pub const EMBEDDINGS_VERSION: u32 = 0;
 pub const INDEX_VERSION: u32 = 9;
 /// Exact owning forward-schema revision, independently qualified from inbox index8.
 pub const INDEX_SQL_BLAKE3: &str =
-    "d7a1d732d7d6ea748c892a59bf915695e2cbb4f7b83769250390b32f4d83ad6e";
+    "150783961b52d6174dadfe75c439825bdcad0328e18ce2df23961d90eb2ace4b";
 pub const INDEX_SPEC_COMMIT: &str = "1389f5d11e0d484116ad8efd4647569fa889b9f9";
 const ARCHIVE_SQL: &str = include_str!("../schema/archive.sql");
 const INDEX_SQL: &str = include_str!("../schema/index.sql");
@@ -42,6 +43,10 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("normalized value predecessor changed")]
+    ValuePredecessorChanged,
+    #[error("normalized value is not integrity sealed")]
+    ValueNotReady,
     #[error("retaining another input requires the excision-aware collector")]
     ExcisionCheckRequired,
     #[error("parser predecessor changed; discard the attempted step")]

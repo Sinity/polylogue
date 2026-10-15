@@ -568,6 +568,7 @@ dependencies = [
 name = "polylogue-store"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "cc",
  "hashed-blobs",
  "libc",

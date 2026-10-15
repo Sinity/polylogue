@@ -776,6 +776,26 @@ mod tests {
         );
     }
 
+    // A concurrent subprocess test may briefly inherit CLOEXEC file descriptions
+    // between fork and exec. This harness expects eventual reopen after its own
+    // writer drop, not zero contention time. A leaked read authority still fails
+    // at the deadline; product startup keeps its immediate WriterHeld contract.
+    fn reopen_after_drop(root: &std::path::Path) -> crate::Writer {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match crate::Writer::open(root) {
+                Ok(writer) => return writer,
+                Err(crate::Error::WriterHeld { ref holder, .. })
+                    if holder == &format!("pid={}", std::process::id())
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error) => panic!("reopen after owned writer drop: {error}"),
+            }
+        }
+    }
+
     #[test]
     fn interrupted_unsealed_preparation_is_discarded_in_bounded_steps() {
         let (_dir, root, mut writer, head) = fixture();
@@ -787,7 +807,7 @@ mod tests {
             .stage_parser(&work.token, &[change("b", "two")], budget())
             .unwrap();
         drop(writer);
-        let mut writer = crate::Writer::open(&root).unwrap();
+        let mut writer = reopen_after_drop(&root);
         let work = writer.parser_work(&head.token).unwrap().unwrap();
         let work = writer
             .discard_parser_preparation(&work.token, budget())
@@ -800,7 +820,7 @@ mod tests {
             Err(StoreError::Invariant(_))
         ));
         drop(writer);
-        let mut writer = crate::Writer::open(&root).unwrap();
+        let mut writer = reopen_after_drop(&root);
         let work = writer.parser_work(&head.token).unwrap().unwrap();
         assert!(
             writer
