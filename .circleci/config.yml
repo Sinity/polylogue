@@ -15,6 +15,12 @@ jobs:
         max-jobs = 1
         cores = 2
     steps:
+      - run:
+          name: Locate injected checkout agent
+          shell: /nix/var/nix/profiles/default/bin/bash -eo pipefail
+          command: |
+            printf 'PATH=%s\n' "$PATH"
+            find / -name circleci-agent -type f 2>/dev/null || true
       - checkout
       - run:
           name: Check the actual Rust foundation
