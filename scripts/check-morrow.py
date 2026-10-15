@@ -192,7 +192,7 @@ class Run:
         context_path.write_text(json.dumps(context, indent=2) + "\n")
         errors = expected.get("record_errors", 0)
         admitted = self.client(archive, "import", str(path), "--format", "claude-code-jsonl",
-                               "--context", str(context_path), "--wait", "--json", expected=(5,) if errors else (0,))
+                               "--context", str(context_path), "--wait", expected=(5,) if errors else (0,))
         rows=admitted.get("source_rows")
         require(isinstance(rows,dict) and rows.get("scope")=="imported_source_rows"
                 and isinstance(rows.get("basis"),dict)

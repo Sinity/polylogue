@@ -1,7 +1,7 @@
 """Controller regressions, not canonical-product qualification.
 
 Pure cases supply synthetic captured replies and deliberately broken oracles.
-An optional immutable real binary exercises only the archive-file launch refusal.
+An optional immutable real binary exercises daemon launch and owned runtime cleanup.
 """
 import argparse
 from copy import deepcopy
@@ -268,7 +268,7 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(json.loads(context.read_text()), expected["import_context"])
             self.assertEqual(calls[-1], (self.output / "archive", "import", str(self.output / "loose.jsonl"),
                                         "--format", "claude-code-jsonl",
-                                        "--context", str(context), "--wait", "--json"))
+                                        "--context", str(context), "--wait"))
 
     def test_missing_or_invalid_context_refuses_before_import(self):
         run = self.keep_run(driver.Run(self.output, None))
