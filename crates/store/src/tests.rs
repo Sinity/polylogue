@@ -39,6 +39,55 @@ fn ddl_is_exact_extraction_from_copied_owning_spec() {
 }
 
 #[test]
+fn forward_index_is_pinned_and_applies_without_predecessor_columns() {
+    assert_eq!(
+        BlobHash::of(INDEX_SQL.as_bytes()).to_string(),
+        INDEX_SQL_BLAKE3
+    );
+    let provenance = include_str!("../schema/provenance.json");
+    assert!(provenance.contains(&format!("\"spec_commit\": \"{INDEX_SPEC_COMMIT}\"")));
+    let mut changed = INDEX_SQL.as_bytes().to_vec();
+    changed.push(b' ');
+    assert_ne!(BlobHash::of(&changed).to_string(), INDEX_SQL_BLAKE3);
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    conn.execute_batch(INDEX_SQL).unwrap();
+    let mut tables = conn
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table'")
+        .unwrap();
+    let tables = tables
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    for name in [
+        "message_body",
+        "message_body_node",
+        "message_build",
+        "tool_item_association",
+    ] {
+        assert!(tables.iter().any(|v| v == name));
+    }
+    let mut columns = conn.prepare("PRAGMA table_info(message)").unwrap();
+    let columns = columns
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(columns.iter().any(|v| v == "selected_body_pk"));
+    assert!(!columns.iter().any(|v| v == "role"));
+    assert!(
+        conn.prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn writer_mutates_and_reader_is_readonly_and_survives_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("archive");

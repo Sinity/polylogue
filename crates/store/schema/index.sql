@@ -68,49 +68,63 @@ CREATE INDEX session_collection ON session(collection_id) WHERE collection_id IS
 CREATE INDEX session_live ON session(live_last_event_at) WHERE live_root_alive = 1 OR live_waiting_on IS NOT NULL;   -- running:, waiting:, the overview
 CREATE INDEX session_live_checkout ON session(checkout) WHERE live_root_alive = 1;   -- peers (repository from session_facts)
 
+-- Stable identity/order. Content is selected only through a ready immutable body.
 CREATE TABLE message (
-  pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- model.md Identity; inherited marking matches on it
-  session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  seq               INTEGER NOT NULL,       -- display position (convergence.md, ordering key)
-  role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
-  written_by        TEXT NOT NULL,          -- human | model | harness | unknown
+  pk INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  session_pk INTEGER NOT NULL REFERENCES session(pk),
+  seq INTEGER NOT NULL,
+  selected_body_pk INTEGER,
+  selected_ready INTEGER NOT NULL DEFAULT 1 CHECK(selected_ready=1),
+  contributor_revision INTEGER NOT NULL DEFAULT 0 CHECK(contributor_revision>=0),
+  removal_epoch INTEGER NOT NULL DEFAULT 0 CHECK(removal_epoch>=0),
+  hidden INTEGER NOT NULL DEFAULT 0 CHECK(hidden IN(0,1)),
+  UNIQUE(pk,session_pk),
+  FOREIGN KEY(selected_body_pk,pk,session_pk,selected_ready)
+    REFERENCES message_body(pk,message_pk,session_pk,ready)
+) STRICT;
+CREATE INDEX message_session ON message(session_pk,seq);
+CREATE INDEX message_selected_body ON message(selected_body_pk) WHERE selected_body_pk IS NOT NULL;
+
+CREATE TABLE message_body (
+  pk                INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_pk        INTEGER NOT NULL,
+  session_pk        INTEGER NOT NULL,
+  ready             INTEGER NOT NULL DEFAULT 0 CHECK(ready IN(0,1)),
+  basis_digest      BLOB NOT NULL CHECK(length(basis_digest)=32),
+  contributor_revision INTEGER NOT NULL CHECK(contributor_revision>=0),
+  removal_epoch     INTEGER NOT NULL CHECK(removal_epoch>=0),
+  preferred_candidate_pk INTEGER,
+  preferred_ready INTEGER NOT NULL DEFAULT 1 CHECK(preferred_ready=1),
+  block_root_pk     INTEGER,
+  block_root_kind   TEXT NOT NULL DEFAULT 'groups' CHECK(block_root_kind='groups'),
+  operation_root_pk INTEGER,
+  operation_root_kind TEXT NOT NULL DEFAULT 'operations' CHECK(operation_root_kind='operations'),
+  field_root_pk     INTEGER,
+  field_root_kind   TEXT NOT NULL DEFAULT 'fields' CHECK(field_root_kind='fields'),
+  root_state        TEXT NOT NULL DEFAULT 'ready' CHECK(root_state='ready'),
+  layout            TEXT NOT NULL CHECK(layout IN('flat','separate_reasoning')),
+  role TEXT NOT NULL CHECK(role IN('user','assistant','system','tool')),
+  written_by TEXT NOT NULL CHECK(written_by IN('human','model','harness','unknown')),
   prompt_kind       TEXT,                   -- written_by human: prose | command (model.md, Message)
-  model             TEXT,
   at                INTEGER,                -- provider time
   completed_at      INTEGER,                -- a message from several timed records: the last record's time
-  at_quality        TEXT,                   -- time_quality of `at` (model.md, Time): intrinsic | file_mtime | unknown
-  at_precision      TEXT,                   -- instant | second | minute | day | month | year | bounded
   at_until          INTEGER,                -- the end of a bounded `at`; NULL otherwise
   first_seen        INTEGER,                -- when Polylogue first had its bytes (convergence.md); NULL for at
                                             --   most a minute, until an observation covers them
-  parent_id         TEXT,                   -- natural message id of the tree parent (may arrive later)
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- input the stored (preferred) version came from
   source_chain      INTEGER,                -- the revision chain the byte range is in (archive.db revision.chain):
                                             --   offsets are stable only within a chain, which only appends
   source_start      INTEGER,                -- byte range of its records in that chain (export `sources[0]`):
   source_end        INTEGER,                --   raw view and outside anchors; for a JSON export, the conversation object
   id_kind           TEXT,                   -- provider | provisional (model.md, provider and provisional IDs)
-  native_message_id TEXT,                   -- the provider's own message ID as written (a ChatGPT node ID, a uuid), stored
-                                            --   whole so the derive step can find a copy across sessions; never split from id
-  response_id       TEXT,                   -- a model message: the provider's response ID (Claude Code message.id)
-  request_id        TEXT,                   --   and request ID (requestId), so the derive step can match a response a
-                                            --   fork re-emits under new uuids (decisions/lineage.md); NULL elsewhere
-  version_hash      BLOB,                   -- BLAKE3 of the preferred version's records as canonical JSON without
+  version_hash      BLOB CHECK(version_hash IS NULL OR length(version_hash)=32), -- BLAKE3 of the preferred version's records as canonical JSON without
                                             --   volatile fields: merge rule 2's last tie-break, decided the same way
                                             --   whichever input arrives first (law 4; sources/README.md, rule 2)
-  in_progress       INTEGER NOT NULL DEFAULT 0, -- the provider marked this version as still being produced (model.md)
-  text_origin_json TEXT,                   -- revision-bound evidence object and proxy metrics (model.md, Text-origin evidence)
+  in_progress       INTEGER CHECK(in_progress IN(0,1)), -- NULL unclassified; never infer false from framing/EOF
   on_active_path    INTEGER,                -- 1 on the path, 0 off, NULL unknown (no marked leaf; model.md);
                                             --   always written, no default
-  inherited_from    TEXT,                   -- natural message id of the copy's source as evidence names it, present or not
   copy_origin       TEXT,                   -- known | unknown for a copy (unknown: provider says copy, names no source)
-  counted_as        TEXT,                   -- for a copy, the message counted in its place (model.md, Message)
-  from_session      TEXT,                   -- agent-to-agent message: the sending session, when resolved
-  from_name         TEXT,                   --   and the sender's name as the provider wrote it
-  attrs_json        TEXT,                   -- provider fields kept as given with no column of their own
-                                            --   (attribution, effort, Codex phase, citations, speech or
-                                            --   recap markers); one JSON object, export field `attrs`
   usage_present     INTEGER NOT NULL DEFAULT 0, -- distinguishes a reported empty usage object from no usage
   input_tokens      INTEGER,                -- NULL = not reported (never 0 for unknown)
   output_tokens     INTEGER,
@@ -120,95 +134,388 @@ CREATE TABLE message (
   cache_write_1h_tokens INTEGER,            -- the part written with a 1-hour lifetime, when reported
   reasoning_tokens  INTEGER,
   web_requests      INTEGER,                -- server-side web search and fetch requests
-  speed             TEXT,                   -- e.g. 'fast', when the provider reports a mode priced differently
-  service_tier      TEXT,                   -- batch | flex | priority | ..., when recorded
   provider_cost_nusd INTEGER,               -- the provider's own cost figure, when given
   cost_nusd         INTEGER,                -- the one per-message cost (analysis.md); NULL = unknown
-  stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
-  parser_version    INTEGER NOT NULL,       -- version of the parser that produced its winning version; a session
-                                            --   rebuilt in place deletes, at its last step, the rows still at the
-                                            --   old version of the bumped format (convergence.md)
-  UNIQUE (pk, session_pk)                   -- lets children state their owner once (R73)
+  parser_version    INTEGER NOT NULL,       -- exact source interpretation basis; not a deletion/completion cursor
+  CHECK(ready=0 OR (preferred_candidate_pk IS NOT NULL AND version_hash IS NOT NULL)),
+  FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
+  FOREIGN KEY(preferred_candidate_pk,message_pk,session_pk,input_pk,version_hash,preferred_ready)
+    REFERENCES message_candidate(pk,message_pk,session_pk,input_pk,version_hash,ready) DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY(block_root_pk,message_pk,session_pk,block_root_kind,root_state)
+    REFERENCES message_body_node(pk,message_pk,session_pk,kind,state),
+  FOREIGN KEY(operation_root_pk,message_pk,session_pk,operation_root_kind,root_state)
+    REFERENCES message_body_node(pk,message_pk,session_pk,kind,state),
+  FOREIGN KEY(field_root_pk,message_pk,session_pk,field_root_kind,root_state)
+    REFERENCES message_body_node(pk,message_pk,session_pk,kind,state),
+  UNIQUE(pk,message_pk,session_pk),
+  UNIQUE(pk,message_pk,session_pk,ready)
 ) STRICT;
-CREATE INDEX message_session ON message(session_pk, seq);     -- reading; [last:N]; open at a position
-CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
-CREATE INDEX message_unseen  ON message(input_pk) WHERE first_seen IS NULL;   -- parse work: first_seen to fill
-CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
-CREATE INDEX message_copy    ON message(inherited_from) WHERE inherited_from IS NOT NULL;   -- derive: copies of a changed source
-CREATE INDEX message_response ON message(response_id, request_id) WHERE response_id IS NOT NULL;   -- derive: re-emitted responses
-CREATE INDEX message_native ON message(native_message_id) WHERE native_message_id IS NOT NULL;      -- derive: copies by node ID
+CREATE INDEX message_body_owner ON message_body(message_pk,session_pk);
+CREATE INDEX message_body_input ON message_body(input_pk);
+CREATE INDEX message_body_preferred ON message_body(preferred_candidate_pk);
+CREATE INDEX message_body_blocks ON message_body(block_root_pk);
+CREATE INDEX message_body_fields ON message_body(field_root_pk);
+CREATE INDEX message_body_operations ON message_body(operation_root_pk);
+CREATE INDEX message_body_prose   ON message_body(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
+CREATE INDEX message_body_unseen  ON message_body(input_pk) WHERE first_seen IS NULL;   -- parse work: first_seen to fill
+CREATE INDEX message_body_branch  ON message_body(session_pk) WHERE on_active_path = 0;
 
--- Every stored version that contributed to a message: one row per input chain
--- whose records hold a version of it (the preferred version's row repeats the
--- message's own columns). A citation names a row here, never just an input and
--- offsets, because a rewritten input's new chain puts other bytes at the same
--- offsets (an outside review, 2026-10-12). Rebuilt with the message.
-CREATE TABLE message_source (
-  message_pk        INTEGER NOT NULL REFERENCES message(pk),
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,       -- archive.db revision.chain
-  source_start      INTEGER NOT NULL,
-  source_end        INTEGER NOT NULL,
-  preferred         INTEGER NOT NULL,       -- 1 for the version the message shows (model.md, preferred version)
-  PRIMARY KEY (message_pk, input_pk, chain)
+
+-- A typed source candidate is not a global winner. Reduce versions per chain,
+-- chain representatives per input, then input representatives (sources rules2/5).
+-- Unresolved facts/hash/head remain retained and are not fabricated eligibility.
+CREATE TABLE message_candidate (
+  pk INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL CHECK(chain>0),
+  revision INTEGER NOT NULL CHECK(revision>0),
+  revision_length INTEGER NOT NULL CHECK(revision_length>=0),
+  evidence_revision INTEGER NOT NULL CHECK(evidence_revision>=0),
+  parser_version INTEGER NOT NULL CHECK(parser_version>=0),
+  basis_digest BLOB NOT NULL CHECK(length(basis_digest)=32),
+  body_pk INTEGER,
+  body_ready INTEGER CHECK(body_ready=1),
+  finish INTEGER NOT NULL CHECK(finish BETWEEN 0 AND 2), -- in-progress / unclassified / finished
+  route INTEGER NOT NULL CHECK(route BETWEEN 0 AND 2), -- DOM/export/native
+  source_blocks INTEGER CHECK(source_blocks>=0),
+  source_text_blocks INTEGER CHECK(source_text_blocks BETWEEN 0 AND source_blocks),
+  source_fields INTEGER CHECK(source_fields>=0),
+  version_hash BLOB CHECK(version_hash IS NULL OR length(version_hash)=32),
+  facts_ready INTEGER NOT NULL DEFAULT 0 CHECK(facts_ready IN(0,1)),
+  ready INTEGER NOT NULL DEFAULT 0 CHECK(ready IN(0,1)), -- immutable preparation certificate
+  eligible INTEGER NOT NULL DEFAULT 0 CHECK(eligible IN(0,1)), -- mutable source-basis eligibility
+  CHECK(facts_ready=0 OR (source_blocks IS NOT NULL AND source_text_blocks IS NOT NULL AND source_fields IS NOT NULL)),
+  CHECK(eligible=0 OR ready=1),
+  CHECK(ready=0 OR (facts_ready=1 AND body_pk IS NOT NULL AND body_ready IS NOT NULL
+        AND source_blocks IS NOT NULL AND source_text_blocks IS NOT NULL
+        AND source_fields IS NOT NULL AND version_hash IS NOT NULL)),
+  FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
+  FOREIGN KEY(body_pk,message_pk,session_pk,body_ready) REFERENCES message_body(pk,message_pk,session_pk,ready),
+  UNIQUE(pk,message_pk,session_pk,input_pk,version_hash,ready),
+  UNIQUE(pk,message_pk,session_pk),
+  UNIQUE(pk,message_pk,session_pk,input_pk),
+  UNIQUE(pk,message_pk,session_pk,input_pk,chain)
 ) STRICT;
+CREATE INDEX message_candidate_input ON message_candidate(input_pk,chain,revision);
+CREATE INDEX message_candidate_owner ON message_candidate(message_pk,session_pk);
+CREATE INDEX message_candidate_body ON message_candidate(body_pk) WHERE body_pk IS NOT NULL;
+CREATE INDEX message_candidate_chain_rank ON message_candidate(message_pk,input_pk,chain,
+  finish DESC,route DESC,source_blocks DESC,source_text_blocks DESC,source_fields DESC,
+  revision_length DESC,version_hash DESC) WHERE eligible=1;
+
+-- Representatives retain roots, including eligible missing-field donors, not
+-- merely the previous global winner. Edits publish a proved current head or an
+-- explicit unresolved state; a hash/mtime/arrival never supplies that proof.
+CREATE TABLE message_chain_choice (
+  message_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  input_pk INTEGER NOT NULL,
+  chain INTEGER NOT NULL,
+  candidate_pk INTEGER,
+  finish INTEGER CHECK(finish BETWEEN 0 AND 2),
+  route INTEGER CHECK(route BETWEEN 0 AND 2),
+  source_blocks INTEGER CHECK(source_blocks>=0),
+  source_text_blocks INTEGER CHECK(source_text_blocks BETWEEN 0 AND source_blocks),
+  source_fields INTEGER CHECK(source_fields>=0),
+  version_hash BLOB CHECK(version_hash IS NULL OR length(version_hash)=32),
+  field_root_pk INTEGER,
+  field_root_kind TEXT NOT NULL DEFAULT 'fields' CHECK(field_root_kind='fields'),
+  root_state TEXT NOT NULL DEFAULT 'ready' CHECK(root_state='ready'),
+  revision INTEGER NOT NULL CHECK(revision>=0),
+  is_current INTEGER NOT NULL CHECK(is_current IN(0,1)),
+  CHECK(candidate_pk IS NULL OR (finish IS NOT NULL AND route IS NOT NULL
+    AND source_blocks IS NOT NULL AND source_text_blocks IS NOT NULL
+    AND source_fields IS NOT NULL AND version_hash IS NOT NULL)),
+  FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
+  FOREIGN KEY(candidate_pk,message_pk,session_pk,input_pk,chain)
+    REFERENCES message_candidate(pk,message_pk,session_pk,input_pk,chain),
+  FOREIGN KEY(input_pk) REFERENCES input_ref(pk),
+  FOREIGN KEY(field_root_pk,message_pk,session_pk,field_root_kind,root_state)
+    REFERENCES message_body_node(pk,message_pk,session_pk,kind,state),
+  PRIMARY KEY(message_pk,input_pk,chain)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX message_chain_choice_input ON message_chain_choice(input_pk);
+CREATE INDEX message_chain_choice_candidate ON message_chain_choice(candidate_pk);
+CREATE INDEX message_chain_choice_fields ON message_chain_choice(field_root_pk);
+CREATE INDEX message_chain_choice_rank ON message_chain_choice(message_pk,input_pk,
+  finish DESC,route DESC,source_blocks DESC,source_text_blocks DESC,source_fields DESC,
+  is_current DESC,version_hash DESC) WHERE candidate_pk IS NOT NULL;
+CREATE TABLE message_input_choice (
+  message_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  candidate_pk INTEGER,
+  finish INTEGER CHECK(finish BETWEEN 0 AND 2),
+  route INTEGER CHECK(route BETWEEN 0 AND 2),
+  source_blocks INTEGER CHECK(source_blocks>=0),
+  source_text_blocks INTEGER CHECK(source_text_blocks BETWEEN 0 AND source_blocks),
+  source_fields INTEGER CHECK(source_fields>=0),
+  version_hash BLOB CHECK(version_hash IS NULL OR length(version_hash)=32),
+  field_root_pk INTEGER,
+  field_root_kind TEXT NOT NULL DEFAULT 'fields' CHECK(field_root_kind='fields'),
+  root_state TEXT NOT NULL DEFAULT 'ready' CHECK(root_state='ready'),
+  revision INTEGER NOT NULL CHECK(revision>=0),
+  state TEXT NOT NULL CHECK(state IN('ready','none','unresolved_edit_head','pending')),
+  CHECK(state!='ready' OR candidate_pk IS NOT NULL),
+  CHECK(candidate_pk IS NULL OR (finish IS NOT NULL AND route IS NOT NULL
+    AND source_blocks IS NOT NULL AND source_text_blocks IS NOT NULL
+    AND source_fields IS NOT NULL AND version_hash IS NOT NULL)),
+  FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
+  FOREIGN KEY(candidate_pk,message_pk,session_pk,input_pk)
+    REFERENCES message_candidate(pk,message_pk,session_pk,input_pk),
+  FOREIGN KEY(field_root_pk,message_pk,session_pk,field_root_kind,root_state)
+    REFERENCES message_body_node(pk,message_pk,session_pk,kind,state),
+  PRIMARY KEY(message_pk,input_pk)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX message_input_choice_input ON message_input_choice(input_pk);
+CREATE INDEX message_input_choice_candidate ON message_input_choice(candidate_pk);
+CREATE INDEX message_input_choice_fields ON message_input_choice(field_root_pk);
+CREATE INDEX message_input_choice_rank ON message_input_choice(message_pk,
+  finish DESC,route DESC,source_blocks DESC,source_text_blocks DESC,source_fields DESC,
+  version_hash DESC) WHERE state='ready';
+
+-- Canonical normalized value bytes, streamed in admitted chunks. Their content
+-- hash is payload integrity, never merge version evidence. Raw lazy source
+-- locators remain revision addresses; they do not masquerade as normalized bytes.
+CREATE TABLE body_value (
+  pk INTEGER PRIMARY KEY AUTOINCREMENT,
+  codec TEXT NOT NULL CHECK(codec IN('utf8','json','bytes')),
+  length INTEGER NOT NULL CHECK(length>=0),
+  hash BLOB CHECK(hash IS NULL OR length(hash)=32),
+  state TEXT NOT NULL CHECK(state IN('building','ready','retiring')),
+  incoming INTEGER NOT NULL CHECK(incoming>=0),
+  CHECK(state!='ready' OR hash IS NOT NULL),
+  CHECK(state!='retiring' OR incoming=0),
+  UNIQUE(pk,state),
+  UNIQUE(pk,state,codec),
+  UNIQUE(pk,state,codec,hash)
+) STRICT;
+CREATE INDEX body_value_reclaim ON body_value(pk) WHERE incoming=0;
+CREATE UNIQUE INDEX body_value_content ON body_value(codec,hash) WHERE hash IS NOT NULL AND state='ready';
+CREATE TABLE body_value_chunk (
+  value_pk INTEGER NOT NULL REFERENCES body_value(pk),
+  offset INTEGER NOT NULL CHECK(offset>=0),
+  bytes BLOB NOT NULL CHECK(length(bytes) BETWEEN 1 AND 65536),
+  PRIMARY KEY(value_pk,offset)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE message_field_slot (
+  pk INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  semantic_key BLOB NOT NULL, -- typed/proved correspondence, never coincident body ordinal alone
+  FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
+  UNIQUE(message_pk,semantic_key),
+  UNIQUE(pk,message_pk,session_pk)
+) STRICT;
+CREATE TABLE message_field_fact (
+  pk INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  candidate_pk INTEGER NOT NULL,
+  slot_pk INTEGER NOT NULL,
+  value_pk INTEGER NOT NULL,
+  value_state TEXT NOT NULL DEFAULT 'ready' CHECK(value_state='ready'),
+  source_time INTEGER,
+  supplied INTEGER NOT NULL CHECK(supplied IN(0,1)), -- mapper-owned before fill/enrichment
+  FOREIGN KEY(candidate_pk,message_pk,session_pk)
+    REFERENCES message_candidate(pk,message_pk,session_pk),
+  FOREIGN KEY(slot_pk,message_pk,session_pk)
+    REFERENCES message_field_slot(pk,message_pk,session_pk),
+  FOREIGN KEY(value_pk,value_state) REFERENCES body_value(pk,state),
+  UNIQUE(pk,message_pk,session_pk),
+  UNIQUE(candidate_pk,slot_pk)
+) STRICT;
+CREATE INDEX message_field_fact_owner ON message_field_fact(message_pk,session_pk);
+CREATE INDEX message_field_fact_slot ON message_field_fact(slot_pk);
+CREATE INDEX message_field_fact_value ON message_field_fact(value_pk);
+
+-- Message-local immutable directories. Outer groups reference block roots;
+-- separate field roots retain donor facts without serializing/copying a map.
+-- Each sparse radix16 node has <=16 edges; u64 ordinals require <=16 levels.
+CREATE TABLE message_body_node (
+  pk INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN('groups','blocks','fields','operations')),
+  height INTEGER NOT NULL CHECK(height BETWEEN 0 AND 15),
+  state TEXT NOT NULL CHECK(state IN('building','ready','retiring')),
+  incoming INTEGER NOT NULL CHECK(incoming>=0),
+  ordinary_count INTEGER NOT NULL CHECK(ordinary_count>=0),
+  reasoning_count INTEGER NOT NULL CHECK(reasoning_count>=0),
+  source_blocks INTEGER NOT NULL CHECK(source_blocks>=0),
+  source_text_blocks INTEGER NOT NULL CHECK(source_text_blocks BETWEEN 0 AND source_blocks),
+  source_fields INTEGER NOT NULL CHECK(source_fields>=0),
+  CHECK(state!='retiring' OR incoming=0),
+  FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
+  UNIQUE(pk,message_pk,session_pk),
+  UNIQUE(pk,message_pk,session_pk,kind),
+  UNIQUE(pk,message_pk,session_pk,kind,state),
+  UNIQUE(pk,message_pk,session_pk,kind,height)
+) STRICT;
+CREATE INDEX message_body_node_owner ON message_body_node(message_pk,session_pk);
+CREATE INDEX message_body_node_reclaim ON message_body_node(pk) WHERE incoming=0;
+CREATE TABLE message_body_edge (
+  parent_pk INTEGER NOT NULL,
+  message_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  parent_kind TEXT NOT NULL,
+  parent_height INTEGER NOT NULL,
+  slot INTEGER NOT NULL CHECK(slot BETWEEN 0 AND 15),
+  child_node_pk INTEGER,
+  child_kind TEXT,
+  child_height INTEGER,
+  child_state TEXT NOT NULL DEFAULT 'ready' CHECK(child_state='ready'),
+  block_pk INTEGER,
+  field_fact_pk INTEGER,
+  tool_call_pk INTEGER,
+  association_pk INTEGER,
+  ordinary_count INTEGER NOT NULL CHECK(ordinary_count>=0),
+  reasoning_count INTEGER NOT NULL CHECK(reasoning_count>=0),
+  source_blocks INTEGER NOT NULL CHECK(source_blocks>=0),
+  source_text_blocks INTEGER NOT NULL CHECK(source_text_blocks BETWEEN 0 AND source_blocks),
+  source_fields INTEGER NOT NULL CHECK(source_fields>=0),
+  CHECK((parent_height>0 AND child_node_pk IS NOT NULL AND child_kind=parent_kind
+         AND child_kind IS NOT NULL AND child_height IS NOT NULL AND child_height=parent_height-1 AND block_pk IS NULL AND field_fact_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
+     OR (parent_height=0 AND parent_kind='groups' AND child_node_pk IS NOT NULL
+         AND child_kind='blocks' AND child_height IS NOT NULL AND block_pk IS NULL AND field_fact_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
+     OR (parent_height=0 AND parent_kind='blocks' AND child_node_pk IS NULL AND child_kind IS NULL
+         AND child_height IS NULL AND block_pk IS NOT NULL AND field_fact_pk IS NULL AND association_pk IS NULL)
+     OR (parent_height=0 AND parent_kind='fields' AND child_node_pk IS NULL AND child_kind IS NULL
+         AND child_height IS NULL AND block_pk IS NULL AND field_fact_pk IS NOT NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
+     OR (parent_height=0 AND parent_kind='operations' AND child_node_pk IS NULL AND child_kind IS NULL
+         AND child_height IS NULL AND block_pk IS NULL AND field_fact_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NOT NULL)),
+  FOREIGN KEY(parent_pk,message_pk,session_pk,parent_kind,parent_height)
+    REFERENCES message_body_node(pk,message_pk,session_pk,kind,height),
+  FOREIGN KEY(child_node_pk,message_pk,session_pk,child_kind,child_height)
+    REFERENCES message_body_node(pk,message_pk,session_pk,kind,height),
+  FOREIGN KEY(child_node_pk,message_pk,session_pk,child_kind,child_state)
+    REFERENCES message_body_node(pk,message_pk,session_pk,kind,state),
+  FOREIGN KEY(block_pk,message_pk,session_pk) REFERENCES block(pk,message_pk,session_pk),
+  FOREIGN KEY(field_fact_pk,message_pk,session_pk) REFERENCES message_field_fact(pk,message_pk,session_pk),
+  FOREIGN KEY(association_pk,message_pk,session_pk) REFERENCES tool_item_association(pk,message_pk,session_pk),
+  FOREIGN KEY(tool_call_pk,block_pk,message_pk,session_pk)
+    REFERENCES tool_call(pk,call_block_pk,message_pk,session_pk),
+  PRIMARY KEY(parent_pk,slot)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX message_body_edge_child ON message_body_edge(child_node_pk);
+CREATE INDEX message_body_edge_block ON message_body_edge(block_pk);
+CREATE INDEX message_body_edge_fact ON message_body_edge(field_fact_pk);
+CREATE INDEX message_body_edge_call ON message_body_edge(tool_call_pk);
+CREATE INDEX message_body_edge_association ON message_body_edge(association_pk);
+
+-- One owned resumable build per Message. This is disposable computation over
+-- a pinned basis, not an independent queue. Cursor scalars never contain a
+-- growing list of IDs, blocks, fields or parser state. AUTOINCREMENT prevents a
+-- stale process from naming a later build after this row has been retired.
+CREATE TABLE message_build (
+  pk INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  body_pk INTEGER NOT NULL,
+  basis_digest BLOB NOT NULL CHECK(length(basis_digest)=32),
+  contributor_revision INTEGER NOT NULL CHECK(contributor_revision>=0),
+  removal_epoch INTEGER NOT NULL CHECK(removal_epoch>=0),
+  phase TEXT NOT NULL CHECK(phase IN('project','rank','fold','hash','layout','ready','retiring')),
+  source_cursor INTEGER NOT NULL DEFAULT 0 CHECK(source_cursor>=0),
+  group_cursor INTEGER NOT NULL DEFAULT 0 CHECK(group_cursor>=0),
+  local_cursor INTEGER NOT NULL DEFAULT 0 CHECK(local_cursor>=0),
+  field_cursor INTEGER NOT NULL DEFAULT 0 CHECK(field_cursor>=0),
+  hash_offset INTEGER NOT NULL DEFAULT 0 CHECK(hash_offset>=0),
+  FOREIGN KEY(body_pk,message_pk,session_pk) REFERENCES message_body(pk,message_pk,session_pk),
+  UNIQUE(message_pk),
+  UNIQUE(pk,message_pk,session_pk)
+) STRICT;
+CREATE INDEX message_build_body ON message_build(body_pk);
+-- Fixed frontier slots lease ready nodes while paths are copied. A path through
+-- an outer group tree and inner block tree has at most 32 radix16 nodes. Root
+-- leases owned by bodies/representatives are separate incoming references.
+CREATE TABLE message_build_frontier (
+  build_pk INTEGER NOT NULL,
+  message_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  depth INTEGER NOT NULL CHECK(depth BETWEEN 0 AND 31),
+  node_pk INTEGER NOT NULL,
+  next_slot INTEGER NOT NULL CHECK(next_slot BETWEEN 0 AND 16),
+  FOREIGN KEY(build_pk,message_pk,session_pk) REFERENCES message_build(pk,message_pk,session_pk),
+  FOREIGN KEY(node_pk,message_pk,session_pk) REFERENCES message_body_node(pk,message_pk,session_pk),
+  PRIMARY KEY(build_pk,depth)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX message_build_frontier_node ON message_build_frontier(node_pk);
+
+-- Exact contributor locators, pinned to source candidate/input/chain. A citation
+-- never substitutes a current chain for the retained chain in this row.
+CREATE TABLE message_source (
+  candidate_pk      INTEGER NOT NULL,
+  message_pk        INTEGER NOT NULL,
+  session_pk        INTEGER NOT NULL,
+  input_pk          INTEGER NOT NULL,
+  chain             INTEGER NOT NULL CHECK(chain>0), -- archive.db revision.chain
+  source_start      INTEGER NOT NULL CHECK(source_start>=0),
+  source_end        INTEGER NOT NULL CHECK(source_end>=source_start),
+  FOREIGN KEY(candidate_pk,message_pk,session_pk,input_pk,chain)
+    REFERENCES message_candidate(pk,message_pk,session_pk,input_pk,chain),
+  PRIMARY KEY (candidate_pk, input_pk, chain)
+) STRICT;
+CREATE INDEX message_source_message ON message_source(message_pk);
 CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
 
--- Text is stored once per distinct content; `id` is the rowid of its search entries.
+-- Deduplicated UTF-8 payload references; bytes live only in body_value_chunk.
+-- `id` is the rowid of serving search entries, not a second text payload.
 CREATE TABLE text (
-  id                INTEGER PRIMARY KEY,
-  hash              BLOB NOT NULL UNIQUE,   -- BLAKE3 of the UTF-8 text; embeddings are keyed by it
-  body              TEXT NOT NULL
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hash BLOB NOT NULL UNIQUE CHECK(length(hash)=32),
+  value_pk INTEGER NOT NULL UNIQUE,
+  value_state TEXT NOT NULL DEFAULT 'ready' CHECK(value_state='ready'),
+  value_codec TEXT NOT NULL DEFAULT 'utf8' CHECK(value_codec='utf8'),
+  FOREIGN KEY(value_pk,value_state,value_codec,hash) REFERENCES body_value(pk,state,codec,hash)
 ) STRICT;
 
 -- What the provider wrote, one row per content item. Facts derived about a tool
 -- call (tool, command, outcome, exit code, duration) belong to tool_call alone.
 CREATE TABLE block (
-  pk                INTEGER PRIMARY KEY,
+  pk                INTEGER PRIMARY KEY AUTOINCREMENT,
   message_pk        INTEGER NOT NULL,
   session_pk        INTEGER NOT NULL,       -- the message's session, enforced by the composite key below
-  idx               INTEGER,                -- position in the content list: Claude Code counts every item, thinking included;
-                                            --   Codex counts non-reasoning items and reasoning in reasoning_idx; id = message id:idx
-  reasoning_idx     INTEGER,                -- formats whose rewrites drop reasoning (Codex): position among its reasoning items; id = message id:r<reasoning_idx>
-  attach_key        TEXT,                   -- attachment listed outside the content list: 'a:<id>' or 'a:~<hash>-<n>'
-                                            --   (model.md Identity); exactly one of idx, reasoning_idx and attach_key is set
-  kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
+  group_ordinal     INTEGER NOT NULL CHECK(group_ordinal>=0),
+  local_ordinal     INTEGER NOT NULL CHECK(local_ordinal>=0),
+  slot_kind         TEXT NOT NULL CHECK(slot_kind IN('ordinary','reasoning','attachment')),
+  attach_key        TEXT,
+  kind              TEXT NOT NULL CHECK(kind IN('text','thinking','tool_call','tool_result','image','file','other')),
+  field_root_pk INTEGER,
+  field_root_kind TEXT NOT NULL DEFAULT 'fields' CHECK(field_root_kind='fields'),
+  field_root_state TEXT NOT NULL DEFAULT 'ready' CHECK(field_root_state='ready'),
   text_id           INTEGER REFERENCES text(id),
   input_pk          INTEGER REFERENCES input_ref(pk),  -- explicit contributor or lazy value locator; otherwise all four NULL
   source_chain      INTEGER,                -- archive.db revision.chain of that contributor, never its current chain
   source_start      INTEGER,                -- byte range in that exact input and chain, including an empty value
   source_end        INTEGER,                --   field from another input or a value too large to index (blobs.md)
-  call_id           TEXT,                   -- tool_call and tool_result: the provider's call id (unique only in a session)
-  input_json        TEXT,                   -- tool_call: arguments as given (export field `input`)
   blob_hash         BLOB,                   -- image/file, large tool output: bytes in the blob store; export `blob`
   direction         TEXT,                   -- image/file: input | output | unknown
-  member            TEXT,                   -- image/file inside an archive stored whole: 'zip:<input>/<member>', read in
-                                            --   place (blobs.md); blob_hash is then NULL
   produced_by_pk    INTEGER,                -- image/file output: the block of the tool call or image request that made it
-  media_type        TEXT,
-  file_name         TEXT,                   -- export `name`
   size              INTEGER,                -- image/file
-  url               TEXT,                   -- image/file downloaded from a link
-  signature         TEXT,                   -- thinking
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
-  other_type        TEXT,                   -- other: the provider's content type name; export `type`
-  data_json         TEXT,                   -- other: payload as given; encrypted thinking data; tool_call and
-                                            --   tool_result: structured tool output kept as given (export `data`)
   result_outcome    TEXT,                   -- tool_result: provider fact, retained even without a paired call
   result_reason     TEXT,                   -- unknown/error reason in the exported vocabulary
   result_exit_code  INTEGER,
   result_duration_ms INTEGER,
   looks_like_secret INTEGER NOT NULL DEFAULT 0, -- has:secret (behavior.md, privacy)
+  CHECK((slot_kind='attachment')=(attach_key IS NOT NULL)),
   CHECK ((input_pk IS NULL AND source_chain IS NULL AND source_start IS NULL AND source_end IS NULL)
       OR (input_pk IS NOT NULL AND source_chain IS NOT NULL AND source_start IS NOT NULL AND source_end IS NOT NULL
           AND source_chain > 0 AND source_start >= 0 AND source_end >= source_start)),
+  FOREIGN KEY(field_root_pk,message_pk,session_pk,field_root_kind,field_root_state)
+    REFERENCES message_body_node(pk,message_pk,session_pk,kind,state),
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
-  UNIQUE (pk, session_pk)
+  UNIQUE (pk, session_pk),
+  UNIQUE (pk, message_pk, session_pk)
 ) STRICT;
-CREATE UNIQUE INDEX block_message ON block(message_pk, idx);
-CREATE UNIQUE INDEX block_attach ON block(message_pk, attach_key) WHERE attach_key IS NOT NULL;
+CREATE INDEX block_owner ON block(message_pk,session_pk);
+CREATE INDEX block_fields ON block(field_root_pk);
+CREATE INDEX block_source ON block(input_pk) WHERE input_pk IS NOT NULL;
 CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- search hit -> blocks
 CREATE INDEX block_secret ON block(message_pk) WHERE looks_like_secret = 1;
 
@@ -224,43 +531,202 @@ CREATE VIRTUAL TABLE output_fts USING fts5(body, content='', contentless_delete=
 CREATE VIRTUAL TABLE fts_vocab_text USING fts5vocab(text_fts, 'row');
 CREATE VIRTUAL TABLE fts_vocab_output USING fts5vocab(output_fts, 'row');
 
+-- Stable native/session-owned operation identity. Its selected version is a
+-- immutable effective facts candidate. It may have pending payload evidence:
+-- known operation existence/classification still counts, while complete-payload
+-- reads require ready=1. Unknown Message ownership is independently valid.
+CREATE TABLE tool_item (
+  pk                INTEGER PRIMARY KEY AUTOINCREMENT,
+  id                TEXT NOT NULL UNIQUE,
+  session_pk        INTEGER NOT NULL REFERENCES session(pk),
+  provider_namespace TEXT NOT NULL,
+  identity_schema   TEXT NOT NULL,
+  identity_kind     TEXT NOT NULL CHECK (identity_kind IN ('native', 'legacy', 'provisional')),
+  native_turn_id    TEXT,
+  native_item_id    TEXT,
+  selected_version_pk INTEGER,              -- effective fact version; may have pending required payload
+  CHECK ((identity_kind = 'native' AND native_turn_id IS NOT NULL AND length(native_turn_id) > 0
+      AND native_item_id IS NOT NULL AND length(native_item_id) > 0)
+      OR (identity_kind <> 'native' AND native_turn_id IS NULL AND native_item_id IS NULL)),
+  UNIQUE (pk, session_pk),
+  UNIQUE (pk, session_pk, id),
+  FOREIGN KEY (selected_version_pk, pk, session_pk)
+    REFERENCES tool_item_version(pk, tool_item_pk, session_pk)
+) STRICT;
+CREATE INDEX tool_item_session ON tool_item(session_pk);
+CREATE UNIQUE INDEX tool_item_native ON tool_item(session_pk, provider_namespace, native_turn_id, native_item_id)
+  WHERE identity_kind = 'native';
+CREATE INDEX tool_item_selected ON tool_item(selected_version_pk) WHERE selected_version_pk IS NOT NULL;
+
+-- Candidate identity is independent of its eventual source-evidence digest.
+-- A building candidate can retain known call/result facts and exact source
+-- locators while required bytes are unavailable. Such facts are inspectable as
+-- pending evidence. Proven operation existence is independent of payload
+-- readiness; incomplete classification/correspondence remains unknown coverage.
+-- New versions use new rows;
+-- ready rows are immutable under the typed writer. Pinned/historical body reads
+-- name this version, never mutable payload columns on the identity head.
+CREATE TABLE tool_item_version (
+  pk                INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool_item_pk      INTEGER NOT NULL,
+  session_pk        INTEGER NOT NULL,
+  evidence_revision INTEGER NOT NULL CHECK (evidence_revision >= 0),
+  ready             INTEGER NOT NULL DEFAULT 0 CHECK (ready IN (0,1)),
+  version_hash      BLOB CHECK (version_hash IS NULL OR length(version_hash) = 32),
+  kind              TEXT NOT NULL,          -- provider's operation kind, not a fabricated block kind
+  agent_class       TEXT NOT NULL CHECK (agent_class IN ('agent', 'non_agent', 'unknown')),
+  correspondence    TEXT NOT NULL CHECK (correspondence IN ('established', 'unresolved', 'conflict')),
+  native_order      INTEGER,                -- provider-established order within its scope; not global adjacency
+  at                INTEGER,
+  call_present      INTEGER NOT NULL CHECK (call_present IN (0, 1)),
+  call_id           TEXT,                   -- source invocation/pairing ID, not a Message or process ID
+  input_value_pk INTEGER REFERENCES body_value(pk), -- JSON value, assembled in bounded chunks
+  result_present    INTEGER NOT NULL CHECK (result_present IN (0, 1)),
+  output_present    INTEGER NOT NULL CHECK (output_present IN (0, 1)),
+  result_text_id    INTEGER REFERENCES text(id),
+  result_blob_hash  BLOB,
+  result_data_value_pk INTEGER REFERENCES body_value(pk),
+  result_outcome    TEXT CHECK (result_outcome IN ('ok', 'error', 'unknown')),
+  result_reason     TEXT,
+  result_exit_code  INTEGER,
+  result_duration_ms INTEGER,
+  CHECK (result_present = 1 OR (output_present = 0 AND result_text_id IS NULL
+      AND result_blob_hash IS NULL AND result_data_value_pk IS NULL AND result_outcome IS NULL
+      AND result_reason IS NULL AND result_exit_code IS NULL AND result_duration_ms IS NULL)),
+  CHECK (output_present = 1 OR (result_text_id IS NULL AND result_blob_hash IS NULL)),
+  CHECK (result_text_id IS NULL OR result_blob_hash IS NULL),
+  CHECK (call_present = 1 OR input_value_pk IS NULL),
+  CHECK (ready = 0 OR version_hash IS NOT NULL),
+  FOREIGN KEY (tool_item_pk, session_pk) REFERENCES tool_item(pk, session_pk),
+  UNIQUE (pk, tool_item_pk, session_pk)
+) STRICT;
+CREATE INDEX tool_item_version_owner ON tool_item_version(tool_item_pk, session_pk);
+CREATE INDEX tool_item_version_input_value ON tool_item_version(input_value_pk);
+CREATE INDEX tool_item_version_data_value ON tool_item_version(result_data_value_pk);
+CREATE INDEX tool_item_version_result_text ON tool_item_version(result_text_id) WHERE result_text_id IS NOT NULL;
+
+-- Immutable contributors/field locators of a candidate, including old versions
+-- and UI transformations. The stable version key works before a digest exists.
+-- Identical distinct chunks keep different slots; replacement uses a new owning
+-- candidate version. Body-dependent associations pin that exact candidate, not
+-- only whichever digest the identity head currently selects.
+CREATE TABLE tool_item_source (
+  tool_item_version_pk INTEGER NOT NULL,
+  tool_item_pk      INTEGER NOT NULL,
+  session_pk        INTEGER NOT NULL,
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  source_chain      INTEGER NOT NULL CHECK (source_chain > 0),
+  source_start      INTEGER NOT NULL CHECK (source_start >= 0),
+  source_end        INTEGER NOT NULL CHECK (source_end >= source_start),
+  field             TEXT NOT NULL,
+  slot              INTEGER NOT NULL CHECK (slot >= 0),
+  constructor       TEXT NOT NULL,
+  PRIMARY KEY (tool_item_version_pk, input_pk, source_chain, source_start, source_end, field, slot),
+  FOREIGN KEY (tool_item_version_pk, tool_item_pk, session_pk)
+    REFERENCES tool_item_version(pk, tool_item_pk, session_pk)
+) STRICT;
+CREATE INDEX tool_item_source_owner ON tool_item_source(tool_item_pk, session_pk);
+CREATE INDEX tool_item_source_input ON tool_item_source(input_pk); -- FK/excision lookup, never a full source scan
+
+-- Shared immutable ownership proofs. Visibility requires BOTH selected operation
+-- root membership and item.selected_version_pk. An append path-copies the root
+-- directory, not every unchanged proof row. Unknown ownership has no proof leaf.
+CREATE TABLE tool_item_association (
+  pk INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool_item_version_pk INTEGER NOT NULL,
+  tool_item_pk INTEGER NOT NULL,
+  message_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN('message_owner','wrapper_parent','wrapper_overlap')),
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  source_chain INTEGER NOT NULL CHECK(source_chain>0),
+  source_start INTEGER NOT NULL CHECK(source_start>=0),
+  source_end INTEGER NOT NULL CHECK(source_end>=source_start),
+  constructor TEXT NOT NULL,
+  FOREIGN KEY(tool_item_version_pk,tool_item_pk,session_pk)
+    REFERENCES tool_item_version(pk,tool_item_pk,session_pk),
+  FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
+  UNIQUE(pk,message_pk,session_pk),
+  UNIQUE(tool_item_version_pk,message_pk,kind,input_pk,source_chain,source_start,source_end)
+) STRICT;
+CREATE INDEX tool_item_association_item ON tool_item_association(tool_item_pk);
+CREATE INDEX tool_item_association_message ON tool_item_association(message_pk);
+CREATE INDEX tool_item_association_input ON tool_item_association(input_pk,source_chain);
+
+-- Direct operation lookup refinement. A block citation remains a block citation;
+-- only tool-call lookup follows this proof. Retained proof addresses outlive a
+-- disposable body; no old body graph is leased solely to keep an anchor alive.
+CREATE TABLE tool_call_anchor (
+  anchor TEXT NOT NULL PRIMARY KEY,
+  tool_item_pk INTEGER NOT NULL REFERENCES tool_item(pk),
+  tool_item_version_pk INTEGER NOT NULL,
+  session_pk INTEGER NOT NULL,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  source_chain INTEGER NOT NULL CHECK(source_chain>0),
+  source_start INTEGER NOT NULL CHECK(source_start>=0),
+  source_end INTEGER NOT NULL CHECK(source_end>=source_start),
+  constructor TEXT NOT NULL,
+  FOREIGN KEY(tool_item_version_pk,tool_item_pk,session_pk)
+    REFERENCES tool_item_version(pk,tool_item_pk,session_pk)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX tool_call_anchor_item ON tool_call_anchor(tool_item_pk);
+CREATE INDEX tool_call_anchor_version ON tool_call_anchor(tool_item_version_pk);
+CREATE INDEX tool_call_anchor_input ON tool_call_anchor(input_pk,source_chain);
+
 -- One row per tool call, paired with its result inside the same session. The
 -- owner of derived call summaries; raw result facts remain on their block.
 CREATE TABLE tool_call (
-  pk                INTEGER PRIMARY KEY,
+  pk                INTEGER PRIMARY KEY AUTOINCREMENT,
   session_pk        INTEGER NOT NULL,       -- kept for index speed; the composite keys make it agree with its blocks
-  call_block_pk     INTEGER NOT NULL UNIQUE,
+  message_pk        INTEGER,
+  operation_id      TEXT NOT NULL,
+  tool_item_pk      INTEGER,
+  tool_item_version_pk INTEGER,
+  call_block_pk     INTEGER,
   result_block_pk   INTEGER,                -- NULL until the result is seen
   at                INTEGER,
-  tool              TEXT NOT NULL,
-  action            TEXT NOT NULL,          -- shell | code | file_read | file_write | file_edit | search | web | subagent | mcp | other
-  command           TEXT,                   -- as given
-  command_norm      TEXT,                   -- 'cargo test', 'git commit' (analysis.md)
-  path              TEXT,                   -- file path argument, when the tool has one
-  outcome           TEXT NOT NULL,          -- ok | error | unknown: facts of the records, never of the clock;
+  tool_value_pk INTEGER REFERENCES body_value(pk),
+  action TEXT CHECK(action IN('shell','code','file_read','file_write','file_edit','search','web','subagent','mcp','other')),
+  command_value_pk INTEGER REFERENCES body_value(pk), -- exact given UTF-8, chunked
+  command_norm_value_pk INTEGER REFERENCES body_value(pk),
+  path_value_pk INTEGER REFERENCES body_value(pk),
+  outcome           TEXT NOT NULL CHECK(outcome IN('ok','error','unknown')), -- facts of the records, never of the clock;
                                             --   `pending` is computed at read time from live state (model.md)
   outcome_reason    TEXT,                   -- a reason code from model.md (no_result, background_never_reported, ...)
   exit_code         INTEGER,
   duration_ms       INTEGER,                -- NULL (unknown) when the times are equal or reversed
   child_session_id  TEXT,                   -- natural id of a spawned subagent (may arrive later)
   inherited         INTEGER NOT NULL DEFAULT 0, -- part of an inherited message
-  FOREIGN KEY (call_block_pk, session_pk) REFERENCES block(pk, session_pk),
-  FOREIGN KEY (result_block_pk, session_pk) REFERENCES block(pk, session_pk)
+  CHECK((call_block_pk IS NOT NULL AND message_pk IS NOT NULL) OR tool_item_version_pk IS NOT NULL),
+  CHECK((call_block_pk IS NULL)=(message_pk IS NULL)),
+  CHECK((tool_item_pk IS NULL)=(tool_item_version_pk IS NULL)),
+  FOREIGN KEY(call_block_pk,message_pk,session_pk) REFERENCES block(pk,message_pk,session_pk),
+  FOREIGN KEY(tool_item_version_pk,tool_item_pk,session_pk)
+    REFERENCES tool_item_version(pk,tool_item_pk,session_pk),
+  FOREIGN KEY(tool_item_pk,session_pk,operation_id)
+    REFERENCES tool_item(pk,session_pk,id),
+  FOREIGN KEY (result_block_pk, session_pk) REFERENCES block(pk, session_pk),
+  UNIQUE(pk,call_block_pk,message_pk,session_pk)
 ) STRICT;
+CREATE INDEX tool_call_block ON tool_call(call_block_pk);
+CREATE INDEX tool_call_item ON tool_call(tool_item_pk);
+CREATE INDEX tool_call_item_version ON tool_call(tool_item_version_pk);
+CREATE INDEX tool_call_message ON tool_call(message_pk);
+CREATE INDEX tool_call_operation ON tool_call(operation_id);
 CREATE INDEX tool_call_session ON tool_call(session_pk, at);   -- exists, seq(...), the changes view
-CREATE INDEX tool_call_tool    ON tool_call(tool);
+CREATE INDEX tool_call_tool ON tool_call(tool_value_pk);
 CREATE INDEX tool_call_action  ON tool_call(action, outcome);
 CREATE INDEX tool_call_failed  ON tool_call(session_pk) WHERE outcome <> 'ok';
-CREATE INDEX tool_call_path    ON tool_call(path) WHERE path IS NOT NULL;
-CREATE INDEX tool_call_repo_command ON tool_call(command_norm, at) WHERE command_norm IS NOT NULL;   -- repo_command_last recompute
+CREATE INDEX tool_call_path ON tool_call(path_value_pk);
+CREATE INDEX tool_call_command ON tool_call(command_value_pk);
+CREATE INDEX tool_call_repo_command ON tool_call(command_norm_value_pk, at);   -- repo_command_last recompute
 CREATE INDEX tool_call_result  ON tool_call(result_block_pk) WHERE result_block_pk IS NOT NULL;   -- foreign-key check
 
--- Substring search on short fields (command:, path:) without a scan. Unfolded
--- text, so it can read its content from tool_call. The writer issues the FTS5
--- `delete` command with the row's old `command` and `path` before deleting or
--- changing a `tool_call` row, in the same transaction.
+-- Serving substring corpus only. Canonical command/path bytes live in body_value.
+-- No prepared/unselected summary enters this index; bounded selected-corpus
+-- publication and retirement remain part of the open search implementation.
 CREATE VIRTUAL TABLE tool_call_trigram USING fts5(command, path,
-    content='tool_call', content_rowid='pk', tokenize='trigram');
+    content='', contentless_delete=1, tokenize='trigram');
 
 -- Where two versions of one message disagree (sources/README.md, rule 2; model.md,
 -- within-input conflicts; attachment conflicts): written by the writer in the
@@ -503,10 +969,14 @@ CREATE TABLE parser_cell (
 -- remain coherent. No provider interpretation runs under a write transaction.
 -- Each admitted batch stages reserved @work:<work_id> parser_cell members before
 -- seal, then applies and deletes a bounded keyset. Final publication changes
--- only this control row and the parser head/resume/counts/checkpoint. It never
+-- only this control row and the parser head/resume/counts/checkpoint, coupled
+-- to the last required canonical publication by its owner. It never
 -- adopts or copies an unbounded delta. Public canonical Messages are untouched.
 -- Same-prefix growth stays owed. Basis replacement/retirement invalidates this
 -- row; old-generation members remain subject to bounded parser_cell collection.
+-- Interrupted unsealed staging may instead discard its members in bounded
+-- keysets without changing published state. Sealed application must complete or
+-- be invalidated; it cannot replay interpretation from a partly changed map.
 CREATE TABLE parse_work (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,

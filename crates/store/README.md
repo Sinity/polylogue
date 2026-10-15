@@ -67,3 +67,12 @@ all staged members have been consumed. This protocol changes no canonical
 Message, block or search rows. The eventual canonical writer must couple its
 message-local selection to final publication. Whole-cell encoding, decoding and
 SQLite page work remain explicitly unqualified for arbitrarily large cells.
+
+
+The forward index9 SQL is extracted from the pinned owning specification revision
+`INDEX_SPEC_COMMIT` and checked against `INDEX_SQL_BLAKE3`, copied Markdown, and
+actual SQLite application. Its Message head/body/directory schema replaces the
+old mutable Message columns. The inbox index8 executable comparison remains
+separate and cannot qualify this forward representation. These schema checks do
+not establish canonical publication, public-client restart or giant-value/search
+resource acceptance.
