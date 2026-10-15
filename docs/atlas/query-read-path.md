@@ -296,6 +296,11 @@ Query-set summary and transcript exports select through resident `cli.query` and
 
 This materialized client selection does not implement scalable resident mutation references or bound the memory required by a single fully rendered session. Existing operation-result bounds also remain an unmet transport obligation for an individual transcript row larger than one deliverable window.
 
+Context-image admission charges each unchanged compiled segment its actual
+token estimate. A segment that cannot fit is a typed budget omission in the
+scheduler ledger; an undersized budget does not discount its unchanged body.
+The image estimate is the sum of admitted segment estimates.
+
 Corpus compaction is an operator-budgeted projection over the pinned selected
 sessions, without changing source evidence. Its executable degradation order
 is clipping, exact adjacent run collapse, source-reference skeletons, item
