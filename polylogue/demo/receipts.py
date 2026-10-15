@@ -500,7 +500,7 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
                 WHERE a.session_id = ?
                   AND r.tool_result_exit_code IS NOT NULL
                   AND a.tool_input LIKE '%pytest tests/test_clock.py%'
-                ORDER BY m.position, result_block.block_id
+                ORDER BY m.position, r.block_id
                 """,
                 (DEMO_CODEX_RECEIPTS_SESSION_ID,),
             ).fetchall()
