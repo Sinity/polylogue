@@ -774,6 +774,12 @@ impl ReadHandle {
 }
 impl SessionCatalog {
     pub fn session(&self, id: &SessionId, allowance: usize) -> Result<Option<SessionView>> {
+        if id.as_str().len() > allowance {
+            return Err(metadata_admission(
+                "session read identity",
+                id.as_str().len() as u64,
+            ));
+        }
         self.visible()?;
         let read = locked(&self.read)?;
         let connection = &read.connection;
@@ -1968,6 +1974,27 @@ mod tests {
             f.session().next(None, 65536).unwrap(),
             SessionStep::UnresolvedOrder { sequence: 4 }
         ));
+    }
+    #[test]
+    fn session_missing_oversized_identity_is_rejected_before_lookup() {
+        let f = Fixture::new();
+        let reader = f.writer.read_handle().unwrap();
+        let catalog = reader.session_catalog(65536).unwrap();
+        let boundary = SessionId::from_stored("x".repeat(128)).unwrap();
+        let oversized = SessionId::from_stored("x".repeat(129)).unwrap();
+        assert!(catalog.session(&boundary, 128).unwrap().is_none());
+        for result in [
+            catalog.session(&oversized, 128),
+            reader.selected_session(&oversized, 128),
+        ] {
+            assert!(matches!(
+                result,
+                Err(Error::ParserAdmission {
+                    resource: "session read identity",
+                    required: 129
+                })
+            ));
+        }
     }
     #[test]
     fn session_metadata_admission_absence_and_current_privacy_are_explicit() {

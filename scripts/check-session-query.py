@@ -107,7 +107,7 @@ def exercise(run):
     run.checked("accessible empty differs from unavailable interpretation")
     native, sid = "query:main:oldest", "claude-code:query:main:oldest"
     secret = "gh" + "p_" + "A" * 36
-    text = f"olderneedle {secret} Łódź refactor carefully shared phrase ranktoken ranktoken ranktoken ranktoken"
+    text = f"olderneedle {secret} Łódź refactor carefully shared phrase ranktoken ranktoken ranktoken ranktoken where AND"
     raw = record(native, "older-message", [{"type":"text","text":text+" boundaryfirst"},{"type":"text","text":"boundarysecond distinctblocktoken"}], "2001-01-01T00:00:00.000Z")
     raw += record(native, "second-message", "separateonlytoken", "2001-01-02T00:00:00.000Z")
     run.import_(native, raw)
@@ -121,6 +121,15 @@ def exercise(run):
     require(secret not in json.dumps(result), "hit references disclosed raw prose")
     for query in ["lodz", "łódź", "refact*", '"shared phrase"', 'origin:claude-code olderneedle phrase']:
         run.query(query, 1, [sid])
+    for query in ['"where"','sessions "where"','sessions where "where"','"AND"','olderneedle AND "AND"']:
+        run.query(query,1,[sid])
+    for query in ['where olderneedle','sessions where','sessions where | limit 0',
+                  'olderneedle | "limit" 0','olderneedle | limit "0"',
+                  'olderneedle | "sort" by last_active desc','olderneedle | sort "by" last_active desc',
+                  'olderneedle | sort by "last_active" desc','olderneedle | sort by last_active "desc"',
+                  '"|"','olderneedle AND "|"','olderneedle | limit 1 "|" limit 0']:
+        run.cli(query,"--json",expected=(2,))
+    run.checked("quoted tokens stay data or refuse; they never become where, stage, sort, limit or conjunction syntax")
     run.query("olderneedle separateonlytoken", 0, [])
     run.query("boundaryfirst boundarysecond",1,[sid])
     run.query('"boundaryfirst boundarysecond"',0,[])

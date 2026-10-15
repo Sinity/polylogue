@@ -22,6 +22,11 @@ struct Token {
     literal: bool,
     at: usize,
 }
+impl Token {
+    fn syntax(&self, value: &str) -> bool {
+        !self.quoted && self.value == value
+    }
+}
 fn tokens(text: &str) -> Result<Vec<Token>, Failure> {
     let mut chars = text.char_indices().peekable();
     let mut result = vec![];
@@ -70,31 +75,32 @@ pub fn bind(text: &str) -> Result<SessionQuery, Failure> {
     }
     let tokens = tokens(text)?;
     let mut plan = SessionQuery::default();
-    let explicit = tokens
-        .first()
-        .is_some_and(|t| !t.quoted && t.value == "find");
+    let explicit = tokens.first().is_some_and(|t| t.syntax("find"));
     let mut i = usize::from(explicit);
     if explicit && i == tokens.len() {
         return Err(invalid(0, "find needs query text"));
     }
-    if !explicit
-        && tokens
-            .first()
-            .is_some_and(|t| !t.quoted && t.value == "sessions")
-    {
+    if !explicit && tokens.first().is_some_and(|t| t.syntax("sessions")) {
         i += 1;
-        if tokens.get(i).is_some_and(|t| t.value == "where") {
+        if tokens.get(i).is_some_and(|t| t.syntax("where")) {
+            let at = tokens[i].at;
             i += 1;
+            if tokens.get(i).is_none_or(|t| t.syntax("|")) {
+                return Err(invalid(at, "where needs a condition"));
+            }
         }
     }
     let mut condition = false;
     while i < tokens.len() {
         let t = &tokens[i];
-        if !t.quoted && t.value == "|" {
+        if t.syntax("|") {
             i += 1;
             let stage = tokens
                 .get(i)
                 .ok_or_else(|| invalid(t.at, "missing stage"))?;
+            if stage.quoted {
+                return Err(unsupported(stage.at, "quoted stage name"));
+            }
             match stage.value.as_str() {
                 "limit" => {
                     if plan.limit.is_some() {
@@ -104,6 +110,9 @@ pub fn bind(text: &str) -> Result<SessionQuery, Failure> {
                     let n = tokens
                         .get(i)
                         .ok_or_else(|| invalid(stage.at, "limit needs a nonnegative integer"))?;
+                    if n.quoted {
+                        return Err(unsupported(n.at, "quoted limit operand"));
+                    }
                     plan.limit = Some(
                         n.value
                             .parse()
@@ -114,9 +123,9 @@ pub fn bind(text: &str) -> Result<SessionQuery, Failure> {
                 "sort" => {
                     if plan.limit.is_some()
                         || plan.recent
-                        || tokens.get(i + 1).is_none_or(|t| t.value != "by")
-                        || tokens.get(i + 2).is_none_or(|t| t.value != "last_active")
-                        || tokens.get(i + 3).is_none_or(|t| t.value != "desc")
+                        || tokens.get(i + 1).is_none_or(|t| !t.syntax("by"))
+                        || tokens.get(i + 2).is_none_or(|t| !t.syntax("last_active"))
+                        || tokens.get(i + 3).is_none_or(|t| !t.syntax("desc"))
                     {
                         return Err(unsupported(stage.at, "sort shape"));
                     }
@@ -125,16 +134,16 @@ pub fn bind(text: &str) -> Result<SessionQuery, Failure> {
                 }
                 _ => return Err(unsupported(stage.at, &stage.value)),
             }
-            if tokens.get(i).is_some_and(|t| t.value != "|") {
+            if tokens.get(i).is_some_and(|t| !t.syntax("|")) {
                 return Err(unsupported(tokens[i].at, "condition after a stage"));
             }
             continue;
         }
-        if !t.quoted && t.value == "AND" {
+        if t.syntax("AND") {
             if !condition
                 || tokens
                     .get(i + 1)
-                    .is_none_or(|t| t.value == "|" || t.value == "AND")
+                    .is_none_or(|t| t.syntax("|") || t.syntax("AND"))
             {
                 return Err(invalid(t.at, "AND needs conditions on both sides"));
             }
@@ -275,6 +284,61 @@ mod tests {
             "reop:morrow",
         ] {
             assert!(bind(q).is_err(), "{q}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod quoted_syntax_tests {
+    use super::*;
+    #[test]
+    fn quoted_words_stay_data_at_leading_and_optional_where_positions() {
+        for query in [
+            "\"where\"",
+            "sessions \"where\"",
+            "sessions where \"where\"",
+        ] {
+            let plan = bind(query).unwrap();
+            assert_eq!(plan.text, vec![TextTerm::Phrase("where".into())], "{query}");
+        }
+        assert_eq!(
+            bind("\"sessions\"").unwrap().text,
+            vec![TextTerm::Phrase("sessions".into())]
+        );
+        for query in ["where chrono", "sessions where", "sessions where | limit 0"] {
+            assert!(bind(query).is_err(), "{query}");
+        }
+    }
+    #[test]
+    fn quoted_stage_names_and_parameters_cannot_acquire_syntax_authority() {
+        for query in [
+            "chrono | \"limit\" 0",
+            "chrono | limit \"0\"",
+            "chrono | \"sort\" by last_active desc",
+            "chrono | sort \"by\" last_active desc",
+            "chrono | sort by \"last_active\" desc",
+            "chrono | sort by last_active \"desc\"",
+            "chrono | limit 1 \"|\" limit 0",
+        ] {
+            assert!(bind(query).is_err(), "{query}");
+        }
+    }
+    #[test]
+    fn quoted_conjunction_is_data_and_quoted_pipe_is_an_unsupported_phrase() {
+        assert_eq!(
+            bind("\"AND\"").unwrap().text,
+            vec![TextTerm::Phrase("AND".into())]
+        );
+        assert_eq!(
+            bind("chrono AND \"AND\"").unwrap().text,
+            vec![
+                TextTerm::Word("chrono".into()),
+                TextTerm::Phrase("AND".into())
+            ]
+        );
+        for query in ["\"|\"", "chrono AND \"|\""] {
+            let error = bind(query).unwrap_err();
+            assert!(error.message.contains("empty phrase"), "{query}: {error:?}");
         }
     }
 }
