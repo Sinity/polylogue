@@ -25,9 +25,13 @@ pub struct MessageHeader {
 struct PinnedRead {
     connection: Connection,
     visibility: Connection,
+    archive: Option<Connection>,
+    archive_visibility: Option<Connection>,
     _lock: Arc<File>,
 }
 type SharedRead = Arc<Mutex<PinnedRead>>;
+mod dependencies;
+pub use dependencies::{SessionDependencyCursor, SessionInputDependency};
 fn locked(read: &SharedRead) -> Result<MutexGuard<'_, PinnedRead>> {
     read.lock()
         .map_err(|_| Error::Invariant("selected read snapshot mutex poisoned".into()))
@@ -124,6 +128,8 @@ impl ReadHandle {
             read: Arc::new(Mutex::new(PinnedRead {
                 connection,
                 visibility: crate::open(&path, true, false)?,
+                archive: None,
+                archive_visibility: None,
                 _lock: Arc::clone(&self._lock),
             })),
             path,
@@ -574,6 +580,7 @@ pub struct SessionView {
     pk: i64,
     generation: String,
     counter: u64,
+    archive_counter: u64,
 }
 /// Work cursor bound to one exact read snapshot. Its PK is a tie cursor only,
 /// never an ordering authority for distinct Messages with the same sequence.
@@ -648,6 +655,13 @@ impl ReadHandle {
                 id.as_str().len() as u64,
             ));
         }
+        // Admission metadata is immutable, but its catalog can grow before
+        // disposable registration. Pin it FIRST, then the index, and refuse an
+        // archive change across that interval rather than hide a crash gap.
+        let archive_path = self.root.join("archive.db");
+        let archive = crate::open(&archive_path, true, true)?;
+        db(&archive_path, || archive.execute_batch("BEGIN DEFERRED"))?;
+        let archive_counter = crate::counter(&archive, &archive_path)?;
         let path = self.root.join("index.db");
         let connection = crate::open(&path, true, false)?;
         db(&path, || connection.execute_batch("BEGIN DEFERRED"))?;
@@ -782,10 +796,15 @@ impl ReadHandle {
             last_activity_at,
             stub,
         };
+        if crate::counter(&self.archive, &archive_path)? != archive_counter {
+            return Err(Error::MessagePredecessorChanged);
+        }
         Ok(Some(SessionView {
             read: Arc::new(Mutex::new(PinnedRead {
                 connection,
                 visibility: crate::open(&path, true, false)?,
+                archive: Some(archive),
+                archive_visibility: Some(crate::open(&archive_path, true, true)?),
                 _lock: Arc::clone(&self._lock),
             })),
             path,
@@ -793,12 +812,25 @@ impl ReadHandle {
             pk,
             generation,
             counter,
+            archive_counter,
         }))
     }
 }
 impl SessionView {
     fn visible(&self) -> Result<()> {
         let read = locked(&self.read)?;
+        if let Some(archive) = &read.archive_visibility {
+            let archive_path = self.path.with_file_name("archive.db");
+            let excision: bool = db(&archive_path, || {
+                archive.query_row("SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)", [], |r| {
+                    r.get(0)
+                })
+            })?;
+            if excision {
+                return Err(Error::ExcisionCheckRequired);
+            }
+        }
+
         let visible: bool = db(&self.path, || {
             read.visibility.query_row("SELECT EXISTS(SELECT 1 FROM session WHERE pk=?1 AND id=?2) AND EXISTS(SELECT 1 FROM meta WHERE key='generation' AND value=?3)",params![self.pk,self.header.id.as_str(),self.generation],|r|r.get(0))
         })?;
@@ -1655,6 +1687,99 @@ mod tests {
             panic!("conflict")
         };
         serde_json::from_slice(&field.range(0, 65536).unwrap().bytes).unwrap()
+    }
+    #[test]
+    fn dependency_catalog_pins_admission_identity_and_survives_index_registration_gap() {
+        let mut f = Fixture::new();
+        f.ready("catalog", 0, 1, "model", false, &[(0, 1)]);
+        let old = f.session();
+        let old_archive_counter = old.source_archive_counter();
+        let hash = f.writer.put_file_blob(b"{malformed}\n").unwrap();
+        let input = f
+            .writer
+            .retain_immutable_input(
+                hash,
+                InputFormat::ClaudeCodeJsonl,
+                &["claude-main", "context-only"],
+                &ImportObservation {
+                    id: "catalog-gap",
+                    machine: "synthetic",
+                    host: "synthetic",
+                    path: "synthetic/context.jsonl",
+                    seen_at: 0,
+                },
+                65536,
+            )
+            .unwrap();
+        assert!(old.next_dependency(None, 1).is_err());
+        let (old_cursor, old_input) = old.next_dependency(None, 65536).unwrap().unwrap();
+        assert_ne!(old_input.id(), input.id);
+        assert!(
+            old.next_dependency(Some(&old_cursor), 65536)
+                .unwrap()
+                .is_none()
+        );
+        // The native crash-repair gap is visible from archive admission even
+        // before a disposable input_ref or any Message exists for this input.
+        f.writer
+            ._index
+            .execute("DELETE FROM input_ref WHERE pk=?1", [input.input_pk])
+            .unwrap();
+        let fresh = f.session();
+        assert!(fresh.source_archive_counter() > old_archive_counter);
+        assert!(matches!(
+            fresh.next_dependency(Some(&old_cursor), 65536),
+            Err(Error::MessagePredecessorChanged)
+        ));
+        let mut after = None;
+        let mut found = false;
+        while let Some((cursor, dependency)) = fresh.next_dependency(after.as_ref(), 65536).unwrap()
+        {
+            if dependency.id() == input.id {
+                assert_eq!(dependency.context(), ["claude-main", "context-only"]);
+                assert!(dependency.registered().is_none());
+                assert!(dependency.head().is_none());
+                found = true;
+            }
+            after = Some(cursor);
+        }
+        assert!(found);
+        // Mutating admitted identity does not redirect a pinned old catalog;
+        // a fresh reader refuses the hash/context inconsistency.
+        f.writer
+            .archive
+            .execute(
+                "UPDATE input SET context_json='[\"claude-main\",\"changed\"]' WHERE id=?1",
+                [&input.id],
+            )
+            .unwrap();
+        let newer = f.session();
+        let mut after = None;
+        let mut refused = false;
+        loop {
+            match newer.next_dependency(after.as_ref(), 65536) {
+                Ok(Some((cursor, _))) => after = Some(cursor),
+                Ok(None) => break,
+                Err(Error::Invariant(_)) => {
+                    refused = true;
+                    break;
+                }
+                Err(e) => panic!("unexpected: {e}"),
+            }
+        }
+        assert!(refused);
+        // Previously pinned metadata still has its original validated identity.
+        let mut after = None;
+        let mut original = false;
+        while let Some((cursor, dependency)) = fresh.next_dependency(after.as_ref(), 65536).unwrap()
+        {
+            if dependency.id() == input.id {
+                assert_eq!(dependency.context(), ["claude-main", "context-only"]);
+                original = true;
+            }
+            after = Some(cursor);
+        }
+        assert!(original);
     }
     #[test]
     fn session_snapshot_pins_all_heads_and_reports_pending_and_catalog_incomplete() {

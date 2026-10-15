@@ -15,6 +15,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 from morrow_report import render_report
@@ -90,9 +91,15 @@ class Run:
             self.env.pop(key, None)
         home = output / "home"
         home.mkdir(mode=0o700)
-        runtime = output / "runtime"
-        runtime.mkdir(mode=0o700)
-        self.env.update(HOME=str(home), XDG_RUNTIME_DIR=str(runtime), NO_COLOR="1")
+        # Only socket dentries use /tmp. Result/archive paths may exceed the
+        # Unix socket name limit; their length must not affect daemon startup.
+        self.runtime_owner = tempfile.TemporaryDirectory(prefix="pl-morrow-", dir="/tmp")
+        self.env.update(HOME=str(home), XDG_RUNTIME_DIR=self.runtime_owner.name, NO_COLOR="1")
+
+    def close_runtime(self):
+        require(self.daemon is None and all(p["exit"] is not None for p in self.processes),
+                "owned daemon must stop before runtime cleanup")
+        self.runtime_owner.cleanup()
 
     def command(self, argv, label, expected=(0,), timeout=30, env=None):
         index = len(self.commands)
@@ -185,7 +192,7 @@ class Run:
         context_path.write_text(json.dumps(context, indent=2) + "\n")
         errors = expected.get("record_errors", 0)
         admitted = self.client(archive, "import", str(path), "--format", "claude-code-jsonl",
-                               "--context", str(context_path), "--wait", "--json", expected=(5,) if errors else (0,))
+                               "--context", str(context_path), "--wait", expected=(5,) if errors else (0,))
         rows=admitted.get("source_rows")
         require(isinstance(rows,dict) and rows.get("scope")=="imported_source_rows"
                 and isinstance(rows.get("basis"),dict)
@@ -336,6 +343,13 @@ def main():
         except Exception as error:
             result["success"] = False
             result["cleanup_failure"] = str(error)
+        result["runtime_cleanup"] = {"path": run.env["XDG_RUNTIME_DIR"], "removed": False}
+        try:
+            run.close_runtime()
+            result["runtime_cleanup"]["removed"] = not Path(run.env["XDG_RUNTIME_DIR"]).exists()
+        except Exception as error:
+            result["success"] = False
+            result["runtime_cleanup_failure"] = str(error)
         result["control_exercised"] = run.control_exercised
         result["control_result"] = run.control_result
         try:

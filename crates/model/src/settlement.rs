@@ -37,3 +37,14 @@ pub enum SourceRowScope {
     #[serde(rename = "imported_source_rows")]
     ImportedSourceRows,
 }
+
+/// One retained undecodable record, independent of query/candidate paths.
+/// Original input identity is context-qualified; offsets never mean Messages.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordFailureId {
+    pub input: String,
+    pub chain: i64,
+    pub revision: u64,
+    pub record_start: u64,
+}

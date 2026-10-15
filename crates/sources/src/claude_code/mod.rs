@@ -30,6 +30,14 @@ impl FileCtx {
     pub fn main(stem: &str) -> Self {
         Self::Main { stem: stem.into() }
     }
+    /// Main-file context proves membership even without one parseable record.
+    /// Subagent ownership needs its own records; folder lineage alone is not it.
+    pub fn direct_main_session(&self) -> Option<SessionId> {
+        match self {
+            Self::Main { stem } => sid(stem),
+            Self::Subagent { .. } => None,
+        }
+    }
 }
 fn origin() -> Origin {
     Origin::new("claude-code").unwrap_or_else(|_| unreachable!("constant valid origin"))

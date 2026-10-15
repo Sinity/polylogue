@@ -13,6 +13,7 @@ polylogue-store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 socket2 = "0.6.5"
+rustix = { version = "1", features = ["event"] }
 blake3.workspace = true
 ctrlc = "3.5.2"
 jiff = { version = "0.2", default-features = false, features = ["std"] }

@@ -61,6 +61,16 @@ leaves retained owner work runnable. Retry the
 same receipt after provider deletion/restart. Import/progress no longer expose a
 hardcoded `canonical_complete` placeholder; Session read coverage remains explicit.
 
+Session JSON reads qualify direct Claude main-file dependencies from one pinned
+admission/index view, independently of selected Message rows. Retained malformed
+records carry `result.unknown.record_errors` and named notes in both the document
+and socket completion. Repeated observations of one immutable input count once;
+unrelated main contexts do not add pending work. Unresolved subagent/linked
+shapes and the existing Session coverage gaps remain explicit. A read keeps its
+captured view when later inputs arrive; this is not an exact historical query or
+complete Session settlement. Deadline/disconnect stops read-side qualification
+without cancelling retained owner work.
+
 The actor uses fixed record/cell/request admission allowances. Oversized records
 fail explicitly with owed work retained; configurable larger allowances and full
 resource qualification remain unfinished. Its current source scheduling follows
@@ -98,7 +108,10 @@ Selected terminal body reads and Session JSON string values apply the fixed shar
 environment. Supply `--spec-repo`, an explicit `--spec-revision`, and a new
 absolute `--output` directory. It builds this checkout's Nix package, retains the
 selected committed synthetic fixtures/oracle, and launches only that package
-with isolated archive, home and runtime paths. Intended checks cover repeated
+with isolated archive, home and runtime paths. Socket files use an owned short
+`/tmp` directory, removed after the daemon stops; archives, captures and reports
+stay in the selected output directory. Long result paths do not lengthen socket
+names, and `result.json` records runtime cleanup. Intended checks cover repeated
 import, append at the same provider pathname followed by immutable snapshot
 import, restart, empty/malformed inputs and read/export agreement. The append
 changes only the suffix and records before/after sizes and digests. These
@@ -122,7 +135,8 @@ The corruption control first validates and preserves the original real answer;
 the planted answer is a separate artifact. Oracle acceptance and unrelated
 failures remain distinguishable. `scripts/test-check-morrow.py --checker PATH`
 tests that reporting boundary with synthetic replies and broken oracles; optional
-`--binary /nix/store/.../bin/polylogue` adds the real launch refusal. These are
+`--binary /nix/store/.../bin/polylogue` adds real launch refusal and daemon
+startup/cleanup under a long result path. These are
 controller checks, not canonical-product acceptance.
 The driver requires `import --wait` to return typed `source_rows` for the
 admitted input: settled for base/append/empty, unavailable/degraded5 with usable

@@ -65,8 +65,11 @@ pub(crate) fn serve(
         crate::output_json::check_identity(&h.native_id, deadline)
             .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
         frame(stream,json!({"type":"session","id":h.id.as_str(),"origin":h.origin.as_str(),"native_id":h.native_id,"format":"polylogue-session","version":1})).map_err(|e|failed(ErrorKind::Io,e))?;
+        let cancellation = stream.try_clone().map_err(|e| failed(ErrorKind::Io, e))?;
         let coverage = text_frames(stream, |out| {
-            session_document::write(&session, out, deadline)
+            session_document::write_with_cancel(&session, out, deadline, &mut || {
+                peer_gone(&cancellation)
+            })
         })
         .map_err(|e| {
             failed(
@@ -82,7 +85,7 @@ pub(crate) fn serve(
         })?;
         match coverage.catalog {
             polylogue_store::contributions::SessionCoverage::KnownCatalogOnly => Ok(
-                json!({"type":"end","outcome":"degraded","canonical_complete":false,"messages":coverage.messages,"missing":session_document::COVERAGE_GAPS}),
+                json!({"type":"end","outcome":"degraded","canonical_complete":false,"messages":coverage.messages,"missing":coverage.qualification["notes"],"notes":coverage.qualification["notes"],"unknown":coverage.qualification["unknown"]}),
             ),
         }
     })();
@@ -93,6 +96,26 @@ pub(crate) fn serve(
         },
     )
 }
+// POLLHUP detects full peer close without treating a request's write-half close
+// as cancellation. Safe rustix polling neither changes flags nor spawns helpers.
+fn peer_gone(stream: &UnixStream) -> bool {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let mut fds = [PollFd::new(stream, PollFlags::HUP | PollFlags::ERR)];
+    match poll(
+        &mut fds,
+        Some(&Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        }),
+    ) {
+        Ok(_) => fds[0]
+            .revents()
+            .intersects(PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL),
+        Err(error) if error == rustix::io::Errno::INTR => false,
+        Err(_) => true,
+    }
+}
+
 pub fn request(socket: &Path, reference: &str, out: &mut impl Write) -> io::Result<Value> {
     if reference.is_empty() || reference.len() > 16384 {
         return Err(io::Error::new(
@@ -242,5 +265,19 @@ mod tests {
         let (result, out) = exchange(vec![failure], expected);
         assert!(out.is_empty());
         assert_eq!(result.unwrap()["outcome"], "error");
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    #[test]
+    fn only_full_peer_close_cancels_preflight_not_request_half_close() {
+        let (server, client) = UnixStream::pair().unwrap();
+        assert!(!peer_gone(&server));
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(!peer_gone(&server));
+        drop(client);
+        assert!(peer_gone(&server));
     }
 }

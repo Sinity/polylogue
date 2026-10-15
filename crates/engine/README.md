@@ -100,3 +100,12 @@ metadata/history/catalog, global freshness or search. Restart replays an unfinis
 audit from its beginning. Claude's admitted whole Effects cell remains a whole
 decode and may contain multiple bounded-admission obligations; universal worker
 CPU/RSS/append-locality acceptance is still open.
+
+Direct Session source qualification walks the pinned retained-input catalog,
+not matching Message provenance. Claude main-context membership is source-owned;
+unresolved subagent shapes remain named. Error counts use unique input/revision
+record-start identities from committed disposition receipts, checked against the
+same pinned parse accounting. Aggregate source receipt counts are not summed.
+The read shares the selected-row snapshot, admits whole existing effect cells,
+and checks its deadline/cancellation between catalog/cell/error steps. This does
+not prove linked/global dependencies or full Session/search completeness.

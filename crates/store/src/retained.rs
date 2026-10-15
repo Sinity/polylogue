@@ -177,36 +177,8 @@ impl Writer {
         let Some((id, format, length, digest, original, context_json)) = row else {
             return Ok(None);
         };
-        let hash = BlobHash::from_bytes(
-            digest
-                .try_into()
-                .map_err(|_| Error::Invariant("invalid immutable import hash".into()))?,
-        );
-        let original = BlobHash::from_bytes(
-            original
-                .try_into()
-                .map_err(|_| Error::Invariant("invalid import original digest".into()))?,
-        );
-        let context: Vec<String> =
-            serde_json::from_str(&context_json).map_err(|e| Error::Invariant(e.to_string()))?;
-        let parts: Vec<&str> = context.iter().map(String::as_str).collect();
-        if hash != original || id != InputId::imported(&original, &format, &parts).as_str() {
-            return Err(Error::Invariant(
-                "immutable import identity tuple mismatch".into(),
-            ));
-        }
-        let format = match format.as_str() {
-            "codex-rollout" => InputFormat::CodexRollout,
-            "claude-code-jsonl" => InputFormat::ClaudeCodeJsonl,
-            _ => {
-                return Err(Error::Invariant(
-                    "unsupported immutable import format".into(),
-                ));
-            }
-        };
-        // Validate provider semantics as well as the identity framing.
-        validate_context(format, &parts)?;
-        let length = u64::try_from(length).map_err(|_| Error::Range)?;
+        let (id, hash, format, context, length) =
+            decode_import_identity(id, format, length, digest, original, context_json)?;
         let input = self.register_import_reference(id, length)?;
         Ok(Some(ImmutableImport {
             input,
@@ -896,4 +868,47 @@ mod tests {
             0
         );
     }
+}
+
+/// One interpretation of immutable archive identity metadata for writer and
+/// pinned readers. Registration/repair remains writer-only.
+pub(crate) fn decode_import_identity(
+    id: String,
+    format: String,
+    length: i64,
+    digest: Vec<u8>,
+    original: Vec<u8>,
+    context_json: String,
+) -> Result<(String, BlobHash, InputFormat, Vec<String>, u64)> {
+    let hash = BlobHash::from_bytes(
+        digest
+            .try_into()
+            .map_err(|_| Error::Invariant("invalid immutable import hash".into()))?,
+    );
+    let original = BlobHash::from_bytes(
+        original
+            .try_into()
+            .map_err(|_| Error::Invariant("invalid import original digest".into()))?,
+    );
+    let context: Vec<String> =
+        serde_json::from_str(&context_json).map_err(|e| Error::Invariant(e.to_string()))?;
+    let parts: Vec<&str> = context.iter().map(String::as_str).collect();
+    if hash != original || id != InputId::imported(&original, &format, &parts).as_str() {
+        return Err(Error::Invariant(
+            "immutable import identity tuple mismatch".into(),
+        ));
+    }
+    let format = match format.as_str() {
+        "codex-rollout" => InputFormat::CodexRollout,
+        "claude-code-jsonl" => InputFormat::ClaudeCodeJsonl,
+        _ => {
+            return Err(Error::Invariant(
+                "unsupported immutable import format".into(),
+            ));
+        }
+    };
+    // Validate provider semantics as well as the identity framing.
+    validate_context(format, &parts)?;
+    let length = u64::try_from(length).map_err(|_| Error::Range)?;
+    Ok((id, hash, format, context, length))
 }

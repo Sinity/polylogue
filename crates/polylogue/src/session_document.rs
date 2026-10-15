@@ -22,8 +22,58 @@ pub(crate) const COVERAGE_GAPS: &[&str] = &[
     "tool_population_and_pairing",
     "partial_excision_coverage",
 ];
-fn result_qualification() -> Value {
-    json!({"outcome":"degraded","notes":COVERAGE_GAPS,"unknown":{}})
+fn result_qualification(
+    session: &SessionView,
+    deadline: Instant,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> io::Result<Value> {
+    let qualification = polylogue_engine::session_qualification::qualify_with_cancel(
+        session,
+        deadline,
+        16 * 1024 * 1024,
+        cancelled,
+    )
+    .map_err(|error| {
+        if matches!(error, polylogue_store::Error::Cancelled) {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Session dependency qualification deadline",
+            )
+        } else {
+            io::Error::other(error)
+        }
+    })?;
+    let mut notes: Vec<String> = COVERAGE_GAPS.iter().map(|s| (*s).into()).collect();
+    if qualification.record_errors != 0 {
+        notes.push(format!(
+            "{} retained undecodable complete records affect this Session's main inputs",
+            qualification.record_errors
+        ));
+    }
+    if qualification.pending_inputs != 0 {
+        notes.push(format!(
+            "{} direct Session input bases have pending interpretation or row effects",
+            qualification.pending_inputs
+        ));
+    }
+    if qualification.unavailable_inputs != 0 {
+        notes.push(format!(
+            "{} direct Session input bases have unavailable interpretation or effects",
+            qualification.unavailable_inputs
+        ));
+    }
+    if qualification.unresolved_inputs != 0 {
+        notes.push(format!(
+            "{} input dependency shapes remain unresolved for this Session",
+            qualification.unresolved_inputs
+        ));
+    }
+    let unknown = if qualification.record_errors != 0 {
+        json!({"record_errors":qualification.record_errors})
+    } else {
+        json!({})
+    };
+    Ok(json!({"outcome":"degraded","notes":notes,"unknown":unknown}))
 }
 const LEAF: usize = 65536;
 const PIECE: usize = 4096;
@@ -31,6 +81,7 @@ const PIECE: usize = 4096;
 pub(crate) struct Coverage {
     pub messages: u64,
     pub catalog: SessionCoverage,
+    pub qualification: Value,
 }
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -142,9 +193,24 @@ pub(crate) fn write(
     out: &mut impl Write,
     deadline: Instant,
 ) -> io::Result<Coverage> {
+    write_with_cancel(session, out, deadline, &mut || false)
+}
+pub(crate) fn write_with_cancel(
+    session: &SessionView,
+    out: &mut impl Write,
+    deadline: Instant,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> io::Result<Coverage> {
+    let qualification = result_qualification(session, deadline, cancelled)?;
     let mut after = None;
     loop {
         check(deadline)?;
+        if cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "Session reader cancelled",
+            ));
+        }
         match stored(session.next(after.as_ref(), LEAF))? {
             SessionStep::Ready { cursor, .. } => after = Some(cursor),
             SessionStep::Pending { .. } => {
@@ -161,7 +227,7 @@ pub(crate) fn write(
     // Package version is fixed build metadata, not provider text.
     e.syntax(env!("CARGO_PKG_VERSION").as_bytes())?;
     e.syntax(b"\"")?;
-    member(&mut e, "result", &result_qualification())?;
+    member(&mut e, "result", &qualification)?;
     e.syntax(b",\"session\":{")?;
     let h = stored(session.header())?;
     e.key("id")?;
@@ -213,6 +279,12 @@ pub(crate) fn write(
     let mut messages = 0u64;
     let catalog = loop {
         check(deadline)?;
+        if cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "Session reader cancelled",
+            ));
+        }
         match stored(session.next(after.as_ref(), LEAF))? {
             SessionStep::Ready {
                 cursor, message, ..
@@ -234,7 +306,11 @@ pub(crate) fn write(
     };
     e.syntax(b"]}")?;
     e.finish()?;
-    Ok(Coverage { messages, catalog })
+    Ok(Coverage {
+        messages,
+        catalog,
+        qualification,
+    })
 }
 fn write_message<W: Write>(
     m: &MessageView,

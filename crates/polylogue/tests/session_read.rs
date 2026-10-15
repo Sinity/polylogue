@@ -211,7 +211,9 @@ impl World {
                     String::from_utf8_lossy(&out.stderr).contains("coverage is incomplete"),
                     "{out:?}"
                 );
-                if document["messages"].as_array().unwrap().len() == messages {
+                if document["messages"].as_array().unwrap().len() == messages
+                    && p["source_rows"]["state"] != "pending"
+                {
                     assert_eq!(
                         p["parser"]["finalization_pending"],
                         p["source_rows"]["state"] != "settled"
@@ -507,12 +509,17 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
 }
 
 fn wait_import(world: &World, path: &Path, request_id: &str, timeout: &str) -> Output {
+    wait_import_context(world, path, request_id, timeout, &["claude-main", SID])
+}
+fn wait_import_context(
+    world: &World,
+    path: &Path,
+    request_id: &str,
+    timeout: &str,
+    parts: &[&str],
+) -> Output {
     let context = world.work.path().join("context.json");
-    fs::write(
-        &context,
-        json!({"version":1,"context":["claude-main",SID]}).to_string(),
-    )
-    .unwrap();
+    fs::write(&context, json!({"version":1,"context":parts}).to_string()).unwrap();
     world.cli(&[
         "import",
         path.to_str().unwrap(),
@@ -773,4 +780,129 @@ fn admission_refusal_and_provider_diagnostics_are_named_without_credential_discl
     );
     let progress = world.raw_progress(failure["retained"]["id"].as_str().unwrap());
     assert!(!progress.to_string().contains(&secret));
+}
+
+#[test]
+fn session_qualification_includes_malformed_only_source_but_excludes_unrelated_pending_main() {
+    let mut world = World::new();
+    let clean = world.input(
+        "qualified-main.jsonl",
+        &simple("qualified-row", json!("retained direct Session row")),
+    );
+    let good = wait_import(&world, &clean, "01900000-0000-7000-8000-000000000420", "20");
+    assert_eq!(good.status.code(), Some(0), "{good:?}");
+    let malformed = world.input("only-malformed.jsonl", b"{not json}\n");
+    let bad = wait_import(
+        &world,
+        &malformed,
+        "01900000-0000-7000-8000-000000000421",
+        "20",
+    );
+    assert_eq!(bad.status.code(), Some(2), "{bad:?}");
+    let bad_receipt: Value = serde_json::from_slice(&bad.stdout).unwrap();
+    assert_eq!(bad_receipt["source_rows"]["usable_result"], false);
+    let peer = world.input("unrelated-pending.jsonl", b"{unfinished");
+    let peer_out = wait_import_context(
+        &world,
+        &peer,
+        "01900000-0000-7000-8000-000000000422",
+        "0",
+        &["claude-main", "unrelated-main"],
+    );
+    assert_eq!(peer_out.status.code(), Some(7));
+    let read = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(read.status.code(), Some(5), "{read:?}");
+    let first: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(first["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(first["result"]["unknown"]["record_errors"], 1);
+    assert!(
+        first["result"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("undecodable complete records"))
+    );
+    assert!(
+        !first["result"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note.as_str().unwrap().contains("pending interpretation")),
+        "{first}"
+    );
+    let (socket, _, end) = world.socket_read(&reference());
+    assert_eq!(socket, first);
+    assert_eq!(end["unknown"], first["result"]["unknown"]);
+    assert_eq!(end["notes"], first["result"]["notes"]);
+    // A subagent's parent is not proved by its folder or by any matching row.
+    // Its malformed record cannot be attributed to A; the dependency is named.
+    let subagent = world.input("unresolved-subagent.jsonl", b"{unreadable}\n");
+    let unresolved = wait_import_context(
+        &world,
+        &subagent,
+        "01900000-0000-7000-8000-000000000424",
+        "20",
+        &["claude-subagent", "synthetic-agent"],
+    );
+    assert_eq!(unresolved.status.code(), Some(2), "{unresolved:?}");
+    let qualified = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(qualified.status.code(), Some(5));
+    let first: Value = serde_json::from_slice(&qualified.stdout).unwrap();
+    assert_eq!(first["result"]["unknown"]["record_errors"], 1);
+    assert!(
+        first["result"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("dependency shapes remain unresolved"))
+    );
+    // Another observation/path into the identical context-qualified input is
+    // the same failure identity, not a second Session/candidate dependency.
+    let copied = world.input("copied-malformed.jsonl", b"{not json}\n");
+    let repeated = wait_import(
+        &world,
+        &copied,
+        "01900000-0000-7000-8000-000000000423",
+        "20",
+    );
+    assert_eq!(repeated.status.code(), Some(2));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&repeated.stdout).unwrap()["retained"],
+        bad_receipt["retained"]
+    );
+    let reread = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(reread.status.code(), Some(5));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&reread.stdout).unwrap(),
+        first
+    );
+    fs::remove_file(&clean).unwrap();
+    fs::remove_file(&malformed).unwrap();
+    fs::remove_file(&copied).unwrap();
+    fs::remove_file(&peer).unwrap();
+    fs::remove_file(&subagent).unwrap();
+    world.restart();
+    let replay = wait_import(
+        &world,
+        &malformed,
+        "01900000-0000-7000-8000-000000000421",
+        "20",
+    );
+    assert_eq!(replay.status.code(), Some(2));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&replay.stdout).unwrap()["retained"],
+        bad_receipt["retained"]
+    );
+    let read = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(read.status.code(), Some(5));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&read.stdout).unwrap(),
+        first
+    );
 }
