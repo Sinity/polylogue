@@ -11,7 +11,7 @@ revisions, parsing or M1 support.
 
 All three schemas are exact SQL-fence extractions from the owning snapshot;
 a drift test compares their text. Archive version 1 adds the immutable import
-identity tuple; embeddings version remains zero and index version is 15. No
+identity tuple; embeddings version remains zero and index version is 18. No
 pre-release durable migration is supplied. Existing schemas and versions are checked before database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 it. Retained state without its coordination lock requires controlled recovery;
@@ -191,3 +191,11 @@ and lazy payload extents. Historical field-origin descriptors and their second
 producer lease are the next owning schema/runtime seam, still unimplemented.
 
 Field facts may retain a separate chunked JSON origin descriptor. Preparation owns independent normalized-value and origin-value leases, including two counts when deduplication aliases them. Fact publication transfers both atomically; `FieldView::origin_range` reads the descriptor through the same selected snapshot. Integrity-ready JSON is only a carrier: source selector/transform validation, pinned-span membership and export remain separate unfinished obligations.
+
+Source certificates retain the exact parser generation, step and basis alongside
+the preparation digest. Reparse can withdraw only a verified strictly older
+generation of the same input/chain/archive revision/logical candidate; a missing
+same-generation receipt or inconsistent certificate refuses publication. This
+works after old parser cells are collected. Source replacement leaves the selected
+body unchanged until explicit selection, and pinned readers retain their old view.
+There is no automatic index migration or general rebuild/swap implementation.

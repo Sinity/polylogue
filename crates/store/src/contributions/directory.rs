@@ -1057,7 +1057,7 @@ mod tests {
         let mut witness_root = None;
         let mut facts = Vec::new();
         for i in 1..=64i64 {
-            tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,basis_digest,finish,route) VALUES(1,1,1,1,1,100,1,?1,1,zeroblob(32),1,2)",[blake3::hash(&i.to_be_bytes()).as_bytes().as_slice()]).unwrap();
+            tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,source_state_generation,source_state_step,source_basis_digest,basis_digest,finish,route) VALUES(1,1,1,1,1,100,1,?1,1,1,0,zeroblob(32),zeroblob(32),1,2)",[blake3::hash(&i.to_be_bytes()).as_bytes().as_slice()]).unwrap();
             let candidate = tx.last_insert_rowid();
             let bytes = i.to_string();
             tx.execute("INSERT INTO body_value(codec,length,hash,state,incoming) VALUES('json',?1,?2,'ready',1)",params![bytes.len() as i64,blake3::hash(bytes.as_bytes()).as_bytes().as_slice()]).unwrap();

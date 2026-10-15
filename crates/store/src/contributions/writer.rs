@@ -291,7 +291,7 @@ impl Writer {
                 RouteKind::Native => 2,
             };
             db(&path, || {
-                tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,basis_digest,body_pk,finish,route) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1,?12)",params![message,session,source.predecessor.input_pk,source.predecessor.chain,revision,length_i,evidence,source.logical_key.as_slice(),head.parser_version,digest.as_slice(),body,route])
+                tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,source_state_generation,source_state_step,source_basis_digest,basis_digest,body_pk,finish,route) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15)",params![message,session,source.predecessor.input_pk,source.predecessor.chain,revision,length_i,evidence,source.logical_key.as_slice(),head.parser_version,source.predecessor.generation,source.predecessor.step,source.predecessor.basis.as_slice(),digest.as_slice(),body,route])
             })?;
             let candidate = tx.last_insert_rowid();
             db(&path, || {
@@ -2569,7 +2569,7 @@ mod tests {
         let source_fields = d::summary(&tx, &path, owner, d::Kind::Fields, source_root)
             .unwrap()
             .source_fields;
-        tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,basis_digest,finish,route,source_blocks,source_text_blocks,source_fields,version_hash,facts_ready,ready) SELECT message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,basis_digest,finish,route,0,0,?2,zeroblob(32),1,1 FROM message_candidate WHERE pk=?1",params![build.candidate,source_fields]).unwrap();
+        tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,source_state_generation,source_state_step,source_basis_digest,basis_digest,finish,route,source_blocks,source_text_blocks,source_fields,version_hash,facts_ready,ready) SELECT message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,source_state_generation,source_state_step,source_basis_digest,basis_digest,finish,route,0,0,?2,zeroblob(32),1,1 FROM message_candidate WHERE pk=?1",params![build.candidate,source_fields]).unwrap();
         let certificate = tx.last_insert_rowid();
         tx.execute("INSERT INTO message_body(message_pk,session_pk,ready,basis_digest,contributor_revision,removal_epoch,preferred_candidate_pk,field_root_pk,layout,role,written_by,input_pk,version_hash,parser_version) SELECT message_pk,session_pk,1,zeroblob(32),contributor_revision,removal_epoch,?2,field_root_pk,layout,role,written_by,input_pk,zeroblob(32),parser_version FROM message_body WHERE pk=?1",params![build.body,certificate]).unwrap();
         let selected = tx.last_insert_rowid();
@@ -2656,7 +2656,7 @@ mod tests {
         let source_fields = d::summary(&tx, &path, owner, d::Kind::Fields, source_root)
             .unwrap()
             .source_fields;
-        tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,basis_digest,finish,route,source_blocks,source_text_blocks,source_fields,version_hash,facts_ready,ready) SELECT message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,basis_digest,finish,route,0,0,?2,zeroblob(32),1,1 FROM message_candidate WHERE pk=?1",params![build.candidate,source_fields]).unwrap();
+        tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,source_state_generation,source_state_step,source_basis_digest,basis_digest,finish,route,source_blocks,source_text_blocks,source_fields,version_hash,facts_ready,ready) SELECT message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,source_state_generation,source_state_step,source_basis_digest,basis_digest,finish,route,0,0,?2,zeroblob(32),1,1 FROM message_candidate WHERE pk=?1",params![build.candidate,source_fields]).unwrap();
         let certificate = tx.last_insert_rowid();
         tx.execute("INSERT INTO message_body(message_pk,session_pk,ready,basis_digest,contributor_revision,removal_epoch,preferred_candidate_pk,field_root_pk,layout,role,written_by,input_pk,version_hash,parser_version) SELECT message_pk,session_pk,1,zeroblob(32),contributor_revision,removal_epoch,?2,field_root_pk,layout,role,written_by,input_pk,zeroblob(32),parser_version FROM message_body WHERE pk=?1",params![build.body,certificate]).unwrap();
         let selected = tx.last_insert_rowid();
@@ -3833,5 +3833,315 @@ mod tests {
             f.writer.value_head(&origin.id).unwrap().state,
             values::State::Retiring
         );
+    }
+    fn reparse_source_fixture(f: &mut Fixture) {
+        let old = f.head.clone();
+        f.head = f
+            .writer
+            .begin_parser(&parser_state::Basis {
+                input_pk: old.token.input_pk,
+                chain: old.token.chain,
+                parser_version: old.parser_version,
+                digest: [8; 32],
+                acquired_upto: old.acquired_upto,
+                companions_json: None,
+                excisions_seen: 0,
+            })
+            .unwrap();
+        assert!(f.head.token.generation > old.token.generation);
+        assert_eq!(f.head.parser_version, old.parser_version);
+        // Collect the actual old receipt through the existing indexed drain.
+        loop {
+            let result = parser_state::collect_retired(
+                &mut f.writer._index,
+                &f.root.join("index.db"),
+                &f.head.token,
+                parser_state::Budget {
+                    cells: 1,
+                    encoded_bytes: 4096,
+                },
+            )
+            .unwrap();
+            if !result.remaining {
+                break;
+            }
+        }
+        assert_eq!(f.scalar("SELECT count(*) FROM parser_cell"), 0);
+    }
+    #[test]
+    fn reparse_certificate_survives_cell_collection_and_late_failure_restart() {
+        let mut f = Fixture::new();
+        let old_build = f.prepare().unwrap().build;
+        let done = finish_source_fixture(&mut f, &old_build);
+        let old = f
+            .writer
+            .publish_source_projection(&done, None, b"old", 4096)
+            .unwrap();
+        f.writer
+            .select_uncontested_source_message(&old, 4096)
+            .unwrap();
+        reparse_source_fixture(&mut f);
+        let new = f.prepare().unwrap().build;
+        let done = finish_source_fixture(&mut f, &new);
+        let mut f = f.reopen();
+        f.writer._index.execute_batch("CREATE TRIGGER refuse_reparse_delete BEFORE DELETE ON message_build BEGIN SELECT RAISE(ABORT,'late reparse failure'); END;").unwrap();
+        assert!(matches!(
+            f.writer
+                .publish_source_projection(&done, None, b"new", 4096),
+            Err(Error::Sqlite { .. })
+        ));
+        assert_eq!(
+            f.scalar(&format!(
+                "SELECT eligible FROM message_candidate WHERE pk={}",
+                old_build.candidate
+            )),
+            1
+        );
+        assert_eq!(
+            f.scalar(&format!(
+                "SELECT ready FROM message_body WHERE pk={}",
+                new.body
+            )),
+            0
+        );
+        assert!(
+            f.writer
+                .current_source_projection(&f.head.token, &[3; 32], 4096)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            &f.writer
+                .read_handle()
+                .unwrap()
+                .selected_message(&f.message)
+                .unwrap()
+                .unwrap()
+                .body_id(),
+            old.body()
+        );
+        f.writer
+            ._index
+            .execute_batch("DROP TRIGGER refuse_reparse_delete")
+            .unwrap();
+        let replacement = f
+            .writer
+            .publish_source_projection(&done, None, b"new", 4096)
+            .unwrap();
+        assert_eq!(
+            f.scalar(&format!(
+                "SELECT eligible FROM message_candidate WHERE pk={}",
+                old_build.candidate
+            )),
+            0
+        );
+        assert_eq!(
+            &f.writer
+                .read_handle()
+                .unwrap()
+                .selected_message(&f.message)
+                .unwrap()
+                .unwrap()
+                .body_id(),
+            old.body()
+        );
+        f.writer
+            .select_uncontested_source_message(&replacement, 4096)
+            .unwrap();
+        let f = f.reopen();
+        assert_eq!(
+            f.writer
+                .current_source_projection(&f.head.token, &[3; 32], 4096)
+                .unwrap()
+                .unwrap()
+                .body(),
+            replacement.body()
+        );
+    }
+    #[test]
+    fn reparse_refuses_missing_same_generation_receipt_and_inconsistent_certificates() {
+        for damage in [
+            "missing same generation",
+            "old generation",
+            "old step",
+            "old source basis",
+            "old preparation basis",
+            "future generation",
+            "new source basis",
+        ] {
+            let mut f = Fixture::new();
+            let old_build = f.prepare().unwrap().build;
+            let done = finish_source_fixture(&mut f, &old_build);
+            let old = f
+                .writer
+                .publish_source_projection(&done, None, b"old", 4096)
+                .unwrap();
+            f.writer
+                .select_uncontested_source_message(&old, 4096)
+                .unwrap();
+            if damage == "missing same generation" {
+                advance_source_fixture(&mut f);
+                f.writer
+                    ._index
+                    .execute(
+                        "DELETE FROM parser_cell WHERE namespace='message.source.v1'",
+                        [],
+                    )
+                    .unwrap();
+            } else {
+                reparse_source_fixture(&mut f);
+            }
+            let new = f.prepare().unwrap().build;
+            let done = finish_source_fixture(&mut f, &new);
+            let (pk, column, value) = match damage {
+                "old generation" => (
+                    old_build.candidate,
+                    "source_state_generation",
+                    "source_state_generation+10".to_string(),
+                ),
+                "old step" => (
+                    old_build.candidate,
+                    "source_state_step",
+                    "source_state_step+1".to_string(),
+                ),
+                "old source basis" => (
+                    old_build.candidate,
+                    "source_basis_digest",
+                    "zeroblob(32)".to_string(),
+                ),
+                "old preparation basis" => (
+                    old_build.candidate,
+                    "basis_digest",
+                    "zeroblob(32)".to_string(),
+                ),
+                "new source basis" => (
+                    new.candidate,
+                    "source_basis_digest",
+                    "zeroblob(32)".to_string(),
+                ),
+                "future generation" => {
+                    let mut token = old.predecessor().clone();
+                    token.generation = f.head.token.generation + 1;
+                    let digest = basis(&token, 1, &[3; 32], 1);
+                    f.writer._index.execute("UPDATE message_candidate SET source_state_generation=?2,basis_digest=?3 WHERE pk=?1",params![old_build.candidate,token.generation,digest.as_slice()]).unwrap();
+                    (
+                        old_build.candidate,
+                        "source_state_step",
+                        token.step.to_string(),
+                    )
+                }
+                _ => (
+                    old_build.candidate,
+                    "source_state_step",
+                    old.predecessor().step.to_string(),
+                ),
+            };
+            f.writer
+                ._index
+                .execute(
+                    &format!("UPDATE message_candidate SET {column}={value} WHERE pk=?1"),
+                    [pk],
+                )
+                .unwrap();
+            assert!(
+                matches!(
+                    f.writer
+                        .publish_source_projection(&done, None, b"new", 4096),
+                    Err(Error::MessagePredecessorChanged)
+                ),
+                "{damage}"
+            );
+            assert_eq!(
+                f.scalar(&format!(
+                    "SELECT eligible FROM message_candidate WHERE pk={}",
+                    old_build.candidate
+                )),
+                1,
+                "{damage}"
+            );
+            assert_eq!(
+                f.scalar(&format!(
+                    "SELECT ready FROM message_body WHERE pk={}",
+                    new.body
+                )),
+                0,
+                "{damage}"
+            );
+            assert_eq!(
+                &f.writer
+                    .read_handle()
+                    .unwrap()
+                    .selected_message(&f.message)
+                    .unwrap()
+                    .unwrap()
+                    .body_id(),
+                old.body()
+            );
+            assert!(
+                f.writer
+                    .current_source_projection(&f.head.token, &[3; 32], 4096)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+    #[test]
+    fn reparse_withdrawal_never_crosses_logical_candidate_or_archive_revision() {
+        for other_revision in [false, true] {
+            let mut f = Fixture::new();
+            let old_build = f.prepare().unwrap().build;
+            let done = finish_source_fixture(&mut f, &old_build);
+            f.writer
+                .publish_source_projection(&done, None, b"old", 4096)
+                .unwrap();
+            reparse_source_fixture(&mut f);
+            let preparation = f.writer.prepare_message(
+                Identity {
+                    session: &f.session,
+                    origin: &f.origin,
+                    native_session: "session:with:colons",
+                    session_kind: SessionKind::Main,
+                    message: &f.message,
+                    sequence: 0,
+                    role: Role::Assistant,
+                    written_by: WrittenBy::Model,
+                },
+                Source {
+                    predecessor: &f.head.token,
+                    revision: if other_revision { 2 } else { 1 },
+                    evidence_revision: 1,
+                    logical_key: if other_revision { [3; 32] } else { [4; 32] },
+                    route: RouteKind::Native,
+                },
+                4096,
+            );
+            if other_revision {
+                // This input has only its retained immutable revision1. An
+                // unproved revision must refuse before allocating a candidate.
+                assert!(matches!(preparation, Err(Error::MessagePredecessorChanged)));
+                assert_eq!(
+                    f.scalar("SELECT count(*) FROM message_candidate WHERE eligible=1"),
+                    1
+                );
+                assert_eq!(f.scalar("SELECT count(*) FROM message_build"), 0);
+                continue;
+            }
+            let new = preparation.unwrap().build;
+            let done = finish_source_fixture(&mut f, &new);
+            let replacement = f
+                .writer
+                .publish_source_projection(&done, None, b"independent", 4096)
+                .unwrap();
+            assert_eq!(
+                f.scalar("SELECT count(*) FROM message_candidate WHERE eligible=1"),
+                2
+            );
+            assert_eq!(
+                f.writer
+                    .select_uncontested_source_message(&replacement, 4096)
+                    .unwrap(),
+                super::super::SourceSelection::Contested
+            );
+        }
     }
 }

@@ -888,3 +888,149 @@ fn source_set_is_exact_noncontiguous_and_includes_timestamp_only_witness() {
 
 #[path = "canonical_message/claude_tests.rs"]
 mod claude_tests;
+
+// Append inside engine/tests/canonical_message.rs after the publication freeze.
+// Diagnostic: demonstrates the currently explicit refusal, not desired support.
+#[test]
+fn parser_generation_replay_replaces_only_verified_prior_candidate_and_preserves_pinned_reads() {
+    let bytes = text_input("retained source generation discriminator");
+    let mut world = World::new(&bytes);
+    let handle = world.begin();
+    let previous = world.complete(&handle);
+    world
+        .writer
+        .select_uncontested_source_message(&previous, 65536)
+        .unwrap();
+    let old_generation = world.head.token.generation;
+    let new = world
+        .writer
+        .begin_parser(&Basis {
+            input_pk: world.head.token.input_pk,
+            chain: world.head.token.chain,
+            parser_version: codex::PARSER_VERSION,
+            digest: [8; 32],
+            acquired_upto: bytes.len() as u64,
+            companions_json: None,
+            excisions_seen: 0,
+        })
+        .unwrap();
+    assert_ne!(new.token.generation, old_generation);
+    let snapshot = world.writer.parser_snapshot(&new.token).unwrap();
+    let attempt = adapter::Attempt::new(&snapshot, budget());
+    let resume = attempt.resume().unwrap();
+    let framed = drive_jsonl(KeyedRecords::new(&attempt, resume), &bytes, 0);
+    let mut delta = framed.output.unwrap();
+    delta.resume.parsed_upto = framed.parsed_upto;
+    let encoded = adapter::encode_delta(&delta, 1, budget()).unwrap();
+    assert!(attempt.take_failure().is_none());
+    drop(attempt);
+    drop(snapshot);
+    let mut prepared = world
+        .writer
+        .prepare_parser(
+            &new,
+            Progress {
+                inspected_upto: framed.parsed_upto,
+                parsed_upto: framed.parsed_upto,
+                phase: Phase::Finalizing,
+                finalization_pending: true,
+                counts: Accounting {
+                    framed: framed.counts.framed,
+                    used: framed.counts.used,
+                    ignored: framed.counts.ignored.values().sum(),
+                    unrecognized: framed.counts.unrecognized.len() as u64,
+                    undecodable: framed.counts.undecodable.len() as u64,
+                },
+            },
+        )
+        .unwrap();
+    prepared = world
+        .writer
+        .stage_parser(&prepared.token, &encoded.changes, budget())
+        .unwrap();
+    prepared = world.writer.seal_parser(&prepared.token).unwrap();
+    while prepared.token.applied < prepared.token.staged {
+        prepared = world
+            .writer
+            .apply_parser(&prepared.token, budget())
+            .unwrap();
+    }
+    world.head = world.writer.publish_parser(&prepared.token).unwrap();
+    assert!(
+        world
+            .writer
+            .current_source_projection(&world.head.token, &[3; 32], 65536)
+            .unwrap()
+            .is_none()
+    );
+    world = world.reopen();
+    let reader = world.writer.read_handle().unwrap();
+    let pinned = reader
+        .selected_message(previous.message())
+        .unwrap()
+        .unwrap();
+    let handle = world.begin();
+    let replacement = world.complete(&handle);
+    assert_eq!(replacement.version_hash(), previous.version_hash());
+    assert_ne!(replacement.body(), previous.body());
+    assert_eq!(
+        &reader
+            .selected_message(previous.message())
+            .unwrap()
+            .unwrap()
+            .body_id(),
+        previous.body()
+    );
+    use polylogue_store::contributions::BodyRetirement;
+    assert_eq!(
+        world.writer.retire_message_body(previous.body()).unwrap(),
+        BodyRetirement::Selected
+    );
+    world
+        .writer
+        .select_uncontested_source_message(&replacement, 65536)
+        .unwrap();
+    assert_eq!(
+        &reader
+            .selected_message(previous.message())
+            .unwrap()
+            .unwrap()
+            .body_id(),
+        replacement.body()
+    );
+    assert_eq!(&pinned.body_id(), previous.body());
+    assert_eq!(
+        world.writer.retire_message_body(previous.body()).unwrap(),
+        BodyRetirement::DetachedCandidate
+    );
+    assert_eq!(
+        world.writer.retire_message_body(previous.body()).unwrap(),
+        BodyRetirement::Body
+    );
+    assert_eq!(
+        pinned
+            .block(BlockSlot::Item(0))
+            .unwrap()
+            .unwrap()
+            .text_range(0, 256)
+            .unwrap()
+            .unwrap()
+            .bytes,
+        b"retained source generation discriminator"
+    );
+    drop(pinned);
+    drop(reader);
+    world = world.reopen();
+    let current = world
+        .writer
+        .current_source_projection(&world.head.token, &[3; 32], 65536)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.body(), replacement.body());
+    let snapshot = world.writer.parser_snapshot(&world.head.token).unwrap();
+    let action = m::start(&snapshot, &world.request(), Some(current), budget(), 65536).unwrap();
+    assert!(matches!(
+        m::apply(&mut world.writer, action).unwrap(),
+        m::Applied::Existing(_)
+    ));
+}
