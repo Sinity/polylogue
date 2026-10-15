@@ -313,8 +313,8 @@ runs and omission rows in request-owned native scratch storage. Transcript
 pages enter the store before the next page is read; only a final pack that
 fits the declared serialized budget becomes an in-memory result. Exact JSON
 prefix measures keep candidate ranking and omission trimming on disk. A
-cancelled or failed read closes its native scratch on its creator before
-returning. The current pinned read frame is checked before each transcript
+cancelled or failed read uses the existing creator-owned native scratch
+cleanup. The current pinned read frame is checked before each transcript
 page and again before returning the pack.
 
 A tool-result message is omitted as successful only when every result block
