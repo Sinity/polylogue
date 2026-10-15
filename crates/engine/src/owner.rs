@@ -40,6 +40,7 @@ pub enum Error {
     Store(StoreError),
     Source(source_turn::Error),
     Canonical(canonical_message::Error),
+    InvalidEvidence(String),
     Busy,
     Stopped,
     RequestTooLarge { required: usize, maximum: usize },
@@ -62,6 +63,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::Store(e) => std::fmt::Display::fmt(e, f),
             Self::Source(e) => std::fmt::Display::fmt(e, f),
+            Self::InvalidEvidence(e) => f.write_str(e),
             Self::Canonical(e) => std::fmt::Display::fmt(e, f),
             Self::Busy => f.write_str("owner is busy; retry the unchanged request"),
             Self::Stopped => f.write_str("owner stopped"),
@@ -76,7 +78,7 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
-type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;
 type Reply<T> = SyncSender<Result<T>>;
 #[derive(Clone, Debug)]
 pub struct Observation {
@@ -112,7 +114,7 @@ pub struct Progress {
     pub failure: Option<String>,
     pub recovery_error: Option<String>,
     pub active: bool,
-    pub canonical_complete: bool,
+    pub source_rows: polylogue_model::settlement::SourceRows,
 }
 enum Message {
     Import(ImportRequest, Reply<RetainedInput>),
@@ -266,7 +268,8 @@ struct ComputeJob {
 // Keyset order schedules obligations only; source ordinals remain in the
 // provider's PendingMessage and do not derive from this traversal.
 #[derive(Clone)]
-enum CanonicalPosition {
+pub(crate) enum CanonicalPosition {
+    Audit(Box<crate::source_rows::Audit>),
     Codex(usize),
     ClaudeAfter(Option<crate::state::claude::PendingCursor>),
     ClaudeMessage(
@@ -275,7 +278,7 @@ enum CanonicalPosition {
     ),
 }
 impl CanonicalPosition {
-    fn first(format: InputFormat) -> Self {
+    pub(crate) fn first(format: InputFormat) -> Self {
         match format {
             InputFormat::CodexRollout => Self::Codex(0),
             InputFormat::ClaudeCodeJsonl => Self::ClaudeAfter(None),
@@ -285,10 +288,12 @@ impl CanonicalPosition {
         match self {
             Self::Codex(n) => Ok(Self::Codex(n.checked_add(1).ok_or(StoreError::Range)?)),
             Self::ClaudeMessage(cursor, _) => Ok(Self::ClaudeAfter(Some(cursor))),
-            Self::ClaudeAfter(_) => Err(Error::InvalidRequest("no current Claude Message")),
+            Self::Audit(_) | Self::ClaudeAfter(_) => {
+                Err(Error::InvalidRequest("no current Claude Message"))
+            }
         }
     }
-    fn logical_key(&self) -> Result<Option<[u8; 32]>> {
+    pub(crate) fn logical_key(&self) -> Result<Option<[u8; 32]>> {
         match self {
             Self::Codex(n) => canonical_key(*n).map(Some),
             Self::ClaudeMessage(_, p) => {
@@ -298,11 +303,12 @@ impl CanonicalPosition {
                 h.update(p.message.as_str().as_bytes());
                 Ok(Some(*h.finalize().as_bytes()))
             }
-            Self::ClaudeAfter(_) => Ok(None),
+            Self::Audit(_) | Self::ClaudeAfter(_) => Ok(None),
         }
     }
 }
 enum CanonicalTurn {
+    Audited(crate::source_rows::Turn),
     Action(canonical_message::Action),
     Pending(
         crate::state::claude::PendingCursor,
@@ -648,7 +654,36 @@ impl Actor {
                             None,
                         ));
                     }
-                    Ok(CanonicalTurn::Done) => {}
+                    Ok(CanonicalTurn::Done) => {
+                        self.active = Some(Active::Canonical(
+                            job.input,
+                            job.head,
+                            CanonicalPosition::Audit(Box::new(crate::source_rows::Audit::new())),
+                            None,
+                        ));
+                    }
+                    Ok(CanonicalTurn::Audited(crate::source_rows::Turn::Progress(audit))) => {
+                        self.active = Some(Active::Canonical(
+                            job.input,
+                            job.head,
+                            CanonicalPosition::Audit(Box::new(audit)),
+                            None,
+                        ));
+                    }
+                    Ok(CanonicalTurn::Audited(crate::source_rows::Turn::Complete(receipt))) => {
+                        receipt
+                            .validate(&job.head.token, &crate::source_rows::basis(&job.input))?;
+                        let bytes = serde_json::to_vec(&receipt)
+                            .map_err(|e| Error::InvalidEvidence(e.to_string()))?;
+                        self.writer.publish_source_rows(
+                            &job.head,
+                            &bytes,
+                            matches!(
+                                receipt.rows.state,
+                                polylogue_model::settlement::SourceRowState::Settled
+                            ),
+                        )?;
+                    }
                     Err(e) => self.fail(&job.head, format!("canonical compute: {e}"))?,
                 }
             }
@@ -668,13 +703,41 @@ impl Actor {
             Some(head) => self.writer.parser_failure(&head.token)?,
             None => None,
         };
+        let obligation = match parser.as_ref().map(|h| h.status.as_str()) {
+            None => "source_parser_admission",
+            Some("waiting_tail") => "unfinished_source_record",
+            Some("parsing") => "source_record_interpretation",
+            _ => "canonical_source_row_effects_and_audit",
+        };
+        let mut source_rows = crate::source_rows::pending(&input, obligation);
+        if let Some(head) = &parser {
+            if head.token.basis != parser_basis(&input)
+                || head.parser_version != parser_version(input.format)
+            {
+                source_rows =
+                    crate::source_rows::pending(&input, "current_interpretation_admission");
+            } else if let Some(reason) = &failure {
+                // A failed admitted install may still own unsealed work. Its
+                // retained diagnostic is unavailability, never a waiting tail.
+                source_rows.state = polylogue_model::settlement::SourceRowState::Unavailable {
+                    usable_result: false,
+                    notes: vec![reason.clone()],
+                    record_errors: head.counts.undecodable,
+                };
+            } else if self.writer.parser_work(&head.token)?.is_none() {
+                let snapshot = self.writer.parser_snapshot(&head.token)?;
+                if let Some(receipt) = crate::source_rows::read(&snapshot, &input)? {
+                    source_rows = receipt.rows;
+                }
+            }
+        }
         Ok(Progress {
             input: input.input,
             parser,
             failure,
             recovery_error: self.recovery_error.clone(),
             active: self.active_id() == Some(id),
-            canonical_complete: false,
+            source_rows,
         })
     }
     fn retry(&mut self, id: &str) -> Result<()> {
@@ -768,7 +831,13 @@ impl Actor {
                     Ok(Recovery::Reparse) => {
                         if !settled(&head) {
                             self.active = Some(Active::Compute(input, head, None));
-                        } else if head.status == "finalizing" {
+                        } else if head.status == "finalizing"
+                            && crate::source_rows::read(
+                                &self.writer.parser_snapshot(&head.token)?,
+                                &input,
+                            )?
+                            .is_none()
+                        {
                             self.active = Some(Active::Canonical(
                                 input.clone(),
                                 head,
@@ -780,7 +849,13 @@ impl Actor {
                     Ok(Recovery::Published(head)) => {
                         if !settled(&head) {
                             self.active = Some(Active::Compute(input, head, None));
-                        } else if head.status == "finalizing" {
+                        } else if head.status == "finalizing"
+                            && crate::source_rows::read(
+                                &self.writer.parser_snapshot(&head.token)?,
+                                &input,
+                            )?
+                            .is_none()
+                        {
                             self.active = Some(Active::Canonical(
                                 input.clone(),
                                 head,
@@ -877,6 +952,7 @@ impl Actor {
                 } else {
                     None
                 };
+                let input_for_audit = input.clone();
                 let source_hash = input.hash;
                 let context = input.context.clone();
                 let work_position = position.clone();
@@ -889,6 +965,13 @@ impl Actor {
                             || -> Result<CanonicalTurn> {
                                 if cancelled.load(Ordering::Acquire) {
                                     return Err(StoreError::Cancelled.into());
+                                }
+                                if let CanonicalPosition::Audit(audit) = work_position {
+                                    return Ok(CanonicalTurn::Audited(audit.advance(
+                                        &snapshot,
+                                        &input_for_audit,
+                                        source_budgets().reads,
+                                    )?));
                                 }
                                 let action = if let Some(state) = state {
                                     canonical_message::compute(
@@ -1017,7 +1100,7 @@ impl Actor {
 fn settled(head: &Head) -> bool {
     matches!(head.status.as_str(), "waiting_tail" | "finalizing" | "done")
 }
-fn parser_version(format: InputFormat) -> u32 {
+pub(crate) fn parser_version(format: InputFormat) -> u32 {
     match format {
         InputFormat::CodexRollout => codex::PARSER_VERSION,
         InputFormat::ClaudeCodeJsonl => claude_code::PARSER_VERSION,
@@ -1063,13 +1146,14 @@ fn parser_context_json(input: &ImmutableImport) -> Result<String> {
     })
     .map_err(|_| Error::InvalidRequest("source context serialization failed"))
 }
-fn parser_basis(input: &ImmutableImport) -> [u8; 32] {
+pub(crate) fn parser_basis(input: &ImmutableImport) -> [u8; 32] {
     if input.format == InputFormat::CodexRollout {
         return basis(&input.hash);
     }
     let mut hash = blake3::Hasher::new();
     hash.update(b"polylogue.claude.immutable.parser-basis.v1\0");
     hash.update(&parser_version(input.format).to_be_bytes());
+    hash.update(&crate::source_rows::RECIPE.to_be_bytes());
     hash.update(input.hash.bytes());
     // The admitted portable context is source identity; frame each component.
     hash.update(&(input.context.len() as u64).to_be_bytes());
@@ -1082,6 +1166,7 @@ fn parser_basis(input: &ImmutableImport) -> [u8; 32] {
 fn basis(hash: &BlobHash) -> [u8; 32] {
     let mut bytes = b"polylogue.codex.immutable.parser-basis.v1\0".to_vec();
     bytes.extend_from_slice(&codex::PARSER_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&crate::source_rows::RECIPE.to_be_bytes());
     bytes.extend_from_slice(&crate::state::codex::STATE_LAYOUT_VERSION.to_be_bytes());
     bytes.extend_from_slice(hash.bytes());
     bytes.extend_from_slice(CONTEXT.as_bytes());
@@ -1207,11 +1292,17 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let p = progress(&service.handle(), &retained.id);
-            assert!(!p.canonical_complete);
+            assert_eq!(p.source_rows.basis.input, p.input.id);
             if let Some(head) = p.parser {
                 if head.parsed_upto == retained.length {
                     assert_eq!(head.counts.used, 1);
-                    assert!(head.finalization_pending);
+                    assert_eq!(
+                        head.finalization_pending,
+                        !matches!(
+                            p.source_rows.state,
+                            polylogue_model::settlement::SourceRowState::Settled
+                        )
+                    );
                     assert_ne!(head.status, "done");
                     break;
                 }
@@ -1238,7 +1329,13 @@ mod tests {
         service.shutdown().unwrap();
         let service = owner(&root);
         assert_eq!(import(&service.handle(), request), retained);
-        assert!(!progress(&service.handle(), &retained.id).canonical_complete);
+        assert_eq!(
+            progress(&service.handle(), &retained.id)
+                .source_rows
+                .basis
+                .input,
+            retained.id
+        );
         service.shutdown().unwrap();
     }
     #[test]
@@ -1281,7 +1378,7 @@ mod tests {
         loop {
             let p = progress(&service.handle(), &retained.id);
             assert!(p.failure.is_none(), "{:?}", p.failure);
-            assert!(!p.canonical_complete);
+            assert_eq!(p.source_rows.basis.input, p.input.id);
             let selected = ids
                 .iter()
                 .map(|id| reader.selected_message(id).unwrap())
@@ -1315,7 +1412,13 @@ mod tests {
         drop(reader);
         let service = owner(&root);
         assert_eq!(import(&service.handle(), r), retained);
-        assert!(!progress(&service.handle(), &retained.id).canonical_complete);
+        assert_eq!(
+            progress(&service.handle(), &retained.id)
+                .source_rows
+                .basis
+                .input,
+            retained.id
+        );
         service.shutdown().unwrap();
     }
     #[test]
@@ -1348,7 +1451,7 @@ mod tests {
         loop {
             let p = progress(&service.handle(), &retained.id);
             assert!(p.failure.is_none(), "{:?}", p.failure);
-            assert!(!p.canonical_complete);
+            assert_eq!(p.source_rows.basis.input, p.input.id);
             if let Some(view) = reader.selected_message(&message).unwrap() {
                 let block = view
                     .block(polylogue_model::BlockSlot::Item(0))
@@ -1356,7 +1459,13 @@ mod tests {
                     .unwrap();
                 let range = block.text_range(0, 64).unwrap().unwrap();
                 assert_eq!(range.bytes, b"hello");
-                assert!(p.parser.unwrap().finalization_pending);
+                assert_eq!(
+                    p.parser.unwrap().finalization_pending,
+                    !matches!(
+                        p.source_rows.state,
+                        polylogue_model::settlement::SourceRowState::Settled
+                    )
+                );
                 break;
             }
             assert!(
@@ -1406,9 +1515,15 @@ mod tests {
         let head = p.parser.unwrap();
         assert_eq!(head.counts.framed, 2);
         assert_eq!(head.parsed_upto, raw().len() as u64);
-        assert_eq!(head.status, "finalizing");
-        assert!(head.finalization_pending);
-        assert!(!p.canonical_complete);
+        assert!(matches!(head.status.as_str(), "finalizing" | "done"));
+        assert_eq!(
+            head.finalization_pending,
+            !matches!(
+                p.source_rows.state,
+                polylogue_model::settlement::SourceRowState::Settled
+            )
+        );
+        assert_eq!(p.source_rows.basis.input, p.input.id);
         service.shutdown().unwrap();
     }
     #[test]
@@ -1441,8 +1556,14 @@ mod tests {
             let head = p.parser.unwrap();
             assert_eq!(head.token, before.token);
             assert_eq!(head.counts, before.counts);
-            assert!(head.finalization_pending);
-            assert!(!p.canonical_complete);
+            assert_eq!(
+                head.finalization_pending,
+                !matches!(
+                    p.source_rows.state,
+                    polylogue_model::settlement::SourceRowState::Settled
+                )
+            );
+            assert_eq!(p.source_rows.basis.input, p.input.id);
         }
         service.shutdown().unwrap();
     }
@@ -1471,7 +1592,7 @@ mod tests {
                 assert_eq!(head.parsed_upto, 0);
                 assert_eq!(head.counts.framed, 0);
                 assert_ne!(head.status, "done");
-                assert!(!p.canonical_complete);
+                assert_eq!(p.source_rows.basis.input, p.input.id);
                 break;
             }
             assert!(Instant::now() < deadline, "missing admission failure");
@@ -1524,7 +1645,7 @@ mod tests {
     }
 }
 
-fn canonical_key(ordinal: usize) -> Result<[u8; 32]> {
+pub(crate) fn canonical_key(ordinal: usize) -> Result<[u8; 32]> {
     let ordinal = u64::try_from(ordinal).map_err(|_| StoreError::Range)?;
     let mut bytes = b"polylogue.codex.logical-message.v1\0".to_vec();
     bytes.extend_from_slice(&ordinal.to_be_bytes());

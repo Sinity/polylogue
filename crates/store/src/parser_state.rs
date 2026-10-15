@@ -15,7 +15,7 @@ macro_rules! sql {
 
 pub mod prepared;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Token {
     pub index_generation: String,
     pub input_pk: i64,
@@ -833,6 +833,131 @@ mod tests {
         }
     }
     #[test]
+    fn source_row_receipt_requires_exact_finished_frontier_and_rolls_back_late_failure() {
+        let (_dir, root, mut writer, input) = fixture();
+        let initial = writer.begin_parser(&basis(input, 10)).unwrap();
+        assert!(matches!(
+            writer.publish_source_rows(&initial, b"synthetic producer proof", true),
+            Err(StoreError::ParserPredecessorChanged)
+        ));
+        // Synthetic producer evidence qualifies storage/CAS, not source semantics.
+        let finalizing = write_step(
+            &mut writer._index,
+            &root.join("index.db"),
+            &initial,
+            Progress {
+                inspected_upto: 10,
+                parsed_upto: 10,
+                phase: Phase::Finalizing,
+                finalization_pending: true,
+                counts: Accounting::default(),
+            },
+            &[],
+            budget(),
+            |_| Ok(()),
+        )
+        .unwrap();
+        let pinned = writer.parser_snapshot(&finalizing.token).unwrap();
+        let mut wrong = finalizing.clone();
+        wrong.token.generation += 1;
+        assert!(matches!(
+            writer.publish_source_rows(&wrong, b"synthetic producer proof", true),
+            Err(StoreError::ParserPredecessorChanged)
+        ));
+        writer._index.execute_batch("CREATE TRIGGER refuse_row_settlement BEFORE UPDATE ON parse_state WHEN NEW.status='done' BEGIN SELECT RAISE(ABORT,'late settlement failure'); END;").unwrap();
+        assert!(matches!(
+            writer.publish_source_rows(&finalizing, b"synthetic producer proof", true),
+            Err(StoreError::Sqlite { .. })
+        ));
+        assert!(
+            writer
+                .parser_snapshot(&finalizing.token)
+                .unwrap()
+                .cell(SOURCE_ROWS_NAMESPACE, b"", 16384)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            writer
+                .parser_head(input, 1)
+                .unwrap()
+                .unwrap()
+                .finalization_pending
+        );
+        writer
+            ._index
+            .execute_batch("DROP TRIGGER refuse_row_settlement")
+            .unwrap();
+        let done = writer
+            .publish_source_rows(&finalizing, b"synthetic producer proof", true)
+            .unwrap();
+        assert_eq!(done.token, finalizing.token);
+        assert!(!done.finalization_pending);
+        assert_eq!(done.status, "done");
+        assert!(
+            pinned
+                .cell(SOURCE_ROWS_NAMESPACE, b"", 16384)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            writer
+                .parser_snapshot(&done.token)
+                .unwrap()
+                .cell(SOURCE_ROWS_NAMESPACE, b"", 16384)
+                .unwrap()
+                .unwrap(),
+            b"synthetic producer proof"
+        );
+        assert!(matches!(
+            writer.publish_source_rows(&finalizing, b"replay", true),
+            Err(StoreError::ParserPredecessorChanged)
+        ));
+    }
+    #[test]
+    fn source_row_receipt_cannot_certify_a_new_suffix_or_removed_input() {
+        for removed in [false, true] {
+            let (_dir, root, mut writer, input) = fixture();
+            let initial = writer.begin_parser(&basis(input, 10)).unwrap();
+            let finalizing = write_step(
+                &mut writer._index,
+                &root.join("index.db"),
+                &initial,
+                Progress {
+                    inspected_upto: 10,
+                    parsed_upto: 10,
+                    phase: Phase::Finalizing,
+                    finalization_pending: true,
+                    counts: Accounting::default(),
+                },
+                &[],
+                budget(),
+                |_| Ok(()),
+            )
+            .unwrap();
+            if removed {
+                writer
+                    ._index
+                    .execute("UPDATE input_ref SET excised=1 WHERE pk=?1", [input])
+                    .unwrap();
+            } else {
+                writer.begin_parser(&basis(input, 11)).unwrap();
+            }
+            assert!(matches!(
+                writer.publish_source_rows(&finalizing, b"old frontier", true),
+                Err(StoreError::ParserPredecessorChanged)
+            ));
+            assert!(
+                writer
+                    .parser_snapshot(&writer.parser_head(input, 1).unwrap().unwrap().token)
+                    .unwrap()
+                    .cell(SOURCE_ROWS_NAMESPACE, b"", 16384)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+    #[test]
     fn parser_failure_is_bounded_predecessor_diagnostic_not_completion() {
         let (_dir, _root, mut writer, input_pk) = fixture();
         let basis = Basis {
@@ -1117,5 +1242,62 @@ mod tests {
             },
         );
         panic!("crash callback must exit before commit");
+    }
+}
+
+/// Existing parser state owns its source-row audit receipt. The source owner
+/// supplies disposition/effect proof; storage binds it to one exact predecessor.
+pub const SOURCE_ROWS_NAMESPACE: &str = "source.rows.v1";
+impl crate::Writer {
+    pub fn publish_source_rows(
+        &mut self,
+        expected: &Head,
+        receipt: &[u8],
+        settled: bool,
+    ) -> Result<Head> {
+        if receipt.is_empty() || receipt.len() > 16384 {
+            return Err(StoreError::ParserAdmission {
+                resource: "source row settlement receipt",
+                required: receipt.len() as u64,
+            });
+        }
+        let path = self.root.join("index.db");
+        let tx = sql!(&path, self._index.transaction())?;
+        let now = current(&tx, &path, &expected.token)?;
+        validate_expected_head(expected, &now)?;
+        prepared::ensure_idle(&tx, &path, &expected.token)?;
+        if now.status != "finalizing"
+            || !now.finalization_pending
+            || now.parsed_upto != now.acquired_upto
+        {
+            return Err(StoreError::ParserPredecessorChanged);
+        }
+        if settled && (now.counts.unrecognized > 0 || now.counts.undecodable > 0) {
+            return Err(StoreError::Invariant(
+                "known interpretation failures cannot certify settled source rows".into(),
+            ));
+        }
+        let excised: bool = sql!(
+            &path,
+            tx.query_row(
+                "SELECT excised FROM input_ref WHERE pk=?1",
+                [now.token.input_pk],
+                |r| r.get(0)
+            )
+        )?;
+        if excised {
+            return Err(StoreError::ParserPredecessorChanged);
+        }
+        sql!(&path,tx.execute("INSERT INTO parser_cell(input_pk,chain,state_generation,namespace,key,value) VALUES(?1,?2,?3,?4,x'',?5) ON CONFLICT DO NOTHING",rusqlite::params![now.token.input_pk,now.token.chain,now.token.generation,SOURCE_ROWS_NAMESPACE,receipt]))?;
+        if tx.changes() != 1 {
+            return Err(StoreError::ParserPredecessorChanged);
+        }
+        if settled {
+            sql!(&path,tx.execute("UPDATE parse_state SET status='done',finalization_pending=0 WHERE input_pk=?1 AND chain=?2",rusqlite::params![now.token.input_pk,now.token.chain]))?;
+        }
+        let result = head(&tx, &path, now.token.input_pk, now.token.chain)?
+            .ok_or(StoreError::ParserPredecessorChanged)?;
+        sql!(&path, tx.commit())?;
+        Ok(result)
     }
 }

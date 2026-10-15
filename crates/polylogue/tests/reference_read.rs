@@ -184,7 +184,7 @@ impl World {
         assert_eq!(receipt["outcome"], "ok");
         assert_eq!(receipt["request_id"], request_id);
         assert_eq!(receipt["seen_at"], 17);
-        assert_eq!(receipt["canonical_complete"], false);
+        assert_eq!(receipt["source_rows"]["scope"], "imported_source_rows");
         receipt
     }
     fn progress(&self, id: &str) -> Value {
@@ -198,7 +198,7 @@ impl World {
         let value = self.progress(id);
         assert!(value["failure"].is_null(), "{value}; daemon {}", self.log());
         assert!(value["recovery_error"].is_null(), "{value}");
-        assert_eq!(value["canonical_complete"], false);
+        assert_eq!(value["source_rows"]["scope"], "imported_source_rows");
         value
     }
     fn wait_read(&self, reference: &str, expected: &str, id: &str) -> Value {
@@ -213,8 +213,11 @@ impl World {
                         .unwrap()
                         .contains("Read coverage is incomplete")
                 );
-                assert_eq!(progress["canonical_complete"], false);
-                assert_eq!(progress["parser"]["finalization_pending"], true);
+                assert_eq!(progress["source_rows"]["scope"], "imported_source_rows");
+                assert_eq!(
+                    progress["parser"]["finalization_pending"],
+                    progress["source_rows"]["state"] != "settled"
+                );
                 return progress;
             }
             assert!(
@@ -303,7 +306,10 @@ fn retained_unicode_reference_reads_exactly_but_coverage_and_search_stay_incompl
         progress["parser"]["parsed_upto"],
         receipt["retained"]["length"]
     );
-    assert_eq!(progress["parser"]["finalization_pending"], true);
+    assert_eq!(
+        progress["parser"]["finalization_pending"],
+        progress["source_rows"]["state"] != "settled"
+    );
     let default = world.cli(&[&reference, "read"]);
     assert_eq!(default.status.code(), Some(5));
     assert_content(&default.stdout, &expected);
@@ -354,7 +360,7 @@ fn selected_read_and_receipt_survive_peer_work_kill_restart_and_provider_removal
         );
         thread::sleep(Duration::from_millis(5));
     };
-    assert_eq!(unfinished["canonical_complete"], false);
+    assert_eq!(unfinished["source_rows"]["scope"], "imported_source_rows");
     let out = world.cli(&[&reference, "read", "--format", "terminal"]);
     assert_eq!(out.status.code(), Some(5));
     assert_content(&out.stdout, &expected);
@@ -372,7 +378,7 @@ fn selected_read_and_receipt_survive_peer_work_kill_restart_and_provider_removal
     assert_eq!(replay["seen_at"], receipt["seen_at"]);
     let resumed = world.healthy(&peer_id);
     assert_eq!(resumed["length"], large.len() as u64);
-    assert_eq!(resumed["canonical_complete"], false);
+    assert_eq!(resumed["source_rows"]["scope"], "imported_source_rows");
     negatives(&world, &reference);
 }
 #[test]
@@ -387,8 +393,11 @@ fn unsupported_unready_message_reference_is_an_explicit_failure() {
     loop {
         let progress = world.progress(id);
         if progress["failure"].is_string() {
-            assert_eq!(progress["canonical_complete"], false);
-            assert_eq!(progress["parser"]["finalization_pending"], true);
+            assert_eq!(progress["source_rows"]["scope"], "imported_source_rows");
+            assert_eq!(
+                progress["parser"]["finalization_pending"],
+                progress["source_rows"]["state"] != "settled"
+            );
             break;
         }
         assert!(

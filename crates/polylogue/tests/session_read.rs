@@ -185,7 +185,7 @@ impl World {
         let receipt: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(receipt["request_id"], request_id);
         assert_eq!(receipt["seen_at"], 17);
-        assert_eq!(receipt["canonical_complete"], false);
+        assert_eq!(receipt["source_rows"]["scope"], "imported_source_rows");
         receipt
     }
     fn raw_progress(&self, id: &str) -> Value {
@@ -195,7 +195,7 @@ impl World {
     }
     fn progress(&self, id: &str) -> Value {
         let progress = self.raw_progress(id);
-        assert_eq!(progress["canonical_complete"], false);
+        assert_eq!(progress["source_rows"]["scope"], "imported_source_rows");
         assert!(progress["failure"].is_null(), "{progress}; {}", self.log());
         assert!(progress["recovery_error"].is_null(), "{progress}");
         progress
@@ -212,7 +212,10 @@ impl World {
                     "{out:?}"
                 );
                 if document["messages"].as_array().unwrap().len() == messages {
-                    assert_eq!(p["parser"]["finalization_pending"], true);
+                    assert_eq!(
+                        p["parser"]["finalization_pending"],
+                        p["source_rows"]["state"] != "settled"
+                    );
                     return document;
                 }
             } else {
@@ -472,7 +475,7 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
     let deadline = Instant::now() + WAIT;
     loop {
         let p = world.raw_progress(pending["retained"]["id"].as_str().unwrap());
-        assert_eq!(p["canonical_complete"], false);
+        assert_eq!(p["source_rows"]["scope"], "imported_source_rows");
         if !p["failure"].is_null() {
             break;
         }
@@ -501,4 +504,273 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(out.stdout.is_empty());
     assert!(String::from_utf8_lossy(&out.stderr).contains("order is unresolved"));
+}
+
+fn wait_import(world: &World, path: &Path, request_id: &str, timeout: &str) -> Output {
+    let context = world.work.path().join("context.json");
+    fs::write(
+        &context,
+        json!({"version":1,"context":["claude-main",SID]}).to_string(),
+    )
+    .unwrap();
+    world.cli(&[
+        "import",
+        path.to_str().unwrap(),
+        "--format",
+        "claude-code-jsonl",
+        "--context",
+        context.to_str().unwrap(),
+        "--request-id",
+        request_id,
+        "--seen-at",
+        "17",
+        "--machine",
+        "00112233445566778899aabbccddeeff",
+        "--host",
+        "synthetic-collector",
+        "--wait",
+        "--wait-timeout",
+        timeout,
+    ])
+}
+#[test]
+fn source_row_wait_settles_fixed_basis_then_provider_loss_restart_replays_without_claiming_session_complete()
+ {
+    let mut world = World::new();
+    let bytes = simple("wait-row", json!("settled retained prompt"));
+    let path = world.input("wait.jsonl", &bytes);
+    let id = "01900000-0000-7000-8000-000000000401";
+    let output = wait_import(&world, &path, id, "20");
+    assert_eq!(output.status.code(), Some(0), "{output:?}; {}", world.log());
+    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(receipt.get("canonical_complete").is_none());
+    assert_eq!(receipt["source_rows"]["scope"], "imported_source_rows");
+    assert_eq!(receipt["source_rows"]["state"], "settled");
+    assert_eq!(receipt["source_rows"]["basis"]["length"], bytes.len());
+    let read = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(read.status.code(), Some(5));
+    let first: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(first["result"]["outcome"], "degraded");
+    assert!(!first["result"]["notes"].as_array().unwrap().is_empty());
+    fs::remove_file(&path).unwrap();
+    world.restart();
+    let replay = wait_import(&world, &path, id, "20");
+    assert_eq!(replay.status.code(), Some(0), "{replay:?}");
+    let again: Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(again["retained"], receipt["retained"]);
+    assert_eq!(again["source_rows"], receipt["source_rows"]);
+    let read = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(read.status.code(), Some(5));
+    let second: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(first["messages"], second["messages"]);
+}
+#[test]
+fn malformed_source_wait_keeps_usable_rows_degraded_and_names_retained_failure() {
+    let mut world = World::new();
+    let mut bytes = simple("malformed-row", json!("known retained row"));
+    bytes.extend_from_slice(b"{not json}\n");
+    let path = world.input("malformed-wait.jsonl", &bytes);
+    let id = "01900000-0000-7000-8000-000000000402";
+    let output = wait_import(&world, &path, id, "20");
+    assert_eq!(output.status.code(), Some(5), "{output:?}; {}", world.log());
+    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(receipt["source_rows"]["state"], "unavailable");
+    assert_eq!(receipt["source_rows"]["usable_result"], true);
+    assert_eq!(receipt["unknown"]["record_errors"], 1);
+    assert!(!receipt["notes"].as_array().unwrap().is_empty());
+    let read = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(read.status.code(), Some(5));
+    fs::remove_file(&path).unwrap();
+    world.restart();
+    let replay = wait_import(&world, &path, id, "20");
+    assert_eq!(replay.status.code(), Some(5), "{replay:?}");
+}
+#[test]
+fn incomplete_source_wait_times_out_without_certifying_from_a_later_peer() {
+    let world = World::new();
+    let mut bytes = simple("partial-row", json!("known prefix"));
+    bytes.extend_from_slice(b"{\"unfinished\":");
+    let path = world.input("partial-wait.jsonl", &bytes);
+    let id = "01900000-0000-7000-8000-000000000403";
+    let output = wait_import(&world, &path, id, "0");
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
+    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let peer = world.input("peer-wait.jsonl", b"\n");
+    let complete = wait_import(&world, &peer, "01900000-0000-7000-8000-000000000404", "20");
+    assert_eq!(complete.status.code(), Some(0), "{complete:?}");
+    let output = wait_import(&world, &path, id, "1");
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
+    let later: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        later["source_rows"]["basis"],
+        receipt["source_rows"]["basis"]
+    );
+    assert_eq!(later["source_rows"]["state"], "pending");
+    assert!(
+        later["retained"]["id"]
+            != serde_json::from_slice::<Value>(&complete.stdout).unwrap()["retained"]["id"]
+    );
+}
+
+#[test]
+fn disconnecting_a_source_waiter_keeps_the_retained_owner_and_peer_available() {
+    let world = World::new();
+    let mut bytes = simple("disconnect-row", json!("prefix"));
+    bytes.extend_from_slice(b"{\"unfinished\":");
+    let path = world.input("disconnect-wait.jsonl", &bytes);
+    let id = "01900000-0000-7000-8000-000000000405";
+    let receipt = world.import(&path, id);
+    let context = world.work.path().join("context.json");
+    let mut client = OwnedChild(
+        world
+            .command()
+            .args([
+                "import",
+                path.to_str().unwrap(),
+                "--format",
+                "claude-code-jsonl",
+                "--context",
+                context.to_str().unwrap(),
+                "--request-id",
+                id,
+                "--seen-at",
+                "17",
+                "--machine",
+                "00112233445566778899aabbccddeeff",
+                "--host",
+                "synthetic-collector",
+                "--wait",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let p = world.raw_progress(receipt["retained"]["id"].as_str().unwrap());
+        if p["parser"]["status"] == "waiting_tail" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{p}");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(client.0.try_wait().unwrap().is_none());
+    drop(client);
+    let peer = world.input("after-disconnect.jsonl", b"\n");
+    let output = wait_import(&world, &peer, "01900000-0000-7000-8000-000000000406", "20");
+    assert_eq!(output.status.code(), Some(0), "{output:?}; {}", world.log());
+    assert_eq!(
+        world.raw_progress(receipt["retained"]["id"].as_str().unwrap())["source_rows"]["state"],
+        "pending"
+    );
+}
+
+#[test]
+fn source_wait_never_turns_no_usable_interpretation_or_unsupported_body_into_empty_success() {
+    for (name, bytes, id) in [
+        (
+            "only-malformed",
+            b"{invalid json}\n".to_vec(),
+            "01900000-0000-7000-8000-000000000407",
+        ),
+        (
+            "unsupported-image",
+            simple(
+                "unsupported",
+                json!([{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]),
+            ),
+            "01900000-0000-7000-8000-000000000408",
+        ),
+    ] {
+        let mut world = World::new();
+        let path = world.input(name, &bytes);
+        let out = wait_import(&world, &path, id, "20");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{name}: {out:?}; {}",
+            world.log()
+        );
+        let reply: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(reply["outcome"], "error");
+        assert_eq!(reply["source_rows"]["state"], "unavailable");
+        assert_eq!(reply["source_rows"]["usable_result"], false);
+        assert!(reply["error"]["message"].as_str().unwrap().len() > 0);
+        fs::remove_file(&path).unwrap();
+        world.restart();
+        let retry = wait_import(&world, &path, id, "20");
+        assert_eq!(retry.status.code(), Some(2), "{retry:?}");
+    }
+}
+#[test]
+fn retained_byte_eof_stays_pending_until_real_message_effects_are_published() {
+    let world = World::new();
+    let text = "source effect ".repeat(15000);
+    let bytes = simple("large-canonical-effect", json!(text));
+    let path = world.input("eof-before-effects.jsonl", &bytes);
+    let id = "01900000-0000-7000-8000-000000000409";
+    let receipt = world.import(&path, id);
+    let input = receipt["retained"]["id"].as_str().unwrap();
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let p = world.raw_progress(input);
+        assert!(p["failure"].is_null(), "{p}");
+        if p["parser"]["parsed_upto"] == receipt["retained"]["length"] {
+            assert_eq!(
+                p["source_rows"]["state"], "pending",
+                "did not observe the actual EOF-before-canonical boundary: {p}"
+            );
+            assert_eq!(p["parser"]["finalization_pending"], true);
+            break;
+        }
+        assert!(Instant::now() < deadline, "{p}");
+        thread::sleep(Duration::from_millis(2));
+    }
+    let settled = wait_import(&world, &path, id, "30");
+    assert_eq!(
+        settled.status.code(),
+        Some(0),
+        "{settled:?}; {}",
+        world.log()
+    );
+    let read = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(read.status.code(), Some(5));
+    let doc: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(doc["messages"][0]["blocks"][0]["text"], text);
+}
+
+#[test]
+fn admission_refusal_and_provider_diagnostics_are_named_without_credential_disclosure() {
+    let world = World::new();
+    let bytes = simple("too-large-member", json!("capacity ".repeat(70000)));
+    let path = world.input("admission-wait.jsonl", &bytes);
+    let out = wait_import(&world, &path, "01900000-0000-7000-8000-000000000410", "20");
+    assert_eq!(out.status.code(), Some(2), "{out:?}; {}", world.log());
+    let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(failure["source_rows"]["state"], "unavailable");
+    assert!(
+        failure["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("admission")
+    );
+    let secret = ["gh", "p_"].concat() + &"A".repeat(36);
+    let mut record: Value =
+        serde_json::from_slice(&simple("secret-diagnostic", json!("supported content"))).unwrap();
+    record["message"][&secret] = json!("unsupported metadata");
+    let bytes = (record.to_string() + "\n").into_bytes();
+    let path = world.input("diagnostic-wait.jsonl", &bytes);
+    let out = wait_import(&world, &path, "01900000-0000-7000-8000-000000000411", "20");
+    assert_eq!(out.status.code(), Some(2), "{out:?}; {}", world.log());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(!text.contains(&secret), "{text}");
+    assert!(text.contains("credential:"), "{text}");
+    let failure: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        failure["source_rows"]["basis"]["original_hash"],
+        json!(polylogue_model::BlobHash::of(&bytes))
+    );
+    let progress = world.raw_progress(failure["retained"]["id"].as_str().unwrap());
+    assert!(!progress.to_string().contains(&secret));
 }

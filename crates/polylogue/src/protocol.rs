@@ -126,8 +126,9 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                     },
                 };
                 let retained = receive(owner.try_import(request))?;
+                let progress = receive(owner.try_progress(&retained.id))?;
                 Ok(
-                    json!({"outcome":"ok","retained":{"id":retained.id,"length":retained.length,"chain":retained.chain},"canonical_complete":false,"query_coverage":"incomplete"}),
+                    json!({"outcome":"ok","retained":{"id":retained.id,"length":retained.length,"chain":retained.chain},"source_rows":progress.source_rows,"query_coverage":"incomplete"}),
                 )
             }
             "progress" => {
@@ -141,7 +142,7 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                 let parser=progress.parser.map(|h|json!({"status":h.status,"step":h.token.step,"acquired_upto":h.acquired_upto,"inspected_upto":h.inspected_upto,"parsed_upto":h.parsed_upto,"finalization_pending":h.finalization_pending,
                     "records":{"framed":h.counts.framed,"used":h.counts.used,"ignored":h.counts.ignored,"unrecognized":h.counts.unrecognized,"undecodable":h.counts.undecodable}}));
                 Ok(
-                    json!({"outcome":"ok","input":progress.input.id,"length":progress.input.length,"parser":parser,"failure":progress.failure,"recovery_error":progress.recovery_error,"active":progress.active,"canonical_complete":progress.canonical_complete,"query_coverage":"incomplete"}),
+                    json!({"outcome":"ok","input":progress.input.id,"length":progress.input.length,"parser":parser,"failure":progress.failure,"recovery_error":progress.recovery_error,"active":progress.active,"source_rows":progress.source_rows,"query_coverage":"incomplete"}),
                 )
             }
             "retry" => {
@@ -152,7 +153,7 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                     return Err(failed(ErrorKind::InvalidQuery, "unknown retry field"));
                 }
                 receive(owner.try_retry(text(request, "input")?))?;
-                Ok(json!({"outcome":"ok","canonical_complete":false}))
+                Ok(json!({"outcome":"ok","query_coverage":"incomplete"}))
             }
             _ => Err(failed(
                 ErrorKind::NotYetAvailable,

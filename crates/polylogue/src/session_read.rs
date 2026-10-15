@@ -82,7 +82,7 @@ pub(crate) fn serve(
         })?;
         match coverage.catalog {
             polylogue_store::contributions::SessionCoverage::KnownCatalogOnly => Ok(
-                json!({"type":"end","outcome":"degraded","canonical_complete":false,"messages":coverage.messages,"missing":["source_catalog_coverage","canonical_history_coverage","session_metadata_reductions","links_events_notes_runs_deliveries","tool_population_and_pairing","partial_excision_coverage"]}),
+                json!({"type":"end","outcome":"degraded","canonical_complete":false,"messages":coverage.messages,"missing":session_document::COVERAGE_GAPS}),
             ),
         }
     })();

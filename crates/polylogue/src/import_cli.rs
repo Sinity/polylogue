@@ -30,6 +30,8 @@ fn uuid_v7(millis: u64, random: [u8; 16]) -> Result<String, Failure> {
 }
 pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
     let mut path = None;
+    let mut wait = false;
+    let mut wait_timeout = None;
     let mut format = None;
     let mut context_file = None;
     let mut id = None;
@@ -39,7 +41,8 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--format" | "--context" | "--request-id" | "--seen-at" | "--machine" | "--host" => {
+            "--format" | "--context" | "--request-id" | "--seen-at" | "--machine" | "--host"
+            | "--wait-timeout" => {
                 let flag = &args[i];
                 i += 1;
                 let value = args
@@ -52,16 +55,23 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
                     "--request-id" => &mut id,
                     "--seen-at" => &mut seen_at,
                     "--machine" => &mut machine,
+                    "--wait-timeout" => &mut wait_timeout,
                     _ => &mut host,
                 };
                 if slot.replace(value).is_some() {
                     return Err(invalid(format!("duplicate {flag}")));
                 }
             }
-            "--wait" | "--dry-run" => {
+            "--wait" => {
+                if wait {
+                    return Err(invalid("duplicate --wait"));
+                }
+                wait = true;
+            }
+            "--dry-run" => {
                 return Err(Failure::new(
                     ErrorKind::NotYetAvailable,
-                    "wait/dry-run require canonical finalization; no source bytes were acquired",
+                    "dry-run is unavailable; no source bytes were acquired",
                 ));
             }
             flag if flag.starts_with('-') => {
@@ -74,6 +84,20 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
             }
         }
         i += 1;
+    }
+    let has_wait_timeout = wait_timeout.is_some();
+    let wait_seconds = wait_timeout
+        .map(|v| {
+            v.parse::<u64>()
+                .map_err(|_| invalid("--wait-timeout requires integer seconds"))
+        })
+        .transpose()?
+        .unwrap_or(30);
+    if !wait && has_wait_timeout {
+        return Err(invalid("--wait-timeout requires --wait"));
+    }
+    if wait_seconds > 86400 {
+        return Err(invalid("--wait-timeout maximum is 86400 seconds"));
     }
     let path = path.ok_or_else(|| invalid("import requires a regular file path"))?;
     let format = match format.as_deref() {
@@ -153,7 +177,7 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
         }
     };
     Ok(
-        json!({"command":"import","context":context,"id":id,"format":format.name(),"path":path,"machine":machine,"host":host,"seen_at":seen_at}),
+        json!({"command":"import","context":context,"id":id,"format":format.name(),"path":path,"machine":machine,"host":host,"seen_at":seen_at,"wait":wait,"wait_seconds":wait_seconds}),
     )
 }
 // Context is a bounded explicit declaration, never inferred from the loose

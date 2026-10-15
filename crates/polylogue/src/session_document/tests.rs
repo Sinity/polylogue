@@ -90,14 +90,20 @@ impl World {
                 "{:?}",
                 progress.recovery_error
             );
-            assert!(!progress.canonical_complete);
+            assert_eq!(progress.source_rows.basis.input, input.id);
             if native_ids.iter().all(|native| {
                 self.reader
                     .selected_message(&MessageId::new(self.session(), native).unwrap())
                     .unwrap()
                     .is_some()
             }) {
-                assert!(progress.parser.unwrap().finalization_pending);
+                assert_eq!(
+                    progress.parser.unwrap().finalization_pending,
+                    !matches!(
+                        progress.source_rows.state,
+                        polylogue_model::settlement::SourceRowState::Settled
+                    )
+                );
                 return;
             }
             assert!(Instant::now() < deadline, "selected Message deadline");
@@ -259,7 +265,7 @@ fn retained_morrow_document_preserves_twelve_messages_payloads_and_exact_origins
     );
     assert_eq!(result["data"]["stderr"], "");
     assert_eq!(result["data"]["interrupted"], false);
-    assert!(!world.progress(&input).canonical_complete);
+    assert_eq!(world.progress(&input).source_rows.basis.input, input.id);
 }
 
 fn simple(uuid: &str, content: Value) -> Vec<u8> {
@@ -327,7 +333,7 @@ fn known_pending_member_refuses_before_emitting_a_complete_looking_subset() {
     let deadline = Instant::now() + WAIT;
     loop {
         let p = world.progress(&input);
-        assert!(!p.canonical_complete);
+        assert_eq!(p.source_rows.basis.input, input.id);
         if p.failure.is_some() {
             break;
         }

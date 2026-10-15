@@ -244,7 +244,14 @@ fn serve(
             json!({"outcome":"error","error":Failure::new(ErrorKind::InvalidQuery,error.to_string()),"archive":archive})
         }
     };
-    serde_json::to_writer(&mut stream, &reply).map_err(|e| e.to_string())?;
+    // Retained interpretation diagnostics may contain provider-controlled text.
+    // Use the same response-boundary policy as normalized JSON documents.
+    let mut encoded = output_json::Encoder::new(
+        &mut stream,
+        std::time::Instant::now() + Duration::from_secs(30),
+    );
+    encoded.value(&reply).map_err(|e| e.to_string())?;
+    encoded.finish().map_err(|e| e.to_string())?;
     stream.write_all(b"\n").map_err(|e| e.to_string())
 }
 
@@ -254,7 +261,22 @@ pub fn request(socket: &Path) -> Result<Value, io::Error> {
 /// Send one request and read one bounded metadata response. Import success means
 /// durable raw retention; query readiness is reported independently.
 pub fn request_value(socket: &Path, value: &Value) -> Result<Value, io::Error> {
-    let mut stream = UnixStream::connect(socket)?;
+    request_metadata(socket, value, None)
+}
+/// The absolute deadline covers connect, every write/read, framing and decode.
+/// No helper thread owns a transport after this call returns or is cancelled.
+pub fn request_value_until(
+    socket: &Path,
+    value: &Value,
+    deadline: std::time::Instant,
+) -> Result<Value, io::Error> {
+    request_metadata(socket, value, Some(deadline))
+}
+fn request_metadata(
+    socket: &Path,
+    value: &Value,
+    deadline: Option<std::time::Instant>,
+) -> Result<Value, io::Error> {
     let bytes =
         serde_json::to_vec(value).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     if bytes.len() >= 65536 {
@@ -263,24 +285,116 @@ pub fn request_value(socket: &Path, value: &Value) -> Result<Value, io::Error> {
             "request metadata exceeds admission",
         ));
     }
+    let stream = if deadline.is_some() {
+        // socket2 owns nonblocking connect/poll without a blocked helper thread.
+        // Remaining time is recomputed after address/socket construction too.
+        let address = socket2::SockAddr::unix(socket)?;
+        let stream = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
+        stream.connect_timeout(&address, remaining(deadline)?.unwrap())?;
+        UnixStream::from(std::os::fd::OwnedFd::from(stream))
+    } else {
+        UnixStream::connect(socket)?
+    };
+    remaining(deadline)?;
+    let mut stream = MetadataTransport { stream, deadline };
     stream.write_all(&bytes)?;
     stream.write_all(b"\n")?;
-    stream.shutdown(std::net::Shutdown::Write)?;
+    stream.stream.shutdown(std::net::Shutdown::Write)?;
     let mut line = String::new();
     use std::io::Read;
+    // Every underlying read uses the SAME absolute deadline; a trickle cannot
+    // renew a per-frame or per-request timeout through BufReader/read_line.
     BufReader::new(stream).take(65537).read_line(&mut line)?;
+    remaining(deadline)?;
     if line.len() > 65536 || !line.ends_with('\n') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid response metadata frame",
         ));
     }
-    serde_json::from_str(&line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    let result =
+        serde_json::from_str(&line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    remaining(deadline)?;
+    Ok(result)
+}
+fn remaining(deadline: Option<std::time::Instant>) -> io::Result<Option<Duration>> {
+    deadline
+        .map(|deadline| {
+            deadline
+                .checked_duration_since(std::time::Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "metadata request deadline"))
+        })
+        .transpose()
+}
+struct MetadataTransport {
+    stream: UnixStream,
+    deadline: Option<std::time::Instant>,
+}
+impl io::Read for MetadataTransport {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.stream.set_read_timeout(remaining(self.deadline)?)?;
+        let result = io::Read::read(&mut self.stream, bytes);
+        remaining(self.deadline)?;
+        result
+    }
+}
+impl Write for MetadataTransport {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.stream.set_write_timeout(remaining(self.deadline)?)?;
+        let result = self.stream.write(bytes);
+        remaining(self.deadline)?;
+        result
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        remaining(self.deadline)?;
+        self.stream.flush()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metadata_write_uses_the_same_absolute_deadline_after_partial_progress() {
+        let (stream, _unread) = UnixStream::pair().unwrap();
+        socket2::SockRef::from(&stream)
+            .set_send_buffer_size(1024)
+            .unwrap();
+        let started = std::time::Instant::now();
+        let mut transport = MetadataTransport {
+            stream,
+            deadline: Some(started + Duration::from_millis(80)),
+        };
+        let error = transport.write_all(&vec![b'x'; 65536]).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+    #[test]
+    fn saturated_unix_connect_never_blocks_beyond_absolute_deadline() {
+        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let path = temp.path().join("socket");
+        let listener =
+            socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).unwrap();
+        listener
+            .bind(&socket2::SockAddr::unix(&path).unwrap())
+            .unwrap();
+        listener.listen(0).unwrap();
+        let _queued = UnixStream::connect(&path).unwrap();
+        let started = std::time::Instant::now();
+        assert!(
+            request_value_until(
+                &path,
+                &json!({"command":"progress"}),
+                started + Duration::from_millis(80)
+            )
+            .is_err()
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
     #[test]
     fn independent_stacks_shutdown_only_owned_clients_and_socket() {
         let temp = tempfile::tempdir().unwrap();

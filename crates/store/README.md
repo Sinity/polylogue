@@ -199,3 +199,11 @@ same-generation receipt or inconsistent certificate refuses publication. This
 works after old parser cells are collected. Source replacement leaves the selected
 body unchanged until explicit selection, and pinned readers retain their old view.
 There is no automatic index migration or general rebuild/swap implementation.
+
+The existing parser-cell owner retains a source-row settlement receipt after the
+engine audits dispositions/effects and selected source certificates. Publication
+binds the exact head, complete-record frontier and input removal state in one
+fixed metadata transaction. This producer-supplied semantic proof is distinct
+from arbitrary row counts and from Session/query/search completeness. Missing or
+corrupt authority refuses; no second progress ledger or automatic migration is
+introduced.
