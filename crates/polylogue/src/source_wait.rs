@@ -14,6 +14,7 @@ fn failure(mut value: Value, kind: ErrorKind, message: impl Into<String>) -> Val
     value
 }
 pub(crate) fn wait(socket: &Path, mut retained: Value, duration: Duration) -> Value {
+    let deadline = Instant::now() + duration;
     let captured: SourceRows = match serde_json::from_value(retained["source_rows"].clone()) {
         Ok(value) => value,
         Err(e) => {
@@ -35,8 +36,13 @@ pub(crate) fn wait(socket: &Path, mut retained: Value, duration: Duration) -> Va
             "source settlement basis differs from the admitted retained input",
         );
     }
-    let deadline = Instant::now() + duration;
+    let mut checked_progress = false;
     loop {
+        // An initially settled receipt may pass --wait-timeout 0 (check once).
+        // A later response must arrive AND be accepted before the same deadline.
+        if checked_progress && Instant::now() >= deadline {
+            return timed_out(retained);
+        }
         let rows: SourceRows = match serde_json::from_value(retained["source_rows"].clone()) {
             Ok(value) => value,
             Err(e) => {
@@ -77,22 +83,31 @@ pub(crate) fn wait(socket: &Path, mut retained: Value, duration: Duration) -> Va
             SourceRowState::Pending { .. } => {}
         }
         if Instant::now() >= deadline {
-            return failure(
-                retained,
-                ErrorKind::Timeout,
-                "source row settlement is pending; retained owner work continues; retry the original import receipt",
-            );
+            return timed_out(retained);
         }
         std::thread::sleep(
             Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
         );
-        let reply = match polylogue::request_value(
+        let reply = match polylogue::request_value_until(
             socket,
             &json!({"command":"progress","input":captured.basis.input}),
+            deadline,
         ) {
             Ok(reply) => reply,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) || Instant::now() >= deadline =>
+            {
+                return timed_out(retained);
+            }
             Err(e) => return failure(retained, ErrorKind::Io, e.to_string()),
         };
+        if Instant::now() >= deadline {
+            return timed_out(retained);
+        }
+        checked_progress = true;
         if reply["outcome"] == "error" {
             return failure(
                 retained,
@@ -102,6 +117,14 @@ pub(crate) fn wait(socket: &Path, mut retained: Value, duration: Duration) -> Va
         }
         retained["source_rows"] = reply["source_rows"].clone();
     }
+}
+
+fn timed_out(retained: Value) -> Value {
+    failure(
+        retained,
+        ErrorKind::Timeout,
+        "source row settlement is pending; retained owner work continues; retry the original import receipt",
+    )
 }
 
 #[cfg(test)]
