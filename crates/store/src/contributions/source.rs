@@ -139,14 +139,29 @@ fn read_current(
         u64,
         Option<String>,
         Option<String>,
+        i64,
+        i64,
+        Vec<u8>,
     );
     let row: Option<Row> = db(&path, || {
         connection.query_row(
-            "SELECT b.message_pk,b.session_pk,c.evidence_revision,c.revision,c.basis_digest,c.version_hash,length(CAST(m.id AS BLOB))+length(CAST(s.id AS BLOB)),CASE WHEN length(CAST(m.id AS BLOB))+length(CAST(s.id AS BLOB))<=?6 THEN m.id END,CASE WHEN length(CAST(m.id AS BLOB))+length(CAST(s.id AS BLOB))<=?6 THEN s.id END FROM message_body b JOIN message_candidate c ON c.body_pk=b.pk AND c.pk=?2 JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk=b.session_pk WHERE b.pk=?1 AND b.ready=1 AND c.ready=1 AND c.eligible=1 AND c.input_pk=?3 AND c.chain=?4 AND c.logical_key=?5 AND b.removal_epoch=m.removal_epoch AND m.hidden=0",
-            params![body,candidate,token.input_pk,token.chain,logical_key.as_slice(),writer::integer(allowance.saturating_sub(bytes.len()) as u64).unwrap_or(i64::MAX)],|r|Ok((r.get(0)?,r.get(1)?,crate::parser_state::unsigned(r,2)?,crate::parser_state::unsigned(r,3)?,r.get(4)?,r.get(5)?,crate::parser_state::unsigned(r,6)?,r.get(7)?,r.get(8)?))).optional()
+            "SELECT b.message_pk,b.session_pk,c.evidence_revision,c.revision,c.basis_digest,c.version_hash,length(CAST(m.id AS BLOB))+length(CAST(s.id AS BLOB)),CASE WHEN length(CAST(m.id AS BLOB))+length(CAST(s.id AS BLOB))<=?6 THEN m.id END,CASE WHEN length(CAST(m.id AS BLOB))+length(CAST(s.id AS BLOB))<=?6 THEN s.id END,c.source_state_generation,c.source_state_step,c.source_basis_digest FROM message_body b JOIN message_candidate c ON c.body_pk=b.pk AND c.pk=?2 JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk=b.session_pk WHERE b.pk=?1 AND b.ready=1 AND c.ready=1 AND c.eligible=1 AND c.input_pk=?3 AND c.chain=?4 AND c.logical_key=?5 AND b.removal_epoch=m.removal_epoch AND m.hidden=0",
+            params![body,candidate,token.input_pk,token.chain,logical_key.as_slice(),writer::integer(allowance.saturating_sub(bytes.len()) as u64).unwrap_or(i64::MAX)],|r|Ok((r.get(0)?,r.get(1)?,crate::parser_state::unsigned(r,2)?,crate::parser_state::unsigned(r,3)?,r.get(4)?,r.get(5)?,crate::parser_state::unsigned(r,6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?))).optional()
     })?;
-    let (message, session, evidence, revision, basis, hash, identity_bytes, id, sid) =
-        row.ok_or_else(|| invalid("source projection lost its eligible certificate"))?;
+    let (
+        message,
+        session,
+        evidence,
+        revision,
+        basis,
+        hash,
+        identity_bytes,
+        id,
+        sid,
+        generation,
+        source_step,
+        source_basis,
+    ) = row.ok_or_else(|| invalid("source projection lost its eligible certificate"))?;
     let (id, sid) = match (id, sid) {
         (Some(id), Some(sid)) => (id, sid),
         _ => {
@@ -156,9 +171,20 @@ fn read_current(
             });
         }
     };
-    let mut predecessor = token.clone();
-    predecessor.step = step;
-    if basis != writer::basis(&predecessor, revision, logical_key, evidence) {
+    let predecessor = certified_predecessor(
+        token,
+        generation,
+        source_step,
+        source_basis,
+        revision,
+        logical_key,
+        evidence,
+        &basis,
+    )?;
+    if predecessor.generation != token.generation
+        || predecessor.basis != token.basis
+        || predecessor.step != step
+    {
         return Err(Error::MessagePredecessorChanged);
     }
     let message_id = MessageId::from_stored(
@@ -185,6 +211,33 @@ fn read_current(
         ),
         reference: bytes,
     }))
+}
+
+// Recover the exact source predecessor from its immutable certificate rather
+// than depending on disposable parser cells or guessing from parser_version.
+fn certified_predecessor(
+    scope: &Token,
+    generation: i64,
+    step: i64,
+    source_basis: Vec<u8>,
+    revision: u64,
+    logical: &[u8; 32],
+    evidence: u64,
+    preparation_basis: &[u8],
+) -> Result<Token> {
+    if generation <= 0 || step < 0 {
+        return Err(Error::MessagePredecessorChanged);
+    }
+    let mut predecessor = scope.clone();
+    predecessor.generation = generation;
+    predecessor.step = step;
+    predecessor.basis = source_basis
+        .try_into()
+        .map_err(|_| invalid("source certificate basis length"))?;
+    if preparation_basis != writer::basis(&predecessor, revision, logical, evidence).as_slice() {
+        return Err(Error::MessagePredecessorChanged);
+    }
+    Ok(predecessor)
 }
 
 /// An uncontested first publication is a bounded vertical slice. Contested
@@ -265,7 +318,10 @@ impl Writer {
         Ok(SourceSelection::Selected)
     }
     /// Publish a source certificate and its restart reference atomically. Only
-    /// the previous scheduling cut of this same logical candidate is withdrawn.
+    /// the identified previous scheduling cut of this same logical candidate is
+    /// withdrawn. A reparse may recover its strictly older parser incarnation
+    /// from verified certificate coordinates; absence within this generation
+    /// never grants that authority.
     /// This does not choose across revisions/chains/inputs, publish a canonical
     /// head, consume Effects, index search, or claim complete history coverage.
     pub fn publish_source_projection(
@@ -303,22 +359,83 @@ impl Writer {
         }
         let tx = db(&path, || self._index.transaction())?;
         writer::check_completed(&tx, &path, build)?;
-        let row: (Vec<u8>, i64, u64, Vec<u8>, bool) = db(&path, || {
-            tx.query_row("SELECT c.logical_key,c.input_pk,c.evidence_revision,c.version_hash,w.active_value_pk IS NULL AND w.active_origin_value_pk IS NULL AND w.active_block_pk IS NULL AND NOT EXISTS(SELECT 1 FROM message_build_frontier WHERE build_pk=w.pk) FROM message_build w JOIN message_candidate c ON c.pk=?2 WHERE w.pk=?1 AND w.phase='rank' AND c.facts_ready=1",params![build.pk,build.candidate],|r|Ok((r.get(0)?,r.get(1)?,crate::parser_state::unsigned(r,2)?,r.get(3)?,r.get(4)?)))
+        type Prepared = (
+            Vec<u8>,
+            i64,
+            u64,
+            Vec<u8>,
+            bool,
+            u64,
+            i64,
+            i64,
+            Vec<u8>,
+            Vec<u8>,
+        );
+        let row: Prepared = db(&path, || {
+            tx.query_row("SELECT c.logical_key,c.input_pk,c.evidence_revision,c.version_hash,w.active_value_pk IS NULL AND w.active_origin_value_pk IS NULL AND w.active_block_pk IS NULL AND NOT EXISTS(SELECT 1 FROM message_build_frontier WHERE build_pk=w.pk),c.revision,c.source_state_generation,c.source_state_step,c.source_basis_digest,c.basis_digest FROM message_build w JOIN message_candidate c ON c.pk=?2 WHERE w.pk=?1 AND w.phase='rank' AND c.facts_ready=1",params![build.pk,build.candidate],|r|Ok((r.get(0)?,r.get(1)?,crate::parser_state::unsigned(r,2)?,r.get(3)?,r.get(4)?,crate::parser_state::unsigned(r,5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)))
         })?;
-        let (logical, input, _evidence, hash, complete) = row;
+        let (
+            logical,
+            input,
+            evidence,
+            hash,
+            complete,
+            revision,
+            generation,
+            step,
+            source_basis,
+            preparation_basis,
+        ) = row;
         if !complete || hash != prepared.hash.bytes().as_slice() {
             return Err(Error::MessagePreparationPending);
         }
         let logical: [u8; 32] = logical
             .try_into()
             .map_err(|_| invalid("source logical key length"))?;
-        let existing: Option<i64> = db(&path, || {
-            tx.query_row("SELECT pk FROM message_candidate WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND revision=(SELECT revision FROM message_candidate WHERE pk=?4) AND logical_key=?5 AND eligible=1",params![build.message,input,build.source.chain,build.candidate,logical.as_slice()],|r|r.get(0)).optional()
-        })?;
-        if existing != previous.map(|p| p.candidate) {
+        let prepared_predecessor = certified_predecessor(
+            &build.source,
+            generation,
+            step,
+            source_basis,
+            revision,
+            &logical,
+            evidence,
+            &preparation_basis,
+        )?;
+        if prepared_predecessor != build.source
+            || preparation_basis != build.digest
+            || input != build.source.input_pk
+        {
             return Err(Error::MessagePredecessorChanged);
         }
+        type Existing = (i64, u64, u64, i64, i64, Vec<u8>, Vec<u8>);
+        let existing: Option<Existing> = db(&path, || {
+            tx.query_row("SELECT pk,revision,evidence_revision,source_state_generation,source_state_step,source_basis_digest,basis_digest FROM message_candidate INDEXED BY message_candidate_effective WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND revision=(SELECT revision FROM message_candidate WHERE pk=?4) AND logical_key=?5 AND eligible=1",params![build.message,input,build.source.chain,build.candidate,logical.as_slice()],|r|Ok((r.get(0)?,crate::parser_state::unsigned(r,1)?,crate::parser_state::unsigned(r,2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()
+        })?;
+        let withdrawal = match existing {
+            Some((candidate, revision, evidence, generation, step, basis, preparation)) => {
+                let predecessor = certified_predecessor(
+                    &build.source,
+                    generation,
+                    step,
+                    basis,
+                    revision,
+                    &logical,
+                    evidence,
+                    &preparation,
+                )?;
+                match previous {
+                    Some(previous)
+                        if previous.candidate == candidate
+                            && previous.predecessor == predecessor => {}
+                    None if predecessor.generation < build.source.generation => {}
+                    _ => return Err(Error::MessagePredecessorChanged),
+                }
+                Some((candidate, predecessor, preparation))
+            }
+            None if previous.is_none() => None,
+            None => return Err(Error::MessagePredecessorChanged),
+        };
         let changed = if let Some(previous) = previous {
             db(&path, || {
                 tx.execute("UPDATE parser_cell SET value=?6 WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5 AND value=?7",params![build.source.input_pk,build.source.chain,build.source.generation,NAMESPACE,logical.as_slice(),encoded,previous.reference])
@@ -331,12 +448,9 @@ impl Writer {
         if changed != 1 {
             return Err(Error::MessagePredecessorChanged);
         }
-        if let Some(previous) = previous {
+        if let Some((candidate, predecessor, preparation)) = withdrawal {
             if db(&path, || {
-                tx.execute(
-                    "UPDATE message_candidate SET eligible=0 WHERE pk=?1 AND eligible=1",
-                    [previous.candidate],
-                )
+                tx.execute("UPDATE message_candidate SET eligible=0 WHERE pk=?1 AND eligible=1 AND source_state_generation=?2 AND source_state_step=?3 AND source_basis_digest=?4 AND basis_digest=?5",params![candidate,predecessor.generation,predecessor.step,predecessor.basis.as_slice(),preparation])
             })? != 1
             {
                 return Err(Error::MessagePredecessorChanged);

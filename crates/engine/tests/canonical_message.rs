@@ -892,7 +892,7 @@ mod claude_tests;
 // Append inside engine/tests/canonical_message.rs after the publication freeze.
 // Diagnostic: demonstrates the currently explicit refusal, not desired support.
 #[test]
-fn parser_generation_replay_cannot_replace_prior_candidate_without_a_receipt() {
+fn parser_generation_replay_replaces_only_verified_prior_candidate_and_preserves_pinned_reads() {
     let bytes = text_input("retained source generation discriminator");
     let mut world = World::new(&bytes);
     let handle = world.begin();
@@ -963,35 +963,74 @@ fn parser_generation_replay_cannot_replace_prior_candidate_without_a_receipt() {
             .unwrap()
             .is_none()
     );
+    world = world.reopen();
+    let reader = world.writer.read_handle().unwrap();
+    let pinned = reader
+        .selected_message(previous.message())
+        .unwrap()
+        .unwrap();
     let handle = world.begin();
-    for _ in 0..4000 {
-        let action = world.compute(&handle);
-        if action.operation() == "source_publish" {
-            assert!(matches!(
-                m::apply(&mut world.writer, action),
-                Err(m::Error::Store(
-                    polylogue_store::Error::MessagePredecessorChanged
-                ))
-            ));
-            assert!(
-                world
-                    .writer
-                    .current_source_projection(&world.head.token, &[3; 32], 65536)
-                    .unwrap()
-                    .is_none()
-            );
-            let reader = world.writer.read_handle().unwrap();
-            let retained = reader
-                .selected_message(previous.message())
-                .unwrap()
-                .unwrap();
-            assert_eq!(&retained.body_id(), previous.body());
-            return;
-        }
-        assert!(matches!(
-            m::apply(&mut world.writer, action).unwrap(),
-            m::Applied::Progress
-        ));
-    }
-    panic!("new generation never reached its publication discriminator");
+    let replacement = world.complete(&handle);
+    assert_eq!(replacement.version_hash(), previous.version_hash());
+    assert_ne!(replacement.body(), previous.body());
+    assert_eq!(
+        &reader
+            .selected_message(previous.message())
+            .unwrap()
+            .unwrap()
+            .body_id(),
+        previous.body()
+    );
+    use polylogue_store::contributions::BodyRetirement;
+    assert_eq!(
+        world.writer.retire_message_body(previous.body()).unwrap(),
+        BodyRetirement::Selected
+    );
+    world
+        .writer
+        .select_uncontested_source_message(&replacement, 65536)
+        .unwrap();
+    assert_eq!(
+        &reader
+            .selected_message(previous.message())
+            .unwrap()
+            .unwrap()
+            .body_id(),
+        replacement.body()
+    );
+    assert_eq!(&pinned.body_id(), previous.body());
+    assert_eq!(
+        world.writer.retire_message_body(previous.body()).unwrap(),
+        BodyRetirement::DetachedCandidate
+    );
+    assert_eq!(
+        world.writer.retire_message_body(previous.body()).unwrap(),
+        BodyRetirement::Body
+    );
+    assert_eq!(
+        pinned
+            .block(BlockSlot::Item(0))
+            .unwrap()
+            .unwrap()
+            .text_range(0, 256)
+            .unwrap()
+            .unwrap()
+            .bytes,
+        b"retained source generation discriminator"
+    );
+    drop(pinned);
+    drop(reader);
+    world = world.reopen();
+    let current = world
+        .writer
+        .current_source_projection(&world.head.token, &[3; 32], 65536)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.body(), replacement.body());
+    let snapshot = world.writer.parser_snapshot(&world.head.token).unwrap();
+    let action = m::start(&snapshot, &world.request(), Some(current), budget(), 65536).unwrap();
+    assert!(matches!(
+        m::apply(&mut world.writer, action).unwrap(),
+        m::Applied::Existing(_)
+    ));
 }

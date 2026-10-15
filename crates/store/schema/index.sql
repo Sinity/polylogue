@@ -177,6 +177,9 @@ CREATE TABLE message_candidate (
   evidence_revision INTEGER NOT NULL CHECK(evidence_revision>=0),
   logical_key BLOB NOT NULL CHECK(length(logical_key)=32), -- format-owned candidate identity, never a scheduling cut
   parser_version INTEGER NOT NULL CHECK(parser_version>=0),
+  source_state_generation INTEGER NOT NULL CHECK(source_state_generation>0),
+  source_state_step INTEGER NOT NULL CHECK(source_state_step>=0),
+  source_basis_digest BLOB NOT NULL CHECK(length(source_basis_digest)=32),
   basis_digest BLOB NOT NULL CHECK(length(basis_digest)=32),
   body_pk INTEGER,
   body_ready INTEGER CHECK(body_ready=1),
