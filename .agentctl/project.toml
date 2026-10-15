@@ -43,3 +43,12 @@ result = "exit"
 timeout_seconds = 180
 scratch = "nvme"
 cache = "none"
+
+[operations.shared_file_layer_check]
+description = "Package and test the standalone shared crate and disposable tag consumer"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-shared-file-layer.py"]
+pool = "normal"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"

@@ -2,7 +2,10 @@
 name = "hashed-blobs"
 version = "0.1.0"
 edition = "2021"
-description = "Bytes by BLAKE3 hash, plain or as a delta, sealed or not (joint #11, #12, #14, #19, #23, #24)"
+rust-version = "1.98.1"
+license-file = "../../LICENSE"
+repository = "https://github.com/Sinity/polylogue"
+description = "Content-addressed files with checked range reads, deltas and sealed encodings"
 publish = false
 
 [dependencies]

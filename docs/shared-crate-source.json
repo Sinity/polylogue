@@ -2,7 +2,7 @@
   "source_commit": "9c707593185673dd3985df4008174474999699ad",
   "source_path": "polylogue-sinex-joint/prototype/hashed-blobs",
   "canonical_target": "crates/hashed-blobs",
-  "status": "isolated adapted owner preparation; reviewed owner-tag pin or explicit contract amendment required before publication",
+  "status": "adapted owner release candidate; remote owner tag and downstream replacement remain unpublished",
   "files": [
     {
       "path": "Cargo.toml",
@@ -63,5 +63,17 @@
       }
     ],
     "file_set_sha256": "969613274d190ae1cb482ab665ce5e0c15a403101ab6b31068f36266d3b88392"
+  },
+  "release_preparation": {
+    "package": "hashed-blobs",
+    "version": "0.1.0",
+    "proposed_tag": "hashed-blobs-v0.1.0",
+    "repository": "https://github.com/Sinity/polylogue",
+    "minimum_rust": "1.98.1",
+    "changed_files": [
+      "Cargo.toml",
+      "README.md"
+    ],
+    "implementation_unchanged": true
   }
 }

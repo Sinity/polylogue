@@ -1,4 +1,6 @@
-# hashed-blobs (joint prototype)
+# hashed-blobs
+
+Polylogue owns this standalone Unix file-layer crate. The proposed first owner tag is `hashed-blobs-v0.1.0`; remote publication remains pending. It builds on stable Rust 1.98.1 or newer with a C compiler for zstd. Product backends and privacy policy remain in the caller. See `docs/shared-file-layer-release.md` in the owner repository for the release and consumer-replacement procedure.
 
 The shared content-store crate (joint #11, #12, #14, #19, #23, #24), built to Polylogue's API (`polylogue-spec/spec/storage/blobs.md`, "The file layer is the hashed-blobs crate") and Sinex's sealed design (`sinex-spec/decisions/privacy.md`). Flake check `joint-hashed-blobs`.
 
