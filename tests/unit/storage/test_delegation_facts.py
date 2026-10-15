@@ -317,6 +317,13 @@ def test_delegation_resolves_with_canonical_child_to_parent_direction(tmp_path: 
     assert row["child_cost_usd"] == pytest.approx(0.42)
     assert row["child_tokens"] == 1000 + 500 + 200 + 50
     assert row["child_wall_ms"] == 44_100
+    conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (child_id,))
+    _insert_session_profile(conn, session_id=child_id, wall_duration_ms=55_100, terminal_state="clean_finish")
+    refreshed = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchone()
+    assert refreshed is not None
+    assert refreshed["child_wall_ms"] == 55_100
+    assert refreshed["child_tokens"] == row["child_tokens"]
+    assert refreshed["child_cost_is_estimated"] == row["child_cost_is_estimated"]
     assert row["child_terminal_state"] == "clean_finish"
     assert row["instruction_payload"] == '{"prompt": "audit the thing"}'
     assert row["dispatch_turn_model"] == "claude-opus-4-8"

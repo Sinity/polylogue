@@ -16,17 +16,19 @@ an extra serial cost is visible.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import statistics
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from devtools.measurement_receipts import emit_receipt
 from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassReport, IntakeClassSpec, IntakePass
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
@@ -544,6 +546,7 @@ def test_dispatcher_page_compaction_cost_is_one_scoped_hold_at_archive_scale(
 
     monkeypatch.setattr(raw_retention, "active_raw_retention_authority", recording_authority)
     measurements: list[_DispatcherMeasurement] = []
+    measurement_scopes: list[frozenset[Path]] = []
     expected_scopes: list[frozenset[Path]] = []
     for label, existing_batches in (("empty", 0), ("medium", 2), ("large", 4)):
         archive_root = tmp_path / f"{label}-archive"
@@ -553,10 +556,12 @@ def test_dispatcher_page_compaction_cost_is_one_scoped_hold_at_archive_scale(
             _run_dispatcher_ingest(seed, archive_root)
         corpus = _write_corpus(tmp_path / f"{label}-measurement", prefix=f"{label}-measurement")
         expected_scopes.append(frozenset(_jsonl_files(corpus)))
+        measurement_scopes.append(expected_scopes[-1])
         measurements.append(_run_dispatcher_ingest(corpus, archive_root, observe_writer_holds=True))
 
     assert observed_scopes == expected_scopes
     assert len(retention_queries) == len(expected_scopes)
+    selects_by_scope: dict[frozenset[Path], int] = {}
     for scope, statements in retention_queries:
         assert scope is not None
         selects = tuple(
@@ -575,6 +580,7 @@ def test_dispatcher_page_compaction_cost_is_one_scoped_hold_at_archive_scale(
         # recurrence grows this count even when the archive's final content is
         # identical, which is why this is a count rather than a timing bound.
         assert len(selects) == 3
+        selects_by_scope[scope] = len(selects)
         assert sum("select distinct raw_id from sessions" in statement for statement in selects) == 1
         assert sum("raw_revision_heads" in statement for statement in selects) == 2
         assert all(" in (" in statement for statement in selects)
@@ -592,3 +598,22 @@ def test_dispatcher_page_compaction_cost_is_one_scoped_hold_at_archive_scale(
         measurement.raw_compaction_time_s is not None and measurement.raw_compaction_time_s > 0
         for measurement in measurements
     )
+
+    observed = {
+        "measurements": [
+            {
+                "population": label,
+                "existing_archive_batches": existing_batches,
+                "route": "FairIntakeDispatcher + FileIntakeAdapter.admit_page",
+                **asdict(measurement),
+                "retention_selects_per_page": selects_by_scope[scope],
+            }
+            for (label, existing_batches), measurement, scope in zip(
+                (("empty", 0), ("medium", 2), ("large", 4)), measurements, measurement_scopes, strict=True
+            )
+        ]
+    }
+    receipt_path = emit_receipt("dispatcher-retention-scale", observed)
+    emitted = json.loads(receipt_path.read_text())
+    assert emitted["name"] == "dispatcher-retention-scale"
+    assert emitted["measurement"] == observed

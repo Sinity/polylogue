@@ -64,6 +64,9 @@ def test_empty_archive_discovers_rejected_prefix_and_publishes_exact_sessions(
             assert retained_path is not None and retained_path.is_file()
             retained = json.loads(retained_path.read_text(encoding="utf-8"))
             assert retained["candidate_sha"] == receipt["candidate"]["sha"]
+            assert retained["host"] == receipt["host"]
+            assert retained["host"]["machine"]
+            assert isinstance(retained["host"]["free_threaded"], bool)
             assert retained["discovery"] == receipt["discovery_measurement"]
             assert retained["process_tree_rss"]["sampled_peak_bytes"] == receipt["process_tree_rss_bytes"]
             assert retained["process_tree_rss"]["limits"]["task_ids_per_sample"] > 0

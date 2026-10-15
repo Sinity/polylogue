@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.benchmarks.cli_profile import record_metrics
 from tests.benchmarks.helpers import benchmark_repeated
+from tests.infra.benchmark_process import run_with_peak_rss
 from tests.infra.cli_cold_start import EmptyResident
 from tests.infra.workload_artifacts import build_seeded_archive
 from tests.infra.workload_declarations import BenchmarkWorkloadTier, benchmark_corpus_specs
@@ -69,7 +70,7 @@ def test_bench_cli_status_unavailable_cold(benchmark: Any, bench_cli_cold_start_
 
     def invoke() -> int:
         started = perf_counter()
-        result = subprocess.run(args, env=env, cwd=home, capture_output=True, timeout=30)
+        result, peak_rss_kib = run_with_peak_rss(args, env=env, cwd=home)
         elapsed_ms = (perf_counter() - started) * 1000
         payload = json.loads(result.stdout)
         assert result.returncode == (0 if route == "agents" else 1), result.stderr.decode(errors="replace")
@@ -86,6 +87,7 @@ def test_bench_cli_status_unavailable_cold(benchmark: Any, bench_cli_cold_start_
         record_metrics(
             benchmark,
             cold_start_ms=elapsed_ms,
+            peak_rss_kib=peak_rss_kib,
             bytes=len(result.stdout),
             rows=result.stdout.count(b"\n"),
         )
@@ -132,13 +134,13 @@ def test_bench_cli_status_cold(benchmark: Any, bench_empty_status_resident: Empt
     executable = Path(sys.executable).parent / ("polylogued" if route == "daemon" else "polylogue")
     args = [str(executable), *(["agents", "status"] if route == "agents" else ["status"]), "--format", "json"]
     samples: list[float] = []
-    attempts: list[tuple[subprocess.CompletedProcess[bytes], float]] = []
+    attempts: list[tuple[subprocess.CompletedProcess[bytes], float, int]] = []
 
     def invoke() -> int:
         started = perf_counter()
-        result = subprocess.run(args, env=env, cwd=resident.home, capture_output=True, timeout=30)
+        result, peak_rss_kib = run_with_peak_rss(args, env=env, cwd=resident.home)
         elapsed_ms = (perf_counter() - started) * 1000
-        attempts.append((result, elapsed_ms))
+        attempts.append((result, elapsed_ms, peak_rss_kib))
         return result.returncode
 
     try:
@@ -146,13 +148,21 @@ def test_bench_cli_status_cold(benchmark: Any, bench_empty_status_resident: Empt
     finally:
         # Preserve every returned response, including when a later launch fails.
         # Fixture I/O and validation must not count as command startup time.
-        for attempt, (result, elapsed_ms) in enumerate(attempts, start=1):
+        for attempt, (result, elapsed_ms, peak_rss_kib) in enumerate(attempts, start=1):
             (resident.home.parent / f"{route}-attempt-{attempt}.stdout.json").write_bytes(result.stdout)
             (resident.home.parent / f"{route}-attempt-{attempt}.stderr.log").write_bytes(result.stderr)
             (resident.home.parent / f"{route}-attempt-{attempt}.receipt.json").write_text(
-                json.dumps({"elapsed_ms": elapsed_ms, "returncode": result.returncode, "profiling": False}) + "\n"
+                json.dumps(
+                    {
+                        "elapsed_ms": elapsed_ms,
+                        "peak_rss_kib": peak_rss_kib,
+                        "returncode": result.returncode,
+                        "profiling": False,
+                    }
+                )
+                + "\n"
             )
-    for result, elapsed_ms in attempts:
+    for result, elapsed_ms, peak_rss_kib in attempts:
         payload = json.loads(result.stdout)
         if route == "agents":
             assert result.returncode == 0, result.stderr.decode(errors="replace")
@@ -162,7 +172,13 @@ def test_bench_cli_status_cold(benchmark: Any, bench_empty_status_resident: Empt
             assert result.returncode == 1, result.stderr.decode(errors="replace")
             assert_served_empty_status(payload, root=resident.root, daemon_pid=resident.daemon_pid)
         samples.append(elapsed_ms)
-        record_metrics(benchmark, cold_start_ms=elapsed_ms, bytes=len(result.stdout), rows=result.stdout.count(b"\n"))
+        record_metrics(
+            benchmark,
+            cold_start_ms=elapsed_ms,
+            peak_rss_kib=peak_rss_kib,
+            bytes=len(result.stdout),
+            rows=result.stdout.count(b"\n"),
+        )
     benchmark.extra_info.update(
         {
             "route": route,

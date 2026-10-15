@@ -412,3 +412,24 @@ Direct `components validation --diagnostic cprofile|tracemalloc` uses the [diagn
 Named Claude units use one project-parent listing and only the selected session subtree; Gemini lists its project root and keeps every project with the existing unit key (including same-stem names), and named Codex walks only its containing directory for the exact rollout. Every selected entry still passes the original native layout, source ownership and link/fault rules. Unrelated sibling names are inspected, but their types, links and subtrees are not visited. Named input is diagnostic selection, not probability sampling.
 
 `sample` keeps its original seeded layout-unit draws and watched-population denominator. Its manifest separates drawn unit bytes from full shared assembly metadata added once per corpus coordinate. Already drawn metadata is not counted twice. When extra shared metadata has no sampling denominator, whole-population intake projection stays unavailable for that origin; actual intake timings and resources remain reported. Previously sealed corpora and receipts retain their original meaning.
+
+## Interactive measurement scope
+
+The interaction harness correlates read-frame and compute intervals by request
+ID, including overlapping requests that finish out of order. Mixed-load tags
+are preseeded for the two writer sessions, then read independently from the
+archive to confirm the same exact populations survived the window. RSS is a
+window high-water mark only when the Linux counter reset succeeds; otherwise
+it is unavailable. A workload without byte reservations reports queue bytes
+as unmeasured rather than publishing zero as a capacity observation.
+
+Cold command RSS comes from that child's wait4 usage record, including its
+pre-exec overhead, rather than subtracting cumulative children high-water
+marks. Timing samples do not enable import profiling. Retained discovery
+receipts carry the original observing host, and milestone trace writes happen
+after the measured route finishes.
+
+The perf-floor runner separates quick and representative floor files. It
+refuses cross-mode comparison and requires the recorded workload version to
+match. Workload version 3 measures canonical retained replay and current query
+surfaces; older artifacts require new measurements through that route.

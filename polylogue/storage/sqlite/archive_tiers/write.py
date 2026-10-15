@@ -7659,6 +7659,7 @@ def _write_attachments(
                 _attachment_reference_native_identity(attachment)
             ]
     touched_attachment_ids: set[str] = set()
+    incoming_unowned_ids: set[str] = set()
     for attachment in attachments:
         attachment_id = identity(attachment)
         message_id = resolved_message_ids.get(attachment.acquisition_key)
@@ -7679,6 +7680,7 @@ def _write_attachments(
             if attachment.inline_bytes is not None or attachment.precomputed_blob is not None:
                 continue
             _write_attachment_row(conn, attachment_id, attachment, preacquired_blobs)
+            incoming_unowned_ids.add(attachment_id)
             continue
         direction, producer_ref = _attachment_provenance(
             attachment, owning_messages.get(message_id), resolved_message_id=message_id
@@ -7737,7 +7739,23 @@ def _write_attachments(
             ),
         )
         _write_attachment_native_ids(conn, ref_id, attachment)
-    affected_attachment_ids = chain(touched_attachment_ids, refresh_attachment_ids or ())
+    # These metadata-only rows are incoming evidence, not abandoned acquired
+    # objects. Refresh their count without deleting the row just upserted.
+    conn.executemany(
+        "UPDATE attachments SET ref_count = (SELECT COUNT(*) FROM attachment_refs "
+        "WHERE attachment_refs.attachment_id = attachments.attachment_id) WHERE attachment_id = ?",
+        ((attachment_id,) for attachment_id in incoming_unowned_ids),
+    )
+    conn.executemany(
+        "UPDATE attachments SET blob_hash = NULL, acquisition_status = 'unfetched' "
+        "WHERE attachment_id = ? AND ref_count = 0",
+        ((attachment_id,) for attachment_id in incoming_unowned_ids),
+    )
+    affected_attachment_ids = (
+        attachment_id
+        for attachment_id in chain(touched_attachment_ids, refresh_attachment_ids or ())
+        if attachment_id not in incoming_unowned_ids
+    )
     # polylogue-w06b: a full-replace re-ingest (or a re-ingest whose attachment
     # can no longer be matched to a message via the shared owner key, e.g.
     # the owning message became a duplicate-native-id exclusion or dropped

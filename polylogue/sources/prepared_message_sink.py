@@ -688,11 +688,11 @@ class GeminiToolOutputIndex:
 # publishes the same leaf and path values.
 #
 # - **Leaf.** A session whose producer marked exactly one occurrence as the
-#   active leaf keeps that occurrence. Otherwise the last message becomes the
-#   leaf as a storage default, and it carries ``active_leaf_fallback`` so a
+#   active leaf keeps that occurrence. Otherwise the last message not explicitly excluded from the active path
+#   becomes the leaf as a storage default, and it carries ``active_leaf_fallback`` so a
 #   later pass never reads its own default as producer evidence.
 # - **Path.** Only a producer leaf implies an active path. The walk starts at
-#   the leaf occurrence itself and follows each occurrence's own parent id.
+#   the leaf occurrence itself and follows each occurrence's own parent id or declared parent position.
 #   A parent id names the nearest earlier occurrence with that provider id
 #   (a transcript records a parent before its child); with no earlier one it
 #   names the last occurrence. Only the occurrences on that chain are marked:
@@ -726,25 +726,37 @@ def normalize_active_branch(messages: list[ParsedMessage]) -> list[ParsedMessage
         return messages
     leaf = producer_leaf_position(messages)
     if leaf is None:
-        last = len(messages) - 1
+        last = next(
+            (
+                position
+                for position in range(len(messages) - 1, -1, -1)
+                if messages[position].is_active_path is not False
+            ),
+            len(messages) - 1,
+        )
         return [
             message.model_copy(update={"is_active_leaf": position == last, "active_leaf_fallback": position == last})
             if bool(message.is_active_leaf) != (position == last) or message.active_leaf_fallback != (position == last)
             else message
             for position, message in enumerate(messages)
         ]
-    if not messages[leaf].provider_message_id:
-        return messages
     positions_by_id: dict[str, list[int]] = {}
+    positions_by_coordinate: dict[int, list[int]] = {}
     for position, message in enumerate(messages):
         if message.provider_message_id:
             positions_by_id.setdefault(message.provider_message_id, []).append(position)
+        coordinate = message.position if message.position is not None else position
+        positions_by_coordinate.setdefault(coordinate, []).append(position)
     chain: set[int] = set()
     cursor: int | None = leaf
     while cursor is not None and cursor not in chain:
         chain.add(cursor)
-        parent_id = messages[cursor].parent_message_provider_id
-        cursor = parent_occurrence(positions_by_id.get(parent_id, ()), cursor) if parent_id else None
+        message = messages[cursor]
+        parent_id = message.parent_message_provider_id
+        parent = parent_occurrence(positions_by_id.get(parent_id, ()), cursor) if parent_id else None
+        if parent is None and message.parent_message_position is not None:
+            parent = parent_occurrence(positions_by_coordinate.get(message.parent_message_position, ()), cursor)
+        cursor = parent
     return [
         message.model_copy(update={"is_active_path": True})
         if position in chain and message.is_active_path is not True
@@ -1052,9 +1064,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         if len(leaves) != 1 or _from_text_json(ParsedMessage, leaves[0][3]).active_leaf_fallback:
             self._settle_fallback_leaf()
             return self
-        leaf_ordinal, leaf_id, leaf_parent, _leaf_json = leaves[0]
-        if not leaf_id:
-            return self
+        leaf_ordinal, _leaf_id, parent_id, _leaf_json = leaves[0]
         self._writer.execute("DROP TABLE IF EXISTS temp.prepared_active_path")
         self._writer.execute("CREATE TEMP TABLE prepared_active_path (message_ordinal INTEGER PRIMARY KEY)")
         # The walk starts at the leaf occurrence itself and follows each
@@ -1062,14 +1072,41 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         # id may name a different parent.
         self._writer.execute("INSERT INTO prepared_active_path VALUES (?)", (leaf_ordinal,))
         child_ordinal: int = leaf_ordinal
-        parent_id: str | None = leaf_parent
-        while parent_id:
-            parent = (
-                self._writer.execute(
-                    _EARLIER_PARENT_OCCURRENCE_SQL, (self.session_ordinal, parent_id, child_ordinal)
-                ).fetchone()
-                or self._writer.execute(_LAST_PARENT_OCCURRENCE_SQL, (self.session_ordinal, parent_id)).fetchone()
-            )
+        while True:
+            # parent_id is the prepared row's encoded native key. Keep the
+            # native walk on its indexed columns without decoding message bodies.
+            parent = None
+            if parent_id:
+                parent = (
+                    self._writer.execute(
+                        _EARLIER_PARENT_OCCURRENCE_SQL, (self.session_ordinal, parent_id, child_ordinal)
+                    ).fetchone()
+                    or self._writer.execute(_LAST_PARENT_OCCURRENCE_SQL, (self.session_ordinal, parent_id)).fetchone()
+                )
+            if parent is None:
+                coordinate = self._writer.execute(
+                    "SELECT json_extract(message_json, '$.parent_message_position') "
+                    "FROM prepared_message WHERE session_ordinal = ? AND message_ordinal = ?",
+                    (self.session_ordinal, child_ordinal),
+                ).fetchone()[0]
+                if coordinate is None:
+                    break
+                base_sql = (
+                    "SELECT message_ordinal, parent_id FROM prepared_message INDEXED BY prepared_message_position "
+                    "WHERE session_ordinal = ? "
+                    "AND COALESCE(json_extract(message_json, '$.position'), message_ordinal) = ? "
+                )
+                key = (self.session_ordinal, coordinate)
+                parent = (
+                    self._writer.execute(
+                        base_sql + "AND message_ordinal < ? ORDER BY message_ordinal DESC LIMIT 1",
+                        (*key, child_ordinal),
+                    ).fetchone()
+                    or self._writer.execute(
+                        base_sql + "ORDER BY message_ordinal DESC LIMIT 1",
+                        key,
+                    ).fetchone()
+                )
             if parent is None:
                 break
             result = self._writer.execute("INSERT OR IGNORE INTO prepared_active_path VALUES (?)", (parent[0],))
@@ -1093,9 +1130,15 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         return self
 
     def _settle_fallback_leaf(self) -> None:
-        """Make the last message the storage-default leaf, marked as not producer evidence."""
+        """Choose the last active candidate without reclassifying an excluded branch."""
         assert self._writer is not None
-        last = self._count - 1
+        candidate = self._writer.execute(
+            "SELECT message_ordinal FROM prepared_message WHERE session_ordinal = ? "
+            "AND json_extract(message_json, '$.is_active_path') IS NOT 0 "
+            "ORDER BY message_ordinal DESC LIMIT 1",
+            (self.session_ordinal,),
+        ).fetchone()
+        last = candidate[0] if candidate is not None else self._count - 1
         ordinal = -1
         while True:
             row = self._writer.execute(
@@ -1724,6 +1767,10 @@ class SqliteMessageStore:
             )
             self.conn.execute(
                 "CREATE INDEX prepared_message_provider ON prepared_message(session_ordinal, provider_id, message_ordinal)"
+            )
+            self.conn.execute(
+                "CREATE INDEX prepared_message_position ON prepared_message("
+                "session_ordinal, COALESCE(json_extract(message_json, '$.position'), message_ordinal), message_ordinal)"
             )
             self.conn.execute(
                 "CREATE TABLE prepared_event (session_ordinal INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, timestamp TEXT, event_type TEXT NOT NULL, event_json TEXT NOT NULL, sort_tier INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (session_ordinal, event_ordinal)) WITHOUT ROWID"

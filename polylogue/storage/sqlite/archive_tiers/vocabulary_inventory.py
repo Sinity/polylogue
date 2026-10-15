@@ -250,3 +250,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = ["Lifecycle", "VocabularyCheck", "VocabularyInventory", "build_inventory", "main"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

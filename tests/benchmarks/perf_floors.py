@@ -2,8 +2,8 @@
 
 The 2026-07-18/19 campaign produced measured wins (>20x replay throughput via
 planner-statistics seeding, 8x/3.3x elsewhere) that nothing protected from
-silent regression. This module is the single entry point that turns four of
-those harnesses into a floor-checked measurement:
+silent regression. This module is the single entry point that turns these
+harnesses into a floor-checked measurement:
 
 * **replay throughput** (sessions/min) through the canonical retained replay
   owner (preparatory Source phases and publication) on a fresh corpus.
@@ -37,11 +37,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from tests.infra.workload_declarations import BenchmarkWorkloadTier
+if TYPE_CHECKING:
+    from tests.infra.workload_declarations import BenchmarkWorkloadTier
+
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 pytestmark = pytest.mark.uses_real_clock(
     "polylogue-196x nightly perf-floors runner stamps its measurement report with the real wall-clock generation time (machine fingerprint metadata for the committed floors artifact); a frozen clock would misdate every real nightly run."
@@ -49,6 +53,8 @@ pytestmark = pytest.mark.uses_real_clock(
 
 REPORT_VERSION = 1
 DEFAULT_FLOORS_PATH = Path(__file__).parent / "floors.json"
+QUICK_FLOORS_PATH = Path(__file__).parent / "floors.quick.json"
+WORKLOAD_VERSION = 3
 DEFAULT_TOLERANCE_PCT = 35.0
 _GIT_TIMEOUT_S = 2.0
 
@@ -61,6 +67,10 @@ _REPLAY_RAW_COUNT = 200
 _REPLAY_RAW_COUNT_QUICK = 40
 _QUERY_TERMS: tuple[str, ...] = ("analysis", "error", "function", "test")
 _QUERY_LIST_REPEATS = 4
+
+
+class FloorWorkloadMismatchError(ValueError):
+    """A floor and a candidate do not measure the same declared workload."""
 
 
 class EmptySampleError(RuntimeError):
@@ -307,6 +317,8 @@ def run_perf_floor_set(workdir: Path | None = None, *, quick: bool = False) -> d
         metrics: list[FloorMetric] = []
         metrics.extend(measure_replay_throughput(base / "replay", quick=quick))
 
+        from tests.infra.workload_declarations import BenchmarkWorkloadTier
+
         tier = BenchmarkWorkloadTier.SMOKE if quick else BenchmarkWorkloadTier.REPRESENTATIVE
         index_db = _seed_bench_archive(base / "seed", tier=tier)
         metrics.extend(measure_action_pairs_refresh(index_db))
@@ -319,6 +331,7 @@ def run_perf_floor_set(workdir: Path | None = None, *, quick: bool = False) -> d
             "git_sha": _git_sha(Path(__file__).resolve().parents[2]),
             "machine": machine_fingerprint(),
             "quick": quick,
+            "workload_version": WORKLOAD_VERSION,
             "metrics": {
                 metric.name: {
                     "value": metric.value,
@@ -358,6 +371,11 @@ def save_floors(
     measured_under_load: bool,
     note: str | None,
 ) -> None:
+    if report["quick"] and path.resolve() == DEFAULT_FLOORS_PATH.resolve():
+        raise FloorWorkloadMismatchError("quick measurements cannot overwrite the normal floors")
+    existing = load_floors(path)
+    if "quick" in existing and existing["quick"] != report["quick"]:
+        raise FloorWorkloadMismatchError("the existing floors belong to the other workload mode")
     floors_metrics: dict[str, Any] = {}
     for name, entry in report["metrics"].items():
         # A non-positive baseline is not a floor: nothing can regress against
@@ -372,6 +390,8 @@ def save_floors(
         }
     payload = {
         "generated_at": report["generated_at"],
+        "quick": report["quick"],
+        "workload_version": report["workload_version"],
         "git_sha": report["git_sha"],
         "machine": report["machine"],
         "measured_under_load": measured_under_load,
@@ -414,6 +434,10 @@ def compare_to_floors(
     ``tolerance_pct`` in the floors file; otherwise the file's
     ``default_tolerance_pct`` (or the caller's) applies."""
     floor_metrics: dict[str, Any] = floors.get("metrics", {})
+    if floor_metrics and (
+        floors.get("quick") != report["quick"] or floors.get("workload_version") != report["workload_version"]
+    ):
+        raise FloorWorkloadMismatchError("floors do not describe this workload; record new measurements")
     file_default = floors.get("default_tolerance_pct", default_tolerance_pct)
     results: list[FloorComparison] = []
     for name, entry in sorted(report["metrics"].items()):
@@ -528,7 +552,7 @@ def format_delta_table(comparisons: Sequence[FloorComparison]) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--floors", type=Path, default=DEFAULT_FLOORS_PATH, help="Path to the committed floors JSON")
+    parser.add_argument("--floors", type=Path, default=None, help="Floor JSON (defaults to the selected workload mode)")
     parser.add_argument("--out", type=Path, default=None, help="Write the raw measurement report JSON here")
     parser.add_argument("--json", action="store_true", help="Print the raw measurement report JSON to stdout")
     parser.add_argument("--quick", action="store_true", help="Smaller corpora for a fast smoke check")
@@ -555,6 +579,9 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    args.floors = args.floors or (QUICK_FLOORS_PATH if args.quick else DEFAULT_FLOORS_PATH)
+    if args.quick and args.floors.resolve() == DEFAULT_FLOORS_PATH.resolve():
+        raise FloorWorkloadMismatchError("quick measurements cannot use the normal floors")
     report = run_perf_floor_set(workdir=args.workdir, quick=args.quick)
 
     if args.out is not None:

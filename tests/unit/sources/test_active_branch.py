@@ -131,3 +131,38 @@ def test_a_producer_leaf_lowering_is_stable_on_repeat(tmp_path: Path) -> None:
     assert _branch(once) == [(True, None, False), (False, None, False), (True, True, False)]
     assert _branch(twice) == _branch(once)
     assert _branch(_disk_lowering(tmp_path, messages, passes=2)) == _branch(once)
+
+
+@pytest.mark.parametrize("explicit_positions", (False, True))
+def test_idless_leaf_walks_positional_ancestors(tmp_path: Path, explicit_positions: bool) -> None:
+    root = ParsedMessage(
+        provider_message_id="",
+        role=Role.USER,
+        text="root",
+        position=10 if explicit_positions else None,
+        is_active_path=False,
+    )
+    leaf = ParsedMessage(
+        provider_message_id="",
+        role=Role.ASSISTANT,
+        text="leaf",
+        position=20 if explicit_positions else None,
+        parent_message_position=10 if explicit_positions else 0,
+        is_active_path=False,
+        is_active_leaf=True,
+    )
+    resident = normalize_active_branch([root, leaf])
+    assert _paths(resident) == [True, True]
+    assert _branch(_disk_lowering(tmp_path, [root, leaf], passes=2)) == _branch(resident)
+
+
+def test_fallback_leaf_does_not_select_an_excluded_retry(tmp_path: Path) -> None:
+    messages = [
+        _message("question"),
+        _message("answer", parent="question"),
+        _message("inactive-retry", parent="question", path=False),
+    ]
+    resident = normalize_active_branch(list(messages))
+    assert [message.provider_message_id for message in resident if message.is_active_leaf] == ["answer"]
+    assert _paths(resident) == [None, None, False]
+    assert _branch(_disk_lowering(tmp_path, messages, passes=2)) == _branch(resident)
