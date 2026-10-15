@@ -69,11 +69,13 @@ pub(super) fn overlay(
     }
     let mut previous = object(field(old, path)?)?;
     let newer = object(field(new, path)?)?;
+    let provided: Vec<String> = newer.keys().cloned().collect();
     let missing: Vec<String> = previous
         .keys()
         .filter(|key| !newer.contains_key(*key))
         .cloned()
         .collect();
+    let retained = missing.clone();
     let mut conflicts = missing;
     for name in ["role", "type"] {
         if let (Some(a), Some(b)) = (previous.get(name), newer.get(name)) {
@@ -86,11 +88,21 @@ pub(super) fn overlay(
     let item = encode(previous)?;
     let canonical = replace(new, path, &item)?;
     let value = serde_json::from_slice(&item).map_err(|e| e.to_string())?;
-    Ok((canonical, ValueFields { value, conflicts }))
+    Ok((
+        canonical,
+        ValueFields {
+            value,
+            conflicts,
+            provided,
+            retained,
+        },
+    ))
 }
 pub(super) struct ValueFields {
     pub value: serde_json::Value,
     pub conflicts: Vec<String>,
+    pub provided: Vec<String>,
+    pub retained: Vec<String>,
 }
 #[cfg(test)]
 mod tests {

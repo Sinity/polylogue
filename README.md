@@ -1,6 +1,6 @@
 # Polylogue Rust foundation
 
-This branch prepares the standalone Rust replacement in isolated state. It implements foundation identity/value contracts, durable SQLite schema checks, shared content files, one archive writer, read-only handles and a real daemon/status client. Explicit immutable Codex regular-file import and provider-state progress are registered. Canonical Message finalization, search, read/export, MCP and HTTP remain unfinished. Status explicitly reports `product_path: "not_implemented"`; an initialized empty schema is not a completed ingestion or M1 demonstration.
+This repository contains the standalone Rust foundation. It implements foundation identity/value contracts, durable SQLite schema checks, shared content files, one archive writer, read-only handles and a real daemon/status client. Explicit immutable Codex regular-file import and provider-state progress are registered. Selected uncontested Codex Messages have a streaming terminal reference read. Full canonical finalization, session JSON read/export, search, MCP and HTTP remain unfinished. Status reports `product_path: "partial"`; an initialized empty schema is not a completed ingestion or M1 demonstration.
 
 ## Build and run
 
@@ -24,13 +24,13 @@ The foreground daemon owns the archive lock, writable schema and its derived soc
 
 The declared AgentCTL operations run the Nix build/check and development-shell commands. `cargo run -p xtask -- check` checks target formatting, actual Cargo dependency boundaries and workspace tests. A synthetic Cargo-edge mutation and compile-fail examples demonstrate forbidden access. `.githooks` contains successor hooks; in linked worktrees select them through per-worktree Git configuration, never by changing another checkout's shared hook configuration.
 
-`crates/model` is pure. Only `crates/store` owns SQLite connections; public handles expose typed operations. `crates/hashed-blobs` is the reviewed shared file layer plus an explicit read-only capability, documented in [source provenance](docs/shared-crate-source.json). This is the shared-crate owner candidate; its protected source publication precedes the immutable release tag and Sinex consumer qualification. [Store limits](crates/store/README.md) distinguish these primitives from complete input acquisition and recovery.
+`crates/model` is pure. Only `crates/store` owns SQLite connections; public handles expose typed operations. `crates/hashed-blobs` is the reviewed shared file layer plus an explicit read-only capability, documented in [source provenance](docs/shared-crate-source.json). The owner publishes the reviewed file layer as `hashed-blobs-v0.1.0`; consumer pins require their own verification. [Store limits](crates/store/README.md) distinguish these primitives from complete input acquisition and recovery.
 
 ## Delivery boundary
 
 [Replacement disposition](docs/REPLACEMENT.md) records predecessor removal and preserved legal/history material. [Contract snapshot](docs/rewrite/README.md) links current semantic owners; canonical DDL provenance lives beside `crates/store/schema`.
 
-This candidate does not change master, deployed packages, consumers, archives or task routing. Known package consumers have explicit immutable predecessor pins in Sinnix `e9bdd3a75` and Lynchpin `0383336`. Shared dependency release, hosted successor checks and protected source publication remain open. Checksum failures on main-database page reads report the actual file and page. Cold durable WAL startup uses a cancellable bounded-memory integrity guard under archive ownership; ambiguous, partial and stale-generation tails require controlled recovery without changing retained bytes. This can refuse legitimate crashes and does not prove an external expected history head. Full WAL recovery remains open. Index rebuild/swap, cross-file read views and the first canonical source-to-query product path require further work. No broad M0/M1 or deployment acceptance is claimed.
+The foundation source and standalone `hashed-blobs-v0.1.0` release are published. Consumer pins, runtime activation and archive migration require their own qualification. Checksum failures on main-database page reads report the actual file and page. Cold durable WAL startup uses a cancellable bounded-memory integrity guard under archive ownership; ambiguous, partial and stale-generation tails require controlled recovery without changing retained bytes. This can refuse legitimate crashes and does not prove an external expected history head. Full WAL recovery remains open. Index rebuild/swap, cross-file read views and the first canonical source-to-query product path require further work. Canonical M1 and deployment acceptance remain open.
 
 An import reply certifies durable raw retention, independently of provider parse
 progress. The client prints its UUIDv7 request ID and acquisition time before
@@ -49,3 +49,25 @@ fail explicitly with owed work retained; configurable larger allowances and full
 resource qualification remain unfinished. Its current source scheduling follows
 one imported input to provider EOF; cross-input fair parse rounds and canonical
 finalization are still owed. Public search refuses even after provider EOF.
+
+The first canonical worker path prepares uncontested Codex Text/Thinking
+Messages and typed source fields through durable private roots, then selects a
+whole certified Message body. Only the terminal Message-reference read is exposed; session JSON read, search
+and export remain unavailable. Competing inputs, unsupported operations and unresolved
+mapping remain pending; `canonical_complete` remains false. Hash validation is
+cooperative off actor but can still process a whole Message/value per worker
+call, and normalized-leaf windowing can repeat serialization. These costs have
+not earned bounded worker-turn or append-local resource acceptance.
+
+Read one selected Message with `polylogue --archive DIR message:<opaque-id>
+read --format terminal`. This uses the stored Session relation, preserves one
+whole selected body and its interleaved reasoning/text order, and streams UTF-8
+payload ranges without collecting the full Message. Control characters are
+escaped for terminal safety. The command explicitly exits 5 (degraded) because
+history and source-locator coverage remain incomplete. Pending references,
+truncated streams and unsupported formats fail explicitly; `read --format json`
+is not a substitute export shape.
+
+Import accepts paired `--machine ID --host LABEL` acquisition-observation metadata. These identify the collector, not the original session machine or the immutable interpretation context. Without the pair, the client reads `/etc/machine-id` and the local hostname. Explicit retries must reuse the original observation metadata, request ID and timestamp.
+
+Selected terminal reads mask supported credential shapes in the daemon before socket encoding. The streaming adapter covers GitHub/GitLab/npm/Hugging Face/Google/Stripe/AWS/Anthropic/OpenAI prefix families, six PEM private-key headers and lowercase HTTP(S) credentials. It preserves matches across text pieces and merges overlapping matches; undecided URL regions above 512 bytes return an explicit error. Retained bytes and canonical values are unchanged. Generic secret assignments, JWT/Bearer patterns, derived `has:secret`/status counts and reveal remain unsupported; this is not comprehensive credential-policy qualification.

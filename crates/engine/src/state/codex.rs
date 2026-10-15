@@ -2,6 +2,7 @@
 //! Interpretation and encoding happen outside the output writer transaction.
 //! Budgets measure cumulative encoded cell traffic, not allocator/RSS usage.
 use std::cell::{Cell as Counter, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use polylogue_sources::codex::{
@@ -11,7 +12,7 @@ use polylogue_sources::codex::{
 use polylogue_store::Error as StoreError;
 use polylogue_store::parser_state::{Budget, CellChange, Snapshot};
 type Result<T> = std::result::Result<T, StoreError>;
-use polylogue_model::{Event, Link};
+use polylogue_model::{Event, Link, merge::Slot};
 use polylogue_sources::codex::keyed::NativeConflict;
 use serde::{Deserialize, Serialize};
 
@@ -276,48 +277,264 @@ fn limited<E: std::fmt::Display>(
     result.map_err(|e| invalid("encoding", e))?;
     Ok(writer.bytes)
 }
-/// Step-scoped obligations, retained until their owning output transaction
-/// commits. They are not proof of canonical publication or completed hashing.
-pub const EFFECTS_NAMESPACE: &str = "codex.effects";
+/// Adapter-only layout identity. Include this in the owning parser basis;
+/// provider interpretation/version evidence is unchanged by this encoding.
+pub const STATE_LAYOUT_VERSION: u32 = 3;
+pub const EFFECTS_NAMESPACE: &str = "codex.effects.v3";
+const EFFECT_KINDS: usize = 8;
+const EFFECT_KEY_BYTES: usize = 17;
+const EFFECT_HEADER_BYTES: usize = 256;
+
+/// Stable ordering is event, link, pending version, conflict, pending result,
+/// reachback, changed Message, deferred call impact. Source vector order and
+/// sorted dirty addresses are retained without a second interpretation.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub enum Effect {
+    Event(Event),
+    Link(Link),
+    PendingVersion {
+        message: usize,
+        evidence_revision: u64,
+    },
+    Conflict(NativeConflict),
+    PendingResult {
+        message: usize,
+        block: usize,
+    },
+    ReachedBack,
+    MessageChanged {
+        message: usize,
+    },
+    CallImpact {
+        call_id: String,
+    },
+}
+impl Effect {
+    fn kind(&self) -> u8 {
+        match self {
+            Self::Event(_) => 1,
+            Self::Link(_) => 2,
+            Self::PendingVersion { .. } => 3,
+            Self::Conflict(_) => 4,
+            Self::PendingResult { .. } => 5,
+            Self::ReachedBack => 6,
+            Self::MessageChanged { .. } => 7,
+            Self::CallImpact { .. } => 8,
+        }
+    }
+}
+#[derive(Serialize)]
+enum EffectRef<'a> {
+    Event(&'a Event),
+    Link(&'a Link),
+    PendingVersion {
+        message: usize,
+        evidence_revision: u64,
+    },
+    Conflict(&'a NativeConflict),
+    PendingResult {
+        message: usize,
+        block: usize,
+    },
+    ReachedBack,
+    MessageChanged {
+        message: usize,
+    },
+    CallImpact {
+        call_id: &'a str,
+    },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EffectsHeader {
+    version: u32,
+    step: u64,
+    counts: [u64; EFFECT_KINDS],
+}
+/// Only scalar position is durable. Opening a reader revalidates its fixed
+/// header against the pinned snapshot; no decoded aggregate receipt is carried.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EffectsCursor {
+    step: u64,
+    kind: u8,
+    ordinal: u64,
+}
+impl EffectsCursor {
+    /// Current immutable receipt address; None after all family boundaries.
+    /// The owner may retain this key before advance for atomic consumption,
+    /// but must validate advance successfully before mutating any receipt.
+    pub fn key(&self) -> Option<[u8; EFFECT_KEY_BYTES]> {
+        (self.kind <= EFFECT_KINDS as u8 && self.kind > 0)
+            .then(|| effect_key(self.step, self.kind, self.ordinal))
+    }
+}
+pub enum EffectStep {
+    Item(Effect),
+    Boundary,
+    Done,
+}
+pub struct EffectsReader<'a, 's> {
+    attempt: &'a Attempt<'s>,
+    header: EffectsHeader,
+}
+fn effect_key(step: u64, kind: u8, ordinal: u64) -> [u8; EFFECT_KEY_BYTES] {
+    let mut key = [0; EFFECT_KEY_BYTES];
+    key[..8].copy_from_slice(&step.to_be_bytes());
+    key[8] = kind;
+    key[9..].copy_from_slice(&ordinal.to_be_bytes());
+    key
+}
+impl<'s> Attempt<'s> {
+    fn effect_cell(&self, step: u64, kind: u8, ordinal: u64) -> Result<Option<Vec<u8>>> {
+        self.charge(1, EFFECTS_NAMESPACE.len() + EFFECT_KEY_BYTES)?;
+        let allowance = if kind == 0 {
+            self.remaining().min(EFFECT_HEADER_BYTES)
+        } else {
+            self.remaining()
+        };
+        let bytes = self.snapshot.cell(
+            EFFECTS_NAMESPACE,
+            &effect_key(step, kind, ordinal),
+            allowance,
+        )?;
+        if let Some(bytes) = &bytes {
+            self.charge(0, bytes.len())?;
+        }
+        Ok(bytes)
+    }
+    pub fn effects(&self, step: u64) -> std::result::Result<EffectsReader<'_, 's>, String> {
+        self.checked(|| {
+            if step == 0
+                || step
+                    > u64::try_from(self.snapshot.head.token.step).map_err(|_| StoreError::Range)?
+            {
+                return Err(invalid("effects step", "outside committed snapshot"));
+            }
+            let bytes = self.effect_cell(step, 0, 0)?.ok_or_else(|| {
+                invalid(
+                    "effects header",
+                    "missing committed header (layout replay required)",
+                )
+            })?;
+            let header: EffectsHeader =
+                serde_json::from_slice(&bytes).map_err(|e| invalid("effects header", e))?;
+            if header.version != STATE_LAYOUT_VERSION || header.step != step || header.counts[5] > 1
+            {
+                return Err(invalid(
+                    "effects header",
+                    "layout, step, or reachback count differs",
+                ));
+            }
+            header
+                .counts
+                .iter()
+                .try_fold(0u64, |n, c| n.checked_add(*c))
+                .ok_or(StoreError::Range)?;
+            Ok(EffectsReader {
+                attempt: self,
+                header,
+            })
+        })
+    }
+}
+impl EffectsReader<'_, '_> {
+    pub fn header_key(&self) -> [u8; EFFECT_KEY_BYTES] {
+        effect_key(self.header.step, 0, 0)
+    }
+    pub fn start(&self) -> EffectsCursor {
+        EffectsCursor {
+            step: self.header.step,
+            kind: 1,
+            ordinal: 0,
+        }
+    }
+    /// At most one admitted point lookup. Each kind ends with an absence probe
+    /// at its declared count, detecting a shortened header over contiguous
+    /// immutable units. Boundary is a real cursor step, not a hidden scan.
+    /// Failure leaves the cursor unchanged and fuses the whole Attempt.
+    pub fn advance(&self, cursor: &mut EffectsCursor) -> std::result::Result<EffectStep, String> {
+        self.attempt.checked(|| {
+            if cursor.step != self.header.step
+                || !(1..=EFFECT_KINDS as u8 + 1).contains(&cursor.kind)
+            {
+                return Err(invalid("effects cursor", "step or kind differs"));
+            }
+            if cursor.kind == EFFECT_KINDS as u8 + 1 {
+                if cursor.ordinal != 0 {
+                    return Err(invalid("effects cursor", "invalid completed ordinal"));
+                }
+                return Ok(EffectStep::Done);
+            }
+            let count = self.header.counts[usize::from(cursor.kind - 1)];
+            if cursor.ordinal > count {
+                return Err(invalid("effects cursor", "ordinal exceeds declared count"));
+            }
+            let bytes = self
+                .attempt
+                .effect_cell(cursor.step, cursor.kind, cursor.ordinal)?;
+            if cursor.ordinal == count {
+                if bytes.is_some() {
+                    return Err(invalid(
+                        "effects header",
+                        "extra unit beyond declared count",
+                    ));
+                }
+                cursor.kind += 1;
+                cursor.ordinal = 0;
+                return Ok(EffectStep::Boundary);
+            }
+            let bytes = bytes.ok_or_else(|| invalid("effect unit", "missing declared ordinal"))?;
+            let unit: Effect =
+                serde_json::from_slice(&bytes).map_err(|e| invalid("effect unit", e))?;
+            if unit.kind() != cursor.kind {
+                return Err(invalid("effect unit", "payload kind differs from key"));
+            }
+            cursor.ordinal += 1;
+            Ok(EffectStep::Item(unit))
+        })
+    }
+    /// Inspection convenience only: collects the same point cursor, subject to
+    /// this Attempt's cumulative admission. It does not bound a whole result or
+    /// certify canonical publication, hashing, or consumption of obligations.
+    pub fn collect(&self) -> std::result::Result<Effects, String> {
+        let mut cursor = self.start();
+        let mut out = Effects::default();
+        loop {
+            match self.advance(&mut cursor)? {
+                EffectStep::Item(Effect::Event(v)) => out.events.push(v),
+                EffectStep::Item(Effect::Link(v)) => out.links.push(v),
+                EffectStep::Item(Effect::PendingVersion {
+                    message,
+                    evidence_revision,
+                }) => out.pending_versions.push((message, evidence_revision)),
+                EffectStep::Item(Effect::Conflict(v)) => out.conflicts.push(v),
+                EffectStep::Item(Effect::PendingResult { message, block }) => {
+                    out.pending_results.push((message, block))
+                }
+                EffectStep::Item(Effect::ReachedBack) => out.reached_back = true,
+                EffectStep::Item(Effect::MessageChanged { message }) => {
+                    out.changed_messages.push(message)
+                }
+                EffectStep::Item(Effect::CallImpact { call_id }) => out.call_impacts.push(call_id),
+                EffectStep::Boundary => {}
+                EffectStep::Done => return Ok(out),
+            }
+        }
+    }
+}
+/// Whole inspection DTO, never a persisted protocol or finalizer work queue.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Effects {
     pub events: Vec<Event>,
     pub links: Vec<Link>,
     pub reached_back: bool,
-    /// (stable provider message index, evidence revision to revalidate).
     pub pending_versions: Vec<(usize, u64)>,
     pub conflicts: Vec<NativeConflict>,
     pub pending_results: Vec<(usize, usize)>,
-}
-impl Effects {
-    /// The owner admits the encoded cell before decoding. Decoder allocations
-    /// and whole-cell effects are not a hard RSS bound.
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        serde_json::from_slice(bytes).map_err(|e| invalid("effects", e))
-    }
-}
-#[derive(Serialize)]
-struct EffectsRef<'a> {
-    events: &'a [Event],
-    links: &'a [Link],
-    reached_back: bool,
-    pending_versions: VersionsRef<'a>,
-    conflicts: &'a [NativeConflict],
-    pending_results: &'a [(usize, usize)],
-}
-struct VersionsRef<'a>(&'a [codex::keyed::PendingVersion]);
-impl Serialize for VersionsRef<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeSeq;
-        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-        for v in self.0 {
-            seq.serialize_element(&(v.message, v.evidence_revision))?;
-        }
-        seq.end()
-    }
+    pub changed_messages: Vec<usize>,
+    pub call_impacts: Vec<String>,
 }
 /// Owns encoded buffers only. It excludes the source Delta, SQLite snapshot,
 /// decoder allocations and canonical output rows, all separately owner-charged.
@@ -342,13 +559,54 @@ pub fn encode_delta(delta: &Delta, next_step: u64, budget: Budget) -> Result<Enc
     if next_step == 0 {
         return Err(invalid("effects step", "committed steps start at one"));
     }
+    let impacts = impacts(delta, budget)?;
+    let counts = [
+        delta.events.len(),
+        delta.links.len(),
+        delta.pending_versions.len(),
+        delta.conflicts.len(),
+        delta.pending_results.len(),
+        usize::from(delta.reached_back),
+        impacts.messages.len(),
+        impacts.calls.len(),
+    ];
+    let effect_units = counts
+        .iter()
+        .try_fold(0usize, |n, c| n.checked_add(*c))
+        .ok_or_else(|| admission("Codex delta cells", usize::MAX))?;
+    let receipt_cells = effect_units
+        .checked_add(1)
+        .and_then(|n| n.checked_add(impacts.local_cells))
+        .ok_or(StoreError::Range)?;
     let cells = delta
         .cells
         .len()
-        .checked_add(2)
-        .ok_or_else(|| admission("Codex delta cells", usize::MAX))?;
+        .checked_add(1)
+        .and_then(|n| n.checked_add(receipt_cells))
+        .ok_or(StoreError::Range)?;
     if cells > budget.cells {
         return Err(admission("Codex delta cells", cells));
+    }
+    // Reject the fixed encoded lower bound before growing the output Vec.
+    let minimum = receipt_cells
+        .checked_mul(EFFECTS_NAMESPACE.len() + EFFECT_KEY_BYTES)
+        .and_then(|n| {
+            impacts
+                .local_cells
+                .checked_mul(IMPACT_KEY_BYTES - EFFECT_KEY_BYTES)
+                .and_then(|m| n.checked_add(m))
+        })
+        .and_then(|n| {
+            delta
+                .cells
+                .len()
+                .checked_mul(PREFIX.len())
+                .and_then(|m| n.checked_add(m))
+        })
+        .and_then(|n| n.checked_add(RESUME_NAMESPACE.len()))
+        .ok_or(StoreError::Range)?;
+    if minimum > budget.encoded_bytes {
+        return Err(admission("Codex delta encoded bytes", minimum));
     }
     let mut changes = Vec::new();
     changes
@@ -372,27 +630,147 @@ pub fn encode_delta(delta: &Delta, next_step: u64, budget: Budget) -> Result<Enc
         key: RESUME_KEY.into(),
         value: Some(resume),
     });
-    add_bytes(&mut bytes, EFFECTS_NAMESPACE.len() + 8, budget)?;
-    let effects = EffectsRef {
-        events: &delta.events,
-        links: &delta.links,
-        reached_back: delta.reached_back,
-        pending_versions: VersionsRef(&delta.pending_versions),
-        conflicts: &delta.conflicts,
-        pending_results: &delta.pending_results,
+    let header = EffectsHeader {
+        version: STATE_LAYOUT_VERSION,
+        step: next_step,
+        counts: counts.map(|n| n as u64),
     };
-    let value = limited(
-        budget.encoded_bytes - bytes,
-        bytes,
-        "Codex delta encoded bytes",
-        |w| serde_json::to_writer(w, &effects),
-    )?;
-    add_bytes(&mut bytes, value.len(), budget)?;
-    changes.push(CellChange {
-        namespace: EFFECTS_NAMESPACE.into(),
-        key: next_step.to_be_bytes().to_vec(),
-        value: Some(value),
-    });
+    push_effect(&mut changes, &mut bytes, next_step, 0, 0, &header, budget)?;
+    for (n, v) in delta.events.iter().enumerate() {
+        push_effect(
+            &mut changes,
+            &mut bytes,
+            next_step,
+            1,
+            n as u64,
+            &EffectRef::Event(v),
+            budget,
+        )?;
+    }
+    for (n, v) in delta.links.iter().enumerate() {
+        push_effect(
+            &mut changes,
+            &mut bytes,
+            next_step,
+            2,
+            n as u64,
+            &EffectRef::Link(v),
+            budget,
+        )?;
+    }
+    for (n, v) in delta.pending_versions.iter().enumerate() {
+        push_effect(
+            &mut changes,
+            &mut bytes,
+            next_step,
+            3,
+            n as u64,
+            &EffectRef::PendingVersion {
+                message: v.message,
+                evidence_revision: v.evidence_revision,
+            },
+            budget,
+        )?;
+    }
+    for (n, v) in delta.conflicts.iter().enumerate() {
+        push_effect(
+            &mut changes,
+            &mut bytes,
+            next_step,
+            4,
+            n as u64,
+            &EffectRef::Conflict(v),
+            budget,
+        )?;
+    }
+    for (n, (message, block)) in delta.pending_results.iter().enumerate() {
+        push_effect(
+            &mut changes,
+            &mut bytes,
+            next_step,
+            5,
+            n as u64,
+            &EffectRef::PendingResult {
+                message: *message,
+                block: *block,
+            },
+            budget,
+        )?;
+    }
+    if delta.reached_back {
+        push_effect(
+            &mut changes,
+            &mut bytes,
+            next_step,
+            6,
+            0,
+            &EffectRef::ReachedBack,
+            budget,
+        )?;
+    }
+    for (n, (message, impact)) in impacts.messages.iter().enumerate() {
+        push_effect(
+            &mut changes,
+            &mut bytes,
+            next_step,
+            7,
+            n as u64,
+            &EffectRef::MessageChanged { message: *message },
+            budget,
+        )?;
+        let header = ImpactHeader {
+            version: STATE_LAYOUT_VERSION,
+            step: next_step,
+            message: *message,
+            header_dirty: impact.header_dirty,
+            counts: [impact.blocks.len() as u64, impact.witnesses.len() as u64],
+        };
+        push_impact(
+            &mut changes,
+            &mut bytes,
+            next_step,
+            *message,
+            0,
+            0,
+            &header,
+            budget,
+        )?;
+        for (ordinal, block) in impact.blocks.iter().enumerate() {
+            push_impact(
+                &mut changes,
+                &mut bytes,
+                next_step,
+                *message,
+                1,
+                ordinal as u64,
+                &ImpactRef::Block { block: *block },
+                budget,
+            )?;
+        }
+        for (ordinal, (key, slot)) in impact.witnesses.iter().enumerate() {
+            push_impact(
+                &mut changes,
+                &mut bytes,
+                next_step,
+                *message,
+                2,
+                ordinal as u64,
+                &ImpactRef::MessageWitness { key, slot },
+                budget,
+            )?;
+        }
+    }
+    for (n, call) in impacts.calls.iter().enumerate() {
+        push_effect(
+            &mut changes,
+            &mut bytes,
+            next_step,
+            8,
+            n as u64,
+            &EffectRef::CallImpact { call_id: call },
+            budget,
+        )?;
+    }
     for (key, value) in &delta.cells {
         if let Some(value) = value {
             if !value.valid_for(key) {
@@ -450,4 +828,395 @@ pub fn encode_delta(delta: &Delta, next_step: u64, budget: Budget) -> Result<Enc
         encoded_bytes: bytes,
         allocated_capacity_bytes,
     })
+}
+
+fn push_effect(
+    changes: &mut Vec<CellChange>,
+    bytes: &mut usize,
+    step: u64,
+    kind: u8,
+    ordinal: u64,
+    unit: &impl Serialize,
+    budget: Budget,
+) -> Result<()> {
+    add_bytes(bytes, EFFECTS_NAMESPACE.len() + EFFECT_KEY_BYTES, budget)?;
+    let value = limited(
+        budget.encoded_bytes - *bytes,
+        *bytes,
+        "Codex delta encoded bytes",
+        |w| serde_json::to_writer(w, unit),
+    )?;
+    add_bytes(bytes, value.len(), budget)?;
+    changes.push(CellChange {
+        namespace: EFFECTS_NAMESPACE.into(),
+        key: effect_key(step, kind, ordinal).to_vec(),
+        value: Some(value),
+    });
+    Ok(())
+}
+
+// The same immutable step receipt, addressed by message rather than filtering
+// its global stream. These are addresses/obligations, never copied Messages.
+const IMPACT_KEY_BYTES: usize = 26;
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub enum Impact {
+    Block { block: usize },
+    MessageWitness { key: String, slot: Slot },
+}
+#[derive(Serialize)]
+enum ImpactRef<'a> {
+    Block { block: usize },
+    MessageWitness { key: &'a str, slot: &'a Slot },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImpactHeader {
+    version: u32,
+    step: u64,
+    message: usize,
+    header_dirty: bool,
+    counts: [u64; 2],
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ImpactCursor {
+    step: u64,
+    message: usize,
+    kind: u8,
+    ordinal: u64,
+}
+impl ImpactCursor {
+    pub fn key(&self) -> Option<[u8; IMPACT_KEY_BYTES]> {
+        (1..=2)
+            .contains(&self.kind)
+            .then(|| impact_key(self.step, self.message, self.kind, self.ordinal))
+    }
+}
+pub enum ImpactStep {
+    Item(Impact),
+    Boundary,
+    Done,
+}
+pub struct ImpactsReader<'a, 's> {
+    attempt: &'a Attempt<'s>,
+    header: ImpactHeader,
+}
+fn impact_key(step: u64, message: usize, kind: u8, ordinal: u64) -> [u8; IMPACT_KEY_BYTES] {
+    let mut key = [0; IMPACT_KEY_BYTES];
+    key[..8].copy_from_slice(&step.to_be_bytes());
+    key[8] = 9;
+    key[9..17].copy_from_slice(&(message as u64).to_be_bytes());
+    key[17] = kind;
+    key[18..].copy_from_slice(&ordinal.to_be_bytes());
+    key
+}
+impl<'s> Attempt<'s> {
+    fn impact_cell(
+        &self,
+        step: u64,
+        message: usize,
+        kind: u8,
+        ordinal: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        self.charge(1, EFFECTS_NAMESPACE.len() + IMPACT_KEY_BYTES)?;
+        let allowance = if kind == 0 {
+            self.remaining().min(EFFECT_HEADER_BYTES)
+        } else {
+            self.remaining()
+        };
+        let bytes = self.snapshot.cell(
+            EFFECTS_NAMESPACE,
+            &impact_key(step, message, kind, ordinal),
+            allowance,
+        )?;
+        if let Some(bytes) = &bytes {
+            self.charge(0, bytes.len())?;
+        }
+        Ok(bytes)
+    }
+    /// One direct header lookup; unrelated Messages' impacts are never read.
+    pub fn message_impacts(
+        &self,
+        step: u64,
+        message: usize,
+    ) -> std::result::Result<ImpactsReader<'_, 's>, String> {
+        self.checked(|| {
+            if step == 0
+                || step
+                    > u64::try_from(self.snapshot.head.token.step).map_err(|_| StoreError::Range)?
+            {
+                return Err(invalid("impact step", "outside committed snapshot"));
+            }
+            let bytes = self
+                .impact_cell(step, message, 0, 0)?
+                .ok_or_else(|| invalid("impact header", "missing declared Message impacts"))?;
+            let header: ImpactHeader =
+                serde_json::from_slice(&bytes).map_err(|e| invalid("impact header", e))?;
+            if header.version != STATE_LAYOUT_VERSION
+                || header.step != step
+                || header.message != message
+                || header.counts[0].checked_add(header.counts[1]).is_none()
+            {
+                return Err(invalid(
+                    "impact header",
+                    "layout, identity or count differs",
+                ));
+            }
+            Ok(ImpactsReader {
+                attempt: self,
+                header,
+            })
+        })
+    }
+}
+impl ImpactsReader<'_, '_> {
+    pub fn header_dirty(&self) -> bool {
+        self.header.header_dirty
+    }
+    pub fn header_key(&self) -> [u8; IMPACT_KEY_BYTES] {
+        impact_key(self.header.step, self.header.message, 0, 0)
+    }
+    pub fn start(&self) -> ImpactCursor {
+        ImpactCursor {
+            step: self.header.step,
+            message: self.header.message,
+            kind: 1,
+            ordinal: 0,
+        }
+    }
+    /// One whole admitted unit or one count-boundary absence probe. This cursor
+    /// is persisted only after the owner's corresponding canonical mutation.
+    pub fn advance(&self, cursor: &mut ImpactCursor) -> std::result::Result<ImpactStep, String> {
+        self.attempt.checked(|| {
+            if cursor.step != self.header.step
+                || cursor.message != self.header.message
+                || !(1..=3).contains(&cursor.kind)
+            {
+                return Err(invalid("impact cursor", "identity or kind differs"));
+            }
+            if cursor.kind == 3 {
+                return if cursor.ordinal == 0 {
+                    Ok(ImpactStep::Done)
+                } else {
+                    Err(invalid("impact cursor", "invalid completed ordinal"))
+                };
+            }
+            let count = self.header.counts[usize::from(cursor.kind - 1)];
+            if cursor.ordinal > count {
+                return Err(invalid("impact cursor", "ordinal exceeds declared count"));
+            }
+            let bytes = self.attempt.impact_cell(
+                cursor.step,
+                cursor.message,
+                cursor.kind,
+                cursor.ordinal,
+            )?;
+            if cursor.ordinal == count {
+                if bytes.is_some() {
+                    return Err(invalid("impact header", "extra unit beyond declared count"));
+                }
+                cursor.kind += 1;
+                cursor.ordinal = 0;
+                return Ok(ImpactStep::Boundary);
+            }
+            let bytes = bytes.ok_or_else(|| invalid("impact unit", "missing declared ordinal"))?;
+            let unit: Impact =
+                serde_json::from_slice(&bytes).map_err(|e| invalid("impact unit", e))?;
+            match &unit {
+                Impact::Block { .. } if cursor.kind == 1 => {}
+                Impact::MessageWitness { key, slot }
+                    if cursor.kind == 2
+                        && codex::presence::message_slot(key).as_ref() == Some(slot) => {}
+                _ => {
+                    return Err(invalid(
+                        "impact unit",
+                        "kind or source-owned witness slot differs",
+                    ));
+                }
+            }
+            cursor.ordinal += 1;
+            Ok(ImpactStep::Item(unit))
+        })
+    }
+}
+#[derive(Default)]
+struct MessageImpacts {
+    header_dirty: bool,
+    blocks: BTreeSet<usize>,
+    witnesses: BTreeMap<String, Slot>,
+}
+struct Impacts {
+    messages: BTreeMap<usize, MessageImpacts>,
+    calls: BTreeSet<String>,
+    local_cells: usize,
+    cells: usize,
+    bytes: usize,
+    budget: Budget,
+}
+impl Impacts {
+    fn charge(&mut self, cells: usize, bytes: usize) -> Result<()> {
+        let n = self.cells.checked_add(cells).ok_or(StoreError::Range)?;
+        if n > self.budget.cells {
+            return Err(admission("Codex impact cells", n));
+        }
+        let b = self.bytes.checked_add(bytes).ok_or(StoreError::Range)?;
+        if b > self.budget.encoded_bytes {
+            return Err(admission("Codex impact address bytes", b));
+        }
+        self.cells = n;
+        self.bytes = b;
+        Ok(())
+    }
+    fn message(&mut self, message: usize) -> Result<&mut MessageImpacts> {
+        if !self.messages.contains_key(&message) {
+            self.charge(
+                2,
+                2 * EFFECTS_NAMESPACE.len() + EFFECT_KEY_BYTES + IMPACT_KEY_BYTES,
+            )?;
+            self.local_cells += 1;
+            self.messages.insert(message, MessageImpacts::default());
+        }
+        self.messages
+            .get_mut(&message)
+            .ok_or_else(|| invalid("impact message", "admitted message is missing"))
+    }
+    fn block(&mut self, message: usize, block: usize) -> Result<()> {
+        if !self.message(message)?.blocks.contains(&block) {
+            self.charge(1, EFFECTS_NAMESPACE.len() + IMPACT_KEY_BYTES)?;
+            self.local_cells += 1;
+            self.messages
+                .get_mut(&message)
+                .ok_or_else(|| invalid("impact message", "admitted message is missing"))?
+                .blocks
+                .insert(block);
+        }
+        Ok(())
+    }
+    fn witness(&mut self, message: usize, key: &str) -> Result<()> {
+        if !self.message(message)?.witnesses.contains_key(key) {
+            self.charge(
+                1,
+                (EFFECTS_NAMESPACE.len() + IMPACT_KEY_BYTES)
+                    .saturating_add(key.len().saturating_mul(2)),
+            )?;
+            let slot = codex::presence::message_slot(key).ok_or_else(|| {
+                invalid("impact witness", "unknown source-owned message witness key")
+            })?;
+            self.local_cells += 1;
+            self.messages
+                .get_mut(&message)
+                .ok_or_else(|| invalid("impact message", "admitted message is missing"))?
+                .witnesses
+                .insert(key.into(), slot);
+        }
+        Ok(())
+    }
+    fn call(&mut self, call: &str) -> Result<()> {
+        if !self.calls.contains(call) {
+            self.charge(
+                1,
+                (EFFECTS_NAMESPACE.len() + EFFECT_KEY_BYTES).saturating_add(call.len()),
+            )?;
+            self.calls.insert(call.into());
+        }
+        Ok(())
+    }
+}
+fn impacts(delta: &Delta, budget: Budget) -> Result<Impacts> {
+    let base_units = [
+        delta.events.len(),
+        delta.links.len(),
+        delta.pending_versions.len(),
+        delta.conflicts.len(),
+        delta.pending_results.len(),
+        usize::from(delta.reached_back),
+    ]
+    .iter()
+    .try_fold(0usize, |n, c| n.checked_add(*c))
+    .ok_or(StoreError::Range)?;
+    let base_cells = delta
+        .cells
+        .len()
+        .checked_add(base_units)
+        .and_then(|n| n.checked_add(2))
+        .ok_or(StoreError::Range)?;
+    let base_bytes = base_units
+        .checked_add(1)
+        .ok_or(StoreError::Range)?
+        .checked_mul(EFFECTS_NAMESPACE.len() + EFFECT_KEY_BYTES)
+        .and_then(|n| {
+            delta
+                .cells
+                .len()
+                .checked_mul(PREFIX.len())
+                .and_then(|m| n.checked_add(m))
+        })
+        .and_then(|n| n.checked_add(RESUME_NAMESPACE.len()))
+        .ok_or(StoreError::Range)?;
+    let mut out = Impacts {
+        messages: BTreeMap::new(),
+        calls: BTreeSet::new(),
+        local_cells: 0,
+        cells: 0,
+        bytes: 0,
+        budget,
+    };
+    out.charge(base_cells, base_bytes)?;
+    for v in &delta.pending_versions {
+        out.message(v.message)?;
+    }
+    for v in &delta.conflicts {
+        out.message(v.message)?;
+    }
+    for (message, block) in &delta.pending_results {
+        out.block(*message, *block)?;
+    }
+    for (key, value) in &delta.cells {
+        match key {
+            Key::Message(message) => out.message(*message)?.header_dirty = true,
+            Key::Block(message, block)
+            | Key::PresenceBlock(message, block)
+            | Key::PendingResult(message, block)
+            | Key::OutputChunk(message, block, _)
+            | Key::CallBlock(_, message, block) => out.block(*message, *block)?,
+            Key::Presence(message, key) => out.witness(*message, key)?,
+            Key::Continuation(call) | Key::ChildCount(call) | Key::Child(call, _) => {
+                out.call(call)?
+            }
+            _ => {}
+        }
+        if matches!(key, Key::Block(_, _)) && value.is_none() {
+            return Err(invalid(
+                "impact block",
+                "source block deletion requires an explicit projection contract",
+            ));
+        }
+    }
+    Ok(out)
+}
+fn push_impact(
+    changes: &mut Vec<CellChange>,
+    bytes: &mut usize,
+    step: u64,
+    message: usize,
+    kind: u8,
+    ordinal: u64,
+    unit: &impl Serialize,
+    budget: Budget,
+) -> Result<()> {
+    add_bytes(bytes, EFFECTS_NAMESPACE.len() + IMPACT_KEY_BYTES, budget)?;
+    let value = limited(
+        budget.encoded_bytes - *bytes,
+        *bytes,
+        "Codex delta encoded bytes",
+        |w| serde_json::to_writer(w, unit),
+    )?;
+    add_bytes(bytes, value.len(), budget)?;
+    changes.push(CellChange {
+        namespace: EFFECTS_NAMESPACE.into(),
+        key: impact_key(step, message, kind, ordinal).to_vec(),
+        value: Some(value),
+    });
+    Ok(())
 }

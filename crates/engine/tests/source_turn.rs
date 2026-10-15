@@ -252,14 +252,10 @@ fn both_sources_publish_only_after_real_prepared_install_and_reopen_resume() {
             let view = polylogue_engine::state::codex::Attempt::new(&snapshot, budgets().reads);
             assert_eq!(view.resume().unwrap().parsed_upto, bytes.len() as u64);
             assert!(
-                snapshot
-                    .cell(
-                        polylogue_engine::state::codex::EFFECTS_NAMESPACE,
-                        &(world.head.token.step as u64).to_be_bytes(),
-                        1024 * 1024
-                    )
+                view.effects(world.head.token.step as u64)
                     .unwrap()
-                    .is_some()
+                    .collect()
+                    .is_ok()
             );
         }
     }

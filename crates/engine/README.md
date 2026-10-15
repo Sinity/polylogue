@@ -28,10 +28,10 @@ seam; they do not qualify a daemon or public-client end-to-end outcome.
 Encoded-byte allowances are logical admission limits. Whole cells, source
 record decoding, decoded objects, effects buffers, allocator/RSS use, SQLite
 page work and arbitrarily large output fanout are not fully resource-qualified.
-Canonical Message/body selection, indexed contribution folding, version/hash
-finalization, search statistics isolation, fairness and actual public-client
-read/write/restart behavior remain unfinished. No live collection or product
-query is registered by this crate.
+General Message/body selection, indexed contribution folding, search statistics
+isolation, fairness and complete public-client behavior remain unfinished. The
+limited selected terminal reference reader is described below; no live collection
+is registered by this crate.
 
 The model's `version_evidence::Framer` streams the owning source-evidence recipe
 in admitted byte chunks. Its digest is distinct from normalized payload content
@@ -47,6 +47,37 @@ one capture worker and one compute worker, with bounded metadata requests.
 Restart enumerates retained imports and resumes or discards durable prepared
 state before interpreting again. Peer requests can run between installation
 turns; provider EOF and waiting tails keep canonical finalization pending.
-Current scheduling drains one input before the next. Neither this owner nor
-its progress endpoint publishes canonical Messages or certifies fair per-input
-rounds, arbitrary record capacity, physical IO/RSS or search completion.
+Current scheduling drains one input before the next. The progress endpoint keeps canonical completion false. Fair per-input rounds,
+arbitrary record capacity, physical IO/RSS and search completion remain open.
+
+Codex effects use a fixed header and addressable typed units. A scalar cursor
+reads one unit or boundary probe per step; whole inspection collects that same
+cursor. The adapter layout version participates in the actor's parser basis.
+`version_proof::Driver` pins one Codex evidence head and hashes the provider-owned
+selected units in admitted slices outside writer transactions. Missing evidence,
+count/slot mismatches and stale revisions cannot yield a digest. A lost process
+replays hashing from zero. This proof alone does not certify source-field mapping,
+canonical publication, lineage or search readiness.
+
+`canonical_message` uses the provider-owned projection/presence/evidence cores
+to prepare a final-head Codex Text/Thinking Message and typed supplied fields.
+Worker computation produces one opaque action; the actor applies one value,
+field, block, cursor or source-certificate transaction between peer commands.
+The store selects its whole body only when no other input candidate competes.
+Unsupported mappings and operations stop with explicit pending diagnostics.
+Restart reconstructs preparation from its durable scalar cursor and active
+value and origin producer. Before attaching a supported field origin, it retains
+the exact record citation set, evaluates the source-owned selector against retained
+bytes, and compares the streamed normalized digest and length with the ready field.
+An immutable JSON descriptor transfers with that field and remains reachable after
+parser-state replacement. Unknown selectors stay unavailable. This first path rebuilds roots and does not consume incremental dirty
+Effects or implement general merge/fill. The actor has not yet scheduled historical
+source-body retirement or full excision closure.
+
+Value and evidence validation currently loop over a complete selected value or
+Message on the worker with cooperative cancellation. Leaf and origin-descriptor windows serialize
+one admitted field again for each chunk. Selector evaluation decodes admitted
+whole source records; it does not establish a cumulative record-work bound. No whole-leaf Vec is required, but this
+does not establish bounded worker computation, append locality or RSS. The CLI exposes only the selected terminal Message-reference consumer with
+degraded coverage. Session query/JSON read/export/search and the Claude Code
+demonstration remain unfinished.

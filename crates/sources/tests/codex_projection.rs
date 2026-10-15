@@ -233,3 +233,98 @@ fn corrupt_state_or_read_failure_fuses_without_retrying() {
     assert!(view.message(0).is_err());
     assert!(view.message(99).unwrap().is_none());
 }
+
+#[test]
+fn selected_block_uses_the_same_reanchor_result_and_presence_units() {
+    let view = fixture(3);
+    let mut full = Cursor::new(0, Mode::Annotated);
+    let mut expected = Vec::new();
+    loop {
+        match full.advance(&view).unwrap() {
+            Step::Done => break,
+            Step::Unit(
+                unit @ (Unit::Header(_)
+                | Unit::Block { index: 1, .. }
+                | Unit::BlockPresence { index: 1, .. }
+                | Unit::ResultStart { block: 1 }
+                | Unit::ResultChunk { block: 1, .. }
+                | Unit::ResultEnd { block: 1 }),
+            ) => expected.push(unit),
+            _ => {}
+        }
+    }
+    let meter = Meter {
+        view: &view,
+        reads: Counter::new(0),
+        fail: false,
+    };
+    let mut cursor = Cursor::block(0, 1, Mode::Annotated);
+    let mut actual = Vec::new();
+    loop {
+        cursor = serde_json::from_slice(&serde_json::to_vec(&cursor).unwrap()).unwrap();
+        let before = meter.reads.get();
+        match cursor.advance(&meter).unwrap() {
+            Step::Done => break,
+            Step::Unit(unit) => actual.push(unit),
+            Step::Absent => panic!("missing selected message"),
+            _ => {}
+        }
+        assert!(meter.reads.get() - before <= 1);
+    }
+    assert_eq!(actual, expected);
+    let mut invalid = Cursor::block(0, 2, Mode::Annotated);
+    assert!(invalid.advance(&view).is_err());
+    assert!(invalid.advance(&view).is_err());
+}
+#[test]
+fn header_and_selected_result_skip_unrelated_blocks_and_wrapper_children() {
+    let mut costs = Vec::new();
+    for n in [3, 1000] {
+        let mut view = fixture(n);
+        let (id, template) = match (
+            view.cells.get(&Key::Message(0)).unwrap(),
+            view.cells.get(&Key::Block(0, 1)).unwrap(),
+        ) {
+            (Cell::Header { message, .. }, Cell::Block(block)) => {
+                (message.id.clone(), block.clone())
+            }
+            _ => panic!("shape"),
+        };
+        for block in 2..n {
+            view.cells.insert(
+                Key::Block(0, block),
+                Cell::Block(Block {
+                    id: BlockId::new(id.clone(), block as u32 + 20),
+                    content: template.content.clone(),
+                }),
+            );
+        }
+        if let Some(Cell::Header { blocks, .. }) = view.cells.get_mut(&Key::Message(0)) {
+            *blocks = n;
+        }
+        let meter = Meter {
+            view: &view,
+            reads: Counter::new(0),
+            fail: false,
+        };
+        let mut header = Cursor::header(0, Mode::Annotated);
+        assert!(matches!(
+            header.advance(&meter).unwrap(),
+            Step::Unit(Unit::Header(_))
+        ));
+        assert!(matches!(header.advance(&meter).unwrap(), Step::Done));
+        assert_eq!(meter.reads.get(), 1);
+        let mut selected = Cursor::block(0, 1, Mode::Annotated);
+        let mut units = 0;
+        loop {
+            match selected.advance(&meter).unwrap() {
+                Step::Done => break,
+                Step::Unit(_) => units += 1,
+                Step::Absent => panic!("missing"),
+                _ => {}
+            }
+        }
+        costs.push((meter.reads.get(), units));
+    }
+    assert_eq!(costs[0], costs[1]);
+}

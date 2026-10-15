@@ -316,8 +316,9 @@ pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Resu
 /// Drop it before applying the result. An old snapshot stays internally coherent;
 /// the output writer subsequently rejects its stale predecessor.
 pub struct Snapshot {
-    db: Connection,
-    path: std::path::PathBuf,
+    // Store-only source membership reads share this already pinned view.
+    pub(crate) db: Connection,
+    pub(crate) path: std::path::PathBuf,
     pub head: Head,
     // Drop the SQLite snapshot before releasing its retained archive authority.
     _lock: std::sync::Arc<std::fs::File>,

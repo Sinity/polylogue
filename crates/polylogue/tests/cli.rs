@@ -102,7 +102,7 @@ fn actual_daemon_and_client_restart_in_owned_state() {
             if output.status.success() {
                 let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
                 assert_eq!(value["archive"], archive.to_str().unwrap());
-                assert_eq!(value["product_path"], "not_implemented");
+                assert_eq!(value["product_path"], "partial");
                 break;
             }
             assert!(

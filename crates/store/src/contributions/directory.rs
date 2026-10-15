@@ -43,7 +43,7 @@ pub(super) struct Counts {
     pub source_fields: i64,
 }
 impl Counts {
-    fn add(self, rhs: Self) -> Result<Self> {
+    pub(super) fn add(self, rhs: Self) -> Result<Self> {
         let plus = |a: i64, b: i64| {
             a.checked_add(b)
                 .ok_or_else(|| bad("directory count overflow"))
@@ -87,6 +87,25 @@ pub(super) struct Work {
     pub nodes_written: u32,
     pub edges_written: u32,
     pub references_changed: u32,
+}
+pub(super) fn summary(
+    dbh: &Connection,
+    path: &Path,
+    owner: Owner,
+    kind: Kind,
+    root: Option<i64>,
+) -> Result<Counts> {
+    let Some(pk) = root else {
+        return Ok(Counts::default());
+    };
+    let node = load(dbh, path, owner, kind, pk, &mut Work::default())?;
+    if node.height != 15 {
+        return Err(bad("directory root height"));
+    }
+    node.edges
+        .iter()
+        .flatten()
+        .try_fold(Counts::default(), |a, b| a.add(b.counts))
 }
 fn bad(s: &str) -> Error {
     Error::Invariant(s.into())
@@ -325,9 +344,11 @@ pub(super) fn collect(tx: &Transaction<'_>, path: &Path, pk: i64) -> Result<bool
         return Ok(false);
     }
     let mut children = [None; 16];
+    let mut blocks = [None; 16];
+    let mut facts = [None; 16];
     let mut stmt = db(path, || {
         tx.prepare(
-            "SELECT slot,child_node_pk FROM message_body_edge WHERE parent_pk=?1 ORDER BY slot",
+            "SELECT slot,child_node_pk,block_pk,field_fact_pk FROM message_body_edge WHERE parent_pk=?1 ORDER BY slot",
         )
     })?;
     let mut rows = db(path, || stmt.query([pk]))?;
@@ -337,6 +358,8 @@ pub(super) fn collect(tx: &Transaction<'_>, path: &Path, pk: i64) -> Result<bool
             return Err(bad("retirement edge slot"));
         }
         children[slot] = db(path, || row.get::<_, Option<i64>>(1))?;
+        blocks[slot] = db(path, || row.get::<_, Option<i64>>(2))?;
+        facts[slot] = db(path, || row.get::<_, Option<i64>>(3))?;
     }
     drop(rows);
     drop(stmt);
@@ -350,6 +373,12 @@ pub(super) fn collect(tx: &Transaction<'_>, path: &Path, pk: i64) -> Result<bool
         {
             return Err(bad("retiring directory child lacks counted reference"));
         }
+    }
+    for block in blocks.into_iter().flatten() {
+        super::blocks::release_unreferenced_block(tx, path, block)?;
+    }
+    for fact in facts.into_iter().flatten() {
+        super::retirement::release_unreferenced_fact(tx, path, fact)?;
     }
     db(path, || {
         tx.execute(
@@ -391,6 +420,82 @@ pub(super) fn lookup(
         }
     }
     Err(bad("directory lookup escaped fixed height"))
+}
+
+/// Order-statistic selection from fixed-size validated node summaries. This is
+/// independent of sparse source group/local addresses and never flattens leaves.
+#[derive(Clone, Copy)]
+pub(super) enum Ordinal {
+    Ordinary,
+    Reasoning,
+    All,
+}
+pub(super) struct Selected {
+    pub key: u64,
+    pub edge: Edge,
+    pub remainder: u64,
+    pub skipped: Counts,
+}
+pub(super) fn nth(
+    dbh: &Connection,
+    path: &Path,
+    owner: Owner,
+    kind: Kind,
+    root: Option<i64>,
+    mut index: u64,
+    selection: Ordinal,
+    work: &mut Work,
+) -> Result<Option<Selected>> {
+    let Some(mut pk) = root else { return Ok(None) };
+    let mut key = 0u64;
+    let mut skipped = Counts::default();
+    for height in (0..16u8).rev() {
+        let node = load(dbh, path, owner, kind, pk, work)?;
+        if node.height != height {
+            return Err(bad("directory selection height"));
+        }
+        let mut selected = None;
+        for (slot, edge) in node.edges.into_iter().enumerate() {
+            let Some(edge) = edge else { continue };
+            let count = match selection {
+                Ordinal::Reasoning => edge.counts.reasoning,
+                Ordinal::Ordinary => edge.counts.ordinary,
+                Ordinal::All => edge
+                    .counts
+                    .ordinary
+                    .checked_add(edge.counts.reasoning)
+                    .ok_or(Error::Range)?,
+            };
+            let count = u64::try_from(count).map_err(|_| bad("negative directory count"))?;
+            if index < count {
+                selected = Some((slot, edge));
+                break;
+            }
+            index = index.checked_sub(count).ok_or(Error::Range)?;
+            skipped = skipped.add(edge.counts)?;
+        }
+        let Some((slot, edge)) = selected else {
+            return Ok(None);
+        };
+        key |= (slot as u64) << (height * 4);
+        if height == 0 {
+            return Ok(Some(Selected {
+                key,
+                edge,
+                remainder: index,
+                skipped,
+            }));
+        }
+        match edge.link {
+            Link::Node {
+                pk: child,
+                kind: child_kind,
+                height: child_height,
+            } if child_kind == kind && child_height == height - 1 => pk = child,
+            _ => return Err(bad("directory selection shape")),
+        }
+    }
+    Err(bad("directory selection escaped fixed height"))
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@
 //! The overlay contains only touched keys; finish returns mutations, not a
 //! serialized prefix or materialized message suffix. Payload/fanout scheduling
 //! and atomic application with normalized rows belong to the caller.
+use super::origins::{Origins, RecordRange};
 use super::*;
 use std::ops::Bound::{Excluded, Unbounded};
 
@@ -67,14 +68,58 @@ pub enum Cell {
     Association {
         call_name: Option<Vec<u8>>,
         session: Option<Vec<u8>>,
+        call_name_origins: Origins,
+        session_origins: Origins,
     },
 }
 /// Raw canonical JSON, tagged by provider membership, never normalized content.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvidenceUnit {
     pub tag: String,
     pub canonical: Vec<u8>,
     pub whole_record: bool,
+    #[serde(default)]
+    pub origins: Origins,
+}
+// Provenance is separate from version membership. Moving an identical unit
+// never advances its revision or salts its digest with scheduling coordinates.
+impl PartialEq for EvidenceUnit {
+    fn eq(&self, other: &Self) -> bool {
+        self.tag == other.tag
+            && self.canonical == other.canonical
+            && self.whole_record == other.whole_record
+    }
+}
+impl Eq for EvidenceUnit {}
+impl EvidenceUnit {
+    /// Validate the provider-owned address/role and one admitted raw JSON unit.
+    /// This borrows the bytes; it neither recanonicalizes nor hashes a DTO.
+    pub fn validate_at(&self, key: &Key) -> Result<(), String> {
+        let (tag, whole_allowed, whole_required) = match key {
+            Key::Evidence(_, 0, slot) => match slot % 3 {
+                0 => ("item", true, false),
+                1 => ("association:call_name", false, false),
+                _ => ("association:process_session", false, false),
+            },
+            Key::Evidence(_, 1, 0) => ("status", true, false),
+            Key::Evidence(_, 1, 1) => ("context:source", false, false),
+            Key::Evidence(_, 1, 2) => ("context:model", false, false),
+            Key::Evidence(_, 1, 3) => ("context:echo", true, true),
+            Key::Evidence(_, 1, 4) => ("usage", false, false),
+            _ => return Err("unsupported Codex evidence address".into()),
+        };
+        if self.tag != tag
+            || (self.whole_record && !whole_allowed)
+            || (!self.whole_record && whole_required)
+        {
+            return Err(
+                "Codex evidence role/tag/whole-record flag differs from its address".into(),
+            );
+        }
+        serde_json::from_slice::<&serde_json::value::RawValue>(&self.canonical)
+            .map_err(|e| format!("invalid Codex raw evidence JSON: {e}"))?;
+        Ok(())
+    }
 }
 /// Provider-local version guard. The owner additionally pins input chain,
 /// parser/schema and committed interpretation predecessor during digest work.
@@ -103,6 +148,31 @@ pub struct EvidenceCursor {
     pub slot: usize,
 }
 impl EvidenceHead {
+    pub fn validate(&self) -> Result<(), String> {
+        let slots = self
+            .items
+            .checked_mul(3)
+            .and_then(|n| n.checked_add(5))
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or("Codex evidence slot count overflow")?;
+        if self.incomplete
+            || self.items == 0
+            || self.units < self.items as u64
+            || self.units > slots
+            || self.revision < self.units
+        {
+            return Err(
+                "Codex evidence head is incomplete or has invalid item/unit/revision counts".into(),
+            );
+        }
+        Ok(())
+    }
+    /// Every effective item owns its primary unit; association/context slots
+    /// are optional and the selected-unit count is checked after enumeration.
+    pub fn required_slot(&self, key: &Key) -> bool {
+        matches!(key, Key::Evidence(_, 0, slot) if slot % 3 == 0 && slot / 3 < self.items)
+    }
+
     pub fn next_slot(&self, message: usize, cursor: &mut EvidenceCursor) -> Option<Key> {
         if cursor.phase == 0 {
             if cursor.slot < self.items.checked_mul(3)? {
@@ -229,6 +299,8 @@ pub struct KeyedRecords<V> {
     retained_bytes: usize,
     sizes: BTreeMap<Key, usize>,
     current_raw: Vec<u8>,
+    current_origins: Origins,
+    effective_origins: Origins,
     // Intrinsic field provenance is separate from volatile-free version bytes.
     current_time_raw: Option<Vec<u8>>,
     pending_versions: BTreeMap<usize, u64>,
@@ -341,6 +413,8 @@ impl<V: ReadView> KeyedRecords<V> {
             retained_bytes: 0,
             sizes: BTreeMap::new(),
             current_raw: Vec::new(),
+            current_origins: Origins::Unknown,
+            effective_origins: Origins::Unknown,
             current_time_raw: None,
             pending_versions: BTreeMap::new(),
             effective_item: None,
@@ -553,7 +627,8 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             self.put(Key::Block(i, b), Cell::Block(v));
             let raw = self.current_raw.clone();
-            self.witness_block_raw(i, b, &raw, super::presence::Owner::Primary);
+            let origins = self.current_origins.at_path(&self.raw_item_path());
+            self.witness_block_raw(i, b, &raw, &origins, super::presence::Owner::Primary);
         }
     }
     fn push_block(&mut self, i: usize, content: BlockContent) -> Option<usize> {
@@ -794,6 +869,15 @@ impl<V: ReadView> RecordParser for KeyedRecords<V> {
             return Err(e.clone());
         }
         // Capture exact provider bytes before decoded Value can normalize numbers.
+        if !rec.table.is_empty() {
+            return Err("Codex SQLite row origins are not implemented".into());
+        }
+        if rec.end.checked_sub(rec.start) != u64::try_from(rec.bytes.len()).ok() {
+            return Err("Codex original-record range differs from framed bytes".into());
+        }
+        self.current_origins = Origins::Record(RecordRange::new(rec.start, rec.end)?);
+        self.effective_origins = Origins::Unknown;
+        self.effective_raw.clear();
         self.current_time_raw = raw::canonical_field(rec.bytes, &["timestamp"]).ok();
         self.current_raw = raw::canonical(rec.bytes)?;
         self.effective_item = None;
@@ -812,8 +896,40 @@ impl<V: ReadView> RecordParser for KeyedRecords<V> {
 
 impl<V: ReadView> KeyedRecords<V> {
     fn witness(&mut self, i: usize, key: &str, value: Result<super::presence::Witness, String>) {
+        let origins = if key == "at" || key == "completed_at" {
+            self.current_origins.at_path(&["timestamp"])
+        } else {
+            self.current_origins.clone()
+        };
+        self.witness_from(i, key, value, origins);
+    }
+    fn witness_from(
+        &mut self,
+        i: usize,
+        key: &str,
+        value: Result<super::presence::Witness, String>,
+        origins: Origins,
+    ) {
         match value {
-            Ok(w) => self.put(Key::Presence(i, key.into()), Cell::Witness(w)),
+            Ok(mut w) => {
+                use super::selection::{FactSelection, Transform};
+                use polylogue_model::merge::{MessageField, Slot};
+                let transform = match &w.slot {
+                    Slot::Message(MessageField::At | MessageField::CompletedAt) => {
+                        Some(Transform::ProviderTimeV1)
+                    }
+                    Slot::Message(MessageField::Model) => Some(Transform::JsonStringV1),
+                    Slot::Extra { .. } => Some(Transform::JsonValueV1),
+                    _ => None,
+                };
+                w.selection = transform.and_then(|transform| {
+                    origins
+                        .selected()
+                        .map(|raw| FactSelection::new(transform, vec![raw]))
+                });
+                w.origins = origins;
+                self.put(Key::Presence(i, key.into()), Cell::Witness(w));
+            }
             Err(e) => self.failure = Some(e),
         }
     }
@@ -834,7 +950,14 @@ impl<V: ReadView> KeyedRecords<V> {
             }
         }
     }
-    fn witness_block_raw(&mut self, i: usize, b: usize, raw: &[u8], owner: super::presence::Owner) {
+    fn witness_block_raw(
+        &mut self,
+        i: usize,
+        b: usize,
+        raw: &[u8],
+        origins: &Origins,
+        owner: super::presence::Owner,
+    ) {
         use super::presence::{Kind, Owner};
         let Some(Cell::Block(block)) = self.get(Key::Block(i, b)) else {
             self.missing("presence block");
@@ -854,7 +977,7 @@ impl<V: ReadView> KeyedRecords<V> {
         } else {
             vec!["payload"]
         };
-        match super::presence::block(raw, &path, block.id.slot(), kind, owner) {
+        match super::presence::block(raw, &path, block.id.slot(), kind, owner, origins) {
             Ok(next) => {
                 let mut group = match self.get(Key::PresenceBlock(i, b)) {
                     Some(Cell::Presence(group)) => group,
@@ -878,7 +1001,12 @@ impl<V: ReadView> KeyedRecords<V> {
             if let Ok(phase) =
                 raw::field(raw, &path).and_then(|item| raw::canonical_field(item, &["phase"]))
             {
-                self.witness(i, "extra:phase", super::presence::extra("phase", &phase));
+                self.witness_from(
+                    i,
+                    "extra:phase",
+                    super::presence::extra("phase", &phase),
+                    origins.field("phase"),
+                );
             }
         }
     }
@@ -888,7 +1016,12 @@ impl<V: ReadView> KeyedRecords<V> {
         } else {
             self.effective_raw.clone()
         };
-        self.witness_block_raw(i, b, &raw, owner);
+        let origins = if self.effective_raw.is_empty() {
+            self.current_origins.at_path(&self.raw_item_path())
+        } else {
+            self.effective_origins.clone()
+        };
+        self.witness_block_raw(i, b, &raw, &origins, owner);
     }
     fn raw_item_path(&self) -> Vec<&'static str> {
         if self.s.legacy {
@@ -1125,6 +1258,7 @@ impl<V: ReadView> KeyedRecords<V> {
             tag: "item".into(),
             canonical: self.current_raw.clone(),
             whole_record: true,
+            origins: self.current_origins.at_path(&self.raw_item_path()),
         };
         let slot = if let Some((slot, block)) = existing {
             if matches!(self.get(Key::Evidence(i,0,slot)), Some(Cell::Evidence(old)) if old == unit)
@@ -1142,6 +1276,10 @@ impl<V: ReadView> KeyedRecords<V> {
             let path = self.raw_item_path();
             match raw::overlay(&previous.canonical, &self.current_raw, &path) {
                 Ok((canonical, fields)) => {
+                    unit.origins =
+                        previous
+                            .origins
+                            .overlay(&unit.origins, &fields.retained, &fields.provided);
                     unit.whole_record = canonical == self.current_raw;
                     unit.canonical = canonical;
                     let original = raw::field(&previous.canonical, &path)
@@ -1204,6 +1342,7 @@ impl<V: ReadView> KeyedRecords<V> {
             slot
         };
         self.effective_raw = unit.canonical.clone();
+        self.effective_origins = unit.origins.clone();
         self.evidence_unit(i, 0, slot, unit);
         true
     }
@@ -1223,6 +1362,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 tag: tag.into(),
                 canonical,
                 whole_record,
+                origins: self.current_origins.clone(),
             },
         );
     }
@@ -1232,7 +1372,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 if let Some(Cell::Evidence(unit)) = self.get(Key::Context(key)) {
                     if key == 1 {
                         if serde_json::from_slice::<String>(&unit.canonical).is_ok() {
-                            self.witness(
+                            self.witness_from(
                                 i,
                                 "model",
                                 super::presence::message(
@@ -1240,6 +1380,7 @@ impl<V: ReadView> KeyedRecords<V> {
                                     &unit.canonical,
                                     None,
                                 ),
+                                unit.origins.clone(),
                             );
                         } else {
                             self.remove(Key::Presence(i, "model".into()));
@@ -1269,6 +1410,7 @@ impl<V: ReadView> KeyedRecords<V> {
                     tag: tag.into(),
                     canonical: value,
                     whole_record: false,
+                    origins: self.current_origins.at_path(path),
                 }),
             );
         }
@@ -1278,12 +1420,16 @@ impl<V: ReadView> KeyedRecords<V> {
             self.missing("output evidence slot");
             return;
         };
-        if let Some(Cell::Association { call_name, session }) =
-            self.get(Key::CallWitness(call_id.into()))
+        if let Some(Cell::Association {
+            call_name,
+            session,
+            call_name_origins,
+            session_origins,
+        }) = self.get(Key::CallWitness(call_id.into()))
         {
-            for (offset, tag, value) in [
-                (1, "association:call_name", call_name),
-                (2, "association:process_session", session),
+            for (offset, tag, value, origins) in [
+                (1, "association:call_name", call_name, call_name_origins),
+                (2, "association:process_session", session, session_origins),
             ] {
                 if let Some(canonical) = value {
                     self.evidence_unit(
@@ -1294,6 +1440,7 @@ impl<V: ReadView> KeyedRecords<V> {
                             tag: tag.into(),
                             canonical,
                             whole_record: false,
+                            origins,
                         },
                     );
                 } else {
@@ -1774,7 +1921,12 @@ impl<V: ReadView> KeyedRecords<V> {
                     Some(summary.join("\n"))
                 },
                 signature: None,
-                encrypted: Some(encrypted.is_some() && summary.is_empty()),
+                // No plaintext or ciphertext establishes no encryption fact.
+                encrypted: if encrypted.is_some() || !summary.is_empty() {
+                    Some(encrypted.is_some() && summary.is_empty())
+                } else {
+                    None
+                },
                 data: encrypted,
             };
             if existing.is_none() {
@@ -1872,6 +2024,8 @@ impl<V: ReadView> KeyedRecords<V> {
                 Cell::Association {
                     call_name: raw_name,
                     session,
+                    call_name_origins: self.effective_origins.field("name"),
+                    session_origins: self.effective_origins.field("arguments"),
                 },
             );
             self.put_call(
@@ -2114,7 +2268,13 @@ impl<V: ReadView> KeyedRecords<V> {
             self.result_chunk(result_i, 0, slot, &output);
         }
         if let Some(unit) = status_witness {
-            self.witness_block_raw(result_i, 0, &unit.canonical, super::presence::Owner::Status);
+            self.witness_block_raw(
+                result_i,
+                0,
+                &unit.canonical,
+                &unit.origins,
+                super::presence::Owner::Status,
+            );
             self.evidence_unit(result_i, 1, 0, unit);
         }
         if let Some(rid) = running_id.filter(|_| is_shell_tool(&tool)) {
@@ -2168,6 +2328,7 @@ impl<V: ReadView> KeyedRecords<V> {
                             tag: "status".into(),
                             canonical: self.current_raw.clone(),
                             whole_record: true,
+                            origins: self.current_origins.at_path(&["payload", "item"]),
                         };
                         let mut effective = item.clone();
                         if let Some(Cell::Evidence(old)) = previous {
@@ -2186,6 +2347,11 @@ impl<V: ReadView> KeyedRecords<V> {
                                     &["payload", "item"],
                                 ) {
                                     Ok((canonical, fields)) => {
+                                        witness.origins = old.origins.overlay(
+                                            &witness.origins,
+                                            &fields.retained,
+                                            &fields.provided,
+                                        );
                                         witness.whole_record = canonical == self.current_raw;
                                         witness.canonical = canonical;
                                         effective = fields.value;
@@ -2236,6 +2402,7 @@ impl<V: ReadView> KeyedRecords<V> {
                                 mi,
                                 bi,
                                 &witness.canonical,
+                                &witness.origins,
                                 super::presence::Owner::Status,
                             );
                             self.evidence_unit(mi, 1, 0, witness);

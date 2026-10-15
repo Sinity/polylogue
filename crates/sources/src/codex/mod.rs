@@ -7,10 +7,12 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 pub mod keyed;
 mod keyed_codec;
+pub mod origins;
 pub mod presence;
 pub mod projection;
 mod raw;
-pub const PARSER_VERSION: u32 = 3;
+pub mod selection;
+pub const PARSER_VERSION: u32 = 6;
 
 /// Record kinds that carry nothing to keep in the index (their bytes stay stored).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,17 +102,32 @@ fn outcome_of_words(o: &str, reason: Option<&str>) -> ToolOutcome {
     }
 }
 
-fn text_parts<'a>(content: Option<&'a Value>) -> impl Iterator<Item = &'a str> {
-    let single = content.and_then(Value::as_str).into_iter();
+fn text_parts_with_paths(
+    content: Option<&Value>,
+) -> impl Iterator<Item = (Vec<selection::PathPart>, &str)> {
+    use selection::PathPart::{Index, Key};
+    let single = content
+        .and_then(Value::as_str)
+        .map(|text| (Vec::new(), text))
+        .into_iter();
     let array = content
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|item| {
+        .enumerate()
+        .filter_map(|(i, item)| {
             item.as_str()
-                .or_else(|| item.get("text").and_then(Value::as_str))
+                .map(|text| (vec![Index(i as u64)], text))
+                .or_else(|| {
+                    item.get("text")
+                        .and_then(Value::as_str)
+                        .map(|text| (vec![Index(i as u64), Key("text".into())], text))
+                })
         });
     single.chain(array)
+}
+fn text_parts(content: Option<&Value>) -> impl Iterator<Item = &str> {
+    text_parts_with_paths(content).map(|(_, text)| text)
 }
 fn texts(content: Option<&Value>) -> Vec<String> {
     text_parts(content).map(str::to_owned).collect()

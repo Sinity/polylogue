@@ -48,11 +48,22 @@ progress. Deleting it loses nothing; the loop rebuilds it.
   absent. It names the contributor's retained chain, even when another input
   supplied the preferred message. It is also used for a value kept lazily in
   retained bytes (`blobs.md`, values too large for SQLite). When all four are
-  absent, a reader may use the message's preferred source only if its input,
-  chain and range are complete; otherwise the byte source is unavailable.
-  No reader substitutes an input's current chain or guesses among its
+  absent, a reader may use a preferred-candidate span only when a format-owned
+  witness identifies that exact span as this block's byte source. Being the
+  first or only Message citation is not that proof; otherwise the byte source
+  is unavailable. No reader substitutes an input's current chain or guesses among its
   `message_source` rows. A missing or excised retained range is reported as
   unavailable or excised, never resolved through another revision.
+- **Contributor sets are not envelopes.** `message_source` pins every exact
+  contributing raw span to its immutable candidate. One input/chain can supply
+  several disjoint spans: older overlay fields, copied context and a timestamp
+  can come from different records. A containing span or `[0,input_length)` is
+  not a substitute. Replacing current parser metadata cannot redirect a pinned
+  candidate's origins. Identical raw re-emission at another offset changes no
+  content digest or merge rank; source coordinates are provenance, not version
+  evidence. A whole-record citation also does not establish an exact lazy
+  payload extent: that needs the format-owned selector/transform and its own
+  byte-source contract. SQLite row identifiers are not byte offsets.
 - **Owners stated once.** A child row names its session through a composite
   foreign key with its parent, so a block or tool call cannot name a
   different session from its message (R73). A session-owned ToolItem has no fabricated Message. Its version-pinned body associations and direct call anchors compose with the canonical selected-Message-body schema; they must enforce same-session ownership, not an unversioned latest-Message join.
@@ -73,11 +84,44 @@ progress. Deleting it loses nothing; the loop rebuilds it.
 
 A provider contributes addressable groups, blocks and source-field facts. `message_candidate` retains pre-fill mapper facts, not scores inferred from normalized defaults. Reduce eligible revisions within each chain, chain representatives within each input, then effective input representatives, as sources rules2/5 require. `message_chain_choice` and `message_input_choice` retain those representatives and field roots. Their indexed scalar rank summaries are copied from the selected candidate in the same transaction, never independently rescored. Within one retained archive revision, a ready replacement of the same format-owned logical candidate retires the earlier intermediate state from current eligibility and missing-field donors. Scheduling cuts create neither additional source witnesses nor historical input authority. This does not collapse distinct competing versions deliberately represented by a format, and actual historical revisions/chains retain the declared lossy/edit policy. Finish ranks positively in-progress, unclassified, positively finished in ascending order. Edits first exclude superseded content and omissions; unresolved edit-head authority remains unresolved. A detached independent import keeps its own input contribution.
 
-`message_build` owns the pinned contributor/removal basis and scalar phase/cursors. Its bounded frontier leases nodes while preparing copy-on-write paths. Its active-value reference is a durable producer lease while normalized bytes are appended/verified; readiness transfers that reference to its field/text owner, and abort releases it before bounded payload retirement. Outer group directories reference local block directories; a replacement copies at most the affected radix16 paths, without shifting later block payload rows. Field directories retain source-slot donors independently of filled output. A selected field root may instead contain an occupied conflict marker for a semantic slot: ordinary scalar output is unknown, and lower-authority fill cannot replace it. The marker enters a shared immutable witness directory retaining its exact fact references, so a pinned historical body never resolves the conflict through today's mutable input choices. The marker is derived resolution, never an additional source-supplied fact or rank contribution. Typed readiness verifies at least two unequal canonical typed values at equal top authority/version; an empty or agreeing witness set cannot certify a conflict. An immutable node owns at most16 edges; internal height strictly decreases, group leaves enter block roots, field conflict leaves enter witness roots, and final leaves reference blocks or field facts. Witness leaves cannot contain conflicts or other directory kinds, so this additional shared subtree introduces no cycle. Cached counts are computed from those children by the typed writer before sealing the node. No ready node or ready body is mutated.
+`message_build` owns the pinned contributor/removal basis and scalar phase/cursors. Its bounded frontier leases nodes while preparing copy-on-write paths. Its active-value reference is a durable producer lease while normalized bytes are appended/verified; readiness transfers that reference to its field/text owner, and abort releases it before bounded payload retirement. A build may also own one `active_block_pk`, with the same Message/session ownership as the build. This block is private: before installation no body directory or tool summary may reference it. Its text/value and field-root leases are durable while individual fields are prepared; only this exclusive preparation may change its field-root pointer. Installation atomically transfers the block into the prepared body directory, clears the active pointer and commits the exact source cursor. It does not copy all fields. A block reached through an immutable directory is immutable. Completion refuses an active block or active value. Abort first releases the active value and active block ownership, then drains their known field/text/node/value references through bounded retirement; collection checks active-block ownership through its index. Source block/text/field summaries come from mapper witnesses, with block-local field counts included exactly once; an empty Text contributes zero to every criterion. Thinking encryption is nullable: unknown never becomes false. Outer group directories reference local block directories; a replacement copies at most the affected radix16 paths, without shifting later block payload rows. Field directories retain source-slot donors independently of filled output. Block-local semantic field keys omit the final public block ordinal: the selected block root establishes correspondence. Distinct blocks of one candidate may supply the same local key. The typed writer enforces at most one fact for that key in each root before insertion; fact identity is not globally unique by candidate and key. A donor from another block still requires explicit semantic correspondence. A selected field root may instead contain an occupied conflict marker for a semantic slot: ordinary scalar output is unknown, and lower-authority fill cannot replace it. The marker enters a shared immutable witness directory retaining its exact fact references, so a pinned historical body never resolves the conflict through today's mutable input choices. The marker is derived resolution, never an additional source-supplied fact or rank contribution. Typed readiness verifies at least two unequal canonical typed values at equal top authority/version; an empty or agreeing witness set cannot certify a conflict. An immutable node owns at most16 edges; internal height strictly decreases, group leaves enter block roots, field conflict leaves enter witness roots, and final leaves reference blocks or field facts. Witness leaves cannot contain conflicts or other directory kinds, so this additional shared subtree introduces no cycle. Cached counts are computed from those children by the typed writer before sealing the node. No ready node or ready body is mutated.
 
 Bodies, representatives, frontier rows and incoming edges acquire/release node references in their small owning transaction. A zero-reference node is claimed as `retiring` before draining at most the admitted edge count; acquisition cannot attach a retiring node. Retirement releases children by stable keysets, then removes the empty owner. Payload/fact/value cleanup likewise checks remaining references and drains bounded chunks. No cascade, giant ID list or whole-body map is used. SQLite readers pinned before retirement retain their old complete graph through WAL. Index collection cannot delete archive-owned source bytes.
 
-Activation checks the exact index incarnation, build identity/basis, head predecessor, contributor revision and removal epoch, then selects one ready body and removes only fixed build/root references. It never adopts/copies every descendant. Candidate/body preparation readiness is committed together; the deferred preferred-candidate constraint pins an immutable certificate and digest. Current eligibility is independent: a true edit/excision can make a candidate ineligible without rewriting or deleting every historical body that cites its completed preparation. A changed contributor or privacy epoch rejects stale activation and leaves newer work owed. Current privacy removal hides the identity immediately where required; preparation cannot resurrect its removed payload.
+**Field origins.** An immutable field fact may also lease `origin_value_pk`, a
+ready JSON `body_value` containing its source-owned, versioned interpretation
+descriptor: adapter/parser and selector/transform versions plus direct immutable
+typed raw origins. Byte-addressed origins name exact input/chain spans; a
+SQLite row origin instead pins the retained immutable snapshot and its
+schema/table/native key, never a rowid disguised as a byte offset. These are extraction instructions and locators,
+not another copy of source payload. Copied context and overlaid fields retain
+the records actually selected, never a pointer to a mutable parser context
+cell. The candidate's `message_source` union cannot replace this per-field
+binding. Historical and conflict-witness facts retain their own descriptor;
+current parser replacement cannot redirect them. Missing origin stays unknown,
+and unsupported interpretation remains unavailable rather than guessed from a
+first citation. A record origin alone is not a lazy payload extent. Provenance
+bytes and their integrity hash do not enter content-version evidence or rank.
+The typed writer validates a supported descriptor against the pinned candidate
+basis before attaching it, including membership of byte spans in that
+candidate's contributor set or validation of a native selector against its
+retained snapshot. A ready JSON value alone is not that validation.
+
+Origin preparation uses a separate `message_build.active_origin_value_pk`
+producer lease while the normalized active value remains owned. The existing
+bounded chunk, cancellation and predecessor rules apply to both. Installing a
+field transfers its normalized and ready-origin leases together with the exact
+source cursor; neither descriptor nor partial fact becomes public early.
+Completion refuses either active producer. Abort releases both before bounded
+retirement, and value collection checks both build indexes and both fact
+references. Deduplicated equal value PKs still represent two counted leases.
+Descriptors obey the same explicit admission/streaming bounds as other values;
+one field lookup must not decode a whole-Message provenance map. This schema
+does not qualify descriptor codecs, lifecycle or historical provenance at runtime.
+
+Activation checks the exact index incarnation, build identity/basis, head predecessor, contributor revision and removal epoch, then selects one ready body and removes only fixed build/root references. It never adopts/copies every descendant. Candidate/body preparation readiness is committed together; the deferred preferred-candidate constraint pins an immutable certificate and digest. Current eligibility and normalized payload retention are independent of that certificate. A true edit/excision can make a candidate ineligible without rewriting or deleting every historical body that cites its completed preparation. An ineligible candidate may detach its `body_pk`/`body_ready` pair when that unselected body retires; its immutable digest/rank certificate and still-leased facts remain. An eligible candidate must retain a ready source body. Detachment never changes a selected Message head or redirects another body's preferred-candidate reference. A changed contributor or privacy epoch rejects stale activation and leaves newer work owed. Current privacy removal hides the identity immediately where required; preparation cannot resurrect its removed payload. A pinned content snapshot may keep its old complete incarnation across ordinary replacement, but each resumed public read also checks the current hidden/removal epoch; privacy invalidation revokes that old view.
+
+Ready-body retirement first proves the exact index/body incarnation is unselected, is not an active build's body, and no eligible candidate requires it. Separate build-frontier node leases remain counted and are never released with this body. Each turn detaches at most one known ineligible candidate's body pointer through the body index, or deletes the fixed body row and releases its at most three root leases in one transaction. It never unseals a ready certificate or edits ready-body roots. Zero-lease node collection then releases at most16 known edges per turn, including final block/text/fact references, while pinned SQLite readers retain their original view. A field fact remains owned while its candidate is eligible, still retains a source body, or a directory edge leases that fact; final reference release may reclaim it only after those indexed ownership checks. Certificate/provenance cleanup follows its actual remaining body/choice/fact/source references, one known row per turn. Cleanup cannot race a new lease or erase newer eligibility: each detach/release/delete shares the owning predecessor/liveness checks and transaction. These are required writer transitions, not a claim that the schema alone performs collection.
 
 Selected ToolItem versions may have known operation existence/classification while required payload evidence remains pending. Such proved operations still count with incomplete payload/history metadata. Unknown classification/correspondence remains unknown coverage. Immutable association leaves are shared by persistent per-body operation roots. Reads require selected-root membership and the selected item version; unowned operations require no fabricated Message. Block-derived call summaries become visible through selected directory leaves, and operation-key deduplication follows proved correspondence. Direct call anchors refine tool lookup without changing a block citation's meaning.
 
@@ -291,10 +335,12 @@ CREATE TABLE message_candidate (
   ready INTEGER NOT NULL DEFAULT 0 CHECK(ready IN(0,1)), -- immutable preparation certificate
   eligible INTEGER NOT NULL DEFAULT 0 CHECK(eligible IN(0,1)), -- mutable source-basis eligibility
   CHECK(facts_ready=0 OR (source_blocks IS NOT NULL AND source_text_blocks IS NOT NULL AND source_fields IS NOT NULL)),
-  CHECK(eligible=0 OR ready=1),
-  CHECK(ready=0 OR (facts_ready=1 AND body_pk IS NOT NULL AND body_ready IS NOT NULL
-        AND source_blocks IS NOT NULL AND source_text_blocks IS NOT NULL
-        AND source_fields IS NOT NULL AND version_hash IS NOT NULL)),
+  CHECK(body_pk IS NOT NULL OR body_ready IS NULL),
+  CHECK(eligible=0 OR (ready=1 AND body_pk IS NOT NULL AND body_ready IS NOT NULL)),
+  CHECK(ready=0 OR ((body_pk IS NULL)=(body_ready IS NULL))),
+  CHECK(ready=0 OR (facts_ready=1 AND source_blocks IS NOT NULL
+        AND source_text_blocks IS NOT NULL AND source_fields IS NOT NULL
+        AND version_hash IS NOT NULL)),
   FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
   FOREIGN KEY(body_pk,message_pk,session_pk,body_ready) REFERENCES message_body(pk,message_pk,session_pk,ready),
   UNIQUE(pk,message_pk,session_pk,input_pk,version_hash,ready),
@@ -309,6 +355,7 @@ CREATE UNIQUE INDEX message_candidate_effective ON message_candidate(
 CREATE INDEX message_candidate_input ON message_candidate(input_pk,chain,revision);
 CREATE INDEX message_candidate_owner ON message_candidate(message_pk,session_pk);
 CREATE INDEX message_candidate_body ON message_candidate(body_pk) WHERE body_pk IS NOT NULL;
+CREATE INDEX message_candidate_required_body ON message_candidate(body_pk) WHERE eligible=1; -- fixed liveness probe without scanning retired pointers
 CREATE INDEX message_candidate_chain_rank ON message_candidate(message_pk,input_pk,chain,
   finish DESC,route DESC,source_blocks DESC,source_text_blocks DESC,source_fields DESC,
   revision_length DESC,version_hash DESC) WHERE eligible=1;
@@ -426,6 +473,9 @@ CREATE TABLE message_field_fact (
   slot_pk INTEGER NOT NULL,
   value_pk INTEGER NOT NULL,
   value_state TEXT NOT NULL DEFAULT 'ready' CHECK(value_state='ready'),
+  origin_value_pk INTEGER, -- immutable source-owned selector/transform + direct raw origins; NULL means unknown
+  origin_value_state TEXT NOT NULL DEFAULT 'ready' CHECK(origin_value_state='ready'),
+  origin_value_codec TEXT NOT NULL DEFAULT 'json' CHECK(origin_value_codec='json'),
   source_time INTEGER,
   supplied INTEGER NOT NULL CHECK(supplied IN(0,1)), -- mapper-owned before fill/enrichment
   FOREIGN KEY(candidate_pk,message_pk,session_pk)
@@ -433,12 +483,15 @@ CREATE TABLE message_field_fact (
   FOREIGN KEY(slot_pk,message_pk,session_pk)
     REFERENCES message_field_slot(pk,message_pk,session_pk),
   FOREIGN KEY(value_pk,value_state) REFERENCES body_value(pk,state),
-  UNIQUE(pk,message_pk,session_pk),
-  UNIQUE(candidate_pk,slot_pk)
+  FOREIGN KEY(origin_value_pk,origin_value_state,origin_value_codec)
+    REFERENCES body_value(pk,state,codec),
+  UNIQUE(pk,message_pk,session_pk)
 ) STRICT;
 CREATE INDEX message_field_fact_owner ON message_field_fact(message_pk,session_pk);
+CREATE INDEX message_field_fact_candidate ON message_field_fact(candidate_pk,slot_pk,pk);
 CREATE INDEX message_field_fact_slot ON message_field_fact(slot_pk);
 CREATE INDEX message_field_fact_value ON message_field_fact(value_pk);
+CREATE INDEX message_field_fact_origin ON message_field_fact(origin_value_pk);
 
 -- Message-local immutable directories. Outer groups reference block roots;
 -- separate field roots retain donor facts without serializing/copying a map.
@@ -538,17 +591,22 @@ CREATE TABLE message_build (
   removal_epoch INTEGER NOT NULL CHECK(removal_epoch>=0),
   phase TEXT NOT NULL CHECK(phase IN('project','rank','fold','hash','layout','ready','retiring')),
   active_value_pk INTEGER REFERENCES body_value(pk), -- durable producer lease, transferred/released atomically
+  active_origin_value_pk INTEGER REFERENCES body_value(pk), -- independent producer lease for the pending field's origin descriptor
+  active_block_pk INTEGER, -- one private mutable block; transferred to its directory atomically
   source_cursor INTEGER NOT NULL DEFAULT 0 CHECK(source_cursor>=0),
   group_cursor INTEGER NOT NULL DEFAULT 0 CHECK(group_cursor>=0),
   local_cursor INTEGER NOT NULL DEFAULT 0 CHECK(local_cursor>=0),
   field_cursor INTEGER NOT NULL DEFAULT 0 CHECK(field_cursor>=0),
   hash_offset INTEGER NOT NULL DEFAULT 0 CHECK(hash_offset>=0),
   FOREIGN KEY(body_pk,message_pk,session_pk) REFERENCES message_body(pk,message_pk,session_pk),
+  FOREIGN KEY(active_block_pk,message_pk,session_pk) REFERENCES block(pk,message_pk,session_pk),
   UNIQUE(message_pk),
   UNIQUE(pk,message_pk,session_pk)
 ) STRICT;
 CREATE INDEX message_build_body ON message_build(body_pk);
 CREATE INDEX message_build_value ON message_build(active_value_pk);
+CREATE INDEX message_build_origin_value ON message_build(active_origin_value_pk);
+CREATE INDEX message_build_block ON message_build(active_block_pk) WHERE active_block_pk IS NOT NULL;
 -- Fixed frontier slots lease ready nodes while paths are copied. A path through
 -- an outer group/block path or field/conflict-witness path has at most 32 radix16 nodes. Root
 -- leases owned by bodies/representatives are separate incoming references.
@@ -565,8 +623,9 @@ CREATE TABLE message_build_frontier (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_build_frontier_node ON message_build_frontier(node_pk);
 
--- Exact contributor locators, pinned to source candidate/input/chain. A citation
--- never substitutes a current chain for the retained chain in this row.
+-- Exact contributor spans, pinned to source candidate/input/chain. Several
+-- disjoint records may supply one candidate; no bounding-envelope fallback.
+-- A citation never substitutes a current chain for this retained chain.
 CREATE TABLE message_source (
   candidate_pk      INTEGER NOT NULL,
   message_pk        INTEGER NOT NULL,
@@ -577,7 +636,7 @@ CREATE TABLE message_source (
   source_end        INTEGER NOT NULL CHECK(source_end>=source_start),
   FOREIGN KEY(candidate_pk,message_pk,session_pk,input_pk,chain)
     REFERENCES message_candidate(pk,message_pk,session_pk,input_pk,chain),
-  PRIMARY KEY (candidate_pk, input_pk, chain)
+  PRIMARY KEY (candidate_pk, input_pk, chain, source_start, source_end)
 ) STRICT;
 CREATE INDEX message_source_message ON message_source(message_pk);
 CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
@@ -604,6 +663,8 @@ CREATE TABLE block (
   slot_kind         TEXT NOT NULL CHECK(slot_kind IN('ordinary','reasoning','attachment')),
   attach_key        TEXT,
   kind              TEXT NOT NULL CHECK(kind IN('text','thinking','tool_call','tool_result','image','file','other')),
+  source_block INTEGER NOT NULL DEFAULT 0 CHECK(source_block IN(0,1)),
+  source_text INTEGER NOT NULL DEFAULT 0 CHECK(source_text IN(0,1) AND source_text<=source_block),
   field_root_pk INTEGER,
   field_root_kind TEXT NOT NULL DEFAULT 'fields' CHECK(field_root_kind='fields'),
   field_root_state TEXT NOT NULL DEFAULT 'ready' CHECK(field_root_state='ready'),
@@ -616,7 +677,7 @@ CREATE TABLE block (
   direction         TEXT,                   -- image/file: input | output | unknown
   produced_by_pk    INTEGER,                -- image/file output: the block of the tool call or image request that made it
   size              INTEGER,                -- image/file
-  encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
+  encrypted         INTEGER CHECK(encrypted IS NULL OR encrypted IN(0,1)), -- unknown remains unknown
   result_outcome    TEXT,                   -- tool_result: provider fact, retained even without a paired call
   result_reason     TEXT,                   -- unknown/error reason in the exported vocabulary
   result_exit_code  INTEGER,

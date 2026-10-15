@@ -3,6 +3,7 @@ pub mod content;
 pub mod identity;
 pub mod measures;
 pub mod merge;
+pub mod source_leaf;
 pub mod time;
 pub mod types;
 pub mod version_evidence;

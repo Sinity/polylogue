@@ -2,7 +2,9 @@
 use polylogue_engine::owner::{Handle, Owner};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, Writer};
+mod masking;
 mod protocol;
+pub mod reference_read;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -222,12 +224,15 @@ fn serve(
         Ok(request) if request == json!({"command":"status"}) => {
             match reader.lock().expect("reader lock").status() {
                 Ok(status) => {
-                    json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status","codex-immutable-retention","provider-progress"],"product_path":"not_implemented"})
+                    json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status","codex-immutable-retention","provider-progress","selected-message-terminal-read"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})
                 }
             }
+        }
+        Ok(request) if request["command"] == "read" => {
+            return reference_read::serve(&mut stream, &request, reader).map_err(|e| e.to_string());
         }
         Ok(request) => protocol::handle(&request, owner),
         Err(error) => {
@@ -280,10 +285,7 @@ mod tests {
         let runtime = runtime_owner.path().join("runtime");
         let mut first = Running::start(&temp.path().join("a"), &runtime).unwrap();
         let second = Running::start(&temp.path().join("b"), &runtime).unwrap();
-        assert_eq!(
-            request(first.socket()).unwrap()["product_path"],
-            "not_implemented"
-        );
+        assert_eq!(request(first.socket()).unwrap()["product_path"], "partial");
         assert_eq!(request(second.socket()).unwrap()["outcome"], "ok");
         let mut stalled = UnixStream::connect(first.socket()).unwrap();
         stalled.write_all(b"{\"command\":").unwrap();

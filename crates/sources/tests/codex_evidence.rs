@@ -456,3 +456,39 @@ fn fork_lineage_does_not_claim_completed_inheritance_correspondence() {
     assert!(delta.resume.normalization_incomplete());
     assert_eq!(delta.links.len(), 1);
 }
+
+#[test]
+fn evidence_validation_owns_roles_required_slots_and_count_bounds() {
+    use polylogue_sources::codex::keyed::EvidenceUnit;
+    let mut head = EvidenceHead {
+        items: 1,
+        units: 1,
+        revision: 1,
+        incomplete: false,
+    };
+    assert!(head.validate().is_ok());
+    assert!(head.required_slot(&Key::Evidence(0, 0, 0)));
+    assert!(!head.required_slot(&Key::Evidence(0, 0, 1)));
+    let mut unit = EvidenceUnit {
+        tag: "item".into(),
+        canonical: br#"{"n":1E2}"#.to_vec(),
+        whole_record: true,
+        origins: Default::default(),
+    };
+    assert!(unit.validate_at(&Key::Evidence(0, 0, 0)).is_ok());
+    assert!(unit.validate_at(&Key::Evidence(0, 0, 1)).is_err());
+    unit.tag = "context:source".into();
+    assert!(unit.validate_at(&Key::Evidence(0, 1, 1)).is_err());
+    unit.whole_record = false;
+    assert!(unit.validate_at(&Key::Evidence(0, 1, 1)).is_ok());
+    unit.canonical = b"bad".to_vec();
+    assert!(unit.validate_at(&Key::Evidence(0, 1, 1)).is_err());
+    head.items = usize::MAX;
+    assert!(head.validate().is_err());
+    head.items = 1;
+    head.units = 9;
+    assert!(head.validate().is_err());
+    head.units = 1;
+    head.incomplete = true;
+    assert!(head.validate().is_err());
+}

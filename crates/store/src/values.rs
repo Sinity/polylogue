@@ -557,29 +557,44 @@ impl ReadHandle {
     /// Returns at most allowance bytes from one stored chunk. Byte boundaries
     /// may split UTF-8; callers must not decode a range with unchecked UTF-8.
     pub fn value_range(&self, id: &ValueId, offset: u64, allowance: usize) -> Result<Range> {
-        let path = self.root.join("index.db");
-        let h = head(&self.index, &path, id)?;
-        if h.state != State::Ready {
-            return Err(Error::ValueNotReady);
-        }
-        if offset > h.length {
-            return Err(Error::Range);
-        }
-        if offset == h.length {
-            return Ok(Range {
-                bytes: Vec::new(),
-                next_offset: offset,
-                eof: true,
-            });
-        }
-        let p = piece(&self.index, &path, &h, offset, allowance)?;
-        let next_offset = offset + p.bytes.len() as u64;
-        Ok(Range {
-            bytes: p.bytes,
-            next_offset,
-            eof: next_offset == h.length,
-        })
+        range(
+            &self.index,
+            &self.root.join("index.db"),
+            id,
+            offset,
+            allowance,
+        )
     }
+}
+
+pub(crate) fn range(
+    connection: &Connection,
+    path: &Path,
+    id: &ValueId,
+    offset: u64,
+    allowance: usize,
+) -> Result<Range> {
+    let h = head(connection, path, id)?;
+    if h.state != State::Ready {
+        return Err(Error::ValueNotReady);
+    }
+    if offset > h.length {
+        return Err(Error::Range);
+    }
+    if offset == h.length {
+        return Ok(Range {
+            bytes: Vec::new(),
+            next_offset: offset,
+            eof: true,
+        });
+    }
+    let p = piece(connection, path, &h, offset, allowance)?;
+    let next_offset = offset + p.bytes.len() as u64;
+    Ok(Range {
+        bytes: p.bytes,
+        next_offset,
+        eof: next_offset == h.length,
+    })
 }
 
 #[cfg(test)]

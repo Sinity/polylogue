@@ -133,12 +133,18 @@ fn empty_text_excludes_its_metadata_while_known_empty_nontext_payloads_survive()
         matches!(view.cells.get(&Key::PresenceBlock(0,0)),Some(Cell::Presence(g)) if !g.nonempty && g.fields.is_empty())
     );
     let assistant = slots(&view, 1);
+    // No summary text maps to Thinking.text=None. The recorded empty encrypted
+    // payload is a known typed value; an absent normalized text is not.
+    assert!(!assistant.contains_key(&Slot::Block {
+        block: BlockSlot::Reasoning(0),
+        field: B::ThinkingText
+    }));
     assert_eq!(
         assistant[&Slot::Block {
             block: BlockSlot::Reasoning(0),
-            field: B::ThinkingText
+            field: B::ThinkingData
         }],
-        b"[]"
+        br#""""#
     );
     assert!(!assistant.contains_key(&Slot::Block {
         block: BlockSlot::Reasoning(0),
@@ -263,4 +269,76 @@ fn native_children_and_legacy_array_results_keep_only_direct_fields() {
     let legacy=[json!({"id":"legacy:synthetic","timestamp":"2025-08-11T12:00:00Z"}),json!({"type":"function_call","id":"call","name":"tool","call_id":"c","arguments":"{}"}),json!({"type":"function_call_output","id":"result","call_id":"c","output":[{"text":"{\"is_error\":false}"}]})].iter().map(|v|v.to_string()+"\n").collect::<String>();
     let (view, _) = parse(&legacy);
     assert_eq!(slots(&view, 1)[&block(0, B::Outcome)], b"false");
+}
+
+#[test]
+fn message_witness_keys_have_one_source_owned_slot_for_insert_and_delete() {
+    use polylogue_sources::codex::presence::message_slot;
+    assert_eq!(message_slot("at"), Some(Slot::Message(M::At)));
+    assert_eq!(
+        message_slot("completed_at"),
+        Some(Slot::Message(M::CompletedAt))
+    );
+    assert_eq!(
+        message_slot("usage:input_tokens"),
+        Some(Slot::Usage(U::Input))
+    );
+    assert_eq!(
+        message_slot("extra:phase"),
+        Some(Slot::Extra {
+            block: None,
+            key: "phase".into()
+        })
+    );
+    assert_eq!(message_slot("unmapped:future"), None);
+}
+
+#[test]
+fn reasoning_without_plaintext_or_ciphertext_keeps_encryption_unknown() {
+    let bytes = header()
+        + &line(
+            "response_item",
+            json!({"type":"reasoning","id":"empty-thinking","summary":[]}),
+        );
+    let (view, _) = parse(&bytes);
+    let message = view.projected_message(0).unwrap().unwrap();
+    let polylogue_model::BlockContent::Thinking(thinking) = &message.blocks[0].content else {
+        panic!("expected Thinking")
+    };
+    assert_eq!(thinking.encrypted, None);
+    assert!(!slots(&view, 0).keys().any(|slot| matches!(
+        slot,
+        Slot::Block {
+            field: B::Encrypted,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn reasoning_summary_membership_distinguishes_no_text_from_known_empty_text() {
+    for (summary, supplied, normalized) in [(json!([]), false, None), (json!([""]), true, Some(""))]
+    {
+        let bytes = header()
+            + &line(
+                "response_item",
+                json!({"type":"reasoning","id":"r","summary":summary}),
+            );
+        let (view, _) = parse(&bytes);
+        let message = view.projected_message(0).unwrap().unwrap();
+        let polylogue_model::BlockContent::Thinking(thinking) = &message.blocks[0].content else {
+            panic!("expected Thinking")
+        };
+        assert_eq!(thinking.text.as_deref(), normalized);
+        assert_eq!(
+            slots(&view, 0).keys().any(|slot| matches!(
+                slot,
+                Slot::Block {
+                    field: B::ThinkingText,
+                    ..
+                }
+            )),
+            supplied
+        );
+    }
 }

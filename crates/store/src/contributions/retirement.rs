@@ -5,6 +5,82 @@ use super::directory;
 use super::writer::Build;
 use crate::{Error, Result, Writer, db};
 use rusqlite::{OptionalExtension, params};
+use std::path::Path;
+
+pub(super) fn release_ready_value(
+    tx: &rusqlite::Transaction<'_>,
+    path: &Path,
+    value: i64,
+) -> Result<()> {
+    if db(path, || {
+        tx.execute("UPDATE body_value SET incoming=incoming-1 WHERE pk=?1 AND incoming>0 AND state='ready'",[value])
+    })? != 1
+    {
+        return Err(Error::Invariant(
+            "canonical value lost its ready owner lease".into(),
+        ));
+    }
+    db(path, || {
+        tx.execute(
+            "UPDATE body_value SET state='retiring' WHERE pk=?1 AND incoming=0",
+            [value],
+        )
+    })?;
+    Ok(())
+}
+fn drop_fact(tx: &rusqlite::Transaction<'_>, path: &Path, fact: i64, value: i64) -> Result<()> {
+    let (slot, origin): (i64, Option<i64>) = db(path, || {
+        tx.query_row(
+            "SELECT slot_pk,origin_value_pk FROM message_field_fact WHERE pk=?1",
+            [fact],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    })?;
+    db(path, || {
+        tx.execute("DELETE FROM message_field_fact WHERE pk=?1", [fact])
+    })?;
+    release_ready_value(tx, path, value)?;
+    if let Some(origin) = origin {
+        release_ready_value(tx, path, origin)?;
+    }
+    let retained: bool = db(path, || {
+        tx.query_row("SELECT EXISTS(SELECT 1 FROM message_field_fact WHERE slot_pk=?1) OR EXISTS(SELECT 1 FROM message_body_edge WHERE conflict_slot_pk=?1)",[slot],|r|r.get(0))
+    })?;
+    if !retained {
+        db(path, || {
+            tx.execute("DELETE FROM message_field_slot WHERE pk=?1", [slot])
+        })?;
+    }
+    Ok(())
+}
+/// A known leaf can disappear only after its final directory reference AND
+/// retained source-body/current-eligibility ownership have both gone away.
+pub(super) fn release_unreferenced_fact(
+    tx: &rusqlite::Transaction<'_>,
+    path: &Path,
+    fact: i64,
+) -> Result<()> {
+    let row: Option<(i64, bool, Option<i64>)> = db(path, || {
+        tx.query_row("SELECT f.value_pk,c.eligible,c.body_pk FROM message_field_fact f JOIN message_candidate c ON c.pk=f.candidate_pk WHERE f.pk=?1",[fact],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()
+    })?;
+    let Some((value, eligible, body)) = row else {
+        return Ok(());
+    };
+    if eligible || body.is_some() {
+        return Ok(());
+    }
+    let retained: bool = db(path, || {
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM message_body_edge WHERE field_fact_pk=?1)",
+            [fact],
+            |r| r.get(0),
+        )
+    })?;
+    if !retained {
+        drop_fact(tx, path, fact, value)?;
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retirement {
@@ -40,10 +116,27 @@ impl Writer {
         if generation != build.source.index_generation {
             return Err(Error::MessagePredecessorChanged);
         }
-        let row: Option<(String, bool, bool, bool, Option<i64>)> = db(&path, || {
-            tx.query_row("SELECT w.phase,b.ready,c.ready,c.eligible,w.active_value_pk FROM message_build w JOIN message_body b ON b.pk=w.body_pk JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE w.pk=?1 AND w.body_pk=?2 AND c.pk=?3 AND w.basis_digest=?4 AND w.message_pk=?5 AND w.session_pk=?6",params![build.pk,build.body,build.candidate,build.digest.as_slice(),build.message,build.session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()
+        let row: Option<(
+            String,
+            bool,
+            bool,
+            bool,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        )> = db(&path, || {
+            tx.query_row("SELECT w.phase,b.ready,c.ready,c.eligible,w.active_value_pk,w.active_origin_value_pk,w.active_block_pk FROM message_build w JOIN message_body b ON b.pk=w.body_pk JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE w.pk=?1 AND w.body_pk=?2 AND c.pk=?3 AND w.basis_digest=?4 AND w.message_pk=?5 AND w.session_pk=?6",params![build.pk,build.body,build.candidate,build.digest.as_slice(),build.message,build.session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()
         })?;
-        let Some((phase, body_ready, candidate_ready, eligible, active)) = row else {
+        let Some((
+            phase,
+            body_ready,
+            candidate_ready,
+            eligible,
+            active,
+            active_origin,
+            active_block,
+        )) = row
+        else {
             let retained: bool = db(&path, || {
                 tx.query_row("SELECT EXISTS(SELECT 1 FROM message_body WHERE pk=?1) OR EXISTS(SELECT 1 FROM message_candidate WHERE pk=?2)",params![build.body,build.candidate],|r|r.get(0))
             })?;
@@ -55,7 +148,14 @@ impl Writer {
                 Ok(Retirement::Complete)
             };
         };
-        if phase != "retiring" || body_ready || candidate_ready || eligible || active.is_some() {
+        if phase != "retiring"
+            || body_ready
+            || candidate_ready
+            || eligible
+            || active.is_some()
+            || active_block.is_some()
+            || active_origin.is_some()
+        {
             return Err(Error::MessagePreparationPending);
         }
         let owner = directory::Owner {
@@ -107,7 +207,7 @@ impl Writer {
             return Ok(Retirement::Node);
         }
         let fact: Option<(i64, i64)> = db(&path, || {
-            tx.query_row("SELECT pk,value_pk FROM message_field_fact WHERE candidate_pk=?1 ORDER BY slot_pk LIMIT 1",[build.candidate],|r|Ok((r.get(0)?,r.get(1)?))).optional()
+            tx.query_row("SELECT pk,value_pk FROM message_field_fact WHERE candidate_pk=?1 ORDER BY slot_pk,pk LIMIT 1",[build.candidate],|r|Ok((r.get(0)?,r.get(1)?))).optional()
         })?;
         if let Some((fact, value)) = fact {
             let referenced: bool = db(&path, || {
@@ -122,39 +222,23 @@ impl Writer {
                     "unpublished candidate fact is leased outside its drained preparation".into(),
                 ));
             }
-            db(&path, || {
-                tx.execute("DELETE FROM message_field_fact WHERE pk=?1", [fact])
-            })?;
-            if db(&path, || {
-                tx.execute(
-                    "UPDATE body_value SET incoming=incoming-1 WHERE pk=?1 AND incoming>0",
-                    [value],
-                )
-            })? != 1
-            {
-                return Err(Error::Invariant(
-                    "retiring fact lost its value lease".into(),
-                ));
-            }
-            db(&path, || {
-                tx.execute(
-                    "UPDATE body_value SET state='retiring' WHERE pk=?1 AND incoming=0",
-                    [value],
-                )
-            })?;
+            drop_fact(&tx, &path, fact, value)?;
             db(&path, || tx.commit())?;
             return Ok(Retirement::Fact);
         }
-        let source: Option<(i64, i64)> = db(&path, || {
-            tx.query_row("SELECT input_pk,chain FROM message_source WHERE candidate_pk=?1 ORDER BY input_pk,chain LIMIT 1",[build.candidate],|r|Ok((r.get(0)?,r.get(1)?))).optional()
+        let source: Option<(i64, i64, i64, i64)> = db(&path, || {
+            tx.query_row("SELECT input_pk,chain,source_start,source_end FROM message_source WHERE candidate_pk=?1 ORDER BY input_pk,chain,source_start,source_end LIMIT 1",[build.candidate],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()
         })?;
-        if let Some((input, chain)) = source {
-            db(&path, || {
+        if let Some((input, chain, start, end)) = source {
+            if db(&path, || {
                 tx.execute(
-                    "DELETE FROM message_source WHERE candidate_pk=?1 AND input_pk=?2 AND chain=?3",
-                    params![build.candidate, input, chain],
+                    "DELETE FROM message_source WHERE candidate_pk=?1 AND input_pk=?2 AND chain=?3 AND source_start=?4 AND source_end=?5",
+                    params![build.candidate, input, chain, start, end],
                 )
-            })?;
+            })? != 1
+            {
+                return Err(Error::MessagePredecessorChanged);
+            }
             db(&path, || tx.commit())?;
             return Ok(Retirement::Source);
         }
@@ -169,6 +253,7 @@ impl Writer {
                 [build.body],
             )
         })?;
+        super::blocks::discard_cursor(&tx, &path, build)?;
         db(&path, || {
             tx.execute("DELETE FROM message_build WHERE pk=?1", [build.pk])
         })?;
@@ -204,6 +289,14 @@ impl Writer {
         let Some(value) = value else {
             return Ok(ValueCollection::Idle);
         };
+        let retained: bool = db(&path, || {
+            tx.query_row("SELECT EXISTS(SELECT 1 FROM message_build WHERE active_value_pk=?1) OR EXISTS(SELECT 1 FROM message_build WHERE active_origin_value_pk=?1) OR EXISTS(SELECT 1 FROM message_field_fact WHERE value_pk=?1) OR EXISTS(SELECT 1 FROM message_field_fact WHERE origin_value_pk=?1) OR EXISTS(SELECT 1 FROM text WHERE value_pk=?1)",[value],|r|r.get(0))
+        })?;
+        if retained {
+            return Err(Error::Invariant(
+                "retiring value still has an owning reference".into(),
+            ));
+        }
         let offset: Option<i64> = db(&path, || {
             tx.query_row(
                 "SELECT offset FROM body_value_chunk WHERE value_pk=?1 ORDER BY offset LIMIT 1",
