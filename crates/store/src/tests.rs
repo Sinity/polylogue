@@ -333,3 +333,33 @@ fn inaccessible_wal_metadata_is_not_treated_as_no_wal() {
     symlink("archive.db-wal", &wal).unwrap();
     assert!(matches!(Writer::open(root), Err(Error::Schema(_))));
 }
+
+#[test]
+fn missing_or_empty_main_never_overwrites_retained_wal_or_shm() {
+    for create_main in [false, true] {
+        for sidecar in ["archive.db-wal", "archive.db-shm"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            if create_main {
+                File::create(root.join("archive.db")).unwrap();
+            }
+            fs::write(root.join(sidecar), b"retained recovery bytes").unwrap();
+            let before = snapshot(root);
+            assert!(matches!(Writer::open(root), Err(Error::Initialization(_))));
+            assert!(
+                snapshot(root) == before,
+                "recovery refusal changed retained files"
+            );
+        }
+    }
+}
+
+#[test]
+fn main_metadata_errors_are_not_treated_as_a_fresh_archive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("regular-file");
+    fs::write(&root, b"preserve this file").unwrap();
+    let error = Writer::open(&root).err().expect("invalid root must refuse");
+    assert!(matches!(error, Error::Io(ref e) if e.kind() == io::ErrorKind::NotADirectory));
+    assert_eq!(fs::read(root).unwrap(), b"preserve this file");
+}

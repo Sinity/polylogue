@@ -193,20 +193,25 @@ fn owned_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
 }
 fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Result<()> {
     let file = root.join(name);
-    if file
-        .symlink_metadata()
-        .is_ok_and(|m| m.file_type().is_symlink())
-    {
-        return Err(Error::Schema(file));
-    }
-    if !file.exists() || file.metadata()?.len() == 0 {
-        return Ok(());
-    }
-    // Read only: no journal mode, schema, counters, chmod, or blob mutations precede this check.
+    // Inspect retained siblings even when the main file is missing or empty.
+    // A WAL may hold the only committed schema/content and must never be overwritten as fresh.
+    let main = owned_metadata(&file)?;
     let wal = sibling(&file, "-wal");
     let shm = sibling(&file, "-shm");
-    let has_wal = owned_metadata(&wal)?.is_some_and(|m| m.len() != 0);
-    if has_wal && owned_metadata(&shm)?.is_none() {
+    let wal_meta = owned_metadata(&wal)?;
+    let shm_meta = owned_metadata(&shm)?;
+    let has_wal = wal_meta.as_ref().is_some_and(|m| m.len() != 0);
+    if main.as_ref().is_none_or(|m| m.len() == 0) {
+        if has_wal || shm_meta.as_ref().is_some_and(|m| m.len() != 0) {
+            return Err(Error::Initialization(format!(
+                "recovery required for missing or empty main database with retained WAL/shared-memory bytes at {}",
+                file.display()
+            )));
+        }
+        return Ok(());
+    }
+    // No journal mode, schema, counters, chmod, or blob mutations precede this check.
+    if has_wal && shm_meta.is_none() {
         return Err(Error::Initialization(format!(
             "non-mutating inspection requires recovery of orphan WAL at {}",
             wal.display()
@@ -270,7 +275,10 @@ fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Re
     Ok(())
 }
 fn preflight(root: &Path) -> Result<()> {
-    if root.exists() && !root.join("archive.db").exists() {
+    validate_version(root, "archive.db", ARCHIVE_VERSION, true)?;
+    validate_version(root, "embeddings.db", EMBEDDINGS_VERSION, true)?;
+    validate_version(root, "index.db", INDEX_VERSION, false)?;
+    if root.try_exists()? && owned_metadata(&root.join("archive.db"))?.is_none() {
         for entry in fs::read_dir(root)? {
             let path = entry?.path();
             if path.file_name().is_some_and(|n| n == "writer.lock") {
@@ -279,9 +287,7 @@ fn preflight(root: &Path) -> Result<()> {
             return Err(Error::MissingArchive(root.into()));
         }
     }
-    validate_version(root, "archive.db", ARCHIVE_VERSION, true)?;
-    validate_version(root, "embeddings.db", EMBEDDINGS_VERSION, true)?;
-    validate_version(root, "index.db", INDEX_VERSION, false)
+    Ok(())
 }
 fn private_dir(path: &Path) -> Result<()> {
     if path
