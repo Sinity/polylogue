@@ -125,6 +125,16 @@ pub struct Budget {
     pub encoded_bytes: usize,
 }
 
+fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(index)?;
+    u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })
+}
 fn integer(value: u64) -> Result<i64> {
     i64::try_from(value)
         .map_err(|_| StoreError::Invariant("parser position exceeds SQLite integer range".into()))
@@ -187,12 +197,12 @@ pub(crate) fn head(
                     r.get::<_, i64>(1)?,
                     r.get::<_, Vec<u8>>(2)?,
                     r.get::<_, u32>(3)?,
-                    r.get::<_, u64>(4)?,
-                    r.get::<_, u64>(5)?,
-                    r.get::<_, u64>(6)?,
+                    unsigned(r, 4)?,
+                    unsigned(r, 5)?,
+                    unsigned(r, 6)?,
                     r.get::<_, String>(7)?,
                     r.get::<_, bool>(8)?,
-                    Accounting {framed:r.get(9)?,used:r.get(10)?,ignored:r.get(11)?,unrecognized:r.get(12)?,undecodable:r.get(13)?},
+                    Accounting {framed:unsigned(r,9)?,used:unsigned(r,10)?,ignored:unsigned(r,11)?,unrecognized:unsigned(r,12)?,undecodable:unsigned(r,13)?},
                     r.get::<_,Vec<u8>>(14)?,
                 ))
             },
@@ -260,7 +270,7 @@ pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Resu
     {
         let identity: (Option<String>, u64) = sql!(path, tx.query_row(
             "SELECT companions_json, excisions_seen FROM parse_state WHERE input_pk=?1 AND chain=?2",
-            params![basis.input_pk, basis.chain], |r| Ok((r.get(0)?, r.get(1)?))))?;
+            params![basis.input_pk, basis.chain], |r| Ok((r.get(0)?, unsigned(r,1)?))))?;
         if old.parser_version != basis.parser_version
             || identity.0.as_deref() != basis.companions_json
             || identity.1 != basis.excisions_seen
@@ -328,7 +338,7 @@ impl Snapshot {
             "SELECT length(value),CASE WHEN length(value)<=?6 THEN value ELSE NULL END FROM parser_cell
              WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",
             params![self.head.token.input_pk,self.head.token.chain,self.head.token.generation,namespace,key,allowance],
-            |r| Ok((r.get::<_, u64>(0)?,r.get::<_, Option<Vec<u8>>>(1)?)),
+            |r| Ok((unsigned(r, 0)?,r.get::<_, Option<Vec<u8>>>(1)?)),
         ).optional())?;
         match row {
             None => Ok(None),
@@ -373,7 +383,7 @@ impl Snapshot {
                     ],
                     |r| {
                         Ok((
-                            r.get::<_, u64>(0)?,
+                            unsigned(r, 0)?,
                             r.get::<_, Option<Vec<u8>>>(1)?,
                             r.get::<_, Option<Vec<u8>>>(2)?,
                         ))
@@ -594,7 +604,9 @@ pub(crate) fn collect_retired(
             ])
         )?;
         while let Some(row) = sql!(path, rows.next())? {
-            let needed = sql!(path, row.get::<_, usize>(1))?;
+            let needed = usize::try_from(sql!(path, unsigned(row, 1))?).map_err(|_| {
+                StoreError::Invariant("parser cell size exceeds addressable memory".into())
+            })?;
             if needed > budget.encoded_bytes.saturating_sub(bytes) {
                 if keys.is_empty() {
                     return Err(StoreError::ParserAdmission {
