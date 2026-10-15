@@ -1,10 +1,10 @@
 # Repository Guidelines
 
-This isolated branch prepares the Rust foundation. It supports foundation diagnostics and isolated initialization only. No session parser, search, export, MCP or live migration is registered yet. Predecessor deployment consumers remain outside this candidate.
+This workspace prepares Polylogue’s Rust replacement. The top-level README and CLI help own supported capabilities and their limits; `docs/rewrite/` records the candidate’s specification basis. Preserve explicit unsupported outcomes while completing a path. Predecessor deployment consumers remain separately pinned until authorized cutover.
 
 ## Structure
 
-`crates/model` owns pure identity, value and outcome types. `crates/hashed-blobs` is the reviewed shared file layer with a read-only capability. `crates/store` owns every SQLite connection and mutation. `crates/polylogue` owns configuration, process lifetime and the CLI. `xtask` runs focused developer checks. Tests use synthetic inputs and isolated temporary state.
+`crates/model` owns pure identity, value and outcome types. `crates/hashed-blobs` is the reviewed shared file layer with a read-only capability. `crates/store` owns every SQLite connection and mutation. `crates/engine` computes provider work outside the writer and installs it through typed store operations. `crates/polylogue` owns configuration, process lifetime, the daemon actor and CLI. `xtask` runs focused developer checks. Tests use synthetic inputs and isolated temporary state. Retained-source progress and canonical Message readiness are distinct; source EOF alone cannot certify a complete query.
 
 ## Commands and style
 
