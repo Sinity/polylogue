@@ -15,8 +15,7 @@
         doCheck = true;
       };
     in {
-      packages.${system}.default = foundation;
-      packages.${system}.polylogue = foundation;
+      packages.${system} = { default = foundation; polylogue = foundation; };
       checks.${system}.foundation = foundation;
       devShells.${system}.default = pkgs.mkShell {
         packages = [ pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.gcc pkgs.pkg-config pkgs.zstd pkgs.python3 ];
