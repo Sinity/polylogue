@@ -549,3 +549,18 @@ message totals independently of projected survivors. No reader or scratch
 transaction crosses an external page request. Late faults and cancellation
 propagate before a result is returned, and native scratch custody closes the
 private context on its creator. Default projections retain the direct page path.
+
+
+## Resident analysis
+
+Postmortem, portfolio and pathology composition select scalar identities and
+read profiles, events, transcripts and child links on one admitted pinned
+archive reader. The independent requested analysis cap defaults to 200; the
+matched denominator counts the full predicate relation and reports truncation.
+The CLI uses `analysis.postmortem`, `analysis.portfolio` and
+`analysis.cost-outlook` on the resident daemon rather than reopening the
+facade for each session. Facets use the same canonical selection lowering.
+Billing outlook streams enriched costs on that reader, attributed by creation
+time from cycle start through the requested reference time. Its daily reducer
+uses that same reference time; source modification time and future cycle rows
+do not substitute for observed usage.

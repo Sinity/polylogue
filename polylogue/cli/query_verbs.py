@@ -56,6 +56,27 @@ def run_coroutine_sync(coro: Awaitable[_T]) -> _T:
     return _run_coroutine_sync(coro)
 
 
+def _resident_analysis_read(
+    env: AppEnv, request: RootModeRequest, operation: str, **arguments: object
+) -> dict[str, object]:
+    from polylogue.cli.lowering import lower_analysis_read
+    from polylogue.cli.operation_kernel import OperationKernelError
+    from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
+
+    try:
+        result, _ = dispatch_read(
+            env.config,
+            lower_analysis_read(request, operation, **arguments),
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            selection_epoch=request.selection_epoch,
+        )
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
+    return result
+
+
 def _deliver_content(env: AppEnv, content: str, *, destination: str, out_path: str | None) -> None:
     """Import read-view delivery helpers only on real delivery paths."""
 
@@ -2092,8 +2113,6 @@ def analyze_verb(
     import json as _json
 
     from polylogue.cli.shared.cost_rendering import render_outlook_plain
-    from polylogue.cost.outlook import ProjectionMethod
-    from polylogue.cost.plans import PlanLookupError
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
@@ -2147,20 +2166,20 @@ def analyze_verb(
         if output_format not in (None, "json", "markdown", "plaintext"):
             raise click.UsageError("`analyze --postmortem` only supports terminal text, --format json, or markdown")
         from polylogue.analysis.postmortem import (
-            postmortem_outcome,
+            PostmortemBundle,
             render_postmortem_markdown,
             render_postmortem_plain,
         )
         from polylogue.cli.shared.machine_errors import success
         from polylogue.core.payload_model import model_json_document
-        from polylogue.surfaces.outcome import outcome_exit_code
+        from polylogue.surfaces.outcome import OutcomeEnvelope, outcome_exit_code
 
-        spec = request.query_spec()
-        bundle = run_coroutine_sync(env.polylogue.postmortem_bundle(spec, limit=limit))
+        wire = _resident_analysis_read(env, request, "analysis.postmortem", limit=limit)
+        bundle = PostmortemBundle.model_validate(wire["payload"])
         # The same outcome owner MCP uses decides every format: a truncated,
         # partly unprofiled or undigested scope, or an unavailable headline
         # measurement, is ``degraded``; an empty scope is ``empty``.
-        outcome = postmortem_outcome(bundle)
+        outcome = OutcomeEnvelope.model_validate(wire["outcome"])
         if output_format == "json":
             payload = model_json_document(bundle, exclude_none=True)
             click.echo(success({"postmortem": payload, "outcome": outcome.to_dict()}).to_json())
@@ -2179,16 +2198,20 @@ def analyze_verb(
     if show_portfolio:
         if output_format not in (None, "json", "markdown", "plaintext"):
             raise click.UsageError("`analyze --portfolio` only supports terminal text, --format json, or markdown")
-        from polylogue.analysis.portfolio import portfolio_outcome, render_portfolio_markdown, render_portfolio_plain
+        from polylogue.analysis.portfolio import (
+            PortfolioBundle,
+            render_portfolio_markdown,
+            render_portfolio_plain,
+        )
         from polylogue.cli.shared.machine_errors import success
         from polylogue.core.payload_model import model_json_document
-        from polylogue.surfaces.outcome import outcome_exit_code
+        from polylogue.surfaces.outcome import OutcomeEnvelope, outcome_exit_code
 
-        spec = request.query_spec()
-        portfolio = run_coroutine_sync(env.polylogue.portfolio_bundle(spec, limit=limit))
+        wire = _resident_analysis_read(env, request, "analysis.portfolio", limit=limit)
+        portfolio = PortfolioBundle.model_validate(wire["payload"])
         # One outcome for every format: a truncated or partly unprofiled scope
         # is ``degraded`` and an empty one ``empty``, never a bare success.
-        outcome = portfolio_outcome(portfolio)
+        outcome = OutcomeEnvelope.model_validate(wire["outcome"])
         if output_format == "json":
             payload = model_json_document(portfolio, exclude_none=True)
             click.echo(success({"portfolio": payload, "outcome": outcome.to_dict()}).to_json())
@@ -2212,11 +2235,12 @@ def analyze_verb(
     if show_facets:
         if effective_output_format not in (None, "json"):
             raise click.UsageError("`analyze --facets` only supports terminal text or --format json")
-        # Delegate to the Polylogue facets API using the request's query spec.
-        spec = request.query_spec()
-        response = run_coroutine_sync(
-            env.polylogue.facets(spec, include_idf=not no_idf, include_deferred=include_deferred)
+        from polylogue.surfaces.payloads import FacetsResponse
+
+        wire = _resident_analysis_read(
+            env, request.with_param_updates(no_idf=no_idf, include_deferred=include_deferred), "facets"
         )
+        response = FacetsResponse.model_validate(wire)
         emit_facets_response(response, output_format=effective_output_format)
         return
 
@@ -2230,12 +2254,15 @@ def analyze_verb(
         from polylogue.analysis.projection_contracts import cost_outlook_availability
         from polylogue.core.payload_model import model_json_document
 
-        projection_method = ProjectionMethod(method)
         started_at = _time.perf_counter()
-        try:
-            outlook = run_coroutine_sync(env.polylogue.cost_outlook(plan_name, method=projection_method))
-        except PlanLookupError as exc:
-            raise click.ClickException(str(exc)) from exc
+        from polylogue.cli.read_views.base import materialized_read_outcome
+        from polylogue.cli.render.outcome import finish_supplied_outcome
+        from polylogue.cost.outlook import CycleOutlook
+        from polylogue.surfaces.outcome import OutcomeEnvelope
+
+        wire = _resident_analysis_read(env, request, "analysis.cost-outlook", plan_name=plan_name, method=method)
+        outlook = None if wire["outlook"] is None else CycleOutlook.model_validate(wire["outlook"])
+        outcome = materialized_read_outcome(wire, OutcomeEnvelope(state="ok"))
         elapsed_s = _time.perf_counter() - started_at
         availability = cost_outlook_availability(plan_name, ready=outlook is not None, elapsed_s=elapsed_s)
         if outlook is None:
@@ -2249,9 +2276,11 @@ def analyze_verb(
                         indent=2,
                     )
                 )
+                finish_supplied_outcome(outcome)
                 return
             remediation = f" {availability.remediation}" if availability.remediation else ""
             env.ui.console.print(f"[yellow]{availability.detail}{remediation}[/yellow]")
+            finish_supplied_outcome(outcome)
             return
         if output_format == "json":
             click.echo(
@@ -2264,6 +2293,7 @@ def analyze_verb(
                     default=str,
                 )
             )
+            finish_supplied_outcome(outcome)
             return
         if availability.state != "ready":
             detail = availability.detail or "projection exceeded its declared interactive deadline"
@@ -2274,6 +2304,7 @@ def analyze_verb(
             )
             env.ui.console.print(f"[yellow]readiness: {availability.state} — {detail}{budget}[/yellow]")
         render_outlook_plain(env, outlook)
+        finish_supplied_outcome(outcome)
         return
 
     if stats_by:
@@ -2390,9 +2421,12 @@ def analyze_facets_command(
     request = _named_analyze_request(ctx)
     if _explain_terminal_action(request, action="analyze", projection="facets"):
         return
-    response = run_coroutine_sync(
-        env.polylogue.facets(request.query_spec(), include_idf=not no_idf, include_deferred=include_deferred)
+    from polylogue.surfaces.payloads import FacetsResponse
+
+    wire = _resident_analysis_read(
+        env, request.with_param_updates(no_idf=no_idf, include_deferred=include_deferred), "facets"
     )
+    response = FacetsResponse.model_validate(wire)
     # The root query owns the output contract: ``polylogue --format json find
     # ... then analyze facets`` must emit the same JSON the equivalent
     # ``analyze --facets`` mode emits (query_verbs.py's
