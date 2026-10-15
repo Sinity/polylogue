@@ -12,6 +12,7 @@ import click
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
 from polylogue.cli.read_view_registry import READ_VIEW_GLOBAL_OPTION_NAMES, ReadViewSessionPolicy
 from polylogue.cli.shared.types import AppEnv
+from polylogue.surfaces.outcome import OutcomeEnvelope
 from polylogue.surfaces.projection_spec import RenderDestination
 
 if TYPE_CHECKING:
@@ -214,6 +215,24 @@ def _warn_on_secret_candidates(env: AppEnv, content: str, *, label: str) -> None
         f"[yellow]secret-scan: {label}: {describe_secret_candidate_spans(spans)} -- "
         "review before sharing this file (candidate detector, not proof of a real secret).[/yellow]"
     )
+
+
+def materialized_read_outcome(wire: Mapping[str, object], supplied: OutcomeEnvelope) -> OutcomeEnvelope:
+    """Compose supplied row and operation verdicts without opening another reader."""
+    from polylogue.operations.read_contracts import ReadMaterialization
+    from polylogue.operations.read_materialization import materialization_outcome
+    from polylogue.surfaces.outcome import combine_outcomes
+
+    outcome = supplied
+    raw = wire.get("outcome")
+    if isinstance(raw, Mapping):
+        terminal = OutcomeEnvelope.model_validate(raw)
+        combined = combine_outcomes((supplied, terminal))
+        outcome = combined.model_copy(update={"detail": {**supplied.detail, **terminal.detail, **combined.detail}})
+    materialization = wire.get("materialization")
+    if materialization is not None:
+        outcome = materialization_outcome(outcome, ReadMaterialization.model_validate(materialization))
+    return outcome
 
 
 def deliver_content(
