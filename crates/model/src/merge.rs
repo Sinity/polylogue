@@ -14,7 +14,8 @@ pub enum RouteKind {
     Native,
 }
 
-/// Unknown remains unresolved until a provider rule supplies a classification.
+/// Ranking keeps unknown completion between positive finished/in-progress
+/// evidence; it never turns absent lifecycle evidence into a Finished claim.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishState {
@@ -180,18 +181,18 @@ impl RankSummary {
     pub fn compare(&self, other: &Self) -> Result<std::cmp::Ordering, MergeError> {
         Ok(self.key()?.cmp(&other.key()?))
     }
-    fn prefix(&self) -> Result<(bool, RouteKind, Completeness), MergeError> {
+    fn prefix(&self) -> Result<(u8, RouteKind, Completeness), MergeError> {
         if self.completeness.text_blocks > self.completeness.blocks {
             return Err(MergeError::InvalidPresence);
         }
-        let finished = match self.finish {
-            FinishState::InProgress => false,
-            FinishState::Finished => true,
-            FinishState::Unknown => return Err(MergeError::UnknownCompletion),
+        let completion = match self.finish {
+            FinishState::InProgress => 0,
+            FinishState::Unknown => 1,
+            FinishState::Finished => 2,
         };
-        Ok((finished, self.route, self.completeness))
+        Ok((completion, self.route, self.completeness))
     }
-    fn key(&self) -> Result<((bool, RouteKind, Completeness), [u8; 32]), MergeError> {
+    fn key(&self) -> Result<((u8, RouteKind, Completeness), [u8; 32]), MergeError> {
         Ok((self.prefix()?, *self.version_hash.bytes()))
     }
 }
@@ -237,8 +238,6 @@ pub struct EffectiveInput {
 pub enum MergeError {
     #[error("source presence facts are inconsistent")]
     InvalidPresence,
-    #[error("source completion is unknown; ranking remains unresolved")]
-    UnknownCompletion,
     #[error("required version evidence remains unresolved")]
     UnresolvedEvidence,
     #[error("an input has more than one current chain")]

@@ -452,13 +452,56 @@ fn equal_evidence_keeps_all_provenance_and_unresolved_facts_never_default() {
     );
     let mut unknown = a.clone();
     unknown.finish = FinishState::Unknown;
-    assert_eq!(unknown.rank(), Err(MergeError::UnknownCompletion));
+    assert_eq!(unknown.rank().unwrap().finish, FinishState::Unknown);
     unknown.finish = FinishState::Finished;
     unknown.version_hash = None;
     assert_eq!(unknown.rank(), Err(MergeError::UnresolvedEvidence));
     unknown.version_hash = a.version_hash;
     unknown.presence.nonempty_blocks = 0;
     assert_eq!(unknown.rank(), Err(MergeError::InvalidPresence));
+}
+
+#[test]
+fn unknown_completion_is_eligible_between_positive_finished_and_in_progress() {
+    let mut finished = candidate(1, 1);
+    finished.route = RouteKind::PageDom;
+    let mut unknown = candidate(2, 255);
+    unknown.finish = FinishState::Unknown;
+    unknown.presence.nonempty_blocks = 100;
+    let mut producing = unknown.clone();
+    producing.reference = 3;
+    producing.finish = FinishState::InProgress;
+    producing.presence.nonempty_blocks = 1000;
+    for candidates in [
+        vec![
+            singleton(&finished),
+            singleton(&unknown),
+            singleton(&producing),
+        ],
+        vec![
+            singleton(&producing),
+            singleton(&unknown),
+            singleton(&finished),
+        ],
+    ] {
+        let selected = select_effective(&candidates).unwrap().unwrap();
+        assert_eq!(refs(&selected), BTreeSet::from([1]));
+        assert_eq!(selected.body.rank.finish, FinishState::Finished);
+    }
+    let selected = select_effective(&[singleton(&producing), singleton(&unknown)])
+        .unwrap()
+        .unwrap();
+    assert_eq!(refs(&selected), BTreeSet::from([2]));
+    assert_eq!(selected.body.rank.finish, FinishState::Unknown);
+    let mut other_unknown = unknown.clone();
+    other_unknown.reference = 4;
+    other_unknown.version_hash = Some(BlobHash::from_bytes([1; 32]));
+    let selected = select_effective(&[singleton(&other_unknown), singleton(&unknown)])
+        .unwrap()
+        .unwrap();
+    assert_eq!(refs(&selected), BTreeSet::from([2]));
+    unknown.version_hash = None;
+    assert_eq!(unknown.rank(), Err(MergeError::UnresolvedEvidence));
 }
 
 #[test]
