@@ -35,6 +35,7 @@ driver = load(Path(__file__).with_name("check-morrow.py"), "morrow_driver")
 checker = load(args.checker, "fixture_checker")
 SID = "claude-code:synthetic"
 EXPECTED = {"session_id": SID, "sessions": 1, "messages": 1, "human_prompts": ["retained prompt"],
+            "import_context": {"version": 1, "context": ["claude-main", "synthetic"]},
             "message_facts": [{"id": "claude-code:synthetic:prompt", "role": "user", "written_by": "human", "at": "2026-10-15T10:00:00.000Z",
                                "blocks": [{"id": "claude-code:synthetic:prompt:0", "kind": "text", "text": "retained prompt"}]}]}
 ANSWER = {"format": "polylogue-session", "version": 1, "session": {"id": SID},
@@ -150,6 +151,35 @@ class ControllerTests(unittest.TestCase):
         run.admit(self.output / "archive", self.output / "input", EXPECTED, "base", checker)
         self.assertEqual(len(comparisons), 1)
         self.assertIs(comparisons[0][-1], checker)
+
+    def test_loose_import_retains_explicit_context_and_passes_exact_file(self):
+        run = driver.Run(self.output, None)
+        calls = []
+        run.client = lambda *a: calls.append(a) or {"canonical_complete": True}
+        run.answers = lambda *a: None
+        expected = deepcopy(EXPECTED)
+        # The native ID is declared independently; never split the opaque reference.
+        expected["session_id"] = "opaque:reference:with:colons"
+        expected["import_context"]["context"][1] = "native:id:with:colons"
+        for name in ("base", "repeat", "append", "empty", "malformed"):
+            run.admit(self.output / "archive", self.output / "loose.jsonl", expected, name, checker)
+            context = self.output / f"{name}-import-context.json"
+            self.assertEqual(json.loads(context.read_text()), expected["import_context"])
+            self.assertEqual(calls[-1], (self.output / "archive", "import", str(self.output / "loose.jsonl"),
+                                        "--format", "claude-code-jsonl",
+                                        "--context", str(context), "--wait", "--json"))
+
+    def test_missing_or_invalid_context_refuses_before_import(self):
+        run = driver.Run(self.output, None)
+        calls = []
+        run.client = lambda *a: calls.append(a)
+        for context in (None, {}, {"version": True, "context": ["claude-main", "s"]},
+                        {"version": 1, "context": ["claude-main", ""]},
+                        {"version": 1, "context": ["claude-subagent", "s"]}):
+            expected = dict(EXPECTED, import_context=context)
+            with self.subTest(context=context), self.assertRaisesRegex(ValueError, "explicit v1"):
+                run.admit(self.output / "archive", self.output / "loose.jsonl", expected, "base", checker)
+        self.assertEqual(calls, [])
 
     def test_failed_report_is_escaped_portable_and_does_not_rewrite_evidence(self):
         root = self.output / 'run'

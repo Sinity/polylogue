@@ -158,7 +158,17 @@ class Run:
                     f"owned daemon did not stop cleanly (exit {code})")
 
     def admit(self, archive, path, expected, name, checker):
-        admitted = self.client(archive, "import", str(path), "--wait", "--json")
+        context = expected.get("import_context")
+        require(isinstance(context, dict) and set(context) == {"version", "context"}
+                and type(context["version"]) is int and context["version"] == 1
+                and isinstance(context["context"], list) and len(context["context"]) == 2
+                and context["context"][0] == "claude-main"
+                and isinstance(context["context"][1], str) and bool(context["context"][1]),
+                "Morrow requires an explicit v1 main-transcript import context")
+        context_path = self.output / f"{name}-import-context.json"
+        context_path.write_text(json.dumps(context, indent=2) + "\n")
+        admitted = self.client(archive, "import", str(path), "--format", "claude-code-jsonl",
+                               "--context", str(context_path), "--wait", "--json")
         require(admitted.get("canonical_complete") is True,
                 "import --wait did not affirm canonical completion; source EOF is insufficient")
         self.answers(archive, expected, name, checker)
@@ -228,6 +238,7 @@ def main():
               "owned_processes": run.processes,
               "isolated_environment": {key: run.env[key] for key in ["HOME", "XDG_RUNTIME_DIR"]},
               "remaining": ["observed-source same-input/chain append, separator-only progress and restart continuation",
+                            "automatic source-signature format recognition without explicit --format",
                             "source accounting and canonical progress binding", "actual provenance reads",
                             "observed retention/admission/publication kills", "provider-loss recovery",
                             "actual MCP transport", "full M0/M1 acceptance"]}

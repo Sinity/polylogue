@@ -89,6 +89,11 @@ import, append at the same provider pathname followed by immutable snapshot
 import, restart, empty/malformed inputs and read/export agreement. The append
 changes only the suffix and records before/after sizes and digests. These
 imports prove snapshot union, not continuation of one observed input/chain.
+Each loose Claude file uses explicit `--format claude-code-jsonl` and the fixture's
+v1 main-transcript context through `--context FILE`. The retained context file
+declares the native session independently of its opaque public reference and
+filename, including empty and malformed inputs. Automatic format recognition
+is outside this run's qualification.
 Observed-source append, separator-only progress and restart continuation remain
 separate unfinished acceptance. Every command retains argv, exits and raw output; failures leave
 later steps explicitly unrun and stop the exact owned daemon.
