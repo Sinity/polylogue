@@ -7793,3 +7793,29 @@ async def test_apply_time_keyerror_is_not_reported_as_a_missing_session(
             await archive.add_tag("codex-session:never-existed", "review")
     finally:
         await archive.close()
+
+
+@pytest.mark.parametrize("method_name", ["postmortem_bundle", "pathology_report", "portfolio_bundle"])
+async def test_analysis_scope_and_digests_use_one_pinned_reader(
+    tmp_path: Path, method_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    facade = _archive(tmp_path)
+    try:
+        await _seed_two_sessions(facade.config.db_path)
+        opened: list[ArchiveStore] = []
+        original = ArchiveStore.open_existing
+
+        def opening(*args: Any, **kwargs: Any) -> ArchiveStore:
+            store = original(*args, **kwargs)
+            opened.append(store)
+            return store
+
+        monkeypatch.setattr(ArchiveStore, "open_existing", opening)
+        report = await getattr(facade, method_name)()
+        scope = getattr(report, "scope", report)
+        assert scope.matched_session_count == 2
+        assert len(opened) == 1, "scope, profiles, events and digests must share one supplied reader"
+    finally:
+        await facade.close()
