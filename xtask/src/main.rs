@@ -82,6 +82,8 @@ fn main() -> ExitCode {
             "-p",
             "polylogue-model",
             "-p",
+            "polylogue-query",
+            "-p",
             "polylogue-store",
             "-p",
             "polylogue",

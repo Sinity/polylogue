@@ -107,24 +107,26 @@ def exercise(run):
     run.checked("accessible empty differs from unavailable interpretation")
     native, sid = "query-main-oldest", "claude-code:query-main-oldest"
     secret = "gh" + "p_" + "A" * 36
-    text = f"olderneedle {secret} Łódź refactor carefully shared phrase"
+    text = f"olderneedle {secret} Łódź refactor carefully shared phrase ranktoken ranktoken ranktoken ranktoken"
     raw = record(native, "older-message", text, "2001-01-01T00:00:00.000Z")
     raw += record(native, "second-message", "separateonlytoken", "2001-01-02T00:00:00.000Z")
     run.import_(native, raw)
     for index in range(110):
         name = f"query-newer-{index:04d}"
-        run.import_(name, record(name, f"newer-{index}", "new unrelated ordinary prose"))
+        run.import_(name, record(name, f"newer-{index}", "new unrelated ordinary prose ranktoken " + "padding " * 20))
     listed = run.query("origin:claude-code", 111)
     require(listed["rows"][-1]["id"] == sid, "listing did not put the oldest known activity last")
     result = run.query("olderneedle", 1, [sid])
     require(result["searched"]["known_sessions"] == 111, "hidden candidate window")
-    require(secret not in json.dumps(result), "snippet credential policy")
+    require(secret not in json.dumps(result), "hit references disclosed raw prose")
     for query in ["lodz", "łódź", "refact*", '"shared phrase"', 'origin:claude-code olderneedle phrase']:
         run.query(query, 1, [sid])
     run.query("olderneedle separateonlytoken", 0, [])
     run.checked("oldest-only match across 110 newer nonmatches; words, phrase, prefix, Unicode and same-Message conjunction")
     # FTS rank is evaluated over all selected prose, before selection limit.
     run.query("olderneedle | limit 1", 1, [sid])
+    run.query("ranktoken | limit 1", 111, [sid])
+    before_document=run.cli(sid,"read","--format","json")
     run.cli("olderneedle", "list")
     run.checked("ordinary terminal and JSON listing use the daemon query")
     for query in ["messages olderneedle", "olderneedle OR prose", "sessions | group by origin", "--reveal"]:
@@ -149,6 +151,8 @@ def exercise(run):
     document = run.cli(sid, "read", "--format", "json")
     require(document["session"]["id"] == sid and document["messages"][0]["id"] == sid + ":older-message",
             f"stable query identity did not open retained Session: {document}")
+    require(document["session"]==before_document["session"] and document["messages"]==before_document["messages"], "retained structured Session changed")
+    require(secret not in json.dumps(document) and "[credential:" in json.dumps(document),"ordinary read lost full-context credential masking")
     run.checked("stable query ID opens retained structured Session after provider removal and SIGKILL/restart")
 
 
