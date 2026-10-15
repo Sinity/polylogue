@@ -698,7 +698,7 @@ def test_listener_readback_failure_still_terminates_proof_child(
 
 
 def test_proof_paths_are_private_and_distinct_per_invocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dev_loop_service.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     first_archive, first_artifacts = dev_loop_service._service_paths()
     second_archive, second_artifacts = dev_loop_service._service_paths()
     assert first_archive.parent == first_artifacts.parent
