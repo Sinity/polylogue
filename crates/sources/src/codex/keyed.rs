@@ -1077,7 +1077,11 @@ impl<V: ReadView> KeyedRecords<V> {
             head.items = next;
             self.put(Key::EvidenceHead(i), Cell::EvidenceHead(head));
             if let Some(id) = native {
-                let block = self.header(i).map(|(_, blocks)| blocks).unwrap_or(0);
+                let block = if primary {
+                    self.header(i).map(|(_, blocks)| blocks).unwrap_or(0)
+                } else {
+                    0
+                };
                 self.put(
                     Key::EvidenceItem(i, id.to_owned()),
                     Cell::Position(slot, block),
@@ -1480,7 +1484,16 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             let effective = self.effective(p);
             let text = texts(effective.get("content")).join("\n");
-            let changed_text=self.replacement_block.and_then(|b|self.get(Key::Block(i,b))).is_some_and(|cell| matches!(cell,Cell::Block(block) if matches!(block.content,BlockContent::Text{text:old} if old!=text)));
+            let changed_text = self
+                .replacement_block
+                .and_then(|b| self.get(Key::Block(i, b)))
+                .is_some_and(|cell| match cell {
+                    Cell::Block(block) => match &block.content {
+                        BlockContent::Text { text: old } => old != &text,
+                        _ => false,
+                    },
+                    _ => false,
+                });
             if changed_text {
                 self.remove_evidence(i, 1, 3);
             }
@@ -1718,8 +1731,9 @@ impl<V: ReadView> KeyedRecords<V> {
                 self.pin(format!("stdin:{c}"), None, Some(i));
             }
             if name == "exec"
-                && !self.wrapper_is_open(&c)
-                && (!replacing || self.position(Key::Result(c.clone())).is_none())
+                && (!replacing
+                    || (!self.wrapper_is_open(&c)
+                        && self.position(Key::Result(c.clone())).is_none()))
             {
                 self.wrapper_push(c, i);
             }

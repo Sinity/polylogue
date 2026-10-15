@@ -308,3 +308,24 @@ fn replacing_an_old_continuation_preserves_distinct_equal_chunks_without_prefix_
         "interpretation did not rebuild the growing result body"
     );
 }
+
+#[test]
+fn distinct_native_calls_with_duplicate_call_ids_keep_both_wrapper_occurrences() {
+    let mut bytes = header();
+    for id in ["one", "two"] {
+        bytes += &line(
+            "response_item",
+            json!({"type":"function_call","id":id,"call_id":"duplicate","name":"exec","arguments":"{}"}),
+        );
+    }
+    let (view, _) = run(MemoryReadView::default(), Resume::default(), &bytes);
+    assert_eq!(
+        view.cells
+            .keys()
+            .filter(|key| matches!(key, Key::Wrapper(_)))
+            .count(),
+        2
+    );
+    assert_eq!(view.message(0).unwrap().unwrap().blocks.len(), 2);
+    assert_eq!(head(&view, 0).items, 2);
+}
