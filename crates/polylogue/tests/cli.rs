@@ -117,6 +117,15 @@ fn actual_daemon_and_client_restart_in_owned_state() {
         }
     };
     wait_status(&mut first);
+    let invalid = Command::new(binary)
+        .args(["--archive", archive.to_str().unwrap(), "progress", ""])
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .output()
+        .unwrap();
+    let reply: serde_json::Value = serde_json::from_slice(&invalid.stdout).unwrap();
+    assert_eq!(reply["outcome"], "error");
+    assert_eq!(reply["error"]["kind"], "invalid_query");
+    assert_eq!(invalid.status.code(), Some(2), "{invalid:?}");
     first.0.kill().unwrap();
     first.0.wait().unwrap();
     let mut second = start();

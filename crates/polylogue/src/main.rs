@@ -1,5 +1,5 @@
 mod import_cli;
-use polylogue_model::types::{ErrorKind, Failure};
+use polylogue_model::types::{ErrorKind, Failure, ResultOutcome};
 use serde_json::json;
 use std::{
     env, fs,
@@ -170,12 +170,60 @@ fn run() -> Result<i32, Failure> {
     }
     serde_json::to_writer(&mut out, &value).map_err(io_error)?;
     writeln!(out).map_err(io_error)?;
-    Ok(if value["outcome"] == "ok" {
-        0
-    } else {
-        ErrorKind::Io.exit_code()
-    })
+    reply_exit_code(&value)
 }
+// The transport envelope carries the full Failure beneath `error`.
+// Decode it before choosing an exit code so remote and local failures agree.
+fn reply_exit_code(value: &serde_json::Value) -> Result<i32, Failure> {
+    if value["outcome"] == "error" {
+        let failure: Failure = serde_json::from_value(value["error"].clone()).map_err(io_error)?;
+        Ok(failure.outcome().exit_code())
+    } else {
+        let outcome: ResultOutcome = serde_json::from_value(value.clone()).map_err(io_error)?;
+        Ok(outcome.exit_code())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_outcomes_preserve_typed_exit_codes() {
+        for kind in [
+            ErrorKind::InvalidQuery,
+            ErrorKind::NotYetAvailable,
+            ErrorKind::NotFound,
+            ErrorKind::Ambiguous,
+            ErrorKind::Conflict,
+            ErrorKind::Refused {
+                reason: "unsupported".into(),
+            },
+            ErrorKind::Timeout,
+            ErrorKind::NotRunning,
+            ErrorKind::Io,
+        ] {
+            let expected = kind.exit_code();
+            let reply = json!({"outcome":"error","error":Failure::new(kind,"failed")});
+            assert_eq!(reply_exit_code(&reply).unwrap(), expected);
+        }
+        for (reply, code) in [
+            (json!({"outcome":"ok"}), 0),
+            (json!({"outcome":"empty"}), 1),
+            (json!({"outcome":"degraded","missing":["input"]}), 5),
+        ] {
+            assert_eq!(reply_exit_code(&reply).unwrap(), code);
+        }
+        for reply in [
+            json!({}),
+            json!({"outcome":"error"}),
+            json!({"outcome":"unknown"}),
+        ] {
+            assert_eq!(reply_exit_code(&reply).unwrap_err().kind, ErrorKind::Io);
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code as u8),
