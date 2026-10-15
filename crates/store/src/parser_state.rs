@@ -2,8 +2,6 @@
 //! real read-only SQLite snapshot; only its bounded touched delta enters the
 //! output transaction. This module checks predecessor identity, not whether the
 //! canonical message/index finalizer has actually earned completion.
-pub mod prepared;
-
 use crate::{Error as StoreError, Result};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
@@ -14,6 +12,8 @@ macro_rules! sql {
         crate::db($path, || $operation)
     };
 }
+
+pub mod prepared;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token {
