@@ -58,7 +58,6 @@ impl Build {
 pub struct Preparation {
     pub build: Build,
     pub active_value: Option<values::Head>,
-    pub retiring: bool,
 }
 fn bad(message: &str) -> Error {
     Error::Invariant(message.into())
@@ -123,7 +122,7 @@ fn source_head(
     }
     Ok(head)
 }
-fn check(conn: &Connection, path: &Path, build: &Build, allow_retiring: bool) -> Result<bool> {
+fn check(conn: &Connection, path: &Path, build: &Build, allow_retiring: bool) -> Result<()> {
     if path != build.path {
         return Err(Error::MessagePredecessorChanged);
     }
@@ -132,11 +131,11 @@ fn check(conn: &Connection, path: &Path, build: &Build, allow_retiring: bool) ->
     if row.1
         || row.2 != build.contributor_revision
         || row.3 != build.removal_epoch
-        || (!allow_retiring && row.0 == "retiring")
+        || row.0 == "retiring"
     {
         return Err(Error::MessagePredecessorChanged);
     }
-    Ok(row.0 == "retiring")
+    Ok(())
 }
 impl Writer {
     /// Reserve one pending body/candidate. Repeating the identical pinned
@@ -314,7 +313,7 @@ impl Writer {
         if !compatible {
             return Err(bad("preparation metadata changed under the same basis"));
         }
-        check(&tx, &path, &build, false)?;
+        check(&tx, &path, &build)?;
         let active: Option<i64> = db(&path, || {
             tx.query_row(
                 "SELECT active_value_pk FROM message_build WHERE pk=?1",
@@ -339,7 +338,6 @@ impl Writer {
         Ok(Preparation {
             build,
             active_value,
-            retiring: false,
         })
     }
     /// The value and its durable producer lease are admitted in one transaction.
@@ -352,7 +350,7 @@ impl Writer {
     ) -> Result<values::Head> {
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        check(&tx, &path, build, false)?;
+        check(&tx, &path, build)?;
         let active: Option<i64> = db(&path, || {
             tx.query_row(
                 "SELECT active_value_pk FROM message_build WHERE pk=?1",
@@ -382,7 +380,7 @@ impl Writer {
     ) -> Result<values::Seal> {
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        check(&tx, &path, build, false)?;
+        check(&tx, &path, build)?;
         let active: Option<i64> = db(&path, || {
             tx.query_row(
                 "SELECT active_value_pk FROM message_build WHERE pk=?1",
@@ -440,7 +438,7 @@ impl Writer {
         let key = field_key(slot, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        check(&tx, &path, build, false)?;
+        check(&tx, &path, build)?;
         let value: Option<i64> = db(&path, || {
             tx.query_row(
                 "SELECT active_value_pk FROM message_build WHERE pk=?1",
@@ -966,5 +964,69 @@ mod tests {
         ));
         assert!(f.prepare().unwrap().active_value.is_some());
         assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 1);
+    }
+    #[test]
+    fn same_prefix_growth_preserves_preparation_but_changed_source_cannot_seal_it() {
+        let mut f = Fixture::new();
+        let length = f.head.acquired_upto;
+        f.head = f
+            .writer
+            .begin_parser(&parser_state::Basis {
+                input_pk: f.head.token.input_pk,
+                chain: 1,
+                parser_version: 3,
+                digest: [11; 32],
+                acquired_upto: 0,
+                companions_json: None,
+                excisions_seen: 0,
+            })
+            .unwrap();
+        let build = f.prepare().unwrap().build;
+        let grown = f
+            .writer
+            .begin_parser(&parser_state::Basis {
+                input_pk: f.head.token.input_pk,
+                chain: 1,
+                parser_version: 3,
+                digest: [11; 32],
+                acquired_upto: length,
+                companions_json: None,
+                excisions_seen: 0,
+            })
+            .unwrap();
+        assert_eq!(grown.token, build.source);
+        let value = f
+            .writer
+            .begin_message_value(&build, values::Codec::Utf8, 0)
+            .unwrap();
+        let proof = f.writer.validate_value(&value.id).unwrap();
+        f.writer
+            .begin_parser(&parser_state::Basis {
+                input_pk: f.head.token.input_pk,
+                chain: 1,
+                parser_version: 4,
+                digest: [12; 32],
+                acquired_upto: length,
+                companions_json: None,
+                excisions_seen: 0,
+            })
+            .unwrap();
+        assert!(matches!(
+            f.writer.seal_message_value(&build, &proof),
+            Err(Error::MessagePredecessorChanged)
+        ));
+        assert_eq!(
+            f.writer.value_head(&value.id).unwrap().state,
+            values::State::Building
+        );
+        assert_eq!(
+            f.scalar("SELECT count(*) FROM message_body WHERE ready=1"),
+            0
+        );
+        f.writer.retire_message_preparation(&build).unwrap();
+        assert_eq!(
+            f.writer.value_head(&value.id).unwrap().state,
+            values::State::Retiring
+        );
     }
 }
