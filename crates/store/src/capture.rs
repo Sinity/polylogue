@@ -3,9 +3,10 @@
 use crate::{BlobHash, Error, Result, Writer, counter, db, private_dir};
 use rusqlite::{OptionalExtension, params};
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     io::{self, Read},
-    path::PathBuf,
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -60,7 +61,66 @@ impl<R: Read> Read for Counted<'_, R> {
         Ok(count)
     }
 }
+// The reviewed decoder owns the file format. This helper only streams its
+// uncompressed bytes, checks cancellation, and verifies the content receipt.
+fn verify_plain(
+    mut reader: impl Read,
+    expected: hashed_blobs::Hash,
+    length: u64,
+    cancelled: &AtomicBool,
+) -> Result<()> {
+    let mut digest = blake3::Hasher::new();
+    let mut total = 0_u64;
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(Error::Cancelled);
+        }
+        let count = match reader.read(&mut chunk) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if cancelled.load(Ordering::Acquire) {
+            return Err(Error::Cancelled);
+        }
+        if count == 0 {
+            break;
+        }
+        total = total
+            .checked_add(u64::try_from(count).map_err(|_| Error::Range)?)
+            .ok_or(Error::Range)?;
+        digest.update(&chunk[..count]);
+    }
+    if total != length || digest.finalize().as_bytes() != &expected.0 {
+        return Err(hashed_blobs::Error::Corrupt {
+            blob: expected,
+            what: "captured CAS digest or length mismatch".into(),
+        }
+        .into());
+    }
+    Ok(())
+}
 impl BlobCapture {
+    /// Explicit regular-file import only. Nonblocking/no-follow open prevents
+    /// FIFO opens and final-component symlinks from trapping the worker before
+    /// descriptor type validation. This is not a general collector policy.
+    pub fn capture_regular_file(
+        &self,
+        path: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<PreparedBlob> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(Error::Cancelled);
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(Error::Invariant("capture requires a regular file".into()));
+        }
+        self.capture(file, cancelled)
+    }
     /// Run on a worker. The underlying store streams through bounded frames;
     /// its seek table still grows with frame count (no whole-input Vec here).
     pub fn capture(&self, reader: impl Read, cancelled: &AtomicBool) -> Result<PreparedBlob> {
@@ -85,19 +145,7 @@ impl BlobCapture {
         }
         // put may deduplicate against an existing filename. Certify those actual
         // retained bytes, not just the hash computed from the incoming stream.
-        match blobs.verify(&hash)? {
-            hashed_blobs::Verified::Intact => {}
-            hashed_blobs::Verified::Missing => {
-                return Err(hashed_blobs::Error::Missing(hash).into());
-            }
-            report => {
-                return Err(hashed_blobs::Error::Corrupt {
-                    blob: hash,
-                    what: format!("capture verification: {report:?}"),
-                }
-                .into());
-            }
-        }
+        verify_plain(blobs.read(&hash)?, hash, counted.length, cancelled)?;
         private_dir(&self.root.join("blobs").join(&hash.hex()[..2]))?;
         let stored_size = blobs.stored_size(&hash)?;
         if cancelled.load(Ordering::Acquire) {
@@ -420,5 +468,111 @@ mod tests {
         );
         assert_eq!(std::fs::read(path).unwrap(), b"not a zstd object");
         assert_eq!(rows(&w), 0);
+    }
+}
+
+#[cfg(test)]
+mod cooperative_tests {
+    use super::*;
+    #[test]
+    fn verification_cancels_between_reads_and_preserves_read_failure() {
+        struct Cancels<'a> {
+            cancelled: &'a AtomicBool,
+            calls: usize,
+        }
+        impl Read for Cancels<'_> {
+            fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+                self.calls += 1;
+                b[0] = b'x';
+                self.cancelled.store(true, Ordering::Release);
+                Ok(1)
+            }
+        }
+        let flag = AtomicBool::new(false);
+        let mut reader = Cancels {
+            cancelled: &flag,
+            calls: 0,
+        };
+        assert!(matches!(
+            verify_plain(&mut reader, hashed_blobs::Hash::of(b"x"), 1, &flag),
+            Err(Error::Cancelled)
+        ));
+        assert_eq!(reader.calls, 1);
+        struct Fails;
+        impl Read for Fails {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "verification denied",
+                ))
+            }
+        }
+        match verify_plain(
+            Fails,
+            hashed_blobs::Hash::of(b""),
+            0,
+            &AtomicBool::new(false),
+        ) {
+            Err(Error::Io(e)) => assert_eq!(e.kind(), io::ErrorKind::PermissionDenied),
+            _ => panic!("verification IO failure was not preserved"),
+        }
+        assert!(
+            verify_plain(
+                &b"body"[..],
+                hashed_blobs::Hash::of(b"body"),
+                4,
+                &AtomicBool::new(false)
+            )
+            .is_ok()
+        );
+        assert!(
+            verify_plain(
+                &b"body"[..],
+                hashed_blobs::Hash::of(b"body"),
+                5,
+                &AtomicBool::new(false)
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn explicit_file_capture_refuses_fifo_symlink_and_nonregular_descriptor() {
+        use std::os::unix::{ffi::OsStrExt, fs::symlink};
+        let root = tempfile::tempdir().unwrap();
+        let input = tempfile::tempdir().unwrap();
+        let mut w = Writer::open(root.path()).unwrap();
+        let capture = w.blob_capture().unwrap();
+        let regular = input.path().join("source");
+        std::fs::write(&regular, b"regular").unwrap();
+        let link = input.path().join("link");
+        symlink(&regular, &link).unwrap();
+        assert!(
+            capture
+                .capture_regular_file(&link, &AtomicBool::new(false))
+                .is_err()
+        );
+        assert!(
+            capture
+                .capture_regular_file(input.path(), &AtomicBool::new(false))
+                .is_err()
+        );
+        let fifo = input.path().join("pipe");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is a live NUL-terminated path, mode has no pointer data.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(
+            capture
+                .capture_regular_file(&fifo, &AtomicBool::new(false))
+                .is_err()
+        );
+        assert!(matches!(
+            capture.capture_regular_file(&fifo, &AtomicBool::new(true)),
+            Err(Error::Cancelled)
+        ));
+        let proof = capture
+            .capture_regular_file(&regular, &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(proof.length(), 7);
+        w.retain_captured_blob(proof).unwrap();
     }
 }
