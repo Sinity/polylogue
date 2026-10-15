@@ -35,7 +35,7 @@ from tests.benchmarks.helpers import BenchmarkFixture, benchmark_repeated
 from tests.infra.benchmark_archives import seed_benchmark_archive
 from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
 from tests.infra.workload_artifacts import _peak_rss_kib, _reset_peak_rss
-from tests.infra.workload_declarations import BenchmarkWorkloadTier
+from tests.infra.workload_declarations import BenchmarkWorkloadTier, benchmark_workload_profile
 
 pytest_plugins = ("tests.benchmarks.test_daemon_uds",)
 
@@ -470,9 +470,10 @@ def test_bench_daemon_concurrent_reads(benchmark: BenchmarkFixture, bench_daemon
     record_metrics(benchmark, concurrent_interference_p95_ms=max(elapsed, default=0))
 
 
-#: Sessions in the SMOKE tier this lane seeds (tests/infra/workload_declarations.py:313).
-#: Every offset below stays far inside it, so no read can be handed an empty page.
-_MIXED_LOAD_SEEDED_SESSIONS = 1_000
+#: The offset guard counts sessions from the same declaration as the seeded artifact.
+_MIXED_LOAD_SEEDED_SESSIONS = sum(
+    count for _provider, count in benchmark_workload_profile(BenchmarkWorkloadTier.SMOKE).provider_session_counts
+)
 
 #: Distinct tag names each write worker cycles over one session. The write load
 #: has to stay bounded for the lane to take repeated rounds -- see
