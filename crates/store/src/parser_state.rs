@@ -319,9 +319,11 @@ pub struct Snapshot {
     db: Connection,
     path: std::path::PathBuf,
     pub head: Head,
+    // Drop the SQLite snapshot before releasing its retained archive authority.
+    _lock: std::sync::Arc<std::fs::File>,
 }
 impl Snapshot {
-    pub(crate) fn open(path: &Path, expected: &Token) -> Result<Self> {
+    fn open(path: &Path, expected: &Token, lock: std::sync::Arc<std::fs::File>) -> Result<Self> {
         let db = crate::open(path, true, false)?;
         sql!(path, db.execute_batch("BEGIN DEFERRED"))?;
         let head = current(&db, path, expected)?; // Establishes the actual read snapshot now.
@@ -333,6 +335,7 @@ impl Snapshot {
             db,
             path: path.to_owned(),
             head,
+            _lock: lock,
         })
     }
     pub fn cell(&self, namespace: &str, key: &[u8], allowance: usize) -> Result<Option<Vec<u8>>> {
@@ -725,12 +728,20 @@ impl crate::Writer {
         begin(&mut self._index, &self.root.join("index.db"), basis)
     }
     pub fn parser_snapshot(&self, predecessor: &Token) -> Result<Snapshot> {
-        Snapshot::open(&self.root.join("index.db"), predecessor)
+        Snapshot::open(
+            &self.root.join("index.db"),
+            predecessor,
+            std::sync::Arc::clone(&self._lock),
+        )
     }
 }
 impl crate::ReadHandle {
     pub fn parser_snapshot(&self, predecessor: &Token) -> Result<Snapshot> {
-        Snapshot::open(&self.root.join("index.db"), predecessor)
+        Snapshot::open(
+            &self.root.join("index.db"),
+            predecessor,
+            std::sync::Arc::clone(&self._lock),
+        )
     }
 }
 
@@ -775,6 +786,26 @@ mod tests {
             key: key.as_bytes().to_vec(),
             value: Some(value.as_bytes().to_vec()),
         }
+    }
+    #[test]
+    fn parser_snapshot_retains_archive_authority_after_its_factory_closes() {
+        let (_dir, root, mut writer, input) = fixture();
+        let head = writer.begin_parser(&basis(input, 100)).unwrap();
+        let reader = writer.read_handle().unwrap();
+        let snapshot = reader.parser_snapshot(&head.token).unwrap();
+        drop(reader);
+        drop(writer);
+        assert!(matches!(
+            Writer::open(&root),
+            Err(StoreError::WriterHeld { .. })
+        ));
+        assert!(matches!(
+            crate::ReadHandle::open(&root),
+            Err(StoreError::WriterHeld { .. })
+        ));
+        assert_eq!(snapshot.cell("test", b"absent", 100).unwrap(), None);
+        drop(snapshot);
+        assert!(Writer::open(&root).is_ok());
     }
     fn progress(parsed: u64, inspected: u64, phase: Phase, pending: bool) -> Progress {
         Progress {
