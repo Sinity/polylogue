@@ -898,9 +898,12 @@ mod tests {
         loop {
             let p = progress(&service.handle(), &retained.id);
             if let Some(failure) = p.failure {
-                assert!(
-                    failure.contains("capacity") || failure.contains("record"),
-                    "{failure}"
+                assert_eq!(
+                    failure,
+                    format!(
+                        "source framing requires {} bytes (allocation failed: false)",
+                        bytes.len() - 1
+                    )
                 );
                 let head = p.parser.unwrap();
                 assert_eq!(head.parsed_upto, 0);
