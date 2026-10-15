@@ -853,6 +853,20 @@ mod tests {
         tx.execute("INSERT INTO message_build(message_pk,session_pk,body_pk,basis_digest,contributor_revision,removal_epoch,phase) VALUES(1,1,?1,zeroblob(32),0,0,'fold')",[body]).unwrap();
         let build = tx.last_insert_rowid();
         tx.execute("INSERT INTO message_build_frontier(build_pk,message_pk,session_pk,depth,node_pk,next_slot) VALUES(?1,1,1,0,?2,0)",params![build,second]).unwrap();
+        assert!(
+            tx.execute(
+                "UPDATE message_body_edge SET child_kind=NULL WHERE conflict_slot_pk IS NOT NULL",
+                []
+            )
+            .is_err()
+        );
+        assert!(
+            tx.execute(
+                "UPDATE message_body_edge SET child_height=NULL WHERE conflict_slot_pk IS NOT NULL",
+                []
+            )
+            .is_err()
+        );
         tx.commit().unwrap();
         let reader = writer.read_handle().unwrap();
         reader.index.execute_batch("BEGIN").unwrap();

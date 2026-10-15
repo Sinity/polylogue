@@ -69,7 +69,7 @@ message-local selection to final publication. Whole-cell encoding, decoding and
 SQLite page work remain explicitly unqualified for arbitrarily large cells.
 
 
-The forward index11 SQL is extracted from the pinned owning specification revision
+The forward index12 SQL is extracted from the pinned owning specification revision
 `INDEX_SPEC_COMMIT` and checked against `INDEX_SQL_BLAKE3`, copied Markdown, and
 actual SQLite application. Its Message head/body/directory schema replaces the
 old mutable Message columns. The inbox index8 executable comparison remains
@@ -96,9 +96,12 @@ verified; sealing deduplicates and transfers that producer lease atomically.
 `write_message_field` transfers it into one source field fact and copies one
 fixed-depth directory path. Source changes, removal epochs and archive/index
 identity mismatches reject further preparation. Invalidation releases its active
-value lease even after the source basis changes. These APIs do not yet finish
-candidate reconciliation, body activation, or retirement draining; public-client
-and whole-path resource acceptance remain open.
+value lease even after the source basis changes. Unpublished invalidated builds drain with `retire_message_turn`: one frontier/root,
+one fixed-size directory node, one fact/source row, or final control metadata per
+turn. `collect_retiring_value` drains one chunk or final value row; building and
+ready unleased generic values are excluded. Candidate reconciliation, body
+activation, ready-body retirement and public-client/whole-path resource acceptance
+remain open.
 
 Occupied field-conflict leaves pin a shared immutable witness subtree. They
 remain distinct from missing fields, contribute no new source-rank facts, and

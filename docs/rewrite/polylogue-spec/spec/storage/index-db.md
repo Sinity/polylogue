@@ -401,6 +401,7 @@ CREATE TABLE body_value (
   UNIQUE(pk,state,codec,hash)
 ) STRICT;
 CREATE INDEX body_value_reclaim ON body_value(pk) WHERE incoming=0;
+CREATE INDEX body_value_retiring ON body_value(pk) WHERE state='retiring';
 CREATE UNIQUE INDEX body_value_content ON body_value(codec,hash) WHERE hash IS NOT NULL AND state='ready';
 CREATE TABLE body_value_chunk (
   value_pk INTEGER NOT NULL REFERENCES body_value(pk),
@@ -464,6 +465,7 @@ CREATE TABLE message_body_node (
 ) STRICT;
 CREATE INDEX message_body_node_owner ON message_body_node(message_pk,session_pk);
 CREATE INDEX message_body_node_reclaim ON message_body_node(pk) WHERE incoming=0;
+CREATE INDEX message_body_node_owner_reclaim ON message_body_node(message_pk,pk) WHERE incoming=0;
 CREATE TABLE message_body_edge (
   parent_pk INTEGER NOT NULL,
   message_pk INTEGER NOT NULL,
@@ -488,14 +490,14 @@ CREATE TABLE message_body_edge (
   CHECK((parent_height>0 AND child_node_pk IS NOT NULL AND child_kind=parent_kind
          AND child_kind IS NOT NULL AND child_height IS NOT NULL AND child_height=parent_height-1 AND block_pk IS NULL AND field_fact_pk IS NULL AND conflict_slot_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
      OR (parent_height=0 AND parent_kind='groups' AND child_node_pk IS NOT NULL
-         AND child_kind='blocks' AND child_height IS NOT NULL AND block_pk IS NULL AND field_fact_pk IS NULL AND conflict_slot_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
+         AND child_kind='blocks' AND child_kind IS NOT NULL AND child_height IS NOT NULL AND block_pk IS NULL AND field_fact_pk IS NULL AND conflict_slot_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
      OR (parent_height=0 AND parent_kind='blocks' AND child_node_pk IS NULL AND child_kind IS NULL
          AND child_height IS NULL AND block_pk IS NOT NULL AND field_fact_pk IS NULL AND conflict_slot_pk IS NULL AND association_pk IS NULL)
      OR (parent_height=0 AND parent_kind IN('fields','witnesses') AND child_node_pk IS NULL AND child_kind IS NULL
          AND child_height IS NULL AND block_pk IS NULL AND field_fact_pk IS NOT NULL
          AND conflict_slot_pk IS NULL AND tool_call_pk IS NULL AND association_pk IS NULL)
      OR (parent_height=0 AND parent_kind='fields' AND child_node_pk IS NOT NULL
-         AND child_kind='witnesses' AND child_height IS NOT NULL AND block_pk IS NULL
+         AND child_kind='witnesses' AND child_kind IS NOT NULL AND child_height IS NOT NULL AND block_pk IS NULL
          AND field_fact_pk IS NULL AND conflict_slot_pk IS NOT NULL AND tool_call_pk IS NULL
          AND association_pk IS NULL AND ordinary_count=0 AND reasoning_count=0
          AND source_blocks=0 AND source_text_blocks=0 AND source_fields=0)

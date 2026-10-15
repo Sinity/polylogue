@@ -32,16 +32,16 @@ pub struct Source<'a> {
 /// revision and local index path/incarnation are checked at every mutation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Build {
-    path: PathBuf,
-    source: parser_state::Token,
-    pk: i64,
-    body: i64,
-    candidate: i64,
-    message: i64,
-    session: i64,
-    contributor_revision: i64,
-    removal_epoch: i64,
-    digest: [u8; 32],
+    pub(super) path: PathBuf,
+    pub(super) source: parser_state::Token,
+    pub(super) pk: i64,
+    pub(super) body: i64,
+    pub(super) candidate: i64,
+    pub(super) message: i64,
+    pub(super) session: i64,
+    pub(super) contributor_revision: i64,
+    pub(super) removal_epoch: i64,
+    pub(super) digest: [u8; 32],
 }
 impl Build {
     pub fn body_pk(&self) -> i64 {
@@ -539,7 +539,7 @@ impl Writer {
             return Err(Error::MessagePredecessorChanged);
         }
         let active: Option<Option<i64>> = db(&path, || {
-            tx.query_row("SELECT active_value_pk FROM message_build WHERE pk=?1 AND body_pk=?2 AND basis_digest=?3",params![build.pk,build.body,build.digest.as_slice()],|r|r.get(0)).optional()
+            tx.query_row("SELECT w.active_value_pk FROM message_build w JOIN message_body b ON b.pk=w.body_pk JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE w.pk=?1 AND w.body_pk=?2 AND w.basis_digest=?3 AND b.ready=0 AND c.ready=0 AND c.eligible=0",params![build.pk,build.body,build.digest.as_slice()],|r|r.get(0)).optional()
         })?;
         let active = active.ok_or(Error::MessagePredecessorChanged)?;
         db(&path, || {
@@ -1028,5 +1028,176 @@ mod tests {
             f.writer.value_head(&value.id).unwrap().state,
             values::State::Retiring
         );
+    }
+    #[test]
+    fn invalidated_preparation_drains_in_restartable_turns_and_does_not_block_new_basis() {
+        use crate::contributions::{Retirement, ValueCollection};
+        let mut f = Fixture::new();
+        let build = f.prepare().unwrap().build;
+        for i in 0..8 {
+            f.value(&build, format!("value-{i}").as_bytes());
+            f.writer
+                .write_message_field(
+                    &build,
+                    &Slot::Extra {
+                        block: None,
+                        key: format!("field-{i}"),
+                    },
+                    None,
+                    true,
+                    4096,
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            f.writer.retire_message_turn(&build),
+            Err(Error::MessagePreparationPending)
+        ));
+        f.writer.retire_message_preparation(&build).unwrap();
+        assert_eq!(
+            f.writer.retire_message_turn(&build).unwrap(),
+            Retirement::Root
+        );
+        f.head = f
+            .writer
+            .begin_parser(&parser_state::Basis {
+                input_pk: f.head.token.input_pk,
+                chain: 1,
+                parser_version: 4,
+                digest: [19; 32],
+                acquired_upto: f.head.acquired_upto,
+                companions_json: None,
+                excisions_seen: 0,
+            })
+            .unwrap();
+        let mut f = f.reopen();
+        let before = (
+            f.scalar("SELECT count(*) FROM message_body_node"),
+            f.scalar("SELECT coalesce(sum(incoming),0) FROM message_body_node"),
+        );
+        f.writer._index.execute_batch("CREATE TRIGGER refuse_node_drain BEFORE DELETE ON message_body_edge BEGIN SELECT RAISE(ABORT,'synthetic node drain failure'); END;").unwrap();
+        assert!(matches!(
+            f.writer.retire_message_turn(&build),
+            Err(Error::Sqlite { .. })
+        ));
+        assert_eq!(
+            (
+                f.scalar("SELECT count(*) FROM message_body_node"),
+                f.scalar("SELECT coalesce(sum(incoming),0) FROM message_body_node")
+            ),
+            before
+        );
+        f.writer
+            ._index
+            .execute_batch("DROP TRIGGER refuse_node_drain")
+            .unwrap();
+        let mut turns = 0;
+        loop {
+            let before_nodes = f.scalar("SELECT count(*) FROM message_body_node");
+            let before_facts = f.scalar("SELECT count(*) FROM message_field_fact");
+            let step = f.writer.retire_message_turn(&build).unwrap();
+            turns += 1;
+            match step {
+                Retirement::Node => assert_eq!(
+                    f.scalar("SELECT count(*) FROM message_body_node"),
+                    before_nodes - 1
+                ),
+                Retirement::Fact => assert_eq!(
+                    f.scalar("SELECT count(*) FROM message_field_fact"),
+                    before_facts - 1
+                ),
+                Retirement::Complete => break,
+                _ => {}
+            }
+            if turns == 5 || turns == 20 {
+                f = f.reopen();
+            }
+            assert!(turns < 200);
+        }
+        assert!(turns > 16);
+        assert_eq!(f.scalar("SELECT count(*) FROM message_build"), 0);
+        assert_eq!(f.scalar("SELECT count(*) FROM message_body"), 0);
+        assert_eq!(f.scalar("SELECT count(*) FROM message_candidate"), 0);
+        assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 0);
+        assert_eq!(
+            f.writer.retire_message_turn(&build).unwrap(),
+            Retirement::Complete
+        );
+        let new = f.prepare().unwrap().build;
+        assert_ne!(new, build);
+        assert!(new.pk > build.pk);
+        assert_eq!(
+            f.writer.retire_message_turn(&build).unwrap(),
+            Retirement::Complete
+        );
+        assert_eq!(f.prepare().unwrap().build, new);
+        let mut chunks = 0;
+        loop {
+            let n = f.scalar("SELECT count(*) FROM body_value_chunk");
+            match f.writer.collect_retiring_value().unwrap() {
+                ValueCollection::Chunk => {
+                    chunks += 1;
+                    assert_eq!(f.scalar("SELECT count(*) FROM body_value_chunk"), n - 1);
+                }
+                ValueCollection::Value => {
+                    assert_eq!(f.scalar("SELECT count(*) FROM body_value_chunk"), n)
+                }
+                ValueCollection::Idle => break,
+            }
+        }
+        assert_eq!(chunks, 8);
+        assert_eq!(f.scalar("SELECT count(*) FROM body_value"), 0);
+        let revisions: i64 = f
+            .writer
+            .archive
+            .query_row("SELECT count(*) FROM revision", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(revisions, 1);
+    }
+    #[test]
+    fn retired_value_collection_deletes_one_chunk_and_keeps_unclaimed_generic_values() {
+        use crate::contributions::{Retirement, ValueCollection};
+        let mut f = Fixture::new();
+        let build = f.prepare().unwrap().build;
+        let h = f
+            .writer
+            .begin_message_value(&build, values::Codec::Utf8, 65537)
+            .unwrap();
+        f.writer
+            .append_value_chunk(&h.id, 0, &vec![b'x'; 65536], 65536)
+            .unwrap();
+        f.writer.append_value_chunk(&h.id, 65536, b"y", 1).unwrap();
+        let generic = f.writer.begin_value(values::Codec::Utf8, 1).unwrap();
+        f.writer.retire_message_preparation(&build).unwrap();
+        assert_eq!(
+            f.writer.retire_message_turn(&build).unwrap(),
+            Retirement::Complete
+        );
+        assert_eq!(
+            f.writer.collect_retiring_value().unwrap(),
+            ValueCollection::Chunk
+        );
+        let mut f = f.reopen();
+        assert_eq!(f.scalar("SELECT count(*) FROM body_value_chunk"), 1);
+        assert_eq!(
+            f.writer.collect_retiring_value().unwrap(),
+            ValueCollection::Chunk
+        );
+        assert_eq!(
+            f.writer.collect_retiring_value().unwrap(),
+            ValueCollection::Value
+        );
+        assert_eq!(
+            f.writer.collect_retiring_value().unwrap(),
+            ValueCollection::Idle
+        );
+        assert_eq!(
+            f.writer.value_head(&generic.id).unwrap().state,
+            values::State::Building
+        );
+        assert!(matches!(
+            f.writer.value_head(&h.id),
+            Err(Error::ValuePredecessorChanged)
+        ));
     }
 }
