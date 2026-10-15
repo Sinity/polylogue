@@ -7,10 +7,7 @@ use polylogue_store::{
     prose_search::ProseSearch,
 };
 use serde_json::{Value, json};
-use std::{
-    collections::{BTreeMap, HashMap},
-    time::Instant,
-};
+use std::{collections::BTreeMap, time::Instant};
 fn check(until: Instant, cancelled: &mut dyn FnMut() -> bool) -> Result<(), Error> {
     if Instant::now() >= until || cancelled() {
         Err(Error::Cancelled)
@@ -134,7 +131,6 @@ pub fn execute(
     }
     let candidate_count = candidates.len();
     let mut matched = BTreeMap::new();
-    let mut ranks = HashMap::new();
     if let Some(corpus) = &corpus {
         for hit in corpus.hits(&plan.text, until, cancelled)? {
             check(until, cancelled)?;
@@ -147,15 +143,10 @@ pub fn execute(
                     row["hits"] = json!([]);
                     row
                 });
-                // FTS yields best rank then provider time, so the first hit is
-                // the Session's rank; no newest-row candidate window exists.
-                ranks
-                    .entry(hit.session.clone())
-                    .or_insert((hit.rank, hit.at));
                 result["hits"]
                     .as_array_mut()
                     .unwrap()
-                    .push(json!({"message":hit.message,"session":hit.session,"rank":hit.rank}));
+                    .push(json!({"message":hit.message,"session":hit.session}));
             }
         }
     } else {
@@ -164,18 +155,10 @@ pub fn execute(
     let count = matched.len();
     let mut rows = matched.into_values().collect::<Vec<_>>();
     rows.sort_by(|a, b| {
-        if corpus.is_some() && !plan.recent {
-            let ar = ranks[a["id"].as_str().unwrap()];
-            let br = ranks[b["id"].as_str().unwrap()];
-            ar.0.total_cmp(&br.0)
-                .then_with(|| br.1.cmp(&ar.1))
-                .then_with(|| b["id"].as_str().cmp(&a["id"].as_str()))
-        } else {
-            b["known_last_message_at"]
-                .as_i64()
-                .cmp(&a["known_last_message_at"].as_i64())
-                .then_with(|| b["id"].as_str().cmp(&a["id"].as_str()))
-        }
+        b["known_last_message_at"]
+            .as_i64()
+            .cmp(&a["known_last_message_at"].as_i64())
+            .then_with(|| b["id"].as_str().cmp(&a["id"].as_str()))
     });
     if let Some(limit) = plan.limit {
         rows.truncate(limit);
@@ -207,6 +190,9 @@ pub fn execute(
             "{} retained input dependency shapes remain unresolved",
             qualification.unresolved_inputs
         ));
+    }
+    if corpus.is_some() && sessions > 0 {
+        notes.push("Canonical relevance ranking is unavailable; results use newest known selected Message time. Distinct-text ranking/publication remains pending.".to_owned());
     }
     if corpus.is_some() && unknown_authors > 0 {
         notes.push(format!("{unknown_authors} selected Messages have unknown authors and are outside the human/model prose corpus"));
@@ -247,7 +233,7 @@ pub fn execute(
         "ok"
     };
     let mut read_as = if corpus.is_some() {
-        "Find known selected Sessions with all prose terms in the same human or model Message, returning retained Message references; snippets, complete population and linked subagent expansion remain unqualified.".to_owned()
+        "Find known selected Sessions with all prose terms in the same human or model Message, phrases within one Text block, ordered by newest known selected Message time; relevance, snippets, complete population and linked subagent expansion remain unqualified.".to_owned()
     } else {
         "List known selected Sessions by newest known selected Message time; complete retained population remains unqualified.".to_owned()
     };
@@ -265,11 +251,13 @@ pub fn execute(
         read_as.push_str(" Exclude separate subagent rows.");
     }
     if let Some(limit) = plan.limit {
-        read_as.push_str(&format!(" Select the first {limit} ranked rows."));
+        read_as.push_str(&format!(
+            " Select the first {limit} rows by known activity."
+        ));
     }
     Ok(
         json!({"outcome":outcome,"unit":"sessions","rows":rows,"count":count,"next_cursor":null,"up_to_date":false,
-        "read_as":read_as, "selection":{"limit":plan.limit},
+        "read_as":read_as, "selection":{"limit":plan.limit}, "ranking":{"state":"unavailable","order":"known_last_message_at desc; id desc"},
         "view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()},
         "defaults":{"exclude_subagents":plan.kind.is_none()&&!plan.all_kinds&&plan.id.is_none()},
         "missing":notes,"notes":notes,"unknown":{"record_errors":qualification.record_errors,"pending_inputs":qualification.pending_inputs,"unavailable_inputs":qualification.unavailable_inputs,"unresolved_inputs":qualification.unresolved_inputs,"unknown_authors":unknown_authors,"pending_messages":pending,"unresolved_message_order":unresolved_order},

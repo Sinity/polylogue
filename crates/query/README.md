@@ -12,7 +12,7 @@ sessions where origin:claude-code text:"shared phrase" refact*
 chrono | sort by last_active desc | limit 10
 ```
 
-Juxtaposition and `AND` require every condition. Words contain letters/digits; quoted values are phrases. `kind:*` includes separate subagent rows. An exact ID drops the implicit subagent exclusion. Without a text term, rows use newest known selected Message time, unknown last, then descending ID. With text, the best matching Message's SQLite FTS5 BM25 rank orders each Session, with provider-time and ID ties; explicit recent sorting overrides relevance. `limit` selects after evaluation/ranking and leaves the candidate count visible. A stage after limit is refused.
+Juxtaposition and `AND` require every condition. Words contain letters/digits; quoted values are phrases. `kind:*` includes separate subagent rows. An exact ID drops the implicit subagent exclusion. Without a text term, rows use newest known selected Message time, unknown last, then descending ID. Text membership uses the same order and explicitly reports canonical relevance ranking unavailable. Words may occur in separate Text blocks of one Message; a phrase must stay within one Text block. `limit` selects after complete membership evaluation and sorting and leaves the candidate count visible. A stage after limit is refused.
 
 Unsupported syntax returns a position and typed non-success; it never becomes plain text. Other fields/units, `OR`/`NOT`, grouping, attachments, general sorting, semantic search, commands, unknown CLI flags and continuation are unregistered. `find` is only CLI intent syntax; it is not another query language. This binder implements the declared subset, not a complete grammar for future slices.
 

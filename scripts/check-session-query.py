@@ -45,10 +45,10 @@ class Run:
     def start(self):
         index = len(self.processes)
         log = self.output / f"daemon-{index}.log"
+        argv=[str(self.binary), "--archive", str(self.archive), "daemon"]
         with log.open("wb") as out:
-            self.child = subprocess.Popen([str(self.binary), "--archive", str(self.archive), "daemon"],
-                                          env=self.env, stdout=out, stderr=out)
-        self.processes.append({"pid": self.child.pid, "log": log.name, "exit": None})
+            self.child = subprocess.Popen(argv, env=self.env, stdout=out, stderr=out)
+        self.processes.append({"pid": self.child.pid, "argv":argv, "log": log.name, "exit": None})
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             require(self.child.poll() is None, f"daemon exited: {log}")
@@ -105,10 +105,10 @@ def exercise(run):
     run.import_("empty-main", b"\n")
     run.query("sessions", 0, [], expected=(1,))
     run.checked("accessible empty differs from unavailable interpretation")
-    native, sid = "query-main-oldest", "claude-code:query-main-oldest"
+    native, sid = "query:main:oldest", "claude-code:query:main:oldest"
     secret = "gh" + "p_" + "A" * 36
     text = f"olderneedle {secret} Łódź refactor carefully shared phrase ranktoken ranktoken ranktoken ranktoken"
-    raw = record(native, "older-message", text, "2001-01-01T00:00:00.000Z")
+    raw = record(native, "older-message", [{"type":"text","text":text+" boundaryfirst"},{"type":"text","text":"boundarysecond distinctblocktoken"}], "2001-01-01T00:00:00.000Z")
     raw += record(native, "second-message", "separateonlytoken", "2001-01-02T00:00:00.000Z")
     run.import_(native, raw)
     for index in range(110):
@@ -122,10 +122,13 @@ def exercise(run):
     for query in ["lodz", "łódź", "refact*", '"shared phrase"', 'origin:claude-code olderneedle phrase']:
         run.query(query, 1, [sid])
     run.query("olderneedle separateonlytoken", 0, [])
+    run.query("boundaryfirst boundarysecond",1,[sid])
+    run.query('"boundaryfirst boundarysecond"',0,[])
     run.checked("oldest-only match across 110 newer nonmatches; words, phrase, prefix, Unicode and same-Message conjunction")
-    # FTS rank is evaluated over all selected prose, before selection limit.
+    # Selection happens after complete membership; unavailable relevance is explicit.
     run.query("olderneedle | limit 1", 1, [sid])
-    run.query("ranktoken | limit 1", 111, [sid])
+    selected=run.query("ranktoken | limit 1",111,["claude-code:query-newer-0109"])
+    require(selected["ranking"]["state"]=="unavailable","fabricated canonical relevance")
     before_document=run.cli(sid,"read","--format","json")
     run.cli("olderneedle", "list")
     run.checked("ordinary terminal and JSON listing use the daemon query")
@@ -162,7 +165,8 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     run = Run(args.binary, args.output)
-    result = {"binary": str(run.binary), "binary_sha256": hashlib.sha256(run.binary.read_bytes()).hexdigest(),
+    candidate=subprocess.check_output(["git","rev-parse","HEAD"],cwd=Path(__file__).resolve().parents[1],text=True).strip()
+    result = {"candidate_sha":candidate,"archive":str(run.archive),"binary": str(run.binary), "binary_sha256": hashlib.sha256(run.binary.read_bytes()).hexdigest(),
               "outcome": "failed", "checks": run.checks, "commands": run.commands, "processes": run.processes}
     try:
         exercise(run)

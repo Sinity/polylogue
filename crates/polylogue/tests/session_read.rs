@@ -983,6 +983,34 @@ fn ordinary_listing_and_prose_search_share_retained_ids_and_population_qualifica
     );
 }
 #[test]
+fn prose_conjunction_crosses_text_blocks_but_phrases_do_not() {
+    let world = World::new();
+    let mut record: Value = serde_json::from_slice(&simple(
+        "split",
+        json!([{"type":"text","text":"boundaryfirst"},{"type":"text","text":"boundarysecond"}]),
+    ))
+    .unwrap();
+    record["promptSource"] = json!("typed");
+    let source = world.input("split-prose.jsonl", (record.to_string() + "\n").as_bytes());
+    let ready = wait_import(
+        &world,
+        &source,
+        "01900000-0000-7000-8000-000000000434",
+        "20",
+    );
+    assert_eq!(ready.status.code(), Some(0), "{ready:?}");
+    for (query, count) in [
+        ("boundaryfirst boundarysecond", 1),
+        ("\"boundaryfirst boundarysecond\"", 0),
+    ] {
+        let output = world.cli(&[query, "--json"]);
+        assert_eq!(output.status.code(), Some(5), "{output:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["count"], count, "{result}");
+        assert_eq!(result["ranking"]["state"], "unavailable");
+    }
+}
+#[test]
 fn query_unknown_population_is_not_completed_empty_and_request_shapes_refuse() {
     let world = World::new();
     let empty = world.input("query-empty.jsonl", b"\n");

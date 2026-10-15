@@ -181,7 +181,7 @@ pub fn bind(text: &str) -> Result<SessionQuery, Failure> {
         match field {
             "origin" => {
                 polylogue_model::Origin::new(value)
-                    .map_err(|_| invalid(t.at, "origin must be a lowercase origin identifier"))?;
+                    .map_err(|_| invalid(t.at, "origin must be a valid origin identifier"))?;
                 if plan.origin.replace(value.to_owned()).is_some() {
                     return Err(unsupported(t.at, "repeated origin"));
                 }
