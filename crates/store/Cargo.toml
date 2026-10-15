@@ -13,6 +13,7 @@ libsqlite3-sys = { version = "=0.38.2", features = ["bundled"] }
 libc.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 blake3.workspace = true
 
 [build-dependencies]

@@ -576,6 +576,7 @@ dependencies = [
  "polylogue-model",
  "rusqlite",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

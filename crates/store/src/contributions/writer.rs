@@ -494,13 +494,13 @@ impl Writer {
             super::directory::Kind::Fields,
             old,
             u64::try_from(slot).map_err(|_| Error::Range)?,
-            super::directory::Edge {
+            Some(super::directory::Edge {
                 link: super::directory::Link::Field(fact),
                 counts: super::directory::Counts {
                     source_fields: i64::from(supplied),
                     ..Default::default()
                 },
-            },
+            }),
             &mut work,
         )?;
         super::directory::acquire(&tx, &path, owner, root)?;
