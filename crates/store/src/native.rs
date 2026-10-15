@@ -1,7 +1,7 @@
 //! Audited native boundary: handles stay owned and valid for each synchronous call.
 #![allow(unsafe_code)]
-use std::{fs::File, io, os::fd::AsRawFd, path::Path};
 use rusqlite::Connection;
+use std::{fs::File, io, os::fd::AsRawFd, path::Path};
 
 unsafe extern "C" {
     fn sqlite3_register_cksumvfs(unused: *const std::ffi::c_char) -> i32;
@@ -24,7 +24,9 @@ pub(crate) fn no_cow(path: &Path) -> io::Result<()> {
     if unsafe { libc::fstatfs(file.as_raw_fd(), &mut fs) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    if fs.f_type != 0x9123683e { return Ok(()); } // BTRFS_SUPER_MAGIC
+    if fs.f_type != 0x9123683e {
+        return Ok(());
+    } // BTRFS_SUPER_MAGIC
     let mut flags: libc::c_long = 0;
     // Linux FS_IOC_GETFLAGS/SETFLAGS expect a pointer to a long. Directory stays open.
     if unsafe { libc::ioctl(file.as_raw_fd(), 0x80086601_u64, &mut flags) } != 0 {

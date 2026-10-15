@@ -1,5 +1,5 @@
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
--- INDEX_VERSION, generation, the write counter, unsynced, facts_version,
+-- INDEX_VERSION, generation, parser_generation, the write counter, unsynced, facts_version,
 -- the status counters count.sessions, count.messages, count.tool_calls,
 -- count.tool_calls_failed, count.unrecognized (behavior.md, status totals),
 -- preamble_set, boot_id (the boot the file was last opened in), clean_stop
@@ -432,15 +432,27 @@ CREATE TABLE parse_state (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   parser_version    INTEGER NOT NULL,
-  status            TEXT NOT NULL,          -- parsing: started, bytes or row finalization still pending (waiting work);
-                                            --   done: at the stored length and row finalization committed; companion: read with its main input
+  status            TEXT NOT NULL,          -- parsing: byte interpretation runnable; waiting_tail: inspected partial suffix
+                                            --   awaits acquisition/admission change; finalizing: row work remains;
+                                            --   finalization_pending is independently runnable with either byte state;
+                                            --   done: at the acquired end and row finalization committed; retired: invalidated, bounded cell cleanup owed;
+                                            --   companion: read with its main input
                                             --   (detail: that input's id); no_sessions | refused | failed | no_parser_yet
   excisions_seen    INTEGER NOT NULL DEFAULT 0,  -- number of `excised` observations of the input when parsed;
                                             --   fewer than archive.db holds means the chain is parsed again
   companions_json   TEXT,                   -- [[companion input id, revision], ...] the companion revisions this
                                             --   chain was parsed with; a companion with a newer revision means the
                                             --   chain is parsed again (convergence.md, companion files)
-  parsed_upto       INTEGER NOT NULL,       -- byte offset in the chain after the last complete record parsed
+  acquired_upto     INTEGER NOT NULL DEFAULT 0 CHECK (acquired_upto >= 0), -- pinned contiguous acquisition end; extending
+                                            --   the same verified prefix does not complete its new suffix
+  inspected_upto    INTEGER NOT NULL DEFAULT 0 CHECK (inspected_upto >= 0), -- examined end, including an owed partial tail
+  parsed_upto       INTEGER NOT NULL CHECK (parsed_upto >= 0), -- complete-record checkpoint; rows/state through here committed
+  basis_digest      BLOB CHECK (basis_digest IS NULL OR length(basis_digest) = 32), -- interpretation namespace: retained input/
+                                            --   chain, parser, companions and excisions; acquired end is tracked separately
+  state_generation  INTEGER NOT NULL DEFAULT 0 CHECK (state_generation >= 0), -- 0: legacy inline state; positive: parser_cell
+  state_step        INTEGER NOT NULL DEFAULT 0 CHECK (state_step >= 0), -- predecessor checked atomically with each row/state step
+  finalization_pending INTEGER NOT NULL DEFAULT 0 CHECK (finalization_pending IN (0, 1)), -- independent of an owed partial tail;
+                                            --   only the owning writer's actual remaining obligations may clear it
   carry             BLOB,                   -- bounded resume state at parsed_upto, including references to
                                             --   addressable disposable parser state where maps grow; not a
                                             --   monolithic copy of all preceding IDs (convergence.md, Parse); NULL = start over
@@ -448,12 +460,41 @@ CREATE TABLE parse_state (
                                             --   no_parser_yet, the slice that adds the parser, or 'none planned'
   framed            INTEGER NOT NULL DEFAULT 0,  -- law 120's accounting for this chain (sources/README.md): records
   used              INTEGER NOT NULL DEFAULT 0,  --   framed = used + ignored + unrecognized + undecodable; an append
-  ignored           INTEGER NOT NULL DEFAULT 0,  --   adds to the counts, a whole parse replaces them; written in the
+  ignored           INTEGER NOT NULL DEFAULT 0,  --   adds to the counts, a whole parse replaces them; counts are
   unrecognized_n    INTEGER NOT NULL DEFAULT 0,  --   checkpointed with the last row-writing transaction of each bounded parse step
   undecodable       INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (input_pk, chain)
+  PRIMARY KEY (input_pk, chain),
+  CHECK (parsed_upto <= inspected_upto AND inspected_upto <= acquired_upto),
+  CHECK (state_generation = 0 OR (basis_digest IS NOT NULL AND carry IS NOT NULL AND length(carry) = 16)),
+  CHECK (framed >= 0 AND used >= 0 AND ignored >= 0 AND unrecognized_n >= 0 AND undecodable >= 0
+         AND framed = used + ignored + unrecognized_n + undecodable)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX parse_state_status ON parse_state(status) WHERE status NOT IN ('done', 'companion');   -- status, waiting work
+
+-- Disposable provider state, addressed by typed provider-owned keys. A read view
+-- pins a real SQLite read snapshot (or an independently qualified immutable
+-- state version), never a mutable generation/key pair alone. Interpretation
+-- holds no write transaction. Its touched delta, output and checkpoint commit
+-- together only after checking the index generation, basis, state_generation
+-- and state_step predecessor. Keyed carry stores bounded references, not these
+-- cells (the keyed reference is two big-endian i64s: generation, then step).
+-- Same-prefix acquisition may grow while an older step computes; that
+-- step cannot certify the new suffix. Prepared output/finalization have their
+-- own basis-bound state and are not complete merely because these cells exist.
+CREATE TABLE parser_cell (
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  state_generation  INTEGER NOT NULL CHECK (state_generation > 0),
+  namespace         TEXT NOT NULL,
+  key               BLOB NOT NULL,          -- provider-owned ordered codec, not JSON lexical order
+  value             BLOB NOT NULL,          -- one addressable cell; admission charges its full live representation
+  PRIMARY KEY (input_pk, chain, state_generation, namespace, key)
+) STRICT, WITHOUT ROWID;
+-- Generations come from a monotonic per-index meta.parser_generation allocator,
+-- surviving head/input removal; recreating either key never reuses an old token.
+-- Retired generations are reclaimed in bounded keysets. Excision/input removal
+-- must drain their cells before removing input_ref; there is no unbounded FK
+-- cascade and no orphan state outside the owning index lifecycle.
 
 -- Record types and fields a parser did not understand, and record types it
 -- deliberately only counts (sources/ lists them), per input: an append adds to

@@ -3,7 +3,7 @@
 The daemon acquires `Writer::open` and holds it until shutdown. An exclusive
 file lock at the canonical archive path rejects competing writers, including
 symlink aliases. Callers receive typed read handles and status, never SQLite
-connections. `put_blob` is a foundation byte-storage diagnostic, not provider
+connections. `put_file_blob` is a foundation byte-storage diagnostic, not provider
 ingestion, revisions, parsing or M1 support.
 
 All three schemas are exact SQL-fence extractions from the owning copied
@@ -13,7 +13,8 @@ embeddings migration versions are zero because there are no pre-release
 migration steps. The index has version one. Startup checks every existing
 schema/version before target database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
-the old index. Rebuild and migration machinery remain later work.
+the old index. An orphan nonempty WAL without its shared-memory file requires
+explicit recovery before non-mutating inspection; no WAL is silently ignored. Rebuild and migration machinery remain later work.
 
 Bundled SQLite 3.53.2 is checked at build time and runtime. The unchanged
 matching upstream checksum VFS is statically linked and registered before

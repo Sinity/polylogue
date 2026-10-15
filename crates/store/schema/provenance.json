@@ -1,17 +1,21 @@
 {
-  "spec_commit": "9c707593185673dd3985df4008174474999699ad",
+  "spec_commit": "fc3b1cd878ae83864b55a99ff75d0b22e02ddb90",
   "files": [
     {
       "source": "polylogue-spec/spec/storage/archive-db.md",
-      "sha256": "c6806fc809dd25de91d837b39fe342d7ce9e16301bacf2d580c40de09f2f7af3"
+      "sha256": "c6806fc809dd25de91d837b39fe342d7ce9e16301bacf2d580c40de09f2f7af3",
+      "copied_sha256": "80188f0c8636f5889f7dbf25b0e0987702b17014d1e0b2aeca41d6ae252350d1"
     },
     {
       "source": "polylogue-spec/spec/storage/index-db.md",
-      "sha256": "d583559e28470818541863d0f4ab32fcfcdbf661663846b8aef6fa21ed3aefd6"
+      "sha256": "635020432521a34d6c95be0d9d1ad6c4dfedf33f8dcee63043e031896004775b",
+      "copied_sha256": "635020432521a34d6c95be0d9d1ad6c4dfedf33f8dcee63043e031896004775b"
     },
     {
       "source": "polylogue-spec/spec/storage/embeddings.md",
-      "sha256": "015c0adb3782df00357a7f4005ce78e04a64a947750c8badc550886128813566"
+      "sha256": "015c0adb3782df00357a7f4005ce78e04a64a947750c8badc550886128813566",
+      "copied_sha256": "015c0adb3782df00357a7f4005ce78e04a64a947750c8badc550886128813566"
     }
-  ]
+  ],
+  "snapshot_normalization": "One final newline in copied Markdown; SQL fences otherwise unchanged."
 }
