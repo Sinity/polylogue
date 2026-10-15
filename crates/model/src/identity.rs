@@ -61,22 +61,32 @@ pub enum IdError {
 pub struct SessionId(String);
 impl SessionId {
     pub fn new(origin: &Origin, native_id: &str) -> Result<Self, IdError> {
-        if native_id.is_empty() { return Err(IdError::Empty); }
+        if native_id.is_empty() {
+            return Err(IdError::Empty);
+        }
         Ok(Self(format!("{origin}:{native_id}")))
     }
     pub fn from_stored(value: impl Into<String>) -> Result<Self, IdError> {
         let value = value.into();
-        if value.is_empty() { return Err(IdError::Empty); }
+        if value.is_empty() {
+            return Err(IdError::Empty);
+        }
         Ok(Self(value))
     }
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 impl TryFrom<String> for SessionId {
     type Error = IdError;
-    fn try_from(value: String) -> Result<Self, Self::Error> { Self::from_stored(value) }
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::from_stored(value)
+    }
 }
 impl From<SessionId> for String {
-    fn from(value: SessionId) -> Self { value.0 }
+    fn from(value: SessionId) -> Self {
+        value.0
+    }
 }
 
 /// The separately supplied session relation survives IDs containing arbitrary colons.
@@ -87,19 +97,33 @@ pub struct MessageId {
     session: SessionId,
 }
 #[derive(Serialize, Deserialize)]
-struct MessageIdWire { id: String, session: SessionId }
+struct MessageIdWire {
+    id: String,
+    session: SessionId,
+}
 impl MessageId {
     pub fn new(session: SessionId, native_id: &str) -> Result<Self, IdError> {
-        if native_id.is_empty() { return Err(IdError::Empty); }
-        Ok(Self { id: format!("{}:{native_id}", session.as_str()), session })
+        if native_id.is_empty() {
+            return Err(IdError::Empty);
+        }
+        Ok(Self {
+            id: format!("{}:{native_id}", session.as_str()),
+            session,
+        })
     }
     pub fn from_stored(id: impl Into<String>, session: SessionId) -> Result<Self, IdError> {
         let id = id.into();
-        if id.is_empty() { return Err(IdError::Empty); }
+        if id.is_empty() {
+            return Err(IdError::Empty);
+        }
         Ok(Self { id, session })
     }
-    pub fn as_str(&self) -> &str { &self.id }
-    pub fn session(&self) -> &SessionId { &self.session }
+    pub fn as_str(&self) -> &str {
+        &self.id
+    }
+    pub fn session(&self) -> &SessionId {
+        &self.session
+    }
 }
 impl TryFrom<MessageIdWire> for MessageId {
     type Error = IdError;
@@ -108,7 +132,12 @@ impl TryFrom<MessageIdWire> for MessageId {
     }
 }
 impl From<MessageId> for MessageIdWire {
-    fn from(value: MessageId) -> Self { Self { id: value.id, session: value.session } }
+    fn from(value: MessageId) -> Self {
+        Self {
+            id: value.id,
+            session: value.session,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -275,12 +304,17 @@ mod tests {
         assert_eq!(MessageId::from_stored("", session), Err(IdError::Empty));
         assert!(serde_json::from_str::<SessionId>(r#""""#).is_err());
         assert!(serde_json::from_str::<SessionId>("null").is_err());
-        for wire in [r#"{"id":"","session":"future:native:session"}"#, r#"{"id":"native:message","session":""}"#, r#"{"session":"future:native:session"}"#] {
+        for wire in [
+            r#"{"id":"","session":"future:native:session"}"#,
+            r#"{"id":"native:message","session":""}"#,
+            r#"{"session":"future:native:session"}"#,
+        ] {
             assert!(serde_json::from_str::<MessageId>(wire).is_err());
         }
         // No trimming, colon splitting or grammar is imposed on nonempty native IDs.
         let opaque = MessageId::new(SessionId::new(&origin, ": ").unwrap(), " :").unwrap();
-        let decoded: MessageId = serde_json::from_slice(&serde_json::to_vec(&opaque).unwrap()).unwrap();
+        let decoded: MessageId =
+            serde_json::from_slice(&serde_json::to_vec(&opaque).unwrap()).unwrap();
         assert_eq!(decoded, opaque);
         assert_eq!(opaque.session().as_str(), "future:: ");
     }
