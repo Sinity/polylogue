@@ -11,7 +11,7 @@ polylogue-model.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 blake3.workspace = true
-jiff = "0.2"
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true
