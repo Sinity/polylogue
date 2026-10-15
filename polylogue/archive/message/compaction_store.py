@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from typing import Any, cast
@@ -161,7 +161,7 @@ class CompactionStore:
         )
         return run or identifier
 
-    def candidates(self, *, reverse: bool = False) -> Iterator[tuple[int, dict[str, object]]]:
+    def candidates(self, *, reverse: bool = False) -> Generator[tuple[int, dict[str, object]], None, None]:
         order = "score,ref DESC,id DESC" if reverse else "score DESC,ref,id"
         for row in self.rows(f"SELECT id,payload FROM compact_candidates WHERE active=1 ORDER BY {order}"):
             value = self.load(int(row[1]))

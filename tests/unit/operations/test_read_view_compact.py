@@ -10,7 +10,7 @@ import pytest
 from polylogue.operations.daemon_protocol import daemon_operation_spec, validate_operation_result
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
-from polylogue.surfaces.compaction import CorpusCompactionPack
+from polylogue.surfaces.compaction import CorpusCompactionPack, compact_sessions
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -227,7 +227,7 @@ def test_compact_read_stages_pages_and_closes_before_return_or_failure(
     monkeypatch.setattr(CompactionStore, "__init__", observed)
     cancelled = False
     compacted = False
-    compact = read_view_compact.compact_sessions
+    compact = compact_sessions
 
     def observed_compact(*args: Any, **kwargs: Any) -> CorpusCompactionPack:
         nonlocal compacted

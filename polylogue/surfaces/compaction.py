@@ -285,8 +285,9 @@ def _compact_staged(
             (session_id,),
         ):
             position, message_id = int(message_row[0]), str(message_row[1])
-            value = stage.load(int(message_row[2]))
-            assert isinstance(value, dict)
+            loaded_value = stage.load(int(message_row[2]))
+            assert isinstance(loaded_value, dict)
+            value = loaded_value
             text, origin = str(value["text"]), str(value["origin"])
             tokens = token_measure.estimate_tokens(text)
             reason: DropReason | None = None
@@ -307,20 +308,22 @@ def _compact_staged(
                 continue
             anchor = value["anchor"]
             assert isinstance(anchor, dict)
-            item = CompactItem(
+            loaded_score = value["score"]
+            assert isinstance(loaded_score, float)
+            item_model = CompactItem(
                 anchor=CompactAnchor.model_validate(anchor),
                 session_id=session_id,
                 material_origin=origin,
                 kind="message",
                 text=text,
-                score=float(value["score"]),
+                score=loaded_score,
                 reasons=tuple(cast(Iterable[str], value["reasons"])),
                 refs=(CompactAnchor.model_validate(anchor).ref,),
             )
             key = (origin, text)
             run = stage.add_candidate(
-                item.model_dump(mode="json"),
-                reference=item.anchor.ref.format(),
+                item_model.model_dump(mode="json"),
+                reference=item_model.anchor.ref.format(),
                 run=run if key == previous_key and position == previous_position + 1 else None,
                 tokens=tokens,
             )
@@ -495,8 +498,9 @@ def _compact_staged(
             stage.rows("SELECT id,payload FROM compact_candidates WHERE run=? ORDER BY id", (run,))
         ):
             identifier = int(member[0])
-            item = stage.load(int(member[1]))
-            assert isinstance(item, dict)
+            loaded_item = stage.load(int(member[1]))
+            assert isinstance(loaded_item, dict)
+            item = loaded_item
             if index == 0:
                 item.update(occurrence_count=count, degradation="collapse_runs_to_counts")
                 stage.update_candidate(identifier, item)
