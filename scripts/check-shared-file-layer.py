@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tarfile
@@ -41,7 +42,12 @@ def check_dependencies(manifest, cwd):
 assert not run("git", "status", "--porcelain", capture=True).strip(), "commit the candidate first"
 revision = run("git", "rev-parse", "HEAD", capture=True).strip()
 compiler = run("rustc", "--version", capture=True).strip()
-assert "nightly" not in compiler and "beta" not in compiler, compiler
+actual = re.match(r"^rustc ([0-9]+)\.([0-9]+)\.([0-9]+)(?:\s|$)", compiler)
+minimum = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)", MANIFEST["rust-version"])
+assert actual and minimum, (compiler, MANIFEST["rust-version"])
+assert tuple(map(int, actual.groups())) == tuple(map(int, minimum.groups())), (
+    "minimum-tested qualification must run the exact declared stable compiler", compiler, MANIFEST["rust-version"]
+)
 print("candidate:", revision, "compiler:", compiler, "declared minimum:", MANIFEST["rust-version"], flush=True)
 
 with tempfile.TemporaryDirectory(prefix="shared-file-layer-", dir=os.environ["TMPDIR"]) as directory:
