@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content
+from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content, materialized_read_outcome
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -54,7 +54,7 @@ def run_read_compact(env: AppEnv, request: RootModeRequest, invocation: ReadView
     deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
     from polylogue.cli.render.outcome import finish_supplied_outcome
 
-    finish_supplied_outcome(pack.outcome)
+    finish_supplied_outcome(materialized_read_outcome(wire, pack.outcome))
 
 
 __all__ = ["run_read_compact"]

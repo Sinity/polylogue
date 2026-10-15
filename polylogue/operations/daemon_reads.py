@@ -259,7 +259,12 @@ def execute_read_operation(
     elif name == "read.compact":
         from polylogue.operations.read_view_compact import execute_compact_read
 
-        result = execute_compact_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
+        result = execute_compact_read(
+            payload,
+            archive=archive,
+            vector_provider=dependencies.vector_provider,
+            checkpoint=dependencies.raise_if_aborted,
+        )
     elif name == "read.effective_context":
         from polylogue.operations.read_view_extras import execute_effective_context_read
 
