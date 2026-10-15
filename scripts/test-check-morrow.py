@@ -1,0 +1,209 @@
+"""Controller regressions, not canonical-product qualification.
+
+Pure cases supply synthetic captured replies and deliberately broken oracles.
+An optional immutable real binary exercises only the archive-file launch refusal.
+"""
+import argparse
+from copy import deepcopy
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+from types import SimpleNamespace
+import unittest
+from html.parser import HTMLParser
+
+from morrow_report import artifact
+
+sys.dont_write_bytecode = True
+
+
+def load(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--checker", type=Path, required=True)
+parser.add_argument("--binary", type=Path)
+args, remaining = parser.parse_known_args()
+driver = load(Path(__file__).with_name("check-morrow.py"), "morrow_driver")
+checker = load(args.checker, "fixture_checker")
+SID = "claude-code:synthetic"
+EXPECTED = {"session_id": SID, "sessions": 1, "messages": 1, "human_prompts": ["retained prompt"],
+            "message_facts": [{"id": "claude-code:synthetic:prompt", "role": "user", "written_by": "human", "at": "2026-10-15T10:00:00.000Z",
+                               "blocks": [{"id": "claude-code:synthetic:prompt:0", "kind": "text", "text": "retained prompt"}]}]}
+ANSWER = {"format": "polylogue-session", "version": 1, "session": {"id": SID},
+          "messages": [{"id": "claude-code:synthetic:prompt", "role": "user", "written_by": "human", "at": "2026-10-15T10:00:00.000Z",
+                        "blocks": [{"id": "claude-code:synthetic:prompt:0", "kind": "text", "text": "retained prompt"}]}]}
+
+
+class CapturedReplies(driver.Run):
+    def client(self, archive, *argv, **kwargs):
+        if "read" in argv:
+            return deepcopy(ANSWER)
+        return {"outcome": "ok", "up_to_date": True, "unit": "sessions",
+                "count": 1, "rows": [{"id": SID}], "next_cursor": None}
+
+    def command(self, *argv, **kwargs):
+        raise ValueError("unrelated export failure must not qualify a negative control")
+
+
+class ControllerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="pl-mc-", dir=os.environ.get("TMPDIR"))
+        self.addCleanup(self.temp.cleanup)
+        self.output = Path(self.temp.name)
+
+    def run_control(self, oracle):
+        run = CapturedReplies(self.output, "corrupt-answer")
+        with self.assertRaises(ValueError) as error:
+            run.answers(self.output / "unused", EXPECTED, "base", oracle)
+        return run, str(error.exception)
+
+    def test_snapshot_append_preserves_prefix_and_refuses_replacement(self):
+        provider, prepared = self.output / 'provider.jsonl', self.output / 'prepared.jsonl'
+        provider.write_bytes(b'{"base":1}\n')
+        prepared.write_bytes(b'{"base":1}\n{"next":2}\n')
+        inode = provider.stat().st_ino
+        change = driver.append_snapshot(provider, prepared)
+        self.assertEqual(provider.read_bytes(), b'{"base":1}\n{"next":2}\n')
+        self.assertEqual(provider.stat().st_ino, inode)
+        self.assertEqual(change['appended_bytes'], len(b'{"next":2}\n'))
+        self.assertEqual(change['after_bytes'], prepared.stat().st_size)
+        for wrong in (b'{"replacement":1}\n', provider.read_bytes(), b''):
+            before = provider.read_bytes()
+            prepared.write_bytes(wrong)
+            with self.assertRaisesRegex(ValueError, 'strictly extend'):
+                driver.append_snapshot(provider, prepared)
+            self.assertEqual(provider.read_bytes(), before)
+
+    def test_original_capture_stays_distinct_from_planted_answer(self):
+        run, _ = self.run_control(checker)
+        self.assertEqual(json.loads((self.output / "base-actual.json").read_text()), ANSWER)
+        self.assertEqual(json.loads((self.output / "base-corrupted.json").read_text())["messages"], [])
+        self.assertEqual(ANSWER["messages"][0]["blocks"][0]["text"], "retained prompt")
+
+    def test_oracle_accepting_mutation_is_control_failure_even_when_run_is_nonzero(self):
+        run, message = self.run_control(SimpleNamespace(check=lambda *a: None))
+        self.assertTrue(run.control_exercised)
+        self.assertEqual(run.control_result["state"], "oracle_accepted")
+        self.assertIn("oracle accepted", message)
+
+    def test_invalid_baseline_never_qualifies_mutation_rejection(self):
+        def reject(*args):
+            raise ValueError("baseline is invalid")
+        run, message = self.run_control(SimpleNamespace(check=reject))
+        self.assertFalse(run.control_exercised)
+        self.assertEqual(run.control_result["state"], "unrun")
+        self.assertFalse((self.output / "base-corrupted.json").exists())
+        self.assertEqual(message, "baseline is invalid")
+
+    def test_wrong_identity_is_baseline_failure_not_a_qualified_mutant(self):
+        for field in ('message', 'block'):
+            output = self.output / field
+            output.mkdir()
+            run = CapturedReplies(output, "corrupt-answer")
+            original = run.client
+            def reply(archive, *argv, **kwargs):
+                answer = original(archive, *argv, **kwargs)
+                if "read" in argv:
+                    target = answer['messages'][0] if field == 'message' else answer['messages'][0]['blocks'][0]
+                    target['id'] = 'claude-code:foreign:prompt:0'
+                return answer
+            run.client = reply
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                run.answers(self.output / "unused", EXPECTED, "base", checker)
+            self.assertFalse(run.control_exercised)
+            self.assertEqual(run.control_result['state'], 'unrun')
+            self.assertFalse((output / 'base-corrupted.json').exists())
+
+    def test_independent_oracle_rejects_only_after_valid_baseline(self):
+        run, message = self.run_control(checker)
+        self.assertEqual(run.control_result["state"], "oracle_rejected")
+        self.assertTrue(run.control_result["baseline_valid"])
+        self.assertEqual(run.control_result["reason"], "wrong message count")
+        self.assertIn("intentional", message)
+
+    def test_missing_or_mistyped_completion_never_reaches_answer_comparison(self):
+        run = driver.Run(self.output, None)
+        comparisons = []
+        run.answers = lambda *a: comparisons.append(a)
+        for receipt in [{}, {"canonical_complete": None}, {"canonical_complete": False},
+                        {"canonical_complete": 0}, {"canonical_complete": 1},
+                        {"canonical_complete": "true"}]:
+            with self.subTest(receipt=receipt):
+                run.client = lambda *a: receipt
+                with self.assertRaisesRegex(ValueError, "canonical completion"):
+                    run.admit(self.output / "archive", self.output / "input", EXPECTED, "base", checker)
+        self.assertEqual(comparisons, [])
+
+    def test_affirmative_completion_proceeds_to_independent_answer_comparison(self):
+        run = driver.Run(self.output, None)
+        comparisons = []
+        run.client = lambda *a: {"canonical_complete": True}
+        run.answers = lambda *a: comparisons.append(a)
+        run.admit(self.output / "archive", self.output / "input", EXPECTED, "base", checker)
+        self.assertEqual(len(comparisons), 1)
+        self.assertIs(comparisons[0][-1], checker)
+
+    def test_failed_report_is_escaped_portable_and_does_not_rewrite_evidence(self):
+        root = self.output / 'run'
+        root.mkdir()
+        (root / '000.stdout').write_text('retained client output')
+        (self.output / 'outside.txt').write_text('outside the report')
+        (root / 'escape').symlink_to(self.output / 'outside.txt')
+        result = {'success':False, 'failure':'candidate <script>bad()</script> failed',
+                  'steps':{'base':{'outcome':'failed'}, 'append':{'outcome':'unrun'}},
+                  'commands':[{'argv':['candidate','read'], 'label':'actual read', 'exit':2,
+                               'stdout':'000.stdout','stderr':'escape'}],
+                  'remaining':['actual MCP transport']}
+        (root / 'result.json').write_text(json.dumps(result))
+        before = (root / 'result.json').read_bytes()
+        original = deepcopy(result)
+        page = driver.render_report(result, root)
+        rendered = page.read_text()
+        self.assertEqual(result, original)
+        self.assertEqual((root / 'result.json').read_bytes(), before)
+        self.assertIn('candidate &lt;script&gt;bad()&lt;/script&gt; failed', rendered)
+        self.assertIn('Not recorded in this run', rendered)
+        self.assertIn('Not executed; no answer or acceptance is inferred.', rendered)
+        self.assertIn('id="run-status" class="badge bad">failed', rendered)
+        self.assertEqual(rendered.count('<script>'), 1)
+        class Links(HTMLParser):
+            def __init__(self):
+                super().__init__(); self.links = []
+            def handle_starttag(self, tag, attrs):
+                if tag == 'a': self.links.append(dict(attrs)['href'])
+        parser = Links(); parser.feed(rendered)
+        self.assertIn('000.stdout', parser.links)
+        self.assertNotIn('escape', parser.links)
+        self.assertTrue(all(h.startswith('#') or (root / h).is_file() for h in parser.links))
+        moved = self.output / 'relocated'
+        root.rename(moved)
+        self.assertIn('href="000.stdout"', driver.render_report(result, moved).read_text())
+        for path in ['/etc/passwd', '../outside.txt', 'https://example.com', 'escape']:
+            self.assertNotIn('<a ', artifact(moved, path))
+
+    @unittest.skipUnless(args.binary, "supply an immutable real binary for launch refusal")
+    def test_real_package_launch_refusal_is_classified_and_reaped(self):
+        self.assertTrue(str(args.binary.resolve()).startswith("/nix/store/"))
+        run = driver.Run(self.output, "launch-failure")
+        run.binary = args.binary
+        try:
+            with self.assertRaises(ValueError):
+                run.start(self.output / "archive")
+        finally:
+            run.stop(check=False)
+        self.assertTrue(run.control_exercised)
+        self.assertEqual(run.control_result["state"], "launch_refused")
+        self.assertEqual(run.processes[0]["exit"], 4)
+        self.assertFalse(run.processes[0].get("forced_kill", False))
+
+
+if __name__ == "__main__":
+    unittest.main(argv=[sys.argv[0], *remaining])

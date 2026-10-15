@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en" data-accent="archive">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Morrow client run: $state</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#1a2129;--muted:#5b6773;--line:#dde3e9;
+--accent:#9d174d;--accent-ink:#fff;--ok:#0f7b46;--ok-bg:#e2f5eb;--bad:#a01c1c;--bad-bg:#fbe4e4;--code-bg:#eef1f4;--fs:17px}
+@media(prefers-color-scheme:dark){:root{--bg:#12161b;--panel:#1a2027;--ink:#e6ebf0;--muted:#94a1ad;--line:#2b333c;--accent:#e87faa;--accent-ink:#24101a;--ok:#4cc98a;--ok-bg:#12301f;--bad:#ef7070;--bad-bg:#391717;--code-bg:#232a32}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#12161b;--panel:#1a2027;--ink:#e6ebf0;--muted:#94a1ad;--line:#2b333c;--accent:#e87faa;--accent-ink:#24101a;--ok:#4cc98a;--ok-bg:#12301f;--bad:#ef7070;--bad-bg:#391717;--code-bg:#232a32}
+:root[data-theme="light"]{color-scheme:light;--bg:#f6f7f9;--panel:#fff;--ink:#1a2129;--muted:#5b6773;--line:#dde3e9;--accent:#9d174d;--accent-ink:#fff;--ok:#0f7b46;--ok-bg:#e2f5eb;--bad:#a01c1c;--bad-bg:#fbe4e4;--code-bg:#eef1f4}
+*{box-sizing:border-box}html{font-size:var(--fs)}body{margin:0;background:var(--bg);color:var(--ink);font:1rem/1.6 system-ui,sans-serif}
+header.page{padding:1rem 1.4rem;border-bottom:1px solid var(--line);background:var(--panel);display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+h1{font-size:1.5rem;margin:0}h2{font-size:1.3rem}h3{font-size:1.05rem}.layout{max-width:76rem;margin:auto;padding:1rem}
+nav{display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem}section{background:var(--panel);border:1px solid var(--line);border-radius:.6rem;padding:1rem 1.3rem;margin-bottom:1rem}
+a{color:var(--accent)}button,input{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:.3rem;padding:.25rem .6rem}
+.badge{padding:.15rem .6rem;border-radius:2rem}.ok,.passed{color:var(--ok);background:var(--ok-bg)}.bad,.failed{color:var(--bad);background:var(--bad-bg)}.muted,.unrun{color:var(--muted)}
+.meta{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.4rem 1rem}.meta dt{color:var(--muted)}.meta dd{margin:0;overflow-wrap:anywhere}
+.tablewrap{overflow:auto}table{border-collapse:collapse;width:100%}th,td{text-align:left;border-bottom:1px solid var(--line);padding:.5rem;vertical-align:top}
+pre{background:var(--code-bg);padding:.7rem;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.9rem}details{margin:.4rem 0}summary{cursor:pointer}article{border-top:1px solid var(--line)}
+footer{max-width:76rem;margin:auto;padding:1rem;color:var(--muted)}
+</style>
+</head><body>
+<header class="page"><h1>Morrow client run</h1><span id="run-status" class="badge $state_class">$state</span><button id="theme" type="button">Toggle theme</button></header>
+<div class="layout"><nav aria-label="Report sections"><a href="#outcome">Outcome</a><a href="#steps">Scenarios</a><a href="#answers">Answers</a><a href="#commands">Commands</a><a href="#remaining">Remaining acceptance</a></nav><main>
+<section id="outcome"><h2>Outcome and evidence</h2>
+<p>This view summarizes one retained run. A failed run is not product acceptance; passed steps do not close the remaining criteria.</p>
+<dl class="meta"><dt>Generated</dt><dd><time>$generated</time></dd><dt>Run data as of</dt><dd>$data_as_of</dd><dt>Basis</dt><dd>Recorded process/client evidence; presentation counts and status are derived. No operator usefulness assessment.</dd><dt>Source</dt><dd>$source</dd><dt>Candidate</dt><dd>$candidate</dd><dt>Specification</dt><dd>$spec</dd></dl>
+$failures $control $binding
+</section>
+<section id="steps"><h2>Scenarios</h2><div class="tablewrap"><table><thead><tr><th>Step</th><th>Recorded outcome</th><th>Failure or limit</th></tr></thead><tbody>$steps</tbody></table></div></section>
+<section id="answers"><h2>Independent expectations and captured answers</h2><p>An unavailable artifact means no corresponding file is retained here. Query stdout may still be linked in Commands; no empty answer is synthesized.</p>$answers</section>
+<section id="commands"><h2>Commands and raw logs</h2><label>Filter commands <input id="filter" type="search" placeholder="Command or failure"></label><div class="tablewrap"><table id="command-table"><thead><tr><th>Index</th><th>Command</th><th>Exit</th><th>Raw logs</th></tr></thead><tbody>$commands</tbody></table></div><h3>Owned process lifecycle</h3>$processes</section>
+<section id="repeat"><h2>Repeat</h2>$repeat</section>
+<section id="remaining"><h2>Remaining acceptance</h2><ul>$remaining</ul><p>The JSON and raw client outputs own the evidence. Rendering this page never changes a failed comparison into success.</p></section>
+</main></div><footer>Private run report. No network requests or external assets.</footer>
+<script>
+document.getElementById('theme').onclick=()=>{const r=document.documentElement;const dark=(r.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'))==='dark';r.dataset.theme=dark?'light':'dark';};
+document.getElementById('filter').oninput=e=>{const q=e.target.value.toLowerCase();document.querySelectorAll('#command-table tbody tr').forEach(r=>r.hidden=!r.textContent.toLowerCase().includes(q));};
+</script></body></html>
