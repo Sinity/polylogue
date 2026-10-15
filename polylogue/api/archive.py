@@ -106,7 +106,6 @@ if TYPE_CHECKING:
     from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.analysis.resume import ResumeBrief
     from polylogue.analysis.resume_contracts import ResumeCandidate
-    from polylogue.analysis.transforms import SessionDigest
     from polylogue.annotations.importer import AnnotationBatchImportRequest, AnnotationBatchImportResult
     from polylogue.annotations.join_contracts import AnnotationStructuralJoinResult
     from polylogue.annotations.schema import AnnotationSchemaRegistry
@@ -2447,122 +2446,41 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             raise ValueError("path is required unless raw_ref or source_path is provided")
         return explain_import_path(Path(path), source_name=source_name, limit=limit)
 
-    async def _session_digest(self, session_id: str) -> SessionDigest | None:
-        """Compile one resolved session and its child links into a session digest."""
-        from polylogue.analysis.transforms import compile_session_digest
-        from polylogue.storage.query_models import SessionRecordQuery
-
-        session = await self.get_session(session_id)
-        if session is None:
-            return None
-        resolved_session_id = str(session.id)
-        # The envelope read that backs get_session does not carry session_events,
-        # and the digest's compaction geometry (polylogue-4ts.5) is stored there.
-        events = await self.repository.get_session_event_models(resolved_session_id)
-        session = session.model_copy(update={"session_events": tuple(events)})
-        session_links: list[dict[str, object]] = await self.repository.queries.list_session_links_for_session(
-            resolved_session_id
-        )
-        children = await self.repository.queries.list_sessions(SessionRecordQuery(parent_id=resolved_session_id))
-        session_links.extend(
-            {
-                "dst_origin": child.origin.value,
-                "dst_native_id": child.native_id,
-                "resolved_dst_session_id": str(child.session_id),
-                "status": "resolved",
-                "link_type": child.branch_type.value if child.branch_type is not None else "child",
-            }
-            for child in children
-        )
-        return compile_session_digest(session, session_links=session_links)
-
     async def postmortem_bundle(
         self,
         spec: SessionQuerySpec | None = None,
         *,
         limit: int | None = None,
     ) -> PostmortemBundle:
-        """Compile a distilled postmortem bundle over a matched session scope (#2380).
+        """Compile the matched predicate relation and its digests on one pinned reader.
 
-        Resolves the matched session set from ``spec`` (the same summary path
-        ``facets`` uses), batch-fetches profiles, compiles per-session
-        digests for a bounded set, and delegates aggregation to the pure
-        :func:`compile_postmortem_bundle`. The analysis cap defaults to 200
-        sessions; when more match, the bundle is marked ``truncated`` and the
-        drop is logged rather than silently capped.
+        The independent analysis cap defaults to 200; scope counts retain every
+        match and name any requested analysis truncation.
         """
-        from polylogue.analysis.postmortem import (
-            PostmortemBundle as _PostmortemBundle,
-        )
-        from polylogue.analysis.postmortem import (
-            PostmortemScope,
-            compile_postmortem_bundle,
-        )
+        from polylogue.operations.analysis_reports import compile_analysis_report, open_analysis_read
 
         if limit is not None and limit <= 0:
             raise ValueError("limit must be a positive integer")
-        cap = limit if limit is not None else 200
-        summaries = await run_archive_read(
-            _active_archive_root(self.config),
-            operation="insights.postmortem.scope",
-            arguments={"spec": spec, "limit": cap},
-            work=lambda archive: (
-                _archive_list_summaries_for_spec(archive, replace(spec, limit=None, offset=0), default_limit=1_000_000)
-                if spec is not None and spec.has_filters()
-                else archive.list_summaries(limit=1_000_000)
+        root = _active_archive_root(self.config)
+        return cast(
+            "PostmortemBundle",
+            await run_archive_read(
+                root,
+                operation="insights.postmortem",
+                arguments={"spec": spec, "limit": limit},
+                work=lambda archive: compile_analysis_report(
+                    archive,
+                    spec,
+                    kind="postmortem",
+                    limit=limit,
+                    checkpoint=archive.check_operation_read,
+                ),
+                read_owner=lambda context: open_analysis_read(root, context),
+                page_size=limit or 200,
+                projection="postmortem",
+                workload_class="scan",
             ),
-            # The analysis cap applies after the authoritative scope is
-            # resolved. Reading only ``cap`` summaries would make a bounded
-            # analysis look complete and hide the matched denominator.
-            page_size=1_000_000,
-            projection="session-scope",
-            workload_class="scan",
         )
-
-        session_ids: list[str] = []
-        seen: set[str] = set()
-        for summary in summaries:
-            if summary.session_id in seen:
-                continue
-            seen.add(summary.session_id)
-            session_ids.append(summary.session_id)
-
-        matched = len(session_ids)
-        truncated = matched > cap
-        dropped = matched - cap if truncated else 0
-        analyzed_ids = session_ids[:cap]
-        if truncated:
-            emit(
-                "archive.postmortem_bundle.truncated",
-                level=WARNING,
-                outcome="degraded",
-                reason="match_cap_exceeded",
-                considered=matched,
-                limit=cap,
-                skipped=dropped,
-            )
-
-        profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)
-        profiles = [profiles_map[sid] for sid in analyzed_ids if sid in profiles_map]
-
-        digests: dict[str, SessionDigest] = {}
-        for sid in analyzed_ids:
-            digest = await self._session_digest(sid)
-            if digest is not None:
-                digests[sid] = digest
-
-        scope = PostmortemScope(
-            since=spec.since if spec is not None else None,
-            until=spec.until if spec is not None else None,
-            query=_archive_text_query(spec) if spec is not None else None,
-            matched_session_count=matched,
-            analyzed_session_count=len(profiles),
-            truncated=truncated,
-            dropped_session_count=dropped,
-        )
-        bundle = compile_postmortem_bundle(profiles, digests, scope=scope)
-        assert isinstance(bundle, _PostmortemBundle)
-        return bundle
 
     async def pathology_report(
         self,
@@ -2570,84 +2488,34 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         limit: int | None = None,
     ) -> PathologyReport:
-        """Mine agent-workflow pathologies across a matched session scope (#2383).
+        """Compile the matched predicate relation and its digests on one pinned reader.
 
-        Resolves the matched session set (the same summary path
-        ``postmortem_bundle`` uses), fetches each session's session digest, and
-        runs the deterministic detectors in :mod:`polylogue.analysis.pathology`
-        over the typed run projections. Returns the aggregate
-        :class:`PathologyReport` (findings + per-kind distribution), the
-        queryable distribution/summary view for #2383. The analysis cap defaults
-        to 200 sessions.
+        The independent analysis cap defaults to 200; scope counts retain every
+        match and name any requested analysis truncation.
         """
-        from polylogue.analysis.pathology import compile_pathology_report
+        from polylogue.operations.analysis_reports import compile_analysis_report, open_analysis_read
 
         if limit is not None and limit <= 0:
             raise ValueError("limit must be a positive integer")
-        cap = limit if limit is not None else 200
-        summaries = await run_archive_read(
-            _active_archive_root(self.config),
-            operation="insights.pathology.scope",
-            arguments={"spec": spec, "limit": cap},
-            work=lambda archive: (
-                _archive_list_summaries_for_spec(archive, replace(spec, limit=None, offset=0), default_limit=1_000_000)
-                if spec is not None and spec.has_filters()
-                else archive.list_summaries(limit=1_000_000)
+        root = _active_archive_root(self.config)
+        return cast(
+            "PathologyReport",
+            await run_archive_read(
+                root,
+                operation="insights.pathology",
+                arguments={"spec": spec, "limit": limit},
+                work=lambda archive: compile_analysis_report(
+                    archive,
+                    spec,
+                    kind="pathology",
+                    limit=limit,
+                    checkpoint=archive.check_operation_read,
+                ),
+                read_owner=lambda context: open_analysis_read(root, context),
+                page_size=limit or 200,
+                projection="pathology",
+                workload_class="scan",
             ),
-            page_size=cap,
-            projection="session-scope",
-            workload_class="scan",
-        )
-
-        session_ids: list[str] = []
-        seen: set[str] = set()
-        for summary in summaries:
-            if summary.session_id in seen:
-                continue
-            seen.add(summary.session_id)
-            session_ids.append(summary.session_id)
-
-        matched = len(session_ids)
-        analyzed_ids = session_ids[:cap]
-        if matched > cap:
-            emit(
-                "archive.pathology_report.truncated",
-                level=WARNING,
-                outcome="degraded",
-                reason="match_cap_exceeded",
-                considered=matched,
-                limit=cap,
-                skipped=matched - cap,
-            )
-        projections = []
-        failed = 0
-        for sid in analyzed_ids:
-            digest = await self._session_digest(sid)
-            if digest is None:
-                # A session inside the analyzed slice whose digest is missing
-                # was never examined. Counting it as analyzed would report an
-                # unmeasured session as a measured pathology-free one.
-                failed += 1
-                continue
-            projections.append(digest.run_projection)
-        if failed:
-            emit(
-                "archive.pathology_report.digest_unavailable",
-                level=WARNING,
-                outcome="degraded",
-                reason="session_digest_unavailable",
-                considered=len(analyzed_ids),
-                failed=failed,
-            )
-        report = compile_pathology_report(projections)
-        return report.model_copy(
-            update={
-                "matched_session_count": matched,
-                "analyzed_session_count": len(projections),
-                "truncated": matched > cap,
-                "dropped_session_count": max(0, matched - cap),
-                "failed_session_count": failed,
-            }
         )
 
     async def portfolio_bundle(
@@ -2657,78 +2525,36 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         limit: int | None = None,
         top_n: int = 10,
     ) -> PortfolioBundle:
-        """Compile a corpus-wide portfolio report (#2437).
+        """Compile the matched predicate relation and its digests on one pinned reader.
 
-        Resolves the matched session set (the same summary path
-        ``postmortem_bundle`` uses), batch-fetches profiles + session digests,
-        and delegates aggregation to the pure :func:`compile_portfolio_bundle`
-        (session/repo/origin counts, cost + wall-clock distributions, pathology
-        and context-loss distribution). The analysis cap defaults to 200 sessions.
+        The independent analysis cap defaults to 200; scope counts retain every
+        match and name any requested analysis truncation.
         """
-        from polylogue.analysis.portfolio import (
-            compile_portfolio_bundle,
-        )
-        from polylogue.analysis.postmortem import PostmortemScope
+        from polylogue.operations.analysis_reports import compile_analysis_report, open_analysis_read
 
         if limit is not None and limit <= 0:
             raise ValueError("limit must be a positive integer")
-        cap = limit if limit is not None else 200
-        summaries = await run_archive_read(
-            _active_archive_root(self.config),
-            operation="insights.portfolio.scope",
-            arguments={"spec": spec, "limit": cap},
-            work=lambda archive: (
-                _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
-                if spec is not None and spec.has_filters()
-                else archive.list_summaries(limit=1_000_000)
+        root = _active_archive_root(self.config)
+        return cast(
+            "PortfolioBundle",
+            await run_archive_read(
+                root,
+                operation="insights.portfolio",
+                arguments={"spec": spec, "limit": limit, "top_n": top_n},
+                work=lambda archive: compile_analysis_report(
+                    archive,
+                    spec,
+                    kind="portfolio",
+                    limit=limit,
+                    top_n=top_n,
+                    checkpoint=archive.check_operation_read,
+                ),
+                read_owner=lambda context: open_analysis_read(root, context),
+                page_size=limit or 200,
+                projection="portfolio",
+                workload_class="scan",
             ),
-            page_size=cap,
-            projection="session-scope",
-            workload_class="scan",
         )
-
-        session_ids: list[str] = []
-        seen: set[str] = set()
-        for summary in summaries:
-            if summary.session_id in seen:
-                continue
-            seen.add(summary.session_id)
-            session_ids.append(summary.session_id)
-
-        matched = len(session_ids)
-        truncated = matched > cap
-        dropped = matched - cap if truncated else 0
-        analyzed_ids = session_ids[:cap]
-        if truncated:
-            emit(
-                "archive.portfolio_bundle.truncated",
-                level=WARNING,
-                outcome="degraded",
-                reason="match_cap_exceeded",
-                considered=matched,
-                limit=cap,
-                skipped=dropped,
-            )
-
-        profiles_map = await self.repository.get_session_profiles_batch(analyzed_ids)
-        profiles = [profiles_map[sid] for sid in analyzed_ids if sid in profiles_map]
-
-        digests: dict[str, SessionDigest] = {}
-        for sid in analyzed_ids:
-            digest = await self._session_digest(sid)
-            if digest is not None:
-                digests[sid] = digest
-
-        scope = PostmortemScope(
-            since=spec.since if spec is not None else None,
-            until=spec.until if spec is not None else None,
-            query=_archive_text_query(spec) if spec is not None else None,
-            matched_session_count=matched,
-            analyzed_session_count=len(profiles),
-            truncated=truncated,
-            dropped_session_count=dropped,
-        )
-        return compile_portfolio_bundle(profiles, digests, scope=scope, top_n=top_n)
 
     async def list_assertion_claims(
         self,

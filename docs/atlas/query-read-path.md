@@ -296,6 +296,11 @@ Query-set summary and transcript exports select through resident `cli.query` and
 
 This materialized client selection does not implement scalable resident mutation references or bound the memory required by a single fully rendered session. Existing operation-result bounds also remain an unmet transport obligation for an individual transcript row larger than one deliverable window.
 
+Context-image admission charges each unchanged compiled segment its actual
+token estimate. A segment that cannot fit is a typed budget omission in the
+scheduler ledger; an undersized budget does not discount its unchanged body.
+The image estimate is the sum of admitted segment estimates.
+
 Corpus compaction is an operator-budgeted projection over the pinned selected
 sessions, without changing source evidence. Its executable degradation order
 is clipping, exact adjacent run collapse, source-reference skeletons, item
@@ -303,8 +308,26 @@ drops with a manifest, then an index-only pack or typed envelope refusal.
 Collapse keeps one original-text representation, an actual occurrence count
 and every run member's reference; skeletons keep typed identity/provenance
 without prose. Markdown exposes the same count, degradation and outcome as
-the typed pack. Budget reductions and missing manifest detail are named gaps;
+the typed pack. CLI exit also carries the supplied operation and same-frame
+materialization verdict through the shared read-view outcome owner. Budget
+reductions and missing manifest detail are named gaps;
 a no-item index-only pack stays degraded, and CLI exit follows that outcome.
+
+Compaction stages transcript evidence, ranked candidates, original adjacent
+runs and omission rows in request-owned native scratch storage. Transcript
+pages enter the store before the next page is read; only a final pack that
+fits the declared serialized budget becomes an in-memory result. Exact JSON
+prefix measures keep candidate ranking and omission trimming on disk. A
+cancelled or failed read uses the existing creator-owned native scratch
+cleanup. The current pinned read frame is checked before each transcript
+page and again before returning the pack.
+
+A tool-result message is omitted as successful only when every result block
+has the canonical `ok` outcome. Any failed or unknown result remains evidence.
+A parent link removes inherited prefixes only when that parent is selected;
+a child-only selection retains its branch point. Context and compaction share
+the same prose and serialized-payload estimator in
+`archive/message/token_measure.py`.
 
 Per-session included and dropped estimates partition original source prose.
 Clip markers and run-count metadata consume the complete serialized-pack
@@ -531,3 +554,17 @@ A topology wire bound resumes at its first withheld node, even if the upstream
 page has a later continuation. Usage timeline first-page optimization keeps
 undated events in dated sessions; those events use the session's bucket rather
 than disappearing behind a timestamp cutoff.
+
+## Resident analysis
+
+Postmortem, portfolio and pathology composition select scalar identities and
+read profiles, events, transcripts and child links on one admitted pinned
+archive reader. The independent requested analysis cap defaults to 200; the
+matched denominator counts the full predicate relation and reports truncation.
+The CLI uses `analysis.postmortem`, `analysis.portfolio` and
+`analysis.cost-outlook` on the resident daemon rather than reopening the
+facade for each session. Facets use the same canonical selection lowering.
+Billing outlook streams enriched costs on that reader, attributed by creation
+time from cycle start through the requested reference time. Its daily reducer
+uses that same reference time; source modification time and future cycle rows
+do not substitute for observed usage.

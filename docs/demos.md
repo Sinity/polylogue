@@ -8,7 +8,7 @@ The shortest path is one command with an explicit scratch archive root. It exits
 successfully only after the tour's structural checks pass:
 
 ```bash
-uvx polylogue demo tour --root ./polylogue-demo-tour/archive
+uvx --python 3.14t polylogue demo tour --root ./polylogue-demo-tour/archive
 ```
 
 The terminal result to look for is `Polylogue demo tour: passed`. The tour

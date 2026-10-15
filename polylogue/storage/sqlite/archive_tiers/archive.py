@@ -3901,7 +3901,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         limit: int | None = None,
         offset: int = 0,
-    ) -> Iterator[SessionCostInsight]:
+    ) -> Generator[SessionCostInsight, None, None]:
         """Stream archive session cost insights, newest first, over one cursor.
 
         Rows are fetched and priced in batches of

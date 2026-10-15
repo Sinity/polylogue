@@ -20,6 +20,9 @@ Only ``list_session_links_for_session`` (a genuine production read path via
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
+
 import aiosqlite
 
 SESSION_LINK_COLUMNS = """src_session_id, dst_origin, dst_native_id, link_type,
@@ -31,6 +34,35 @@ SESSION_LINK_COLUMNS = """src_session_id, dst_origin, dst_native_id, link_type,
 A sync reader (the archive tier's rooted tree) and the async readers must select
 the same columns, or one surface silently loses provenance the other keeps.
 """
+
+
+def read_session_digest_links(conn: sqlite3.Connection, session_id: str) -> list[dict[str, object]]:
+    """Read the original digest's outbound assertions and unlinked children on one pin."""
+    with closing(conn.cursor()) as cursor:
+        cursor.row_factory = sqlite3.Row
+        links = [
+            dict(row)
+            for row in cursor.execute(
+                f"SELECT {SESSION_LINK_COLUMNS} FROM session_links WHERE src_session_id = ? "
+                "ORDER BY link_type, dst_origin, dst_native_id",
+                (session_id,),
+            )
+        ]
+        links.extend(
+            {
+                "dst_origin": row["origin"],
+                "dst_native_id": row["native_id"],
+                "resolved_dst_session_id": row["session_id"],
+                "status": "resolved",
+                "link_type": row["branch_type"] or "child",
+            }
+            for row in cursor.execute(
+                "SELECT session_id, origin, native_id, branch_type FROM sessions "
+                "WHERE parent_session_id = ? ORDER BY sort_key_ms DESC, session_id",
+                (session_id,),
+            )
+        )
+        return links
 
 
 async def list_session_links_for_session(
@@ -91,6 +123,7 @@ async def list_session_links(conn: aiosqlite.Connection) -> list[dict[str, objec
 
 
 __all__ = [
+    "read_session_digest_links",
     "list_session_links_for_session",
     "list_session_links",
     "list_session_links_to_session",

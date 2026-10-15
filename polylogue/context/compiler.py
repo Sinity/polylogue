@@ -20,11 +20,11 @@ from polylogue.archive.context_models import (
     ContextSnapshotRecord,
     context_image_sha256,
 )
+from polylogue.archive.message.token_measure import estimate_token_words, estimate_tokens, tokens_from_estimated_words
 from polylogue.core.assertions import AssertionContextTrustClass, derive_assertion_context_trust
 from polylogue.core.evidence_integrity import EvidenceIntegrityVerdict
 from polylogue.core.refs import EvidenceRef, ObjectRef, normalize_durable_object_ref_text
 from polylogue.surfaces.chronicle import ChronicleProjectionPayload, render_chronicle_markdown
-from polylogue.surfaces.compaction import estimate_token_words, estimate_tokens, tokens_from_estimated_words
 from polylogue.surfaces.temporal_evidence import TemporalEvidenceWindow
 
 

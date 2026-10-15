@@ -560,6 +560,20 @@ class AssertionExportReleaseRequest(_OperationPayload):
     selection_ref: str = Field(min_length=1)
 
 
+class AnalysisReportRequest(_OperationPayload):
+    params: dict[str, object] = Field(default_factory=dict)
+    selection_epoch: str | None = Field(default=None, min_length=1)
+    limit: int | None = Field(default=None, ge=1)
+    top_n: int = Field(default=10, ge=1)
+
+
+class CostOutlookRequest(_OperationPayload):
+    plan_name: str = Field(min_length=1)
+    method: Literal["linear", "trailing-7d-mean", "eom-naive"] = "linear"
+    params: dict[str, object] = Field(default_factory=dict)
+    selection_epoch: str | None = Field(default=None, min_length=1)
+
+
 class ContinuationRouteRequest(_OperationPayload):
     session_id: str = Field(min_length=1)
     selection_epoch: str | None = Field(default=None, min_length=1)
@@ -866,7 +880,7 @@ class CompletionRequest(_OperationPayload):
 
 
 class FacetsRequest(QueryRequest):
-    pass
+    selection_epoch: str | None = Field(default=None, min_length=1)
 
 
 class BackupRequest(_OperationPayload):
@@ -1545,6 +1559,16 @@ class ContextPreambleReadResult(_OperationResult):
 class ContextImageReadResult(_OperationResult):
     view: Literal["context-image"]
     payload: dict[str, object]
+
+
+class AnalysisReportResult(_OperationResult):
+    view: Literal["postmortem", "portfolio"]
+    payload: dict[str, object]
+    outcome: dict[str, object]
+
+
+class CostOutlookResult(_OperationResult):
+    outlook: dict[str, object] | None
 
 
 class ContinuationRouteResult(_OperationResult):
@@ -2248,6 +2272,30 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="read.context-image.result/v1",
         request_model=ContextImageReadRequest,
         result_model=ContextImageReadResult,
+    ),
+    DaemonOperationSpec(
+        "analysis.postmortem",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="analysis.postmortem.result/v1",
+        request_model=AnalysisReportRequest,
+        result_model=AnalysisReportResult,
+    ),
+    DaemonOperationSpec(
+        "analysis.portfolio",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="analysis.portfolio.result/v1",
+        request_model=AnalysisReportRequest,
+        result_model=AnalysisReportResult,
+    ),
+    DaemonOperationSpec(
+        "analysis.cost-outlook",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="analysis.cost-outlook.result/v1",
+        request_model=CostOutlookRequest,
+        result_model=CostOutlookResult,
     ),
     DaemonOperationSpec(
         "continuation.route",

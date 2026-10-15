@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli as click_cli
+from polylogue.cli.operation_kernel import OperationFailedError
+from polylogue.cli.read_dispatch import ServedBy
 from polylogue.cost.outlook import (
     CycleOutlook,
     CycleWindow,
@@ -18,7 +20,7 @@ from polylogue.cost.outlook import (
     QuotaPressure,
     QuotaPressureMissing,
 )
-from polylogue.cost.plans import OverageRule, PlanLookupError, QuotaBasis
+from polylogue.cost.plans import OverageRule, QuotaBasis
 
 
 def _quota_outlook() -> CycleOutlook:
@@ -88,11 +90,8 @@ def _no_quota_outlook() -> CycleOutlook:
 
 class TestCostOutlookJsonContract:
     def test_json_output_serializes_full_payload(self, cli_runner: CliRunner) -> None:
-        with patch("polylogue.api.Polylogue") as mock_cls:
-            poly = mock_cls.return_value
-            poly.__aenter__ = AsyncMock(return_value=poly)
-            poly.__aexit__ = AsyncMock(return_value=None)
-            poly.cost_outlook = AsyncMock(return_value=_quota_outlook())
+        with patch("polylogue.cli.read_dispatch.dispatch_read") as read:
+            read.return_value = ({"outlook": _quota_outlook().model_dump(mode="json")}, ServedBy("daemon", None))
 
             result = cli_runner.invoke(
                 click_cli, ["analyze", "--cost-outlook", "--plan", "claude-pro", "--format", "json"]
@@ -128,11 +127,8 @@ class TestCostOutlookJsonContract:
         ]
 
     def test_unknown_plan_exits_with_typed_message(self, cli_runner: CliRunner) -> None:
-        with patch("polylogue.api.Polylogue") as mock_cls:
-            poly = mock_cls.return_value
-            poly.__aenter__ = AsyncMock(return_value=poly)
-            poly.__aexit__ = AsyncMock(return_value=None)
-            poly.cost_outlook = AsyncMock(side_effect=PlanLookupError("Unknown subscription plan 'mystery'."))
+        with patch("polylogue.cli.read_dispatch.dispatch_read") as read:
+            read.side_effect = OperationFailedError("PlanLookupError", "Unknown subscription plan 'mystery'.")
 
             result = cli_runner.invoke(
                 click_cli, ["analyze", "--cost-outlook", "--plan", "mystery", "--format", "json"]
@@ -142,11 +138,8 @@ class TestCostOutlookJsonContract:
         assert "mystery" in result.output
 
     def test_no_cycle_anchor_returns_json_null_outlook(self, cli_runner: CliRunner) -> None:
-        with patch("polylogue.api.Polylogue") as mock_cls:
-            poly = mock_cls.return_value
-            poly.__aenter__ = AsyncMock(return_value=poly)
-            poly.__aexit__ = AsyncMock(return_value=None)
-            poly.cost_outlook = AsyncMock(return_value=None)
+        with patch("polylogue.cli.read_dispatch.dispatch_read") as read:
+            read.return_value = ({"outlook": None}, ServedBy("daemon", None))
 
             result = cli_runner.invoke(
                 click_cli, ["analyze", "--cost-outlook", "--plan", "github-copilot-pro", "--format", "json"]
@@ -177,11 +170,8 @@ class TestCostOutlookJsonContract:
 
 class TestCostOutlookPlainContract:
     def test_plain_mode_labels_bases_and_estimates(self, cli_runner: CliRunner) -> None:
-        with patch("polylogue.api.Polylogue") as mock_cls:
-            poly = mock_cls.return_value
-            poly.__aenter__ = AsyncMock(return_value=poly)
-            poly.__aexit__ = AsyncMock(return_value=None)
-            poly.cost_outlook = AsyncMock(return_value=_quota_outlook())
+        with patch("polylogue.cli.read_dispatch.dispatch_read") as read:
+            read.return_value = ({"outlook": _quota_outlook().model_dump(mode="json")}, ServedBy("daemon", None))
 
             result = cli_runner.invoke(
                 click_cli,
@@ -202,13 +192,10 @@ class TestCostOutlookPlainContract:
     def test_plain_mode_surfaces_degraded_readiness(self, cli_runner: CliRunner) -> None:
         """A deadline-exceeding run must warn in plain output, not silently render (polylogue-duti)."""
         with (
-            patch("polylogue.api.Polylogue") as mock_cls,
+            patch("polylogue.cli.read_dispatch.dispatch_read") as read,
             patch("polylogue.analysis.projection_contracts.budget_exceeded", return_value=True),
         ):
-            poly = mock_cls.return_value
-            poly.__aenter__ = AsyncMock(return_value=poly)
-            poly.__aexit__ = AsyncMock(return_value=None)
-            poly.cost_outlook = AsyncMock(return_value=_quota_outlook())
+            read.return_value = ({"outlook": _quota_outlook().model_dump(mode="json")}, ServedBy("daemon", None))
 
             result = cli_runner.invoke(
                 click_cli,
@@ -221,11 +208,8 @@ class TestCostOutlookPlainContract:
         assert "(estimate)" in result.output
 
     def test_plain_mode_surfaces_absent_quota_explicitly(self, cli_runner: CliRunner) -> None:
-        with patch("polylogue.api.Polylogue") as mock_cls:
-            poly = mock_cls.return_value
-            poly.__aenter__ = AsyncMock(return_value=poly)
-            poly.__aexit__ = AsyncMock(return_value=None)
-            poly.cost_outlook = AsyncMock(return_value=_no_quota_outlook())
+        with patch("polylogue.cli.read_dispatch.dispatch_read") as read:
+            read.return_value = ({"outlook": _no_quota_outlook().model_dump(mode="json")}, ServedBy("daemon", None))
 
             result = cli_runner.invoke(
                 click_cli,
@@ -237,11 +221,8 @@ class TestCostOutlookPlainContract:
         assert "not configured" in result.output
 
     def test_plain_mode_no_cycle_anchor_message(self, cli_runner: CliRunner) -> None:
-        with patch("polylogue.api.Polylogue") as mock_cls:
-            poly = mock_cls.return_value
-            poly.__aenter__ = AsyncMock(return_value=poly)
-            poly.__aexit__ = AsyncMock(return_value=None)
-            poly.cost_outlook = AsyncMock(return_value=None)
+        with patch("polylogue.cli.read_dispatch.dispatch_read") as read:
+            read.return_value = ({"outlook": None}, ServedBy("daemon", None))
 
             result = cli_runner.invoke(
                 click_cli,
@@ -254,18 +235,8 @@ class TestCostOutlookPlainContract:
 
 class TestCostOutlookMethodChoice:
     def test_trailing_mean_method_passes_through(self, cli_runner: CliRunner) -> None:
-        captured: dict[str, object] = {}
-
-        async def fake_outlook(plan_name: str, *, method: ProjectionMethod) -> CycleOutlook:
-            captured["plan_name"] = plan_name
-            captured["method"] = method
-            return _quota_outlook()
-
-        with patch("polylogue.api.Polylogue") as mock_cls:
-            poly = mock_cls.return_value
-            poly.__aenter__ = AsyncMock(return_value=poly)
-            poly.__aexit__ = AsyncMock(return_value=None)
-            poly.cost_outlook = AsyncMock(side_effect=fake_outlook)
+        with patch("polylogue.cli.read_dispatch.dispatch_read") as read:
+            read.return_value = ({"outlook": _quota_outlook().model_dump(mode="json")}, ServedBy("daemon", None))
 
             result = cli_runner.invoke(
                 click_cli,
@@ -282,4 +253,6 @@ class TestCostOutlookMethodChoice:
             )
 
         assert result.exit_code == 0, result.output
-        assert captured["method"] is ProjectionMethod.trailing_7d_mean
+        assert read.call_args.args[1].operation == "analysis.cost-outlook"
+        assert read.call_args.args[1].payload["method"] == "trailing-7d-mean"
+        assert read.call_args.args[1].payload["plan_name"] == "claude-pro"

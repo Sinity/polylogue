@@ -259,7 +259,12 @@ def execute_read_operation(
     elif name == "read.compact":
         from polylogue.operations.read_view_compact import execute_compact_read
 
-        result = execute_compact_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
+        result = execute_compact_read(
+            payload,
+            archive=archive,
+            vector_provider=dependencies.vector_provider,
+            checkpoint=dependencies.raise_if_aborted,
+        )
     elif name == "read.effective_context":
         from polylogue.operations.read_view_extras import execute_effective_context_read
 
@@ -297,6 +302,10 @@ def execute_read_operation(
                 mode="json", exclude_none=True
             ),
         }
+    elif name in {"analysis.postmortem", "analysis.portfolio", "analysis.cost-outlook"}:
+        from polylogue.operations.analysis_reports import execute_analysis_read
+
+        result = execute_analysis_read(name, payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
     elif name in {"continuation.route", "continuation.context", "continuation.candidates"}:
         from polylogue.operations.continuation import execute_continuation_read
 
@@ -995,18 +1004,10 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     import time
 
     from polylogue.api.archive import _archive_facet_buckets, build_facets_response
-    from polylogue.archive.query.expression import compile_expression_into
-    from polylogue.archive.query.spec import SessionQuerySpec
 
-    query = str(params.get("query") or "").strip()
-    base = SessionQuerySpec.from_params(
-        {
-            key: value
-            for key, value in params.items()
-            if key not in {"query", "include_deferred", "include_expensive", "no_idf"}
-        }
+    spec = cli_query_spec(
+        {key: value for key, value in params.items() if key not in {"include_deferred", "include_expensive", "no_idf"}}
     )
-    spec = compile_expression_into(query, base) if query else base
     include_deferred = _truthy(params.get("include_deferred")) or _truthy(params.get("include_expensive"))
     scoped_to_query = spec.has_filters()
 

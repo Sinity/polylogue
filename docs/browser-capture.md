@@ -617,9 +617,7 @@ summaries contain only its digest, sequence and size. Authenticated artifact
 reads use `/v1/capture-jobs/{job_id}/checkpoint-artifacts/{digest}` with the
 same descriptor and a current account-scoped lease. Checkpoint replacement
 retains older receipt roots. A read holds its exact inode while terminal-job
-collection checks roots and active reads before deletion. Interrupted conversion
-of the shipped SQLite checkpoint column preserves the original row until the
-verified artifact and its reference commit. Restore stages records before
+collection checks roots and active reads before deletion. Restore stages records before
 atomic publication and preserves existing local acquired custody and operator
 pause state. An unchanged restored record can advance only with verified
 receiver checkpoint evidence; same-job sequences are compared within that job,

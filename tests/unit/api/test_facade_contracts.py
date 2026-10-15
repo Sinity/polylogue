@@ -40,6 +40,7 @@ import pytest
 import polylogue.api.archive as archive_module
 from polylogue import Polylogue
 from polylogue.analysis import insight_reads
+from polylogue.analysis.transforms import SessionDigest
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.importer import AnnotationBatchImportRequest
 from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
@@ -377,6 +378,14 @@ def _archive(tmp_path: Path) -> Polylogue:
     """Construct a Polylogue facade against an isolated tmp archive."""
     run_off_event_loop(lambda: initialize_active_archive_root(tmp_path))
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
+
+
+def _read_pinned_digest(root: Path, session_id: str) -> SessionDigest | None:
+    from polylogue.operations.analysis_reports import read_session_digest
+    from polylogue.operations.operation_context import open_operation_read
+
+    with open_operation_read(root) as pinned:
+        return read_session_digest(pinned.archive, session_id)
 
 
 @pytest.fixture
@@ -1181,12 +1190,14 @@ async def test_get_session_returns_typed_object(tmp_path: Path) -> None:
 
 
 async def test_session_digest_compiles_seeded_session(tmp_path: Path) -> None:
-    """The private session-digest helper compiles deterministic transform output."""
+    """The supplied-reader digest helper compiles deterministic transform output."""
     archive = _archive(tmp_path)
     db_path = archive.config.archive_root / "index.db"
     await _seed_two_sessions(db_path)
     try:
-        digest = await archive._session_digest("claude-ai-export:conv-alpha")
+        digest = run_off_event_loop(
+            lambda: _read_pinned_digest(archive.config.archive_root, "claude-ai-export:conv-alpha")
+        )
 
         assert digest is not None
         assert digest.session_id == "claude-ai-export:conv-alpha"
@@ -1194,7 +1205,7 @@ async def test_session_digest_compiles_seeded_session(tmp_path: Path) -> None:
         assert digest.transform.input_session_id == "claude-ai-export:conv-alpha"
         assert digest.resume_markdown.startswith("# Resume: Alpha")
         assert digest.raw_refs
-        assert await archive._session_digest("nonexistent") is None
+        assert run_off_event_loop(lambda: _read_pinned_digest(archive.config.archive_root, "nonexistent")) is None
     finally:
         await archive.close()
 
@@ -1259,7 +1270,7 @@ async def test_session_digest_resolves_subagent_child_links(tmp_path: Path) -> N
             parent_id,
         ) = run_off_event_loop(_off_loop_6)
 
-        digest = await archive._session_digest(parent_id)
+        digest = run_off_event_loop(lambda: _read_pinned_digest(archive.config.archive_root, parent_id))
 
         assert digest is not None
         [subagent] = digest.subagent_reports
@@ -1269,7 +1280,9 @@ async def test_session_digest_resolves_subagent_child_links(tmp_path: Path) -> N
         assert subagent.resolved_child_session_id == child_id
         assert "child_link_status=resolved" in digest.resume_markdown
 
-        alias_digest = await archive._session_digest("codex:session-digest-parent")
+        alias_digest = run_off_event_loop(
+            lambda: _read_pinned_digest(archive.config.archive_root, "codex:session-digest-parent")
+        )
         assert alias_digest is not None
         [alias_subagent] = alias_digest.subagent_reports
         assert alias_subagent.resolved_child_session_id == child_id
@@ -1635,6 +1648,12 @@ async def test_correlate_claude_agent_dispatches_resolves_via_the_facade(tmp_pat
                 fixture_block_content_identity("tool_use", "Bash", "toolu_facade_1"),
             ),
         )
+        instruction_block_id = str(
+            index_conn.execute(
+                "SELECT block_id FROM blocks WHERE session_id = ? AND tool_id = ?",
+                (session_id, "toolu_facade_1"),
+            ).fetchone()[0]
+        )
         index_conn.commit()
 
     envelope: dict[str, object] = {
@@ -1680,7 +1699,7 @@ async def test_correlate_claude_agent_dispatches_resolves_via_the_facade(tmp_pat
         assertion = report.resolved[0]
         assert assertion.agent_id == "agent-instance-facade"
         assert assertion.agent_type == "reviewer"
-        assert assertion.tool_use_block_id == f"{session_id}:n:msg-1:0"
+        assert assertion.tool_use_block_id == instruction_block_id
     finally:
         await archive.close()
 
@@ -4475,8 +4494,7 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
     """polylogue-lph4: action-observed delegation identity is
     (parent_session_id, instruction_tool_use_block_id) -- the ref carries
     only the block id since it already embeds the parent session id
-    structurally (block_id = message_id:position, message_id =
-    session_id:native_id)."""
+    through its message owner and immutable content identity."""
     archive = _archive(tmp_path)
     try:
 
@@ -4503,19 +4521,16 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
                         branch_type=BranchType.SUBAGENT,
                     ),
                 )
-            return (
-                child_session_id,
-                parent_session_id,
-            )
+                instruction_block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE session_id = ? AND tool_id = ? AND block_type = 'tool_use'",
+                        (parent_session_id, "task-1"),
+                    ).fetchone()[0]
+                )
+            return instruction_block_id, child_session_id, parent_session_id
 
-        (
-            child_session_id,
-            parent_session_id,
-        ) = run_off_event_loop(_off_loop_32)
+        instruction_block_id, child_session_id, parent_session_id = run_off_event_loop(_off_loop_32)
 
-        # blocks.block_id derives from messages.message_id, which is generated
-        # with an "n:" discriminator for a native-id message.
-        instruction_block_id = f"{parent_session_id}:n:dispatch:0"
         payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
 
         assert payload.resolved is True
@@ -4739,11 +4754,15 @@ async def test_resolve_ref_returns_unresolved_delegation_attempt_payload_without
                         branch_type=BranchType.SUBAGENT,
                     ),
                 )
-            return (parent_session_id,)
+                instruction_block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE session_id = ? AND tool_id = ? AND block_type = 'tool_use'",
+                        (parent_session_id, "task-a"),
+                    ).fetchone()[0]
+                )
+            return parent_session_id, instruction_block_id
 
-        (parent_session_id,) = run_off_event_loop(_off_loop_36)
-
-        instruction_block_id = f"{parent_session_id}:n:dispatch-a:0"
+        parent_session_id, instruction_block_id = run_off_event_loop(_off_loop_36)
         payload = await archive.resolve_ref(f"delegation:{instruction_block_id}")
 
         assert payload.resolved is True
@@ -6909,15 +6928,28 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(
             source_name=Provider.CODEX,
             provider_session_id="annotation-facade-v1",
             title="Annotation facade target",
-            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="evidence",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="evidence")],
+                )
+            ],
         )
 
         def _off_loop_58() -> Any:
             with ArchiveStore(active_root) as archive_db:
                 session_id = write_index_session(archive_db, session)
-            return (session_id,)
+                prompt_block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE message_id = ? AND block_type = 'text'",
+                        (archive_message_id(session_id, "m1"),),
+                    ).fetchone()[0]
+                )
+            return session_id, prompt_block_id
 
-        (session_id,) = run_off_event_loop(_off_loop_58)
+        session_id, prompt_block_id = run_off_event_loop(_off_loop_58)
 
         registry = AnnotationSchemaRegistry()
         registry.register(
@@ -6961,7 +6993,7 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(
             source_result_ref="result-set:facade-import",
             actor_ref="agent:facade-test",
             model_ref="agent:model",
-            prompt_ref="block:prompt:b:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+            prompt_ref=f"block:{prompt_block_id}",
             created_at_ms=1_000,
         )
 
@@ -7014,10 +7046,22 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
                         branch_type=BranchType.SUBAGENT,
                     ),
                 )
-            return (parent_session_id,)
+                instruction_block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE session_id = ? AND tool_id = ? AND block_type = 'tool_use'",
+                        (parent_session_id, "task-1"),
+                    ).fetchone()[0]
+                )
+                prompt_block_id = str(
+                    archive_db._conn.execute(
+                        "SELECT block_id FROM blocks WHERE message_id = ? AND block_type = 'text'",
+                        (archive_message_id(parent_session_id, "turn-0"),),
+                    ).fetchone()[0]
+                )
+            return parent_session_id, instruction_block_id, prompt_block_id
 
-        (parent_session_id,) = run_off_event_loop(_off_loop_59)
-        delegation_ref = f"delegation:{parent_session_id}:n:dispatch:0"
+        parent_session_id, instruction_block_id, prompt_block_id = run_off_event_loop(_off_loop_59)
+        delegation_ref = f"delegation:{instruction_block_id}"
         request_input = io.BytesIO(
             (
                 json.dumps(
@@ -7049,7 +7093,7 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
             source_result_ref="result-set:facade-default-registry",
             actor_ref="agent:facade-test",
             model_ref="agent:model",
-            prompt_ref="block:prompt:0",
+            prompt_ref=f"block:{prompt_block_id}",
             created_at_ms=2_000,
         )
 
@@ -7370,7 +7414,7 @@ async def test_pathology_report_counts_unreadable_sessions_as_failed(
     never folded into the analyzed count (polylogue-dvhe7).
 
     Anti-vacuity: revert the ``failed`` bookkeeping in
-    ``PolylogueArchiveMixin.pathology_report`` -- i.e. let a ``None`` digest
+    ``compile_analysis_report`` -- i.e. let a ``None`` digest
     simply be skipped -- and the report claims ``matched=2, analyzed=1`` with
     nothing naming the missing session, so an unmeasured session renders as a
     measured pathology-free one. The assertion that the three counts conserve
@@ -7383,16 +7427,16 @@ async def test_pathology_report_counts_unreadable_sessions_as_failed(
         assert len(summaries) == 2
         unreadable = str(summaries[0].id)
 
-        from polylogue.api.archive import PolylogueArchiveMixin
+        from polylogue.operations import analysis_reports
 
-        original = PolylogueArchiveMixin._session_digest
+        original = analysis_reports.read_session_digest
 
-        async def _digest(self: PolylogueArchiveMixin, session_id: str) -> object:
+        def _digest(store: ArchiveStore, session_id: str) -> object:
             if session_id == unreadable:
                 return None
-            return await original(self, session_id)
+            return original(store, session_id)
 
-        monkeypatch.setattr(PolylogueArchiveMixin, "_session_digest", _digest)
+        monkeypatch.setattr(analysis_reports, "read_session_digest", _digest)
 
         report = await archive.pathology_report()
 
@@ -7793,3 +7837,77 @@ async def test_apply_time_keyerror_is_not_reported_as_a_missing_session(
             await archive.add_tag("codex-session:never-existed", "review")
     finally:
         await archive.close()
+
+
+@pytest.mark.parametrize("method_name", ["postmortem_bundle", "pathology_report", "portfolio_bundle"])
+async def test_analysis_scope_and_digests_use_one_pinned_reader(
+    tmp_path: Path, method_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    facade = _archive(tmp_path)
+    try:
+        await _seed_two_sessions(facade.config.db_path)
+        opened: list[ArchiveStore] = []
+        original = ArchiveStore.open_existing
+
+        def opening(*args: Any, **kwargs: Any) -> ArchiveStore:
+            store = original(*args, **kwargs)
+            opened.append(store)
+            return store
+
+        monkeypatch.setattr(ArchiveStore, "open_existing", opening)
+        report = await getattr(facade, method_name)()
+        scope = getattr(report, "scope", report)
+        assert scope.matched_session_count == 2
+        assert len(opened) == 1, f"scope, profiles, events and digests opened {len(opened)} readers"
+    finally:
+        await facade.close()
+
+
+@pytest.mark.parametrize("plan_name", ["github-copilot-pro", "nonexistent-synthetic-plan"])
+async def test_cost_outlook_resolves_missing_cycle_or_plan_before_opening_archive(
+    tmp_path: Path, plan_name: str
+) -> None:
+    from polylogue.cost.plans import PlanLookupError
+
+    facade = Polylogue(archive_root=tmp_path / "absent")
+    try:
+        if plan_name == "github-copilot-pro":
+            assert await facade.cost_outlook(plan_name) is None
+        else:
+            with pytest.raises(PlanLookupError):
+                await facade.cost_outlook(plan_name)
+        assert not (tmp_path / "absent").exists()
+    finally:
+        await facade.close()
+
+
+async def test_cost_outlook_api_uses_the_resolved_plan_and_reference_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from polylogue.cost.plans import SubscriptionPlan
+    from polylogue.operations import analysis_reports
+
+    plan = SubscriptionPlan(
+        name="synthetic-plan", provider="test", display_name="Synthetic", monthly_cost_usd=20.0, cycle_anchor_day=1
+    )
+    when = datetime(2026, 5, 11, 12, tzinfo=UTC)
+
+    def resolve(name: str, *, user_rows: object) -> SubscriptionPlan:
+        assert name == "synthetic-plan"
+        return plan
+
+    monkeypatch.setattr(analysis_reports, "resolve_plan", resolve)
+    facade = _archive(tmp_path)
+    try:
+        await _seed_two_sessions(facade.config.db_path)
+        outlook = await facade.cost_outlook("synthetic-plan", now=when)
+        assert outlook is not None
+        assert outlook.plan_name == "synthetic-plan"
+        assert outlook.window.now == when
+        assert outlook.window.start == datetime(2026, 5, 1, tzinfo=UTC)
+    finally:
+        await facade.close()

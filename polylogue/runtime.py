@@ -313,8 +313,8 @@ def probe_extensions(names: tuple[str, ...] = REQUIRED_NATIVE_PACKAGES) -> tuple
 def runtime_report() -> dict[str, object]:
     """Build the machine-readable runtime proof used by devtools and packaging."""
 
-    identity = runtime_identity()
     extensions = probe_extensions()
+    identity = runtime_identity()
     extensions_safe = all(probe.safe for probe in extensions)
     return {
         "runtime": identity.to_dict(),

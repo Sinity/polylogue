@@ -42,6 +42,31 @@ def test_extension_probe_cannot_silently_reenable_the_gil(monkeypatch: pytest.Mo
         runtime.require_free_threaded_runtime(consumer="test")
 
 
+def test_runtime_report_uses_identity_after_extension_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An extension import that enables the GIL cannot leave a passing report."""
+    import sys
+
+    import polylogue.runtime as runtime
+
+    gil_enabled = False
+    monkeypatch.setattr(sys, "_is_gil_enabled", lambda: gil_enabled, raising=False)
+
+    def enable_gil_during_probe() -> tuple[runtime.ExtensionProbe, ...]:
+        nonlocal gil_enabled
+        gil_enabled = True
+        return (runtime.ExtensionProbe("synthetic-native", True, None, (), True),)
+
+    monkeypatch.setattr(runtime, "probe_extensions", enable_gil_during_probe)
+
+    report = runtime.runtime_report()
+    identity = report["runtime"]
+    assert isinstance(identity, dict)
+    assert identity["gil_enabled"] is True
+    assert report["free_threaded_assertion"] is False
+    assert report["extensions_safe"] is True
+    assert report["pass"] is False
+
+
 #: Console scripts that deliberately do NOT establish the runtime contract,
 #: with the reason. An entry here is a decision, not an oversight: adding one
 #: is the deliberate act this test exists to force.

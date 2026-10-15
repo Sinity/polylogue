@@ -10,7 +10,7 @@ from.
 | --- | --- | --- | --- |
 | `nix develop` | Local development, source checkout, verification | `nix develop` | [Contributing](../CONTRIBUTING.md) |
 | Nix flake | NixOS / nix-darwin users | `nix run github:Sinity/polylogue -- --help` | [`flake.nix`](../flake.nix) |
-| PyPI / pipx | Python CLI users | `pipx install polylogue` | `polylogue --version`, `polylogued --help`, `polylogue-mcp --help` |
+| PyPI / pipx | Python CLI users | `pipx install --python python3.14t polylogue` | `polylogue --version`, `polylogued --help`, `polylogue-mcp --help` |
 | GHCR | Container deployments | `podman pull ghcr.io/sinity/polylogue:X.Y.Z` | `podman run --rm --entrypoint polylogue ghcr.io/sinity/polylogue:X.Y.Z --version` |
 | Homebrew | macOS/Linuxbrew users | `brew tap sinity/polylogue && brew install polylogue` | `brew test polylogue` |
 | Browser extension | Browser-capture users | Download the matching release `.zip` / `.xpi` | verify `build-manifest.json` version equals `X.Y.Z` |

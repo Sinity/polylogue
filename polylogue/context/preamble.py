@@ -14,11 +14,11 @@ from polylogue.analysis.lineage_graph import (
     LineageEdgeRole,
     LineageNodeRole,
 )
+from polylogue.archive.message.token_measure import estimate_tokens
 from polylogue.context.scheduler import ContextAssembly, ContextItem, schedule_context
 from polylogue.core.assertions import derive_assertion_context_trust
 from polylogue.core.refs import ExecutionContextRef
 from polylogue.logging import WARNING, emit, get_logger
-from polylogue.surfaces.compaction import estimate_tokens
 from polylogue.surfaces.payloads import (
     AssertionClaimPayload,
     ContextPreamble,
