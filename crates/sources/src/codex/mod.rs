@@ -100,18 +100,26 @@ fn outcome_of_words(o: &str, reason: Option<&str>) -> ToolOutcome {
     }
 }
 
+fn text_parts<'a>(content: Option<&'a Value>) -> impl Iterator<Item = &'a str> {
+    let single = content.and_then(Value::as_str).into_iter();
+    let array = content
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.as_str()
+                .or_else(|| item.get("text").and_then(Value::as_str))
+        });
+    single.chain(array)
+}
 fn texts(content: Option<&Value>) -> Vec<String> {
-    match content {
-        Some(Value::String(s)) => vec![s.clone()],
-        Some(Value::Array(items)) => items
-            .iter()
-            .filter_map(|i| match i {
-                Value::String(s) => Some(s.clone()),
-                _ => i.get("text").and_then(Value::as_str).map(str::to_owned),
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
+    text_parts(content).map(str::to_owned).collect()
+}
+fn has_nonempty_text(content: Option<&Value>) -> bool {
+    let mut parts = text_parts(content);
+    parts
+        .next()
+        .is_some_and(|first| !first.is_empty() || parts.next().is_some())
 }
 
 fn native_duration(item: &Value) -> Option<u64> {
@@ -147,16 +155,23 @@ fn native_outcome(item: &Value) -> (ToolOutcome, Option<i64>) {
     (outcome, exit)
 }
 
+fn has_recorded_output(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::String(_)) => true,
+        Some(Value::Array(items)) => items
+            .iter()
+            .all(|item| item.is_string() || item.get("text").is_some_and(Value::is_string)),
+        Some(Value::Object(object)) => object.get("output").is_some_and(Value::is_string),
+        _ => false,
+    }
+}
 fn recorded_output(value: Option<&Value>) -> Option<ToolOutput> {
+    if !has_recorded_output(value) {
+        return None;
+    }
     match value? {
         Value::String(text) => Some(ToolOutput::Text(text.clone())),
-        Value::Array(items)
-            if items
-                .iter()
-                .all(|item| item.is_string() || item.get("text").is_some_and(Value::is_string)) =>
-        {
-            Some(ToolOutput::Text(texts(value).join("\n")))
-        }
+        Value::Array(_) => Some(ToolOutput::Text(texts(value).join("\n"))),
         Value::Object(object) => object
             .get("output")
             .and_then(Value::as_str)

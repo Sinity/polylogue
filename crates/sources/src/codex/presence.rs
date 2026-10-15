@@ -1,7 +1,7 @@
 //! Source-supplied witnesses, captured beside the single mapping core. Values
 //! remain canonical raw fields, not normalized DTO values. A group has one entry
 //! per semantic slot; replacement removes only that source owner's old fields.
-use super::{is_shell_tool, native_duration, raw, recorded_output, texts};
+use super::{has_nonempty_text, has_recorded_output, is_shell_tool, native_duration, raw};
 use polylogue_model::merge::{BlockField as B, MessageField as M, Slot, UsageField as U};
 use polylogue_model::{BlockSlot, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -125,8 +125,7 @@ pub(super) fn block(
     match kind {
         Kind::Text => {
             let content = item.get("content");
-            let text = texts(content).join("\n");
-            if text.is_empty() {
+            if !has_nonempty_text(content) {
                 return Ok(Group::default());
             }
             group.nonempty_text = true;
@@ -139,7 +138,7 @@ pub(super) fn block(
                 if value(raw).is_some_and(|v| v.is_array() || v.is_string()) {
                     add(B::ThinkingText, raw)?;
                 }
-                group.nonempty_text = !texts(item.get("summary")).join("\n").is_empty();
+                group.nonempty_text = has_nonempty_text(item.get("summary"));
             }
             if let Some(raw) =
                 get("encrypted_content").filter(|raw| value(raw).is_some_and(|v| v.is_string()))
@@ -199,8 +198,7 @@ pub(super) fn block(
             }
             let output = get("aggregated_output").or_else(|| get("output"));
             if let Some(raw) = output.filter(|raw| {
-                owner != Owner::Status
-                    && value(raw).is_some_and(|v| recorded_output(Some(&v)).is_some())
+                owner != Owner::Status && value(raw).is_some_and(|v| has_recorded_output(Some(&v)))
             }) {
                 add(B::Output, raw)?;
             }
