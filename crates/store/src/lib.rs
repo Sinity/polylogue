@@ -88,6 +88,10 @@ fn open(file: &Path, readonly: bool, durable: bool) -> Result<Connection> {
     } | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     db(file, Connection::open_with_flags_and_vfs(file, flags, if durable { "cksmvfs" } else { "unix" }))
 }
+fn counter(conn: &Connection, file: &Path) -> Result<u64> {
+    let text: String = db(file, conn.query_row("SELECT value FROM meta WHERE key='write_counter'",[],|r|r.get(0)))?;
+    text.parse::<u64>().ok().filter(|n| *n <= i64::MAX as u64).ok_or_else(|| Error::Schema(file.into()))
+}
 fn version(conn: &Connection, file: &Path) -> Result<u32> {
     db(file, conn.query_row("PRAGMA user_version", [], |row| row.get(0)))
 }
@@ -219,12 +223,14 @@ impl Writer {
         let hash = BlobHash::of(bytes);
         let h = self.blobs.put(bytes, 3)?;
         private_dir(&self.root.join("blobs").join(&h.hex()[..2]))?;
-        let stored = self.blobs.stored_size(&h)?;
+        let stored = i64::try_from(self.blobs.stored_size(&h)?).map_err(|_| Error::Range)?;
+        let length = i64::try_from(bytes.len()).map_err(|_| Error::Range)?;
         let file = self.root.join("archive.db");
         let tx = db(&file, self.archive.transaction())?;
-        let inserted = db(&file, tx.execute("INSERT OR IGNORE INTO blob(hash,size,stored_size,place,encoding,state) VALUES(?1,?2,?3,'file','plain','present')", params![hash.bytes().as_slice(),bytes.len() as i64,stored as i64]))?;
+        let inserted = db(&file, tx.execute("INSERT OR IGNORE INTO blob(hash,size,stored_size,place,encoding,state) VALUES(?1,?2,?3,'file','plain','present')", params![hash.bytes().as_slice(),length,stored]))?;
         if inserted != 0 {
-            db(&file, tx.execute("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='write_counter'", []))?;
+            let next = counter(&tx, &file)?.checked_add(1).filter(|n| *n <= i64::MAX as u64).ok_or_else(|| Error::Schema(file.clone()))?;
+            db(&file, tx.execute("UPDATE meta SET value=?1 WHERE key='write_counter'", [next.to_string()]))?;
         }
         db(&file, tx.commit())?;
         Ok(hash)
@@ -239,13 +245,13 @@ impl ReadHandle {
     }
     pub fn status(&self) -> Result<Status> {
         let file = self.root.join("archive.db");
-        let write_counter = db(&file,self.archive.query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'",[],|r|r.get(0)))?;
+        let write_counter = counter(&self.archive, &file)?;
         Ok(Status { archive_version: version(&self.archive,&file)?, index_version: version(&self.index,&self.root.join("index.db"))?, embeddings_version: version(&self.embeddings,&self.root.join("embeddings.db"))?, write_counter })
     }
     pub fn read_blob_range(&self, hash: BlobHash, offset: u64, length: u64) -> Result<Vec<u8>> {
         let path = self.root.join("archive.db");
-        let size: Option<u64> = db(&path,self.archive.query_row("SELECT size FROM blob WHERE hash=?1 AND state='present'",[hash.bytes().as_slice()],|r|r.get(0)).optional())?;
-        let size = size.ok_or(Error::UnknownBlob)?;
+        let size: Option<i64> = db(&path,self.archive.query_row("SELECT size FROM blob WHERE hash=?1 AND state='present'",[hash.bytes().as_slice()],|r|r.get(0)).optional())?;
+        let size = u64::try_from(size.ok_or(Error::UnknownBlob)?).map_err(|_| Error::Schema(path.clone()))?;
         if offset.checked_add(length).is_none_or(|end| end > size) { return Err(Error::Range); }
         let store = hashed_blobs::Reader::new(&self.root, vec![]);
         Ok(store.read_range(&hashed_blobs::Hash(*hash.bytes()),offset,length)?)
