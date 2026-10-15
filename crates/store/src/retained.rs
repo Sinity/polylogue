@@ -216,9 +216,9 @@ impl Writer {
             return Ok(None);
         };
         if previous.as_slice() != expected.bytes() {
-            return Err(Error::Invariant(
-                "immutable import request ID reused with changed content".into(),
-            ));
+            return Err(Error::ImportRequestConflict {
+                id: observation.id.to_owned(),
+            });
         }
         let id: String = db(&file, || {
             self.archive.query_row(
@@ -277,9 +277,9 @@ impl Writer {
             self.replay_immutable_import(format, context, observation, metadata_allowance)?
         {
             if previous.id != InputId::imported(&hash, format.name(), context).as_str() {
-                return Err(Error::Invariant(
-                    "immutable import retry supplied different retained bytes".into(),
-                ));
+                return Err(Error::ImportRequestConflict {
+                    id: observation.id.to_owned(),
+                });
             }
             return Ok(previous);
         }

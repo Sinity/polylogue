@@ -151,3 +151,21 @@ fn public_partial_tail_restart_waits_without_advancing_or_claiming_done() {
     assert_eq!(progress(running.socket(), &id)["parser"], after["parser"]);
     assert_eq!(after["canonical_complete"], false);
 }
+
+#[test]
+fn actual_request_conflict_and_invalid_identity_are_typed_before_source_open() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir_in("/tmp").unwrap();
+    let running = Running::start(&temp.path().join("archive"), runtime.path()).unwrap();
+    let first = temp.path().join("first.jsonl");
+    fs::write(&first, b"").unwrap();
+    let id = "01900000-0000-7000-8000-000000000004";
+    assert_eq!(import(running.socket(), &first, id)["outcome"], "ok");
+    let different = temp.path().join("does-not-exist.jsonl");
+    let conflict = import(running.socket(), &different, id);
+    assert_eq!(conflict["error"]["kind"], "conflict", "{conflict}");
+    assert_eq!(conflict["error"]["retryable"], false);
+    let invalid = import(running.socket(), &different, "invalid-request-id");
+    assert_eq!(invalid["error"]["kind"], "invalid_query", "{invalid}");
+    assert_eq!(import(running.socket(), &first, id)["outcome"], "ok");
+}

@@ -47,6 +47,8 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("import request {id} was reused with different content")]
+    ImportRequestConflict { id: String },
     #[error(
         "normalized value chunk of {required} bytes must be split into chunks of at most {maximum} bytes"
     )]

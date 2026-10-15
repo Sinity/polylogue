@@ -9,14 +9,23 @@ fn failed(kind: ErrorKind, message: impl Into<String>) -> Value {
 }
 fn actor_error(error: OwnerError) -> Value {
     let kind = match &error {
-        OwnerError::Busy | OwnerError::Stopped => ErrorKind::Timeout,
+        OwnerError::Busy => ErrorKind::Timeout,
+        OwnerError::Stopped => ErrorKind::NotRunning,
+        OwnerError::Store(polylogue_store::Error::ImportRequestConflict { .. }) => {
+            ErrorKind::Conflict
+        }
+        OwnerError::Store(polylogue_store::Error::ExcisionCheckRequired) => ErrorKind::Refused {
+            reason: "excision-aware collector is not registered".into(),
+        },
         OwnerError::InvalidRequest(_) | OwnerError::RequestTooLarge { .. } => {
             ErrorKind::InvalidQuery
         }
         OwnerError::UnknownInput => ErrorKind::NotFound,
         _ => ErrorKind::Io,
     };
-    failed(kind, error.to_string())
+    let mut failure = Failure::new(kind, error.to_string());
+    failure.retryable = matches!(error, OwnerError::Busy | OwnerError::Stopped);
+    json!({"outcome":"error","error":failure})
 }
 fn receive<T>(
     pending: Result<mpsc::Receiver<Result<T, OwnerError>>, OwnerError>,
