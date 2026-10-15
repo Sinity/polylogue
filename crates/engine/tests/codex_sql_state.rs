@@ -476,6 +476,16 @@ fn sealed_partial_application_restarts_without_reinterpreting_and_rejects_stale_
 
 fn prefix(n: usize) -> String {
     let mut bytes = header();
+    // Keep the early suffix unsettled while unrelated completed calls grow.
+    bytes += &line(
+        "response_item",
+        json!({"type":"function_call","id":"early","name":"exec_command","call_id":"early","arguments":"{}"}),
+    );
+    bytes += &line(
+        "response_item",
+        json!({"type":"function_call_output","call_id":"early","output":"Process running with session ID 7"}),
+    );
+    bytes += &line("event_msg", json!({"type":"token_count","info":null}));
     for i in 0..n {
         bytes += &line(
             "response_item",
@@ -483,7 +493,7 @@ fn prefix(n: usize) -> String {
         );
         bytes += &line(
             "response_item",
-            json!({"type":"function_call","id":format!("a{i}"),"name":"tool","call_id":format!("c{i}"),"arguments":"{}"}),
+            json!({"type":"function_call","id":format!("a{i}"),"name":"exec_command","call_id":format!("c{i}"),"arguments":"{}"}),
         );
         bytes += &line(
             "response_item",
@@ -523,7 +533,7 @@ fn fixed_suffix_sqlite_access_does_not_scale_with_unrelated_unique_prefix() {
         usage.push(attempt.usage());
     }
     assert_eq!(usage[0].cells, usage[1].cells);
-    assert!(usage[1].cells <= 16);
+    assert!(usage[1].cells <= 33);
     assert!(usage[1].encoded_bytes < 16384);
     assert!(
         usage[0].encoded_bytes.abs_diff(usage[1].encoded_bytes) < 256,
