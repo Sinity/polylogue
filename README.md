@@ -139,4 +139,3 @@ pass. New runs record start/end times and invocation. Older JSON can be viewed
 with `python3 scripts/morrow_report.py PATH/result.json`; missing historical
 timestamps remain unknown. Artifact links are relative and refuse files outside
 the report tree, so copy the whole run directory when relocating it.
-
