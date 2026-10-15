@@ -505,3 +505,161 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
     assert!(out.stdout.is_empty());
     assert!(String::from_utf8_lossy(&out.stderr).contains("order is unresolved"));
 }
+
+fn wait_import(world: &World, path: &Path, request_id: &str, timeout: &str) -> Output {
+    let context = world.work.path().join("context.json");
+    fs::write(
+        &context,
+        json!({"version":1,"context":["claude-main",SID]}).to_string(),
+    )
+    .unwrap();
+    world.cli(&[
+        "import",
+        path.to_str().unwrap(),
+        "--format",
+        "claude-code-jsonl",
+        "--context",
+        context.to_str().unwrap(),
+        "--request-id",
+        request_id,
+        "--seen-at",
+        "17",
+        "--machine",
+        "00112233445566778899aabbccddeeff",
+        "--host",
+        "synthetic-collector",
+        "--wait",
+        "--wait-timeout",
+        timeout,
+    ])
+}
+#[test]
+fn source_row_wait_settles_fixed_basis_then_provider_loss_restart_replays_without_claiming_session_complete()
+ {
+    let mut world = World::new();
+    let bytes = simple("wait-row", json!("settled retained prompt"));
+    let path = world.input("wait.jsonl", &bytes);
+    let id = "01900000-0000-7000-8000-000000000401";
+    let output = wait_import(&world, &path, id, "20");
+    assert_eq!(output.status.code(), Some(0), "{output:?}; {}", world.log());
+    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(receipt.get("canonical_complete").is_none());
+    assert_eq!(receipt["source_rows"]["scope"], "imported_source_rows");
+    assert_eq!(receipt["source_rows"]["state"], "settled");
+    assert_eq!(receipt["source_rows"]["basis"]["length"], bytes.len());
+    let read = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(read.status.code(), Some(5));
+    let first: Value = serde_json::from_slice(&read.stdout).unwrap();
+    fs::remove_file(&path).unwrap();
+    world.restart();
+    let replay = wait_import(&world, &path, id, "20");
+    assert_eq!(replay.status.code(), Some(0), "{replay:?}");
+    let again: Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(again["retained"], receipt["retained"]);
+    assert_eq!(again["source_rows"], receipt["source_rows"]);
+    let read = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(read.status.code(), Some(5));
+    let second: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(first["messages"], second["messages"]);
+}
+#[test]
+fn malformed_source_wait_keeps_usable_rows_degraded_and_names_retained_failure() {
+    let mut world = World::new();
+    let mut bytes = simple("malformed-row", json!("known retained row"));
+    bytes.extend_from_slice(b"{not json}\n");
+    let path = world.input("malformed-wait.jsonl", &bytes);
+    let id = "01900000-0000-7000-8000-000000000402";
+    let output = wait_import(&world, &path, id, "20");
+    assert_eq!(output.status.code(), Some(5), "{output:?}; {}", world.log());
+    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(receipt["source_rows"]["state"], "unavailable");
+    assert_eq!(receipt["source_rows"]["usable_result"], true);
+    assert_eq!(receipt["unknown"]["record_errors"], 1);
+    assert!(!receipt["notes"].as_array().unwrap().is_empty());
+    let read = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(read.status.code(), Some(5));
+    fs::remove_file(&path).unwrap();
+    world.restart();
+    let replay = wait_import(&world, &path, id, "20");
+    assert_eq!(replay.status.code(), Some(5), "{replay:?}");
+}
+#[test]
+fn incomplete_source_wait_times_out_without_certifying_from_a_later_peer() {
+    let world = World::new();
+    let mut bytes = simple("partial-row", json!("known prefix"));
+    bytes.extend_from_slice(b"{\"unfinished\":");
+    let path = world.input("partial-wait.jsonl", &bytes);
+    let id = "01900000-0000-7000-8000-000000000403";
+    let output = wait_import(&world, &path, id, "0");
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
+    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let peer = world.input("peer-wait.jsonl", b"\n");
+    let complete = wait_import(&world, &peer, "01900000-0000-7000-8000-000000000404", "20");
+    assert_eq!(complete.status.code(), Some(0), "{complete:?}");
+    let output = wait_import(&world, &path, id, "1");
+    assert_eq!(output.status.code(), Some(7), "{output:?}");
+    let later: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        later["source_rows"]["basis"],
+        receipt["source_rows"]["basis"]
+    );
+    assert_eq!(later["source_rows"]["state"], "pending");
+    assert!(
+        later["retained"]["id"]
+            != serde_json::from_slice::<Value>(&complete.stdout).unwrap()["retained"]["id"]
+    );
+}
+
+#[test]
+fn disconnecting_a_source_waiter_keeps_the_retained_owner_and_peer_available() {
+    let world = World::new();
+    let mut bytes = simple("disconnect-row", json!("prefix"));
+    bytes.extend_from_slice(b"{\"unfinished\":");
+    let path = world.input("disconnect-wait.jsonl", &bytes);
+    let id = "01900000-0000-7000-8000-000000000405";
+    let receipt = world.import(&path, id);
+    let context = world.work.path().join("context.json");
+    let mut client = OwnedChild(
+        world
+            .command()
+            .args([
+                "import",
+                path.to_str().unwrap(),
+                "--format",
+                "claude-code-jsonl",
+                "--context",
+                context.to_str().unwrap(),
+                "--request-id",
+                id,
+                "--seen-at",
+                "17",
+                "--machine",
+                "00112233445566778899aabbccddeeff",
+                "--host",
+                "synthetic-collector",
+                "--wait",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let p = world.raw_progress(receipt["retained"]["id"].as_str().unwrap());
+        if p["parser"]["status"] == "waiting_tail" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{p}");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(client.0.try_wait().unwrap().is_none());
+    drop(client);
+    let peer = world.input("after-disconnect.jsonl", b"\n");
+    let output = wait_import(&world, &peer, "01900000-0000-7000-8000-000000000406", "20");
+    assert_eq!(output.status.code(), Some(0), "{output:?}; {}", world.log());
+    assert_eq!(
+        world.raw_progress(receipt["retained"]["id"].as_str().unwrap())["source_rows"]["state"],
+        "pending"
+    );
+}

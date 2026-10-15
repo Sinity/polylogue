@@ -24,6 +24,17 @@ pub(crate) fn wait(socket: &Path, mut retained: Value, duration: Duration) -> Va
             );
         }
     };
+    if retained["retained"]["id"].as_str() != Some(captured.basis.input.as_str())
+        || retained["retained"]["chain"].as_i64() != Some(captured.basis.chain)
+        || retained["retained"]["length"].as_u64() != Some(captured.basis.length)
+        || captured.basis.revision != 1
+    {
+        return failure(
+            retained,
+            ErrorKind::Io,
+            "source settlement basis differs from the admitted retained input",
+        );
+    }
     let deadline = Instant::now() + duration;
     loop {
         let rows: SourceRows = match serde_json::from_value(retained["source_rows"].clone()) {
@@ -89,5 +100,38 @@ pub(crate) fn wait(socket: &Path, mut retained: Value, duration: Duration) -> Va
             );
         }
         retained["source_rows"] = reply["source_rows"].clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn pending() -> Value {
+        json!({"outcome":"ok","retained":{"id":"synthetic","chain":1,"length":7},"source_rows":{"scope":"imported_source_rows","basis":{"input":"synthetic","original_hash":polylogue_model::BlobHash::of(b"raw"),"chain":1,"revision":1,"length":7,"parser_version":1,"interpretation":polylogue_model::BlobHash::of(b"basis")},"state":"pending","obligations":["canonical rows"]}})
+    }
+    #[test]
+    fn zero_wait_preserves_receipt_and_never_converts_pending_into_empty() {
+        let output = wait(Path::new("/synthetic/unused"), pending(), Duration::ZERO);
+        assert_eq!(output["error"]["kind"], "timeout");
+        assert_eq!(output["retained"]["id"], "synthetic");
+        assert_eq!(output["source_rows"]["state"], "pending");
+    }
+    #[test]
+    fn wrong_admission_identity_or_unknown_basis_refuses_before_settled_success() {
+        for field in ["input", "chain", "length", "revision"] {
+            let mut reply = pending();
+            reply["source_rows"]["state"] = json!("settled");
+            reply["source_rows"]
+                .as_object_mut()
+                .unwrap()
+                .remove("obligations");
+            reply["source_rows"]["basis"][field] = if field == "input" {
+                json!("foreign")
+            } else {
+                json!(9)
+            };
+            let output = wait(Path::new("/synthetic/unused"), reply, Duration::ZERO);
+            assert_eq!(output["outcome"], "error", "{field}: {output}");
+        }
     }
 }

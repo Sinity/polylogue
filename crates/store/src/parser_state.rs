@@ -15,7 +15,7 @@ macro_rules! sql {
 
 pub mod prepared;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Token {
     pub index_generation: String,
     pub input_pk: i64,

@@ -19,16 +19,13 @@ pub const RECIPE: u32 = 1;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
-    pub generation: i64,
-    pub step: i64,
-    pub basis: BlobHash,
+    pub predecessor: Token,
+    pub dispositions: [u64; 5],
     pub rows: SourceRows,
 }
 impl Receipt {
     pub fn validate(&self, token: &Token, basis: &SourceRowBasis) -> Result<()> {
-        if self.generation != token.generation
-            || self.step != token.step
-            || self.basis.bytes() != &token.basis
+        if &self.predecessor != token
             || &self.rows.basis != basis
             || self.rows.scope != SourceRowScope::ImportedSourceRows
             || matches!(self.rows.state, SourceRowState::Pending { .. })
@@ -75,6 +72,34 @@ pub fn read(snapshot: &Snapshot, input: &ImmutableImport) -> Result<Option<Recei
     let receipt: Receipt = serde_json::from_slice(&value)
         .map_err(|_| Error::Invariant("invalid source row settlement receipt".into()))?;
     receipt.validate(&snapshot.head.token, &basis(input))?;
+    let h = &snapshot.head;
+    let counts = [
+        h.counts.framed,
+        h.counts.used,
+        h.counts.ignored,
+        h.counts.unrecognized,
+        h.counts.undecodable,
+    ];
+    let valid_state = match &receipt.rows.state {
+        SourceRowState::Settled => h.status == "done" && !h.finalization_pending,
+        SourceRowState::Unavailable {
+            notes,
+            record_errors,
+            ..
+        } => {
+            h.status == "finalizing"
+                && h.finalization_pending
+                && !notes.is_empty()
+                && *record_errors == h.counts.undecodable
+        }
+        SourceRowState::Pending { .. } => false,
+    };
+    if receipt.dispositions != counts || !valid_state {
+        return Err(Error::Invariant(
+            "source row receipt disagrees with its retained completion authority".into(),
+        )
+        .into());
+    }
     Ok(Some(receipt))
 }
 #[derive(Clone)]
@@ -309,9 +334,14 @@ impl Audit {
             }
         };
         Ok(Turn::Complete(Receipt {
-            generation: head.token.generation,
-            step: head.token.step,
-            basis: BlobHash::from_bytes(head.token.basis),
+            predecessor: head.token.clone(),
+            dispositions: [
+                head.counts.framed,
+                head.counts.used,
+                head.counts.ignored,
+                head.counts.unrecognized,
+                head.counts.undecodable,
+            ],
             rows: SourceRows {
                 scope: SourceRowScope::ImportedSourceRows,
                 basis: basis(input),
