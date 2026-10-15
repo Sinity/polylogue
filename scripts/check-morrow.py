@@ -35,6 +35,22 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def qualification(value, record_errors, label):
+    require(isinstance(value, dict), f"{label}: missing result qualifier")
+    wanted = "degraded" if record_errors else "ok"
+    require(value.get("outcome") == wanted, f"{label}: expected {wanted} outcome")
+    require(isinstance(value.get("notes"), list)
+            and all(isinstance(n, str) and n.strip() for n in value["notes"]),
+            f"{label}: result diagnostics are missing or malformed")
+    require(isinstance(value.get("unknown"), dict), f"{label}: missing unknown coverage")
+    if record_errors:
+        require(bool(value["notes"]), f"{label}: retained interpretation failure needs diagnostics")
+        unknown = value.get("unknown")
+        require(isinstance(unknown, dict) and type(unknown.get("record_errors")) is int
+                and unknown["record_errors"] == record_errors,
+                f"{label}: wrong retained interpretation failure coverage")
+
+
 def load(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -167,25 +183,35 @@ class Run:
                 "Morrow requires an explicit v1 main-transcript import context")
         context_path = self.output / f"{name}-import-context.json"
         context_path.write_text(json.dumps(context, indent=2) + "\n")
+        errors = expected.get("record_errors", 0)
         admitted = self.client(archive, "import", str(path), "--format", "claude-code-jsonl",
-                               "--context", str(context_path), "--wait", "--json")
-        require(admitted.get("canonical_complete") is True,
-                "import --wait did not affirm canonical completion; source EOF is insufficient")
+                               "--context", str(context_path), "--wait", "--json", expected=(5,) if errors else (0,))
+        if errors:
+            qualification(admitted, errors, "import --wait")
+            require(admitted.get("canonical_complete") is False,
+                    "retained interpretation failure cannot affirm canonical completion")
+        else:
+            require(admitted.get("canonical_complete") is True,
+                    "import --wait did not affirm canonical completion; source EOF is insufficient")
         self.answers(archive, expected, name, checker)
 
     def answers(self, archive, expected, name, checker):
         sid = expected["session_id"]
-        listing = self.client(archive, sid, "--json", expected=(1,) if expected["sessions"] == 0 else (0,))
+        errors = expected.get("record_errors", 0)
+        exits = (5,) if errors else (0,)
+        listing = self.client(archive, sid, "--json", expected=(1,) if expected["sessions"] == 0 else exits)
         (self.output / f"{name}-query.json").write_text(json.dumps(listing, indent=2) + "\n")
         if expected["sessions"] == 0:
             checker.check("polylogue", expected, listing)
             return
-        require(listing.get("outcome") == "ok" and listing.get("up_to_date") is True,
-                "canonical listing is not completed and fresh")
+        qualification(listing, errors, "listing")
+        require(listing.get("up_to_date") is True,
+                "listing is not fresh; freshness does not imply complete evidence")
         require(listing.get("unit") == "sessions" and type(listing.get("count")) is int and listing["count"] == 1
                 and [row.get("id") for row in listing.get("rows", [])] == [sid]
                 and "next_cursor" in listing and listing["next_cursor"] is None, "wrong exact session selection")
-        answer = self.client(archive, sid, "read", "--format", "json")
+        answer = self.client(archive, sid, "read", "--format", "json", expected=exits)
+        qualification(answer.get("result"), errors, "standalone read")
         (self.output / f"{name}-actual.json").write_text(json.dumps(answer, indent=2) + "\n")
         checker.check("polylogue", expected, answer)
         if self.control == "corrupt-answer":
@@ -203,10 +229,11 @@ class Run:
             self.control_result.update(state="oracle_accepted")
             raise ValueError("oracle accepted the planted answer mutation; control failed")
         export = self.output / f"{name}-export"
-        self.command([self.binary, "--archive", archive, sid, "export", "--format", "json", "--to", export], "export " + name)
+        self.command([self.binary, "--archive", archive, sid, "export", "--format", "json", "--to", export], "export " + name, expected=exits)
         documents = [p for p in export.rglob("*.json") if p.name != "manifest.json"]
         require(len(documents) == 1, "export did not contain exactly one session document")
         exported = json.loads(documents[0].read_text())
+        qualification(exported.get("result"), errors, "exported session")
         checker.check("polylogue", expected, exported)
         def semantic(document):
             return {k: v for k, v in document.items() if k not in {"exported_at", "exported_by"}}
@@ -214,6 +241,7 @@ class Run:
         manifest_path = export / "manifest.json"
         require(manifest_path.is_file(), "export selection manifest is missing")
         manifest = json.loads(manifest_path.read_text())
+        qualification(manifest.get("result"), errors, "export manifest")
         require(manifest.get("format") == "polylogue-export-manifest"
                 and type(manifest.get("version")) is int and manifest["version"] == 1
                 and type(manifest.get("sessions")) is int and manifest["sessions"] == 1

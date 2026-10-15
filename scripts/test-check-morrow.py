@@ -38,7 +38,7 @@ EXPECTED = {"session_id": SID, "sessions": 1, "messages": 1, "human_prompts": ["
             "import_context": {"version": 1, "context": ["claude-main", "synthetic"]},
             "message_facts": [{"id": "claude-code:synthetic:prompt", "role": "user", "written_by": "human", "at": "2026-10-15T10:00:00.000Z",
                                "blocks": [{"id": "claude-code:synthetic:prompt:0", "kind": "text", "text": "retained prompt"}]}]}
-ANSWER = {"format": "polylogue-session", "version": 1, "session": {"id": SID},
+ANSWER = {"result": {"outcome":"ok","notes":[],"unknown":{}}, "format": "polylogue-session", "version": 1, "session": {"id": SID},
           "messages": [{"id": "claude-code:synthetic:prompt", "role": "user", "written_by": "human", "at": "2026-10-15T10:00:00.000Z",
                         "blocks": [{"id": "claude-code:synthetic:prompt:0", "kind": "text", "text": "retained prompt"}]}]}
 
@@ -47,7 +47,7 @@ class CapturedReplies(driver.Run):
     def client(self, archive, *argv, **kwargs):
         if "read" in argv:
             return deepcopy(ANSWER)
-        return {"outcome": "ok", "up_to_date": True, "unit": "sessions",
+        return {"outcome": "ok", "notes":[], "unknown":{}, "up_to_date": True, "unit": "sessions",
                 "count": 1, "rows": [{"id": SID}], "next_cursor": None}
 
     def command(self, *argv, **kwargs):
@@ -65,6 +65,84 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaises(ValueError) as error:
             run.answers(self.output / "unused", EXPECTED, "base", oracle)
         return run, str(error.exception)
+
+    def captured_case(self, errors=1):
+        run = driver.Run(self.output, None)
+        expected = deepcopy(EXPECTED)
+        expected["record_errors"] = errors
+        qualifier = {"outcome":"degraded" if errors else "ok",
+                     "notes":["one retained undecodable record"] if errors else [],
+                     "unknown":{"record_errors":errors} if errors else {}}
+        calls=[]
+        def client(archive, *argv, **kwargs):
+            calls.append((argv,kwargs))
+            if "import" in argv:
+                return dict(qualifier, canonical_complete=not errors)
+            if "read" in argv:
+                return dict(deepcopy(ANSWER), result=deepcopy(qualifier))
+            return dict(deepcopy(qualifier),up_to_date=True,unit="sessions",count=1,rows=[{"id":SID}],next_cursor=None)
+        def command(argv, label, **kwargs):
+            calls.append((argv,kwargs))
+            export=Path(argv[-1]);export.mkdir()
+            (export/'session.json').write_text(json.dumps(dict(deepcopy(ANSWER),result=qualifier)))
+            (export/'manifest.json').write_text(json.dumps({"format":"polylogue-export-manifest","version":1,"sessions":1,"up_to_date":True,"result":qualifier}))
+            return ""
+        run.client=client;run.command=command
+        return run,expected,calls
+
+    def test_malformed_usable_result_is_degraded_through_wait_read_and_export(self):
+        run,expected,calls=self.captured_case()
+        run.admit(self.output/'archive',self.output/'input',expected,'malformed',checker)
+        self.assertEqual(len(calls),4)
+        self.assertTrue(all(kw['expected']==(5,) for _,kw in calls))
+        actual=json.loads((self.output/'malformed-actual.json').read_text())
+        self.assertEqual(actual['result']['unknown'],{'record_errors':1})
+        self.assertEqual(actual['messages'],ANSWER['messages'])
+
+    def test_base_still_requires_zero_exit_and_ok_qualified_artifacts(self):
+        run,expected,calls=self.captured_case(0)
+        run.admit(self.output/'archive',self.output/'input',expected,'base',checker)
+        self.assertTrue(all(kw['expected']==(0,) for _,kw in calls))
+
+    def test_malformed_wait_rejects_false_success_missing_diagnostics_and_wrong_coverage(self):
+        for mutation in [dict(outcome='ok'),dict(canonical_complete=True),dict(canonical_complete=None),dict(notes=[]),dict(unknown={}),dict(unknown={'record_errors':True})]:
+            output=self.output/str(len(list(self.output.iterdir())));output.mkdir()
+            run=driver.Run(output,None)
+            comparisons=[];run.answers=lambda *a: comparisons.append(a)
+            receipt={'outcome':'degraded','canonical_complete':False,'notes':['one undecodable record'],'unknown':{'record_errors':1}}
+            receipt.update(mutation);run.client=lambda *a,**kw: receipt
+            expected=dict(EXPECTED,record_errors=1)
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):
+                run.admit(output/'archive',output/'input',expected,'malformed',checker)
+            self.assertEqual(comparisons,[])
+
+    def test_malformed_cannot_accept_ok_listing_or_unqualified_standalone_document(self):
+        for where in ['listing','read']:
+            output=self.output/where;output.mkdir()
+            run=driver.Run(output,None)
+            def client(archive,*argv,**kwargs):
+                if 'read' in argv: return deepcopy(ANSWER)
+                return {'outcome':'ok' if where=='listing' else 'degraded','up_to_date':True,'notes':['undecodable record'],'unknown':{'record_errors':1},'unit':'sessions','count':1,'rows':[{'id':SID}],'next_cursor':None}
+            run.client=client
+            with self.subTest(where=where),self.assertRaises(ValueError):
+                run.answers(output/'archive',dict(EXPECTED,record_errors=1),'malformed',checker)
+
+    def test_export_cannot_drop_or_upgrade_its_qualifiers(self):
+        for target in ['session.json','manifest.json']:
+            for replacement in [None,{'outcome':'ok','notes':[],'unknown':{}}]:
+                output=self.output/str(len(list(self.output.iterdir())));output.mkdir()
+                old=self.output;self.output=output
+                run,expected,_=self.captured_case();self.output=old
+                command=run.command
+                def altered(argv,label,**kwargs):
+                    result=command(argv,label,**kwargs)
+                    path=Path(argv[-1])/target;value=json.loads(path.read_text())
+                    if replacement is None:value.pop('result')
+                    else:value['result']=replacement
+                    path.write_text(json.dumps(value));return result
+                run.command=altered
+                with self.subTest(target=target,replacement=replacement),self.assertRaises(ValueError):
+                    run.admit(output/'archive',output/'input',expected,'malformed',checker)
 
     def test_snapshot_append_preserves_prefix_and_refuses_replacement(self):
         provider, prepared = self.output / 'provider.jsonl', self.output / 'prepared.jsonl'
@@ -138,7 +216,7 @@ class ControllerTests(unittest.TestCase):
                         {"canonical_complete": 0}, {"canonical_complete": 1},
                         {"canonical_complete": "true"}]:
             with self.subTest(receipt=receipt):
-                run.client = lambda *a: receipt
+                run.client = lambda *a, **kw: receipt
                 with self.assertRaisesRegex(ValueError, "canonical completion"):
                     run.admit(self.output / "archive", self.output / "input", EXPECTED, "base", checker)
         self.assertEqual(comparisons, [])
@@ -146,7 +224,7 @@ class ControllerTests(unittest.TestCase):
     def test_affirmative_completion_proceeds_to_independent_answer_comparison(self):
         run = driver.Run(self.output, None)
         comparisons = []
-        run.client = lambda *a: {"canonical_complete": True}
+        run.client = lambda *a, **kw: {"canonical_complete": True}
         run.answers = lambda *a: comparisons.append(a)
         run.admit(self.output / "archive", self.output / "input", EXPECTED, "base", checker)
         self.assertEqual(len(comparisons), 1)
@@ -155,7 +233,7 @@ class ControllerTests(unittest.TestCase):
     def test_loose_import_retains_explicit_context_and_passes_exact_file(self):
         run = driver.Run(self.output, None)
         calls = []
-        run.client = lambda *a: calls.append(a) or {"canonical_complete": True}
+        run.client = lambda *a, **kw: calls.append(a) or {"canonical_complete": True}
         run.answers = lambda *a: None
         expected = deepcopy(EXPECTED)
         # The native ID is declared independently; never split the opaque reference.

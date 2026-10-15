@@ -110,8 +110,12 @@ failures remain distinguishable. `scripts/test-check-morrow.py --checker PATH`
 tests that reporting boundary with synthetic replies and broken oracles; optional
 `--binary /nix/store/.../bin/polylogue` adds the real launch refusal. These are
 controller checks, not canonical-product acceptance.
-The driver requires `import --wait` to affirm `canonical_complete: true`
-before comparing answers. A missing, null or mistyped field cannot stand in
+The base/append cases require `import --wait` to affirm `canonical_complete: true`
+before comparing answers. The malformed case instead requires degraded exit5,
+`canonical_complete: false`, and the retained interpretation failure in result
+diagnostics/unknown coverage through wait, listing, read and export. Its known
+rows still face the unchanged oracle; freshness may be true despite degradation.
+Standalone documents and manifests must retain their own result qualifiers. A missing, null or mistyped field cannot stand in
 for completion; this assertion alone does not qualify source accounting.
 Source accounting, provenance, observed durability boundaries, provider loss
 and real MCP acceptance remain separate unfinished checks in the report.
