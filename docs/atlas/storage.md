@@ -748,6 +748,17 @@ never create missing tiers. Named-source freshness reads current cursor progress
 only from ops `ingest_cursor`; a missing offset remains unknown, and successful
 empty canonical state cannot inherit progress from a retired index table.
 
+Embedding success verifies desired references and retires obsolete references in
+pages within the same guarded transaction. Queries reserve the session binding
+under the actual connection's SQLite variable limit, and each page observes
+cancellation. Failed or cancelled completion rolls back reference cleanup;
+shared purchased vectors remain intact. An empty desired set can complete only
+an actually empty source identity.
+
+Hermes profile-qualified identity joins use literal binary prefix bounds. An
+opaque raw ID containing percent, underscore or differing case cannot borrow
+another session's messages or parent topology.
+
 ## Embedding contract transitions
 
 Acquisition checks all retained producer contracts in the active Embeddings

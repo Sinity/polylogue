@@ -120,7 +120,7 @@ from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.sources.parsers.claude.orchestration import (
     parse_claude_orchestration_artifact,
 )
-from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
+from polylogue.sources.parsers.hermes_identity import qualified_session_id_bounds, split_qualified_session_id
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, _prepared_reader, normalize_active_branch
 from polylogue.sources.sidecar_evidence import SidecarResolver
@@ -16636,9 +16636,9 @@ def _resolved_hermes_parent_native_id(conn: sqlite3.Connection, origin_value: st
         return parent_native_id
     rows = conn.execute(
         """SELECT native_id FROM sessions
-           WHERE origin = ? AND (native_id = ? OR native_id LIKE ? || '@profile-%')
-           ORDER BY native_id""",
-        (origin_value, raw_id, raw_id),
+           WHERE origin = ? AND (native_id = ? OR (native_id >= ? AND native_id < ?))
+           ORDER BY native_id LIMIT 2""",
+        (origin_value, raw_id, *qualified_session_id_bounds(raw_id)),
     ).fetchall()
     # Exactly one conversational session carries this raw id, so the qualifier
     # mismatch was an acquisition-path artifact, not a real ambiguity. Two or

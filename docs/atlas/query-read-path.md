@@ -526,3 +526,8 @@ message totals independently of projected survivors. No reader or scratch
 transaction crosses an external page request. Late faults and cancellation
 propagate before a result is returned, and native scratch custody closes the
 private context on its creator. Default projections retain the direct page path.
+
+A topology wire bound resumes at its first withheld node, even if the upstream
+page has a later continuation. Usage timeline first-page optimization keeps
+undated events in dated sessions; those events use the session's bucket rather
+than disappearing behind a timestamp cutoff.

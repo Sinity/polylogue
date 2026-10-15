@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -25,13 +26,13 @@ from devtools.agentctl_service_context import require_declared_operation_context
 from devtools.isolated_environment import isolated_home_environment
 from devtools.native_transport_proof import scoped_native_transport_proof
 from devtools.shared_chrome_lock import shared_chrome_extension_lock
+from polylogue.browser_capture.receiver import load_or_mint_receiver_token
 from polylogue.browser_capture.server import make_server
+from polylogue.daemon.api_auth import load_or_mint_api_auth_token
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 _MAX_ERROR_MESSAGE = 512
 _RECEIVER_ORIGIN = "chrome-extension://polylogue-agentctl-proof"
-_RECEIVER_TOKEN = "polylogue-agentctl-proof-token"
-_API_TOKEN = "polylogue-agentctl-proof-api-token"
 _SHARED_CHROME_TIMEOUT_S = 150
 _CHILD_ERROR_TAIL_CHARS = 384
 _DETERMINISTIC_PROVIDERS = ("chatgpt", "claude-ai")
@@ -50,8 +51,16 @@ def _require_agentctl_operation_context() -> None:
 
 def _service_paths() -> tuple[Path, Path]:
     """Place disposable proof state under the per-job temporary root."""
-    root = Path(tempfile.gettempdir()).resolve() / "polylogue-dev-loop-proof"
+    root = Path(tempfile.mkdtemp(prefix="polylogue-dev-loop-proof-", dir=tempfile.gettempdir()))
     return root / "archive", root / "artifacts"
+
+
+def _proof_tokens(archive_root: Path) -> tuple[str, str]:
+    """Mint private per-run credentials in the daemon's normal token files."""
+    return (
+        load_or_mint_receiver_token(archive_root / "browser-capture-receiver-token", rotate=True),
+        load_or_mint_api_auth_token(archive_root / "api-auth-token", rotate=True),
+    )
 
 
 def _share_source_fingerprint_memo(home: Path) -> None:
@@ -89,6 +98,8 @@ def _proof_environment(*, archive_root: Path, artifact_root: Path) -> dict[str, 
         {
             "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
             "POLYLOGUE_API_PORT": "0",
+            "POLYLOGUE_API_ALLOW_NO_AUTH": "0",
+            "POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH": "0",
             "POLYLOGUE_BROWSER_CAPTURE_PORT": "0",
         }
     )
@@ -158,11 +169,12 @@ def _receiver_post(*, port: int, body: object, token: str | None) -> tuple[int, 
 def run_receiver_smoke(*, spool_path: Path) -> dict[str, object]:
     """Keep the deterministic, in-process receiver-auth smoke product-owned."""
     spool_path.mkdir(parents=True, exist_ok=True)
+    receiver_token = secrets.token_urlsafe(32)
     server = make_server(
         "127.0.0.1",
         0,
         spool_path=spool_path,
-        auth_token=_RECEIVER_TOKEN,
+        auth_token=receiver_token,
         extra_origins=(_RECEIVER_ORIGIN,),
     )
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -170,7 +182,7 @@ def run_receiver_smoke(*, spool_path: Path) -> dict[str, object]:
     try:
         _host, port = server.server_address[:2]
         rejected_status, _rejected = _receiver_post(port=port, body=_receiver_payload(), token=None)
-        accepted_status, accepted = _receiver_post(port=port, body=_receiver_payload(), token=_RECEIVER_TOKEN)
+        accepted_status, accepted = _receiver_post(port=port, body=_receiver_payload(), token=receiver_token)
     finally:
         server.shutdown()
         server.server_close()
@@ -264,10 +276,6 @@ def _start_daemon(
         "0",
         "--listener-info-path",
         str(listener_info_path),
-        "--browser-capture-auth-token",
-        _RECEIVER_TOKEN,
-        "--api-auth-token",
-        _API_TOKEN,
         "--no-source-catchup",
     ]
     with log_path.open("w", encoding="utf-8") as log_file:
@@ -330,7 +338,9 @@ def _run_shared_chrome_control_locked(
     return payload
 
 
-def _submit_deterministic_captures(*, capture_port: int, session_id: str) -> dict[str, dict[str, str]]:
+def _submit_deterministic_captures(
+    *, capture_port: int, session_id: str, receiver_token: str
+) -> dict[str, dict[str, str]]:
     """Keep receiver, archive, and API convergence deterministic and browser-free."""
     captures: dict[str, dict[str, str]] = {}
     for provider in _DETERMINISTIC_PROVIDERS:
@@ -338,7 +348,7 @@ def _submit_deterministic_captures(*, capture_port: int, session_id: str) -> dic
         status, _accepted = _receiver_post(
             port=capture_port,
             body=_receiver_payload(provider=provider, session_id=provider_session_id),
-            token=_RECEIVER_TOKEN,
+            token=receiver_token,
         )
         if status != 202:
             raise RuntimeError(f"deterministic {provider} capture was not accepted")
@@ -347,13 +357,13 @@ def _submit_deterministic_captures(*, capture_port: int, session_id: str) -> dic
 
 
 def _poll_archive_state(
-    *, receiver_url: str, provider: str, provider_session_id: str, timeout_s: float
+    *, receiver_url: str, provider: str, provider_session_id: str, timeout_s: float, receiver_token: str
 ) -> dict[str, object] | None:
     query = urlencode({"provider": provider, "provider_session_id": provider_session_id})
     deadline = time.monotonic() + timeout_s
     while time.monotonic() <= deadline:
         try:
-            status, payload = _http_get_json(f"{receiver_url}/v1/archive-state?{query}", bearer_token=_RECEIVER_TOKEN)
+            status, payload = _http_get_json(f"{receiver_url}/v1/archive-state?{query}", bearer_token=receiver_token)
         except OSError:
             status, payload = 0, {}
         if status == 200 and payload.get("raw_row_exists") is True and payload.get("indexed_session_exists") is True:
@@ -362,10 +372,10 @@ def _poll_archive_state(
     return None
 
 
-def _fetch_api_messages(*, api_url: str, session_id: str) -> bool:
+def _fetch_api_messages(*, api_url: str, session_id: str, api_token: str) -> bool:
     status, payload = _http_get_json(
         f"{api_url}/api/sessions/{quote(session_id, safe='')}/messages?limit=5",
-        bearer_token=_API_TOKEN,
+        bearer_token=api_token,
     )
     messages = payload.get("messages")
     if status != 200 or payload.get("session_id") != session_id or not isinstance(messages, list) or not messages:
@@ -447,6 +457,7 @@ def run_proof(
     archive_root, artifact_root = _service_paths()
     artifact_root.mkdir(parents=True, exist_ok=True)
     initialize_active_archive_root(archive_root)
+    receiver_token, api_token = _proof_tokens(archive_root)
     receiver_auth = run_receiver_smoke(spool_path=artifact_root / "receiver-auth")
     if receiver_auth.get("ok") is not True:
         raise RuntimeError("receiver authentication proof failed")
@@ -477,7 +488,9 @@ def run_proof(
                 native_environment["POLYLOGUE_DEV_LOOP_DIAGNOSTIC_PATH"] = str(diagnostic_path.absolute())
             chrome_proof = _run_shared_chrome_control(repo_root=checkout, proof_environment=native_environment)
         providers = _validated_provider_captures(
-            _submit_deterministic_captures(capture_port=capture_port, session_id=session_id)
+            _submit_deterministic_captures(
+                capture_port=capture_port, session_id=session_id, receiver_token=receiver_token
+            )
         )
         archive_ok = False
         api_ok = False
@@ -490,11 +503,13 @@ def run_proof(
                 provider=provider,
                 provider_session_id=provider_session_id,
                 timeout_s=readiness_timeout_s,
+                receiver_token=receiver_token,
             )
             indexed_session_id = archive_state.get("indexed_session_id") if archive_state is not None else None
             provider_api_ok = isinstance(indexed_session_id, str) and _fetch_api_messages(
                 api_url=api_url,
                 session_id=indexed_session_id,
+                api_token=api_token,
             )
             convergence[provider] = {
                 "archive": archive_state is not None,
