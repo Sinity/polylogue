@@ -13,7 +13,8 @@ from pathlib import Path
 from sqlite3 import Connection
 from typing import Any
 
-_SNAPSHOT_HASH_CHUNK_BYTES = 1024 * 1024
+from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
+from polylogue.storage.sqlite.physical_file import open_physical_identity, physical_identity_operation
 
 
 class IndexSnapshotRaceError(RuntimeError):
@@ -55,9 +56,8 @@ class OpenedIndexFileSet:
 
 def _open_regular_index_file(path: Path, *, sidecar: bool, missing_ok: bool = False) -> int:
     """Open one selected index object without blocking on non-regular files."""
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        descriptor = os.open(path, flags)
+        descriptor = open_physical_identity(path)
     except FileNotFoundError:
         if missing_ok:
             raise
@@ -75,8 +75,8 @@ def _open_regular_index_file(path: Path, *, sidecar: bool, missing_ok: bool = Fa
             label = "selected index sidecar" if sidecar else "selected index"
             raise error(f"{label} is not a regular file: {path}")
         return descriptor
-    except BaseException:
-        os.close(descriptor)
+    except BaseException as primary:
+        _close_failed_native_construction(NativeSQLCustodyOwner(None, anchored_descriptors=(descriptor,)), primary)
         raise
 
 
@@ -90,9 +90,13 @@ def open_index_file_set(index_db: Path) -> Iterator[OpenedIndexFileSet]:
         file_set = OpenedIndexFileSet(main_fd=main_fd, sidecar_fds={}, _descriptors=descriptors)
         file_set.capture_sidecars(index_db)
         yield file_set
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+    except BaseException as primary:
+        _close_failed_native_construction(
+            NativeSQLCustodyOwner(None, anchored_descriptors=tuple(reversed(descriptors))), primary
+        )
+        raise
+    else:
+        NativeSQLCustodyOwner(None, anchored_descriptors=tuple(reversed(descriptors))).close()
 
 
 @contextmanager
@@ -102,23 +106,10 @@ def open_index_file_handle(index_db: Path) -> Iterator[int]:
         yield file_set.main_fd
 
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(_SNAPSHOT_HASH_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _file_sha256_descriptor(descriptor: int) -> str:
-    digest = hashlib.sha256()
-    offset = 0
-    while True:
-        chunk = os.pread(descriptor, _SNAPSHOT_HASH_CHUNK_BYTES, offset)
-        if not chunk:
-            return digest.hexdigest()
-        digest.update(chunk)
-        offset += len(chunk)
+    digest = physical_identity_operation(descriptor)
+    assert digest is not None
+    return digest.sha256
 
 
 def data_version(conn: Connection) -> int:
@@ -184,7 +175,7 @@ def snapshot_index_file_set(
                 late_sidecar_metadata = os.fstat(late_sidecar_fd)
                 late_sidecar_digest = _file_sha256_descriptor(late_sidecar_fd)
             finally:
-                os.close(late_sidecar_fd)
+                NativeSQLCustodyOwner(None, anchored_descriptors=(late_sidecar_fd,)).close()
             complete = False
             files.append(
                 {
@@ -269,7 +260,7 @@ def snapshot_index_file_set(
             files.append({"path": str(path), "present": False, "changed_during_observation": True})
             continue
         finally:
-            os.close(safe_fd)
+            NativeSQLCustodyOwner(None, anchored_descriptors=(safe_fd,)).close()
         unchanged = (
             metadata_before.st_dev,
             metadata_before.st_ino,

@@ -21,6 +21,8 @@ import resource
 import sqlite3
 import stat
 import subprocess
+import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
@@ -551,7 +553,7 @@ class SeededArchiveQueryLease:
             return ArchiveStore.open_existing(self.root, read_only=True, opened_main_fd=index_fd)
         finally:
             if index_fd >= 0:
-                os.close(index_fd)
+                _close_file_fd(index_fd)
 
     def close(self) -> None:
         """Finalize the capability and refuse later opens."""
@@ -1415,19 +1417,41 @@ def _configured_archive_root(root: Path) -> Iterator[None]:
 
 
 def _sha256_fd(fd: int, *, progress: Callable[[], None] | None = None) -> str:
-    digest = hashlib.sha256()
-    os.lseek(fd, 0, os.SEEK_SET)
-    while True:
-        if progress is not None:
-            progress()
-        chunk = os.read(fd, 1024 * 1024)
-        if not chunk:
-            return digest.hexdigest()
-        digest.update(chunk)
+    from polylogue.storage.sqlite.physical_file import physical_identity_operation
+
+    result = physical_identity_operation(fd, progress=progress)
+    assert result is not None
+    return result.sha256
 
 
 def _open_file_fd(path: Path) -> int:
-    return _open_no_follow(path, os.O_RDONLY | os.O_NONBLOCK)
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
+    from polylogue.storage.sqlite.physical_file import open_physical_identity
+
+    parent, leaf = _open_pinned_parent(path)
+    parent_owner = NativeSQLCustodyOwner(None, anchored_descriptors=(parent,))
+    try:
+        descriptor = open_physical_identity(leaf, dir_fd=parent)
+    except BaseException as primary:
+        _close_failed_native_construction(parent_owner, primary)
+        raise
+    try:
+        parent_owner.close()
+    except BaseException as primary:
+        _close_failed_native_construction(NativeSQLCustodyOwner(None, anchored_descriptors=(descriptor,)), primary)
+        raise
+    return descriptor
+
+
+def _close_file_fd(fd: int) -> None:
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
+
+    owner = NativeSQLCustodyOwner(None, anchored_descriptors=(fd,))
+    primary = sys.exception()
+    if primary is not None:
+        _close_failed_native_construction(owner, primary)
+    else:
+        owner.close()
 
 
 def _sha256(path: Path, *, progress: Callable[[], None] | None = None) -> str:
@@ -1435,7 +1459,7 @@ def _sha256(path: Path, *, progress: Callable[[], None] | None = None) -> str:
     try:
         return _sha256_fd(fd, progress=progress)
     finally:
-        os.close(fd)
+        _close_file_fd(fd)
 
 
 def _is_reserved_root_file(path: Path, root: Path) -> bool:
@@ -1552,12 +1576,21 @@ def _safe_stat(path: Path) -> os.stat_result:
 
 
 def _chmod_at(directory_fd: int, leaf: str, mode: int) -> None:
-    """Change mode through an O_NOFOLLOW descriptor, never a symlink target."""
-    fd = os.open(leaf, os.O_RDONLY | os.O_NONBLOCK | _O_NOFOLLOW, dir_fd=directory_fd)
+    """Change a pinned regular leaf's mode without a parent-process data FD."""
+    from polylogue.storage.sqlite.physical_file import open_physical_identity, physical_identity_operation
+
+    fd = open_physical_identity(leaf, dir_fd=directory_fd)
     try:
-        os.fchmod(fd, mode)
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            directory = os.open(f"/proc/self/fd/{fd}", os.O_RDONLY | _O_DIRECTORY)
+            try:
+                os.fchmod(directory, mode)
+            finally:
+                _close_file_fd(directory)
+        else:
+            physical_identity_operation(fd, chmod=mode)
     finally:
-        os.close(fd)
+        _close_file_fd(fd)
 
 
 def _safe_chmod(path: Path, mode: int) -> None:
@@ -2427,17 +2460,26 @@ def _manifest_from_payload(payload: object) -> CorpusArtifactManifest:
 
 
 def _read_manifest_fd(fd: int) -> CorpusArtifactManifest:
-    os.lseek(fd, 0, os.SEEK_SET)
-    with os.fdopen(os.dup(fd), "r", encoding="utf-8") as handle:
-        return _manifest_from_payload(json.load(handle))
+    from polylogue.storage.sqlite.physical_file import physical_identity_operation
+
+    # A private copy lets JSON read normally while the borrowed original is
+    # always an identity pin, including during authenticated clone comparison.
+    with tempfile.TemporaryDirectory(prefix="polylogue-manifest-read-") as directory:
+        directory_fd = os.open(directory, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW)
+        try:
+            physical_identity_operation(fd, copy_directory_fd=directory_fd, copy_name="manifest.json")
+        finally:
+            os.close(directory_fd)
+        with (Path(directory) / "manifest.json").open(encoding="utf-8") as handle:
+            return _manifest_from_payload(json.load(handle))
 
 
 def _read_manifest(path: Path) -> CorpusArtifactManifest:
-    fd = _open_no_follow(path, os.O_RDONLY)
+    fd = _open_file_fd(path)
     try:
         return _read_manifest_fd(fd)
     finally:
-        os.close(fd)
+        _close_file_fd(fd)
 
 
 def _manifest_binds_to_key(manifest: CorpusArtifactManifest, root: Path, key: SeededArchiveKey) -> bool:
@@ -3673,15 +3715,6 @@ def _build_seeded_archive_inner(
         return artifact
 
 
-def _write_all(fd: int, data: bytes) -> None:
-    view = memoryview(data)
-    while view:
-        written = os.write(fd, view)
-        if written <= 0:
-            raise OSError("short cache write")
-        view = view[written:]
-
-
 def _copy_tree(
     source: Path,
     destination: Path,
@@ -3746,28 +3779,16 @@ def _copy_tree(
                             os.close(child_src)
                             os.close(child_dst)
                     elif stat.S_ISREG(info.st_mode):
-                        in_fd = os.open(entry.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=src)
-                        out_fd = -1
+                        from polylogue.storage.sqlite.physical_file import (
+                            open_physical_identity,
+                            physical_identity_operation,
+                        )
+
+                        in_fd = open_physical_identity(entry.name, dir_fd=src)
                         try:
-                            out_fd = os.open(
-                                entry.name,
-                                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW,
-                                info.st_mode & 0o777,
-                                dir_fd=dst,
-                            )
-                        except BaseException:
-                            os.close(in_fd)
-                            raise
-                        try:
-                            while True:
-                                chunk = os.read(in_fd, 1024 * 1024)
-                                if not chunk:
-                                    break
-                                _write_all(out_fd, chunk)
-                            os.fchmod(out_fd, info.st_mode & 0o777)
+                            physical_identity_operation(in_fd, copy_directory_fd=dst, copy_name=entry.name)
                         finally:
-                            os.close(in_fd)
-                            os.close(out_fd)
+                            _close_file_fd(in_fd)
                     else:
                         raise ValueError(f"unsupported cache node: {entry.name}")
 
@@ -3818,9 +3839,9 @@ def _authenticate_clone_copy(
                 raise ValueError(f"clone file content mismatch: {relative}")
         finally:
             if source_fd >= 0:
-                os.close(source_fd)
+                _close_file_fd(source_fd)
             if clone_fd >= 0:
-                os.close(clone_fd)
+                _close_file_fd(clone_fd)
 
     for relative, size, digest in expected:
         authenticate_pair(relative, size, digest)
@@ -3843,9 +3864,9 @@ def _authenticate_clone_copy(
             raise ValueError("clone manifest mismatch")
     finally:
         if source_manifest_fd >= 0:
-            os.close(source_manifest_fd)
+            _close_file_fd(source_manifest_fd)
         if clone_manifest_fd >= 0:
-            os.close(clone_manifest_fd)
+            _close_file_fd(clone_manifest_fd)
 
 
 @contextlib.contextmanager

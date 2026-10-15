@@ -2062,9 +2062,9 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
         NativeSQLCustodyOwner,
         _close_failed_native_construction,
     )
+    from polylogue.storage.sqlite.physical_file import open_physical_identity
 
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(target, flags)
+    fd = open_physical_identity(target)
     try:
         opened = os.fstat(fd)
         if (opened.st_dev, opened.st_ino) != expected_identity:
@@ -2075,7 +2075,7 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
             raise RuntimeError(f"no validated descriptor alias for source snapshot: {path}")
         try:
             conn = open_readonly_connection(
-                path,
+                target,
                 opened_main_fd=fd,
                 timeout_class="background-read",
                 validate_schema=False,
@@ -2296,27 +2296,28 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
     from polylogue.storage.sqlite.write_lease import require_write_lease
 
     require_write_lease(f"index generation {label} WAL checkpoint({path})", archive_root=archive_root)
-    fd = reopened_fd = -1
+    from polylogue.storage.sqlite.physical_file import open_physical_identity, validate_physical_identity_path
+
+    fd = directory_fd = -1
     try:
         try:
             open_path = path.resolve(strict=True)
-            fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)
-            before = os.fstat(fd)
-            reopened_fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)
-            after = os.fstat(reopened_fd)
+            fd = open_physical_identity(open_path)
         except OSError as exc:
             raise RuntimeError(f"cannot securely open {label}: {path}") from exc
-        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
-            raise RuntimeError(f"{label} changed during descriptor validation: {path}")
-        consumed_fd, reopened_fd = reopened_fd, -1
-        NativeSQLCustodyOwner(None, anchored_descriptors=(consumed_fd,)).close()
         alias = descriptor_alias_path(fd)
         if alias is None:
             raise RuntimeError(f"no validated descriptor alias for {label}: {path}")
-        conn = connect_measured(str(alias))
+        directory_fd = os.open(open_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        parent = os.fstat(directory_fd)
+        parent_identity = (parent.st_dev, parent.st_ino)
+        validate_physical_identity_path(open_path, fd, expected_parent=parent_identity)
+        conn = connect_measured(f"file:{alias}?mode=rw", uri=True)
         owned_fd, fd = fd, -1
-        owner = NativeSQLCustodyOwner(conn, anchored_descriptors=(owned_fd,))
+        owned_directory, directory_fd = directory_fd, -1
+        owner = NativeSQLCustodyOwner(conn, anchored_descriptors=(owned_fd, owned_directory))
         try:
+            validate_physical_identity_path(open_path, owned_fd, expected_parent=parent_identity)
             checkpoint = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
         except BaseException as primary:
             _close_failed_native_construction(owner, primary)
@@ -2325,8 +2326,8 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
             owner.close()
     finally:
         settlement_primary = sys.exception()
-        descriptors = tuple(descriptor for descriptor in (reopened_fd, fd) if descriptor >= 0)
-        reopened_fd = fd = -1
+        descriptors = tuple(descriptor for descriptor in (fd, directory_fd) if descriptor >= 0)
+        fd = directory_fd = -1
         if descriptors:
             cleanup_owner = NativeSQLCustodyOwner(None, anchored_descriptors=descriptors)
             if settlement_primary is not None:

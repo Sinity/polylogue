@@ -216,6 +216,20 @@ actual backup merely because they make a check-only observation unsuccessful.
 
 ## Write custody and connection lifetime
 
+Linux metadata pins for live SQLite files use no-follow O_PATH descriptors.
+Snapshot/checkpoint readers and diagnostic file sets keep those pins through
+their existing native connection owners; a descriptor-bound open revalidates
+the selected native file and pinned parent around SQLite construction before
+any schema or payload query. Checkpoints use mode=rw, so a vanished tier is
+never recreated. Closing an ordinary independent descriptor would release
+other connections' process-wide POSIX locks on that inode, so byte hashes,
+fixture copies and regular-file chmod execute in the existing physical-file
+child. Cancellation kills and reaps that child; the owning copy operation
+keeps responsibility for its pending output. Failed parent cleanup retains
+the current NativeSQLCustodyOwner and its original artifact lifetimes.
+These identity routes refuse without O_PATH; they do not claim an operational
+Darwin adapter (`storage/sqlite/physical_file.py`, `connection_profile.py`).
+
 Reference preparation supports declared configured tier symlinks by opening
 exact resolved leaves with no-follow admission. It retains the configured root
 and link incarnations and rechecks those names through writer admission and

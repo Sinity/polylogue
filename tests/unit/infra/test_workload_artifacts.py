@@ -589,21 +589,34 @@ def test_seeded_archive_rejects_unsupported_cache_node_and_rebuilds(tmp_path: Pa
 def test_clone_retains_pending_output_after_short_write(
     c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import tests.infra.workload_artifacts as artifacts
 
     artifact = c03_seeded_artifact
     destination = tmp_path / "partial-clone"
 
-    def fail_write(fd: int, data: bytes) -> None:
-        raise OSError("injected short write")
+    from polylogue.storage.sqlite import physical_file
 
-    monkeypatch.setattr(artifacts, "_write_all", fail_write)
+    # The data write belongs to the real child. A zero-progress write of the
+    # selected SQLite copy must retain the destination's pending marker.
+    monkeypatch.setattr(
+        physical_file,
+        "_CHILD",
+        """
+from polylogue.storage.sqlite import physical_file
+original = physical_file._physical_identity_child
+def interrupted(request):
+    if request.get("copy_name") == "source.db":
+        physical_file.os.write = lambda descriptor, data: 0
+    return original(request)
+physical_file._physical_identity_child = interrupted
+physical_file._physical_file_hash_child()
+""",
+    )
     monkeypatch.setattr(
         subprocess,
         "run",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
     )
-    with pytest.raises(OSError, match="short write"):
+    with pytest.raises(OSError, match="physical file child failed"):
         clone_seeded_archive(artifact, destination)
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
@@ -3212,3 +3225,61 @@ def test_advanced_archive_artifact_carries_original_tier_identity_through_clone(
         } - set(original_backup_files)
         assert new_backup_files
     assert (artifact.root / "manifest.json").read_bytes() == manifest_bytes
+
+
+def test_small_archive_failed_child_copy_retains_pending_and_reaps_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite import physical_file
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    source = tmp_path / "source"
+    with ArchiveStore(source):
+        pass
+    seal_fixture_tree(source)
+    artifact = ImmutableTreeArtifact.adopt(source, key="neutral-empty-archive")
+    predecessor = {path.name: (path.read_bytes(), path.stat().st_mode) for path in source.iterdir() if path.is_file()}
+    original_popen = subprocess.Popen
+    children = []
+
+    def popen(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        child = original_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr("polylogue.storage.sqlite.physical_file.subprocess.Popen", popen)
+    monkeypatch.setattr(
+        physical_file,
+        "_CHILD",
+        """
+from polylogue.storage.sqlite import physical_file
+original = physical_file._physical_identity_child
+def interrupted(request):
+    if request.get("copy_name") == "source.db":
+        physical_file.os.write = lambda descriptor, data: 0
+    return original(request)
+physical_file._physical_identity_child = interrupted
+physical_file._physical_file_hash_child()
+""",
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+    destination = tmp_path / "partial"
+    with pytest.raises(OSError, match="physical file child failed"):
+        clone_immutable_tree(artifact, destination)
+    assert (destination / POPULATION_PENDING).is_file()
+    assert stat.S_IMODE((destination / "source.db").stat().st_mode) == 0o600
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(destination)
+    assert {
+        path.name: (path.read_bytes(), path.stat().st_mode) for path in source.iterdir() if path.is_file()
+    } == predecessor
+    assert children
+    assert any(child.returncode != 0 for child in children)
+    for child in children:
+        assert child.poll() is not None
+        with pytest.raises(ChildProcessError):
+            os.waitpid(child.pid, os.WNOHANG)

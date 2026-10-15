@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import sqlite3
 from pathlib import Path
@@ -91,6 +92,10 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 observed_at_ms INTEGER,
                 resolved_at_ms INTEGER
             );
+            CREATE TABLE session_identity_scopes (
+                session_id TEXT PRIMARY KEY,
+                scope_json TEXT NOT NULL
+            );
             CREATE TABLE session_working_dirs (
                 session_id TEXT,
                 position INTEGER,
@@ -107,6 +112,7 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
             );
             CREATE TABLE attachment_refs (
                 ref_id TEXT,
+                native_identity TEXT,
                 session_id TEXT,
                 message_id TEXT,
                 attachment_id TEXT,
@@ -127,6 +133,7 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 message_id TEXT PRIMARY KEY,
                 session_id TEXT,
                 native_id TEXT,
+                source_native_id_json TEXT,
                 content_identity TEXT,
                 fields_digest BLOB,
                 content_occurrence INTEGER DEFAULT 0,
@@ -163,6 +170,8 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
             );
             CREATE TABLE blocks (
                 block_id TEXT,
+                content_identity TEXT,
+                content_occurrence INTEGER DEFAULT 0,
                 message_id TEXT,
                 block_type TEXT,
                 text TEXT,
@@ -282,6 +291,7 @@ def _writer_message(provider_id: str, text: str, position: int, role: Role = Rol
 # index above must declare every production column of these tables, or a schema
 # bump surfaces as "no such column" inside an envelope read instead of here.
 _ROUTE_BACKED_TABLES = (
+    "session_identity_scopes",
     "sessions",
     "messages",
     "blocks",
@@ -701,10 +711,10 @@ def test_lineage_validation_rejects_selected_index_replacement_after_reader_open
         lineage_validation.build_report(_args(archive_root))
 
 
-def test_lineage_validation_reader_stays_on_opened_inode_across_path_replacement_and_restoration(
+def test_lineage_validation_refuses_path_replacement_before_reader_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The production reader must use the inode opened before the pathname mutation."""
+    """A substituted native entry must refuse before a reader can query it."""
     archive_root = tmp_path / "archive"
     selected_db = _make_index_db(archive_root)
     replacement_root = tmp_path / "replacement"
@@ -725,19 +735,19 @@ def test_lineage_validation_reader_stays_on_opened_inode_across_path_replacement
                 replacement.commit()
             selected_db.rename(original_path)
             replacement_db.rename(selected_db)
-            connection = real_open(path, opened_main_fd=opened_main_fd)
-            selected_db.rename(replacement_db)
-            original_path.rename(selected_db)
             swapped = True
-            return connection
+            try:
+                return real_open(path, opened_main_fd=opened_main_fd)
+            finally:
+                selected_db.rename(replacement_db)
+                original_path.rename(selected_db)
         return real_open(path, opened_main_fd=opened_main_fd)
 
     monkeypatch.setattr(lineage_validation, "open_readonly_connection", replace_before_reader_open)
-    report = lineage_validation.build_report(_args(archive_root))
-
+    with pytest.raises(OSError) as error:
+        lineage_validation.build_report(_args(archive_root))
+    assert error.value.errno == errno.ESTALE
     assert swapped is True
-    assert report["counts"]["physical_sessions"] == 3
-    assert report["snapshot_identity"]["stable"] is True
 
 
 def test_lineage_validation_captures_reader_created_sqlite_sidecars(

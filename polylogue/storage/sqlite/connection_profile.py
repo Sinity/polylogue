@@ -2156,9 +2156,10 @@ def open_readonly_connection(
     helper does not perform it, since the check is specific to how the caller
     obtained the snapshot.
 
-    When ``opened_main_fd`` is supplied, the reader is bound to that opened
-    inode through a validated ``/dev/fd`` or ``/proc/self/fd`` alias. A caller
-    that needs descriptor binding fails closed when neither alias is available.
+    When ``opened_main_fd`` is supplied, it must be a Linux O_PATH identity
+    pin. The native file and containing directory are revalidated around
+    SQLite open through its descriptor alias. Ordinary data descriptors and
+    unavailable identity capabilities fail closed.
 
     ``validate_schema=False`` is reserved for diagnostic readers that need to
     inspect a tier before reporting its schema mismatch. It does not change the
@@ -2222,31 +2223,64 @@ def _open_readonly_owner(
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     if opened_main_fd is not None and immutable:
         raise ValueError("an opened SQLite file descriptor cannot use immutable mode")
+    from polylogue.storage.sqlite.physical_file import validate_physical_identity_path
+
     opened_fd = opened_main_fd
-    if opened_fd is None:
-        # Percent-encode the path: an unescaped '?' or '#' in a filename would
-        # otherwise be parsed as the URI's own query or fragment delimiter and
-        # silently open a different file, or none.
-        database_uri = f"file:{quote(str(path))}{suffix}"
-    else:
-        descriptor_uri = _descriptor_database_uri(opened_fd, suffix)
-        if descriptor_uri is None:
-            raise RuntimeError(f"cannot open selected SQLite database through a descriptor-bound path: {path}")
-        database_uri = descriptor_uri
-    conn = connect_measured(database_uri, uri=True, timeout=timeout, check_same_thread=check_same_thread)
-    owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=lifetime_dependencies, terminal_parent=terminal_parent)
+    directory_owner = None
     try:
-        register_query_comparisons(conn)
-        if validate_schema:
-            _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
-        for stmt in profile.pragma_statements:
-            if explicit_timeout and stmt.startswith("PRAGMA busy_timeout"):
-                stmt = f"PRAGMA busy_timeout = {int(timeout * 1000)}"
-            conn.execute(stmt)
-        _install_read_authorizer(conn)
+        parent_identity = None
+        if opened_fd is not None:
+            directory_fd = os.open(
+                Path(path).resolve(strict=True).parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+            )
+            directory_owner = NativeSQLCustodyOwner(
+                None,
+                anchored_descriptors=(directory_fd,),
+                lifetime_dependencies=lifetime_dependencies,
+                terminal_parent=terminal_parent,
+            )
+            directory_metadata = os.fstat(directory_fd)
+            parent_identity = (directory_metadata.st_dev, directory_metadata.st_ino)
+            validate_physical_identity_path(path, opened_fd, expected_parent=parent_identity)
+        if opened_fd is None:
+            # Percent-encode the path: an unescaped '?' or '#' in a filename would
+            # otherwise be parsed as the URI's own query or fragment delimiter and
+            # silently open a different file, or none.
+            database_uri = f"file:{quote(str(path))}{suffix}"
+        else:
+            descriptor_uri = _descriptor_database_uri(opened_fd, suffix)
+            if descriptor_uri is None:
+                raise RuntimeError(f"cannot open selected SQLite database through a descriptor-bound path: {path}")
+            database_uri = descriptor_uri
+        conn = connect_measured(database_uri, uri=True, timeout=timeout, check_same_thread=check_same_thread)
+        owner = NativeSQLCustodyOwner(
+            conn, lifetime_dependencies=lifetime_dependencies, terminal_parent=terminal_parent
+        )
+        try:
+            if opened_fd is not None:
+                validate_physical_identity_path(path, opened_fd, expected_parent=parent_identity)
+            register_query_comparisons(conn)
+            if validate_schema:
+                _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
+            for stmt in profile.pragma_statements:
+                if explicit_timeout and stmt.startswith("PRAGMA busy_timeout"):
+                    stmt = f"PRAGMA busy_timeout = {int(timeout * 1000)}"
+                conn.execute(stmt)
+            _install_read_authorizer(conn)
+        except BaseException as primary:
+            _close_failed_native_construction(owner, primary)
+            raise
     except BaseException as primary:
-        _close_failed_native_construction(owner, primary)
+        if directory_owner is not None:
+            _close_failed_native_construction(directory_owner, primary)
         raise
+    else:
+        if directory_owner is not None:
+            try:
+                directory_owner.close()
+            except BaseException as primary:
+                _close_failed_native_construction(owner, primary)
+                raise
     return owner
 
 

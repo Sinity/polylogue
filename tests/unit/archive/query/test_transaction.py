@@ -293,21 +293,30 @@ def test_open_reader_frame_keeps_its_captured_physical_generation(tmp_path: Path
 
 
 def test_archive_frame_uses_the_retained_open_descriptor_generation(tmp_path: Path) -> None:
+    import errno
     import os
     import shutil
+
+    from polylogue.storage.sqlite.physical_file import open_physical_identity
 
     with ArchiveStore(tmp_path) as archive:
         archive.close()
     issued = _snapshot_epoch(tmp_path)
     index = tmp_path / "index.db"
-    with index.open("rb") as selected:
-        index.rename(tmp_path / "predecessor.db")
-        shutil.copyfile(tmp_path / "predecessor.db", index)
-        with ArchiveStore.open_existing(tmp_path, index_path=index, opened_main_fd=selected.fileno()) as reader:
+    selected = open_physical_identity(index)
+    try:
+        with ArchiveStore.open_existing(tmp_path, index_path=index, opened_main_fd=selected) as reader:
             reader.begin_read_snapshot()
-            assert reader.index_generation.inode == os.fstat(selected.fileno()).st_ino
+            assert reader.index_generation.inode == os.fstat(selected).st_ino
             assert archive_snapshot_epoch(reader) == issued
             reader.end_read_snapshot()
+        index.rename(tmp_path / "predecessor.db")
+        shutil.copyfile(tmp_path / "predecessor.db", index)
+        with pytest.raises(OSError) as refused:
+            ArchiveStore.open_existing(tmp_path, index_path=index, opened_main_fd=selected)
+        assert refused.value.errno == errno.ESTALE
+    finally:
+        os.close(selected)
     assert _snapshot_epoch(tmp_path) != issued
 
 
