@@ -519,7 +519,32 @@ fn retained_wal_probe_child() {
         .put_file_blob(b"second acknowledged WAL commit")
         .unwrap();
     assert_eq!(writer.status().unwrap().write_counter, 3);
-    fs::write(ack, b"3").unwrap();
+    match std::env::var("POLYLOGUE_WAL_CHILD_MODE").as_deref() {
+        Ok("stale-generation") => {
+            writer
+                .archive
+                .execute_batch("PRAGMA wal_checkpoint(RESTART)")
+                .unwrap();
+            writer
+                .put_file_blob(b"acknowledged next WAL generation")
+                .unwrap();
+            assert_eq!(writer.status().unwrap().write_counter, 4);
+            fs::write(ack, b"4").unwrap();
+        }
+        Ok("uncommitted") => {
+            let tx = writer.archive.transaction().unwrap();
+            tx.execute("UPDATE meta SET value='4' WHERE key='write_counter'", [])
+                .unwrap();
+            tx.cache_flush().unwrap();
+            fs::write(ack, b"3").unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
+        _ => {
+            fs::write(ack, b"3").unwrap();
+        }
+    }
     loop {
         std::thread::park();
     }
@@ -549,41 +574,7 @@ impl Drop for WalProbeChild {
 #[test]
 #[ignore = "bounded investigation; not a claimed WAL protection acceptance"]
 fn retained_wal_cold_reopen_probe() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().join("original");
-    let ack = tmp.path().join("ack");
-    let mut initial = Writer::open(&root).unwrap();
-    initial.put_file_blob(b"checkpointed baseline").unwrap();
-    drop(initial);
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    let mut child = WalProbeChild(
-        command
-            .args([
-                "--exact",
-                "tests::retained_wal_probe_child",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("POLYLOGUE_WAL_CHILD_ROOT", &root)
-            .env("POLYLOGUE_WAL_CHILD_ACK", &ack)
-            .spawn()
-            .unwrap(),
-    );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while !ack.exists() {
-        if let Some(status) = child.0.try_wait().unwrap() {
-            panic!("owned fixture exited before acknowledgment: {status}");
-        }
-        if std::time::Instant::now() > deadline {
-            child.0.kill().unwrap();
-            child.0.wait().unwrap();
-            panic!("owned fixture did not acknowledge");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert_eq!(fs::read(&ack).unwrap(), b"3");
-    child.0.kill().unwrap();
-    assert!(!child.0.wait().unwrap().success());
+    let (tmp, root, _) = killed_wal_fixture("normal");
     let wal = fs::read(root.join("archive.db-wal")).unwrap();
     let word = |bytes: &[u8]| u32::from_be_bytes(bytes.try_into().unwrap());
     let page_size = word(&wal[8..12]) as usize;
@@ -663,6 +654,93 @@ fn retained_wal_cold_reopen_probe() {
                     assert!(result.starts_with("error="));
                     assert!(snapshot(&case) == before);
                 }
+            }
+        }
+    }
+}
+
+fn killed_wal_fixture(mode: &str) -> (tempfile::TempDir, PathBuf, u64) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("original");
+    let ack = tmp.path().join("ack");
+    let expected = if mode == "stale-generation" { 4 } else { 3 };
+    let mut initial = Writer::open(&root).unwrap();
+    initial.put_file_blob(b"checkpointed baseline").unwrap();
+    drop(initial);
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    let mut child = WalProbeChild(
+        command
+            .args([
+                "--exact",
+                "tests::retained_wal_probe_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("POLYLOGUE_WAL_CHILD_ROOT", &root)
+            .env("POLYLOGUE_WAL_CHILD_ACK", &ack)
+            .env("POLYLOGUE_WAL_CHILD_MODE", mode)
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !ack.exists() {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            panic!("owned fixture exited before acknowledgment: {status}");
+        }
+        if std::time::Instant::now() > deadline {
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            panic!("owned fixture did not acknowledge");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(fs::read_to_string(&ack).unwrap(), expected.to_string());
+    child.0.kill().unwrap();
+    assert!(!child.0.wait().unwrap().success());
+    (tmp, root, expected)
+}
+
+#[test]
+#[ignore = "bounded investigation of legitimate WAL tails"]
+fn retained_wal_legitimate_tails_probe() {
+    for mode in ["stale-generation", "uncommitted"] {
+        let (tmp, root, expected) = killed_wal_fixture(mode);
+        let original = fs::read(root.join("archive.db-wal")).unwrap();
+        let page_size = u32::from_be_bytes(original[8..12].try_into().unwrap()) as usize;
+        let frame_size = page_size + 24;
+        for tail in ["intact", "partial"] {
+            if mode == "stale-generation" && tail == "partial" {
+                continue;
+            }
+            for api in ["reader", "writer"] {
+                let name = format!("{mode}-{tail}-{api}");
+                let case = tmp.path().join(&name);
+                copy_fixture(&root, &case);
+                if tail == "partial" {
+                    let file = OpenOptions::new()
+                        .write(true)
+                        .open(case.join("archive.db-wal"))
+                        .unwrap();
+                    file.set_len((original.len() - frame_size + 24 + 100) as u64)
+                        .unwrap();
+                }
+                let before = fs::read(case.join("archive.db-wal")).unwrap();
+                if let Some(capture) = std::env::var_os("POLYLOGUE_WAL_PROBE_CAPTURE") {
+                    copy_fixture(&case, &PathBuf::from(capture).join(&name));
+                }
+                let outcome = if api == "reader" {
+                    ReadHandle::open(&case).and_then(|r| r.status())
+                } else {
+                    Writer::open(&case).and_then(|w| w.status())
+                };
+                let actual = outcome.unwrap().write_counter;
+                println!(
+                    "WAL_TAIL {name}: expected={expected} actual={actual} bytes={} wal_unchanged={}",
+                    before.len(),
+                    fs::read(case.join("archive.db-wal")).ok().as_deref()
+                        == Some(before.as_slice())
+                );
+                assert_eq!(actual, expected);
             }
         }
     }
