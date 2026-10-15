@@ -7,6 +7,8 @@ jobs:
       - image: nixos/nix@sha256:62c506c32c75395163676006f0c00d75c31578fffaac1167d600289f72477b78
     resource_class: medium
     environment:
+      # The Nix image omits conventional paths used by the injected CI agent.
+      PATH: /usr/local/bin:/usr/bin:/bin:/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/nix/var/nix/profiles/default/sbin
       NIX_CONFIG: |
         experimental-features = nix-command flakes
         sandbox = false
