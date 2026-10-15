@@ -230,12 +230,11 @@ def test_read_frame_timing_handoff_attributes_worker_delay_over_real_uds(
     archive_root.mkdir()
     socket_path = daemon_socket_path(archive_root)
 
-    def seed(root: Path) -> None:
-        seed_benchmark_archive(root / "index.db", BenchmarkWorkloadTier.SMOKE)
+    # Immutable clones require an empty destination; bootstrap opens the clone.
+    seed_benchmark_archive(archive_root / "index.db", BenchmarkWorkloadTier.SMOKE)
 
     with running_daemon_operations(
         archive_root,
-        seed_archive=seed,
         compute_workers=2,
         compute_queue_units=8,
         socket_path=socket_path,
@@ -537,12 +536,11 @@ def bench_mixed_load_stack(
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
     socket_path = daemon_socket_path(archive_root, runtime_dir=str(runtime_dir))
 
-    def seed(root: Path) -> None:
-        seed_benchmark_archive(root / "index.db", BenchmarkWorkloadTier.SMOKE)
+    # Immutable clones require an empty destination; bootstrap opens the clone.
+    seed_benchmark_archive(archive_root / "index.db", BenchmarkWorkloadTier.SMOKE)
 
     with running_daemon_operations(
         archive_root,
-        seed_archive=seed,
         compute_workers=4,
         compute_queue_units=16,
         socket_path=socket_path,
@@ -1399,3 +1397,30 @@ def test_mixed_load_tag_check_cannot_reuse_the_seed_response(
     assert result["error"] is None
     with pytest.raises(AssertionError):
         _assert_mixed_load_tags(stack.archive_root, session_ids)
+
+
+def test_seeded_benchmark_callers_clone_before_daemon_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both callers admit an authentic small clone before any SQLite bootstrap."""
+    from polylogue.scenarios import CorpusSpec
+    from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
+
+    artifact = build_seeded_archive(
+        (CorpusSpec.for_provider("codex", count=1, messages_min=4, messages_max=4, seed=42, style="tool-heavy"),),
+        cache_root=tmp_path / "cache",
+    )
+
+    def seed_small(db_path: Path, tier: BenchmarkWorkloadTier) -> None:
+        assert tier is BenchmarkWorkloadTier.SMOKE
+        clone_seeded_archive(artifact, db_path.parent)
+
+    monkeypatch.setattr(sys.modules[__name__], "seed_benchmark_archive", seed_small)
+    timing_root = tmp_path / "timing"
+    timing_root.mkdir()
+    test_read_frame_timing_handoff_attributes_worker_delay_over_real_uds(timing_root, monkeypatch)
+    mixed_root = tmp_path / "mixed"
+    mixed_root.mkdir()
+    with contextmanager(bench_mixed_load_stack.__wrapped__)(mixed_root, monkeypatch) as stack:
+        response = _operation(stack.client, "cli.query", {"params": {"limit": 2}})
+        assert response["error"] is None
