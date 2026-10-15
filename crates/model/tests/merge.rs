@@ -740,3 +740,196 @@ fn detached_immutable_copy_can_witness_content_that_a_proved_true_edit_removed()
     .unwrap();
     assert_eq!(rebuilt, a_m);
 }
+
+#[test]
+fn equal_content_version_conflicts_are_occupied_and_independent_of_arrival_or_ref_numbers() {
+    for ids in [[1, 2, 3], [900, 7, 50]] {
+        let a = with_slot(
+            with_slot(
+                candidate(ids[0], 4),
+                slot(MessageField::At),
+                ids[0] * 10 + 1,
+            ),
+            slot(MessageField::CompletedAt),
+            ids[0] * 10 + 2,
+        );
+        let b = with_slot(
+            with_slot(
+                candidate(ids[1], 4),
+                slot(MessageField::At),
+                ids[1] * 10 + 1,
+            ),
+            slot(MessageField::CompletedAt),
+            ids[1] * 10 + 2,
+        );
+        let mut donor = with_slot(
+            with_slot(
+                candidate(ids[2], 4),
+                slot(MessageField::At),
+                ids[2] * 10 + 1,
+            ),
+            slot(MessageField::CompletedAt),
+            ids[2] * 10 + 2,
+        );
+        donor.route = RouteKind::AccountExport;
+        let times = BTreeMap::from([
+            (ids[0] * 10 + 1, 100i64),
+            (ids[0] * 10 + 2, 110),
+            (ids[1] * 10 + 1, 200),
+            (ids[1] * 10 + 2, 210),
+            (ids[2] * 10 + 1, 150),
+            (ids[2] * 10 + 2, 150),
+        ]);
+        for inputs in [
+            [singleton(&a), singleton(&b), singleton(&donor)],
+            [singleton(&donor), singleton(&b), singleton(&a)],
+        ] {
+            let merged = select_effective(&inputs).unwrap().unwrap();
+            for field in [MessageField::At, MessageField::CompletedAt] {
+                let choice = &merged.slots[&slot(field)];
+                assert_eq!(choice.sources.len(), 2);
+                assert!(choice.sources.iter().all(|r| r.candidate != ids[2]));
+                assert_eq!(
+                    choice
+                        .resolve::<std::convert::Infallible>(|a, b| Ok(
+                            times[&a.value] == times[&b.value]
+                        ))
+                        .unwrap(),
+                    FieldResolution::Conflict
+                );
+            }
+            let restored: EffectiveInput =
+                serde_json::from_slice(&serde_json::to_vec(&merged).unwrap()).unwrap();
+            assert_eq!(restored, merged);
+        }
+        let remaining = select_effective(&[singleton(&a), singleton(&donor)])
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            remaining.slots[&slot(MessageField::At)]
+                .resolve::<std::convert::Infallible>(|a, b| Ok(times[&a.value] == times[&b.value]))
+                .unwrap(),
+            FieldResolution::Agreed(_)
+        ));
+        let mut stronger = with_slot(
+            with_slot(candidate(999, 9), slot(MessageField::At), 300),
+            slot(MessageField::CompletedAt),
+            310,
+        );
+        stronger.presence.nonempty_blocks = 2;
+        let resolved = select_effective(&[singleton(&a), singleton(&b), singleton(&stronger)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            resolved.slots[&slot(MessageField::At)].sources,
+            BTreeSet::from([FactRef {
+                candidate: 999,
+                value: 300
+            }])
+        );
+    }
+}
+
+#[test]
+fn typed_agreement_includes_time_quality_precision_and_known_empty_values() {
+    use polylogue_model::{Precision, ProviderTime};
+    let refs = [
+        FactRef {
+            candidate: 1,
+            value: 1,
+        },
+        FactRef {
+            candidate: 2,
+            value: 2,
+        },
+    ];
+    let choice = SlotChoice {
+        sources: refs.into_iter().collect(),
+    };
+    let a = ProviderTime::Intrinsic {
+        at: Timestamp(100),
+        precision: Precision::Instant,
+        until: None,
+    };
+    for b in [
+        a,
+        ProviderTime::Intrinsic {
+            at: Timestamp(100),
+            precision: Precision::Second,
+            until: None,
+        },
+        ProviderTime::FileMtime {
+            at: Timestamp(100),
+            precision: Precision::Instant,
+            until: None,
+        },
+    ] {
+        let values = BTreeMap::from([(refs[0], a), (refs[1], b)]);
+        let result = choice
+            .resolve::<std::convert::Infallible>(|l, r| Ok(values[&l] == values[&r]))
+            .unwrap();
+        assert_eq!(matches!(result, FieldResolution::Agreed(_)), a == b);
+    }
+    for value in [
+        serde_json::json!(false),
+        serde_json::json!(0),
+        serde_json::json!(""),
+        serde_json::json!([]),
+        serde_json::json!({}),
+    ] {
+        let values = BTreeMap::from([(refs[0], value.clone()), (refs[1], value)]);
+        assert!(matches!(
+            choice
+                .resolve::<std::convert::Infallible>(|l, r| Ok(values[&l] == values[&r]))
+                .unwrap(),
+            FieldResolution::Agreed(_)
+        ));
+    }
+    assert_eq!(
+        SlotChoice {
+            sources: BTreeSet::new()
+        }
+        .resolve::<std::convert::Infallible>(|_, _| unreachable!())
+        .unwrap(),
+        FieldResolution::Missing
+    );
+}
+
+#[test]
+fn field_agreement_resumes_one_witness_at_a_time_and_failure_does_not_invent_conflict() {
+    let a = FactRef {
+        candidate: 1,
+        value: 10,
+    };
+    let b = FactRef {
+        candidate: 2,
+        value: 20,
+    };
+    let c = FactRef {
+        candidate: 3,
+        value: 30,
+    };
+    let values = BTreeMap::from([(a, 5), (b, 5), (c, 6)]);
+    let mut state = FieldResolution::Missing;
+    state
+        .observe::<()>(a, |_, _| panic!("first witness needs no comparison"))
+        .unwrap();
+    let old = state;
+    assert_eq!(
+        state.observe(b, |_, _| Err("synthetic value read failed")),
+        Err("synthetic value read failed")
+    );
+    assert_eq!(state, old);
+    for next in [b, c] {
+        state = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        state
+            .observe::<()>(next, |l, r| Ok(values[&l] == values[&r]))
+            .unwrap();
+    }
+    assert_eq!(state, FieldResolution::Conflict);
+    // Further witnesses remain retained by SlotChoice/root ownership; their
+    // payload need not be read just to preserve an already known conflict.
+    state
+        .observe::<()>(a, |_, _| panic!("conflict already established"))
+        .unwrap();
+}

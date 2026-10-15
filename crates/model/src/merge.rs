@@ -227,6 +227,53 @@ pub struct BodyChoice {
 pub struct SlotChoice {
     pub sources: BTreeSet<FactRef>,
 }
+
+/// Occupied conflict is distinct from absence. References retain no ordering
+/// authority over unequal values. The owner retains every witness separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldResolution {
+    Missing,
+    Agreed(FactRef),
+    Conflict,
+}
+impl FieldResolution {
+    /// One witness per call; the callback compares canonical TYPED values,
+    /// including time quality/precision, never reference IDs or raw provenance.
+    /// A failed comparison leaves this state unchanged. Persist this scalar
+    /// only with the owner's exact source basis and witness-traversal cursor.
+    /// Conflict does not discard the separately retained alternative witnesses.
+    pub fn observe<E>(
+        &mut self,
+        witness: FactRef,
+        equal: impl FnOnce(FactRef, FactRef) -> Result<bool, E>,
+    ) -> Result<(), E> {
+        match *self {
+            Self::Missing => *self = Self::Agreed(witness),
+            Self::Agreed(first) => {
+                if !equal(first, witness)? {
+                    *self = Self::Conflict;
+                }
+            }
+            Self::Conflict => {}
+        }
+        Ok(())
+    }
+}
+impl SlotChoice {
+    /// Pure batch convenience over the same one-witness policy. This does not
+    /// qualify callback decoding, witness enumeration or a whole payload bound.
+    pub fn resolve<E>(
+        &self,
+        mut equal: impl FnMut(FactRef, FactRef) -> Result<bool, E>,
+    ) -> Result<FieldResolution, E> {
+        let mut result = FieldResolution::Missing;
+        for &witness in &self.sources {
+            result.observe(witness, &mut equal)?;
+        }
+        Ok(result)
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectiveInput {
     pub body: BodyChoice,
