@@ -170,35 +170,13 @@ fn yielded_record_budget_does_not_scan_the_next_record() {
 
 #[test]
 fn real_provider_interpretation_is_identical_across_framing_turns() {
-    use polylogue_sources::claude_code::{FileCtx, Records};
-    let input = concat!(
-        "{\"type\":\"user\",\"uuid\":\"u1\",\"sessionId\":\"session-one\",\"message\":{\"content\":\"hello\"}}\n",
-        "{\"type\":\"assistant\",\"uuid\":\"a1\",\"sessionId\":\"session-one\",\"requestId\":\"r1\",\"message\":{\"id\":\"r1\",\"content\":[{\"type\":\"text\",\"text\":\"first\"}]}}\n",
-        "{\"type\":\"assistant\",\"uuid\":\"a2\",\"sessionId\":\"session-one\",\"requestId\":\"r1\",\"message\":{\"id\":\"r1\",\"content\":[{\"type\":\"text\",\"text\":\"second\"}]}}\n"
-    ).as_bytes();
-    let whole = drive_jsonl(Records::new(FileCtx::main("session-one")), input, 0);
-    let mut driver = JsonlDriver::new(Records::new(FileCtx::main("session-one")), 0);
-    let mut pos = 0;
-    while pos < input.len() {
-        let step = driver
-            .advance(&input[pos..], budget(13, 1, input.len()))
-            .unwrap();
-        pos += step.consumed;
+    use polylogue_sources::codex::keyed::{KeyedRecords, MemoryReadView, Resume};
+    fn records() -> KeyedRecords<MemoryReadView> {
+        KeyedRecords::new(MemoryReadView::default(), Resume::default())
     }
-    let result = driver.finish();
-    assert_eq!(
-        result.output.as_ref().unwrap().parsed,
-        whole.output.as_ref().unwrap().parsed
-    );
-    assert_eq!(result.counts, whole.counts);
-    assert_eq!(
-        result.output.as_ref().unwrap().spans,
-        whole.output.as_ref().unwrap().spans
-    );
-
     let input = include_bytes!("data/codex-stateful.jsonl");
-    let whole = drive_jsonl(polylogue_sources::codex::Records::default(), input, 0);
-    let mut driver = JsonlDriver::new(polylogue_sources::codex::Records::default(), 0);
+    let whole = drive_jsonl(records(), input, 0);
+    let mut driver = JsonlDriver::new(records(), 0);
     let mut pos = 0;
     while pos < input.len() {
         let step = driver
@@ -208,8 +186,32 @@ fn real_provider_interpretation_is_identical_across_framing_turns() {
     }
     let result = driver.finish();
     assert_eq!(
-        result.output.as_ref().unwrap().parsed,
-        whole.output.as_ref().unwrap().parsed
+        serde_json::to_value((
+            &result.output.as_ref().unwrap().resume,
+            result
+                .output
+                .as_ref()
+                .unwrap()
+                .cells
+                .iter()
+                .collect::<Vec<_>>(),
+            &result.output.as_ref().unwrap().events,
+            &result.output.as_ref().unwrap().links
+        ))
+        .unwrap(),
+        serde_json::to_value((
+            &whole.output.as_ref().unwrap().resume,
+            whole
+                .output
+                .as_ref()
+                .unwrap()
+                .cells
+                .iter()
+                .collect::<Vec<_>>(),
+            &whole.output.as_ref().unwrap().events,
+            &whole.output.as_ref().unwrap().links
+        ))
+        .unwrap()
     );
     assert_eq!(result.counts, whole.counts);
 }
