@@ -4095,30 +4095,38 @@ mod tests {
                 .publish_source_projection(&done, None, b"old", 4096)
                 .unwrap();
             reparse_source_fixture(&mut f);
-            let new = f
-                .writer
-                .prepare_message(
-                    Identity {
-                        session: &f.session,
-                        origin: &f.origin,
-                        native_session: "session:with:colons",
-                        session_kind: SessionKind::Main,
-                        message: &f.message,
-                        sequence: 0,
-                        role: Role::Assistant,
-                        written_by: WrittenBy::Model,
-                    },
-                    Source {
-                        predecessor: &f.head.token,
-                        revision: if other_revision { 2 } else { 1 },
-                        evidence_revision: 1,
-                        logical_key: if other_revision { [3; 32] } else { [4; 32] },
-                        route: RouteKind::Native,
-                    },
-                    4096,
-                )
-                .unwrap()
-                .build;
+            let preparation = f.writer.prepare_message(
+                Identity {
+                    session: &f.session,
+                    origin: &f.origin,
+                    native_session: "session:with:colons",
+                    session_kind: SessionKind::Main,
+                    message: &f.message,
+                    sequence: 0,
+                    role: Role::Assistant,
+                    written_by: WrittenBy::Model,
+                },
+                Source {
+                    predecessor: &f.head.token,
+                    revision: if other_revision { 2 } else { 1 },
+                    evidence_revision: 1,
+                    logical_key: if other_revision { [3; 32] } else { [4; 32] },
+                    route: RouteKind::Native,
+                },
+                4096,
+            );
+            if other_revision {
+                // This input has only its retained immutable revision1. An
+                // unproved revision must refuse before allocating a candidate.
+                assert!(matches!(preparation, Err(Error::MessagePredecessorChanged)));
+                assert_eq!(
+                    f.scalar("SELECT count(*) FROM message_candidate WHERE eligible=1"),
+                    1
+                );
+                assert_eq!(f.scalar("SELECT count(*) FROM message_build"), 0);
+                continue;
+            }
+            let new = preparation.unwrap().build;
             let done = finish_source_fixture(&mut f, &new);
             let replacement = f
                 .writer
