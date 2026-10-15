@@ -13,6 +13,7 @@
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = [ pkgs.zstd ];
         doCheck = true;
+        postCheck = "cargo run --offline --locked -p xtask -- boundaries";
       };
     in {
       packages.${system} = { default = foundation; polylogue = foundation; };
