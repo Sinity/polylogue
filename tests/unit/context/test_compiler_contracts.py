@@ -13,12 +13,12 @@ from polylogue.archive.context_models import ContextSpec
 from polylogue.archive.hydration import archive_block_to_domain
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.token_measure import estimate_token_words, estimate_tokens
 from polylogue.context.compiler import compile_prose_with_refs_context_segment
 from polylogue.context.product_image import _select_context_messages, compile_context_image
 from polylogue.core.identity_law import block_id
 from polylogue.operations.ref_resolution import resolve_ref_against_archive
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow
-from polylogue.surfaces.compaction import estimate_token_words, estimate_tokens
 
 
 def test_hydrated_action_marker_resolves_and_missing_identity_is_a_gap(tmp_path: Path) -> None:

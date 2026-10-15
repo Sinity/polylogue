@@ -72,3 +72,44 @@ def test_compact_cli_preserves_degraded_index_pack_and_supplied_exit(output_form
     else:
         assert "Outcome: degraded" in result.output
         assert "index_only_pack_failure" in result.output
+
+
+@pytest.mark.parametrize("output_format", ["json", "markdown"])
+@pytest.mark.parametrize("gap_owner", ["operation", "materialization"])
+def test_compact_cli_finishes_with_the_same_frame_gap(output_format: str, gap_owner: str) -> None:
+    from polylogue.operations.read_contracts import ReadMaterialization
+    from polylogue.surfaces.outcome import OutcomeEnvelope, outcome_exit_code
+
+    pack = compact_sessions(
+        [
+            {
+                "id": "neutral",
+                "messages": [{"id": "one", "text": "Neutral retained decision", "material_origin": "human_authored"}],
+            }
+        ]
+    )
+    assert pack.outcome.state == "ok"
+    wire = {"view": "compact", "payload": pack.model_dump(mode="json")}
+    if gap_owner == "operation":
+        supplied = OutcomeEnvelope(
+            state="degraded", reason="synthetic_selection_gap", detail={"gaps": ["synthetic_selection_gap"]}
+        )
+        wire["outcome"] = supplied.to_dict()
+    else:
+        materialization = ReadMaterialization(
+            state="populated_unconverged",
+            reason="pending_raw",
+            raw_artifact_count=2,
+            materialized_raw_artifact_count=1,
+            blocking_counts={"pending_raw": 1},
+            raw_state_revision="raw-state:neutral",
+        )
+        wire["materialization"] = materialization.model_dump(mode="json")
+        supplied = OutcomeEnvelope(state="degraded", reason="archive_not_converged")
+    with patch("polylogue.cli.operation_kernel.dispatch", return_value=SimpleNamespace(value=wire)):
+        result = CliRunner().invoke(cli, ["--plain", "read", "--view", "compact", "--format", output_format])
+    if output_format == "json":
+        assert json.loads(result.stdout)["pack_ref"] == pack.pack_ref
+    else:
+        assert pack.pack_ref in result.stdout
+    assert result.exit_code == outcome_exit_code(supplied)

@@ -43,6 +43,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/archive/message/compaction_store.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/archive/raw_payload/streams.py",
     "tiers": [],
     "authority": "scratch"
@@ -679,6 +684,11 @@
   },
   {
     "file": "polylogue/storage/sqlite/session_shard.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/surfaces/compaction.py",
     "tiers": [],
     "authority": "scratch"
   }

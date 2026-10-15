@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import json
+import weakref
+from collections.abc import Callable, Iterator
 from typing import cast
 
 import pytest
 
 from polylogue.archive.context_models import ContextImage
+from polylogue.archive.message.token_measure import estimate_serialized_tokens
 from polylogue.surfaces.compaction import (
     CompactionBudgetTooSmallError,
     CompactProjectionSpec,
     CorpusCompactionPack,
     compact_sessions,
-    estimate_serialized_tokens,
 )
 
 
@@ -31,14 +33,14 @@ def _sessions() -> list[dict[str, object]]:
                     "id": "m2",
                     "text": "run tests failed",
                     "material_origin": "tool_result",
-                    "blocks": [{"type": "tool_result", "tool_result_is_error": True, "tool_result_exit_code": 2}],
+                    "blocks": [{"type": "tool_result", "tool_outcome": "error"}],
                 },
                 {"id": "m3", "text": "fixed the test and verify it", "material_origin": "assistant_authored"},
                 {
                     "id": "m4",
                     "text": "success output",
                     "material_origin": "tool_result",
-                    "blocks": [{"type": "tool_result", "tool_result_is_error": False, "tool_result_exit_code": 0}],
+                    "blocks": [{"type": "tool_result", "tool_outcome": "ok"}],
                 },
             ],
         },
@@ -60,9 +62,9 @@ def test_compaction_manifest_filters_spam_and_keeps_structured_failure_fix() -> 
     ``KeyError`` because the successful ``m4`` is kept instead. Deleting the
     ``duplicate_lineage_prefix`` branch makes ``duplicate_prefix_omissions``
     read 0. The fixture reaches the production structural-outcome reader
-    through the same ``tool_result_is_error``/``tool_result_exit_code`` fields
-    ``_tool_outcome`` consults, and the parent/child link aliases are the ones
-    ``compact_sessions`` accepts at line 188.
+    through the same ``tool_outcome`` field
+    the canonical block outcome reader consults, and the parent/child link aliases are the ones
+    ``compact_sessions`` accepts.
     """
     pack = compact_sessions(
         _sessions(),
@@ -271,7 +273,7 @@ def test_long_unbroken_runs_are_weighted_by_their_size() -> None:
     """Anti-vacuity: counting a run as one word estimates ``"!" * 100000`` at
     one token, so a tiny budget would accept it.
     """
-    from polylogue.surfaces.compaction import estimate_serialized_tokens, estimate_tokens
+    from polylogue.archive.message.token_measure import estimate_serialized_tokens, estimate_tokens
 
     run = "!" * 100_000
     assert estimate_tokens(run) >= 10_000
@@ -297,7 +299,7 @@ def _repeated_messages(count: int, text: str) -> list[dict[str, object]]:
 
 
 def test_clipped_source_tokens_partition_the_original_prose() -> None:
-    from polylogue.surfaces.compaction import estimate_tokens
+    from polylogue.archive.message.token_measure import estimate_tokens
 
     text = "evidence " * 1000
     pack = compact_sessions(_repeated_messages(1, text), spec=CompactProjectionSpec(max_tokens=600))
@@ -312,7 +314,7 @@ def test_clipped_source_tokens_partition_the_original_prose() -> None:
 
 @pytest.mark.parametrize("budget,stage", [(800, "collapse_runs_to_counts"), (700, "skeleton_only")])
 def test_budget_ladder_retains_run_counts_and_source_references(budget: int, stage: str) -> None:
-    from polylogue.surfaces.compaction import estimate_tokens
+    from polylogue.archive.message.token_measure import estimate_tokens
 
     text = "decision " * 1000
     # The current typed skeleton and all 20 source refs cost 692 wire tokens;
@@ -339,7 +341,7 @@ def test_budget_ladder_retains_run_counts_and_source_references(budget: int, sta
 
 @pytest.mark.parametrize("budget", [400, 620])
 def test_index_only_budget_pack_reports_source_loss_instead_of_empty_selection(budget: int) -> None:
-    from polylogue.surfaces.compaction import estimate_tokens
+    from polylogue.archive.message.token_measure import estimate_tokens
 
     text = "decision " * 1000
     pack = compact_sessions(_repeated_messages(20, text), spec=CompactProjectionSpec(max_tokens=budget))
@@ -364,3 +366,162 @@ def test_collapse_uses_original_adjacent_text_not_equal_clipped_prefixes() -> No
     pack = compact_sessions(sessions, spec=CompactProjectionSpec(max_tokens=800))
     assert "budget_collapsed" not in pack.manifest.drop_counts
     assert all(item.occurrence_count == 1 for item in pack.items)
+
+
+def test_compaction_ingests_one_message_at_a_time_and_preserves_rank_ties() -> None:
+    class ObservedMessage:
+        material_origin = "human_authored"
+        blocks = ()
+
+        def __init__(self, identifier: str) -> None:
+            self.id = identifier
+            self.text = "same decision"
+
+    references: list[weakref.ReferenceType[ObservedMessage]] = []
+
+    def messages() -> Iterator[ObservedMessage]:
+        for position in range(60):
+            # The current for-loop element may survive until the next arrives;
+            # an eager retained input collection keeps every prior object alive.
+            assert sum(reference() is not None for reference in references) <= 1
+            message = ObservedMessage(f"message-{59 - position:02}")
+            references.append(weakref.ref(message))
+            yield message
+
+    pack = compact_sessions(iter([{"id": "streamed", "messages": messages()}]))
+    assert [item.anchor.ref.format() for item in pack.items] == [
+        f"streamed::message-{position:02}" for position in range(60)
+    ]
+    assert all(reference() is None for reference in references)
+    assert pack.token_estimate == _wire_tokens(pack)
+
+
+def test_compaction_chunks_valid_large_message_below_native_value_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sqlite3
+
+    from polylogue.archive.message.compaction_store import CompactionStore
+
+    initialize = CompactionStore.__init__
+
+    def limited(stage: CompactionStore, connection: sqlite3.Connection, checkpoint: Callable[[], None]) -> None:
+        initialize(stage, connection, checkpoint)
+        connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1024 * 1024)
+
+    monkeypatch.setattr(CompactionStore, "__init__", limited)
+    text = "synthetic evidence " * 120000
+    pack = compact_sessions(
+        [
+            {
+                "id": "large-streamed",
+                "messages": iter([{"id": "large", "text": text, "material_origin": "human_authored"}]),
+            }
+        ],
+        spec=CompactProjectionSpec(max_tokens=2000000),
+    )
+    assert pack.items[0].text == text.strip()
+    assert pack.token_estimate == _wire_tokens(pack)
+
+
+@pytest.mark.parametrize("failure", ["cancel", "late-input"])
+def test_compaction_closes_private_native_store_on_failure(monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    import sqlite3
+    from pathlib import Path
+
+    from polylogue.archive.message.compaction_store import CompactionStore
+
+    stores: list[CompactionStore] = []
+    paths: list[Path] = []
+    initialize = CompactionStore.__init__
+
+    def observed(stage: CompactionStore, connection: sqlite3.Connection, checkpoint: Callable[[], None]) -> None:
+        initialize(stage, connection, checkpoint)
+        stores.append(stage)
+        cursor = connection.execute("PRAGMA database_list")
+        try:
+            paths.append(Path(cursor.fetchone()[2]))
+        finally:
+            cursor.close()
+
+    monkeypatch.setattr(CompactionStore, "__init__", observed)
+    calls = 0
+
+    def checkpoint() -> None:
+        nonlocal calls
+        calls += 1
+        if failure == "cancel" and calls == 20:
+            raise InterruptedError("synthetic compact cancellation")
+
+    def messages() -> Iterator[dict[str, object]]:
+        for position in range(300):
+            yield {"id": str(position), "text": "neutral decision", "material_origin": "human_authored"}
+        raise RuntimeError("synthetic late input failure")
+
+    expected = InterruptedError if failure == "cancel" else RuntimeError
+    with pytest.raises(expected):
+        compact_sessions(iter([{"id": "one", "messages": messages()}]), checkpoint=checkpoint)
+    assert len(stores) == len(paths) == 1
+    assert not paths[0].parent.exists()
+    with pytest.raises(sqlite3.ProgrammingError):
+        stores[0].connection.execute("SELECT 1")
+
+
+def test_compaction_private_native_keys_remain_distinct() -> None:
+    from polylogue.archive.message.compaction_store import compaction_store
+
+    identifiers = ("native-\ud800", "native-\ufffd", "native-😀")
+    with compaction_store(lambda: None) as stage:
+        for identifier in identifiers:
+            stage.add_session(identifier, None)
+            stage.add_message(identifier, 0, identifier, {"neutral": True})
+        assert {row[0] for row in stage.rows("SELECT id FROM compact_sessions")} == set(identifiers)
+        assert all(stage.parent_has(identifier, identifier) for identifier in identifiers)
+        assert not stage.parent_has(identifiers[0], identifiers[1])
+
+
+def test_explicit_root_parent_does_not_report_unknown_lineage() -> None:
+    pack = compact_sessions(
+        [
+            {
+                "id": "root",
+                "parent_id": None,
+                "messages": iter([{"id": "one", "text": "Neutral root evidence", "material_origin": "human_authored"}]),
+            }
+        ]
+    )
+    assert pack.outcome.state == "ok"
+    assert pack.manifest.unknown == ()
+
+
+@pytest.mark.parametrize(
+    "text", ["", "ordinary words", "x" * 65, "記録\u00a0tail!", '{"quote":"a b\\nlongwordlongwordlongword"}']
+)
+def test_streamed_wire_measure_matches_the_complete_estimator(text: str) -> None:
+    from polylogue.archive.message.token_measure import TextMeasure
+
+    expected = _wire_estimate(text)
+    for split in range(len(text) + 1):
+        combined = TextMeasure.text(text[:split]).then(TextMeasure.text(text[split:]))
+        assert combined.tokens == expected
+
+
+def _wire_estimate(text: str) -> int:
+    words = sum(1 if len(word) <= 16 else (len(word) + 7) // 8 for word in text.split())
+    return max(int(words * 1.3), (len(text.encode("utf-8")) + 3) // 4)
+
+
+def test_compaction_keeps_unicode_reference_rank_order() -> None:
+    identifiers = ["😀", "中", "é", "a"]
+    pack = compact_sessions(
+        [
+            {
+                "id": "neutral",
+                "messages": iter(
+                    [
+                        {"id": identifier, "text": "Neutral decision", "material_origin": "human_authored"}
+                        for identifier in identifiers
+                    ]
+                ),
+            }
+        ]
+    )
+    assert [item.anchor.ref.message_id for item in pack.items] == sorted(identifiers)

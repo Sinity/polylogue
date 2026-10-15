@@ -17,6 +17,7 @@ import pytest
 from polylogue import Polylogue
 from polylogue.archive.context_models import ContextImage, ContextSpec
 from polylogue.archive.message.roles import Role
+from polylogue.context.scheduler import ContextLedgerRow
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -102,15 +103,10 @@ async def test_compile_context_accepts_filtered_seed_selection(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_max_tokens_bounds_output_with_omission_accounting(tmp_path: Path) -> None:
-    """A tiny --max-tokens budget clips what it admits and accounts for what it drops.
+    """Unchanged content cannot masquerade as a one-token degraded segment.
 
-    polylogue-37t.11.1 AC3 requires the scheduler's ledger to record dropped
-    items with their budget state and disclosure verdict, and AC2 forbids
-    exceeding the moment budget. Two segments cannot both survive a
-    one-token budget, so admitting one, clipping it, and recording the other
-    as a budget omission is the contract — not silently returning two
-    truncated segments and reporting nothing omitted, which is what this test
-    asserted before #4256 landed the scheduler.
+    Removing the honest admission cost returns a segment whose real estimate
+    exceeds the requested budget instead of a typed omission.
     """
     archive_root = tmp_path / "archive"
     _seed(archive_root, provider_session_id="budget-a", text="alpha budget body that has several words")
@@ -140,8 +136,14 @@ async def test_max_tokens_bounds_output_with_omission_accounting(tmp_path: Path)
     admitted = {segment.segment_id for segment in bounded.segments}
     dropped = {omission.ref for omission in bounded.omitted}
     assert not admitted & dropped
-    assert all(segment.caveats for segment in bounded.segments)
-    assert all("omitted from this message" in (segment.markdown or "") for segment in bounded.segments)
+    assert bounded.token_estimate == sum(segment.token_estimate for segment in bounded.segments) == 0
+    assert not bounded.segments
+    assert len(bounded.ledger) == 2
+    for row in bounded.ledger:
+        assert isinstance(row, ContextLedgerRow)
+        assert row.decision == "dropped"
+        assert row.token_cost > 1
+        assert row.budget_before == row.budget_after == 1
 
 
 @pytest.mark.asyncio
