@@ -3,8 +3,10 @@
   "files": [
     {
       "source": "polylogue-spec/spec/storage/archive-db.md",
-      "sha256": "c6806fc809dd25de91d837b39fe342d7ce9e16301bacf2d580c40de09f2f7af3",
-      "copied_sha256": "80188f0c8636f5889f7dbf25b0e0987702b17014d1e0b2aeca41d6ae252350d1"
+      "sha256": "e4514b1a9d3de989a16733c81e3f1a497c35e40e0182f36c9c216dcc1a82fc24",
+      "copied_sha256": "57ba05c64dd5a7a675102edce9eada0e3fe2b2ddaf5bcbb067c50d15fa50455c",
+      "spec_commit": "191adbec3ddf0b39c1ce07ef3bbd555d07ecf795",
+      "sql_sha256": "8944262f62e8db4b8a7ed2700b31b7003edc930fcad810b41c23beb0631ac427"
     },
     {
       "source": "polylogue-spec/spec/storage/index-db.md",

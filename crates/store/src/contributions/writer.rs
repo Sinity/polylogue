@@ -656,6 +656,7 @@ mod tests {
                 .retain_immutable_input(
                     blob,
                     InputFormat::CodexRollout,
+                    &[],
                     &ImportObservation {
                         id: "synthetic-observation",
                         machine: "synthetic-machine",

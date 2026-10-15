@@ -83,6 +83,11 @@ impl World {
                 } else {
                     InputFormat::CodexRollout
                 },
+                if claude {
+                    &["claude-main", "synthetic-session"]
+                } else {
+                    &[]
+                },
                 &ImportObservation {
                     id: "synthetic-import",
                     machine: "synthetic-machine",

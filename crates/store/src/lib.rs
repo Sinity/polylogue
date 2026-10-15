@@ -32,7 +32,8 @@ pub mod parser_state;
 pub mod values;
 mod wal;
 
-pub const ARCHIVE_VERSION: u32 = 0;
+pub const ARCHIVE_VERSION: u32 = 1;
+pub const ARCHIVE_SPEC_COMMIT: &str = "191adbec3ddf0b39c1ce07ef3bbd555d07ecf795";
 pub const EMBEDDINGS_VERSION: u32 = 0;
 pub const INDEX_VERSION: u32 = 12;
 /// Exact owning forward-schema revision, independently qualified from inbox index8.

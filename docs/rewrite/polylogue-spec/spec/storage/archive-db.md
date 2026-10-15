@@ -32,12 +32,18 @@ notes, kept results, excisions, variants, settings. How bytes are stored is in
   archive's write counter at the transaction that inserted the row here. They
   are assigned by the local writer, never copied in a union, and never a key;
   the change feed and the read view use them (`index-db.md`, change counter).
-  One exception: restoring `archive.db` from Sinex (backed mode,
-  `decisions/sinex.md`) keeps each row's published `local_seq` instead of
-  assigning a new one, and new rows continue above the highest restored
-  value, because Sinex's replicated frontier (joint #29) compares the
-  numbers it already holds with this archive's; a fresh numbering would
-  make that comparison silently wrong.
+  Restoring the same archive from Sinex preserves its own published local
+  positions and continues above the verified retained high-water mark. A union
+  assigns destination-local order to imported rows; it never copies another
+  archive's counter. Imports advance this archive's write counter before any
+  subsequent local write. Original publication metadata remains scoped to its
+  registered producer/archive lineage in Sinex. A copied archive running
+  independently registers a new lineage; resuming the original lineage requires
+  fencing its previous writer. Contribution completion and the designated
+  Polylogue resolver's completed union publication are separate chains, not a
+  single counter across archives (`polylogue-sinex-joint/topics/03-transport.md`,
+  Archive publication and union resolution; joint #29). Record-only writes also
+  close a publication, so the last note never waits for a future input revision.
 - **Migrations.** `archive.db` cannot be recomputed from anything local (in
   backed mode it can be restored from Sinex, but that is recovery, not a
   schema path), so its schema changes by
@@ -96,16 +102,20 @@ CREATE INDEX blob_base ON blob(base) WHERE base IS NOT NULL;
 
 -- One logical file: one location's history, or one imported file.
 CREATE TABLE input (
-  id            TEXT PRIMARY KEY,        -- hex BLAKE3 for an imported file that cannot change;
-                                         -- UUIDv7 for a location that can grow or change
-  format        TEXT NOT NULL            -- 'claude-code-jsonl', 'codex-rollout', 'codex-state-sqlite', 'chatgpt-export', ...
-                                         -- (when it was first seen is a query over its observations, so an input
-                                         --  named by content is the same row on every machine)
+  id            TEXT PRIMARY KEY,        -- immutable import key (model.md, immutable import identity),
+                                         -- or UUIDv7 for a location that can grow or change
+  format        TEXT NOT NULL,           -- 'claude-code-jsonl', 'codex-rollout', 'codex-state-sqlite', 'chatgpt-export', ...
+  original_hash BLOB,                    -- immutable import's original 32-byte digest; survives byte excision
+  context_json  TEXT,                    -- version-1 string array (model.md); [] is self-identifying
+                                         -- both NULL for ordinary observed/location-backed UUID inputs
+  CHECK ((original_hash IS NULL AND context_json IS NULL) OR
+         (original_hash IS NOT NULL AND length(original_hash) = 32 AND
+          context_json IS NOT NULL AND json_valid(context_json) AND json_type(context_json) = 'array'))
 ) STRICT;
 
 -- Every distinct content of an input. Never deleted except by excision. The
 -- observation that first saw a revision is a query (the earliest by seen_at, then
--- id), not a column, so the rows of an input named by content are identical on
+-- id), not a column, so the rows of an immutable tuple-named input are identical on
 -- every machine.
 CREATE TABLE revision (
   input         TEXT NOT NULL REFERENCES input(id),
@@ -122,12 +132,9 @@ CREATE TABLE revision (
   length        INTEGER NOT NULL,        -- of the revision's full bytes
   blake3        BLOB,                    -- of the full bytes as observed, once complete; never changed,
                                          --   not even by excision (an excised revision is verified by its blobs)
-  local_seq     INTEGER NOT NULL,        -- local order (Rules): the write counter at the insert; in backed mode
-                                         --   the revision event carries it, and Sinex's replicated frontier is the
-                                         --   largest W with every revision at or below W complete (joint #29); the event also carries
-                                         --   prev_local_seq, the local_seq of the revision stored just before it in
-                                         --   this archive's write order (0 for the first), so a gap left by a note or
-                                         --   excision is told apart from a missing revision
+  local_seq     INTEGER NOT NULL,        -- destination-local insertion order (Rules), never a global key
+                                         -- backed publication metadata is scoped by registered archive and
+                                         -- publication kind; union never imports another archive's counter
   PRIMARY KEY (input, number)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX revision_local ON revision(local_seq);
@@ -169,7 +176,8 @@ CREATE TABLE observation (
   machine       TEXT NOT NULL,           -- machine.id; paths from two machines never collide
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
                                          --   'zip:<input>/<member>', 'copy:<origin>', or 'capture:<id>'
-  stands_for    TEXT,                    -- 'zip:' and 'copy:' observations: the location path these bytes are an
+  stands_for    TEXT,                    -- target location from the container's retained mapping (sources/README.md);
+                                         -- 'zip:' and 'copy:' observations: the location path these bytes are an
                                          --   older copy of, so the file found there later joins this input
   class         TEXT NOT NULL,           -- first | appended | head_rewritten | replaced | rewritten | renamed
                                          -- | deleted | back | imported | excised | download_attempt
@@ -402,7 +410,8 @@ anywhere.
   deleted, and its blobs go to `deleting` unless another input's extent uses
   them (a blob that is another input's delta base is first re-encoded plain
   for that delta). Before the rows go, the excision row records the input's
-  locations and the BLAKE3 of its revisions and blobs in `refused_json`.
+  locations, immutable import identity tuple when present, and the BLAKE3 of
+  its original bytes, revisions and blobs in `refused_json`.
 - `session:<id>`: an input that fed only that session is excised as above.
   An input shared with other sessions is rewritten without the session's
   records:
@@ -475,6 +484,17 @@ resumes where it stopped.
    sessions are deleted, and each removed session is recorded for the change
    feed (`index-db.md`). While a new `index.db` is being built beside the old
    one, these deletions are applied to both.
+   This includes session-owned ToolItems and all their candidate versions,
+   source locators, proved anchors, output-search references and derived call
+   facts, including items with no Message owner. A Message or text removal
+   follows its exact retained ranges and proved operation correspondence;
+   it neither skips an unowned representation of those bytes nor guesses
+   ownership for unrelated items. A surviving operation may retain its known
+   structural facts while its removed payload is explicitly excised. Pending
+   payload completion and later association must recheck the removal basis;
+   they cannot restore an old body, select a pre-excision version or refill
+   it from another representation. Complete this closure before claiming the
+   ToolItem runtime projection qualified.
 4. Every vector whose `text_hash` is in an `excised` observation's
    `text_hashes_json`, or belongs to a text only the excised session used, is
    deleted from `embeddings.md`'s `embedded`, and `near:` skips any vector
@@ -524,8 +544,8 @@ same bound without Sinex, is set aside (`SET-ASIDE.md`).
   passes the overwritten bytes and spans to `store`. Each store that
   overwrites bytes this way writes, in the same transaction, an `excised`
   observation for the input naming the excision, the spans and the
-  pre-overwrite IDs, exactly as step 2 does. An imported file whose hash is
-  refused is stored in its excised form (which usually exists already); for
+  pre-overwrite IDs, exactly as step 2 does. An imported file whose original byte digest is
+  refused, under any interpretation context, is stored in its excised form (which usually exists already); for
   an input scope, nothing is stored.
 - **Change classification** of an input with an `excised` observation masks
   the recorded spans (`storage/blobs.md`, excised inputs).

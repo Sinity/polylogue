@@ -43,6 +43,7 @@ impl World {
             .retain_immutable_input(
                 blob,
                 InputFormat::ClaudeCodeJsonl,
+                &["claude-main", "claude"],
                 &ImportObservation {
                     id: "synthetic-claude",
                     machine: "synthetic-machine",

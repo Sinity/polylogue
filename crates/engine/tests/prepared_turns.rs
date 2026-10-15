@@ -16,6 +16,7 @@ fn fixture() -> (tempfile::TempDir, Writer, Head) {
         .retain_immutable_input(
             hash,
             InputFormat::CodexRollout,
+            &[],
             &ImportObservation {
                 id: "test-import",
                 machine: "test-machine",

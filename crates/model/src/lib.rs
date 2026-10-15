@@ -8,7 +8,7 @@ pub mod types;
 pub mod version_evidence;
 
 pub use content::*;
-pub use identity::{BlobHash, BlockId, BlockSlot, IdError, MessageId, Origin, SessionId};
+pub use identity::{BlobHash, BlockId, BlockSlot, IdError, InputId, MessageId, Origin, SessionId};
 pub use measures::{ErrorReason, ToolOutcome, UnknownReason};
 pub use time::{Precision, ProviderTime, TimeQuality, Timestamp};
 pub use types::{Credits, ErrorKind, Failure, Ratio, RecordOutcome, ResultOutcome, Usd};

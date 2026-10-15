@@ -282,6 +282,36 @@ impl TryFrom<String> for BlobHash {
     }
 }
 
+/// Immutable imports are named by exact bytes and canonical interpretation
+/// context. Provider validation/admission precedes this pure framing primitive.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InputId(String);
+impl InputId {
+    pub fn imported(original: &BlobHash, format: &str, context: &[&str]) -> Self {
+        fn field(h: &mut blake3::Hasher, value: &str) {
+            h.update(&(value.len() as u64).to_le_bytes());
+            h.update(value.as_bytes());
+        }
+        let mut h = blake3::Hasher::new();
+        h.update(b"polylogue-import-v1\0");
+        h.update(original.bytes());
+        field(&mut h, format);
+        h.update(&(context.len() as u64).to_le_bytes());
+        for value in context {
+            field(&mut h, value);
+        }
+        Self(h.finalize().to_hex().to_string())
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl fmt::Display for InputId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Canonicalize a raw provider record, omitting only adapter-declared top-level volatile fields.
 /// RawValue preserves exponent spelling, which arbitrary_precision alone normalizes.
 pub fn canonical_record(raw: &[u8], volatile: &[&str]) -> Result<Vec<u8>, serde_json::Error> {
@@ -466,5 +496,42 @@ mod tests {
         let second = provisional_message_id(session, raw, &[], 1).unwrap();
         assert_ne!(first, second);
         assert!(second.as_str().ends_with("-1"));
+    }
+}
+
+#[cfg(test)]
+mod import_identity_tests {
+    use super::*;
+    #[test]
+    fn import_identity_has_independent_exact_framing_and_semantic_scope() {
+        let raw = BlobHash::of(b"synthetic");
+        let mut wire = b"polylogue-import-v1\0".to_vec();
+        wire.extend_from_slice(raw.bytes());
+        wire.extend_from_slice(&2u64.to_le_bytes());
+        wire.extend_from_slice("é".as_bytes());
+        wire.extend_from_slice(&2u64.to_le_bytes());
+        wire.extend_from_slice(&1u64.to_le_bytes());
+        wire.extend_from_slice(b"a");
+        wire.extend_from_slice(&0u64.to_le_bytes());
+        assert_eq!(
+            InputId::imported(&raw, "é", &["a", ""]).to_string(),
+            BlobHash::of(&wire).to_string()
+        );
+        assert_ne!(
+            InputId::imported(&raw, "codex-rollout", &[]).as_str(),
+            raw.to_string()
+        );
+        assert_ne!(
+            InputId::imported(&raw, "claude-code-jsonl", &["claude-main", "a"]),
+            InputId::imported(&raw, "claude-code-jsonl", &["claude-main", "b"])
+        );
+        assert_ne!(
+            InputId::imported(&raw, "f", &["ab", "c"]),
+            InputId::imported(&raw, "f", &["a", "bc"])
+        );
+        assert_ne!(
+            InputId::imported(&raw, "f", &[]),
+            InputId::imported(&raw, "f", &[""])
+        );
     }
 }

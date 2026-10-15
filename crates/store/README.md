@@ -10,8 +10,9 @@ rewriting it. Callers receive typed handles, never raw SQLite connections.
 revisions, parsing or M1 support.
 
 All three schemas are exact SQL-fence extractions from the owning snapshot;
-a drift test compares their text. Archive/embeddings versions are zero because
-there are no pre-release migrations; index version is three, adding provider preparation. Existing schemas
+a drift test compares their text. Archive version 1 adds the immutable import
+identity tuple; embeddings version remains zero and index version is 12. No
+pre-release durable migration is supplied. Existing schemas
 and versions are checked before database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 it. Retained state without its coordination lock requires controlled recovery;
@@ -110,3 +111,21 @@ Directory lookup/copy/collection uses the same leases and fixed-depth paths;
 no per-body alternative list is copied on an unrelated field change. The pure
 model compares canonical typed values one witness at a time. Serving conflict
 views, export/import and full canonical activation are still unwired.
+
+
+Immutable inputs retain their original byte digest and explicit format-owned
+interpretation context. `InputId::imported` implements the pinned version-1
+framing from spec191adbec; physical CAS remains named by raw byte digest.
+Registration/recovery validates that tuple. The primitive accepts explicit
+Claude contexts; the public actor currently accepts only self-identifying Codex
+rollouts, with empty context. It does not choose a Claude pathname from competing
+observations. Any existing excision refuses acquisition until the refusal-aware
+collector is wired.
+
+`BlobCapture` holds archive lock authority without SQLite capability. It streams
+and verifies bytes on a worker before opaque proof admission writes metadata.
+`client_request` and the import observation commit together; an unchanged retry
+replays the retained result before opening its provider path. Archive commit
+precedes repairable disposable `input_ref` registration. Capture cancellation is
+cooperative around decoder reads; seek tables, record/cell allocations and physical
+IO work remain outside a complete memory/latency qualification.

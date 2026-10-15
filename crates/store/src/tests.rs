@@ -40,6 +40,24 @@ fn ddl_is_exact_extraction_from_copied_owning_spec() {
 }
 
 #[test]
+fn context_qualified_archive_uses_explicit_owning_schema_basis() {
+    assert_eq!(ARCHIVE_VERSION, 1);
+    let provenance = include_str!("../schema/provenance.json");
+    assert!(provenance.contains(&format!("\"spec_commit\": \"{ARCHIVE_SPEC_COMMIT}\"")));
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(ARCHIVE_SQL).unwrap();
+    assert!(
+        conn.execute(
+            "INSERT INTO input(id,format,context_json) VALUES('torn','codex-rollout','[]')",
+            []
+        )
+        .is_err()
+    );
+    assert!(conn.execute("INSERT INTO input(id,format,original_hash,context_json) VALUES('wrong','codex-rollout',zeroblob(31),'[]')",[]).is_err());
+    conn.execute("INSERT INTO input(id,format,original_hash,context_json) VALUES('complete','codex-rollout',zeroblob(32),'[]')",[]).unwrap();
+}
+
+#[test]
 fn forward_index_is_pinned_and_applies_without_predecessor_columns() {
     assert_eq!(
         BlobHash::of(INDEX_SQL.as_bytes()).to_string(),

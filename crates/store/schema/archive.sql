@@ -27,16 +27,20 @@ CREATE INDEX blob_base ON blob(base) WHERE base IS NOT NULL;
 
 -- One logical file: one location's history, or one imported file.
 CREATE TABLE input (
-  id            TEXT PRIMARY KEY,        -- hex BLAKE3 for an imported file that cannot change;
-                                         -- UUIDv7 for a location that can grow or change
-  format        TEXT NOT NULL            -- 'claude-code-jsonl', 'codex-rollout', 'codex-state-sqlite', 'chatgpt-export', ...
-                                         -- (when it was first seen is a query over its observations, so an input
-                                         --  named by content is the same row on every machine)
+  id            TEXT PRIMARY KEY,        -- immutable import key (model.md, immutable import identity),
+                                         -- or UUIDv7 for a location that can grow or change
+  format        TEXT NOT NULL,           -- 'claude-code-jsonl', 'codex-rollout', 'codex-state-sqlite', 'chatgpt-export', ...
+  original_hash BLOB,                    -- immutable import's original 32-byte digest; survives byte excision
+  context_json  TEXT,                    -- version-1 string array (model.md); [] is self-identifying
+                                         -- both NULL for ordinary observed/location-backed UUID inputs
+  CHECK ((original_hash IS NULL AND context_json IS NULL) OR
+         (original_hash IS NOT NULL AND length(original_hash) = 32 AND
+          context_json IS NOT NULL AND json_valid(context_json) AND json_type(context_json) = 'array'))
 ) STRICT;
 
 -- Every distinct content of an input. Never deleted except by excision. The
 -- observation that first saw a revision is a query (the earliest by seen_at, then
--- id), not a column, so the rows of an input named by content are identical on
+-- id), not a column, so the rows of an immutable tuple-named input are identical on
 -- every machine.
 CREATE TABLE revision (
   input         TEXT NOT NULL REFERENCES input(id),
@@ -53,12 +57,9 @@ CREATE TABLE revision (
   length        INTEGER NOT NULL,        -- of the revision's full bytes
   blake3        BLOB,                    -- of the full bytes as observed, once complete; never changed,
                                          --   not even by excision (an excised revision is verified by its blobs)
-  local_seq     INTEGER NOT NULL,        -- local order (Rules): the write counter at the insert; in backed mode
-                                         --   the revision event carries it, and Sinex's replicated frontier is the
-                                         --   largest W with every revision at or below W complete (joint #29); the event also carries
-                                         --   prev_local_seq, the local_seq of the revision stored just before it in
-                                         --   this archive's write order (0 for the first), so a gap left by a note or
-                                         --   excision is told apart from a missing revision
+  local_seq     INTEGER NOT NULL,        -- destination-local insertion order (Rules), never a global key
+                                         -- backed publication metadata is scoped by registered archive and
+                                         -- publication kind; union never imports another archive's counter
   PRIMARY KEY (input, number)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX revision_local ON revision(local_seq);
@@ -100,7 +101,8 @@ CREATE TABLE observation (
   machine       TEXT NOT NULL,           -- machine.id; paths from two machines never collide
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
                                          --   'zip:<input>/<member>', 'copy:<origin>', or 'capture:<id>'
-  stands_for    TEXT,                    -- 'zip:' and 'copy:' observations: the location path these bytes are an
+  stands_for    TEXT,                    -- target location from the container's retained mapping (sources/README.md);
+                                         -- 'zip:' and 'copy:' observations: the location path these bytes are an
                                          --   older copy of, so the file found there later joins this input
   class         TEXT NOT NULL,           -- first | appended | head_rewritten | replaced | rewritten | renamed
                                          -- | deleted | back | imported | excised | download_attempt

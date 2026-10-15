@@ -35,6 +35,7 @@ impl World {
             .retain_immutable_input(
                 blob,
                 InputFormat::CodexRollout,
+                &[],
                 &ImportObservation {
                     id: "synthetic-import",
                     machine: "synthetic-machine",
