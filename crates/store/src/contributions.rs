@@ -71,3 +71,5 @@ impl SelectCompatibleSourceForTest for crate::Writer {
         ))
     }
 }
+
+pub(crate) mod tool_associations;

@@ -2440,6 +2440,9 @@ impl<V: ReadView> KeyedRecords<V> {
             return;
         };
         let anchor = source_block.id.as_str().to_owned();
+        // An exec wrapper has a proved request block, not a native
+        // CommandExecution item ID. Keep that constructor distinction.
+        let native = tool != "exec" && self.s.turn.is_some();
         let operation = polylogue_model::tool_item::Operation {
             kind: if tool == "exec" {
                 "CodeExecution"
@@ -2453,8 +2456,8 @@ impl<V: ReadView> KeyedRecords<V> {
             session,
             turn: self.s.turn.clone(),
             invocation: call.into(),
-            native: self.s.turn.is_some(),
-            provisional_anchor: self.s.turn.is_none().then_some(anchor),
+            native,
+            provisional_anchor: (!native).then_some(anchor),
             agent_class: "agent".into(),
             correspondence: if self.s.turn.is_some() {
                 "established"
@@ -2595,7 +2598,7 @@ impl<V: ReadView> KeyedRecords<V> {
                         ));
                         if let Some(Cell::Operation(owner)) = self.get(key) {
                             if owner.turn == operation.turn && owner.turn.is_some() {
-                                wrappers.push((wrapper, id, owner.message));
+                                wrappers.push((wrapper, id, owner.origins));
                             }
                         }
                     }
@@ -2606,7 +2609,27 @@ impl<V: ReadView> KeyedRecords<V> {
         // Temporal overlap supports suppression, never a Message/parent edge.
         operation.wrapper = None;
         operation.wrapper_overlaps = wrappers.iter().map(|(_, id, _)| id.clone()).collect();
-        for (raw, _, _) in wrappers {
+        for (raw, id, origins) in wrappers {
+            for origin in origins {
+                if let polylogue_model::tool_item::ToolOrigin::Rollout {
+                    tag,
+                    start,
+                    end,
+                    raw_hash,
+                } = origin
+                {
+                    if tag == "call" {
+                        operation
+                            .origins
+                            .push(polylogue_model::tool_item::ToolOrigin::Rollout {
+                                tag: format!("wrapper_overlap:{id}"),
+                                start,
+                                end,
+                                raw_hash,
+                            });
+                    }
+                }
+            }
             self.child(raw, format!("~native:{}", operation.invocation));
         }
         match operation.id() {

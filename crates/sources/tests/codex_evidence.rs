@@ -542,6 +542,13 @@ fn pinned_unowned_command_keeps_wrapper_messages_and_raw_evidence_unchanged() {
     assert!(child.message.is_none() && child.wrapper.is_none());
     assert_eq!(child.wrapper_overlaps.len(), 2);
     assert!(
+        operations
+            .iter()
+            .filter(|op| op.kind == "CodeExecution")
+            .all(|op| !op.native && op.provisional_anchor.is_some())
+    );
+    assert_eq!(child.origins.iter().filter(|o|matches!(o,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..} if tag.starts_with("wrapper_overlap:"))).count(),2);
+    assert!(
         child
             .wrapper_overlaps
             .iter()

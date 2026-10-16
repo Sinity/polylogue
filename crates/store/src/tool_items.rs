@@ -18,6 +18,19 @@ pub struct Citation {
     pub adapter_revision: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Association {
+    pub kind: String,
+    pub message: String,
+    pub input: String,
+    pub chain: i64,
+    pub start: u64,
+    pub end: u64,
+    pub constructor: String,
+    pub message_body: i64,
+    pub body_version: String,
+    pub index_generation: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Item {
     pub reference: String,
     pub version: i64,
@@ -25,7 +38,9 @@ pub struct Item {
     pub operation: Operation,
     pub sources: Vec<Citation>,
     pub representations: Vec<Citation>,
+    pub associations: Vec<Association>,
     pub conflicting_representations: bool,
+    pub selected: bool,
 }
 #[derive(Serialize)]
 pub struct Population {
@@ -33,6 +48,7 @@ pub struct Population {
     pub tool_calls: u64,
     pub failed: u64,
     pub correspondence_complete: bool,
+    pub outcomes_complete: bool,
     pub retained_representations: usize,
     pub retained_rows: u64,
     pub decoded_rows: u64,
@@ -103,6 +119,25 @@ fn bytes(c: &Connection, p: &Path, pk: i64, allowance: usize) -> Result<Vec<u8>>
     }
     Ok(out)
 }
+fn bump_session(tx: &Transaction<'_>, p: &Path, session: i64) -> Result<()> {
+    let changed = crate::counter(tx, p)?
+        .checked_add(1)
+        .filter(|n| *n <= i64::MAX as u64)
+        .ok_or(Error::Range)?;
+    db(p, || {
+        tx.execute(
+            "UPDATE meta SET value=?1 WHERE key='write_counter'",
+            [changed.to_string()],
+        )
+    })?;
+    db(p, || {
+        tx.execute(
+            "UPDATE session SET changed=?2 WHERE pk=?1",
+            params![session, changed as i64],
+        )
+    })?;
+    Ok(())
+}
 fn published_for_source(c: &Connection, p: &Path, input: i64, chain: i64) -> Result<bool> {
     db(p, || {
         c.query_row("SELECT EXISTS(SELECT 1 FROM tool_item_source s JOIN tool_item_version v ON v.pk=s.tool_item_version_pk WHERE s.input_pk=?1 AND s.source_chain=?2 AND v.ready=1)", params![input,chain], |r|r.get(0))
@@ -152,6 +187,15 @@ impl Writer {
                 required: (encoded.len() + output.as_ref().map_or(0, String::len)) as u64,
             });
         }
+        if operation.wrapper_overlaps.len() > 16 || operation.direct_anchors.len() > 16 {
+            return Err(Error::ParserAdmission {
+                resource: "operation association witnesses",
+                required: operation
+                    .wrapper_overlaps
+                    .len()
+                    .max(operation.direct_anchors.len()) as u64,
+            });
+        }
         if operation.origins.is_empty() {
             return Err(bad("operation has no source evidence"));
         }
@@ -186,7 +230,7 @@ impl Writer {
             tx.execute("INSERT INTO parsed(input_pk,chain,session_pk,parser_version) SELECT ?1,?2,?3,parser_version FROM parse_state WHERE input_pk=?1 AND chain=?2 ON CONFLICT DO NOTHING", params![token.input_pk,token.chain,session])
         })?;
         db(&p, || {
-            tx.execute("INSERT INTO tool_item(id,session_pk,provider_namespace,identity_schema,identity_kind,native_turn_id,native_item_id) VALUES(?1,?2,'codex',?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",params![id,session,CODEX_CONSTRUCTOR,if operation.native{"native"}else{"provisional"},if operation.native{operation.turn.as_deref()}else{None},operation.native.then_some(operation.invocation.as_str())])
+            tx.execute("INSERT INTO tool_item(id,session_pk,provider_namespace,identity_schema,identity_kind,native_turn_id,native_item_id) VALUES(?1,?2,'codex',?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",params![id,session,if operation.kind == "CodeExecution" { "codex-rust-v0.162.1/exec-response-call-block" } else { CODEX_CONSTRUCTOR },if operation.native{"native"}else{"provisional"},if operation.native{operation.turn.as_deref()}else{None},operation.native.then_some(operation.invocation.as_str())])
         })?;
         let item: i64 = db(&p, || {
             tx.query_row(
@@ -199,6 +243,9 @@ impl Writer {
             tx.query_row("SELECT v.pk FROM tool_item_version v JOIN tool_item_source s ON s.tool_item_version_pk=v.pk WHERE v.tool_item_pk=?1 AND v.version_hash=?2 AND s.input_pk=?3 AND s.source_chain=?4 LIMIT 1",params![item,digest.bytes().as_slice(),token.input_pk,token.chain],|r|r.get(0)).optional()
         })?;
         if let Some(v) = existing {
+            if crate::contributions::tool_associations::attach_selected(&tx, &p, item)? {
+                bump_session(&tx, &p, session)?;
+            }
             db(&p, || tx.commit())?;
             return Ok(v);
         }
@@ -228,8 +275,21 @@ impl Writer {
         let version = tx.last_insert_rowid();
         for (slot, origin) in operation.origins.iter().enumerate() {
             let (start, end, constructor) = match origin {
-                ToolOrigin::Rollout { start, end, .. } => {
-                    (*start, *end, format!("{CODEX_CONSTRUCTOR}/core"))
+                ToolOrigin::Rollout {
+                    tag, start, end, ..
+                } => {
+                    let constructor = if tag.starts_with("wrapper_overlap:")
+                        || operation.kind == "CodeExecution"
+                    {
+                        "codex-rust-v0.162.1/exec-response-call-block".into()
+                    } else if tag == "status" {
+                        format!("{CODEX_CONSTRUCTOR}/core")
+                    } else if tag == "call" {
+                        format!("{CODEX_CONSTRUCTOR}/core-tools-events-ctx.call_id")
+                    } else {
+                        "codex-rust-v0.162.1/function_call_output/status-classifier-v1".into()
+                    };
+                    (*start, *end, constructor)
                 }
                 ToolOrigin::History { .. } => (
                     0,
@@ -305,14 +365,38 @@ impl Writer {
                     .origins
                     .iter()
                     .find_map(|o| match o {
-                        ToolOrigin::Rollout { start, end, .. } => Some((*start, *end)),
+                        ToolOrigin::Rollout {
+                            tag, start, end, ..
+                        } if tag == "call" => Some((*start, *end)),
                         _ => None,
                     })
                     .ok_or_else(|| bad("Message owner has no direct rollout witness"))?;
                 db(&p, || {
-                    tx.execute("INSERT INTO tool_item_association(tool_item_version_pk,tool_item_pk,message_pk,session_pk,kind,input_pk,source_chain,source_start,source_end,constructor) VALUES(?1,?2,?3,?4,'message_owner',?5,?6,?7,?8,?9)",params![version,item,owner,session,token.input_pk,token.chain,start as i64,end as i64,CODEX_CONSTRUCTOR])
+                    tx.execute("INSERT INTO tool_item_association(tool_item_version_pk,tool_item_pk,message_pk,session_pk,kind,input_pk,source_chain,source_start,source_end,constructor) VALUES(?1,?2,?3,?4,'message_owner',?5,?6,?7,?8,?9)",params![version,item,owner,session,token.input_pk,token.chain,start as i64,end as i64,"codex-rust-v0.162.1/response_item/request-boundary"])
                 })?;
             }
+        }
+        // Overlap is a separate proof kind. It neither assigns a parent nor
+        // rewrites a wrapper's independently published Message body.
+        for wrapper in &operation.wrapper_overlaps {
+            let (start, end) = operation
+                .origins
+                .iter()
+                .find_map(|origin| match origin {
+                    ToolOrigin::Rollout {
+                        tag, start, end, ..
+                    } if tag == &format!("wrapper_overlap:{wrapper}") => Some((*start, *end)),
+                    _ => None,
+                })
+                .ok_or_else(|| bad("wrapper overlap lacks its direct retained call witness"))?;
+            let message: Option<i64> = db(&p, || {
+                tx.query_row("SELECT a.message_pk FROM tool_item t JOIN tool_item_version v ON v.tool_item_pk=t.pk JOIN tool_item_association a ON a.tool_item_version_pk=v.pk WHERE t.id=?1 AND t.session_pk=?2 AND v.kind='CodeExecution' AND a.kind='message_owner' AND a.input_pk=?3 AND a.source_chain=?4 AND a.source_start=?5 AND a.source_end=?6 LIMIT 1",params![wrapper,session,token.input_pk,token.chain,start as i64,end as i64],|r|r.get(0)).optional()
+            })?;
+            let message = message
+                .ok_or_else(|| bad("wrapper overlap has no independently proved request owner"))?;
+            db(&p, || {
+                tx.execute("INSERT INTO tool_item_association(tool_item_version_pk,tool_item_pk,message_pk,session_pk,kind,input_pk,source_chain,source_start,source_end,constructor) VALUES(?1,?2,?3,?4,'wrapper_overlap',?5,?6,?7,?8,'codex-rust-v0.162.1/open-exec-call-in-native-turn')",params![version,item,message,session,token.input_pk,token.chain,start as i64,end as i64])
+            })?;
         }
         let refined: bool = db(&p, || {
             tx.query_row(
@@ -323,7 +407,7 @@ impl Writer {
         })?;
         if !refined {
             db(&p, || {
-                tx.execute("UPDATE tool_item SET selected_version_pk=(SELECT pk FROM tool_item_version WHERE tool_item_pk=?1 ORDER BY result_present DESC,output_present DESC,(SELECT count(*) FROM tool_item_association a WHERE a.tool_item_version_pk=tool_item_version.pk) DESC,call_present DESC,version_hash ASC,pk ASC LIMIT 1) WHERE pk=?1",[item])
+                tx.execute("UPDATE tool_item SET selected_version_pk=(SELECT pk FROM tool_item_version WHERE tool_item_pk=?1 ORDER BY result_present DESC,output_present DESC,(SELECT count(*) FROM tool_item_association a WHERE a.tool_item_version_pk=tool_item_version.pk AND a.kind='message_owner') DESC,call_present DESC,version_hash ASC,pk ASC LIMIT 1) WHERE pk=?1",[item])
             })?;
         }
         // Keep one selected Session-owned summary. Block-backed summaries have
@@ -346,27 +430,70 @@ impl Writer {
                 tx.execute("INSERT INTO tool_call(session_pk,operation_id,tool_item_pk,tool_item_version_pk,outcome,outcome_reason,exit_code,duration_ms,action) SELECT session_pk,?2,tool_item_pk,pk,coalesce(result_outcome,'unknown'),CASE WHEN result_present=0 THEN 'no_result' ELSE NULL END,result_exit_code,result_duration_ms,'shell' FROM tool_item_version WHERE pk=?1 AND agent_class='agent' AND correspondence='established' AND call_present=1",params![selected,id])
             })?;
         }
-        let changed = crate::counter(&tx, &p)?
-            .checked_add(1)
-            .filter(|n| *n <= i64::MAX as u64)
-            .ok_or(Error::Range)?;
-        db(&p, || {
-            tx.execute(
-                "UPDATE meta SET value=?1 WHERE key='write_counter'",
-                [changed.to_string()],
-            )
-        })?;
-        db(&p, || {
-            tx.execute(
-                "UPDATE session SET changed=?2 WHERE pk=?1",
-                params![session, changed as i64],
-            )
-        })?;
+        crate::contributions::tool_associations::attach_selected(&tx, &p, item)?;
+        bump_session(&tx, &p, session)?;
         db(&p, || tx.commit())?;
         Ok(version)
     }
 }
 
+fn associations(reader: &ReadHandle, version: i64) -> Result<Vec<Association>> {
+    let p = reader.root.join("index.db");
+    let mut statement = db(&p, || {
+        reader.index.prepare("SELECT a.pk,a.message_pk,a.session_pk,a.kind,m.id,i.id,a.source_chain,a.source_start,a.source_end,a.constructor FROM tool_item_association a JOIN tool_item t ON t.selected_version_pk=a.tool_item_version_pk JOIN message m ON m.pk=a.message_pk JOIN input_ref i ON i.pk=a.input_pk WHERE a.tool_item_version_pk=?1 ORDER BY a.kind,m.id,a.source_start LIMIT 18")
+    })?;
+    let rows = db(&p, || {
+        statement
+            .query_map([version], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, i64>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, String>(9)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })?;
+    if rows.len() > 17 {
+        return Err(Error::ParserAdmission {
+            resource: "operation associations",
+            required: rows.len() as u64,
+        });
+    }
+    let mut out = Vec::new();
+    for (pk, message_pk, session, kind, message, input, chain, start, end, constructor) in rows {
+        let Some((message_body, body_version, index_generation)) =
+            crate::contributions::tool_associations::membership(
+                &reader.index,
+                &p,
+                pk,
+                message_pk,
+                session,
+            )?
+        else {
+            return Err(Error::MessagePreparationPending);
+        };
+        out.push(Association {
+            kind,
+            message,
+            input,
+            chain,
+            start: u64::try_from(start).map_err(|_| Error::Range)?,
+            end: u64::try_from(end).map_err(|_| Error::Range)?,
+            constructor,
+            message_body,
+            body_version,
+            index_generation,
+        });
+    }
+    Ok(out)
+}
 fn citations(reader: &ReadHandle, id: &str, version: Option<i64>) -> Result<Vec<Citation>> {
     let p = reader.root.join("index.db");
     let mut s = db(&p, || {
@@ -504,8 +631,16 @@ fn load_item(
     let sources = citations(reader, &reference, Some(version))?;
     verify_sources(reader, &sources, verified)?;
     let representations = citations(reader, &reference, None)?;
+    let associations = associations(reader, version)?;
+    let selected: bool = db(&p, || {
+        reader.index.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tool_item WHERE selected_version_pk=?1)",
+            [version],
+            |r| r.get(0),
+        )
+    })?;
     let conflicting_representations: bool = db(&p, || {
-        reader.index.query_row("SELECT EXISTS(SELECT 1 FROM tool_item_version a JOIN tool_item_version b ON a.tool_item_pk=b.tool_item_pk WHERE a.pk=?1 AND ((a.agent_class IN ('agent','non_agent') AND b.agent_class IN ('agent','non_agent') AND a.agent_class!=b.agent_class) OR (a.result_present=1 AND b.result_present=1 AND ((a.result_outcome IS NOT NULL AND b.result_outcome IS NOT NULL AND a.result_outcome!=b.result_outcome) OR (a.result_exit_code IS NOT NULL AND b.result_exit_code IS NOT NULL AND a.result_exit_code!=b.result_exit_code) OR (a.output_present=1 AND b.output_present=1 AND a.result_text_id!=b.result_text_id)))))", [version], |r|r.get(0))
+        reader.index.query_row("SELECT EXISTS(SELECT 1 FROM tool_item_version a JOIN tool_item_version b ON a.tool_item_pk=b.tool_item_pk WHERE a.pk=?1 AND (a.kind!=b.kind OR (a.agent_class IN ('agent','non_agent') AND b.agent_class IN ('agent','non_agent') AND a.agent_class!=b.agent_class) OR (a.result_present=1 AND b.result_present=1 AND ((a.result_outcome IS NOT NULL AND b.result_outcome IS NOT NULL AND a.result_outcome!=b.result_outcome) OR (a.result_exit_code IS NOT NULL AND b.result_exit_code IS NOT NULL AND a.result_exit_code!=b.result_exit_code) OR (a.output_present=1 AND b.output_present=1 AND a.result_text_id!=b.result_text_id)))))", [version], |r|r.get(0))
     })?;
     Ok(Item {
         reference,
@@ -514,7 +649,9 @@ fn load_item(
         operation,
         sources,
         representations,
+        associations,
         conflicting_representations,
+        selected,
     })
 }
 impl ReadHandle {
@@ -574,12 +711,15 @@ impl ReadHandle {
         let mut calls = 0;
         let mut failed = 0;
         let mut complete = !items.is_empty();
+        let mut outcomes_complete = true;
         for item in &items {
             if item.operation.counted()
                 && !item.conflicting_representations
                 && !suppressed_wrappers.contains(&item.reference)
             {
                 calls += 1;
+                outcomes_complete &= item.operation.result_present
+                    && matches!(item.operation.outcome.as_deref(), Some("ok" | "error"));
                 if item.operation.outcome.as_deref() == Some("error") {
                     failed += 1;
                 }
@@ -587,6 +727,27 @@ impl ReadHandle {
                 && !suppressed_wrappers.contains(&item.reference)
             {
                 complete = false;
+            }
+        }
+        // A history-only child cannot prove which open wrapper cohort it
+        // overlaps. Keep aggregate count coverage unknown until a scoped
+        // rollout witness accounts for every affected wrapper.
+        for child in items
+            .iter()
+            .filter(|i| i.operation.kind == "CommandExecution" && i.operation.message.is_none())
+        {
+            for wrapper in items.iter().filter(|i| {
+                i.operation.kind == "CodeExecution"
+                    && i.operation.turn.is_some()
+                    && i.operation.turn == child.operation.turn
+            }) {
+                if !child
+                    .operation
+                    .wrapper_overlaps
+                    .contains(&wrapper.reference)
+                {
+                    complete = false;
+                }
             }
         }
         let retained_representations: i64 = db(&p, || {
@@ -601,6 +762,7 @@ impl ReadHandle {
             tool_calls: calls,
             failed,
             correspondence_complete: complete,
+            outcomes_complete,
             retained_representations: retained_representations as usize,
             retained_rows: retained_rows as u64,
             decoded_rows: decoded_rows as u64,

@@ -77,12 +77,20 @@ def verify_case(binary,output,order,wrappers=False):
         operation=commands[0]
         result=run.cli([operation['ref'],'read','--budget','20000'])
         facts=result['shown'][0]['operation']
+        associations = result['shown'][0]['associations']
+        assert result['shown'][0]['selected'], result
+        assert all(a['message_body'] > 0 and len(a['body_version']) == 64 and a['index_generation'] for a in associations), associations
+        if not wrappers:
+            assert len(associations) == 1 and associations[0]['kind'] == 'message_owner', associations
         assert facts['result_present'] and facts['output']=='' and facts['outcome']=='error'and facts['exit_code']==1,facts
         assert facts['invocation']=='C'and facts['turn']=='T',facts
         assert facts['message'] is None if wrappers else facts['message']==REF+':M',facts
         assert facts['wrapper'] is None,facts
         if wrappers:
-            assert len(facts['wrapper_overlaps'])==2 and all(ref.startswith('operation:')for ref in facts['wrapper_overlaps']),facts
+            assert len(facts['wrapper_overlaps'])==2 and all(ref.startswith('operation:provisional-v1:')for ref in facts['wrapper_overlaps']),facts
+            associations = result['shown'][0]['associations']
+            assert len(associations) == 2 and all(a['kind'] == 'wrapper_overlap' for a in associations), associations
+            assert {a['message'] for a in associations} == {REF + ':message-W1', REF + ':message-W2'}, associations
             assert calls['population']['tool_calls']==1,calls
         # The two representations preserve their different raw text presence.
         assert any('core-to-ui-empty-output-filter'in source['constructor']for source in result['shown'][0]['representations']),result
@@ -182,6 +190,7 @@ def refinement_control(binary, output, order):
         if old_ref:
             historical = run.cli([old_ref, 'read', '--budget', '20000'])
             assert historical['shown'][0]['operation']['turn'] is None, historical
+            assert not historical['shown'][0]['selected'] and not historical['shown'][0]['associations'], historical
             resolved = run.cli([old_ref.split('@')[0], 'read', '--budget', '20000'])
             assert resolved['shown'][0]['id'] == calls['rows'][0]['id'], resolved
         return calls
@@ -225,6 +234,8 @@ def missing_and_wrong_session_controls(binary, output):
         assert len(calls['rows']) == 1, calls
         item = run.cli([calls['rows'][0]['ref'], 'read', '--budget', '20000'])['shown'][0]['operation']
         assert not item['result_present'] and item['output'] is None, item
+        assert calls['population']['tool_calls'] == 1 and calls['population']['failed'] is None, calls
+        assert not calls['population']['outcomes_complete'], calls
         wrong = output / 'wrong-session.jsonl'
         rollout(wrong, scope=False, call='wrong')
         rows = [json.loads(line) for line in wrong.read_text().splitlines()]
@@ -312,6 +323,33 @@ def command_representation_control(binary, output):
         close_run(run, output)
 
 
+def unresolved_overlap_control(binary, output):
+    run = mcp.Run(binary, output)
+    try:
+        run.start()
+        full = output / 'full.jsonl'
+        rollout(full, wrappers=True)
+        rows = [json.loads(line) for line in full.read_text().splitlines()]
+        prefix = output / 'prefix.jsonl'
+        prefix.write_text(''.join(compact(row) + '\n' for row in rows[:-1]))
+        native = output / 'history.sqlite'
+        history(native, [native_item()])
+        imported(run, prefix, 'codex-rollout')
+        imported(run, native, 'codex-history-sqlite')
+        _, unknown = query(run, 'tool_items')
+        assert unknown['count'] == 3, unknown
+        assert not unknown['population']['correspondence_complete'] and unknown['population']['tool_calls'] is None, unknown
+        wrappers = [row for row in unknown['rows'] if row['kind'] == 'CodeExecution']
+        assert len(wrappers) == 2 and all(row['id'].startswith('operation:provisional-v1:') for row in wrappers), wrappers
+        imported(run, full, 'codex-rollout')
+        _, proved = query(run)
+        assert proved['count'] == 1 and proved['population']['tool_calls'] == 1, proved
+        assert proved['population']['correspondence_complete'], proved
+        return {'unknown': unknown, 'proved': proved}
+    finally:
+        close_run(run, output)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True, type=Path)
@@ -329,7 +367,7 @@ def main():
         assert results[0]['reference'] == results[1]['reference']
         assert results[0]['selected'] == results[1]['selected']
         report['cases'] = results
-        for name, verifier in [('qualification', qualification_controls), ('refine-PNF', lambda b, p: refinement_control(b, p, 'PNF')), ('refine-NFP', lambda b, p: refinement_control(b, p, 'NFP')), ('unavailable', unavailable_control), ('missing-wrong-session', missing_and_wrong_session_controls), ('chunked-output', chunked_output_control), ('giant-admission', giant_admission_control), ('command-representations', command_representation_control)]:
+        for name, verifier in [('qualification', qualification_controls), ('refine-PNF', lambda b, p: refinement_control(b, p, 'PNF')), ('refine-NFP', lambda b, p: refinement_control(b, p, 'NFP')), ('unavailable', unavailable_control), ('missing-wrong-session', missing_and_wrong_session_controls), ('chunked-output', chunked_output_control), ('giant-admission', giant_admission_control), ('command-representations', command_representation_control), ('unresolved-overlap', unresolved_overlap_control)]:
             path = args.output / name
             path.mkdir()
             report[name] = verifier(binary, path)

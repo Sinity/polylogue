@@ -43,6 +43,8 @@ provider's `CommandExecution.id`, scoped by Session and turn. In the pinned
 core constructor the direct tool's `ctx.call_id` becomes that item ID; a rollout
 response call can therefore correspond when its turn is independently known.
 A code wrapper's call ID is a different invocation from its child command ID.
+Wrappers retain their proved block-derived identity, known turn and raw call ID;
+they do not claim a native CommandExecution item ID.
 Equal commands, generated legacy UI `item-N` IDs and legacy Session/call IDs
 supply no correspondence proof. Generated UI IDs remain unresolved.
 
@@ -54,6 +56,15 @@ version-pinned reference still reads its immutable body and citations. A
 standalone native row cannot assign a turn to an unrelated unscoped call.
 `CommandExecution` has no parent-call field in this schema. Open wrapper overlap
 supports counting suppression, never an invented Message or wrapper parent.
+Selected `associations` distinguish `message_owner` from `wrapper_overlap` and
+carry the exact request-call source ranges, selected Message-body key/hash and
+index generation. Visibility requires both the selected ToolItem version and
+membership in that exact selected Message body’s immutable operation root.
+Association publication copies fixed body metadata and shares existing roots;
+it never edits a ready body or its source version hash. Historical ToolItem
+reads return `selected: false` and no current association projection. Until a scoped rollout witness
+accounts for the affected wrapper cohort, aggregate count coverage stays
+unknown even when all individual items were decoded.
 Native UI items do not manufacture Messages.
 
 ## Presence and qualification
@@ -78,7 +89,9 @@ The population reports retained representations, decoded selected items, source
 row dispositions and correspondence independently. The full retained-item
 population remains explicitly unknown (`retained_items: null`). When
 correspondence is unresolved, aggregate `tool_calls` and `failed` are also null;
-`known_agent_items` describes the proved subset and supplies no total-count bound. A source with unknown rows
+`known_agent_items` describes the proved subset and supplies no total-count bound.
+A missing or unknown result also keeps `failed` null, independently of known
+operation correspondence; `outcomes_complete` exposes that distinction. A source with unknown rows
 keeps coverage degraded. A contested Message merge stays unavailable while independently proved
 Session-owned operations can still publish; `import --wait` reports that partial
 usability without certifying the contested rows. The query always reports incomplete general Session
@@ -94,7 +107,10 @@ not invalidate an independent selected representation.
 
 This first path admits a physical snapshot up to 16 MiB, 4096 typed rows and
 16 MiB of item JSON; one operation's normalized metadata plus output is limited
-to 2 MiB. Existing chunked immutable values hold admitted bodies. Population
+to 2 MiB, with at most 16 wrapper-overlap witnesses and 16 direct anchors.
+One publication attaches at most 17 selected association leaves through the
+existing fixed-depth persistent directories. Existing chunked immutable values
+hold admitted bodies. Population
 reads admit 4096 selected items, 4096 citations per item, 32 MiB of selected-source
 byte verification and 4 MiB encoded data.
 Read display budgets are 1 through 1048576 estimated tokens and must fit the
